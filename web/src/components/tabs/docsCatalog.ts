@@ -664,7 +664,9 @@ export const ENDPOINTS: ApiEndpoint[] = [
     description:
       "Returns adapter IDs and validated local model identifiers. The inventory stays inside Core and this call does not select, enroll, publish or upload a model.",
     responseExample: json({
-      schema_version: "provider-detected-models-v1",
+      schema_version: "provider-detected-models-v2",
+      observed_at: "2026-09-06T10:00:00.000Z",
+      diagnostics: [],
       runtimes: [{ adapter_id: "lm-studio", models: ["publisher/model"] }],
     }),
   },

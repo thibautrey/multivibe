@@ -162,8 +162,10 @@ type ProviderAgentSelection = {
 };
 
 type ProviderAgentDetectedModels = {
-  schema_version: "provider-detected-models-v1";
+  schema_version: "provider-detected-models-v2";
+  observed_at: string;
   runtimes: Array<{ adapter_id: string; models: string[] }>;
+  diagnostics: Array<{ adapter_id: string; status: "available" | "unavailable" | "degraded"; code: string }>;
 };
 
 type ProviderAgentAdapterRegistry = {

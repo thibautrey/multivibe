@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const detectedModelsSchemaVersion = "provider-detected-models-v1"
+const detectedModelsSchemaVersion = "provider-detected-models-v2"
 
 type detectedRuntime struct {
 	AdapterID string   `json:"adapter_id"`
@@ -18,8 +18,16 @@ type detectedRuntime struct {
 }
 
 type detectedModelsDocument struct {
-	SchemaVersion string            `json:"schema_version"`
-	Runtimes      []detectedRuntime `json:"runtimes"`
+	SchemaVersion string                      `json:"schema_version"`
+	ObservedAt    string                      `json:"observed_at"`
+	Runtimes      []detectedRuntime           `json:"runtimes"`
+	Diagnostics   []detectedRuntimeDiagnostic `json:"diagnostics"`
+}
+
+type detectedRuntimeDiagnostic struct {
+	AdapterID string `json:"adapter_id"`
+	Status    string `json:"status"`
+	Code      string `json:"code"`
 }
 
 type modelCatalogPayload struct {
@@ -41,9 +49,15 @@ func automaticRuntimeOwner(adapterID string) string {
 func detectedModels(ctx context.Context, registry adapterRegistryDocument, configured []runtimeEndpoint, client *http.Client) detectedModelsDocument {
 	document := detectedModelsDocument{
 		SchemaVersion: detectedModelsSchemaVersion,
+		ObservedAt:    time.Now().UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z"),
 		Runtimes:      []detectedRuntime{},
+		Diagnostics:   []detectedRuntimeDiagnostic{},
 	}
 	for _, adapter := range registry.Adapters {
+		if len(adapter.Candidates) == 0 {
+			continue
+		}
+		available := false
 		for _, candidate := range adapter.Candidates {
 			models, err := probeRuntimeCatalogAuthenticated(ctx, adapter, candidate, "", client)
 			if err != nil {
@@ -53,7 +67,13 @@ func detectedModels(ctx context.Context, registry adapterRegistryDocument, confi
 				AdapterID: adapter.ID,
 				Models:    models,
 			})
+			available = true
 			break
+		}
+		if available {
+			document.Diagnostics = append(document.Diagnostics, detectedRuntimeDiagnostic{AdapterID: adapter.ID, Status: "available", Code: "catalog_ok"})
+		} else {
+			document.Diagnostics = append(document.Diagnostics, detectedRuntimeDiagnostic{AdapterID: adapter.ID, Status: "unavailable", Code: "catalog_probe_failed"})
 		}
 	}
 	adapters := make(map[string]runtimeAdapter, len(registry.Adapters))
@@ -72,10 +92,14 @@ func detectedModels(ctx context.Context, registry adapterRegistryDocument, confi
 		}
 		models, err := probeRuntimeCatalogAuthenticated(ctx, adapter, candidate, endpoint.BearerToken, client)
 		if err != nil {
+			document.Diagnostics = append(document.Diagnostics, detectedRuntimeDiagnostic{AdapterID: adapter.ID, Status: "unavailable", Code: "catalog_probe_failed"})
 			continue
 		}
 		document.Runtimes = append(document.Runtimes, detectedRuntime{AdapterID: adapter.ID, Models: models})
+		document.Diagnostics = append(document.Diagnostics, detectedRuntimeDiagnostic{AdapterID: adapter.ID, Status: "available", Code: "catalog_ok"})
 	}
+	sort.Slice(document.Runtimes, func(left, right int) bool { return document.Runtimes[left].AdapterID < document.Runtimes[right].AdapterID })
+	sort.Slice(document.Diagnostics, func(left, right int) bool { return document.Diagnostics[left].AdapterID < document.Diagnostics[right].AdapterID })
 	return document
 }
 
