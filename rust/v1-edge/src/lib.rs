@@ -3212,6 +3212,48 @@ fn buffered_trace_outcome(
     }
 }
 
+fn opaque_trace_outcome(
+    reply: &BufferedReply,
+    content_type: &str,
+    upstream_empty_body: bool,
+) -> TraceOutcome {
+    let error = (reply.status.as_u16() >= 400)
+        .then(|| trace_string(&String::from_utf8_lossy(&reply.body), 500));
+    TraceOutcome {
+        status: reply.status.as_u16(),
+        completed_at: now_ms(),
+        lifecycle_state: "completed",
+        usage: None,
+        error: error.clone(),
+        upstream_error: error,
+        upstream_content_type: (!content_type.trim().is_empty()).then(|| content_type.to_owned()),
+        upstream_empty_body: Some(upstream_empty_body),
+        ttft_ms: None,
+        response_stream_diagnostics: None,
+        assistant_empty_output: None,
+        assistant_finish_reason: None,
+        client_disconnected: Some(false),
+    }
+}
+
+fn transport_trace_outcome(status: StatusCode, error: String) -> TraceOutcome {
+    TraceOutcome {
+        status: status.as_u16(),
+        completed_at: now_ms(),
+        lifecycle_state: "completed",
+        usage: None,
+        error: Some(error.clone()),
+        upstream_error: Some(error),
+        upstream_content_type: None,
+        upstream_empty_body: Some(true),
+        ttft_ms: None,
+        response_stream_diagnostics: None,
+        assistant_empty_output: None,
+        assistant_finish_reason: None,
+        client_disconnected: Some(false),
+    }
+}
+
 fn trace_string(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
@@ -6585,7 +6627,19 @@ fn realtime_url(account: &Account, config: &EdgeConfig) -> Result<String, String
     ))
 }
 
+fn realtime_account_selection(provider: &str, candidate_count: usize, rotated: bool) -> Value {
+    json!({
+        "reason": "quota-headroom",
+        "provider": provider,
+        "candidateCount": candidate_count,
+        "eligibleCount": candidate_count,
+        "nearLimitCount": 0,
+        "rotated": rotated,
+    })
+}
+
 async fn realtime_call_handler(State(state): State<EdgeState>, req: Request<Body>) -> Response {
+    let started_at = now_ms();
     let path = req.uri().path().to_owned();
     let headers = req.headers().clone();
     let store = match state.store.snapshot().await {
@@ -6636,12 +6690,53 @@ async fn realtime_call_handler(State(state): State<EdgeState>, req: Request<Body
     let blocked = state.blocked.lock().await.clone();
     let selected = state.selected.lock().await.clone();
     let accounts = select_accounts(&store.accounts, &route, &blocked, &selected);
+    let candidate_count = accounts.len();
+    let trace_provider = route.provider.as_deref().unwrap_or("openai");
+    let trace_body = json!({"contentType": content_type, "byteLength": body.len()});
+    let client_request_id = header_value(&headers, "x-multivibe-trace-parent")
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     let mut last_error = "no eligible realtime account configured".to_owned();
+    let mut provider_attempts = 0_usize;
+
     for account in accounts {
+        provider_attempts += 1;
+        let selection =
+            realtime_account_selection(trace_provider, candidate_count, provider_attempts > 1);
+        let mut trace_context = build_trace_context(
+            &state,
+            &path,
+            &headers,
+            &trace_body,
+            &auth.application,
+            &client_request_id,
+            "realtime",
+            "realtime",
+            Some(&account),
+            false,
+            started_at,
+            provider_attempts,
+            provider_attempts,
+            "upstream-attempt",
+        );
+        trace_context.request_body = state.config.trace_include_body.then(|| trace_body.clone());
+        trace_context.account_selection = Some(selection.clone());
+
         let url = match realtime_url(&account, &state.config) {
             Ok(url) => url,
             Err(error) => {
                 last_error = error;
+                trace_context.latency_breakdown = Some(json!({
+                    "preparationMs": now_ms().saturating_sub(started_at),
+                    "upstreamHeadersMs": 0,
+                }));
+                state
+                    .trace
+                    .record(
+                        &trace_context,
+                        transport_trace_outcome(StatusCode::BAD_GATEWAY, last_error.clone()),
+                    )
+                    .await;
                 continue;
             }
         };
@@ -6652,6 +6747,7 @@ async fn realtime_call_handler(State(state): State<EdgeState>, req: Request<Body
             "accept",
             "application/sdp, application/json",
         );
+        let upstream_started_at = now_ms();
         let response = match timeout(
             state.config.upstream_timeout,
             state
@@ -6666,21 +6762,64 @@ async fn realtime_call_handler(State(state): State<EdgeState>, req: Request<Body
             Ok(Ok(response)) => response,
             Ok(Err(error)) => {
                 last_error = error.to_string();
+                trace_context.latency_breakdown = Some(json!({
+                    "preparationMs": upstream_started_at.saturating_sub(started_at),
+                    "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
+                }));
+                state
+                    .trace
+                    .record(
+                        &trace_context,
+                        transport_trace_outcome(StatusCode::BAD_GATEWAY, last_error.clone()),
+                    )
+                    .await;
                 continue;
             }
             Err(_) => {
                 last_error = "realtime upstream request timed out".to_owned();
+                trace_context.latency_breakdown = Some(json!({
+                    "preparationMs": upstream_started_at.saturating_sub(started_at),
+                    "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
+                }));
+                state
+                    .trace
+                    .record(
+                        &trace_context,
+                        transport_trace_outcome(StatusCode::GATEWAY_TIMEOUT, last_error.clone()),
+                    )
+                    .await;
                 continue;
             }
         };
         let status = response.status();
         let response_headers = copy_public_headers(response.headers());
-        let bytes = response.bytes().await.unwrap_or_default();
-        if !status.is_success() && is_quota_error(status, &String::from_utf8_lossy(&bytes)) {
+        let response_content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        let response_body = response.bytes().await.unwrap_or_default();
+        trace_context.latency_breakdown = Some(json!({
+            "preparationMs": upstream_started_at.saturating_sub(started_at),
+            "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
+        }));
+        let reply = BufferedReply {
+            status,
+            headers: response_headers,
+            body: response_body,
+        };
+        let outcome = opaque_trace_outcome(&reply, &response_content_type, reply.body.is_empty());
+        let completed_at = outcome.completed_at;
+        let response_error = outcome.error.clone();
+        state.trace.record(&trace_context, outcome).await;
+        if !status.is_success() && is_quota_error(status, &String::from_utf8_lossy(&reply.body)) {
             state
                 .mark_blocked(&account, "realtime", Duration::from_secs(60))
                 .await;
-            last_error = String::from_utf8_lossy(&bytes).chars().take(500).collect();
+            last_error = response_error
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "realtime upstream quota response".to_owned());
             continue;
         }
         if !status.is_success()
@@ -6693,15 +6832,73 @@ async fn realtime_call_handler(State(state): State<EdgeState>, req: Request<Body
                     | StatusCode::GATEWAY_TIMEOUT
             )
         {
-            last_error = String::from_utf8_lossy(&bytes).chars().take(500).collect();
+            last_error = response_error
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| format!("Realtime upstream returned {status}"));
             continue;
         }
-        return response_from_buffer(BufferedReply {
-            status,
-            headers: response_headers,
-            body: Bytes::from(bytes),
-        });
+        let mut client_context = build_trace_context(
+            &state,
+            &path,
+            &headers,
+            &Value::Null,
+            &auth.application,
+            &client_request_id,
+            "realtime",
+            "realtime",
+            None,
+            false,
+            started_at,
+            0,
+            provider_attempts,
+            "client-request",
+        );
+        client_context.request_body = None;
+        client_context.account_selection = Some(selection);
+        state
+            .trace
+            .record(
+                &client_context,
+                client_trace_outcome(status.as_u16(), completed_at, response_error, Some(false)),
+            )
+            .await;
+        return response_from_buffer(reply);
     }
+
+    let mut client_context = build_trace_context(
+        &state,
+        &path,
+        &headers,
+        &Value::Null,
+        &auth.application,
+        &client_request_id,
+        "realtime",
+        "realtime",
+        None,
+        false,
+        started_at,
+        0,
+        provider_attempts,
+        "client-request",
+    );
+    client_context.request_body = None;
+    client_context.account_selection = Some(realtime_account_selection(
+        trace_provider,
+        candidate_count,
+        provider_attempts > 1,
+    ));
+    state
+        .trace
+        .record(
+            &client_context,
+            client_trace_outcome(
+                StatusCode::BAD_GATEWAY.as_u16(),
+                now_ms(),
+                Some(last_error.clone()),
+                Some(false),
+            ),
+        )
+        .await;
     json_response(
         StatusCode::BAD_GATEWAY,
         json!({"error": {"message": last_error, "type": "upstream_error", "code": "realtime_upstream_error", "application": auth.application}}),
@@ -6709,6 +6906,7 @@ async fn realtime_call_handler(State(state): State<EdgeState>, req: Request<Body
 }
 
 async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Body>) -> Response {
+    let started_at = now_ms();
     let headers = req.headers().clone();
     let path = req.uri().path().to_owned();
     let store = match state.store.snapshot().await {
@@ -6717,9 +6915,10 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
             return error_response(StatusCode::SERVICE_UNAVAILABLE, error, "store_unavailable");
         }
     };
-    if let Err(response) = authorize(&headers, &path, &store, &state.config) {
-        return response;
-    }
+    let auth = match authorize(&headers, &path, &store, &state.config) {
+        Ok(auth) => auth,
+        Err(response) => return response,
+    };
     let route = RouteCandidate {
         requested_model: "realtime-voices".to_owned(),
         model: "realtime-voices".to_owned(),
@@ -6728,15 +6927,67 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
     };
     let blocked = state.blocked.lock().await.clone();
     let selected = state.selected.lock().await.clone();
-    let Some(account) = select_accounts(&store.accounts, &route, &blocked, &selected)
-        .into_iter()
-        .next()
-    else {
+    let accounts = select_accounts(&store.accounts, &route, &blocked, &selected);
+    let candidate_count = accounts.len();
+    let trace_provider = route.provider.as_deref().unwrap_or("openai");
+    let client_request_id = header_value(&headers, "x-multivibe-trace-parent")
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let selection = realtime_account_selection(trace_provider, candidate_count, false);
+    let Some(account) = accounts.into_iter().next() else {
+        let mut client_context = build_trace_context(
+            &state,
+            &path,
+            &headers,
+            &Value::Null,
+            &auth.application,
+            &client_request_id,
+            "realtime-voices",
+            "realtime-voices",
+            None,
+            false,
+            started_at,
+            0,
+            0,
+            "client-request",
+        );
+        client_context.request_body = None;
+        client_context.account_selection = Some(selection);
+        state
+            .trace
+            .record(
+                &client_context,
+                client_trace_outcome(
+                    StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+                    now_ms(),
+                    Some("no eligible ChatGPT account configured for voice discovery".to_owned()),
+                    Some(false),
+                ),
+            )
+            .await;
         return json_response(
             StatusCode::SERVICE_UNAVAILABLE,
             json!({"error": {"message": "no eligible ChatGPT account configured for voice discovery", "type": "service_unavailable", "code": "voice_account_unavailable"}}),
         );
     };
+    let mut trace_context = build_trace_context(
+        &state,
+        &path,
+        &headers,
+        &Value::Null,
+        &auth.application,
+        &client_request_id,
+        "realtime-voices",
+        "realtime-voices",
+        Some(&account),
+        false,
+        started_at,
+        1,
+        1,
+        "upstream-attempt",
+    );
+    trace_context.request_body = None;
+    trace_context.account_selection = Some(selection.clone());
     let mut url = format!(
         "{}/backend-api/settings/voices",
         trim_slashes(&state.config.chatgpt_base_url)
@@ -6749,6 +7000,7 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
         url.push(if url.contains('?') { '&' } else { '?' });
         url.push_str("voice_mode=advanced");
     }
+    let upstream_started_at = now_ms();
     let response = match timeout(
         state.config.upstream_timeout,
         state
@@ -6767,26 +7019,150 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
     {
         Ok(Ok(response)) => response,
         Ok(Err(error)) => {
+            let message = error.to_string();
+            trace_context.latency_breakdown = Some(json!({
+                "preparationMs": upstream_started_at.saturating_sub(started_at),
+                "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
+            }));
+            state
+                .trace
+                .record(
+                    &trace_context,
+                    transport_trace_outcome(StatusCode::BAD_GATEWAY, message.clone()),
+                )
+                .await;
+            let mut client_context = build_trace_context(
+                &state,
+                &path,
+                &headers,
+                &Value::Null,
+                &auth.application,
+                &client_request_id,
+                "realtime-voices",
+                "realtime-voices",
+                None,
+                false,
+                started_at,
+                0,
+                1,
+                "client-request",
+            );
+            client_context.request_body = None;
+            client_context.account_selection = Some(selection.clone());
+            state
+                .trace
+                .record(
+                    &client_context,
+                    client_trace_outcome(
+                        StatusCode::BAD_GATEWAY.as_u16(),
+                        now_ms(),
+                        Some(message.clone()),
+                        Some(false),
+                    ),
+                )
+                .await;
             return json_response(
                 StatusCode::BAD_GATEWAY,
-                json!({"error": {"message": error.to_string(), "type": "upstream_error", "code": "voice_discovery_upstream_error"}}),
+                json!({"error": {"message": message, "type": "upstream_error", "code": "voice_discovery_upstream_error"}}),
             );
         }
         Err(_) => {
+            let message = "voice discovery upstream request timed out".to_owned();
+            trace_context.latency_breakdown = Some(json!({
+                "preparationMs": upstream_started_at.saturating_sub(started_at),
+                "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
+            }));
+            state
+                .trace
+                .record(
+                    &trace_context,
+                    transport_trace_outcome(StatusCode::GATEWAY_TIMEOUT, message.clone()),
+                )
+                .await;
+            let mut client_context = build_trace_context(
+                &state,
+                &path,
+                &headers,
+                &Value::Null,
+                &auth.application,
+                &client_request_id,
+                "realtime-voices",
+                "realtime-voices",
+                None,
+                false,
+                started_at,
+                0,
+                1,
+                "client-request",
+            );
+            client_context.request_body = None;
+            client_context.account_selection = Some(selection.clone());
+            state
+                .trace
+                .record(
+                    &client_context,
+                    client_trace_outcome(
+                        StatusCode::GATEWAY_TIMEOUT.as_u16(),
+                        now_ms(),
+                        Some(message.clone()),
+                        Some(false),
+                    ),
+                )
+                .await;
             return json_response(
                 StatusCode::GATEWAY_TIMEOUT,
-                json!({"error": {"message": "voice discovery upstream request timed out", "type": "upstream_error", "code": "voice_discovery_upstream_error"}}),
+                json!({"error": {"message": message, "type": "upstream_error", "code": "voice_discovery_upstream_error"}}),
             );
         }
     };
     let status = response.status();
     let response_headers = copy_public_headers(response.headers());
-    let body = response.bytes().await.unwrap_or_default();
-    response_from_buffer(BufferedReply {
+    let response_content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let response_body = response.bytes().await.unwrap_or_default();
+    trace_context.latency_breakdown = Some(json!({
+        "preparationMs": upstream_started_at.saturating_sub(started_at),
+        "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
+    }));
+    let reply = BufferedReply {
         status,
         headers: response_headers,
-        body: Bytes::from(body),
-    })
+        body: response_body,
+    };
+    let outcome = opaque_trace_outcome(&reply, &response_content_type, reply.body.is_empty());
+    let completed_at = outcome.completed_at;
+    let response_error = outcome.error.clone();
+    state.trace.record(&trace_context, outcome).await;
+    let mut client_context = build_trace_context(
+        &state,
+        &path,
+        &headers,
+        &Value::Null,
+        &auth.application,
+        &client_request_id,
+        "realtime-voices",
+        "realtime-voices",
+        None,
+        false,
+        started_at,
+        0,
+        1,
+        "client-request",
+    );
+    client_context.request_body = None;
+    client_context.account_selection = Some(selection);
+    state
+        .trace
+        .record(
+            &client_context,
+            client_trace_outcome(status.as_u16(), completed_at, response_error, Some(false)),
+        )
+        .await;
+    response_from_buffer(reply)
 }
 
 async fn websocket_handler(
@@ -7711,6 +8087,110 @@ mod tests {
                 .iter()
                 .any(|entry| entry["traceKind"] == "client-request")
         );
+
+        edge_task.abort();
+        upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+        let _ = fs::remove_file(trace_path).await;
+    }
+
+    #[tokio::test]
+    async fn native_realtime_and_voice_requests_are_traced_with_explicit_models() {
+        let upstream = Router::new()
+            .route(
+                "/backend-api/realtime/calls",
+                post(|| async {
+                    Response::builder()
+                        .status(StatusCode::CREATED)
+                        .header(header::CONTENT_TYPE, "application/sdp")
+                        .body(Body::from("v=0\\r\\na=answer\\r\\n"))
+                        .unwrap()
+                }),
+            )
+            .route(
+                "/backend-api/settings/voices",
+                get(|| async { Json(json!({"voices": ["cove"]})) }),
+            );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+
+        let store_path = temporary_path("native-realtime-trace");
+        let jobs_path = temporary_path("native-realtime-trace-jobs");
+        let trace_path = temporary_path("native-realtime-trace-log");
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![account("openai-1")])).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.chatgpt_base_url = upstream_url;
+        config.configured_api_keys = vec![("realtime-app".to_owned(), "realtime-key".to_owned())];
+        config.upstream_timeout = Duration::from_secs(5);
+        config.trace_path = Some(trace_path.clone());
+        config.trace_include_body = true;
+        config.trace_include_headers = true;
+
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("{edge_url}/v1/realtime/calls"))
+            .header("authorization", "Bearer realtime-key")
+            .header(header::CONTENT_TYPE, "application/sdp")
+            .body("v=0\\r\\n")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(response.text().await.unwrap(), "v=0\\r\\na=answer\\r\\n");
+
+        let response = client
+            .get(format!(
+                "{edge_url}/v1/settings/voices?spoken_language=fr-FR"
+            ))
+            .header("authorization", "Bearer realtime-key")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.json::<Value>().await.unwrap()["voices"][0], "cove");
+
+        let trace_contents = fs::read_to_string(&trace_path).await.unwrap();
+        let traces = trace_contents
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let realtime = traces
+            .iter()
+            .find(|entry| {
+                entry["route"] == "/v1/realtime/calls" && entry["traceKind"] == "upstream-attempt"
+            })
+            .unwrap();
+        assert_eq!(realtime["model"], "realtime");
+        assert_eq!(realtime["requestedModel"], "realtime");
+        assert_eq!(realtime["provider"], "openai");
+        assert_eq!(realtime["accountId"], "openai-1");
+        assert_eq!(realtime["status"], 201);
+        assert_eq!(realtime["usageStatus"], "missing");
+        assert_eq!(realtime["requestBody"]["contentType"], "application/sdp");
+        assert_eq!(realtime["requestHeaders"]["authorization"], "[REDACTED]");
+        assert!(traces.iter().any(|entry| {
+            entry["route"] == "/v1/realtime/calls" && entry["traceKind"] == "client-request"
+        }));
+
+        let voices = traces
+            .iter()
+            .find(|entry| {
+                entry["route"] == "/v1/settings/voices" && entry["traceKind"] == "upstream-attempt"
+            })
+            .unwrap();
+        assert_eq!(voices["model"], "realtime-voices");
+        assert_eq!(voices["provider"], "openai");
+        assert_eq!(voices["status"], 200);
+        assert_eq!(voices["usageStatus"], "missing");
 
         edge_task.abort();
         upstream_task.abort();
