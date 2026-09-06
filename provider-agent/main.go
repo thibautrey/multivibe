@@ -811,8 +811,8 @@ func main() {
 	var enrollment *cloudEnrollmentService
 	var workerTest *workerTestService
 	if identity != nil {
-		enrollment = newCloudEnrollmentService(cloudURL, client, identity, selections, enrollmentStore)
-		workerTest = newWorkerTestService(cloudURL, client, identity, enrollmentStore, selections, runtimes)
+		enrollment = newCloudEnrollmentService(cloudURL, client, identity, enrollmentStore)
+		workerTest = newWorkerTestService(cloudURL, client, identity, enrollmentStore, runtimes)
 		go workerTest.run(context.Background())
 	}
 	listener, err := openProviderAgentListener(listenAddress, bootstrap)

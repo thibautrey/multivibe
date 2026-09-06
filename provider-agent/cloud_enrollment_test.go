@@ -26,32 +26,38 @@ const (
 
 func enrollmentRequestBody(token string) string {
 	encoded, _ := json.Marshal(cloudEnrollmentInput{
-		EnrollmentToken: token, CoreVersion: "0.2.0", RuntimeFamily: "omlx",
-		SelectedModels:         []cloudEnrollmentModel{{ReportedID: "publisher/model", Modalities: []string{"text"}}},
+		EnrollmentToken: token, CoreVersion: "0.2.0", RuntimeFamily: providerCloudManagedRuntime,
+		SelectedModels:         []cloudEnrollmentModel{},
 		DeclaredMaxConcurrency: 4,
 	})
 	return string(encoded)
 }
 
 func TestCloudEnrollmentAcceptsEveryRegisteredRuntimeAndRejectsUnknownOnes(t *testing.T) {
-	selected := []string{"publisher/model"}
 	for _, adapter := range runtimeAdapterRegistry().Adapters {
 		input := cloudEnrollmentInput{
 			EnrollmentToken: "mve_" + strings.Repeat("a", 43), CoreVersion: "0.2.0", RuntimeFamily: adapter.ID,
-			SelectedModels:         []cloudEnrollmentModel{{ReportedID: selected[0], Modalities: []string{"text"}}},
+			SelectedModels:         []cloudEnrollmentModel{{ReportedID: "publisher/model", Modalities: []string{"text"}}},
 			DeclaredMaxConcurrency: 1,
 		}
-		manifest, err := normalizeEnrollmentInput(input, selected)
+		manifest, err := normalizeEnrollmentInput(input)
 		if err != nil || manifest.RuntimeFamily != adapter.ID {
 			t.Fatalf("registered runtime %s was rejected: %#v %v", adapter.ID, manifest, err)
 		}
 	}
+	managed, err := normalizeEnrollmentInput(cloudEnrollmentInput{
+		EnrollmentToken: "mve_" + strings.Repeat("a", 43), CoreVersion: "0.2.0",
+		RuntimeFamily: providerCloudManagedRuntime, SelectedModels: []cloudEnrollmentModel{}, DeclaredMaxConcurrency: 1,
+	})
+	if err != nil || managed.RuntimeFamily != providerCloudManagedRuntime || len(managed.SelectedModels) != 0 {
+		t.Fatalf("cloud-managed runtime with no local model was rejected: %#v %v", managed, err)
+	}
 	invalid := cloudEnrollmentInput{
 		EnrollmentToken: "mve_" + strings.Repeat("a", 43), CoreVersion: "0.2.0", RuntimeFamily: "unknown-runtime",
-		SelectedModels:         []cloudEnrollmentModel{{ReportedID: selected[0], Modalities: []string{"text"}}},
+		SelectedModels:         []cloudEnrollmentModel{{ReportedID: "publisher/model", Modalities: []string{"text"}}},
 		DeclaredMaxConcurrency: 1,
 	}
-	if _, err := normalizeEnrollmentInput(invalid, selected); !errors.Is(err, errInvalidCloudEnrollment) {
+	if _, err := normalizeEnrollmentInput(invalid); !errors.Is(err, errInvalidCloudEnrollment) {
 		t.Fatalf("unknown runtime must fail closed: %v", err)
 	}
 }
@@ -106,8 +112,8 @@ func TestCloudEnrollmentSubmitsExactConsentPersistsNoGrantAndStaysNonCommercial(
 			if begin.ClientNodeID != deterministicClientNodeID(begin.DevicePublicKeySPKI) ||
 				begin.Manifest.ManifestVersion != providerManifestVersion || begin.Manifest.ProtocolVersion != providerControlProtocol ||
 				begin.Manifest.CompanionVersion != providerCompanionVersion || begin.Manifest.CoreVersion != "0.2.0" ||
-				begin.Manifest.RuntimeFamily != "omlx" || len(begin.Manifest.SelectedModels) != 1 ||
-				begin.Manifest.SelectedModels[0].ReportedID != "publisher/model" || begin.Manifest.DeclaredMaxConcurrency != 4 {
+				begin.Manifest.RuntimeFamily != providerCloudManagedRuntime || len(begin.Manifest.SelectedModels) != 0 ||
+				begin.Manifest.DeclaredMaxConcurrency != 4 {
 				t.Fatalf("unexpected consent manifest: %#v", begin)
 			}
 			response.WriteHeader(http.StatusCreated)
@@ -150,8 +156,8 @@ func TestCloudEnrollmentSubmitsExactConsentPersistsNoGrantAndStaysNonCommercial(
 	if err != nil {
 		t.Fatal(err)
 	}
-	selections := newMemorySelectionStore([]string{"publisher/model"})
-	service := newCloudEnrollmentService(baseURL, cloud.Client(), identity, selections, store)
+	selections := newMemorySelectionStore([]string{})
+	service := newCloudEnrollmentService(baseURL, cloud.Client(), identity, store)
 	service.now = func() time.Time { return now }
 	core, _ := url.Parse("http://127.0.0.1:1455")
 	controlToken := strings.Repeat("c", 32)
@@ -223,7 +229,7 @@ func TestCloudEnrollmentSubmitsExactConsentPersistsNoGrantAndStaysNonCommercial(
 	}
 }
 
-func TestCloudEnrollmentRejectsUnselectedModelsAndUntrustedOriginsBeforeNetwork(t *testing.T) {
+func TestCloudEnrollmentRejectsMalformedModelsAndUntrustedOriginsBeforeNetwork(t *testing.T) {
 	if _, err := cloudAPIURL("https://auth.multivibe.cloud"); err != nil {
 		t.Fatalf("trusted Cloud enrollment origin rejected: %v", err)
 	}
@@ -237,11 +243,10 @@ func TestCloudEnrollmentRejectsUnselectedModelsAndUntrustedOriginsBeforeNetwork(
 	}
 	identity, _ := newMemoryDeviceIdentity()
 	baseURL, _ := cloudAPIURL("http://127.0.0.1:65534")
-	selections := newMemorySelectionStore([]string{"publisher/model"})
-	service := newCloudEnrollmentService(baseURL, http.DefaultClient, identity, selections, newMemoryCloudEnrollmentStore())
+	service := newCloudEnrollmentService(baseURL, http.DefaultClient, identity, newMemoryCloudEnrollmentStore())
 	input := cloudEnrollmentInput{
 		EnrollmentToken: "mve_" + strings.Repeat("a", 43), CoreVersion: "0.2.0", RuntimeFamily: "omlx",
-		SelectedModels:         []cloudEnrollmentModel{{ReportedID: "different/model", Modalities: []string{"text"}}},
+		SelectedModels:         []cloudEnrollmentModel{{ReportedID: "https://different.example/model", Modalities: []string{"text"}}},
 		DeclaredMaxConcurrency: 1,
 	}
 	if _, err := service.enroll(context.Background(), input); !errors.Is(err, errInvalidCloudEnrollment) {
