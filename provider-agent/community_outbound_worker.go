@@ -181,6 +181,41 @@ type communityOutboundWorker struct {
 	trusted    trustedProviderDemandKeys
 	replay     *communityOutboundReplayStore
 	now        func() time.Time
+	stats      *communityOutboundWorkerStats
+}
+
+type communityOutboundWorkerStatus struct {
+	SchemaVersion      string `json:"schema_version"`
+	Claims             uint64 `json:"claims"`
+	Executions         uint64 `json:"executions"`
+	RenewFailures      uint64 `json:"renew_failures"`
+	Cancellations      uint64 `json:"cancellations"`
+	StreamFailures     uint64 `json:"stream_failures"`
+	CompletionFailures uint64 `json:"completion_failures"`
+	LastClaimedAt      string `json:"last_claimed_at,omitempty"`
+	LastCompletedAt    string `json:"last_completed_at,omitempty"`
+	LastErrorCategory  string `json:"last_error_category,omitempty"`
+}
+
+type communityOutboundWorkerStats struct {
+	mu     sync.Mutex
+	status communityOutboundWorkerStatus
+}
+
+func newCommunityOutboundWorkerStats() *communityOutboundWorkerStats {
+	return &communityOutboundWorkerStats{status: communityOutboundWorkerStatus{SchemaVersion: "community-outbound-worker-status-v1"}}
+}
+
+func (stats *communityOutboundWorkerStats) update(effect func(*communityOutboundWorkerStatus)) {
+	stats.mu.Lock()
+	defer stats.mu.Unlock()
+	effect(&stats.status)
+}
+
+func (stats *communityOutboundWorkerStats) snapshot() communityOutboundWorkerStatus {
+	stats.mu.Lock()
+	defer stats.mu.Unlock()
+	return stats.status
 }
 
 func newCommunityOutboundWorker(
@@ -206,7 +241,15 @@ func newCommunityOutboundWorker(
 	return &communityOutboundWorker{
 		baseURL: baseURL, cloud: &cloud, sessions: sessions, enrollment: enrollment, policy: policy,
 		backend: backend, catalog: cloneRuntimeBackendCatalog(backend.catalog), trusted: keys, replay: replay, now: time.Now,
+		stats: newCommunityOutboundWorkerStats(),
 	}, nil
+}
+
+func (worker *communityOutboundWorker) status() communityOutboundWorkerStatus {
+	if worker == nil || worker.stats == nil {
+		return communityOutboundWorkerStatus{SchemaVersion: "community-outbound-worker-status-v1"}
+	}
+	return worker.stats.snapshot()
 }
 
 func communityInferencePayloadMap(payload communityInferencePayload) map[string]any {
@@ -434,6 +477,9 @@ func (worker *communityOutboundWorker) complete(ctx context.Context, claim commu
 			"body": base64.RawURLEncoding.EncodeToString(body), "disposition": disposition,
 		})
 		if err == nil && (code == http.StatusCreated || code == http.StatusOK) {
+			worker.stats.update(func(value *communityOutboundWorkerStatus) {
+				value.LastCompletedAt = worker.now().UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z")
+			})
 			return nil
 		}
 		if code >= 400 && code < 500 && code != http.StatusUnauthorized {
@@ -443,6 +489,10 @@ func (worker *communityOutboundWorker) complete(ctx context.Context, claim commu
 			break
 		}
 	}
+	worker.stats.update(func(value *communityOutboundWorkerStatus) {
+		value.CompletionFailures++
+		value.LastErrorCategory = "completion_failed"
+	})
 	return errors.New("community outbound completion could not be committed")
 }
 
@@ -469,6 +519,10 @@ func (worker *communityOutboundWorker) appendChunk(ctx context.Context, claim co
 			break
 		}
 	}
+	worker.stats.update(func(value *communityOutboundWorkerStatus) {
+		value.StreamFailures++
+		value.LastErrorCategory = "stream_commit_failed"
+	})
 	return errors.New("community outbound stream chunk could not be committed")
 }
 
@@ -484,11 +538,22 @@ func (worker *communityOutboundWorker) monitor(ctx context.Context, cancel conte
 			return
 		case <-ticker.C:
 			if !worker.authorized() {
+				worker.stats.update(func(value *communityOutboundWorkerStatus) { value.Cancellations++ })
 				cancel()
 				return
 			}
 			session := worker.sessions.snapshot(worker.now())
-			if session == nil || worker.cancelled(ctx, session, claim) || worker.renew(ctx, session, claim) != nil {
+			cancelled := session != nil && worker.cancelled(ctx, session, claim)
+			renewFailed := session == nil || (!cancelled && worker.renew(ctx, session, claim) != nil)
+			if cancelled || renewFailed {
+				worker.stats.update(func(value *communityOutboundWorkerStatus) {
+					if cancelled {
+						value.Cancellations++
+					} else {
+						value.RenewFailures++
+						value.LastErrorCategory = "renew_failed"
+					}
+				})
 				failures++
 				if failures >= 3 {
 					cancel()
@@ -502,6 +567,7 @@ func (worker *communityOutboundWorker) monitor(ctx context.Context, cancel conte
 }
 
 func (worker *communityOutboundWorker) execute(ctx context.Context, claim communityOutboundClaim) {
+	worker.stats.update(func(value *communityOutboundWorkerStatus) { value.Executions++ })
 	now := worker.now().UTC()
 	body, modelID, err := worker.verify(claim, now)
 	if err != nil || !worker.authorized() {
@@ -538,6 +604,10 @@ func (worker *communityOutboundWorker) execute(ctx context.Context, claim commun
 		if executeErr == nil {
 			return
 		}
+		worker.stats.update(func(value *communityOutboundWorkerStatus) {
+			value.StreamFailures++
+			value.LastErrorCategory = "backend_stream_failed"
+		})
 		if sequence == 0 {
 			status, headers, responseBody, disposition := communityOutboundErrorResponse("uncertain")
 			_ = worker.complete(ctx, claim, status, headers, responseBody, disposition)
@@ -582,6 +652,10 @@ func (worker *communityOutboundWorker) run(ctx context.Context) {
 			}
 			continue
 		}
+		worker.stats.update(func(value *communityOutboundWorkerStatus) {
+			value.Claims++
+			value.LastClaimedAt = worker.now().UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z")
+		})
 		worker.execute(ctx, *claim)
 	}
 }

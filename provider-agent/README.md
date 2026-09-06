@@ -220,13 +220,16 @@ consent is withdrawn. An expired plan also invalidates the active set and stops
 the managed runtime even when no further request arrives.
 
 Reconciliation can only install catalog-pinned artifacts and mark a verified
-managed manifest active. It never receives a prompt or output and never opens a
-Cloud transport. Every view hardcodes `shadow_only=true` and customer traffic,
-routing and compensation eligibility to false. The announced future commercial
+managed manifest active. The reconciliation path never receives a prompt or
+output. The separate community outbound worker polls Cloud only after signed
+enrollment, inventory admission and workload consent are current. Its local
+`GET /v1/community-outbound/status` route requires the provider control token
+and exposes counters and sanitized error categories only; it never exposes
+prompts, outputs, bearer tokens or device credentials. The announced commercial
 split is 85% to the host operator and a 15% MultiVibe service fee for eligible,
 cleared community-workload revenue, before applicable taxes, reserves, disputes
 and reversals; the separate 5% fee applies only to customer purchases or
-top-ups. No payable or settlement is created by this code.
+top-ups.
 
 ## License
 

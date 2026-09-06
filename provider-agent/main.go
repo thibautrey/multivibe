@@ -135,10 +135,10 @@ func providerHandlerWithManagedController(core *url.URL, selections *selectionSt
 }
 
 func providerHandlerWithManagedControllerAndCapability(core *url.URL, selections *selectionStore, runtimes *runtimeEndpointStore, identity *deviceIdentity, enrollment *cloudEnrollmentService, capacity *capacityPolicyStore, demand *providerDemandService, controller *managedProviderController, capability hostCapability, client *http.Client, controlToken string) http.Handler {
-	return providerHandlerWithModelLifecycle(core, selections, runtimes, identity, enrollment, capacity, demand, controller, capability, nil, client, controlToken)
+	return providerHandlerWithModelLifecycle(core, selections, runtimes, identity, enrollment, capacity, demand, controller, capability, nil, nil, client, controlToken)
 }
 
-func providerHandlerWithModelLifecycle(core *url.URL, selections *selectionStore, runtimes *runtimeEndpointStore, identity *deviceIdentity, enrollment *cloudEnrollmentService, capacity *capacityPolicyStore, demand *providerDemandService, controller *managedProviderController, capability hostCapability, lifecycle *providerModelLifecycleService, client *http.Client, controlToken string) http.Handler {
+func providerHandlerWithModelLifecycle(core *url.URL, selections *selectionStore, runtimes *runtimeEndpointStore, identity *deviceIdentity, enrollment *cloudEnrollmentService, capacity *capacityPolicyStore, demand *providerDemandService, controller *managedProviderController, capability hostCapability, lifecycle *providerModelLifecycleService, outbound *communityOutboundWorker, client *http.Client, controlToken string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("content-type", "application/json")
@@ -314,6 +314,19 @@ func providerHandlerWithModelLifecycle(core *url.URL, selections *selectionStore
 		response.Header().Set("cache-control", "no-store")
 		response.Header().Set("content-type", "application/json")
 		_ = json.NewEncoder(response).Encode(lifecycle.snapshot())
+	})
+	mux.HandleFunc("GET /v1/community-outbound/status", func(response http.ResponseWriter, request *http.Request) {
+		if !authorizeProviderControl(request, controlToken) {
+			http.Error(response, "not found", http.StatusNotFound)
+			return
+		}
+		if outbound == nil {
+			http.Error(response, "community outbound worker unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		response.Header().Set("cache-control", "no-store")
+		response.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(response).Encode(outbound.status())
 	})
 	mux.HandleFunc("GET /v1/capacity-policy", func(response http.ResponseWriter, request *http.Request) {
 		if !authorizeProviderControl(request, controlToken) {
@@ -863,7 +876,7 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("provider_agent_started", "address", listener.Addr().String(), "selected_model_count", len(selections.snapshot().SelectedModels), "selection_persistent", statePath != "", "manual_runtime_count", len(runtimes.snapshot().Endpoints), "runtime_state_persistent", runtimeStatePath != "", "device_identity_persistent", deviceKeyPath != "", "cloud_enrollment_persistent", enrollmentStatePath != "", "worker_test_enabled", workerTest != nil, "model_lifecycle_enabled", modelLifecycle != nil, "community_outbound_enabled", outboundWorker != nil, "capacity_policy_configured", capacity.snapshot() != nil, "capacity_policy_persistent", capacityPolicyPath != "", "demand_planning_enabled", demand != nil, "demand_plan_persistent", demandPlanPath != "", "managed_ollama_enabled", controller != nil)
-	server := newProviderHTTPServer(providerHandlerWithModelLifecycle(core, selections, runtimes, identity, enrollment, capacity, demand, controller, capability, modelLifecycle, client, controlToken))
+	server := newProviderHTTPServer(providerHandlerWithModelLifecycle(core, selections, runtimes, identity, enrollment, capacity, demand, controller, capability, modelLifecycle, outboundWorker, client, controlToken))
 	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("provider_agent_failed", "error", fmt.Sprint(err))
 		os.Exit(1)

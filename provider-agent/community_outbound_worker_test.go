@@ -8,6 +8,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -150,5 +152,53 @@ func TestCommunityOutboundSessionReplacementFailsClosed(t *testing.T) {
 	}
 	if store.snapshot(now.Add(2*time.Minute)) != nil {
 		t.Fatal("expired relay session remained usable")
+	}
+}
+
+func TestCommunityOutboundStatusContainsOnlyBoundedOperationalCounters(t *testing.T) {
+	stats := newCommunityOutboundWorkerStats()
+	stats.update(func(status *communityOutboundWorkerStatus) {
+		status.Claims = 2
+		status.Executions = 1
+		status.RenewFailures = 3
+		status.Cancellations = 1
+		status.StreamFailures = 1
+		status.CompletionFailures = 1
+		status.LastClaimedAt = "2035-01-01T00:00:00.000Z"
+		status.LastErrorCategory = "renew_failed"
+	})
+	worker := &communityOutboundWorker{stats: stats}
+	status := worker.status()
+	if status.SchemaVersion != "community-outbound-worker-status-v1" || status.Claims != 2 ||
+		status.Executions != 1 || status.RenewFailures != 3 || status.LastErrorCategory != "renew_failed" {
+		t.Fatalf("unexpected community outbound status: %#v", status)
+	}
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"prompt", "output", "authorization", "token", "body"} {
+		if strings.Contains(strings.ToLower(string(encoded)), forbidden) {
+			t.Fatalf("community outbound status contains forbidden field %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestCommunityOutboundStatusRouteRequiresLocalControlAuthentication(t *testing.T) {
+	const token = "community-outbound-local-control-token-with-at-least-32-characters"
+	worker := &communityOutboundWorker{stats: newCommunityOutboundWorkerStats()}
+	handler := providerHandlerWithModelLifecycle(nil, nil, nil, nil, nil, nil, nil, nil, hostCapability{}, nil,
+		worker, &http.Client{}, token)
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/v1/community-outbound/status", nil))
+	if unauthorized.Code != http.StatusNotFound {
+		t.Fatalf("unauthenticated status was exposed: %d", unauthorized.Code)
+	}
+	authorized := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/v1/community-outbound/status", nil)
+	request.Header.Set("authorization", "Bearer "+token)
+	handler.ServeHTTP(authorized, request)
+	if authorized.Code != http.StatusOK || !strings.Contains(authorized.Body.String(), "community-outbound-worker-status-v1") {
+		t.Fatalf("unexpected authenticated status: %d %s", authorized.Code, authorized.Body.String())
 	}
 }
