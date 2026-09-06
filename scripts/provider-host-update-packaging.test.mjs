@@ -7,6 +7,19 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (name) => readFile(path.join(root, name), "utf8");
 
+test("the macOS status item uses a transparent high-resolution template image", async () => {
+  const image = await readFile(path.join(root, "packaging", "macos", "MultiVibeMenuBarTemplate.png"));
+  assert.deepEqual(image.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  assert.equal(image.readUInt32BE(16), 36);
+  assert.equal(image.readUInt32BE(20), 36);
+  const colorType = image[25];
+  const transparencyChunk = image.indexOf(Buffer.from("tRNS"));
+  const hasAlphaChannel = colorType === 4 || colorType === 6;
+  const hasTransparentPaletteEntry = transparencyChunk >= 4
+    && image.subarray(transparencyChunk + 4, transparencyChunk + 4 + image.readUInt32BE(transparencyChunk - 4)).some((alpha) => alpha < 255);
+  assert.ok(hasAlphaChannel || hasTransparentPaletteEntry);
+});
+
 test("native packages include the updater and platform schedulers", async () => {
   const [packager, linux, macos, windows, verifier, uninstall] = await Promise.all([
     read("scripts/package-provider-host.mjs"), read("packaging/linux/install.sh"),
@@ -19,6 +32,8 @@ test("native packages include the updater and platform schedulers", async () => 
   assert.match(packager, /buildGo\(\s*path\.join\(repositoryRoot, "host-menu"\)/u);
   assert.match(packager, /CGO_ENABLED: selectedTarget\.goos === "linux" \? "1" : "0"/u);
   assert.match(packager, /favicon-32x32\.png/u);
+  assert.match(packager, /MultiVibeMenuBarTemplate\.png/u);
+  assert.match(verifier, /MultiVibeMenuBarTemplate\.png/u);
   assert.match(packager, /path\.join\(contents, "Resources", "update", "install\.sh"\)/u);
   assert.match(packager, /install-docker-updater\.sh/u);
   assert.match(
