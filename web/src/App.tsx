@@ -40,7 +40,7 @@ import {
   ThemeSwitcher,
   type ThemeMode,
 } from "./components/ui/ThemeSwitcher";
-import { dismissGitHubPromotion, GITHUB_NEW_ISSUE_URL, GITHUB_REPOSITORY_URL, GITHUB_STARS_URL, readGitHubPromotionState } from "./github-promotion";
+import { dismissGitHubPromotion, GITHUB_NEW_ISSUE_URL, GITHUB_REPOSITORY_URL, readGitHubPromotionState } from "./github-promotion";
 import { completeHostOnboarding, hasCompletedHostOnboarding, shouldShowHostOnboarding } from "./host-onboarding";
 
 const TAB_ITEMS: Array<{ id: Tab; label: string; description: string; group: "Operate" | "Build" | "Advanced" }> = [
@@ -1178,7 +1178,7 @@ export default function App() {
               <h2 id="github-promotion-title">Help the project grow</h2>
               <p>If MultiVibe is useful to you, a GitHub star helps more people discover it. Feedback and bug reports are just as valuable.</p>
               <div className="github-promotion-actions">
-                <a className="btn" href={GITHUB_STARS_URL} target="_blank" rel="noreferrer" onClick={closeGitHubPromotion}>Star on GitHub</a>
+                <a className="btn" href={GITHUB_REPOSITORY_URL} target="_blank" rel="noreferrer" onClick={closeGitHubPromotion}>Star on GitHub</a>
                 <a className="btn secondary" href={GITHUB_NEW_ISSUE_URL} target="_blank" rel="noreferrer">Submit an issue</a>
               </div>
               <button className="github-promotion-later" type="button" onClick={closeGitHubPromotion}>Maybe later</button>

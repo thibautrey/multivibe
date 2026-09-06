@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GITHUB_PROMOTION_DELAY_MS, dismissGitHubPromotion, readGitHubPromotionState } from "../src/github-promotion";
+import { GITHUB_NEW_ISSUE_URL, GITHUB_PROMOTION_DELAY_MS, GITHUB_REPOSITORY_URL, dismissGitHubPromotion, readGitHubPromotionState } from "../src/github-promotion";
 
 function storage(entries: Record<string, string> = {}) {
   return { getItem: (key: string) => entries[key] ?? null, setItem: (key: string, value: string) => { entries[key] = value; }, entries };
 }
+
+test("uses the repository home for GitHub promotion links", () => {
+  assert.equal(GITHUB_REPOSITORY_URL, "https://github.com/thibautrey/multivibe");
+  assert.equal(GITHUB_NEW_ISSUE_URL, `${GITHUB_REPOSITORY_URL}/issues/new`);
+});
 
 test("starts the delay on the first visit", () => {
   const store = storage();
