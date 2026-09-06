@@ -81,6 +81,10 @@ async function command(program, args, options = {}) {
 
 export { command as runVerificationCommand };
 
+function encodedPowerShellCommand(script) {
+  return Buffer.from(script, "utf16le").toString("base64");
+}
+
 function windowsPowerShellPath() {
   const systemRoot = process.env.SystemRoot?.trim();
   if (!systemRoot || !path.isAbsolute(systemRoot)) throw new Error("Windows PowerShell is unavailable");
@@ -98,8 +102,10 @@ async function extractZipArchive(archive, destination) {
     MULTIVIBE_VERIFY_ZIP_DESTINATION: destination,
   };
   await command(windowsPowerShellPath(), [
-    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
-    "$ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath $env:MULTIVIBE_VERIFY_ZIP_SOURCE -DestinationPath $env:MULTIVIBE_VERIFY_ZIP_DESTINATION -Force",
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand",
+    encodedPowerShellCommand(
+      "$ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath $env:MULTIVIBE_VERIFY_ZIP_SOURCE -DestinationPath $env:MULTIVIBE_VERIFY_ZIP_DESTINATION -Force",
+    ),
   ], { env: environment });
 }
 

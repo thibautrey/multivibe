@@ -90,7 +90,8 @@ async function runWindowsPowerShell(script, variables) {
   const environment = { ...process.env };
   for (const [name, value] of Object.entries(variables)) environment[name] = value;
   await command(windowsPowerShellPath(), [
-    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script,
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand",
+    Buffer.from(script, "utf16le").toString("base64"),
   ], { env: environment });
 }
 
@@ -761,11 +762,11 @@ export async function archiveBundle(bundle, options, selectedTarget) {
           "      continue",
           "    }",
           "    $entry = $archive.CreateEntry($relative, [System.IO.Compression.CompressionLevel]::Optimal)",
-          "    $input = [System.IO.File]::OpenRead($item.FullName)",
+          "    $inputStream = [System.IO.File]::OpenRead($item.FullName)",
           "    try {",
-          "      $output = $entry.Open()",
-          "      try { $input.CopyTo($output, 1048576) } finally { $output.Dispose() }",
-          "    } finally { $input.Dispose() }",
+          "      $outputStream = $entry.Open()",
+          "      try { $inputStream.CopyTo($outputStream, 1048576) } finally { $outputStream.Dispose() }",
+          "    } finally { $inputStream.Dispose() }",
           "  }",
           "} finally { $archive.Dispose() }",
         ].join('\n'),

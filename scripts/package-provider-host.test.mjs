@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { archiveBundle } from "./package-provider-host.mjs";
 
 const packager = fileURLToPath(new URL("./package-provider-host.mjs", import.meta.url));
+const verifier = fileURLToPath(new URL("./verify-provider-host.mjs", import.meta.url));
 
 async function runNode(arguments_) {
   return await new Promise((resolve, reject) => {
@@ -56,7 +57,7 @@ test("Linux packaging uses ustar paths instead of duplicate GNU long-name metada
   try {
     const baseName = "multivibe-host_0.2.0-runtime-community.1_linux_amd64";
     const root = path.join(directory, baseName);
-    const relative = path.join(
+    const relativeParts = [
       "app",
       "node_modules",
       "@opentelemetry",
@@ -68,9 +69,10 @@ test("Linux packaging uses ustar paths instead of duplicate GNU long-name metada
       "esnext",
       "resource",
       "SemanticResourceAttributes.js.map",
-    );
-    await mkdir(path.dirname(path.join(root, relative)), { recursive: true });
-    await writeFile(path.join(root, relative), "source map\n");
+    ];
+    const relative = path.posix.join(...relativeParts);
+    await mkdir(path.dirname(path.join(root, ...relativeParts)), { recursive: true });
+    await writeFile(path.join(root, ...relativeParts), "source map\n");
 
     const archive = await archiveBundle(
       { root, baseName },
@@ -131,8 +133,13 @@ test("Windows packaging emits a ZIP with the native installer pair", async () =>
 });
 
 test("Windows packaging uses the ZIP64-capable .NET archive writer", async () => {
-  const source = await readFile(packager, "utf8");
+  const [source, verifierSource] = await Promise.all([
+    readFile(packager, "utf8"),
+    readFile(verifier, "utf8"),
+  ]);
   assert.match(source, /ZipArchiveMode.*Create/u);
   assert.match(source, /CreateEntry/u);
+  assert.match(source, /-EncodedCommand/u);
+  assert.match(verifierSource, /-EncodedCommand/u);
   assert.doesNotMatch(source, /Compress-Archive/u);
 });
