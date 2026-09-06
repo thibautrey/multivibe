@@ -102,6 +102,7 @@ test("Cloud connection uses PKCE and provisions a local API-key account", async 
   assert.equal(authorizeUrl.searchParams.get("redirect_uri"), "http://192.168.1.149:1455/admin/cloud/oauth/callback");
   assert.equal(flow.redirectUri, "http://192.168.1.149:1455/admin/cloud/oauth/callback");
   assert.equal(authorizeUrl.searchParams.get("code_challenge_method"), "S256");
+  assert.match(authorizeUrl.searchParams.get("scope") ?? "", /(?:^| )provider:read(?: |$)/);
   assert.equal(
     authorizeUrl.searchParams.get("code_challenge"),
     createHash("sha256").update(flow.codeVerifier).digest("base64url"),
@@ -170,6 +171,8 @@ test("Cloud status reports balance and subscription without exposing the API key
     seen.push(`${String(input)} ${new Headers(init?.headers).get("authorization")}`);
     if (String(input).endsWith("/client/v1/credits")) return response({ totalAvailableUsd: "12.50" });
     if (String(input).endsWith("/client/v1/billing/subscription")) return response({ data: { planCode: "credit-50", state: "active" } });
+    if (String(input).endsWith("/client/v1/auto-recharge")) return response({ current: { state: "active", thresholdUsd: "5", rechargeUsd: "20" }, monetaryEffectsApplied: true });
+    if (String(input).endsWith("/provider/v1/earnings")) return response({ currency: "USD", lifetimeNetUsd: "120", monthNetUsd: "45", averageMonthlyNetUsd: "30", monetaryEffectsApplied: true });
     throw new Error("unexpected Cloud call");
   });
 
@@ -180,8 +183,10 @@ test("Cloud status reports balance and subscription without exposing the API key
     subscription: "Credit 50",
     apiKeyExpiresAt: new Date(stores.accounts[0]!.expiresAt!).toISOString(),
     topupUrl: "https://app.example.test/billing",
+    autoTopup: { enabled: true, thresholdUsd: "5", rechargeUsd: "20" },
+    workerEarnings: { currency: "USD", lifetimeNetUsd: "120", monthNetUsd: "45", averageMonthlyNetUsd: "30" },
   });
-  assert.equal(seen.length, 2);
+  assert.equal(seen.length, 4);
   assert.equal(seen.every((entry) => entry.endsWith("Bearer cloud-access")), true);
   assert.equal(JSON.stringify(status).includes("mvk_cloud_secret"), false);
 });
@@ -224,4 +229,32 @@ test("Cloud status rotates an expired OAuth session and keeps the local API key"
   assert.equal(stores.settings.multivibeCloud?.refreshToken, "rotated-refresh");
   assert.deepEqual(stores.accounts[0]?.accessToken, "mvk_cloud_secret");
   assert.equal(calls[0]?.endsWith("/oauth/token POST"), true);
+});
+
+test("Cloud status does not turn shadow money into user notifications", async () => {
+  const stores = fakeStores({
+    settings: { multivibeCloud: { accessToken: "cloud-access", projectId } },
+    accounts: [{
+      id: "multivibe-cloud", provider: "openai-compatible", accessToken: "key",
+      baseUrl: "https://api.example.test", enabled: true, location: "cloud",
+      multivibeCloud: true, expiresAt: Date.now() + 2 * 86_400_000,
+    }],
+  });
+  const cloud = service(stores, async (input) => {
+    const url = String(input);
+    if (url.endsWith("/client/v1/credits")) return response({ totalAvailableUsd: "5.25" });
+    if (url.endsWith("/client/v1/billing/subscription")) return response({ data: null });
+    if (url.endsWith("/client/v1/auto-recharge")) return response({
+      current: { state: "active", thresholdUsd: "5", rechargeUsd: "20" },
+      monetaryEffectsApplied: false,
+    });
+    if (url.endsWith("/provider/v1/earnings")) return response({
+      currency: "USD", lifetimeNetUsd: "100", monthNetUsd: "100", averageMonthlyNetUsd: "100",
+      monetaryEffectsApplied: false,
+    });
+    throw new Error("unexpected Cloud call");
+  });
+  const status = await cloud.getStatus();
+  assert.equal(status.autoTopup, undefined);
+  assert.equal(status.workerEarnings, undefined);
 });

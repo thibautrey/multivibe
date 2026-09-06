@@ -8,6 +8,7 @@ import {
   hasReachedScheduledWeeklyResetThreshold,
   maybeConsumeScheduledWeeklyReset,
   rateLimitResetCreditRequest,
+  scheduleWeeklyReset,
 } from "./rate-limit-reset.js";
 import { AccountStore } from "./store.js";
 import type { Account } from "./types.js";
@@ -37,6 +38,28 @@ test("weekly auto-reset threshold starts at exactly 0.5% remaining", () => {
   assert.equal(hasReachedScheduledWeeklyResetThreshold(scheduledAccount(99.49)), false);
   assert.equal(hasReachedScheduledWeeklyResetThreshold(scheduledAccount(99.5)), true);
   assert.equal(hasReachedScheduledWeeklyResetThreshold(scheduledAccount(100)), true);
+});
+
+test("weekly auto-reset scheduling persists one stable reset request", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-reset-schedule-test-"));
+  const store = new AccountStore(path.join(tempDir, "accounts.json"));
+  const account = scheduledAccount(90);
+  account.state = {};
+
+  try {
+    await store.init();
+    assert.equal(await scheduleWeeklyReset(account, store), "scheduled");
+    const scheduled = store.getCachedAccounts()[0]?.state?.scheduledWeeklyReset;
+    assert.equal(scheduled?.thresholdRemainingPercent, 0.5);
+    assert.equal(typeof scheduled?.idempotencyKey, "string");
+    assert.equal(await scheduleWeeklyReset(account, store), "already-scheduled");
+    assert.equal(
+      store.getCachedAccounts()[0]?.state?.scheduledWeeklyReset?.idempotencyKey,
+      scheduled?.idempotencyKey,
+    );
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("available reset credit count supports nested API response shapes", () => {

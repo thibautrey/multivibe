@@ -77,6 +77,28 @@ private struct MenuBarGitHubStarPrompt: Decodable {
     let eligible: Bool
 }
 
+private struct MenuBarForecast: Decodable {
+    let score: Double
+}
+
+private struct MenuBarNotification: Decodable {
+    let id: String
+    let kind: String
+    let priority: Int
+    let repeatMode: String
+    let message: String
+    let actionTitle: String?
+    let actionURL: URL?
+    let actionPath: String?
+    let confirmationMessage: String?
+    let confirmationTitle: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, priority, repeatMode, message, actionTitle, actionPath, confirmationMessage, confirmationTitle
+        case actionURL = "actionUrl"
+    }
+}
+
 private struct MenuBarSummary: Decodable {
     struct Earnings: Decodable {
         let available: Bool
@@ -90,6 +112,8 @@ private struct MenuBarSummary: Decodable {
     let accounts: [MenuBarAccount]
     let quota: MenuBarQuota
     let githubStarPrompt: MenuBarGitHubStarPrompt?
+    let forecast: MenuBarForecast?
+    let notifications: [MenuBarNotification]?
     let earnings: Earnings
 }
 
@@ -865,6 +889,13 @@ private final class NotificationPopup: NSViewController {
         actionButton.isEnabled = false
     }
 
+    func showStatus(message: String, actionTitle: String, actionEnabled: Bool) {
+        loadViewIfNeeded()
+        messageLabel.stringValue = message
+        actionButton.title = actionTitle
+        actionButton.isEnabled = actionEnabled
+    }
+
     @objc private func didSelectAction() { configuration?.action() }
 }
 
@@ -872,6 +903,14 @@ private final class NotificationPopup: NSViewController {
 final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private static let githubRepositoryURL = URL(string: "https://github.com/thibautrey/multivibe")!
     private static let githubStarPromptAcknowledgedKey = "githubStarPromptAcknowledged"
+    private static let notificationAcknowledgedIDsKey = "notificationAcknowledgedIDs"
+    private static let notificationLastForecastScoreKey = "notificationLastForecastScore"
+    private static let notificationLastUrgentPresentedAtKey = "notificationLastUrgentPresentedAt"
+    private static let notificationLastGamificationPresentedAtKey = "notificationLastGamificationPresentedAt"
+    private static let notificationConditionLastShownPrefix = "notificationConditionLastShown."
+    private static let notificationUrgentSpacing: TimeInterval = 60 * 60
+    private static let notificationGamificationSpacing: TimeInterval = 7 * 24 * 60 * 60
+    private static let notificationConditionReminder: TimeInterval = 7 * 24 * 60 * 60
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let popover = NSPopover()
     private let popoverController = HostPopoverController()
@@ -895,8 +934,14 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
     private var pendingEnrollmentToken: String?
     private var enrollmentInProgress = false
     private var githubStarPromptPresented = false
-    private var githubStarPromptCloseWorkItem: DispatchWorkItem?
+    private var notificationCloseWorkItem: DispatchWorkItem?
     private var githubStarPromptAcknowledged = UserDefaults.standard.bool(forKey: githubStarPromptAcknowledgedKey)
+    private var acknowledgedNotificationIDs = Set(
+        UserDefaults.standard.stringArray(forKey: notificationAcknowledgedIDsKey) ?? []
+    )
+    private var activeConditionNotificationIDs = Set<String>()
+    private var pendingNotifications: [MenuBarNotification] = []
+    private var currentNotification: MenuBarNotification?
 #if DEBUG
     private var previewWindow: NSWindow?
 #endif
@@ -1039,7 +1084,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
 
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
-        githubStarPromptCloseWorkItem?.cancel()
+        notificationCloseWorkItem?.cancel()
         if let process = ownedService, process.isRunning { process.terminate() }
     }
 
@@ -1085,13 +1130,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         notificationPopover.animates = true
         notificationPopover.contentSize = NSSize(width: 340, height: 150)
         notificationPopover.contentViewController = notificationPopup
-        notificationPopup.configure(.init(
-            message: "Nice work — you’ve generated 5 million output tokens with MultiVibe. If it’s useful, please star the project on GitHub.",
-            actionTitle: "⭐ Star MultiVibe on GitHub",
-            confirmationMessage: "Thank you for supporting MultiVibe! ❤️",
-            confirmationTitle: "Thank you! ❤️",
-            action: { [weak self] in self?.openGitHubStarPage() }
-        ))
+        notificationPopover.delegate = self
     }
 
     private func configureTerminationSignals() {
@@ -1125,7 +1164,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
             updateBusy: updateBusy,
             startAtLogin: UserDefaults.standard.object(forKey: "startAtLogin") as? Bool ?? true
         )
-        presentGitHubStarPromptIfNeeded()
+        presentNextNotificationIfNeeded()
     }
 
     @objc private func togglePopover() {
@@ -1168,7 +1207,14 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         guard !refreshing else { return }
         refreshing = true
         render()
-        guard let request = authorizedRequest(path: "/admin/host/menu-bar") else {
+        var summaryPath = "/admin/host/menu-bar"
+        if UserDefaults.standard.object(forKey: Self.notificationLastForecastScoreKey) != nil {
+            let previousScore = UserDefaults.standard.double(forKey: Self.notificationLastForecastScoreKey)
+            if previousScore.isFinite && previousScore >= 0 && previousScore <= 100 {
+                summaryPath += "?previous_forecast_score=\(previousScore)"
+            }
+        }
+        guard let request = authorizedRequest(path: summaryPath) else {
             refreshing = false
             workerConfigurationState = nil
             workerSetupURL = nil
@@ -1191,6 +1237,14 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
             }
             DispatchQueue.main.async {
                 self?.summary = summary
+                self?.ingestNotifications(summary)
+                let forecastCrossingIsPending = summary.notifications?.contains {
+                    $0.kind == "will-codex-reset"
+                } == true
+                if !forecastCrossingIsPending,
+                   let score = summary.forecast?.score, score.isFinite, score >= 0, score <= 100 {
+                    UserDefaults.standard.set(score, forKey: Self.notificationLastForecastScoreKey)
+                }
                 self?.updateState(operational: summary.operational, status: summary.operational ? "Operational" : "Unavailable")
                 if summary.operational, self?.pendingDashboardOpen == true { self?.requestDashboardSession() }
                 if summary.operational, self?.pendingEnrollmentToken != nil { self?.submitPendingEnrollment() }
@@ -1266,36 +1320,184 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         render()
     }
 
-    private func presentGitHubStarPromptIfNeeded() {
-        guard operational,
-              summary?.githubStarPrompt?.eligible == true,
-              !githubStarPromptAcknowledged,
-              !githubStarPromptPresented,
-              !popover.isShown,
-              !notificationPopover.isShown,
-              let button = statusItem.button else { return }
-        githubStarPromptPresented = true
-        notificationPopup.reset()
+    private func ingestNotifications(_ summary: MenuBarSummary) {
+        let incoming = summary.notifications ?? []
+        let conditionIDs = Set(incoming.filter {
+            isValid($0) && $0.repeatMode == "condition"
+        }.map(\.id))
+        pendingNotifications.removeAll {
+            $0.repeatMode == "condition" && !conditionIDs.contains($0.id)
+        }
+        for id in activeConditionNotificationIDs.subtracting(conditionIDs) {
+            activeConditionNotificationIDs.remove(id)
+            UserDefaults.standard.removeObject(forKey: Self.notificationConditionLastShownPrefix + id)
+        }
+
+        let shouldPreferGitHub = summary.githubStarPrompt?.eligible == true
+            && !githubStarPromptAcknowledged
+            && !githubStarPromptPresented
+        for notification in incoming {
+            guard isValid(notification) else { continue }
+            if shouldPreferGitHub && notification.kind == "output-tokens" {
+                acknowledge(notification.id)
+                continue
+            }
+            if notification.repeatMode == "once" && acknowledgedNotificationIDs.contains(notification.id) {
+                continue
+            }
+            if notification.repeatMode == "condition" {
+                activeConditionNotificationIDs.insert(notification.id)
+                let lastShown = UserDefaults.standard.double(
+                    forKey: Self.notificationConditionLastShownPrefix + notification.id
+                )
+                if lastShown > 0 && Date().timeIntervalSince1970 - lastShown < Self.notificationConditionReminder {
+                    continue
+                }
+            }
+            enqueue(notification)
+        }
+
+        if shouldPreferGitHub {
+            enqueue(MenuBarNotification(
+                id: "github-star:5000000",
+                kind: "github-star",
+                priority: 30,
+                repeatMode: "edge",
+                message: "Nice work — you’ve generated 5 million output tokens with MultiVibe. If it’s useful, please star the project on GitHub.",
+                actionTitle: "⭐ Star MultiVibe on GitHub",
+                actionURL: Self.githubRepositoryURL,
+                actionPath: nil,
+                confirmationMessage: "Thank you for supporting MultiVibe! ❤️",
+                confirmationTitle: "Thank you! ❤️"
+            ))
+        }
+    }
+
+    private func isValid(_ notification: MenuBarNotification) -> Bool {
+        guard !notification.id.isEmpty, notification.id.count <= 160,
+              !notification.message.isEmpty, notification.message.count <= 500,
+              (0...100).contains(notification.priority),
+              ["once", "condition", "edge"].contains(notification.repeatMode) else { return false }
+        if let url = notification.actionURL, url.scheme != "https" { return false }
+        if let path = notification.actionPath, path != "/admin/host/weekly-auto-reset" { return false }
+        return true
+    }
+
+    private func enqueue(_ notification: MenuBarNotification) {
+        guard currentNotification?.id != notification.id,
+              !pendingNotifications.contains(where: { $0.id == notification.id }) else { return }
+        pendingNotifications.append(notification)
+        pendingNotifications.sort { left, right in
+            left.priority == right.priority ? left.id < right.id : left.priority > right.priority
+        }
+    }
+
+    private func acknowledge(_ id: String) {
+        acknowledgedNotificationIDs.insert(id)
+        UserDefaults.standard.set(
+            acknowledgedNotificationIDs.sorted(),
+            forKey: Self.notificationAcknowledgedIDsKey
+        )
+    }
+
+    private func presentNextNotificationIfNeeded() {
+        guard operational, currentNotification == nil, !popover.isShown,
+              !notificationPopover.isShown, let button = statusItem.button,
+              let next = pendingNotifications.first else { return }
+        let urgent = next.priority >= 80
+        let spacing = next.kind == "github-star"
+            ? 0
+            : (urgent ? Self.notificationUrgentSpacing : Self.notificationGamificationSpacing)
+        let spacingKey = urgent
+            ? Self.notificationLastUrgentPresentedAtKey
+            : Self.notificationLastGamificationPresentedAtKey
+        let lastPresented = UserDefaults.standard.double(forKey: spacingKey)
+        if lastPresented > 0 && Date().timeIntervalSince1970 - lastPresented < spacing { return }
+
+        pendingNotifications.removeFirst()
+        currentNotification = next
+        if next.repeatMode == "once" { acknowledge(next.id) }
+        if next.repeatMode == "condition" {
+            UserDefaults.standard.set(
+                Date().timeIntervalSince1970,
+                forKey: Self.notificationConditionLastShownPrefix + next.id
+            )
+        }
+        if next.kind == "will-codex-reset",
+           let score = summary?.forecast?.score, score.isFinite, score >= 0, score <= 100 {
+            UserDefaults.standard.set(score, forKey: Self.notificationLastForecastScoreKey)
+        }
+        if next.kind == "github-star" { githubStarPromptPresented = true }
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: spacingKey)
+
+        notificationPopup.configure(.init(
+            message: next.message,
+            actionTitle: next.actionTitle ?? "Got it",
+            confirmationMessage: next.confirmationMessage,
+            confirmationTitle: next.confirmationTitle,
+            action: { [weak self] in self?.performNotificationAction(next) }
+        ))
         notificationPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
-    private func openGitHubStarPage() {
-        githubStarPromptAcknowledged = true
-        UserDefaults.standard.set(true, forKey: Self.githubStarPromptAcknowledgedKey)
-        notificationPopup.showConfirmation()
-        NSWorkspace.shared.open(Self.githubRepositoryURL)
+    private func performNotificationAction(_ notification: MenuBarNotification) {
+        if let path = notification.actionPath {
+            performNotificationRequest(path: path)
+            return
+        }
+        if let url = notification.actionURL { NSWorkspace.shared.open(url) }
+        if notification.kind == "github-star" {
+            githubStarPromptAcknowledged = true
+            UserDefaults.standard.set(true, forKey: Self.githubStarPromptAcknowledgedKey)
+        }
+        if notification.confirmationMessage != nil, notification.confirmationTitle != nil {
+            notificationPopup.showConfirmation()
+            closeNotification(after: 2)
+        } else {
+            notificationPopover.performClose(nil)
+        }
+    }
 
-        githubStarPromptCloseWorkItem?.cancel()
+    private func performNotificationRequest(path: String) {
+        guard var request = authorizedRequest(path: path, method: "POST") else { return }
+        request.httpBody = Data("{}".utf8)
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        notificationPopup.showStatus(message: "Activating automatic reset…", actionTitle: "Please wait…", actionEnabled: false)
+        URLSession.shared.dataTask(with: request) { [weak self] _, response, _ in
+            DispatchQueue.main.async {
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                if (200..<300).contains(status) {
+                    self?.notificationPopup.showConfirmation()
+                    self?.closeNotification(after: 2)
+                    self?.refresh()
+                } else {
+                    self?.notificationPopup.showStatus(
+                        message: "Automatic reset could not be activated. You can try again.",
+                        actionTitle: "Try again",
+                        actionEnabled: true
+                    )
+                }
+            }
+        }.resume()
+    }
+
+    private func closeNotification(after seconds: TimeInterval) {
+        notificationCloseWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
             self?.notificationPopover.performClose(nil)
         }
-        githubStarPromptCloseWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: workItem)
+        notificationCloseWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: workItem)
     }
 
     func popoverDidClose(_ notification: Notification) {
-        presentGitHubStarPromptIfNeeded()
+        if let closedPopover = notification.object as? NSPopover,
+           closedPopover === notificationPopover {
+            notificationCloseWorkItem?.cancel()
+            currentNotification = nil
+        }
+        presentNextNotificationIfNeeded()
     }
 
     private func setStartAtLogin(_ enabled: Bool) {

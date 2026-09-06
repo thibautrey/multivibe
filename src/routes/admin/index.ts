@@ -35,7 +35,7 @@ import { discoverModels } from "../proxy/index.js";
 import {
   maybeConsumeScheduledWeeklyReset,
   rateLimitResetCreditRequest,
-  WEEKLY_RESET_REMAINING_THRESHOLD_PERCENT,
+  scheduleWeeklyReset,
 } from "../../rate-limit-reset.js";
 import {
   XAI_AUTH_PATH,
@@ -1956,16 +1956,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     // Scheduling is a local, persisted operation. Do not refresh usage,
     // refresh authentication, check credit availability, or contact the reset
     // endpoint until the monitor observes the configured quota threshold.
-    account.state = {
-      ...account.state,
-      scheduledWeeklyReset: {
-        scheduledAt: Date.now(),
-        idempotencyKey: randomUUID(),
-        thresholdRemainingPercent:
-          WEEKLY_RESET_REMAINING_THRESHOLD_PERCENT,
-      },
-    };
-    await store.addOrUpdate(account);
+    await scheduleWeeklyReset(account, store);
     res.json({ ok: true, account: redact(account) });
   });
 

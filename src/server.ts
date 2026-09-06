@@ -86,7 +86,7 @@ import { ModuleManager } from "./module-manager.js";
 import { createProviderWorkerEstimateClient } from "./provider-worker-estimate.js";
 import { createBodyParserMiddleware } from "./middleware/decompression.js";
 import http from "node:http";
-import { startScheduledWeeklyResetMonitor } from "./rate-limit-reset.js";
+import { scheduleWeeklyReset, startScheduledWeeklyResetMonitor } from "./rate-limit-reset.js";
 import {
   identifyProxyApplication,
   parseProxyApiKeys,
@@ -107,6 +107,11 @@ import {
   buildHostMenuBarAccountsSummary,
   buildHostMenuBarGitHubStarPrompt,
 } from "./host-menu-bar.js";
+import {
+  buildHostNotifications,
+  selectWeeklyAutoResetAccount,
+} from "./host-notifications.js";
+import { CodexQuotaResetForecastCache } from "./quota-reset-forecast.js";
 import { HostUpdateController } from "./host-update-controller.js";
 import { MultivibeCloudService } from "./multivibe-cloud.js";
 
@@ -217,6 +222,27 @@ const multivibeCloud = new MultivibeCloudService(store, oauthStore, {
   redirectUri: MULTIVIBE_CLOUD_REDIRECT_URI,
   topupUrl: `${MULTIVIBE_CLOUD_API_BASE_URL}/billing`,
 });
+const quotaResetForecastCache = new CodexQuotaResetForecastCache();
+const HOST_CLOUD_STATUS_CACHE_MS = 60_000;
+let hostCloudStatusCache: {
+  value: Awaited<ReturnType<MultivibeCloudService["getStatus"]>>;
+  expiresAt: number;
+} | undefined;
+let hostCloudStatusInFlight: ReturnType<MultivibeCloudService["getStatus"]> | undefined;
+
+async function hostCloudStatus() {
+  if (hostCloudStatusCache && Date.now() < hostCloudStatusCache.expiresAt) {
+    return hostCloudStatusCache.value;
+  }
+  if (hostCloudStatusInFlight) return hostCloudStatusInFlight;
+  hostCloudStatusInFlight = multivibeCloud.getStatus().then((value) => {
+    hostCloudStatusCache = { value, expiresAt: Date.now() + HOST_CLOUD_STATUS_CACHE_MS };
+    return value;
+  }).finally(() => {
+    hostCloudStatusInFlight = undefined;
+  });
+  return hostCloudStatusInFlight;
+}
 await traceManager.seedStatsHistoryIfMissing();
 const anonymousUsageSharing = createAnonymousUsageSharingWorker({
   settingsStore: store,
@@ -512,15 +538,45 @@ app.get("/admin/session", (req, res) => {
   res.json({ authenticated: !ADMIN_TOKEN || hasAdminSession(req) });
 });
 
-app.get("/admin/host/menu-bar", adminGuard, async (_req, res) => {
+app.get("/admin/host/menu-bar", adminGuard, async (req, res) => {
   res.setHeader("cache-control", "no-store");
-  const accountSummary = buildHostMenuBarAccountsSummary(await store.listAccounts());
-  const traceStats = await traceManager.getTraceStats();
+  const [accounts, traceStats, forecast, cloud, workerResult] = await Promise.all([
+    store.listAccounts(),
+    traceManager.getTraceStats(),
+    quotaResetForecastCache.get().catch(() => undefined),
+    hostCloudStatus().catch(() => undefined),
+    providerAgent.enabled
+      ? providerAgent.getCloudEnrollment().then(() => true).catch(() => false)
+      : Promise.resolve(false),
+  ]);
+  const accountSummary = buildHostMenuBarAccountsSummary(accounts);
+  const previousForecastScoreValue = Number(req.query.previous_forecast_score);
+  const previousForecastScore = Number.isFinite(previousForecastScoreValue)
+    && previousForecastScoreValue >= 0 && previousForecastScoreValue <= 100
+    ? previousForecastScoreValue
+    : undefined;
+  const generatedOutputTokens = traceStats.stats.totals.tokensOutput;
   res.json({
     operational: true,
     ...accountSummary,
-    githubStarPrompt: buildHostMenuBarGitHubStarPrompt(traceStats.stats.totals.tokensOutput),
-    earnings: {
+    githubStarPrompt: buildHostMenuBarGitHubStarPrompt(generatedOutputTokens),
+    ...(forecast ? { forecast } : {}),
+    ...(cloud ? { cloud } : {}),
+    notifications: buildHostNotifications({
+      accounts,
+      ...(forecast ? { forecast } : {}),
+      ...(previousForecastScore === undefined ? {} : { previousForecastScore }),
+      ...(cloud ? { cloud } : {}),
+      workerConfigured: workerResult,
+      generatedOutputTokens,
+    }),
+    earnings: cloud?.workerEarnings && workerResult ? {
+      available: true,
+      currency: cloud.workerEarnings.currency,
+      today: null,
+      week: null,
+      month: Number(cloud.workerEarnings.monthNetUsd),
+    } : {
       available: false,
       currency: null,
       today: null,
@@ -529,6 +585,18 @@ app.get("/admin/host/menu-bar", adminGuard, async (_req, res) => {
       reason: "provider_earnings_not_active",
     },
   });
+});
+
+app.post("/admin/host/weekly-auto-reset", adminGuard, async (_req, res) => {
+  const account = selectWeeklyAutoResetAccount(
+    await store.listAccounts(),
+    10,
+  );
+  if (!account) {
+    return res.status(409).json({ error: "weekly_auto_reset_not_available" });
+  }
+  await scheduleWeeklyReset(account, store);
+  return res.json({ ok: true });
 });
 
 app.post("/admin/desktop-session", adminGuard, (_req, res) => {
