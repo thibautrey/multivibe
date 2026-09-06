@@ -12,6 +12,11 @@ import {
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (relative) => readFile(path.join(repositoryRoot, relative), "utf8");
 
+test("repository text checkouts preserve signed bytes across platforms", async () => {
+  const attributes = await read(".gitattributes");
+  assert.match(attributes, /^\* text=auto eol=lf$/mu);
+});
+
 test("the Host runtime image preserves the verified bundle layout and drops privileges", async () => {
   const [dockerfile, entrypoint] = await Promise.all([
     read("packaging/container/Dockerfile"),
@@ -43,7 +48,7 @@ test("the Compose deployment exposes only Core and keeps state and models separa
   assert.match(compose, /gpus: all/u);
   assert.match(compose, /read_only: true/u);
   assert.match(compose, /no-new-privileges:true/u);
-  assert.match(compose, /cap_drop:\n\s+- ALL/u);
+  assert.match(compose, /cap_drop:\r?\n\s+- ALL/u);
   assert.doesNotMatch(compose, /privileged:\s*true/u);
   assert.doesNotMatch(compose, /ADMIN_TOKEN|PROXY_API_KEY/u);
 });

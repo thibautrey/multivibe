@@ -381,7 +381,7 @@ async function inspectZipArchive(archive, archiveInfo) {
     }
     const roots = new Set(entries.map((entry) => entry.canonicalName.split("/", 1)[0]));
     if (roots.size !== 1) throw new Error("provider-host archive root is invalid");
-    return [...roots][0];
+    return { root: [...roots][0], fileModes: null };
   } finally {
     await handle.close();
   }
@@ -526,6 +526,7 @@ async function inspectTarArchive(archive) {
   const names = new Set();
   const foldedNames = new Set();
   const archiveNames = [];
+  const archiveFileModes = new Map();
   let metadataBytes = 0;
   let extractedBytes = 0;
   let entryCount = 0;
@@ -556,6 +557,8 @@ async function inspectTarArchive(archive) {
       const typeByte = header[156];
       const type = typeByte === 0 ? "0" : String.fromCharCode(typeByte);
       const headerSize = parseTarNumber(header.subarray(124, 136), "size");
+      const headerMode = parseTarNumber(header.subarray(100, 108), "mode");
+      if (headerMode > 0o777) throw new Error("provider-host tar entry mode is invalid");
       metadataBytes += Buffer.byteLength(headerName) + Buffer.byteLength(prefix) + Buffer.byteLength(linkName);
       if (metadataBytes > maximumArchiveMetadataBytes) throw archiveMetadataCeilingError(metadataBytes, entryCount);
 
@@ -623,6 +626,7 @@ async function inspectTarArchive(archive) {
         }
       }
       archiveNames.push(canonicalName);
+      if (!directory) archiveFileModes.set(canonicalName, headerMode);
       await reader.skip(size);
       await reader.skip((512 - (size % 512)) % 512);
     }
@@ -638,7 +642,13 @@ async function inspectTarArchive(archive) {
   }
   const roots = new Set(archiveNames.map((name) => name.split("/", 1)[0]));
   if (roots.size !== 1) throw new Error("provider-host archive root is invalid");
-  return [...roots][0];
+  const root = [...roots][0];
+  const fileModes = new Map();
+  for (const [name, mode] of archiveFileModes) {
+    if (!name.startsWith(`${root}/`)) throw new Error("provider-host archive root is invalid");
+    fileModes.set(name.slice(root.length + 1), mode);
+  }
+  return { root, fileModes };
 }
 
 async function inspectArchive(archive) {
@@ -1115,7 +1125,7 @@ export async function validateProviderRuntimeResources(root, platform) {
   }
 }
 
-async function validateTree(root, options, archiveRoot) {
+async function validateTree(root, options, archiveInspection) {
   const rootInfo = await lstat(root);
   if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new Error("provider-host directory is invalid");
   const manifestPath = path.join(root, "manifest.json");
@@ -1146,9 +1156,11 @@ async function validateTree(root, options, archiveRoot) {
     "darwin-amd64": "tar-gzip", "darwin-arm64": "tar-gzip", "linux-amd64": "tar-zstd", "windows-amd64": "zip",
   });
 
-  if (archiveRoot) {
+  if (archiveInspection) {
     const expectedRoot = `multivibe-host_${manifest.version}_${manifest.platform}_${manifest.architecture}`;
-    if (archiveRoot !== expectedRoot || path.basename(root) !== expectedRoot) throw new Error("provider-host archive name is inconsistent");
+    if (archiveInspection.root !== expectedRoot || path.basename(root) !== expectedRoot) {
+      throw new Error("provider-host archive name is inconsistent");
+    }
   }
 
   const seen = new Set();
@@ -1164,8 +1176,11 @@ async function validateTree(root, options, archiveRoot) {
     seen.add(entry.path);
     const file = path.join(root, entry.path);
     const info = await lstat(file);
+    const modeMatches = manifest.platform === "windows" || (archiveInspection?.fileModes instanceof Map
+      ? archiveInspection.fileModes.get(entry.path) === entry.mode
+      : (info.mode & 0o777) === entry.mode);
     if (!info.isFile() || info.isSymbolicLink() || info.size !== entry.size ||
-      (manifest.platform !== "windows" && (info.mode & 0o777) !== entry.mode) ||
+      !modeMatches ||
       await sha256(file) !== entry.sha256) {
       throw new Error(`provider-host file verification failed: ${entry.path}`);
     }
@@ -1414,7 +1429,7 @@ async function main() {
   const options = argumentsFrom(process.argv.slice(2));
   let work = null;
   let root = options.directory;
-  let archiveRoot = null;
+  let archiveInspection = null;
   let verifiedArchiveSha256 = null;
   try {
     if (options.archive) {
@@ -1453,7 +1468,7 @@ async function main() {
         }));
         return;
       }
-      archiveRoot = await inspectArchive(archiveCopy);
+      archiveInspection = await inspectArchive(archiveCopy);
       const extraction = path.join(work, "extracted");
       await mkdir(extraction, { mode: 0o700 });
       if (extension === ".zip") await extractZipArchive(archiveCopy, extraction);
@@ -1464,7 +1479,7 @@ async function main() {
       }
       root = path.join(extraction, entries[0].name);
     }
-    const { manifest, profile } = await validateTree(root, options, archiveRoot);
+    const { manifest, profile } = await validateTree(root, options, archiveInspection);
     console.log(JSON.stringify({
       verified: true,
       archive: options.archive ?? null,
