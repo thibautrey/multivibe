@@ -112,7 +112,6 @@ private final class FlippedView: NSView {
 
 private final class HostPopoverController: NSViewController {
     var openDashboard: (() -> Void)?
-    var refresh: (() -> Void)?
     var checkForUpdates: (() -> Void)?
     var installUpdate: (() -> Void)?
     var setStartAtLogin: ((Bool) -> Void)?
@@ -124,7 +123,6 @@ private final class HostPopoverController: NSViewController {
     private let headerStatusDot = NSView()
     private let contentStack = NSStackView()
     private let primaryButton = NSButton(title: "Open Dashboard", target: nil, action: nil)
-    private let refreshButton = NSButton(title: "Refresh", target: nil, action: nil)
     private let startAtLoginButton = NSButton(checkboxWithTitle: "Start MultiVibe Host when I log in", target: nil, action: nil)
 
     private let popoverWidth: CGFloat = 440
@@ -264,11 +262,6 @@ private final class HostPopoverController: NSViewController {
         primaryButton.imagePosition = .imageTrailing
         primaryButton.target = self
         primaryButton.action = #selector(didOpenDashboard)
-        refreshButton.bezelStyle = .rounded
-        refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")
-        refreshButton.imagePosition = .imageLeading
-        refreshButton.target = self
-        refreshButton.action = #selector(didRefresh)
         let quitButton = NSButton(title: "Quit", target: self, action: #selector(didQuit))
         quitButton.bezelStyle = .rounded
         quitButton.image = NSImage(systemSymbolName: "power", accessibilityDescription: "Quit")
@@ -282,7 +275,7 @@ private final class HostPopoverController: NSViewController {
         startAtLoginButton.target = self
         startAtLoginButton.action = #selector(didChangeStartAtLogin)
 
-        let actions = NSStackView(views: [primaryButton, refreshButton, quitButton])
+        let actions = NSStackView(views: [primaryButton, quitButton])
         actions.orientation = .horizontal
         actions.alignment = .centerY
         actions.spacing = 8
@@ -311,7 +304,6 @@ private final class HostPopoverController: NSViewController {
         summary: MenuBarSummary?,
         status: String,
         operational: Bool,
-        refreshing: Bool,
         updateStatus: HostUpdateStatus?,
         updateBusy: Bool,
         startAtLogin: Bool
@@ -325,8 +317,6 @@ private final class HostPopoverController: NSViewController {
         headerStatus.textColor = statusColor
         headerStatusDot.layer?.backgroundColor = statusColor.cgColor
         primaryButton.title = operational ? "Open Dashboard" : "Start Host"
-        refreshButton.title = refreshing ? "Refreshing…" : "Refresh"
-        refreshButton.isEnabled = !refreshing
 
         for child in contentStack.arrangedSubviews {
             contentStack.removeArrangedSubview(child)
@@ -820,7 +810,6 @@ private final class HostPopoverController: NSViewController {
     }
 
     @objc private func didOpenDashboard() { openDashboard?() }
-    @objc private func didRefresh() { refresh?() }
     @objc private func didCheckForUpdates() { checkForUpdates?() }
     @objc private func didInstallUpdate() { installUpdate?() }
     @objc private func didChangeStartAtLogin() { setStartAtLogin?(startAtLoginButton.state == .on) }
@@ -1084,7 +1073,6 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
             self?.popover.performClose(nil)
             self?.openDashboard()
         }
-        popoverController.refresh = { [weak self] in self?.refreshNow() }
         popoverController.checkForUpdates = { [weak self] in self?.runUpdateAction(path: "/admin/host-update/check") }
         popoverController.installUpdate = { [weak self] in self?.runUpdateAction(path: "/admin/host-update/apply") }
         popoverController.setStartAtLogin = { [weak self] enabled in self?.setStartAtLogin(enabled) }
@@ -1123,7 +1111,6 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
             summary: summary,
             status: statusText,
             operational: operational,
-            refreshing: refreshing,
             updateStatus: updateStatus,
             updateBusy: updateBusy,
             startAtLogin: UserDefaults.standard.object(forKey: "startAtLogin") as? Bool ?? true
