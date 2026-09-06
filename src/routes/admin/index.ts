@@ -1024,16 +1024,10 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       return res.status(400).json({ error: "invalid_provider_cloud_handoff" });
     }
     try {
-      const [manifest, detectedModels] = await Promise.all([
-        options.providerAgent.getManifest(),
-        options.providerAgent.detectModels(),
-      ]);
       const enrollment = await options.providerAgent.enrollCloud(
         providerCloudEnrollmentRequestFromLocalState({
           enrollmentToken: body.enrollment_token,
           coreVersion: options.appVersion ?? "unknown",
-          manifest,
-          detectedModels,
         }),
       );
       res.setHeader("cache-control", "no-store");

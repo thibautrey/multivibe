@@ -564,7 +564,7 @@ test("admin Cloud enrollment forwards explicit consent once and never returns th
   });
 });
 
-test("the macOS handoff derives the selected runtime and submits the local key flow automatically", async () => {
+test("the macOS handoff only exchanges the device identity and defers model selection to Cloud", async () => {
   const grant = `mve_${"h".repeat(43)}`;
   let received: unknown;
   const view = {
@@ -585,20 +585,6 @@ test("the macOS handoff derives the selected runtime and submits the local key f
     safety_profile: "shadow_only_no_routing_no_compensation" as const,
   };
   const control = providerAgentControl({
-    getManifest: async () => ({
-      protocol_version: "provider-agent-v1",
-      state: "selected",
-      selected_models: ["Qwen3.8-27B-4bit"],
-      device_key_id: `ed25519:${"b".repeat(43)}`,
-      device_public_key_spki: "public-only",
-    }),
-    detectModels: async () => ({
-      schema_version: "provider-detected-models-v1",
-      runtimes: [
-        { adapter_id: "lm-studio", models: ["another-model"] },
-        { adapter_id: "omlx", models: ["Qwen3.8-27B-4bit"] },
-      ],
-    }),
     enrollCloud: async (request) => {
       received = request;
       return view;
@@ -615,8 +601,8 @@ test("the macOS handoff derives the selected runtime and submits the local key f
     assert.deepEqual(received, {
       enrollment_token: grant,
       core_version: "0.2.0",
-      runtime_family: "omlx",
-      selected_models: [{ reported_id: "Qwen3.8-27B-4bit", modalities: ["text"] }],
+      runtime_family: "cloud-managed",
+      selected_models: [],
       declared_max_concurrency: 1,
     });
     assert.doesNotMatch(body, /mve_|enrollment_token|device_public_key_spki/);
@@ -624,24 +610,35 @@ test("the macOS handoff derives the selected runtime and submits the local key f
   }, { appVersion: "0.2.0" });
 });
 
-test("the macOS handoff fails closed when no single selected runtime can be proved", async () => {
+test("the macOS handoff does not probe or require a local model", async () => {
   let enrollCalls = 0;
   const control = providerAgentControl({
-    getManifest: async () => ({
-      protocol_version: "provider-agent-v1",
-      state: "selected",
-      selected_models: ["shared-model"],
-    }),
-    detectModels: async () => ({
-      schema_version: "provider-detected-models-v1",
-      runtimes: [
-        { adapter_id: "lm-studio", models: ["shared-model"] },
-        { adapter_id: "omlx", models: ["shared-model"] },
-      ],
-    }),
-    enrollCloud: async () => {
+    enrollCloud: async (request) => {
       enrollCalls += 1;
-      throw new Error("must not enroll");
+      assert.deepEqual(request, {
+        enrollment_token: `mve_${"a".repeat(43)}`,
+        core_version: "0.2.0",
+        runtime_family: "cloud-managed",
+        selected_models: [],
+        declared_max_concurrency: 1,
+      });
+      return {
+        schema_version: "provider-cloud-enrollment-v1",
+        revision: 1,
+        state: "submitted",
+        provider_id: "10000000-0000-4000-8000-000000000001",
+        node_id: "20000000-0000-4000-8000-000000000002",
+        device_key_id: `ed25519:${"b".repeat(43)}`,
+        credential_epoch: 1,
+        manifest_digest: "c".repeat(64),
+        runtime_family: "cloud-managed",
+        declared_max_concurrency: 1,
+        cloud_api_origin: "https://auth.multivibe.cloud",
+        submitted_at: "2026-09-03T20:00:00.000Z",
+        routing_eligible: false,
+        compensation_eligible: false,
+        safety_profile: "shadow_only_no_routing_no_compensation",
+      };
     },
   });
   await withAdminServer(control, async (baseUrl) => {
@@ -650,11 +647,7 @@ test("the macOS handoff fails closed when no single selected runtime can be prov
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ enrollment_token: `mve_${"a".repeat(43)}` }),
     });
-    assert.equal(response.status, 409);
-    assert.equal(enrollCalls, 0);
-    assert.deepEqual(await response.json(), {
-      error: "provider_cloud_handoff_not_ready",
-      message: "The selected local model belongs to more than one runtime",
-    });
+    assert.equal(response.status, 201);
+    assert.equal(enrollCalls, 1);
   }, { appVersion: "0.2.0" });
 });

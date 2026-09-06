@@ -70,14 +70,17 @@ export const PROVIDER_RUNTIME_FAMILIES = [
   "tensorrt-llm", "triton", "openllm", "bentoml", "mtplx", "manual-openai-compatible",
 ] as const;
 
+export const PROVIDER_CLOUD_MANAGED_RUNTIME_FAMILY = "cloud-managed" as const;
+
 export type ProviderRuntimeFamily = typeof PROVIDER_RUNTIME_FAMILIES[number];
+export type ProviderEnrollmentRuntimeFamily = ProviderRuntimeFamily | typeof PROVIDER_CLOUD_MANAGED_RUNTIME_FAMILY;
 
 const PROVIDER_RUNTIME_FAMILY_SET = new Set<string>(PROVIDER_RUNTIME_FAMILIES);
 
 export type ProviderCloudEnrollmentRequest = {
   enrollment_token: string;
   core_version: string;
-  runtime_family: ProviderRuntimeFamily;
+  runtime_family: ProviderEnrollmentRuntimeFamily;
   selected_models: Array<{ reported_id: string; modalities: string[] }>;
   declared_max_concurrency: number;
 };
@@ -91,7 +94,7 @@ export type ProviderCloudEnrollmentView = {
   device_key_id: string;
   credential_epoch: number;
   manifest_digest: string;
-  runtime_family: ProviderRuntimeFamily;
+  runtime_family: ProviderEnrollmentRuntimeFamily;
   declared_max_concurrency: number;
   cloud_api_origin: string;
   submitted_at: string;
@@ -468,10 +471,11 @@ export function isValidProviderCloudEnrollmentRequest(
   if (Object.keys(request).length !== keys.length || keys.some((key) => !(key in request))) return false;
   if (typeof request.enrollment_token !== "string" || !/^mve_[A-Za-z0-9_-]{43}$/.test(request.enrollment_token)) return false;
   if (typeof request.core_version !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._+:/-]{0,63}$/.test(request.core_version)) return false;
-  if (!PROVIDER_RUNTIME_FAMILY_SET.has(String(request.runtime_family))) return false;
+  if (request.runtime_family !== PROVIDER_CLOUD_MANAGED_RUNTIME_FAMILY
+    && !PROVIDER_RUNTIME_FAMILY_SET.has(String(request.runtime_family))) return false;
   if (!Number.isSafeInteger(request.declared_max_concurrency)
     || (request.declared_max_concurrency as number) < 1 || (request.declared_max_concurrency as number) > 1_000) return false;
-  if (!Array.isArray(request.selected_models) || request.selected_models.length < 1 || request.selected_models.length > 100) return false;
+  if (!Array.isArray(request.selected_models) || request.selected_models.length > 100) return false;
   const ids = new Set<string>();
   for (const value of request.selected_models) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -490,31 +494,15 @@ export function isValidProviderCloudEnrollmentRequest(
 export function providerCloudEnrollmentRequestFromLocalState(input: {
   enrollmentToken: string;
   coreVersion: string;
-  manifest: ProviderAgentManifest;
-  detectedModels: ProviderAgentDetectedModels;
 }): ProviderCloudEnrollmentRequest {
-  if (input.manifest.state !== "selected" || input.manifest.selected_models.length < 1) {
-    throw new Error("Select at least one local model before connecting this device");
-  }
-  const selected = [...new Set(input.manifest.selected_models)];
-  if (selected.length !== input.manifest.selected_models.length
-    || selected.some((model) => !isValidProviderSelectedModelId(model))) {
-    throw new Error("The selected local model list is invalid");
-  }
-  const candidates = input.detectedModels.runtimes.filter((runtime) => (
-    PROVIDER_RUNTIME_FAMILY_SET.has(runtime.adapter_id)
-    && selected.every((model) => runtime.models.includes(model))
-  ));
-  if (candidates.length !== 1) {
-    throw new Error(candidates.length === 0
-      ? "The selected local model is not available"
-      : "The selected local model belongs to more than one runtime");
-  }
+  // Enrollment is only a device-identity/key handshake. The Cloud-managed
+  // runtime marker keeps the existing manifest envelope shape while making
+  // model loading and exposure an infrastructure concern.
   const request: ProviderCloudEnrollmentRequest = {
     enrollment_token: input.enrollmentToken,
     core_version: input.coreVersion,
-    runtime_family: candidates[0]!.adapter_id as ProviderRuntimeFamily,
-    selected_models: selected.map((reported_id) => ({ reported_id, modalities: ["text"] })),
+    runtime_family: PROVIDER_CLOUD_MANAGED_RUNTIME_FAMILY,
+    selected_models: [],
     declared_max_concurrency: 1,
   };
   if (!isValidProviderCloudEnrollmentRequest(request)) {

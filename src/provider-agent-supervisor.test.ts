@@ -279,7 +279,7 @@ test("provider relay shadow requests bind exact identities and keep every commer
   assert.equal(isValidProviderRelayShadowSessionRequest({ ...valid, customerTrafficAllowed: true }), false);
 });
 
-test("provider Cloud enrollment accepts only the exact explicit consent manifest", () => {
+test("provider Cloud enrollment accepts a Cloud-managed identity handshake", () => {
   const valid = {
     enrollment_token: `mve_${"a".repeat(43)}`,
     core_version: "0.2.0",
@@ -292,8 +292,12 @@ test("provider Cloud enrollment accepts only the exact explicit consent manifest
     assert.equal(isValidProviderCloudEnrollmentRequest({ ...valid, runtime_family }), true, runtime_family);
   }
   assert.equal(isValidProviderCloudEnrollmentRequest({ ...valid, runtime_family: "unknown-runtime" }), false);
+  assert.equal(isValidProviderCloudEnrollmentRequest({
+    ...valid,
+    runtime_family: "cloud-managed",
+    selected_models: [],
+  }), true);
   assert.equal(isValidProviderCloudEnrollmentRequest({ ...valid, enrollment_token: "secret" }), false);
-  assert.equal(isValidProviderCloudEnrollmentRequest({ ...valid, selected_models: [] }), false);
   assert.equal(isValidProviderCloudEnrollmentRequest({
     ...valid,
     selected_models: [{ reported_id: "publisher/model", modalities: ["text", "text"] }],

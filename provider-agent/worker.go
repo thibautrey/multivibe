@@ -77,12 +77,11 @@ type workerTestService struct {
 	runtime    *http.Client
 	identity   *deviceIdentity
 	enrollment *cloudEnrollmentStore
-	selections *selectionStore
 	runtimes   *runtimeEndpointStore
 	now        func() time.Time
 }
 
-func newWorkerTestService(baseURL *url.URL, client *http.Client, identity *deviceIdentity, enrollment *cloudEnrollmentStore, selections *selectionStore, runtimes *runtimeEndpointStore) *workerTestService {
+func newWorkerTestService(baseURL *url.URL, client *http.Client, identity *deviceIdentity, enrollment *cloudEnrollmentStore, runtimes *runtimeEndpointStore) *workerTestService {
 	cloud := *client
 	cloud.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	if cloud.Timeout <= 0 || cloud.Timeout > 10*time.Second {
@@ -91,7 +90,7 @@ func newWorkerTestService(baseURL *url.URL, client *http.Client, identity *devic
 	runtime := *client
 	runtime.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	runtime.Timeout = 2 * time.Minute
-	return &workerTestService{baseURL: baseURL, cloud: &cloud, runtime: &runtime, identity: identity, enrollment: enrollment, selections: selections, runtimes: runtimes, now: time.Now}
+	return &workerTestService{baseURL: baseURL, cloud: &cloud, runtime: &runtime, identity: identity, enrollment: enrollment, runtimes: runtimes, now: time.Now}
 }
 
 func workerTestPayloadMap(payload workerTestSessionPayload) map[string]any {
@@ -211,35 +210,65 @@ func (service *workerTestService) poll(ctx context.Context, token string) (*work
 	}
 	claim := response.Job
 	expiresAt, err := canonicalTimestamp(claim.ExpiresAt)
-	selected := service.selections.snapshot().SelectedModels
-	selectedMatch := false
-	for _, model := range selected {
-		if model == claim.Model {
-			selectedMatch = true
-			break
-		}
-	}
+	enrollment := service.enrollment.snapshot()
 	if !providerUUID.MatchString(claim.JobID) || !providerUUID.MatchString(claim.NodeID) ||
-		claim.NodeID != enrollmentNodeID(service.enrollment) || !validSelectedModelID(claim.Model) || !selectedMatch ||
+		enrollment == nil || claim.NodeID != enrollment.NodeID || !validSelectedModelID(claim.Model) ||
 		claim.Prompt != "Reply with exactly MULTIVIBE_WORKER_OK." || err != nil || !expiresAt.After(service.now()) || !claim.TestOnly {
 		return nil, errors.New("worker test claim is invalid")
+	}
+	// Cloud owns model scheduling. Validate the claim against the live local
+	// runtime catalog before accepting it; local consent selection is not an
+	// enrollment prerequisite.
+	if claim.Model == providerCloudAssignedModel {
+		_, model, err := service.cloudManagedRuntime(ctx, providerCloudAssignedModel)
+		if err != nil {
+			return nil, errors.New("worker test claim model is unavailable locally")
+		}
+		claim.Model = model
+	} else if _, err := service.runtimeEndpoint(ctx, enrollment.RuntimeFamily, claim.Model); err != nil {
+		return nil, errors.New("worker test claim model is unavailable locally")
 	}
 	return claim, nil
 }
 
-func enrollmentNodeID(store *cloudEnrollmentStore) string {
-	view := store.snapshot()
-	if view == nil {
-		return ""
-	}
-	return view.NodeID
-}
-
 func (service *workerTestService) runtimeEndpoint(ctx context.Context, family, model string) (runtimeEndpoint, error) {
-	for _, endpoint := range service.runtimes.configured() {
-		if endpoint.AdapterID == family {
-			return endpoint, nil
+	if family == providerCloudManagedRuntime {
+		endpoint, _, err := service.cloudManagedRuntime(ctx, model)
+		return endpoint, err
+	}
+	if service.runtimes != nil {
+		registry := runtimeAdapterRegistry()
+		adapters := make(map[string]runtimeAdapter, len(registry.Adapters))
+		for _, adapter := range registry.Adapters {
+			adapters[adapter.ID] = adapter
 		}
+		for _, endpoint := range service.runtimes.configured() {
+			if endpoint.AdapterID != family {
+				continue
+			}
+			adapter, exists := adapters[endpoint.AdapterID]
+			if !exists {
+				return runtimeEndpoint{}, errors.New("worker test runtime is unavailable")
+			}
+			candidate := adapterCandidate{
+				Endpoint:   endpoint.Endpoint,
+				HealthURL:  endpoint.Endpoint + adapter.HealthPath,
+				CatalogURL: endpoint.Endpoint + adapter.CatalogPath,
+			}
+			models, err := probeRuntimeCatalogAuthenticated(ctx, adapter, candidate, endpoint.BearerToken, service.runtime)
+			if err != nil {
+				return runtimeEndpoint{}, errors.New("worker test runtime is unavailable")
+			}
+			for _, detected := range models {
+				if detected == model {
+					return endpoint, nil
+				}
+			}
+			return runtimeEndpoint{}, errors.New("worker test model is unavailable")
+		}
+	}
+	if service.runtime == nil {
+		return runtimeEndpoint{}, errors.New("worker test runtime is unavailable")
 	}
 	for _, adapter := range runtimeAdapterRegistry().Adapters {
 		if adapter.ID != family {
@@ -258,6 +287,59 @@ func (service *workerTestService) runtimeEndpoint(ctx context.Context, family, m
 		}
 	}
 	return runtimeEndpoint{}, errors.New("worker test runtime is unavailable")
+}
+
+func (service *workerTestService) cloudManagedRuntime(ctx context.Context, model string) (runtimeEndpoint, string, error) {
+	if service.runtime == nil {
+		return runtimeEndpoint{}, "", errors.New("worker test runtime is unavailable")
+	}
+	registry := runtimeAdapterRegistry()
+	adapters := make(map[string]runtimeAdapter, len(registry.Adapters))
+	for _, adapter := range registry.Adapters {
+		adapters[adapter.ID] = adapter
+	}
+	choose := func(endpoint runtimeEndpoint, adapter runtimeAdapter, candidates []adapterCandidate) (runtimeEndpoint, string, error) {
+		for _, candidate := range candidates {
+			candidate.Endpoint = endpoint.Endpoint
+			candidate.HealthURL = endpoint.Endpoint + adapter.HealthPath
+			candidate.CatalogURL = endpoint.Endpoint + adapter.CatalogPath
+			models, err := probeRuntimeCatalogAuthenticated(ctx, adapter, candidate, endpoint.BearerToken, service.runtime)
+			if err != nil {
+				continue
+			}
+			for _, detected := range models {
+				if model == providerCloudAssignedModel || detected == model {
+					return endpoint, detected, nil
+				}
+			}
+		}
+		return runtimeEndpoint{}, "", errors.New("worker test runtime is unavailable")
+	}
+	if service.runtimes != nil {
+		for _, endpoint := range service.runtimes.configured() {
+			adapter, exists := adapters[endpoint.AdapterID]
+			if !exists {
+				continue
+			}
+			resolved, detected, err := choose(endpoint, adapter, []adapterCandidate{{Endpoint: endpoint.Endpoint}})
+			if err == nil {
+				return resolved, detected, nil
+			}
+		}
+	}
+	for _, adapter := range registry.Adapters {
+		if len(adapter.Candidates) == 0 {
+			continue
+		}
+		for _, candidate := range adapter.Candidates {
+			endpoint := runtimeEndpoint{AdapterID: adapter.ID, Endpoint: candidate.Endpoint}
+			resolved, detected, err := choose(endpoint, adapter, []adapterCandidate{candidate})
+			if err == nil {
+				return resolved, detected, nil
+			}
+		}
+	}
+	return runtimeEndpoint{}, "", errors.New("worker test runtime is unavailable")
 }
 
 func (service *workerTestService) infer(ctx context.Context, enrollment cloudEnrollmentView, claim workerTestClaim) (string, uint64, uint64, error) {

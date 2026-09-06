@@ -29,6 +29,8 @@ const (
 	providerManifestVersion     = "multivibe-provider-manifest-shadow-v1"
 	providerEnrollmentStateV1   = "provider-cloud-enrollment-v1"
 	providerCompanionVersion    = "0.1.0-shadow"
+	providerCloudManagedRuntime = "cloud-managed"
+	providerCloudAssignedModel  = "__multivibe_cloud_assigned__"
 	maxCloudEnrollmentBodyBytes = 64 * 1024
 )
 
@@ -45,6 +47,7 @@ var (
 		for _, adapter := range runtimeAdapters {
 			families[adapter.ID] = true
 		}
+		families[providerCloudManagedRuntime] = true
 		return families
 	}()
 	errInvalidCloudEnrollment = errors.New("provider Cloud enrollment request is invalid")
@@ -150,13 +153,12 @@ type cloudEnrollmentStore struct {
 }
 
 type cloudEnrollmentService struct {
-	enrollMu   sync.Mutex
-	baseURL    *url.URL
-	client     *http.Client
-	identity   *deviceIdentity
-	selections *selectionStore
-	store      *cloudEnrollmentStore
-	now        func() time.Time
+	enrollMu sync.Mutex
+	baseURL  *url.URL
+	client   *http.Client
+	identity *deviceIdentity
+	store    *cloudEnrollmentStore
+	now      func() time.Time
 }
 
 func cloudAPIURL(raw string) (*url.URL, error) {
@@ -259,19 +261,19 @@ func (store *cloudEnrollmentStore) record(view cloudEnrollmentView) error {
 	return nil
 }
 
-func newCloudEnrollmentService(baseURL *url.URL, client *http.Client, identity *deviceIdentity, selections *selectionStore, store *cloudEnrollmentStore) *cloudEnrollmentService {
+func newCloudEnrollmentService(baseURL *url.URL, client *http.Client, identity *deviceIdentity, store *cloudEnrollmentStore) *cloudEnrollmentService {
 	boundedClient := *client
 	boundedClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	if boundedClient.Timeout <= 0 || boundedClient.Timeout > 10*time.Second {
 		boundedClient.Timeout = 10 * time.Second
 	}
-	return &cloudEnrollmentService{baseURL: baseURL, client: &boundedClient, identity: identity, selections: selections, store: store, now: time.Now}
+	return &cloudEnrollmentService{baseURL: baseURL, client: &boundedClient, identity: identity, store: store, now: time.Now}
 }
 
-func normalizeEnrollmentInput(input cloudEnrollmentInput, selected []string) (cloudEnrollmentManifest, error) {
+func normalizeEnrollmentInput(input cloudEnrollmentInput) (cloudEnrollmentManifest, error) {
 	if !providerEnrollmentToken.MatchString(input.EnrollmentToken) || !providerVersion.MatchString(input.CoreVersion) ||
 		!providerRuntimeFamilies[input.RuntimeFamily] || input.DeclaredMaxConcurrency < 1 || input.DeclaredMaxConcurrency > 1000 ||
-		len(input.SelectedModels) < 1 || len(input.SelectedModels) > 100 || len(input.SelectedModels) != len(selected) {
+		len(input.SelectedModels) > 100 {
 		return cloudEnrollmentManifest{}, errInvalidCloudEnrollment
 	}
 	models := append([]cloudEnrollmentModel(nil), input.SelectedModels...)
@@ -288,10 +290,8 @@ func normalizeEnrollmentInput(input cloudEnrollmentInput, selected []string) (cl
 		}
 	}
 	sort.Slice(models, func(left, right int) bool { return models[left].ReportedID < models[right].ReportedID })
-	selectedCopy := append([]string(nil), selected...)
-	sort.Strings(selectedCopy)
 	for index, model := range models {
-		if model.ReportedID != selectedCopy[index] || (index > 0 && model.ReportedID == models[index-1].ReportedID) {
+		if index > 0 && model.ReportedID == models[index-1].ReportedID {
 			return cloudEnrollmentManifest{}, errInvalidCloudEnrollment
 		}
 	}
@@ -424,8 +424,7 @@ func (service *cloudEnrollmentService) enroll(ctx context.Context, input cloudEn
 	if service.store.snapshot() != nil {
 		return cloudEnrollmentView{}, errCloudAlreadyEnrolled
 	}
-	selection := service.selections.snapshot()
-	manifest, err := normalizeEnrollmentInput(input, selection.SelectedModels)
+	manifest, err := normalizeEnrollmentInput(input)
 	if err != nil {
 		return cloudEnrollmentView{}, err
 	}
