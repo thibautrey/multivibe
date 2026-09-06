@@ -1,6 +1,38 @@
 import AppKit
 import Foundation
 
+private enum MenuBarPalette {
+    private static func color(_ hex: UInt32) -> NSColor {
+        NSColor(
+            calibratedRed: CGFloat((hex >> 16) & 0xff) / 255,
+            green: CGFloat((hex >> 8) & 0xff) / 255,
+            blue: CGFloat(hex & 0xff) / 255,
+            alpha: 1,
+        )
+    }
+
+    private static func adaptive(light: NSColor, dark: NSColor) -> NSColor {
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+        }
+    }
+
+    static let background = adaptive(light: color(0xf3f6f5), dark: color(0x0a1210))
+    static let panel = adaptive(light: color(0xffffff), dark: color(0x111b18))
+    static let surfaceMuted = adaptive(light: color(0xf6f8f7), dark: color(0x182521))
+    static let line = adaptive(light: color(0xe0e7e4), dark: color(0x273733))
+    static let text = adaptive(light: color(0x14231f), dark: color(0xedf5f2))
+    static let muted = adaptive(light: color(0x6b7d77), dark: color(0x91a59f))
+    static let mutedStrong = adaptive(light: color(0x435650), dark: color(0xc2d1cc))
+    static let primary = adaptive(light: color(0x147d72), dark: color(0x55c7b8))
+    static let warning = adaptive(light: color(0xad681e), dark: color(0xf3b35f))
+    static let warningSoft = adaptive(light: color(0xfff5e7), dark: color(0x392817))
+    static let danger = adaptive(light: color(0xc74654), dark: color(0xfb7185))
+    static let dangerSoft = adaptive(light: color(0xfff0f1), dark: color(0x3a1b22))
+    static let success = adaptive(light: color(0x147d5f), dark: color(0x5fd2aa))
+    static let successSoft = adaptive(light: color(0xe6f5ef), dark: color(0x17372d))
+}
+
 private let configuredHostPort: Int = {
     let configured = ProcessInfo.processInfo.environment["MULTIVIBE_HOST_PORT"] ?? "1455"
     return Int(configured).flatMap { (1...65535).contains($0) ? $0 : nil } ?? 1455
@@ -93,14 +125,14 @@ private final class QuotaBarView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         let track = NSBezierPath(roundedRect: bounds, xRadius: 3.5, yRadius: 3.5)
-        NSColor.quaternaryLabelColor.withAlphaComponent(0.6).setFill()
+        MenuBarPalette.line.setFill()
         track.fill()
         guard let remainingPercent else { return }
         let safeValue = max(0, min(100, remainingPercent))
         let fillRect = NSRect(x: 0, y: 0, width: bounds.width * safeValue / 100, height: bounds.height)
         guard fillRect.width > 0 else { return }
         let fill = NSBezierPath(roundedRect: fillRect, xRadius: 3.5, yRadius: 3.5)
-        let color: NSColor = safeValue <= 10 ? .systemRed : safeValue <= 30 ? .systemOrange : .controlAccentColor
+        let color: NSColor = safeValue <= 10 ? MenuBarPalette.danger : safeValue <= 30 ? MenuBarPalette.warning : MenuBarPalette.primary
         color.setFill()
         fill.fill()
     }
@@ -120,16 +152,16 @@ private final class HostPopoverController: NSViewController {
 
     private let headerTitle = NSTextField(labelWithString: "MultiVibe Host")
     private let headerStatus = NSTextField(labelWithString: "Starting…")
+    private let headerVersion = NSTextField(labelWithString: "")
     private let contentStack = NSStackView()
     private let primaryButton = NSButton(title: "Open Dashboard", target: nil, action: nil)
     private let refreshButton = NSButton(title: "Refresh", target: nil, action: nil)
     private let startAtLoginButton = NSButton(checkboxWithTitle: "Start MultiVibe Host when I log in", target: nil, action: nil)
 
     override func loadView() {
-        let background = NSVisualEffectView()
-        background.material = .popover
-        background.blendingMode = .behindWindow
-        background.state = .active
+        let background = NSView()
+        background.wantsLayer = true
+        background.layer?.backgroundColor = MenuBarPalette.background.cgColor
         view = background
 
         let header = makeHeader()
@@ -143,13 +175,15 @@ private final class HostPopoverController: NSViewController {
         document.translatesAutoresizingMaskIntoConstraints = false
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
-        contentStack.spacing = 12
+        contentStack.spacing = 10
         contentStack.edgeInsets = NSEdgeInsets(top: 14, left: 18, bottom: 16, right: 18)
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         document.addSubview(contentStack)
         scrollView.documentView = document
 
         let footer = makeFooter()
+        startAtLoginButton.font = .systemFont(ofSize: 11, weight: .regular)
+        startAtLoginButton.contentTintColor = MenuBarPalette.mutedStrong
         background.addSubview(header)
         background.addSubview(scrollView)
         background.addSubview(footer)
@@ -168,7 +202,7 @@ private final class HostPopoverController: NSViewController {
             footer.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             footer.trailingAnchor.constraint(equalTo: background.trailingAnchor),
             footer.bottomAnchor.constraint(equalTo: background.bottomAnchor),
-            footer.heightAnchor.constraint(equalToConstant: 62),
+            footer.heightAnchor.constraint(equalToConstant: 68),
             document.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
             contentStack.topAnchor.constraint(equalTo: document.topAnchor),
             contentStack.leadingAnchor.constraint(equalTo: document.leadingAnchor),
@@ -186,17 +220,19 @@ private final class HostPopoverController: NSViewController {
         icon.imageScaling = .scaleProportionallyUpOrDown
         icon.translatesAutoresizingMaskIntoConstraints = false
 
-        headerTitle.font = .systemFont(ofSize: 16, weight: .semibold)
-        headerStatus.font = .systemFont(ofSize: 12, weight: .medium)
-        headerStatus.textColor = .secondaryLabelColor
-        let labels = NSStackView(views: [headerTitle, headerStatus])
+        headerTitle.font = .systemFont(ofSize: 17, weight: .semibold)
+        headerTitle.textColor = MenuBarPalette.text
+        headerStatus.font = .systemFont(ofSize: 11, weight: .semibold)
+        headerStatus.textColor = MenuBarPalette.success
+        headerVersion.font = .systemFont(ofSize: 10, weight: .regular)
+        headerVersion.textColor = MenuBarPalette.muted
+        let labels = NSStackView(views: [headerTitle, headerStatus, headerVersion])
         labels.orientation = .vertical
         labels.alignment = .leading
-        labels.spacing = 3
+        labels.spacing = 2
         labels.translatesAutoresizingMaskIntoConstraints = false
 
-        let divider = NSBox()
-        divider.boxType = .separator
+        let divider = makeDivider()
         divider.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(icon)
         container.addSubview(labels)
@@ -205,14 +241,15 @@ private final class HostPopoverController: NSViewController {
         NSLayoutConstraint.activate([
             icon.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 18),
             icon.centerYAnchor.constraint(equalTo: container.centerYAnchor, constant: -1),
-            icon.widthAnchor.constraint(equalToConstant: 38),
-            icon.heightAnchor.constraint(equalToConstant: 38),
+            icon.widthAnchor.constraint(equalToConstant: 36),
+            icon.heightAnchor.constraint(equalToConstant: 36),
             labels.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 12),
             labels.centerYAnchor.constraint(equalTo: icon.centerYAnchor),
             labels.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -18),
             divider.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             divider.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             divider.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            divider.heightAnchor.constraint(equalToConstant: 1),
         ])
         return container
     }
@@ -220,19 +257,17 @@ private final class HostPopoverController: NSViewController {
     private func makeFooter() -> NSView {
         let container = NSView()
         container.translatesAutoresizingMaskIntoConstraints = false
-        let divider = NSBox()
-        divider.boxType = .separator
+        let divider = makeDivider()
         divider.translatesAutoresizingMaskIntoConstraints = false
 
-        primaryButton.bezelStyle = .rounded
-        primaryButton.controlSize = .large
+        styleButton(primaryButton, kind: .primary)
         primaryButton.target = self
         primaryButton.action = #selector(didOpenDashboard)
-        refreshButton.bezelStyle = .rounded
+        styleButton(refreshButton, kind: .secondary)
         refreshButton.target = self
         refreshButton.action = #selector(didRefresh)
         let quitButton = NSButton(title: "Quit", target: self, action: #selector(didQuit))
-        quitButton.bezelStyle = .rounded
+        styleButton(quitButton, kind: .quiet)
 
         let actions = NSStackView(views: [primaryButton, refreshButton, quitButton])
         actions.orientation = .horizontal
@@ -247,12 +282,47 @@ private final class HostPopoverController: NSViewController {
             divider.topAnchor.constraint(equalTo: container.topAnchor),
             divider.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             divider.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            divider.heightAnchor.constraint(equalToConstant: 1),
             actions.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 18),
             actions.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -18),
             actions.centerYAnchor.constraint(equalTo: container.centerYAnchor, constant: 1),
             primaryButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 170),
+            primaryButton.heightAnchor.constraint(equalToConstant: 36),
+            refreshButton.heightAnchor.constraint(equalToConstant: 34),
+            quitButton.heightAnchor.constraint(equalToConstant: 34),
         ])
         return container
+    }
+
+    private func makeDivider() -> NSView {
+        let divider = NSView()
+        divider.wantsLayer = true
+        divider.layer?.backgroundColor = MenuBarPalette.line.cgColor
+        return divider
+    }
+
+    private enum ButtonKind {
+        case primary
+        case secondary
+        case quiet
+    }
+
+    private func styleButton(_ button: NSButton, kind: ButtonKind) {
+        button.bezelStyle = .rounded
+        button.controlSize = .regular
+        button.font = .systemFont(ofSize: 12, weight: .semibold)
+        button.focusRingType = .default
+        switch kind {
+        case .primary:
+            button.bezelColor = MenuBarPalette.primary
+            button.contentTintColor = .white
+        case .secondary:
+            button.bezelColor = MenuBarPalette.surfaceMuted
+            button.contentTintColor = MenuBarPalette.mutedStrong
+        case .quiet:
+            button.isBordered = false
+            button.contentTintColor = MenuBarPalette.muted
+        }
     }
 
     func render(
@@ -265,10 +335,13 @@ private final class HostPopoverController: NSViewController {
         startAtLogin: Bool
     ) {
         loadViewIfNeeded()
+        view.wantsLayer = true
+        view.layer?.backgroundColor = MenuBarPalette.background.cgColor
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
-        headerTitle.stringValue = "MultiVibe Host  \(version)"
+        headerTitle.stringValue = "MultiVibe"
         headerStatus.stringValue = status
-        headerStatus.textColor = operational ? .systemGreen : .secondaryLabelColor
+        headerStatus.textColor = operational ? MenuBarPalette.success : MenuBarPalette.mutedStrong
+        headerVersion.stringValue = "Host  ·  v\(version)"
         primaryButton.title = operational ? "Open Dashboard" : "Start Host"
         refreshButton.title = refreshing ? "Refreshing…" : "Refresh"
         refreshButton.isEnabled = !refreshing
@@ -297,16 +370,19 @@ private final class HostPopoverController: NSViewController {
     }
 
     private func sectionLabel(_ text: String) -> NSTextField {
-        label(text, size: 11, weight: .semibold, color: .secondaryLabelColor)
+        let field = label(text, size: 10, weight: .semibold, color: MenuBarPalette.primary)
+        field.font = .monospacedSystemFont(ofSize: 10, weight: .semibold)
+        return field
     }
 
     private func card() -> NSView {
         let view = NSView()
         view.wantsLayer = true
-        view.layer?.cornerRadius = 12
-        view.layer?.borderWidth = 0.5
-        view.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.7).cgColor
-        view.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.72).cgColor
+        view.layer?.cornerRadius = 15
+        view.layer?.borderWidth = 1
+        view.layer?.borderColor = MenuBarPalette.line.cgColor
+        view.layer?.backgroundColor = MenuBarPalette.panel.cgColor
+        view.layer?.masksToBounds = true
         view.translatesAutoresizingMaskIntoConstraints = false
         view.widthAnchor.constraint(equalToConstant: 384).isActive = true
         return view
@@ -314,12 +390,12 @@ private final class HostPopoverController: NSViewController {
 
     private func summaryCard(_ quota: MenuBarQuota?) -> NSView {
         let container = card()
-        let weekly = quotaCell(title: "Weekly", value: quota?.weeklyRemainingPercent, detail: accountCount(quota?.weeklyAccountCount ?? 0))
+        let weekly = quotaCell(title: "Weekly quota", value: quota?.weeklyRemainingPercent, detail: accountCount(quota?.weeklyAccountCount ?? 0))
         var quotaCells: [NSView] = []
         if quota?.fiveHourAccountCount ?? 0 > 0 {
             quotaCells.append(
                 quotaCell(
-                    title: "5 hours",
+                    title: "5h quota",
                     value: quota?.fiveHourRemainingPercent,
                     detail: accountCount(quota?.fiveHourAccountCount ?? 0),
                 ),
@@ -342,24 +418,26 @@ private final class HostPopoverController: NSViewController {
     }
 
     private func quotaCell(title: String, value: Double?, detail: String) -> NSView {
-        let titleLabel = label(title, size: 12, weight: .medium, color: .secondaryLabelColor)
-        let valueLabel = label(percent(value), size: 22, weight: .semibold)
+        let titleLabel = label(title, size: 11, weight: .semibold, color: MenuBarPalette.muted)
+        let valueLabel = label(percent(value), size: 24, weight: .semibold, color: MenuBarPalette.text)
         valueLabel.font = .monospacedDigitSystemFont(ofSize: 22, weight: .semibold)
-        let detailLabel = label(detail, size: 11, color: .tertiaryLabelColor)
+        let detailLabel = label(detail, size: 10, color: MenuBarPalette.muted)
         let bar = QuotaBarView()
         bar.remainingPercent = value
         bar.translatesAutoresizingMaskIntoConstraints = false
+        bar.setAccessibilityLabel(title)
+        bar.setAccessibilityValue(percent(value))
         let stack = NSStackView(views: [titleLabel, valueLabel, bar, detailLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 6
+        stack.spacing = 5
         bar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         return stack
     }
 
     private func accountCard(_ account: MenuBarAccount) -> NSView {
         let container = card()
-        let name = label(account.displayName, size: 13, weight: .semibold)
+        let name = label(account.displayName, size: 13, weight: .semibold, color: MenuBarPalette.text)
         name.lineBreakMode = .byTruncatingMiddle
         name.maximumNumberOfLines = 1
         let state = statusBadge(account.status)
@@ -370,16 +448,16 @@ private final class HostPopoverController: NSViewController {
 
         let unsupported = account.usageStatus == "unsupported"
         let quotaWindows: [(title: String, window: QuotaWindow?)] = [
-            ("5H", account.fiveHour),
-            ("WEEK", account.weekly),
-            ("MONTH", account.monthly),
+            ("5h quota", account.fiveHour),
+            ("Weekly quota", account.weekly),
+            ("Monthly quota", account.monthly),
         ]
         let updatedText = usageDetail(account)
         let visibleQuotaWindows: [NSView] = unsupported
             ? []
             : quotaWindows.compactMap { item in
                 guard let window = item.window, hasResetTime(window.resetAt) else { return nil }
-                return compactQuota(title: item.title, window: window, updatedText: updatedText)
+                return compactQuota(title: item.title, window: window)
         }
 
         var contentViews: [NSView] = [header]
@@ -392,14 +470,15 @@ private final class HostPopoverController: NSViewController {
             windowsView = windows
             contentViews.append(windows)
         }
-        if visibleQuotaWindows.isEmpty {
-            contentViews.append(label(updatedText, size: 10, color: .tertiaryLabelColor))
-        }
+        let updated = label(updatedText, size: 10, color: MenuBarPalette.muted)
+        updated.lineBreakMode = .byTruncatingTail
+        updated.maximumNumberOfLines = 1
+        contentViews.append(updated)
 
         let stack = NSStackView(views: contentViews)
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 11
+        stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
         header.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         windowsView?.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
@@ -413,55 +492,55 @@ private final class HostPopoverController: NSViewController {
         return container
     }
 
-    private func compactQuota(title: String, window: QuotaWindow, updatedText: String) -> NSView {
-        let titleLabel = label(title, size: 10, weight: .semibold, color: .secondaryLabelColor)
-        let value = label(percent(window.remainingPercent), size: 17, weight: .semibold)
-        value.font = .monospacedDigitSystemFont(ofSize: 17, weight: .semibold)
-        let reset = label(resetText(window.resetAt), size: 10, color: .tertiaryLabelColor)
+    private func compactQuota(title: String, window: QuotaWindow) -> NSView {
+        let titleLabel = label(title, size: 10, weight: .semibold, color: MenuBarPalette.muted)
+        let value = label(percent(window.remainingPercent), size: 18, weight: .semibold, color: MenuBarPalette.text)
+        value.font = .monospacedDigitSystemFont(ofSize: 18, weight: .semibold)
+        let reset = label(resetText(window.resetAt), size: 10, color: MenuBarPalette.muted)
         reset.lineBreakMode = .byTruncatingTail
-        let updated = label(updatedText, size: 10, color: .tertiaryLabelColor)
-        updated.lineBreakMode = .byTruncatingTail
-        let metadata = NSStackView(views: [reset, updated])
-        metadata.orientation = .horizontal
-        metadata.distribution = .fillEqually
-        metadata.alignment = .centerY
-        metadata.spacing = 8
-        metadata.translatesAutoresizingMaskIntoConstraints = false
         let bar = QuotaBarView()
         bar.remainingPercent = window.remainingPercent
         bar.translatesAutoresizingMaskIntoConstraints = false
-        let stack = NSStackView(views: [titleLabel, value, bar, metadata])
+        bar.setAccessibilityLabel(title)
+        bar.setAccessibilityValue(percent(window.remainingPercent))
+        let stack = NSStackView(views: [titleLabel, value, bar, reset])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 5
+        stack.spacing = 4
         bar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        metadata.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         return stack
     }
 
     private func statusBadge(_ status: String) -> NSTextField {
         let copy: String
         let color: NSColor
+        let background: NSColor
         switch status {
-        case "ready": (copy, color) = ("Ready", .systemGreen)
-        case "paused": (copy, color) = ("Paused", .secondaryLabelColor)
-        case "limited": (copy, color) = ("Limited", .systemOrange)
-        default: (copy, color) = ("Attention", .systemRed)
+        case "ready":
+            (copy, color, background) = ("Ready", MenuBarPalette.success, MenuBarPalette.successSoft)
+        case "paused":
+            (copy, color, background) = ("Paused", MenuBarPalette.mutedStrong, MenuBarPalette.surfaceMuted)
+        case "limited":
+            (copy, color, background) = ("Limited", MenuBarPalette.warning, MenuBarPalette.warningSoft)
+        default:
+            (copy, color, background) = ("Attention", MenuBarPalette.danger, MenuBarPalette.dangerSoft)
         }
-        let badge = label("  \(copy)  ", size: 10, weight: .semibold, color: color)
+        let badge = label("\u{00a0}\(copy)\u{00a0}", size: 10, weight: .semibold, color: color)
         badge.wantsLayer = true
-        badge.layer?.cornerRadius = 7
-        badge.layer?.backgroundColor = color.withAlphaComponent(0.12).cgColor
+        badge.layer?.cornerRadius = 8
+        badge.layer?.borderWidth = 0.5
+        badge.layer?.borderColor = color.withAlphaComponent(0.2).cgColor
+        badge.layer?.backgroundColor = background.cgColor
         return badge
     }
 
     private func emptyAccountsCard(operational: Bool) -> NSView {
         let container = card()
-        let title = label(operational ? "No OpenAI account yet" : "Host data unavailable", size: 13, weight: .semibold)
+        let title = label(operational ? "No OpenAI account yet" : "Host data unavailable", size: 13, weight: .semibold, color: MenuBarPalette.text)
         let detail = label(
             operational ? "Add an account from the dashboard to see its quota here." : "Start or refresh MultiVibe Host to load your accounts.",
             size: 11,
-            color: .secondaryLabelColor
+            color: MenuBarPalette.muted
         )
         detail.maximumNumberOfLines = 2
         let stack = NSStackView(views: [title, detail])
@@ -506,28 +585,28 @@ private final class HostPopoverController: NSViewController {
         let detail: String
         if let version = update?.availableVersion {
             title = "Version \(version) available"
-            detail = update?.downloaded == true ? "Verified download ready to install." : "Ready for verified background download."
+            detail = update?.downloaded == true ? "Ready to install." : "Ready for secure background download."
         } else if update?.status == "current" {
             title = "MultiVibe Host is up to date"
-            detail = "The signed stable release feed is checked periodically."
+            detail = "The signed release feed is checked periodically."
         } else {
-            title = "Automatic verified updates"
-            detail = "Check the signed release feed now or manage policy in the dashboard."
+            title = "Updates"
+            detail = "Check for a signed MultiVibe Host release."
         }
 
-        let titleLabel = label(title, size: 13, weight: .semibold)
-        let detailLabel = label(detail, size: 11, color: .secondaryLabelColor)
+        let titleLabel = label(title, size: 13, weight: .semibold, color: MenuBarPalette.text)
+        let detailLabel = label(detail, size: 11, color: MenuBarPalette.muted)
         detailLabel.maximumNumberOfLines = 2
         let checkButton = NSButton(title: busy ? "Checking…" : "Check Now", target: self, action: #selector(didCheckForUpdates))
-        checkButton.bezelStyle = .rounded
+        styleButton(checkButton, kind: .secondary)
         checkButton.isEnabled = !busy
         let actions = NSStackView(views: [checkButton])
         actions.orientation = .horizontal
         actions.spacing = 8
         if update?.availableVersion != nil {
-            let installTitle = update?.installRequested == true ? "Installation Queued" : "Install Safely"
+            let installTitle = update?.installRequested == true ? "Installation queued" : "Install update"
             let installButton = NSButton(title: installTitle, target: self, action: #selector(didInstallUpdate))
-            installButton.bezelStyle = .rounded
+            styleButton(installButton, kind: .primary)
             installButton.isEnabled = !busy && update?.installRequested != true
             actions.addArrangedSubview(installButton)
         }
@@ -548,8 +627,8 @@ private final class HostPopoverController: NSViewController {
     }
 
     private func earningRow(_ title: String, value: String) -> NSView {
-        let titleLabel = label(title, size: 11, color: .secondaryLabelColor)
-        let valueLabel = label(value, size: 11, weight: .medium)
+        let titleLabel = label(title, size: 11, color: MenuBarPalette.muted)
+        let valueLabel = label(value, size: 12, weight: .semibold, color: MenuBarPalette.text)
         let row = NSStackView(views: [titleLabel, NSView(), valueLabel])
         row.orientation = .horizontal
         row.alignment = .centerY
@@ -625,18 +704,20 @@ private final class GitHubStarPromptController: NSViewController {
     private let starButton = NSButton(title: "⭐ Star MultiVibe on GitHub", target: nil, action: nil)
 
     override func loadView() {
-        let background = NSVisualEffectView()
-        background.material = .popover
-        background.blendingMode = .behindWindow
-        background.state = .active
+        let background = NSView()
+        background.wantsLayer = true
+        background.layer?.backgroundColor = MenuBarPalette.background.cgColor
 
         messageLabel.font = .systemFont(ofSize: 13)
-        messageLabel.textColor = .labelColor
+        messageLabel.textColor = MenuBarPalette.text
         messageLabel.maximumNumberOfLines = 0
         messageLabel.lineBreakMode = .byWordWrapping
 
         starButton.bezelStyle = .rounded
-        starButton.controlSize = .large
+        starButton.controlSize = .regular
+        starButton.font = .systemFont(ofSize: 12, weight: .semibold)
+        starButton.bezelColor = MenuBarPalette.primary
+        starButton.contentTintColor = .white
         starButton.target = self
         starButton.action = #selector(didOpenGitHub)
 
@@ -702,6 +783,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
     private var githubStarPromptPresented = false
     private var githubStarPromptCloseWorkItem: DispatchWorkItem?
     private var githubStarPromptAcknowledged = UserDefaults.standard.bool(forKey: githubStarPromptAcknowledgedKey)
+    private var appearanceObserver: NSObjectProtocol?
 #if DEBUG
     private var previewWindow: NSWindow?
 #endif
@@ -726,6 +808,13 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         didFinishLaunching = true
         configureStatusItem()
         configurePopover()
+        appearanceObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeEffectiveAppearanceNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.render()
+        }
         configureTerminationSignals()
         render()
         ensureServiceIsRunning()
@@ -845,6 +934,9 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
         githubStarPromptCloseWorkItem?.cancel()
+        if let appearanceObserver {
+            NotificationCenter.default.removeObserver(appearanceObserver)
+        }
         if let process = ownedService, process.isRunning { process.terminate() }
     }
 
@@ -853,12 +945,13 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         let iconURL = Bundle.main.resourceURL?.appendingPathComponent("MultiVibeMenuBarIcon.png")
         if let iconURL, let image = NSImage(contentsOf: iconURL) {
             image.size = NSSize(width: 18, height: 18)
-            image.isTemplate = false
+            image.isTemplate = true
             button.image = image
         } else {
             button.image = NSImage(systemSymbolName: "waveform.path", accessibilityDescription: "MultiVibe")
         }
         button.imagePosition = .imageLeading
+        button.contentTintColor = MenuBarPalette.primary
         button.target = self
         button.action = #selector(togglePopover)
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
