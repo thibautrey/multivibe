@@ -10,6 +10,7 @@ import {
   randomUUID,
   timingSafeEqual,
   verify,
+  type JsonWebKey as NodeJsonWebKey,
   type KeyObject,
 } from "node:crypto";
 
@@ -100,7 +101,7 @@ export type ConfidentialResponseEnvelope = Readonly<{
 
 export type ConfidentialTrustRoot = Readonly<{
   keyId: string;
-  publicKey: JsonWebKey;
+  publicKey: NodeJsonWebKey;
 }>;
 
 export type ConfidentialRuntimeProfile = Readonly<{

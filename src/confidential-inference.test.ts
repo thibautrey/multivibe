@@ -193,7 +193,11 @@ test("verifies attestation before encrypting and only sends ciphertext through C
   assert.match(stats.relayBody, /"privacy":"confidential_verified"/u);
 });
 
-for (const scenario of [
+const rejectionScenarios: Array<{
+  name: string;
+  options: FixtureOptions;
+  code: string;
+}> = [
   {
     name: "an untrusted root",
     options: { untrustedSigner: true },
@@ -250,7 +254,9 @@ for (const scenario of [
     },
     code: "invalid_attestation_signature",
   },
-] as const) {
+];
+
+for (const scenario of rejectionScenarios) {
   test(`rejects ${scenario.name} before the prompt is sent`, async () => {
     const run = fixture(scenario.options);
     await assert.rejects(
