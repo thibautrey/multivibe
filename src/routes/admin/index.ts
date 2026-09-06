@@ -89,6 +89,7 @@ import {
 } from "../../provider-worker-estimate.js";
 import type { HostUpdateController, HostUpdateStatus } from "../../host-update-controller.js";
 import type { MultivibeCloudService } from "../../multivibe-cloud.js";
+import { fetchCodexQuotaResetForecast } from "../../quota-reset-forecast.js";
 
 const MULTIVIBE_CLOUD_FLOW_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -933,6 +934,15 @@ export function createAdminRouter(options: AdminRoutesOptions) {
   router.get("/accounts", async (_req, res) =>
     res.json({ accounts: (await store.listAccounts()).filter((account) => !account.multivibeCloud).map(redact) }),
   );
+
+  router.get("/quota-reset-forecast", async (_req, res) => {
+    res.setHeader("cache-control", "no-store");
+    try {
+      return res.json({ forecast: await fetchCodexQuotaResetForecast() });
+    } catch {
+      return res.status(503).json({ error: "quota_reset_forecast_unavailable" });
+    }
+  });
 
   router.post("/local-runtimes/discover", async (_req, res) => {
     try {
