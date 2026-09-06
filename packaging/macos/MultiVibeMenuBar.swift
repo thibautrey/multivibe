@@ -374,14 +374,14 @@ private final class HostPopoverController: NSViewController {
             ("WEEK", account.weekly),
             ("MONTH", account.monthly),
         ]
+        let updatedText = usageDetail(account)
         let visibleQuotaWindows: [NSView] = unsupported
             ? []
             : quotaWindows.compactMap { item in
                 guard let window = item.window, hasResetTime(window.resetAt) else { return nil }
-                return compactQuota(title: item.title, window: window)
+                return compactQuota(title: item.title, window: window, updatedText: updatedText)
         }
 
-        let updated = label(usageDetail(account), size: 10, color: .tertiaryLabelColor)
         var contentViews: [NSView] = [header]
         var windowsView: NSStackView?
         if !visibleQuotaWindows.isEmpty {
@@ -392,7 +392,9 @@ private final class HostPopoverController: NSViewController {
             windowsView = windows
             contentViews.append(windows)
         }
-        contentViews.append(updated)
+        if visibleQuotaWindows.isEmpty {
+            contentViews.append(label(updatedText, size: 10, color: .tertiaryLabelColor))
+        }
 
         let stack = NSStackView(views: contentViews)
         stack.orientation = .vertical
@@ -411,20 +413,29 @@ private final class HostPopoverController: NSViewController {
         return container
     }
 
-    private func compactQuota(title: String, window: QuotaWindow) -> NSView {
+    private func compactQuota(title: String, window: QuotaWindow, updatedText: String) -> NSView {
         let titleLabel = label(title, size: 10, weight: .semibold, color: .secondaryLabelColor)
         let value = label(percent(window.remainingPercent), size: 17, weight: .semibold)
         value.font = .monospacedDigitSystemFont(ofSize: 17, weight: .semibold)
         let reset = label(resetText(window.resetAt), size: 10, color: .tertiaryLabelColor)
         reset.lineBreakMode = .byTruncatingTail
+        let updated = label(updatedText, size: 10, color: .tertiaryLabelColor)
+        updated.lineBreakMode = .byTruncatingTail
+        let metadata = NSStackView(views: [reset, updated])
+        metadata.orientation = .horizontal
+        metadata.distribution = .fillEqually
+        metadata.alignment = .centerY
+        metadata.spacing = 8
+        metadata.translatesAutoresizingMaskIntoConstraints = false
         let bar = QuotaBarView()
         bar.remainingPercent = window.remainingPercent
         bar.translatesAutoresizingMaskIntoConstraints = false
-        let stack = NSStackView(views: [titleLabel, value, bar, reset])
+        let stack = NSStackView(views: [titleLabel, value, bar, metadata])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 5
         bar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        metadata.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         return stack
     }
 
