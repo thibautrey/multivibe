@@ -636,6 +636,8 @@ Useful admin endpoints:
 `sinceMs` and `untilMs` are accepted by stats and export routes. Export also
 supports `accountId`, `route`, and `projectId`.
 
+For a source-based explanation of prompt handling, deferred-job retention, telemetry, and the limits of transport encryption, read the [prompt privacy guide](./docs/prompt-privacy.md).
+
 Request bodies and headers are disabled in traces by default. When
 `TRACE_INCLUDE_HEADERS=true`, names are retained but credentials, cookies,
 tokens, session values, and similar secrets are redacted. Header values are not
