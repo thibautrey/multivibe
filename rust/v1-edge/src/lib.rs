@@ -2539,6 +2539,7 @@ impl TraceSink {
         route: &str,
         application: &str,
         account: Option<&Account>,
+        model: Option<&str>,
         status: u16,
         stream: bool,
         started_at: u64,
@@ -2556,6 +2557,9 @@ impl TraceSink {
             "stream": stream,
             "latencyMs": now_ms().saturating_sub(started_at),
         });
+        if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
+            entry["model"] = Value::String(model.to_owned());
+        }
         if let Some(account) = account {
             entry["accountId"] = Value::String(account.id.clone());
             if let Some(email) = account.email.as_deref() {
@@ -3203,6 +3207,7 @@ async fn proxy_inference(
                         path,
                         application,
                         Some(&account),
+                        Some(&route.model),
                         status.as_u16(),
                         client_stream,
                         started_at,
@@ -3247,6 +3252,7 @@ async fn proxy_inference(
                         path,
                         application,
                         Some(&account),
+                        Some(&route.model),
                         response.status().as_u16(),
                         true,
                         started_at,
@@ -3277,6 +3283,7 @@ async fn proxy_inference(
                     path,
                     application,
                     Some(&account),
+                    Some(&route.model),
                     reply.status.as_u16(),
                     client_stream,
                     started_at,
@@ -3286,12 +3293,14 @@ async fn proxy_inference(
             return Ok(ProxyResult::Buffered(reply));
         }
     }
+    let trace_model = requested_model.clone().if_empty_then(default_model);
     state
         .trace
         .record(
             path,
             application,
             None,
+            Some(&trace_model),
             last_status.as_u16(),
             client_stream,
             started_at,
@@ -6211,6 +6220,7 @@ mod tests {
 
         let store_path = temporary_path("native-catalog");
         let jobs_path = temporary_path("native-catalog-jobs");
+        let trace_path = temporary_path("native-catalog-trace");
         fs::write(
             &store_path,
             serde_json::to_vec(&store_with_accounts(vec![account("openai-1")])).unwrap(),
@@ -6225,6 +6235,7 @@ mod tests {
         config.configured_api_keys = vec![("interactive".to_owned(), "edge-secret".to_owned())];
         config.models_cache_ttl = Duration::from_secs(60);
         config.upstream_timeout = Duration::from_secs(5);
+        config.trace_path = Some(trace_path.clone());
 
         let state = EdgeState::new(config).await.unwrap();
         let (edge_url, edge_task) = start_server(build_router(state)).await;
@@ -6280,6 +6291,15 @@ mod tests {
         assert_eq!(request_bodies[0]["tools"][0]["type"], "function");
         drop(request_bodies);
 
+        let trace_contents = fs::read_to_string(&trace_path).await.unwrap();
+        let trace = trace_contents
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .find(|entry| entry["route"] == "/v1/responses")
+            .unwrap();
+        assert_eq!(trace["model"], "gpt-5.6-sol");
+        assert_eq!(trace["provider"], "openai");
+
         let response = client
             .get(format!(
                 "{edge_url}/v1/capacity?model=gpt-5.6-sol&priority=interactive"
@@ -6306,6 +6326,7 @@ mod tests {
         control_plane_task.abort();
         let _ = fs::remove_file(store_path).await;
         let _ = fs::remove_file(jobs_path).await;
+        let _ = fs::remove_file(trace_path).await;
     }
 
     #[tokio::test]
