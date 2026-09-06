@@ -1255,6 +1255,8 @@ export default function App() {
             models={models}
             openModelInDocs={openModelInDocs}
             navigate={setTab}
+            hostApplication={hostApplication}
+            onHarnessesChanged={loadBase}
           />
         )}
 
