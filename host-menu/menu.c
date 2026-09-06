@@ -12,6 +12,7 @@ extern void goEnrollmentDecision(int accepted);
 static GtkWidget *window;
 static GtkWidget *header_title;
 static GtkWidget *header_status;
+static GtkWidget *header_version;
 static GtkWidget *content_box;
 static GtkWidget *primary_button;
 static GtkWidget *refresh_button;
@@ -19,36 +20,44 @@ static GtkStatusIcon *status_icon;
 static GtkWidget *start_at_login;
 
 static const char *menu_css =
-    "window { background-color: #f2f3f4; }"
-    "label { color: #292d32; }"
-    ".header { padding: 18px; }"
-    ".header-title { font-size: 20px; font-weight: 700; }"
-    ".header-status { font-size: 14px; }"
-    ".header-status.operational { color: #18a83a; }"
-    ".section { font-size: 15px; font-weight: 700; margin-top: 2px; }"
-    ".card { background-color: rgba(255,255,255,0.88); border: 1px solid #8f959b; border-radius: 14px; }"
-    ".card-content { padding: 14px; }"
-    ".quota-title { color: #65696e; font-size: 14px; font-weight: 600; }"
-    ".quota-value { color: #3d4145; font-size: 30px; font-weight: 700; }"
-    ".quota-detail { color: #969a9e; font-size: 13px; }"
-    ".compact-title { color: #65696e; font-size: 13px; font-weight: 700; }"
-    ".compact-value { color: #3d4145; font-size: 24px; font-weight: 700; }"
-    ".compact-reset { color: #969a9e; font-size: 12px; }"
-    ".account-name { color: #464a4f; font-size: 18px; font-weight: 700; }"
-    ".badge { border-radius: 12px; padding: 3px 9px; font-size: 12px; font-weight: 700; }"
-    ".badge-ready { color: #0da936; background-color: #d7efdd; }"
-    ".badge-paused { color: #6d7378; background-color: #e4e6e8; }"
-    ".badge-limited { color: #c36a00; background-color: #ffebcc; }"
-    ".badge-attention { color: #d22e2e; background-color: #ffdede; }"
-    ".updated { color: #858a8f; font-size: 12px; }"
-    ".muted { color: #747a80; font-size: 13px; }"
-    ".update-title { font-size: 16px; font-weight: 700; }"
-    ".update-detail { color: #656b70; font-size: 13px; }"
+    "window { background-color: #f3f6f5; color: #14231f; }"
+    "label { color: #14231f; font-family: Inter; }"
+    ".header { padding: 16px 18px; }"
+    ".header-title { color: #14231f; font-size: 20px; font-weight: 700; }"
+    ".header-status { color: #435650; font-size: 12px; font-weight: 600; }"
+    ".header-status.operational { color: #147d5f; }"
+    ".header-version { color: #6b7d77; font-size: 10px; }"
+    ".section { color: #147d72; font-family: monospace; font-size: 11px; font-weight: 700; margin-top: 2px; }"
+    ".card { background-color: #ffffff; background-image: none; border: 1px solid #e0e7e4; border-radius: 15px; box-shadow: none; }"
+    ".card-content { padding: 15px; }"
+    ".quota-title { color: #6b7d77; font-size: 12px; font-weight: 600; }"
+    ".quota-value { color: #14231f; font-size: 28px; font-weight: 700; }"
+    ".quota-detail { color: #6b7d77; font-size: 11px; }"
+    ".compact-title { color: #6b7d77; font-size: 11px; font-weight: 700; }"
+    ".compact-value { color: #14231f; font-size: 18px; font-weight: 700; }"
+    ".compact-reset { color: #6b7d77; font-size: 10px; }"
+    ".account-name { color: #14231f; font-size: 14px; font-weight: 700; }"
+    ".badge { border-radius: 999px; padding: 4px 9px; font-size: 10px; font-weight: 700; }"
+    ".badge-ready { color: #147d5f; background-color: #e6f5ef; }"
+    ".badge-paused { color: #435650; background-color: #f6f8f7; }"
+    ".badge-limited { color: #ad681e; background-color: #fff5e7; }"
+    ".badge-attention { color: #c74654; background-color: #fff0f1; }"
+    ".updated { color: #6b7d77; font-size: 10px; }"
+    ".muted { color: #6b7d77; font-size: 11px; }"
+    ".update-title { color: #14231f; font-size: 13px; font-weight: 700; }"
+    ".update-detail { color: #6b7d77; font-size: 11px; }"
     ".footer { padding: 12px 18px 16px; }"
-    ".progressbar trough { min-height: 7px; border: 0; border-radius: 4px; background-color: #eceeef; }"
-    ".progressbar progress { min-height: 7px; border-radius: 4px; background-color: #1478e8; }"
-    ".quota-warning progress { background-color: #ff9500; }"
-    ".quota-danger progress { background-color: #f04444; }";
+    "button { min-height: 34px; padding: 7px 12px; border: 1px solid #e0e7e4; border-radius: 10px; color: #435650; background-color: #f6f8f7; background-image: none; box-shadow: none; font-weight: 700; }"
+    "button:hover { border-color: #c9d5d1; background-color: #edf2f0; }"
+    "button:disabled { opacity: 0.5; }"
+    "button.primary { border-color: #147d72; color: #ffffff; background-color: #147d72; }"
+    "button.primary:hover { background-color: #0c625a; }"
+    "button.quiet { border-color: transparent; color: #6b7d77; background-color: transparent; }"
+    "button.quiet:hover { border-color: #e0e7e4; background-color: #f6f8f7; }"
+    ".progressbar trough { min-height: 7px; border: 1px solid #e0e7e4; border-radius: 999px; background-color: #f6f8f7; background-image: none; }"
+    ".progressbar progress { min-height: 7px; border-radius: 999px; background-color: #147d72; background-image: none; }"
+    ".quota-warning progress { background-color: #ad681e; }"
+    ".quota-danger progress { background-color: #c74654; }";
 
 static void add_class(GtkWidget *widget, const char *class_name) {
     GtkStyleContext *context = gtk_widget_get_style_context(widget);
@@ -189,7 +198,7 @@ static GtkWidget *account_card(gchar **fields) {
     GtkWidget *badge = text_label(status_copy(fields[2]), "badge");
     GtkWidget *grid = gtk_grid_new();
     int unsupported = g_strcmp0(fields[3], "unsupported") == 0;
-    const char *titles[] = {"5H", "WEEK", "MONTH"};
+    const char *titles[] = {"5h quota", "Weekly quota", "Monthly quota"};
     const char *presents[] = {fields[4], fields[7], fields[10]};
     const char *values[] = {fields[5], fields[8], fields[11]};
     const char *resets[] = {fields[6], fields[9], fields[12]};
@@ -271,24 +280,26 @@ static GtkWidget *update_card(const char *status, const char *available_version,
 
     if (available_version[0]) {
         title = g_strdup_printf("Version %s available", available_version);
-        detail = downloaded ? "Verified download ready to install." : "Ready for verified background download.";
+        detail = downloaded ? "Ready to install." : "Ready for secure background download.";
     } else if (g_strcmp0(status, "current") == 0) {
         title = "MultiVibe Host is up to date";
-        detail = "The signed stable release feed is checked periodically.";
+        detail = "The signed release feed is checked periodically.";
     } else {
-        title = "Automatic verified updates";
-        detail = "Check the signed release feed now or manage policy in the dashboard.";
+        title = "Updates";
+        detail = "Check for a signed MultiVibe Host release.";
     }
 
     gtk_widget_set_sensitive(check, !busy);
+    add_class(check, "secondary");
     g_signal_connect(check, "clicked", G_CALLBACK(on_check_updates), NULL);
     gtk_box_pack_start(GTK_BOX(box), text_label(title, "update-title"), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box), text_label(detail, "update-detail"), FALSE, FALSE, 9);
     gtk_box_pack_start(GTK_BOX(box), actions, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(actions), check, FALSE, FALSE, 0);
     if (available_version[0]) {
-        GtkWidget *install = gtk_button_new_with_label(install_requested ? "Installation Queued" : "Install Safely");
+        GtkWidget *install = gtk_button_new_with_label(install_requested ? "Installation queued" : "Install update");
         gtk_widget_set_sensitive(install, !busy && !install_requested);
+        add_class(install, "primary");
         g_signal_connect(install, "clicked", G_CALLBACK(on_install_update), NULL);
         gtk_box_pack_start(GTK_BOX(actions), install, FALSE, FALSE, 0);
     }
@@ -312,12 +323,14 @@ static void apply_model(const char *model) {
     gsize line_count = g_strv_length(lines);
     int account_count = 0;
     gboolean was_visible = gtk_widget_get_visible(window);
-    char *title;
 
-    title = g_strdup_printf("MultiVibe Host  %s", line_at(lines, line_count, 0)[0] ? line_at(lines, line_count, 0) : "unknown");
-    set_label(header_title, title);
-    g_free(title);
+    set_label(header_title, "MultiVibe");
     set_label(header_status, line_at(lines, line_count, 1)[0] ? line_at(lines, line_count, 1) : "Unavailable");
+    {
+        char *version = g_strdup_printf("Host  ·  v%s", line_at(lines, line_count, 0)[0] ? line_at(lines, line_count, 0) : "unknown");
+        set_label(header_version, version);
+        g_free(version);
+    }
     {
         GtkStyleContext *context = gtk_widget_get_style_context(header_status);
         gtk_style_context_remove_class(context, "operational");
@@ -513,12 +526,14 @@ int multivibe_menu_init(const char *icon_path) {
     header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
     add_class(header, "header");
     header_image = icon_path && icon_path[0] ? gtk_image_new_from_file(icon_path) : gtk_image_new_from_icon_name("applications-system", GTK_ICON_SIZE_DIALOG);
-    gtk_image_set_pixel_size(GTK_IMAGE(header_image), 38);
+    gtk_image_set_pixel_size(GTK_IMAGE(header_image), 36);
     header_labels = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
-    header_title = text_label("MultiVibe Host  unknown", "header-title");
+    header_title = text_label("MultiVibe", "header-title");
     header_status = text_label("Starting...", "header-status");
+    header_version = text_label("Host  ·  vunknown", "header-version");
     gtk_box_pack_start(GTK_BOX(header_labels), header_title, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(header_labels), header_status, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(header_labels), header_version, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(header), header_image, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(header), header_labels, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(root), header, FALSE, FALSE, 0);
@@ -543,6 +558,9 @@ int multivibe_menu_init(const char *icon_path) {
     primary_button = gtk_button_new_with_label("Open Dashboard");
     refresh_button = gtk_button_new_with_label("Refresh");
     GtkWidget *quit_button = gtk_button_new_with_label("Quit");
+    add_class(primary_button, "primary");
+    add_class(refresh_button, "secondary");
+    add_class(quit_button, "quiet");
     gtk_widget_set_hexpand(primary_button, TRUE);
     g_signal_connect(primary_button, "clicked", G_CALLBACK(on_primary_clicked), NULL);
     g_signal_connect(refresh_button, "clicked", G_CALLBACK(on_refresh_clicked), NULL);
@@ -552,6 +570,7 @@ int multivibe_menu_init(const char *icon_path) {
     gtk_box_pack_start(GTK_BOX(actions), quit_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(footer), actions, FALSE, FALSE, 0);
     start_at_login = gtk_check_button_new_with_label("Start MultiVibe Host when I log in");
+    add_class(start_at_login, "quiet");
     g_signal_connect(start_at_login, "toggled", G_CALLBACK(on_start_at_login_toggled), NULL);
     gtk_box_pack_start(GTK_BOX(footer), start_at_login, FALSE, FALSE, 8);
     gtk_box_pack_start(GTK_BOX(root), footer, FALSE, FALSE, 0);

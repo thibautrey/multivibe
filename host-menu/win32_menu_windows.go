@@ -280,7 +280,7 @@ func loadMenuIcon(path string) syscall.Handle {
 
 func (menu *windowsMenu) createControls() error {
 	var err error
-	menu.title, err = menu.createChild("STATIC", "MultiVibe Host  unknown", staticStyle, 20, 16, 470, 30, 0)
+	menu.title, err = menu.createChild("STATIC", "MultiVibe", staticStyle, 20, 16, 470, 30, 0)
 	if err != nil {
 		return err
 	}
@@ -304,7 +304,7 @@ func (menu *windowsMenu) createControls() error {
 	if err != nil {
 		return err
 	}
-	menu.install, err = menu.createChild("BUTTON", "Install Safely", buttonStyle, 20, 555, 180, 34, buttonInstall)
+	menu.install, err = menu.createChild("BUTTON", "Install update", buttonStyle, 20, 555, 180, 34, buttonInstall)
 	if err != nil {
 		return err
 	}
@@ -446,11 +446,12 @@ func (menu *windowsMenu) renderModel() {
 	if version == "" {
 		version = "unknown"
 	}
-	setWindowsText(menu.title, "MultiVibe Host  "+version)
+	setWindowsText(menu.title, "MultiVibe")
 	status := line(modelStatus)
 	if status == "" {
 		status = "Unavailable"
 	}
+	status += "  ·  v" + version
 	setWindowsText(menu.status, status)
 	menu.operational = line(modelOperational) == "1"
 	setWindowsText(menu.primary, map[bool]string{true: "Open Dashboard", false: "Start Host"}[menu.operational])
@@ -463,9 +464,9 @@ func (menu *windowsMenu) renderModel() {
 	busy := line(modelUpdateBusy) == "1"
 	if menu.updateAvailable {
 		if installRequested {
-			setWindowsText(menu.install, "Installation Queued")
+			setWindowsText(menu.install, "Installation queued")
 		} else {
-			setWindowsText(menu.install, "Install Safely")
+			setWindowsText(menu.install, "Install update")
 		}
 		enableWindowWindows.Call(uintptr(menu.install), boolToWindowsInt(!busy && !installRequested))
 		showWindowWindows.Call(uintptr(menu.install), swShow)
@@ -487,7 +488,7 @@ func (menu *windowsMenu) bodyText(lines []string) string {
 	}
 	var builder strings.Builder
 	builder.WriteString("OPENAI CAPACITY\n")
-	builder.WriteString("5 hours: ")
+	builder.WriteString("5h quota: ")
 	if line(modelFiveHourPresent) == "1" {
 		builder.WriteString(line(modelFiveHourValue))
 	} else {
@@ -496,7 +497,7 @@ func (menu *windowsMenu) bodyText(lines []string) string {
 	if line(modelFiveHourAccountCount) != "" {
 		builder.WriteString(" (" + line(modelFiveHourAccountCount) + ")")
 	}
-	builder.WriteString("\nWeekly: ")
+	builder.WriteString("\nWeekly quota: ")
 	if line(modelWeeklyPresent) == "1" {
 		builder.WriteString(line(modelWeeklyValue))
 	} else {
@@ -521,7 +522,7 @@ func (menu *windowsMenu) bodyText(lines []string) string {
 			name                  string
 			present, value, reset int
 		}{
-			{"5H", 4, 5, 6}, {"WEEK", 7, 8, 9}, {"MONTH", 10, 11, 12},
+			{"5h quota", 4, 5, 6}, {"Weekly quota", 7, 8, 9}, {"Monthly quota", 10, 11, 12},
 		} {
 			if fields[quota.present] == "1" && fields[quota.reset] != "No reset time" {
 				builder.WriteString("  " + quota.name + ": " + fields[quota.value] + " — " + fields[quota.reset] + "\n")
@@ -548,15 +549,15 @@ func (menu *windowsMenu) bodyText(lines []string) string {
 	if line(modelUpdateAvailableVersion) != "" {
 		builder.WriteString("Version " + line(modelUpdateAvailableVersion) + " available")
 		if line(modelUpdateDownloaded) == "1" {
-			builder.WriteString(" — verified download ready")
+			builder.WriteString(" — ready to install")
 		} else {
-			builder.WriteString(" — ready for verified background download")
+			builder.WriteString(" — ready for secure background download")
 		}
 		builder.WriteString("\n")
 	} else if line(modelUpdateStatus) == "current" {
 		builder.WriteString("MultiVibe Host is up to date.\n")
 	} else {
-		builder.WriteString("Automatic verified updates.\n")
+		builder.WriteString("Updates — check for a signed MultiVibe Host release.\n")
 	}
 	return builder.String()
 }
@@ -599,7 +600,7 @@ func (menu *windowsMenu) showContextMenu() {
 	appendWindowsMenu(popup, menuRefresh, "Refresh", false)
 	appendWindowsMenu(popup, menuCheckUpdates, "Check Updates", false)
 	if menu.updateAvailable {
-		appendWindowsMenu(popup, menuInstallUpdate, "Install Safely", false)
+		appendWindowsMenu(popup, menuInstallUpdate, "Install update", false)
 	}
 	appendMenuWindows.Call(popup, mfSeparator, 0, 0)
 	appendWindowsMenu(popup, menuStartLogin, "Start MultiVibe Host when I log in", startAtLoginEnabled())
