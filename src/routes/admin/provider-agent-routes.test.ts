@@ -67,6 +67,7 @@ function providerAgentControl(overrides: Partial<ProviderAgentControl> = {}): Pr
     getRuntimeEndpoints: unavailable,
     replaceRuntimeEndpoints: unavailable,
     detectModels: unavailable,
+    getModelLifecycleStatus: unavailable,
     getCloudEnrollment: unavailable,
     enrollCloud: unavailable,
     getCapacityPolicy: unavailable,

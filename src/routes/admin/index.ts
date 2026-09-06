@@ -1125,6 +1125,16 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
   });
 
+  router.get("/provider-agent/model-lifecycle", async (_req, res) => {
+    if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
+    try {
+      res.setHeader("cache-control", "no-store");
+      res.json(await options.providerAgent.getModelLifecycleStatus());
+    } catch {
+      res.status(503).json({ error: "provider_model_lifecycle_unavailable" });
+    }
+  });
+
   router.get("/provider-agent/capacity-policy", async (_req, res) => {
     if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
     try {

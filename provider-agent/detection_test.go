@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -202,8 +203,13 @@ func TestDetectedModelsEndpointReturnsOnlySuccessfulLoopbackInventory(t *testing
 	if response.Code != http.StatusOK || response.Header().Get("cache-control") != "no-store" {
 		t.Fatalf("unexpected endpoint response: %d %#v", response.Code, response.Header())
 	}
-	if response.Body.String() != `{"schema_version":"provider-detected-models-v1","runtimes":[{"adapter_id":"lm-studio","models":["publisher/model"]}]}`+"\n" {
+	var inventory detectedModelsDocument
+	if err := json.Unmarshal(response.Body.Bytes(), &inventory); err != nil || inventory.SchemaVersion != detectedModelsSchemaVersion ||
+		inventory.ObservedAt == "" || !reflect.DeepEqual(inventory.Runtimes, []detectedRuntime{{AdapterID: "lm-studio", Models: []string{"publisher/model"}}}) {
 		t.Fatalf("unexpected bounded inventory: %s", response.Body.String())
+	}
+	if len(inventory.Diagnostics) != 5 {
+		t.Fatalf("expected diagnostics for every reviewed automatic runtime, got %#v", inventory.Diagnostics)
 	}
 	if calls != 10 {
 		t.Fatalf("expected exactly ten reviewed loopback attempts, got %d", calls)

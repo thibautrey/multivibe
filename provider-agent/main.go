@@ -135,6 +135,10 @@ func providerHandlerWithManagedController(core *url.URL, selections *selectionSt
 }
 
 func providerHandlerWithManagedControllerAndCapability(core *url.URL, selections *selectionStore, runtimes *runtimeEndpointStore, identity *deviceIdentity, enrollment *cloudEnrollmentService, capacity *capacityPolicyStore, demand *providerDemandService, controller *managedProviderController, capability hostCapability, client *http.Client, controlToken string) http.Handler {
+	return providerHandlerWithModelLifecycle(core, selections, runtimes, identity, enrollment, capacity, demand, controller, capability, nil, client, controlToken)
+}
+
+func providerHandlerWithModelLifecycle(core *url.URL, selections *selectionStore, runtimes *runtimeEndpointStore, identity *deviceIdentity, enrollment *cloudEnrollmentService, capacity *capacityPolicyStore, demand *providerDemandService, controller *managedProviderController, capability hostCapability, lifecycle *providerModelLifecycleService, client *http.Client, controlToken string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("content-type", "application/json")
@@ -297,6 +301,19 @@ func providerHandlerWithManagedControllerAndCapability(core *url.URL, selections
 		response.Header().Set("cache-control", "no-store")
 		response.Header().Set("content-type", "application/json")
 		_ = json.NewEncoder(response).Encode(detectedModels(request.Context(), runtimeAdapterRegistry(), runtimes.configured(), client))
+	})
+	mux.HandleFunc("GET /v1/model-lifecycle/status", func(response http.ResponseWriter, request *http.Request) {
+		if !authorizeProviderControl(request, controlToken) {
+			http.Error(response, "not found", http.StatusNotFound)
+			return
+		}
+		if lifecycle == nil {
+			http.Error(response, "provider model lifecycle unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		response.Header().Set("cache-control", "no-store")
+		response.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(response).Encode(lifecycle.snapshot())
 	})
 	mux.HandleFunc("GET /v1/capacity-policy", func(response http.ResponseWriter, request *http.Request) {
 		if !authorizeProviderControl(request, controlToken) {
@@ -810,18 +827,23 @@ func main() {
 	client := &http.Client{Timeout: 2 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	var enrollment *cloudEnrollmentService
 	var workerTest *workerTestService
+	var modelLifecycle *providerModelLifecycleService
 	if identity != nil {
 		enrollment = newCloudEnrollmentService(cloudURL, client, identity, enrollmentStore)
 		workerTest = newWorkerTestService(cloudURL, client, identity, enrollmentStore, runtimes)
 		go workerTest.run(context.Background())
+		modelLifecycle = newProviderModelLifecycleService(
+			cloudURL, client, identity, enrollmentStore, runtimes, capacity, demand, controller,
+		)
+		go modelLifecycle.run(context.Background())
 	}
 	listener, err := openProviderAgentListener(listenAddress, bootstrap)
 	if err != nil {
 		logger.Error("provider_agent_listen_failed", "error", err.Error())
 		os.Exit(1)
 	}
-	logger.Info("provider_agent_started", "address", listener.Addr().String(), "selected_model_count", len(selections.snapshot().SelectedModels), "selection_persistent", statePath != "", "manual_runtime_count", len(runtimes.snapshot().Endpoints), "runtime_state_persistent", runtimeStatePath != "", "device_identity_persistent", deviceKeyPath != "", "cloud_enrollment_persistent", enrollmentStatePath != "", "worker_test_enabled", workerTest != nil, "capacity_policy_configured", capacity.snapshot() != nil, "capacity_policy_persistent", capacityPolicyPath != "", "demand_planning_enabled", demand != nil, "demand_plan_persistent", demandPlanPath != "", "managed_ollama_enabled", controller != nil)
-	server := newProviderHTTPServer(providerHandlerWithManagedControllerAndCapability(core, selections, runtimes, identity, enrollment, capacity, demand, controller, capability, client, controlToken))
+	logger.Info("provider_agent_started", "address", listener.Addr().String(), "selected_model_count", len(selections.snapshot().SelectedModels), "selection_persistent", statePath != "", "manual_runtime_count", len(runtimes.snapshot().Endpoints), "runtime_state_persistent", runtimeStatePath != "", "device_identity_persistent", deviceKeyPath != "", "cloud_enrollment_persistent", enrollmentStatePath != "", "worker_test_enabled", workerTest != nil, "model_lifecycle_enabled", modelLifecycle != nil, "capacity_policy_configured", capacity.snapshot() != nil, "capacity_policy_persistent", capacityPolicyPath != "", "demand_planning_enabled", demand != nil, "demand_plan_persistent", demandPlanPath != "", "managed_ollama_enabled", controller != nil)
+	server := newProviderHTTPServer(providerHandlerWithModelLifecycle(core, selections, runtimes, identity, enrollment, capacity, demand, controller, capability, modelLifecycle, client, controlToken))
 	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("provider_agent_failed", "error", fmt.Sprint(err))
 		os.Exit(1)

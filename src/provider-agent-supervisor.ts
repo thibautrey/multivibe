@@ -104,8 +104,14 @@ export type ProviderCloudEnrollmentView = {
 };
 
 export type ProviderAgentDetectedModels = {
-  schema_version: "provider-detected-models-v1";
+  schema_version: "provider-detected-models-v2";
+  observed_at: string;
   runtimes: Array<{ adapter_id: string; models: string[] }>;
+  diagnostics: Array<{
+    adapter_id: string;
+    status: "available" | "unavailable" | "degraded";
+    code: string;
+  }>;
 };
 
 export type ProviderAgentRuntimeEndpointInput = {
@@ -208,6 +214,19 @@ export type ProviderManagedOllamaReconcileFence = {
   envelope_digest: string;
 };
 
+export type ProviderModelLifecycleStatus = {
+  schema_version: "provider-model-lifecycle-status-v1";
+  state: "waiting_for_enrollment" | "reporting" | "online" | "degraded";
+  inventory_generation: number;
+  last_reported_at?: string;
+  last_success_at?: string;
+  last_error_code?: string;
+  admission_count: number;
+  plan_generation: number;
+  applied_generation: number;
+  automatic_reconcile: boolean;
+};
+
 export type ProviderAgentControl = {
   enabled: boolean;
   getManifest(): Promise<ProviderAgentManifest>;
@@ -218,6 +237,7 @@ export type ProviderAgentControl = {
   getRuntimeEndpoints(): Promise<ProviderAgentRuntimeEndpoints>;
   replaceRuntimeEndpoints(revision: number, endpoints: ProviderAgentRuntimeEndpointInput[]): Promise<{ conflict: boolean; endpoints: ProviderAgentRuntimeEndpoints }>;
   detectModels(): Promise<ProviderAgentDetectedModels>;
+  getModelLifecycleStatus(): Promise<ProviderModelLifecycleStatus>;
   getCloudEnrollment(): Promise<ProviderCloudEnrollmentView>;
   enrollCloud(request: ProviderCloudEnrollmentRequest): Promise<ProviderCloudEnrollmentView>;
   getCapacityPolicy(): Promise<ProviderCapacityPolicy>;
@@ -586,6 +606,7 @@ export function startEmbeddedProviderAgent(options: {
     getRuntimeEndpoints: unavailable,
     replaceRuntimeEndpoints: unavailable,
     detectModels: unavailable,
+    getModelLifecycleStatus: unavailable,
     getCloudEnrollment: unavailable,
     enrollCloud: unavailable,
     getCapacityPolicy: unavailable,
@@ -791,6 +812,8 @@ export function startEmbeddedProviderAgent(options: {
       return { conflict: result.response.status === 409, endpoints: result.value };
     },
     detectModels: async () => (await request<ProviderAgentDetectedModels>("/v1/detected-models")).value,
+    getModelLifecycleStatus: async () =>
+      (await request<ProviderModelLifecycleStatus>("/v1/model-lifecycle/status", {}, [200])).value,
     getCloudEnrollment: async () => (await request<ProviderCloudEnrollmentView>("/v1/cloud-shadow/enrollment", {}, [200])).value,
     enrollCloud: async (enrollment) => (await request<ProviderCloudEnrollmentView>("/v1/cloud-shadow/enroll", {
       method: "POST",
