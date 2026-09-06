@@ -228,7 +228,7 @@ function sha256Buffer(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function completeLinuxBundleTar(mutateFiles = () => {}) {
+function completeLinuxBundleTar(mutateFiles = () => {}, mutateEntries = () => {}) {
   const root = "multivibe-host_0.0.1_linux_amd64";
   const dependencyData = readFileSync(path.join(repositoryRoot, "packaging", "provider-host-dependencies.json"));
   const dependencyMetadata = JSON.parse(dependencyData);
@@ -323,6 +323,7 @@ function completeLinuxBundleTar(mutateFiles = () => {}) {
     entries.push({ name: `${root}/${filePath}`, data: file.data, mode: file.mode });
   }
   entries.push({ name: `${root}/manifest.json`, data: manifest, mode: 0o644 });
+  mutateEntries(entries);
   return tarGzip(entries);
 }
 
@@ -728,6 +729,20 @@ test("complete Linux release fixture passes archive and signed-manifest verifica
     assert.equal(output.releaseReady, true);
     assert.equal(output.platform, "linux");
     assert.equal(output.runtimeChecked, false);
+  });
+});
+
+test("Linux archive modes are verified from signed tar metadata", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const archive = path.join(directory, "multivibe-host_0.0.1_linux_amd64.tar.gz");
+    const payload = completeLinuxBundleTar(() => {}, (entries) => {
+      const readme = entries.find((entry) => entry.name.endsWith("/README.md"));
+      readme.mode = 0o600;
+    });
+    await writeFile(archive, payload, { mode: 0o600 });
+    const result = await runVerifier(archive);
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /provider-host file verification failed: README\.md/u);
   });
 });
 
