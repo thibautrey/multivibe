@@ -9,7 +9,10 @@ function openAi(overrides: Partial<Account> = {}): Account {
     provider: "openai",
     accessToken: "secret",
     enabled: true,
-    usage: { secondary: { usedPercent: 91, resetAt: 1_900_000_000_000 } },
+    usage: {
+      fetchedAt: 1_800_000_000_000,
+      secondary: { usedPercent: 91, resetAt: 1_900_000_000_000 },
+    },
     ...overrides,
   };
 }
