@@ -3571,10 +3571,6 @@ details summary {
   scrollbar-color: var(--line-strong) transparent;
 }
 
-.host-harness-header {
-  margin-bottom: 0;
-}
-
 .host-harness-card {
   display: flex;
   flex: 0 0 292px;
