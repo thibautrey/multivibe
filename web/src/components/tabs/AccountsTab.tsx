@@ -374,6 +374,20 @@ function isOpenAiAccount(account: Account) {
   return (account.provider ?? "openai") === "openai";
 }
 
+function shouldDisplayOptionalQuotaWindow(
+  account: Account,
+  window: "primary" | "monthly",
+) {
+  // Keep the placeholder visible before the first usage refresh and preserve
+  // the N/A state when the provider does not expose quota details. Once a
+  // supported snapshot exists, an absent window means it does not apply.
+  return (
+    !account.usage ||
+    account.usage.quotaStatus === "unsupported" ||
+    Boolean(account.usage[window])
+  );
+}
+
 function activeModelBlocks(account: Account) {
   return Object.entries(account.state?.modelBlocks ?? {}).filter(
     ([, block]) => block.until > Date.now(),
@@ -1970,18 +1984,22 @@ export function AccountsTab(props: Props) {
                     )}
                   </div>
                   <div className="provider-quota-grid" aria-label="Quota usage">
-                    <div className="provider-quota-item">
-                      <span className="provider-quota-label">5h quota</span>
-                      {renderUsageCell(a.usage?.primary?.usedPercent, a.usage?.primary?.resetAt, a.usage?.quotaStatus === "unsupported")}
-                    </div>
+                    {shouldDisplayOptionalQuotaWindow(a, "primary") && (
+                      <div className="provider-quota-item">
+                        <span className="provider-quota-label">5h quota</span>
+                        {renderUsageCell(a.usage?.primary?.usedPercent, a.usage?.primary?.resetAt, a.usage?.quotaStatus === "unsupported")}
+                      </div>
+                    )}
                     <div className="provider-quota-item">
                       <span className="provider-quota-label">Weekly quota</span>
                       {renderUsageCell(a.usage?.secondary?.usedPercent, a.usage?.secondary?.resetAt, a.usage?.quotaStatus === "unsupported")}
                     </div>
-                    <div className="provider-quota-item">
-                      <span className="provider-quota-label">Monthly quota</span>
-                      {renderUsageCell(a.usage?.monthly?.usedPercent, a.usage?.monthly?.resetAt, a.usage?.quotaStatus === "unsupported")}
-                    </div>
+                    {shouldDisplayOptionalQuotaWindow(a, "monthly") && (
+                      <div className="provider-quota-item">
+                        <span className="provider-quota-label">Monthly quota</span>
+                        {renderUsageCell(a.usage?.monthly?.usedPercent, a.usage?.monthly?.resetAt, a.usage?.quotaStatus === "unsupported")}
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div className="provider-card-footer">
