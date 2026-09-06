@@ -308,13 +308,16 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm --prefix web ci --no-audit --no-fund
-      - name: Run Windows provider tests
+      - name: Compile Windows provider tests
         shell: pwsh
         run: |
-          go -C provider-agent test ./...
-          go -C host-application test ./...
-          go -C host-updater test ./...
-          go -C host-menu test ./...
+          $ErrorActionPreference = 'Stop'
+          foreach ($package in @('provider-agent', 'host-application', 'host-updater', 'host-menu')) {
+            go -C $package test -run '^$' ./...
+            if ($LASTEXITCODE -ne 0) {
+              throw "Windows compile-only test check failed for $package"
+            }
+          }
       - name: Test provider archive and container hardening
         shell: pwsh
         run: node --test scripts/package-provider-host.test.mjs scripts/provider-host-container.test.mjs scripts/provider-host-native-dependencies.test.mjs scripts/provider-host-update-feed.test.mjs scripts/provider-host-update-packaging.test.mjs scripts/runtime-benchmark-evidence.test.mjs scripts/verify-provider-host-archive-fixtures.test.mjs
