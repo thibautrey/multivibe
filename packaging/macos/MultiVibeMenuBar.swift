@@ -656,7 +656,7 @@ private final class GitHubStarPromptController: NSViewController {
 
 @main
 final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
-    private static let githubStarsURL = URL(string: "https://github.com/thibautrey/multivibe")!
+    private static let githubRepositoryURL = URL(string: "https://github.com/thibautrey/multivibe")!
     private static let githubStarPromptAcknowledgedKey = "githubStarPromptAcknowledged"
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let popover = NSPopover()
@@ -1026,7 +1026,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         githubStarPromptAcknowledged = true
         UserDefaults.standard.set(true, forKey: Self.githubStarPromptAcknowledgedKey)
         githubStarPromptController.showThankYou()
-        NSWorkspace.shared.open(Self.githubStarsURL)
+        NSWorkspace.shared.open(Self.githubRepositoryURL)
 
         githubStarPromptCloseWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in

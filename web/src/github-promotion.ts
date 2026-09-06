@@ -1,5 +1,4 @@
 export const GITHUB_REPOSITORY_URL = "https://github.com/thibautrey/multivibe";
-export const GITHUB_STARS_URL = `${GITHUB_REPOSITORY_URL}/stargazers`;
 export const GITHUB_NEW_ISSUE_URL = `${GITHUB_REPOSITORY_URL}/issues/new`;
 export const GITHUB_PROMOTION_DELAY_MS = 3 * 24 * 60 * 60 * 1_000;
 
