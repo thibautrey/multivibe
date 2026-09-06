@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { Metric } from "../Metric";
 import { ProgressStat } from "../ProgressStat";
+import { HostHarnessCards } from "../HostHarnessCarousel";
 import { usd } from "../../lib/ui";
 import type { ExposedModel, TraceStats } from "../../types";
 
@@ -11,9 +12,20 @@ type Props = {
   models: ExposedModel[];
   openModelInDocs: (modelId: string) => void;
   navigate: (tab: "accounts" | "docs" | "tracing") => void;
+  hostApplication: boolean;
+  onHarnessesChanged: () => Promise<void>;
 };
 
-export function OverviewTab({ stats, usageStats, traceStats, models, openModelInDocs, navigate }: Props) {
+export function OverviewTab({
+  stats,
+  usageStats,
+  traceStats,
+  models,
+  openModelInDocs,
+  navigate,
+  hostApplication,
+  onHarnessesChanged,
+}: Props) {
   const [providerTab, setProviderTab] = useState<
     "all" | "openai" | "openai-compatible" | "opencode" | "mistral" | "zai" | "xai"
   >("all");
@@ -32,6 +44,28 @@ export function OverviewTab({ stats, usageStats, traceStats, models, openModelIn
 
   const isReady = stats.enabled > 0 && models.length > 0;
   const hasTraffic = traceStats.totals.requests > 0;
+  const isEverythingRunning = Boolean(stats.total && models.length && hasTraffic);
+
+  const nextStepCard = (
+    <section className="panel overview-next-step">
+      <div>
+        <span className="eyebrow">Next step</span>
+        <h2>{!stats.total ? "Connect your first provider" : !models.length ? "Choose models to expose" : !hasTraffic ? "Send your first request" : "Everything is running"}</h2>
+        <p className="muted">
+          {!stats.total
+            ? "Add OpenAI, Mistral, Grok Build, OpenCode, or any OpenAI-compatible endpoint."
+            : !models.length
+              ? "Your provider is connected. Finish its model configuration before routing traffic."
+              : !hasTraffic
+                ? "Test an exposed model from the API workspace to validate the complete route."
+                : `${traceStats.totals.requests} requests processed with ${stats.blocked} providers requiring attention.`}
+        </p>
+      </div>
+      <button className="btn overview-primary-action" onClick={() => navigate(!stats.total || !models.length ? "accounts" : !hasTraffic ? "docs" : "tracing")}>
+        {!stats.total ? "Add a provider" : !models.length ? "Configure providers" : !hasTraffic ? "Test the API" : "View activity"}
+      </button>
+    </section>
+  );
 
   return (
     <>
@@ -47,24 +81,12 @@ export function OverviewTab({ stats, usageStats, traceStats, models, openModelIn
         <Metric title="Cost" value={usd(traceStats.totals.costUsd)} detail="Estimated provider cost" />
       </section>
 
-      <section className="panel overview-next-step">
-        <div>
-          <span className="eyebrow">Next step</span>
-          <h2>{!stats.total ? "Connect your first provider" : !models.length ? "Choose models to expose" : !hasTraffic ? "Send your first request" : "Everything is running"}</h2>
-          <p className="muted">
-            {!stats.total
-              ? "Add OpenAI, Mistral, Grok Build, OpenCode, or any OpenAI-compatible endpoint."
-              : !models.length
-                ? "Your provider is connected. Finish its model configuration before routing traffic."
-                : !hasTraffic
-                  ? "Test an exposed model from the API workspace to validate the complete route."
-                  : `${traceStats.totals.requests} requests processed with ${stats.blocked} providers requiring attention.`}
-          </p>
+      {isEverythingRunning && hostApplication ? (
+        <div className="overview-running-layout">
+          {nextStepCard}
+          <HostHarnessCards onApiKeysChanged={onHarnessesChanged} />
         </div>
-        <button className="btn overview-primary-action" onClick={() => navigate(!stats.total || !models.length ? "accounts" : !hasTraffic ? "docs" : "tracing")}>
-          {!stats.total ? "Add a provider" : !models.length ? "Configure providers" : !hasTraffic ? "Test the API" : "View activity"}
-        </button>
-      </section>
+      ) : nextStepCard}
 
       <section className="overview-detail-grid">
         <div className="panel overview-usage-panel">
