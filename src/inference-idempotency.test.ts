@@ -104,6 +104,33 @@ test("canonical payload hashing ignores object key order", () => {
   );
 });
 
+test("confidential requests bypass clear response replay storage", async (t) => {
+  let calls = 0;
+  const baseUrl = await startFixture(t, (_req, res) => {
+    calls += 1;
+    res.json({ id: `response-${calls}`, status: "completed" });
+  });
+  const first = await postJson(
+    baseUrl,
+    "/v1/responses",
+    "app-a",
+    "confidential-key",
+    { model: "test", input: "first" },
+    { "x-multivibe-privacy": "confidential_verified" },
+  );
+  const second = await postJson(
+    baseUrl,
+    "/v1/responses",
+    "app-a",
+    "confidential-key",
+    { model: "test", input: "second" },
+    { "x-multivibe-privacy": "confidential_verified" },
+  );
+  assert.equal(calls, 2);
+  assert.equal(first.idempotencyStatus, "bypass");
+  assert.equal(second.idempotencyStatus, "bypass");
+});
+
 test("coalesces concurrent non-stream inference and replays the result", async (t) => {
   let calls = 0;
   let release!: () => void;
