@@ -17,6 +17,8 @@ import {
 import { Metric } from "../Metric";
 import { createPortal } from "react-dom";
 
+const CODEX_QUOTA_RESET_FORECAST_URL = "https://www.willcodexquotareset.com/";
+
 type Props = {
   traceStats: TraceStats;
   accounts: Account[];
@@ -88,6 +90,14 @@ export type MultivibeCloudProvider = {
 
 type AccountProvider = ProviderId;
 type OAuthMethod = "browser" | "device";
+
+type QuotaResetForecast = {
+  score: number;
+  state: string;
+  horizonHours?: number;
+};
+
+type QuotaResetForecastStatus = "idle" | "loading" | "ready" | "error";
 
 type OpenAccountMenu = {
   accountId: string;
@@ -462,6 +472,10 @@ export function AccountsTab(props: Props) {
   const [showAddAccount, setShowAddAccount] = useState(false);
   const [cloudBusy, setCloudBusy] = useState(false);
   const [cloudError, setCloudError] = useState("");
+  const [quotaResetForecast, setQuotaResetForecast] =
+    useState<QuotaResetForecast | null>(null);
+  const [quotaResetForecastStatus, setQuotaResetForecastStatus] =
+    useState<QuotaResetForecastStatus>("idle");
 
   const connectCloud = async () => {
     setCloudBusy(true);
@@ -1439,6 +1453,46 @@ export function AccountsTab(props: Props) {
   const openAiCount = accounts.filter(
     (account) => (account.provider ?? "openai") === "openai",
   ).length;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (openAiCount === 0) {
+      setQuotaResetForecast(null);
+      setQuotaResetForecastStatus("idle");
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setQuotaResetForecastStatus("loading");
+    void api("/admin/quota-reset-forecast")
+      .then((result) => {
+        if (cancelled) return;
+        const rawForecast = result?.forecast;
+        const score = Number(rawForecast?.score);
+        if (!Number.isFinite(score) || score < 0 || score > 100) {
+          throw new Error("Invalid quota reset forecast");
+        }
+        setQuotaResetForecast({
+          score,
+          state: typeof rawForecast?.state === "string" ? rawForecast.state : "forecast",
+          ...(typeof rawForecast?.horizonHours === "number"
+            ? { horizonHours: rawForecast.horizonHours }
+            : {}),
+        });
+        setQuotaResetForecastStatus("ready");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setQuotaResetForecast(null);
+        setQuotaResetForecastStatus("error");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [openAiCount]);
+
   const openAiCompatibleCount = accounts.filter(
     (account) => account.provider === "openai-compatible" && !account.localRuntime,
   ).length;
@@ -1575,6 +1629,43 @@ export function AccountsTab(props: Props) {
         />
       </section>
         </>
+      )}
+
+      {openAiCount > 0 && (
+        <section
+          className="panel quota-reset-forecast-card"
+          aria-labelledby="quota-reset-forecast-title"
+        >
+          <div className="quota-reset-forecast-copy">
+            <span className="eyebrow">OpenAI quota signal</span>
+            <h2 id="quota-reset-forecast-title">Will Codex reset?</h2>
+            <p className="muted">
+              Unofficial forecast for the next {quotaResetForecast?.horizonHours ?? 48} hours.
+            </p>
+          </div>
+          <div className="quota-reset-forecast-score" aria-live="polite">
+            {quotaResetForecastStatus === "loading" ? (
+              <strong className="muted">…</strong>
+            ) : quotaResetForecastStatus === "ready" && quotaResetForecast ? (
+              <strong>{Math.round(quotaResetForecast.score)}%</strong>
+            ) : (
+              <strong className="muted">—</strong>
+            )}
+            <small>
+              {quotaResetForecastStatus === "error"
+                ? "Forecast unavailable"
+                : "Chance of a reset"}
+            </small>
+          </div>
+          <a
+            className="btn secondary quota-reset-forecast-link"
+            href={CODEX_QUOTA_RESET_FORECAST_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            View forecast <span aria-hidden="true">↗</span>
+          </a>
+        </section>
       )}
 
       <section className={hasAnyProvider ? "panel" : "panel providers-empty-state"}>
