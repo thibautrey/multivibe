@@ -119,17 +119,24 @@ private final class HostPopoverController: NSViewController {
     var quit: (() -> Void)?
 
     private let headerTitle = NSTextField(labelWithString: "MultiVibe Host")
+    private let headerVersion = NSTextField(labelWithString: "")
     private let headerStatus = NSTextField(labelWithString: "Starting…")
+    private let headerStatusDot = NSView()
     private let contentStack = NSStackView()
     private let primaryButton = NSButton(title: "Open Dashboard", target: nil, action: nil)
     private let refreshButton = NSButton(title: "Refresh", target: nil, action: nil)
     private let startAtLoginButton = NSButton(checkboxWithTitle: "Start MultiVibe Host when I log in", target: nil, action: nil)
+
+    private let popoverWidth: CGFloat = 480
+    private let cardWidth: CGFloat = 444
 
     override func loadView() {
         let background = NSVisualEffectView()
         background.material = .popover
         background.blendingMode = .behindWindow
         background.state = .active
+        background.wantsLayer = true
+        background.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.24).cgColor
         view = background
 
         let header = makeHeader()
@@ -143,8 +150,8 @@ private final class HostPopoverController: NSViewController {
         document.translatesAutoresizingMaskIntoConstraints = false
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
-        contentStack.spacing = 12
-        contentStack.edgeInsets = NSEdgeInsets(top: 14, left: 18, bottom: 16, right: 18)
+        contentStack.spacing = 14
+        contentStack.edgeInsets = NSEdgeInsets(top: 16, left: 18, bottom: 18, right: 18)
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         document.addSubview(contentStack)
         scrollView.documentView = document
@@ -155,12 +162,12 @@ private final class HostPopoverController: NSViewController {
         background.addSubview(footer)
 
         NSLayoutConstraint.activate([
-            background.widthAnchor.constraint(equalToConstant: 420),
-            background.heightAnchor.constraint(equalToConstant: 570),
+            background.widthAnchor.constraint(equalToConstant: popoverWidth),
+            background.heightAnchor.constraint(equalToConstant: 700),
             header.topAnchor.constraint(equalTo: background.topAnchor),
             header.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             header.trailingAnchor.constraint(equalTo: background.trailingAnchor),
-            header.heightAnchor.constraint(equalToConstant: 72),
+            header.heightAnchor.constraint(equalToConstant: 94),
             scrollView.topAnchor.constraint(equalTo: header.bottomAnchor),
             scrollView.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: background.trailingAnchor),
@@ -168,7 +175,7 @@ private final class HostPopoverController: NSViewController {
             footer.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             footer.trailingAnchor.constraint(equalTo: background.trailingAnchor),
             footer.bottomAnchor.constraint(equalTo: background.bottomAnchor),
-            footer.heightAnchor.constraint(equalToConstant: 62),
+            footer.heightAnchor.constraint(equalToConstant: 104),
             document.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
             contentStack.topAnchor.constraint(equalTo: document.topAnchor),
             contentStack.leadingAnchor.constraint(equalTo: document.leadingAnchor),
@@ -179,20 +186,45 @@ private final class HostPopoverController: NSViewController {
 
     private func makeHeader() -> NSView {
         let container = NSView()
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor.systemBlue.withAlphaComponent(0.055).cgColor
         container.translatesAutoresizingMaskIntoConstraints = false
 
         let icon = NSImageView()
         icon.image = appIcon()
         icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.wantsLayer = true
+        icon.layer?.cornerRadius = 14
+        icon.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.13).cgColor
+        icon.layer?.shadowColor = NSColor.black.withAlphaComponent(0.24).cgColor
+        icon.layer?.shadowOpacity = 1
+        icon.layer?.shadowRadius = 8
+        icon.layer?.shadowOffset = CGSize(width: 0, height: 3)
         icon.translatesAutoresizingMaskIntoConstraints = false
 
-        headerTitle.font = .systemFont(ofSize: 16, weight: .semibold)
-        headerStatus.font = .systemFont(ofSize: 12, weight: .medium)
-        headerStatus.textColor = .secondaryLabelColor
-        let labels = NSStackView(views: [headerTitle, headerStatus])
+        headerTitle.font = .systemFont(ofSize: 20, weight: .semibold)
+        headerVersion.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        headerVersion.textColor = .secondaryLabelColor
+        let titleLine = NSStackView(views: [headerTitle, headerVersion])
+        titleLine.orientation = .horizontal
+        titleLine.alignment = .centerY
+        titleLine.spacing = 9
+
+        headerStatus.font = .systemFont(ofSize: 13, weight: .medium)
+        headerStatus.textColor = .systemGreen
+        headerStatusDot.wantsLayer = true
+        headerStatusDot.layer?.cornerRadius = 4
+        headerStatusDot.layer?.backgroundColor = NSColor.systemGreen.cgColor
+        headerStatusDot.translatesAutoresizingMaskIntoConstraints = false
+        let statusLine = NSStackView(views: [headerStatusDot, headerStatus])
+        statusLine.orientation = .horizontal
+        statusLine.alignment = .centerY
+        statusLine.spacing = 7
+
+        let labels = NSStackView(views: [titleLine, statusLine])
         labels.orientation = .vertical
         labels.alignment = .leading
-        labels.spacing = 3
+        labels.spacing = 5
         labels.translatesAutoresizingMaskIntoConstraints = false
 
         let divider = NSBox()
@@ -204,12 +236,14 @@ private final class HostPopoverController: NSViewController {
 
         NSLayoutConstraint.activate([
             icon.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 18),
-            icon.centerYAnchor.constraint(equalTo: container.centerYAnchor, constant: -1),
-            icon.widthAnchor.constraint(equalToConstant: 38),
-            icon.heightAnchor.constraint(equalToConstant: 38),
+            icon.centerYAnchor.constraint(equalTo: container.centerYAnchor, constant: -2),
+            icon.widthAnchor.constraint(equalToConstant: 50),
+            icon.heightAnchor.constraint(equalToConstant: 50),
             labels.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 12),
             labels.centerYAnchor.constraint(equalTo: icon.centerYAnchor),
             labels.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -18),
+            headerStatusDot.widthAnchor.constraint(equalToConstant: 8),
+            headerStatusDot.heightAnchor.constraint(equalToConstant: 8),
             divider.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             divider.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             divider.bottomAnchor.constraint(equalTo: container.bottomAnchor),
@@ -226,13 +260,26 @@ private final class HostPopoverController: NSViewController {
 
         primaryButton.bezelStyle = .rounded
         primaryButton.controlSize = .large
+        primaryButton.image = NSImage(systemSymbolName: "arrow.up.right.square", accessibilityDescription: "Open Dashboard")
+        primaryButton.imagePosition = .imageTrailing
         primaryButton.target = self
         primaryButton.action = #selector(didOpenDashboard)
         refreshButton.bezelStyle = .rounded
+        refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")
+        refreshButton.imagePosition = .imageLeading
         refreshButton.target = self
         refreshButton.action = #selector(didRefresh)
         let quitButton = NSButton(title: "Quit", target: self, action: #selector(didQuit))
         quitButton.bezelStyle = .rounded
+        quitButton.image = NSImage(systemSymbolName: "power", accessibilityDescription: "Quit")
+        quitButton.imagePosition = .imageLeading
+        quitButton.contentTintColor = .systemRed
+
+        startAtLoginButton.font = .systemFont(ofSize: 11, weight: .medium)
+        startAtLoginButton.contentTintColor = .secondaryLabelColor
+        startAtLoginButton.translatesAutoresizingMaskIntoConstraints = false
+        startAtLoginButton.target = self
+        startAtLoginButton.action = #selector(didChangeStartAtLogin)
 
         let actions = NSStackView(views: [primaryButton, refreshButton, quitButton])
         actions.orientation = .horizontal
@@ -242,15 +289,19 @@ private final class HostPopoverController: NSViewController {
         primaryButton.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         container.addSubview(divider)
+        container.addSubview(startAtLoginButton)
         container.addSubview(actions)
         NSLayoutConstraint.activate([
             divider.topAnchor.constraint(equalTo: container.topAnchor),
             divider.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             divider.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            startAtLoginButton.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 18),
+            startAtLoginButton.topAnchor.constraint(equalTo: divider.bottomAnchor, constant: 8),
             actions.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 18),
             actions.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -18),
-            actions.centerYAnchor.constraint(equalTo: container.centerYAnchor, constant: 1),
-            primaryButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 170),
+            actions.topAnchor.constraint(equalTo: startAtLoginButton.bottomAnchor, constant: 8),
+            actions.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -14),
+            primaryButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 190),
         ])
         return container
     }
@@ -266,9 +317,12 @@ private final class HostPopoverController: NSViewController {
     ) {
         loadViewIfNeeded()
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
-        headerTitle.stringValue = "MultiVibe Host  \(version)"
+        headerTitle.stringValue = "MultiVibe Host"
+        headerVersion.stringValue = version
         headerStatus.stringValue = status
-        headerStatus.textColor = operational ? .systemGreen : .secondaryLabelColor
+        let statusColor: NSColor = operational ? .systemGreen : .systemOrange
+        headerStatus.textColor = statusColor
+        headerStatusDot.layer?.backgroundColor = statusColor.cgColor
         primaryButton.title = operational ? "Open Dashboard" : "Start Host"
         refreshButton.title = refreshing ? "Refreshing…" : "Refresh"
         refreshButton.isEnabled = !refreshing
@@ -278,47 +332,70 @@ private final class HostPopoverController: NSViewController {
             child.removeFromSuperview()
         }
 
-        contentStack.addArrangedSubview(sectionLabel("OPENAI CAPACITY"))
+        contentStack.addArrangedSubview(sectionHeader("OpenAI Capacity", symbol: "gauge.with.dots.needle.67percent", tint: .systemBlue))
         contentStack.addArrangedSubview(summaryCard(summary?.quota))
-        contentStack.addArrangedSubview(sectionLabel("ACCOUNTS"))
+        contentStack.addArrangedSubview(sectionHeader("Accounts", symbol: "person.2.fill", tint: .systemPurple, trailing: accountCount(summary?.accounts.count ?? 0)))
         if let accounts = summary?.accounts, !accounts.isEmpty {
             for account in accounts { contentStack.addArrangedSubview(accountCard(account)) }
         } else {
             contentStack.addArrangedSubview(emptyAccountsCard(operational: operational))
         }
-        contentStack.addArrangedSubview(sectionLabel("EARNINGS"))
+        contentStack.addArrangedSubview(sectionHeader("Earnings", symbol: "chart.bar.fill", tint: .systemGreen))
         contentStack.addArrangedSubview(earningsCard(summary?.earnings))
-        contentStack.addArrangedSubview(sectionLabel("HOST UPDATES"))
+        contentStack.addArrangedSubview(sectionHeader("Host Updates", symbol: "megaphone.fill", tint: .systemOrange))
         contentStack.addArrangedSubview(updateCard(updateStatus, busy: updateBusy))
         startAtLoginButton.state = startAtLogin ? .on : .off
-        startAtLoginButton.target = self
-        startAtLoginButton.action = #selector(didChangeStartAtLogin)
-        contentStack.addArrangedSubview(startAtLoginButton)
     }
 
-    private func sectionLabel(_ text: String) -> NSTextField {
-        label(text, size: 11, weight: .semibold, color: .secondaryLabelColor)
+    private func sectionHeader(_ title: String, symbol: String, tint: NSColor, trailing: String? = nil) -> NSView {
+        let icon = iconBubble(symbol: symbol, color: tint, size: 30)
+        let titleLabel = label(title, size: 15, weight: .semibold)
+        var views: [NSView] = [icon, titleLabel, NSView()]
+        if let trailing {
+            views.append(label(trailing, size: 12, weight: .medium, color: .secondaryLabelColor))
+        }
+        let row = NSStackView(views: views)
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 9
+        row.translatesAutoresizingMaskIntoConstraints = false
+        icon.widthAnchor.constraint(equalToConstant: 30).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        row.widthAnchor.constraint(equalToConstant: cardWidth).isActive = true
+        return row
     }
 
-    private func card() -> NSView {
+    private func card(backgroundColor: NSColor? = nil) -> NSView {
         let view = NSView()
         view.wantsLayer = true
         view.layer?.cornerRadius = 12
-        view.layer?.borderWidth = 0.5
-        view.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.7).cgColor
-        view.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.72).cgColor
+        view.layer?.borderWidth = 0.7
+        view.layer?.borderColor = NSColor.white.withAlphaComponent(0.44).cgColor
+        view.layer?.backgroundColor = (backgroundColor ?? NSColor.controlBackgroundColor.withAlphaComponent(0.58)).cgColor
+        view.layer?.shadowColor = NSColor.black.withAlphaComponent(0.14).cgColor
+        view.layer?.shadowOpacity = 1
+        view.layer?.shadowRadius = 8
+        view.layer?.shadowOffset = CGSize(width: 0, height: 2)
         view.translatesAutoresizingMaskIntoConstraints = false
-        view.widthAnchor.constraint(equalToConstant: 384).isActive = true
+        view.widthAnchor.constraint(equalToConstant: cardWidth).isActive = true
         return view
     }
 
     private func summaryCard(_ quota: MenuBarQuota?) -> NSView {
         let container = card()
-        let weekly = quotaCell(title: "Weekly", value: quota?.weeklyRemainingPercent, detail: accountCount(quota?.weeklyAccountCount ?? 0))
+        let weekly = quotaCell(
+            symbol: "chart.bar.xaxis",
+            tint: .systemPink,
+            title: "Weekly",
+            value: quota?.weeklyRemainingPercent,
+            detail: accountCount(quota?.weeklyAccountCount ?? 0),
+        )
         var quotaCells: [NSView] = []
         if quota?.fiveHourAccountCount ?? 0 > 0 {
             quotaCells.append(
                 quotaCell(
+                    symbol: "clock.fill",
+                    tint: .systemBlue,
                     title: "5 hours",
                     value: quota?.fiveHourRemainingPercent,
                     detail: accountCount(quota?.fiveHourAccountCount ?? 0),
@@ -333,37 +410,62 @@ private final class HostPopoverController: NSViewController {
         stack.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 14),
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -14),
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 13),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 13),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -13),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -13),
         ])
         return container
     }
 
-    private func quotaCell(title: String, value: Double?, detail: String) -> NSView {
+    private func quotaCell(symbol: String, tint: NSColor, title: String, value: Double?, detail: String) -> NSView {
+        let tile = metricTile()
+        let icon = iconBubble(symbol: symbol, color: tint, size: 34)
         let titleLabel = label(title, size: 12, weight: .medium, color: .secondaryLabelColor)
-        let valueLabel = label(percent(value), size: 22, weight: .semibold)
-        valueLabel.font = .monospacedDigitSystemFont(ofSize: 22, weight: .semibold)
-        let detailLabel = label(detail, size: 11, color: .tertiaryLabelColor)
+        let valueLabel = label(percent(value), size: 25, weight: .semibold)
+        valueLabel.font = .monospacedDigitSystemFont(ofSize: 25, weight: .semibold)
+        let detailLabel = label(detail, size: 11, color: .secondaryLabelColor)
         let bar = QuotaBarView()
         bar.remainingPercent = value
         bar.translatesAutoresizingMaskIntoConstraints = false
-        let stack = NSStackView(views: [titleLabel, valueLabel, bar, detailLabel])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 6
-        bar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        return stack
+        let labels = NSStackView(views: [titleLabel, valueLabel, detailLabel])
+        labels.orientation = .vertical
+        labels.alignment = .leading
+        labels.spacing = 2
+        labels.translatesAutoresizingMaskIntoConstraints = false
+        let content = NSStackView(views: [icon, labels])
+        content.orientation = .horizontal
+        content.alignment = .centerY
+        content.spacing = 10
+        content.translatesAutoresizingMaskIntoConstraints = false
+        tile.addSubview(content)
+        tile.addSubview(bar)
+        NSLayoutConstraint.activate([
+            icon.widthAnchor.constraint(equalToConstant: 34),
+            icon.heightAnchor.constraint(equalToConstant: 34),
+            content.topAnchor.constraint(equalTo: tile.topAnchor, constant: 12),
+            content.leadingAnchor.constraint(equalTo: tile.leadingAnchor, constant: 12),
+            content.trailingAnchor.constraint(equalTo: tile.trailingAnchor, constant: -12),
+            bar.topAnchor.constraint(equalTo: content.bottomAnchor, constant: 10),
+            bar.leadingAnchor.constraint(equalTo: tile.leadingAnchor, constant: 12),
+            bar.trailingAnchor.constraint(equalTo: tile.trailingAnchor, constant: -12),
+            bar.bottomAnchor.constraint(equalTo: tile.bottomAnchor, constant: -12),
+        ])
+        return tile
     }
 
     private func accountCard(_ account: MenuBarAccount) -> NSView {
         let container = card()
+        let avatar = avatarView(for: account.displayName, tint: avatarTint(for: account.displayName))
         let name = label(account.displayName, size: 13, weight: .semibold)
         name.lineBreakMode = .byTruncatingMiddle
         name.maximumNumberOfLines = 1
         let state = statusBadge(account.status)
-        let header = NSStackView(views: [name, NSView(), state])
+        let identity = NSStackView(views: [avatar, name])
+        identity.orientation = .horizontal
+        identity.alignment = .centerY
+        identity.spacing = 10
+        let header = NSStackView(views: [identity, NSView(), state])
         header.orientation = .horizontal
         header.alignment = .centerY
         header.spacing = 8
@@ -379,7 +481,7 @@ private final class HostPopoverController: NSViewController {
             ? []
             : quotaWindows.compactMap { item in
                 guard let window = item.window, hasResetTime(window.resetAt) else { return nil }
-                return compactQuota(title: item.title, window: window, updatedText: updatedText)
+                return compactQuota(title: item.title, window: window)
         }
 
         var contentViews: [NSView] = [header]
@@ -399,8 +501,10 @@ private final class HostPopoverController: NSViewController {
         let stack = NSStackView(views: contentViews)
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 11
+        stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
+        avatar.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        avatar.heightAnchor.constraint(equalToConstant: 38).isActive = true
         header.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         windowsView?.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         container.addSubview(stack)
@@ -413,33 +517,94 @@ private final class HostPopoverController: NSViewController {
         return container
     }
 
-    private func compactQuota(title: String, window: QuotaWindow, updatedText: String) -> NSView {
+    private func compactQuota(title: String, window: QuotaWindow) -> NSView {
+        let tile = metricTile()
         let titleLabel = label(title, size: 10, weight: .semibold, color: .secondaryLabelColor)
         let value = label(percent(window.remainingPercent), size: 17, weight: .semibold)
         value.font = .monospacedDigitSystemFont(ofSize: 17, weight: .semibold)
         let reset = label(resetText(window.resetAt), size: 10, color: .tertiaryLabelColor)
         reset.lineBreakMode = .byTruncatingTail
-        let updated = label(updatedText, size: 10, color: .tertiaryLabelColor)
-        updated.lineBreakMode = .byTruncatingTail
-        let metadata = NSStackView(views: [reset, updated])
-        metadata.orientation = .horizontal
-        metadata.distribution = .fillEqually
-        metadata.alignment = .centerY
-        metadata.spacing = 8
-        metadata.translatesAutoresizingMaskIntoConstraints = false
         let bar = QuotaBarView()
         bar.remainingPercent = window.remainingPercent
         bar.translatesAutoresizingMaskIntoConstraints = false
-        let stack = NSStackView(views: [titleLabel, value, bar, metadata])
+        let stack = NSStackView(views: [titleLabel, value, bar, reset])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 5
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        reset.maximumNumberOfLines = 1
+        reset.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         bar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        metadata.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        return stack
+        tile.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: tile.topAnchor, constant: 10),
+            stack.leadingAnchor.constraint(equalTo: tile.leadingAnchor, constant: 10),
+            stack.trailingAnchor.constraint(equalTo: tile.trailingAnchor, constant: -10),
+            stack.bottomAnchor.constraint(equalTo: tile.bottomAnchor, constant: -10),
+        ])
+        return tile
     }
 
-    private func statusBadge(_ status: String) -> NSTextField {
+    private func metricTile() -> NSView {
+        let tile = NSView()
+        tile.wantsLayer = true
+        tile.layer?.cornerRadius = 13
+        tile.layer?.borderWidth = 0.6
+        tile.layer?.borderColor = NSColor.white.withAlphaComponent(0.38).cgColor
+        tile.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.32).cgColor
+        tile.translatesAutoresizingMaskIntoConstraints = false
+        return tile
+    }
+
+    private func iconBubble(symbol: String, color: NSColor, size: CGFloat) -> NSView {
+        let bubble = NSView()
+        bubble.wantsLayer = true
+        bubble.layer?.cornerRadius = size / 2
+        bubble.layer?.backgroundColor = color.withAlphaComponent(0.13).cgColor
+        bubble.translatesAutoresizingMaskIntoConstraints = false
+
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            ?? NSImage(size: NSSize(width: size, height: size))
+        let imageView = NSImageView(image: image)
+        imageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: size * 0.46, weight: .semibold)
+        imageView.contentTintColor = color
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        bubble.addSubview(imageView)
+        NSLayoutConstraint.activate([
+            imageView.centerXAnchor.constraint(equalTo: bubble.centerXAnchor),
+            imageView.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
+            imageView.widthAnchor.constraint(lessThanOrEqualTo: bubble.widthAnchor, multiplier: 0.62),
+            imageView.heightAnchor.constraint(lessThanOrEqualTo: bubble.heightAnchor, multiplier: 0.62),
+        ])
+        return bubble
+    }
+
+    private func avatarView(for displayName: String, tint: NSColor) -> NSView {
+        let avatar = NSView()
+        avatar.wantsLayer = true
+        avatar.layer?.cornerRadius = 19
+        avatar.layer?.backgroundColor = tint.withAlphaComponent(0.16).cgColor
+        avatar.translatesAutoresizingMaskIntoConstraints = false
+        let initial = displayName.trimmingCharacters(in: .whitespacesAndNewlines).first.map(String.init)?.uppercased() ?? "?"
+        let initialLabel = label(initial, size: 16, weight: .semibold, color: tint)
+        initialLabel.alignment = .center
+        initialLabel.translatesAutoresizingMaskIntoConstraints = false
+        avatar.addSubview(initialLabel)
+        NSLayoutConstraint.activate([
+            initialLabel.centerXAnchor.constraint(equalTo: avatar.centerXAnchor),
+            initialLabel.centerYAnchor.constraint(equalTo: avatar.centerYAnchor),
+        ])
+        return avatar
+    }
+
+    private func avatarTint(for displayName: String) -> NSColor {
+        let palette: [NSColor] = [.systemBlue, .systemPurple, .systemTeal, .systemOrange, .systemPink]
+        let value = displayName.unicodeScalars.reduce(0) { $0 + Int($1.value) }
+        return palette[value % palette.count]
+    }
+
+    private func statusBadge(_ status: String) -> NSView {
         let copy: String
         let color: NSColor
         switch status {
@@ -448,10 +613,31 @@ private final class HostPopoverController: NSViewController {
         case "limited": (copy, color) = ("Limited", .systemOrange)
         default: (copy, color) = ("Attention", .systemRed)
         }
-        let badge = label("  \(copy)  ", size: 10, weight: .semibold, color: color)
+        let badge = NSView()
         badge.wantsLayer = true
-        badge.layer?.cornerRadius = 7
+        badge.layer?.cornerRadius = 10
         badge.layer?.backgroundColor = color.withAlphaComponent(0.12).cgColor
+        badge.translatesAutoresizingMaskIntoConstraints = false
+        let dot = NSView()
+        dot.wantsLayer = true
+        dot.layer?.cornerRadius = 4
+        dot.layer?.backgroundColor = color.cgColor
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        let text = label(copy, size: 11, weight: .semibold, color: color)
+        let row = NSStackView(views: [dot, text])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 6
+        row.translatesAutoresizingMaskIntoConstraints = false
+        badge.addSubview(row)
+        NSLayoutConstraint.activate([
+            dot.widthAnchor.constraint(equalToConstant: 8),
+            dot.heightAnchor.constraint(equalToConstant: 8),
+            row.topAnchor.constraint(equalTo: badge.topAnchor, constant: 5),
+            row.leadingAnchor.constraint(equalTo: badge.leadingAnchor, constant: 9),
+            row.trailingAnchor.constraint(equalTo: badge.trailingAnchor, constant: -9),
+            row.bottomAnchor.constraint(equalTo: badge.bottomAnchor, constant: -5),
+        ])
         return badge
     }
 
@@ -481,27 +667,31 @@ private final class HostPopoverController: NSViewController {
 
     private func earningsCard(_ earnings: MenuBarSummary.Earnings?) -> NSView {
         let container = card()
-        let rows = NSStackView(views: [
-            earningRow("Today", value: earningText(earnings?.today, earnings: earnings)),
-            earningRow("This week", value: earningText(earnings?.week, earnings: earnings)),
-            earningRow("This month", value: earningText(earnings?.month, earnings: earnings)),
+        let columns = NSStackView(views: [
+            earningRow("Today", value: earningText(earnings?.today, earnings: earnings), symbol: "calendar", tint: .systemBlue),
+            earningRow("This week", value: earningText(earnings?.week, earnings: earnings), symbol: "calendar.badge.clock", tint: .systemPurple),
+            earningRow("This month", value: earningText(earnings?.month, earnings: earnings), symbol: "chart.bar.fill", tint: .systemGreen),
         ])
-        rows.orientation = .vertical
-        rows.alignment = .leading
-        rows.spacing = 8
-        rows.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(rows)
+        columns.orientation = .horizontal
+        columns.distribution = .fillEqually
+        columns.alignment = .centerY
+        columns.spacing = 8
+        columns.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(columns)
         NSLayoutConstraint.activate([
-            rows.topAnchor.constraint(equalTo: container.topAnchor, constant: 13),
-            rows.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 15),
-            rows.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -15),
-            rows.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -13),
+            columns.topAnchor.constraint(equalTo: container.topAnchor, constant: 13),
+            columns.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 13),
+            columns.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -13),
+            columns.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -13),
         ])
         return container
     }
 
     private func updateCard(_ update: HostUpdateStatus?, busy: Bool) -> NSView {
-        let container = card()
+        let isCurrent = update?.availableVersion == nil && update?.status == "current"
+        let container = card(backgroundColor: isCurrent
+            ? NSColor.systemGreen.withAlphaComponent(0.10)
+            : NSColor.controlBackgroundColor.withAlphaComponent(0.58))
         let title: String
         let detail: String
         if let version = update?.availableVersion {
@@ -515,6 +705,8 @@ private final class HostPopoverController: NSViewController {
             detail = "Check the signed release feed now or manage policy in the dashboard."
         }
 
+        let tint: NSColor = isCurrent ? .systemGreen : .systemOrange
+        let icon = iconBubble(symbol: isCurrent ? "checkmark" : "arrow.down.circle", color: tint, size: 38)
         let titleLabel = label(title, size: 13, weight: .semibold)
         let detailLabel = label(detail, size: 11, color: .secondaryLabelColor)
         detailLabel.maximumNumberOfLines = 2
@@ -532,28 +724,44 @@ private final class HostPopoverController: NSViewController {
             actions.addArrangedSubview(installButton)
         }
 
-        let stack = NSStackView(views: [titleLabel, detailLabel, actions])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 9
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(stack)
+        let copy = NSStackView(views: [titleLabel, detailLabel])
+        copy.orientation = .vertical
+        copy.alignment = .leading
+        copy.spacing = 4
+        copy.translatesAutoresizingMaskIntoConstraints = false
+        let body = NSStackView(views: [icon, copy, NSView(), actions])
+        body.orientation = .horizontal
+        body.alignment = .centerY
+        body.spacing = 10
+        body.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(body)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 14),
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 15),
-            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -15),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -14),
+            icon.widthAnchor.constraint(equalToConstant: 38),
+            icon.heightAnchor.constraint(equalToConstant: 38),
+            body.topAnchor.constraint(equalTo: container.topAnchor, constant: 13),
+            body.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 13),
+            body.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -13),
+            body.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -13),
         ])
         return container
     }
 
-    private func earningRow(_ title: String, value: String) -> NSView {
+    private func earningRow(_ title: String, value: String, symbol: String, tint: NSColor) -> NSView {
+        let icon = iconBubble(symbol: symbol, color: tint, size: 34)
         let titleLabel = label(title, size: 11, color: .secondaryLabelColor)
-        let valueLabel = label(value, size: 11, weight: .medium)
-        let row = NSStackView(views: [titleLabel, NSView(), valueLabel])
+        let valueLabel = label(value, size: 12, weight: .semibold)
+        valueLabel.lineBreakMode = .byTruncatingTail
+        let copy = NSStackView(views: [titleLabel, valueLabel])
+        copy.orientation = .vertical
+        copy.alignment = .leading
+        copy.spacing = 3
+        let row = NSStackView(views: [icon, copy])
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.widthAnchor.constraint(equalToConstant: 354).isActive = true
+        row.spacing = 8
+        row.translatesAutoresizingMaskIntoConstraints = false
+        icon.widthAnchor.constraint(equalToConstant: 34).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 34).isActive = true
         return row
     }
 
@@ -828,7 +1036,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
 #if DEBUG
     private func showPreviewWindow() {
         let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: NSSize(width: 420, height: 570)),
+            contentRect: NSRect(origin: .zero, size: NSSize(width: 480, height: 700)),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -868,7 +1076,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
     private func configurePopover() {
         popover.behavior = .transient
         popover.animates = true
-        popover.contentSize = NSSize(width: 420, height: 570)
+        popover.contentSize = NSSize(width: 480, height: 700)
         popover.contentViewController = popoverController
         popover.delegate = self
         popoverController.openDashboard = { [weak self] in
