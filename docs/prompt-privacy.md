@@ -1,5 +1,13 @@
 # Prompt privacy in MultiVibe Core
 
+## Implementation update — 6 September 2026
+
+Core now contains the fail-closed client foundation for `confidential_verified` inference. It verifies signed, challenge-bound evidence against locally pinned Ed25519 roots and exact measurements, checks protected CPU/GPU state, encrypts the prompt to the attested X25519 recipient key, and authenticates/decrypts the response locally. The matching Cloud path only relays sealed envelopes.
+
+This mode is disabled unless both `MULTIVIBE_CLOUD_PRIVACY_MODE=confidential_verified` and a local `MULTIVIBE_CONFIDENTIAL_INFERENCE_TRUST_POLICY` are configured. No production trust bundle or qualified CPU/GPU runtime is shipped. Conventional provider routes therefore remain conventional, and the hardware-backed privacy promise remains unavailable.
+
+The policy is non-downgradable within the Core process: confidential requests filter out standard accounts, fail immediately on verification or protected-transport errors, bypass clear response replay storage, omit request bodies from traces, and do not enter the current clear deferred-job store. See the Cloud document `docs/confidential-inference-implementation.md` for the protocol, activation contract, limitations and test coverage.
+
 Source review: 6 September 2026, commit `d7713a87c3e3c9a03cc2ef1bb35f088609528f8d`.
 Status: documentation of current behavior and proposed requirements. This document does not implement a confidential-computing mode or certify an installation.
 

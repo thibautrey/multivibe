@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import type { AccountStore, OAuthStateStore } from "./store.js";
-import type { Account, OAuthFlowState, StoreSettings } from "./types.js";
+import type { Account, OAuthFlowState, PrivacyMode, StoreSettings } from "./types.js";
 
 const CLIENT_ID = "multivibe-core";
 const ACCOUNT_ID = "multivibe-cloud";
@@ -53,6 +53,7 @@ export type MultivibeCloudServiceOptions = {
   inferenceBaseUrl: string;
   redirectUri: string;
   topupUrl: string;
+  privacyMode?: PrivacyMode;
   fetchImpl?: typeof fetch;
 };
 
@@ -176,6 +177,7 @@ export class MultivibeCloudService {
   private readonly inferenceBaseUrl: string;
   private readonly redirectUri: string;
   private readonly topupUrl: string;
+  private readonly privacyMode: PrivacyMode;
   private readonly fetchImpl: typeof fetch;
 
   constructor(
@@ -188,6 +190,7 @@ export class MultivibeCloudService {
     this.inferenceBaseUrl = normalizedOrigin(options.inferenceBaseUrl, "MultiVibe Cloud inference base URL");
     this.redirectUri = this.validRedirectUri(options.redirectUri);
     this.topupUrl = this.validHttpUrl(options.topupUrl, "MultiVibe Cloud top-up URL");
+    this.privacyMode = options.privacyMode ?? "standard";
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -364,6 +367,10 @@ export class MultivibeCloudService {
     const accounts = await this.store.listAccounts();
     const current = existingCloudAccount(accounts);
     if (current && current.expiresAt && current.expiresAt > Date.now() + API_KEY_RENEWAL_MARGIN_MS) {
+      if ((current.privacyMode ?? "standard") !== this.privacyMode) {
+        await this.store.patchAccount(current.id, { privacyMode: this.privacyMode });
+        await this.store.flushIfDirty();
+      }
       return;
     }
 
@@ -380,6 +387,7 @@ export class MultivibeCloudService {
       priority: 0,
       location: "cloud",
       multivibeCloud: true,
+      privacyMode: this.privacyMode,
       expiresAt: key.expiresAt,
       state: {},
     };

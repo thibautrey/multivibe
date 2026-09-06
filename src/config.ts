@@ -91,6 +91,16 @@ export const MULTIVIBE_CLOUD_INFERENCE_BASE_URL =
   (process.env.MULTIVIBE_CLOUD_INFERENCE_BASE_URL ?? "https://api.multivibe.cloud").replace(/\/+$/, "");
 export const MULTIVIBE_CLOUD_REDIRECT_URI =
   process.env.MULTIVIBE_CLOUD_REDIRECT_URI ?? "http://127.0.0.1:1455/admin/cloud/oauth/callback";
+export const MULTIVIBE_CLOUD_PRIVACY_MODE = (() => {
+  const value = process.env.MULTIVIBE_CLOUD_PRIVACY_MODE ?? "standard";
+  if (value !== "standard" && value !== "confidential_verified") {
+    throw new Error("MULTIVIBE_CLOUD_PRIVACY_MODE must be standard or confidential_verified");
+  }
+  return value;
+})();
+/** Public attestation roots and exact approved measurements; never learned from Cloud at runtime. */
+export const MULTIVIBE_CONFIDENTIAL_INFERENCE_TRUST_POLICY =
+  process.env.MULTIVIBE_CONFIDENTIAL_INFERENCE_TRUST_POLICY;
 export const CODEX_PROJECTS_PATH =
   process.env.CODEX_PROJECTS_PATH ?? "/data/codex-projects.json";
 export const JOBS_DB_PATH = process.env.JOBS_DB_PATH ?? "/data/jobs.sqlite";
