@@ -76,6 +76,8 @@ pub struct EdgeConfig {
     pub store_path: PathBuf,
     pub jobs_path: PathBuf,
     pub trace_path: Option<PathBuf>,
+    pub trace_include_body: bool,
+    pub trace_include_headers: bool,
     pub request_body_limit: usize,
     pub realtime_body_limit: usize,
     pub models_cache_ttl: Duration,
@@ -116,6 +118,8 @@ impl Default for EdgeConfig {
             store_path: PathBuf::from("/data/accounts.json"),
             jobs_path: PathBuf::from("/data/v1-edge-jobs.json"),
             trace_path: None,
+            trace_include_body: false,
+            trace_include_headers: false,
             request_body_limit: 100 * 1024 * 1024,
             realtime_body_limit: 2 * 1024 * 1024,
             models_cache_ttl: Duration::from_secs(10 * 60),
@@ -203,6 +207,10 @@ impl EdgeConfig {
             store_path,
             jobs_path,
             trace_path: env("TRACE_FILE_PATH").map(PathBuf::from),
+            trace_include_body: env("TRACE_INCLUDE_BODY")
+                .is_some_and(|value| value.eq_ignore_ascii_case("true")),
+            trace_include_headers: env("TRACE_INCLUDE_HEADERS")
+                .is_some_and(|value| value.eq_ignore_ascii_case("true")),
             request_body_limit: request_body_limit.max(1),
             realtime_body_limit: 2 * 1024 * 1024,
             models_cache_ttl: Duration::from_millis(
@@ -2374,6 +2382,7 @@ struct StreamingReply {
     upstream: reqwest::Response,
     transform: StreamTransform,
     requested_model: String,
+    trace: Option<StreamingTrace>,
 }
 
 enum ProxyResult {
@@ -2528,47 +2537,849 @@ impl SessionAffinityCache {
     }
 }
 
+const TRACE_PRICING_VERSION: &str = "2026-08-01";
+
+#[derive(Clone)]
+struct TraceContext {
+    id: String,
+    client_request_id: String,
+    trace_kind: &'static str,
+    route: String,
+    application: String,
+    requested_model: Option<String>,
+    resolved_model: Option<String>,
+    model: Option<String>,
+    account_id: Option<String>,
+    account_email: Option<String>,
+    provider: Option<String>,
+    stream: bool,
+    started_at: u64,
+    upstream_attempt: usize,
+    provider_attempts: usize,
+    recovered_retry: bool,
+    codex_session_id: Option<String>,
+    project_root: Option<String>,
+    project_host: Option<String>,
+    priority: Option<String>,
+    routing_decision: Option<String>,
+    execution_location: Option<String>,
+    capacity_version: Option<u64>,
+    admission_wait_ms: Option<u64>,
+    latency_breakdown: Option<Value>,
+    account_selection: Option<Value>,
+    input_context: Option<Value>,
+    request_body: Option<Value>,
+    request_headers: Option<Value>,
+}
+
+struct TraceOutcome {
+    status: u16,
+    completed_at: u64,
+    lifecycle_state: &'static str,
+    usage: Option<Value>,
+    error: Option<String>,
+    upstream_error: Option<String>,
+    upstream_content_type: Option<String>,
+    upstream_empty_body: Option<bool>,
+    ttft_ms: Option<u64>,
+    response_stream_diagnostics: Option<Value>,
+    assistant_empty_output: Option<bool>,
+    assistant_finish_reason: Option<String>,
+    client_disconnected: Option<bool>,
+}
+
+fn client_trace_outcome(
+    status: u16,
+    completed_at: u64,
+    error: Option<String>,
+    client_disconnected: Option<bool>,
+) -> TraceOutcome {
+    TraceOutcome {
+        status,
+        completed_at,
+        lifecycle_state: if client_disconnected == Some(true) {
+            "interrupted"
+        } else {
+            "completed"
+        },
+        usage: None,
+        error,
+        upstream_error: None,
+        upstream_content_type: None,
+        upstream_empty_body: None,
+        ttft_ms: None,
+        response_stream_diagnostics: None,
+        assistant_empty_output: None,
+        assistant_finish_reason: None,
+        client_disconnected,
+    }
+}
+
+#[derive(Default, Clone)]
+struct NativeStreamDiagnostics {
+    event_count: u64,
+    event_types: HashMap<String, u64>,
+    invalid_data_payload_count: u64,
+    output_text_delta_count: u64,
+    output_text_done_count: u64,
+    reasoning_event_count: u64,
+    refusal_event_count: u64,
+    function_call_count: u64,
+    hidden_function_call_count: u64,
+    sanitizer_dropped_event_count: u64,
+    sanitizer_dropped_text_event_count: u64,
+    terminal_event_type: Option<String>,
+    saw_response_completed: bool,
+    saw_chat_completion_chunk: bool,
+    saw_meaningful_output: bool,
+    saw_assistant_text: bool,
+    saw_function_call: bool,
+    custom_tool_calls: Vec<NativeCustomToolCall>,
+    usage: Option<Value>,
+    finish_reason: Option<String>,
+}
+
+#[derive(Default, Clone)]
+struct NativeCustomToolCall {
+    item_id_present: bool,
+    call_id_present: bool,
+    name: Option<String>,
+    status: Option<String>,
+    input_delta_count: u64,
+    input_bytes: u64,
+    saw_input_done: bool,
+    saw_output_item_added: bool,
+    saw_output_item_done: bool,
+    key: String,
+}
+
+impl NativeStreamDiagnostics {
+    fn inspect_frame(&mut self, frame: &str) {
+        let normalized = frame.replace('\r', "");
+        for line in normalized.lines() {
+            let Some(payload) = line.strip_prefix("data:").map(str::trim) else {
+                continue;
+            };
+            if payload.is_empty() || payload == "[DONE]" {
+                continue;
+            }
+            let Ok(event) = serde_json::from_str::<Value>(payload) else {
+                self.invalid_data_payload_count = self.invalid_data_payload_count.saturating_add(1);
+                continue;
+            };
+            self.inspect_event(&event);
+        }
+    }
+
+    fn inspect_event(&mut self, event: &Value) {
+        let event_type = value_string(event.get("type")).unwrap_or_default();
+        self.inspect_custom_tool_call(event, &event_type);
+        if event.get("object").and_then(Value::as_str) == Some("chat.completion.chunk") {
+            self.saw_chat_completion_chunk = true;
+        }
+        if !event_type.is_empty() || self.saw_chat_completion_chunk {
+            self.event_count = self.event_count.saturating_add(1);
+        }
+        if !event_type.is_empty() {
+            *self.event_types.entry(event_type.clone()).or_default() += 1;
+        }
+        match event_type.as_str() {
+            "response.output_text.delta" => {
+                self.output_text_delta_count = self.output_text_delta_count.saturating_add(1);
+                if value_string(event.get("delta")).is_some_and(|value| !value.is_empty()) {
+                    self.saw_meaningful_output = true;
+                    self.saw_assistant_text = true;
+                }
+            }
+            "response.output_text.done" => {
+                self.output_text_done_count = self.output_text_done_count.saturating_add(1);
+                if value_string(event.get("text")).is_some_and(|value| !value.is_empty()) {
+                    self.saw_meaningful_output = true;
+                    self.saw_assistant_text = true;
+                }
+            }
+            value if value.starts_with("response.reasoning") => {
+                self.reasoning_event_count = self.reasoning_event_count.saturating_add(1);
+                if has_generated_value(event.get("delta")) {
+                    self.saw_meaningful_output = true;
+                }
+            }
+            value if value.starts_with("response.refusal") => {
+                self.refusal_event_count = self.refusal_event_count.saturating_add(1);
+                if has_generated_value(event.get("delta")) {
+                    self.saw_meaningful_output = true;
+                }
+            }
+            "response.completed" | "response.failed" | "response.incomplete" | "error" => {
+                if self.terminal_event_type.is_none() {
+                    self.terminal_event_type = Some(event_type.clone());
+                }
+                if event_type == "response.completed" {
+                    self.saw_response_completed = true;
+                }
+                self.finish_reason = value_string(event.get("status"))
+                    .or_else(|| value_string(event.get("stop_reason")))
+                    .or_else(|| {
+                        event
+                            .get("response")
+                            .and_then(|response| value_string(response.get("status")))
+                    });
+                if let Some(response) = event.get("response") {
+                    if let Some(usage) = response.get("usage") {
+                        self.usage = Some(usage.clone());
+                    }
+                    if response_has_assistant_output(response) {
+                        self.saw_meaningful_output = true;
+                        self.saw_assistant_text = response_has_assistant_text(response);
+                        self.saw_function_call = response_has_function_call(response);
+                    }
+                }
+            }
+            _ => {}
+        }
+        if let Some(usage) = event.get("usage") {
+            self.usage = Some(usage.clone());
+        }
+        if event.get("object").and_then(Value::as_str) == Some("chat.completion.chunk") {
+            let choices = event.get("choices").and_then(Value::as_array);
+            if let Some(choice) = choices.and_then(|values| values.first()) {
+                self.finish_reason = value_string(choice.get("finish_reason"))
+                    .or_else(|| self.finish_reason.clone());
+                if let Some(delta) = choice.get("delta") {
+                    if has_generated_value(delta.get("content"))
+                        || has_generated_value(delta.get("reasoning_content"))
+                        || has_generated_value(delta.get("refusal"))
+                        || has_generated_value(delta.get("function_call"))
+                        || has_generated_value(delta.get("tool_calls"))
+                    {
+                        self.saw_meaningful_output = true;
+                    }
+                    if delta.get("tool_calls").is_some() || delta.get("function_call").is_some() {
+                        self.saw_function_call = true;
+                    }
+                }
+            }
+        }
+        if let Some(item) = event.get("item") {
+            if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                self.function_call_count = self.function_call_count.saturating_add(1);
+                self.saw_function_call = true;
+                self.saw_meaningful_output = true;
+                if value_string(item.get("name"))
+                    .is_some_and(|name| name.to_ascii_lowercase().starts_with("functions."))
+                {
+                    self.hidden_function_call_count =
+                        self.hidden_function_call_count.saturating_add(1);
+                }
+            }
+        }
+        if event_type.contains("function_call") && event_type.ends_with(".delta") {
+            self.saw_function_call = true;
+            self.saw_meaningful_output |= has_generated_value(event.get("delta"));
+        }
+    }
+
+    fn inspect_custom_tool_call(&mut self, event: &Value, event_type: &str) {
+        let item = event.get("item").unwrap_or(&Value::Null);
+        let item_type = value_string(item.get("type")).unwrap_or_default();
+        if item_type != "custom_tool_call" && !event_type.starts_with("response.custom_tool_call_")
+        {
+            return;
+        }
+        let item_id = value_string(event.get("item_id")).or_else(|| value_string(item.get("id")));
+        let call_id =
+            value_string(event.get("call_id")).or_else(|| value_string(item.get("call_id")));
+        let key = item_id
+            .clone()
+            .or(call_id.clone())
+            .unwrap_or_else(|| format!("anonymous-{}", self.custom_tool_calls.len() + 1));
+        let index = self
+            .custom_tool_calls
+            .iter()
+            .position(|entry| entry.key == key);
+        let Some(index) = index.or_else(|| {
+            if self.custom_tool_calls.len() >= 8 {
+                return None;
+            }
+            self.custom_tool_calls.push(NativeCustomToolCall {
+                item_id_present: item_id.is_some(),
+                call_id_present: call_id.is_some(),
+                name: value_string(event.get("name")).or_else(|| value_string(item.get("name"))),
+                status: value_string(item.get("status")),
+                key,
+                ..Default::default()
+            });
+            Some(self.custom_tool_calls.len() - 1)
+        }) else {
+            return;
+        };
+        let entry = &mut self.custom_tool_calls[index];
+        if event_type == "response.output_item.added" {
+            entry.saw_output_item_added = true;
+        }
+        if event_type == "response.output_item.done" {
+            entry.saw_output_item_done = true;
+        }
+        if event_type == "response.custom_tool_call_input.delta" {
+            entry.input_delta_count = entry.input_delta_count.saturating_add(1);
+            entry.input_bytes = entry.input_bytes.saturating_add(
+                value_string(event.get("delta"))
+                    .map(|value| value.len() as u64)
+                    .unwrap_or(0),
+            );
+        }
+        if event_type == "response.custom_tool_call_input.done" {
+            entry.saw_input_done = true;
+        }
+    }
+
+    fn as_value(&self) -> Value {
+        let mut event_types = Map::new();
+        for (key, value) in &self.event_types {
+            event_types.insert(key.clone(), Value::Number((*value).into()));
+        }
+        let custom_tool_calls = self
+            .custom_tool_calls
+            .iter()
+            .map(|entry| {
+                json!({
+                    "itemIdPresent": entry.item_id_present,
+                    "callIdPresent": entry.call_id_present,
+                    "name": entry.name,
+                    "status": entry.status,
+                    "inputDeltaCount": entry.input_delta_count,
+                    "inputBytes": entry.input_bytes,
+                    "sawInputDone": entry.saw_input_done,
+                    "sawOutputItemAdded": entry.saw_output_item_added,
+                    "sawOutputItemDone": entry.saw_output_item_done,
+                })
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "eventCount": self.event_count,
+            "eventTypes": event_types,
+            "customToolCalls": custom_tool_calls,
+            "invalidDataPayloadCount": self.invalid_data_payload_count,
+            "outputTextDeltaCount": self.output_text_delta_count,
+            "outputTextDoneCount": self.output_text_done_count,
+            "reasoningEventCount": self.reasoning_event_count,
+            "refusalEventCount": self.refusal_event_count,
+            "functionCallCount": self.function_call_count,
+            "hiddenFunctionCallCount": self.hidden_function_call_count,
+            "sanitizerDroppedEventCount": self.sanitizer_dropped_event_count,
+            "sanitizerDroppedTextEventCount": self.sanitizer_dropped_text_event_count,
+            "terminalEventType": self.terminal_event_type,
+            "sawResponseCompleted": self.saw_response_completed,
+            "sawChatCompletionChunk": self.saw_chat_completion_chunk,
+        })
+    }
+
+    fn assistant_empty_output(&self) -> bool {
+        !self.saw_meaningful_output
+    }
+}
+
+struct SseTraceObserver {
+    buffer: String,
+    diagnostics: NativeStreamDiagnostics,
+}
+
+impl SseTraceObserver {
+    fn new() -> Self {
+        Self {
+            buffer: String::new(),
+            diagnostics: NativeStreamDiagnostics::default(),
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        self.buffer.push_str(&String::from_utf8_lossy(bytes));
+        while let Some(index) = self.buffer.find("\n\n") {
+            let frame = self.buffer[..index].to_owned();
+            self.buffer.drain(..index + 2);
+            self.diagnostics.inspect_frame(&frame);
+        }
+    }
+
+    fn finish(mut self) -> NativeStreamDiagnostics {
+        if !self.buffer.trim().is_empty() {
+            self.diagnostics.inspect_frame(&self.buffer);
+        }
+        self.diagnostics
+    }
+}
+
+fn has_generated_value(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::String(text)) => !text.is_empty(),
+        Some(Value::Array(values)) => values.iter().any(|value| has_generated_value(Some(value))),
+        Some(Value::Object(values)) => values
+            .values()
+            .any(|value| has_generated_value(Some(value))),
+        _ => false,
+    }
+}
+
+fn response_has_function_call(response: &Value) -> bool {
+    response
+        .get("output")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
+        })
+}
+
+fn response_has_assistant_text(response: &Value) -> bool {
+    response
+        .get("output")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item.get("type").and_then(Value::as_str) == Some("message")
+                    && item.get("role").and_then(Value::as_str) == Some("assistant")
+                    && item
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .is_some_and(|parts| {
+                            parts.iter().any(|part| {
+                                (part.get("type").and_then(Value::as_str) == Some("output_text")
+                                    || part.get("type").and_then(Value::as_str) == Some("refusal"))
+                                    && value_string(
+                                        part.get("text").or_else(|| part.get("refusal")),
+                                    )
+                                    .is_some_and(|text| !text.is_empty())
+                            })
+                        })
+            })
+        })
+}
+
+fn response_has_assistant_output(response: &Value) -> bool {
+    response_has_function_call(response) || response_has_assistant_text(response)
+}
+
+fn trace_number(value: Option<&Value>) -> Option<u64> {
+    value.and_then(Value::as_u64).or_else(|| {
+        value
+            .and_then(Value::as_i64)
+            .and_then(|value| u64::try_from(value).ok())
+    })
+}
+
+fn normalized_trace_usage(usage: &Value) -> (Option<u64>, u64, u64, u64, u64, u64) {
+    let input = trace_number(
+        usage
+            .get("input_tokens")
+            .or_else(|| usage.get("prompt_tokens")),
+    );
+    let output = trace_number(
+        usage
+            .get("output_tokens")
+            .or_else(|| usage.get("completion_tokens")),
+    )
+    .unwrap_or(0);
+    let total = trace_number(usage.get("total_tokens"))
+        .unwrap_or_else(|| input.unwrap_or(0).saturating_add(output));
+    let cached = trace_number(
+        usage
+            .get("input_tokens_details")
+            .and_then(|value| value.get("cached_tokens")),
+    )
+    .or_else(|| {
+        trace_number(
+            usage
+                .get("prompt_tokens_details")
+                .and_then(|value| value.get("cached_tokens")),
+        )
+    })
+    .or_else(|| trace_number(usage.get("cached_input_tokens")))
+    .or_else(|| trace_number(usage.get("input_cached_tokens")))
+    .or_else(|| trace_number(usage.get("cached_tokens")))
+    .unwrap_or(0);
+    let cache_write = trace_number(
+        usage
+            .get("input_tokens_details")
+            .and_then(|value| value.get("cache_write_tokens")),
+    )
+    .or_else(|| {
+        trace_number(
+            usage
+                .get("prompt_tokens_details")
+                .and_then(|value| value.get("cache_write_tokens")),
+        )
+    })
+    .or_else(|| trace_number(usage.get("cache_write_tokens")))
+    .unwrap_or(0);
+    let reasoning = trace_number(
+        usage
+            .get("output_tokens_details")
+            .and_then(|value| value.get("reasoning_tokens")),
+    )
+    .or_else(|| {
+        trace_number(
+            usage
+                .get("completion_tokens_details")
+                .and_then(|value| value.get("reasoning_tokens")),
+        )
+    })
+    .or_else(|| trace_number(usage.get("reasoning_tokens")))
+    .unwrap_or(0);
+    (input, cached, cache_write, output, reasoning, total)
+}
+
+fn trace_pricing(model: Option<&str>, input: u64) -> Option<(f64, f64, f64, f64)> {
+    let model = model?.trim();
+    if model.is_empty() || model == "gpt-5.3-codex-spark" || model == "codex-auto-review" {
+        return None;
+    }
+    let mut pricing = if model.starts_with("gpt-5.6-sol") || model == "gpt-5.6" {
+        (5.0, 0.5, 6.25, 30.0)
+    } else if model.starts_with("gpt-5.6-terra") {
+        (2.0, 0.2, 2.5, 12.0)
+    } else if model.starts_with("gpt-5.6-luna") {
+        (0.2, 0.02, 0.25, 1.2)
+    } else if model.starts_with("gpt-5.4-mini") {
+        (0.75, 0.075, 0.75, 4.5)
+    } else if model.starts_with("gpt-5.4") {
+        if input > 272_000 {
+            (5.0, 0.5, 5.0, 22.5)
+        } else {
+            (2.5, 0.25, 2.5, 15.0)
+        }
+    } else if model.starts_with("gpt-5.5") {
+        if input > 272_000 {
+            (10.0, 1.0, 10.0, 45.0)
+        } else {
+            (5.0, 0.5, 5.0, 30.0)
+        }
+    } else if model.starts_with("gpt-5.3-codex") || model.starts_with("gpt-5.2-codex") {
+        (1.75, 0.175, 1.75, 14.0)
+    } else if model.starts_with("gpt-5.1-codex-mini") {
+        (0.25, 0.25, 0.25, 2.0)
+    } else if model.starts_with("gpt-5.1-codex") || model.starts_with("gpt-5-codex") {
+        (1.25, 1.25, 1.25, 10.0)
+    } else if model.starts_with("gpt-5") {
+        (5.0, 5.0, 5.0, 15.0)
+    } else if model.starts_with("gpt-4o-mini") {
+        (0.15, 0.15, 0.15, 0.6)
+    } else if model.starts_with("gpt-4.1-mini") {
+        (0.3, 0.3, 0.3, 1.2)
+    } else if model.starts_with("gpt-4.1-nano") {
+        (0.1, 0.1, 0.1, 0.4)
+    } else if model.starts_with("gpt-4o") || model.starts_with("gpt-4.1") {
+        (5.0, 5.0, 5.0, 15.0)
+    } else if model.starts_with("codex-mini-latest") {
+        (1.5, 1.5, 1.5, 6.0)
+    } else if model.starts_with("daybreak-blue") || model.starts_with("gpt-daybreak-blue") {
+        (4.0, 0.4, 5.0, 20.0)
+    } else if model.starts_with("deepseek-v4-flash") || model.starts_with("deepseek-chat") {
+        (0.14, 0.14, 0.14, 0.28)
+    } else if model.starts_with("deepseek-v4-pro") {
+        (0.435, 0.435, 0.435, 0.87)
+    } else if model.starts_with("deepseek-reasoner") {
+        (0.14, 0.14, 0.14, 0.28)
+    } else {
+        return None;
+    };
+    if pricing.1 == pricing.0 && pricing.2 == pricing.0 {
+        pricing.1 = pricing.0;
+        pricing.2 = pricing.0;
+    }
+    Some(pricing)
+}
+
+fn trace_cost(
+    model: Option<&str>,
+    input: u64,
+    cached: u64,
+    cache_write: u64,
+    output: u64,
+) -> Option<f64> {
+    let (input_rate, cached_rate, cache_write_rate, output_rate) = trace_pricing(model, input)?;
+    let cached = cached.min(input);
+    let cache_write = cache_write.min(input.saturating_sub(cached));
+    let uncached = input.saturating_sub(cached).saturating_sub(cache_write);
+    Some(
+        (uncached as f64 / 1_000_000.0) * input_rate
+            + (cached as f64 / 1_000_000.0) * cached_rate
+            + (cache_write as f64 / 1_000_000.0) * cache_write_rate
+            + (output as f64 / 1_000_000.0) * output_rate,
+    )
+}
+
+fn usage_from_payload(value: &Value) -> Option<Value> {
+    value.get("usage").cloned().or_else(|| {
+        value
+            .get("response")
+            .and_then(|response| response.get("usage"))
+            .cloned()
+    })
+}
+
+fn chat_has_assistant_output(value: &Value) -> bool {
+    let Some(choice) = value
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+    else {
+        return false;
+    };
+    let message = choice.get("message").unwrap_or(&Value::Null);
+    let has_text = match message.get("content") {
+        Some(Value::String(text)) => !text.trim().is_empty(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .any(|part| value_string(part.get("text")).is_some_and(|text| !text.trim().is_empty())),
+        _ => false,
+    };
+    let has_tool_calls = message
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .is_some_and(|calls| !calls.is_empty());
+    has_text || has_tool_calls
+}
+
+fn assistant_payload_diagnostics(value: &Value) -> (Option<bool>, Option<String>) {
+    match value.get("object").and_then(Value::as_str) {
+        Some("chat.completion") => {
+            let choice = value
+                .get("choices")
+                .and_then(Value::as_array)
+                .and_then(|choices| choices.first());
+            (
+                Some(!chat_has_assistant_output(value)),
+                choice.and_then(|choice| value_string(choice.get("finish_reason"))),
+            )
+        }
+        Some("response") => (
+            Some(!response_has_assistant_output(value)),
+            value_string(value.get("status")).or_else(|| value_string(value.get("stop_reason"))),
+        ),
+        _ => (None, None),
+    }
+}
+
+fn buffered_trace_outcome(
+    reply: &BufferedReply,
+    content_type: &str,
+    upstream_empty_body: bool,
+) -> TraceOutcome {
+    let text = String::from_utf8_lossy(&reply.body).to_string();
+    let is_sse = content_type
+        .to_ascii_lowercase()
+        .contains("text/event-stream")
+        || text.contains("data:");
+    let mut observer = if is_sse {
+        Some(SseTraceObserver::new())
+    } else {
+        None
+    };
+    if let Some(observer) = observer.as_mut() {
+        observer.push(&reply.body);
+    }
+    let parsed = if is_sse {
+        None
+    } else {
+        serde_json::from_slice::<Value>(&reply.body).ok()
+    };
+    let payload = parsed.unwrap_or_else(|| {
+        if text.contains("chat.completion.chunk") {
+            chat_from_sse(&text, "unknown")
+        } else {
+            response_from_sse(&text, "unknown")
+        }
+    });
+    let (assistant_empty_output, assistant_finish_reason) = assistant_payload_diagnostics(&payload);
+    let diagnostics = observer.map(|observer| observer.finish());
+    let usage = usage_from_payload(&payload)
+        .or_else(|| diagnostics.as_ref().and_then(|value| value.usage.clone()));
+    TraceOutcome {
+        status: reply.status.as_u16(),
+        completed_at: now_ms(),
+        lifecycle_state: "completed",
+        usage,
+        error: (reply.status.as_u16() >= 400).then(|| trace_string(&text, 500)),
+        upstream_error: (reply.status.as_u16() >= 400).then(|| trace_string(&text, 500)),
+        upstream_content_type: (!content_type.trim().is_empty()).then(|| content_type.to_owned()),
+        upstream_empty_body: Some(upstream_empty_body),
+        ttft_ms: None,
+        response_stream_diagnostics: diagnostics.map(|value| value.as_value()),
+        assistant_empty_output,
+        assistant_finish_reason,
+        client_disconnected: Some(false),
+    }
+}
+
+fn trace_string(value: &str, max: usize) -> String {
+    value.chars().take(max).collect()
+}
+
 struct TraceSink {
     path: Option<PathBuf>,
     lock: Mutex<()>,
 }
 
 impl TraceSink {
-    async fn record(
-        &self,
-        route: &str,
-        application: &str,
-        account: Option<&Account>,
-        model: Option<&str>,
-        status: u16,
-        stream: bool,
-        started_at: u64,
-        error: Option<&str>,
-    ) {
+    async fn record(&self, context: &TraceContext, outcome: TraceOutcome) {
         let Some(path) = self.path.as_ref() else {
             return;
         };
         let _guard = self.lock.lock().await;
         let mut entry = json!({
-            "at": now_ms(),
-            "route": route,
-            "application": application,
-            "status": status,
-            "stream": stream,
-            "latencyMs": now_ms().saturating_sub(started_at),
+            "id": context.id,
+            "at": outcome.completed_at,
+            "route": context.route,
+            "clientRequestId": context.client_request_id,
+            "traceKind": context.trace_kind,
+            "upstreamAttempt": context.upstream_attempt,
+            "providerAttempts": context.provider_attempts,
+            "recoveredRetry": context.recovered_retry,
+            "application": context.application,
+            "status": outcome.status,
+            "isError": outcome.status >= 400,
+            "stream": context.stream,
+            "latencyMs": outcome.completed_at.saturating_sub(context.started_at),
+            "lifecycleState": outcome.lifecycle_state,
+            "startedAt": context.started_at,
+            "completedAt": outcome.completed_at,
+            "usageStatus": if outcome.usage.is_some() { "measured" } else { "missing" },
         });
-        if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
+        if let Some(model) = context
+            .model
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
             entry["model"] = Value::String(model.to_owned());
         }
-        if let Some(account) = account {
-            entry["accountId"] = Value::String(account.id.clone());
-            if let Some(email) = account.email.as_deref() {
-                entry["accountEmail"] = Value::String(email.to_owned());
-            }
-            entry["provider"] = Value::String(normalize_provider(account));
+        if let Some(model) = context
+            .requested_model
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            entry["requestedModel"] = Value::String(model.to_owned());
         }
-        if let Some(error) = error {
-            entry["error"] = Value::String(error.chars().take(500).collect());
+        if let Some(model) = context
+            .resolved_model
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            entry["resolvedModel"] = Value::String(model.to_owned());
+        }
+        if let Some(value) = context.account_id.as_deref() {
+            entry["accountId"] = Value::String(value.to_owned());
+        }
+        if let Some(value) = context.account_email.as_deref() {
+            entry["accountEmail"] = Value::String(value.to_owned());
+        }
+        if let Some(value) = context.provider.as_deref() {
+            entry["provider"] = Value::String(value.to_owned());
+        }
+        if let Some(value) = context.codex_session_id.as_deref() {
+            entry["codexSessionId"] = Value::String(value.to_owned());
+        }
+        if let Some(value) = context.project_root.as_deref() {
+            entry["projectRoot"] = Value::String(value.to_owned());
+        }
+        if let Some(value) = context.project_host.as_deref() {
+            entry["projectHost"] = Value::String(value.to_owned());
+        }
+        if let Some(value) = context.priority.as_deref() {
+            entry["priority"] = Value::String(value.to_owned());
+        }
+        if let Some(value) = context.routing_decision.as_deref() {
+            entry["routingDecision"] = Value::String(value.to_owned());
+        }
+        if let Some(value) = context.execution_location.as_deref() {
+            entry["executionLocation"] = Value::String(value.to_owned());
+        }
+        if let Some(value) = context.capacity_version {
+            entry["capacityVersion"] = Value::Number(value.into());
+        }
+        if let Some(value) = context.admission_wait_ms {
+            entry["admissionWaitMs"] = Value::Number(value.into());
+        }
+        if let Some(value) = context.latency_breakdown.as_ref() {
+            entry["latencyBreakdown"] = value.clone();
+        }
+        if let Some(value) = context.account_selection.as_ref() {
+            entry["accountSelection"] = value.clone();
+        }
+        if let Some(value) = context.input_context.as_ref() {
+            entry["inputContext"] = value.clone();
+        }
+        if context.provider_attempts > 0 {
+            entry["providerAttempts"] = Value::Number((context.provider_attempts as u64).into());
+        }
+        if let Some(usage) = outcome.usage.as_ref() {
+            let (input, cached, cache_write, output, reasoning, total) =
+                normalized_trace_usage(usage);
+            if let Some(value) = input {
+                entry["tokensInput"] = value.into();
+            }
+            entry["tokensInputCached"] = cached.into();
+            entry["tokensInputCacheWrite"] = cache_write.into();
+            entry["tokensOutput"] = output.into();
+            entry["tokensReasoning"] = reasoning.into();
+            entry["tokensTotal"] = total.into();
+            let cost = trace_cost(
+                context.model.as_deref(),
+                input.unwrap_or(0),
+                cached,
+                cache_write,
+                output,
+            );
+            if let Some(cost) = cost.and_then(serde_json::Number::from_f64) {
+                entry["costUsd"] = Value::Number(cost);
+                entry["pricingVersion"] = Value::String(TRACE_PRICING_VERSION.to_owned());
+                entry["costStatus"] = Value::String("estimated".to_owned());
+            } else {
+                entry["costStatus"] = Value::String(
+                    if context.model.is_some() {
+                        "unpriced"
+                    } else {
+                        "unknown"
+                    }
+                    .to_owned(),
+                );
+            }
+            entry["usage"] = usage.clone();
+        } else {
+            entry["costStatus"] = Value::String("unknown".to_owned());
+        }
+        if let Some(value) = outcome.error.as_deref() {
+            entry["error"] = Value::String(trace_string(value, 500));
+        }
+        if let Some(value) = outcome.upstream_error.as_deref() {
+            entry["upstreamError"] = Value::String(trace_string(value, 500));
+        }
+        if let Some(value) = outcome.upstream_content_type.as_deref() {
+            entry["upstreamContentType"] = Value::String(value.to_owned());
+        }
+        if let Some(value) = outcome.upstream_empty_body {
+            entry["upstreamEmptyBody"] = Value::Bool(value);
+        }
+        if let Some(value) = outcome.ttft_ms {
+            entry["ttftMs"] = Value::Number(value.into());
+        }
+        if let Some(value) = outcome.response_stream_diagnostics {
+            entry["responseStreamDiagnostics"] = value;
+        }
+        if let Some(value) = outcome.assistant_empty_output {
+            entry["assistantEmptyOutput"] = Value::Bool(value);
+        }
+        if let Some(value) = outcome.assistant_finish_reason {
+            entry["assistantFinishReason"] = Value::String(value);
+        }
+        if let Some(value) = outcome.client_disconnected {
+            entry["clientDisconnected"] = Value::Bool(value);
+        }
+        if let Some(value) = context.request_body.as_ref() {
+            entry["requestBody"] = value.clone();
+        }
+        if let Some(value) = context.request_headers.as_ref() {
+            entry["requestHeaders"] = value.clone();
         }
         if let Ok(line) = serde_json::to_vec(&entry) {
             if let Some(parent) = path.parent() {
@@ -2585,6 +3396,143 @@ impl TraceSink {
                 let _ = file.write_all(b"\n").await;
             }
         }
+    }
+}
+
+struct StreamingTrace {
+    sink: Arc<TraceSink>,
+    context: TraceContext,
+    client_context: TraceContext,
+    observer: SseTraceObserver,
+    upstream_content_type: Option<String>,
+    saw_bytes: bool,
+    ttft_ms: Option<u64>,
+    finished: bool,
+}
+
+impl StreamingTrace {
+    fn new(
+        sink: Arc<TraceSink>,
+        context: TraceContext,
+        client_context: TraceContext,
+        upstream_content_type: Option<String>,
+    ) -> Self {
+        Self {
+            sink,
+            context,
+            client_context,
+            observer: SseTraceObserver::new(),
+            upstream_content_type,
+            saw_bytes: false,
+            ttft_ms: None,
+            finished: false,
+        }
+    }
+
+    fn observe(&mut self, bytes: &[u8]) {
+        self.saw_bytes |= !bytes.is_empty();
+        self.observer.push(bytes);
+        if self.ttft_ms.is_none() && self.observer.diagnostics.saw_meaningful_output {
+            self.ttft_ms = Some(now_ms().saturating_sub(self.context.started_at));
+        }
+    }
+
+    fn outcome(
+        &self,
+        status: u16,
+        completed_at: u64,
+        lifecycle_state: &'static str,
+        error: Option<String>,
+        client_disconnected: Option<bool>,
+    ) -> TraceOutcome {
+        let diagnostics = self.observer.diagnostics.clone();
+        TraceOutcome {
+            status,
+            completed_at,
+            lifecycle_state,
+            usage: diagnostics.usage.clone(),
+            error: error.clone(),
+            upstream_error: error,
+            upstream_content_type: self.upstream_content_type.clone(),
+            upstream_empty_body: Some(!self.saw_bytes),
+            ttft_ms: self.ttft_ms,
+            response_stream_diagnostics: Some(diagnostics.as_value()),
+            assistant_empty_output: Some(diagnostics.assistant_empty_output()),
+            assistant_finish_reason: diagnostics.finish_reason.clone(),
+            client_disconnected,
+        }
+    }
+
+    async fn finish(
+        &mut self,
+        status: u16,
+        error: Option<String>,
+        client_disconnected: Option<bool>,
+    ) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        let completed_at = now_ms();
+        let client_error = error.clone();
+        let outcome = self.outcome(
+            status,
+            completed_at,
+            if error.is_some() {
+                "interrupted"
+            } else {
+                "completed"
+            },
+            error,
+            client_disconnected,
+        );
+        self.sink.record(&self.context, outcome).await;
+        self.sink
+            .record(
+                &self.client_context,
+                client_trace_outcome(
+                    if client_disconnected == Some(true) {
+                        499
+                    } else {
+                        status
+                    },
+                    completed_at,
+                    client_error,
+                    client_disconnected,
+                ),
+            )
+            .await;
+    }
+}
+
+impl Drop for StreamingTrace {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let Some(handle) = tokio::runtime::Handle::try_current().ok() else {
+            return;
+        };
+        let sink = self.sink.clone();
+        let context = self.context.clone();
+        let client_context = self.client_context.clone();
+        let completed_at = now_ms();
+        let error = "client disconnected before the upstream stream completed".to_owned();
+        let outcome = self.outcome(
+            499,
+            completed_at,
+            "interrupted",
+            Some(error.clone()),
+            Some(true),
+        );
+        handle.spawn(async move {
+            sink.record(&context, outcome).await;
+            sink.record(
+                &client_context,
+                client_trace_outcome(499, completed_at, Some(error), Some(true)),
+            )
+            .await;
+        });
     }
 }
 
@@ -2731,6 +3679,149 @@ fn request_codex_session_id(headers: &HeaderMap) -> Option<String> {
             .unwrap_or_default()
             .to_owned(),
     )
+}
+
+fn trace_header_is_sensitive(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    [
+        "authorization",
+        "proxy-authorization",
+        "api-key",
+        "access-token",
+        "refresh-token",
+        "id-token",
+        "token",
+        "secret",
+        "password",
+        "credential",
+        "cookie",
+        "set-cookie",
+        "session",
+        "state",
+        "nonce",
+        "signature",
+        "hmac",
+        "attestation",
+        "assertion",
+        "proof",
+    ]
+    .iter()
+    .any(|needle| {
+        name == *needle
+            || name.contains(&format!("-{needle}"))
+            || name.contains(&format!("_{needle}"))
+    })
+}
+
+fn sanitize_trace_headers(headers: &HeaderMap) -> Value {
+    let mut values = HashMap::<String, String>::new();
+    for (name, value) in headers {
+        let name = name.as_str().to_ascii_lowercase();
+        if name == "x-multivibe-trace-request-headers" {
+            continue;
+        }
+        let Ok(value) = value.to_str() else { continue };
+        let value = if trace_header_is_sensitive(&name) {
+            "[REDACTED]".to_owned()
+        } else {
+            trace_string(value, 512)
+        };
+        values.insert(name, value);
+    }
+    let mut object = Map::new();
+    let mut names = values.keys().cloned().collect::<Vec<_>>();
+    names.sort();
+    for name in names {
+        if let Some(value) = values.remove(&name) {
+            object.insert(name, Value::String(value));
+        }
+    }
+    Value::Object(object)
+}
+
+fn trace_input_context(body: &Value) -> Option<Value> {
+    let input = body.get("input").and_then(Value::as_array)?;
+    let mut count = 0_u64;
+    let mut latest = None;
+    for (index, item) in input.iter().enumerate() {
+        if item.get("type").and_then(Value::as_str) == Some("compaction") {
+            count = count.saturating_add(1);
+            latest = Some(index as u64);
+        }
+    }
+    (count > 0).then(|| {
+        json!({
+            "compactionItemCount": count,
+            "itemsBeforeLatestCompaction": latest.unwrap_or(0),
+        })
+    })
+}
+
+fn build_trace_context(
+    state: &EdgeState,
+    path: &str,
+    headers: &HeaderMap,
+    body: &Value,
+    application: &str,
+    client_request_id: &str,
+    requested_model: &str,
+    resolved_model: &str,
+    account: Option<&Account>,
+    stream: bool,
+    started_at: u64,
+    upstream_attempt: usize,
+    provider_attempts: usize,
+    trace_kind: &'static str,
+) -> TraceContext {
+    let requested_model = (!requested_model.trim().is_empty()).then(|| requested_model.to_owned());
+    let resolved_model = (!resolved_model.trim().is_empty()
+        && resolved_model != requested_model.as_deref().unwrap_or_default())
+    .then(|| resolved_model.to_owned());
+    let model = Some(requested_model.clone().unwrap_or_else(|| {
+        resolved_model
+            .clone()
+            .unwrap_or_else(|| "unknown".to_owned())
+    }));
+    TraceContext {
+        id: Uuid::new_v4().to_string(),
+        client_request_id: client_request_id.to_owned(),
+        trace_kind,
+        route: path.to_owned(),
+        application: application.to_owned(),
+        requested_model,
+        resolved_model,
+        model,
+        account_id: account.map(|value| value.id.clone()),
+        account_email: account.and_then(|value| value.email.clone()),
+        provider: account.map(normalize_provider),
+        stream,
+        started_at,
+        upstream_attempt,
+        provider_attempts,
+        recovered_retry: trace_kind == "client-request" && provider_attempts > 1,
+        codex_session_id: request_codex_session_id(headers),
+        project_root: header_value(headers, "x-multivibe-project-root"),
+        project_host: header_value(headers, "x-multivibe-project-host"),
+        priority: header_value(headers, "x-multivibe-priority"),
+        routing_decision: account.map(|_| "cloud".to_owned()),
+        execution_location: account.map(|value| {
+            if value.location.as_deref() == Some("local") {
+                "local".to_owned()
+            } else {
+                "cloud".to_owned()
+            }
+        }),
+        capacity_version: Some(state.capacity_version.load(AtomicOrdering::Relaxed)),
+        admission_wait_ms: Some(now_ms().saturating_sub(started_at)),
+        latency_breakdown: None,
+        account_selection: None,
+        input_context: trace_input_context(body),
+        request_body: state.config.trace_include_body.then(|| body.clone()),
+        request_headers: state
+            .config
+            .trace_include_headers
+            .then(|| sanitize_trace_headers(headers)),
+    }
 }
 
 fn upstream_headers(
@@ -2980,9 +4071,8 @@ fn transform_for(
     // ChatGPT's Responses endpoint has returned a real SSE stream without a
     // Content-Type header. The chat-compatible route still needs conversion;
     // only the native Responses route can safely pass those bytes through.
-    let headerless_openai_chat_stream = client_chat
-        && normalize_provider(account) == "openai"
-        && content_type.trim().is_empty();
+    let headerless_openai_chat_stream =
+        client_chat && normalize_provider(account) == "openai" && content_type.trim().is_empty();
     if !client_stream || (!upstream_sse && !headerless_openai_chat_stream) {
         return StreamTransform::None;
     }
@@ -3009,6 +4099,9 @@ async fn proxy_inference(
     application: &str,
 ) -> Result<ProxyResult, Response> {
     let started_at = now_ms();
+    let client_request_id = header_value(headers, "x-multivibe-trace-parent")
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     let store = state.store.snapshot().await.map_err(|error| {
         error_response(StatusCode::SERVICE_UNAVAILABLE, error, "store_unavailable")
     })?;
@@ -3080,12 +4173,53 @@ async fn proxy_inference(
             }
         }
         had_account = true;
+        let eligible_account_count = accounts.len();
         for account in accounts {
             if attempted >= state.config.max_account_retry_attempts {
                 break;
             }
             attempted += 1;
             let provider = normalize_provider(&account);
+            let mut trace_context = build_trace_context(
+                state,
+                path,
+                headers,
+                body,
+                application,
+                &client_request_id,
+                &requested_model,
+                &route.model,
+                Some(&account),
+                client_stream,
+                started_at,
+                attempted,
+                attempted,
+                "upstream-attempt",
+            );
+            let client_context = build_trace_context(
+                state,
+                path,
+                headers,
+                body,
+                application,
+                &client_request_id,
+                &requested_model,
+                &route.model,
+                None,
+                client_stream,
+                started_at,
+                0,
+                attempted,
+                "client-request",
+            );
+            trace_context.account_selection = Some(json!({
+                "reason": "quota-headroom",
+                "provider": provider,
+                "candidateCount": eligible_account_count,
+                "eligibleCount": eligible_account_count,
+                "nearLimitCount": 0,
+                "rotated": attempted > 1,
+            }));
             if state.config.session_affinity_enabled {
                 if let Some(session_id) = codex_session_id.as_deref() {
                     // Record the attempt before the upstream call. If this
@@ -3145,25 +4279,81 @@ async fn proxy_inference(
                     &state.config,
                 ))
                 .body(serialized);
-            let response = match timeout(state.config.upstream_timeout, request.send()).await {
+            let upstream_started_at = now_ms();
+            let response_result = timeout(state.config.upstream_timeout, request.send()).await;
+            let response = match response_result {
                 Ok(Ok(response)) => response,
                 Ok(Err(error)) => {
+                    trace_context.latency_breakdown = Some(json!({
+                        "preparationMs": upstream_started_at.saturating_sub(started_at),
+                        "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
+                    }));
                     last_status = StatusCode::BAD_GATEWAY;
                     last_error = error.to_string();
+                    state
+                        .trace
+                        .record(
+                            &trace_context,
+                            TraceOutcome {
+                                status: last_status.as_u16(),
+                                completed_at: now_ms(),
+                                lifecycle_state: "completed",
+                                usage: None,
+                                error: Some(last_error.clone()),
+                                upstream_error: Some(last_error.clone()),
+                                upstream_content_type: None,
+                                upstream_empty_body: Some(true),
+                                ttft_ms: None,
+                                response_stream_diagnostics: None,
+                                assistant_empty_output: None,
+                                assistant_finish_reason: None,
+                                client_disconnected: Some(false),
+                            },
+                        )
+                        .await;
                     state
                         .mark_blocked(&account, &route.model, Duration::from_secs(5))
                         .await;
                     continue;
                 }
                 Err(_) => {
+                    trace_context.latency_breakdown = Some(json!({
+                        "preparationMs": upstream_started_at.saturating_sub(started_at),
+                        "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
+                    }));
                     last_status = StatusCode::GATEWAY_TIMEOUT;
                     last_error = "upstream request timed out".to_owned();
+                    state
+                        .trace
+                        .record(
+                            &trace_context,
+                            TraceOutcome {
+                                status: last_status.as_u16(),
+                                completed_at: now_ms(),
+                                lifecycle_state: "completed",
+                                usage: None,
+                                error: Some(last_error.clone()),
+                                upstream_error: Some(last_error.clone()),
+                                upstream_content_type: None,
+                                upstream_empty_body: Some(true),
+                                ttft_ms: None,
+                                response_stream_diagnostics: None,
+                                assistant_empty_output: None,
+                                assistant_finish_reason: None,
+                                client_disconnected: Some(false),
+                            },
+                        )
+                        .await;
                     state
                         .mark_blocked(&account, &route.model, Duration::from_secs(5))
                         .await;
                     continue;
                 }
             };
+            trace_context.latency_breakdown = Some(json!({
+                "preparationMs": upstream_started_at.saturating_sub(started_at),
+                "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
+            }));
             let status = response.status();
             last_status = status;
             let response_headers = copy_public_headers(response.headers());
@@ -3182,6 +4372,28 @@ async fn proxy_inference(
                     text.chars().take(500).collect()
                 };
                 if should_retry_status(status, &text) {
+                    state
+                        .trace
+                        .record(
+                            &trace_context,
+                            TraceOutcome {
+                                status: status.as_u16(),
+                                completed_at: now_ms(),
+                                lifecycle_state: "completed",
+                                usage: None,
+                                error: Some(last_error.clone()),
+                                upstream_error: Some(last_error.clone()),
+                                upstream_content_type: (!content_type.trim().is_empty())
+                                    .then(|| content_type.clone()),
+                                upstream_empty_body: Some(bytes.is_empty()),
+                                ttft_ms: None,
+                                response_stream_diagnostics: None,
+                                assistant_empty_output: None,
+                                assistant_finish_reason: None,
+                                client_disconnected: Some(false),
+                            },
+                        )
+                        .await;
                     state
                         .mark_blocked(
                             &account,
@@ -3204,14 +4416,35 @@ async fn proxy_inference(
                 state
                     .trace
                     .record(
-                        path,
-                        application,
-                        Some(&account),
-                        Some(&route.model),
-                        status.as_u16(),
-                        client_stream,
-                        started_at,
-                        Some(&last_error),
+                        &trace_context,
+                        TraceOutcome {
+                            status: status.as_u16(),
+                            completed_at: now_ms(),
+                            lifecycle_state: "completed",
+                            usage: None,
+                            error: Some(last_error.clone()),
+                            upstream_error: Some(last_error.clone()),
+                            upstream_content_type: (!content_type.trim().is_empty())
+                                .then(|| content_type.clone()),
+                            upstream_empty_body: Some(body.is_empty()),
+                            ttft_ms: None,
+                            response_stream_diagnostics: None,
+                            assistant_empty_output: None,
+                            assistant_finish_reason: None,
+                            client_disconnected: Some(false),
+                        },
+                    )
+                    .await;
+                state
+                    .trace
+                    .record(
+                        &client_context,
+                        client_trace_outcome(
+                            status.as_u16(),
+                            now_ms(),
+                            Some(last_error.clone()),
+                            Some(false),
+                        ),
                     )
                     .await;
                 return Ok(ProxyResult::Buffered(BufferedReply {
@@ -3246,25 +4479,19 @@ async fn proxy_inference(
                     stream_headers
                         .push(("content-type".to_owned(), "text/event-stream".to_owned()));
                 }
-                state
-                    .trace
-                    .record(
-                        path,
-                        application,
-                        Some(&account),
-                        Some(&route.model),
-                        response.status().as_u16(),
-                        true,
-                        started_at,
-                        None,
-                    )
-                    .await;
+                let streaming_trace = StreamingTrace::new(
+                    state.trace.clone(),
+                    trace_context,
+                    client_context,
+                    (!content_type.trim().is_empty()).then(|| content_type.clone()),
+                );
                 return Ok(ProxyResult::Streaming(StreamingReply {
                     status: response.status(),
                     headers: stream_headers,
                     upstream: response,
                     transform,
                     requested_model: requested_model.clone().if_empty_then(default_model),
+                    trace: Some(streaming_trace),
                 }));
             }
             let bytes = response.bytes().await.unwrap_or_default();
@@ -3277,34 +4504,48 @@ async fn proxy_inference(
                 &bytes,
                 response_headers,
             );
+            let outcome = buffered_trace_outcome(&reply, &content_type, bytes.is_empty());
+            let completed_at = outcome.completed_at;
+            let client_status = outcome.status;
+            let client_error = outcome.error.clone();
+            state.trace.record(&trace_context, outcome).await;
             state
                 .trace
                 .record(
-                    path,
-                    application,
-                    Some(&account),
-                    Some(&route.model),
-                    reply.status.as_u16(),
-                    client_stream,
-                    started_at,
-                    None,
+                    &client_context,
+                    client_trace_outcome(client_status, completed_at, client_error, Some(false)),
                 )
                 .await;
             return Ok(ProxyResult::Buffered(reply));
         }
     }
     let trace_model = requested_model.clone().if_empty_then(default_model);
+    let no_account_context = build_trace_context(
+        state,
+        path,
+        headers,
+        body,
+        application,
+        &client_request_id,
+        &requested_model,
+        &trace_model,
+        None,
+        client_stream,
+        started_at,
+        0,
+        attempted,
+        "client-request",
+    );
     state
         .trace
         .record(
-            path,
-            application,
-            None,
-            Some(&trace_model),
-            last_status.as_u16(),
-            client_stream,
-            started_at,
-            Some(&last_error),
+            &no_account_context,
+            client_trace_outcome(
+                last_status.as_u16(),
+                now_ms(),
+                Some(last_error.clone()),
+                Some(false),
+            ),
         )
         .await;
     let status = if had_account {
@@ -3910,13 +5151,22 @@ fn streaming_response(reply: StreamingReply) -> Response {
     builder = set_response_headers(builder, &headers);
     let transform = reply.transform;
     let model = reply.requested_model;
+    let status = reply.status.as_u16();
+    let mut trace = reply.trace;
     let mut upstream = reply.upstream.bytes_stream();
     let body = stream! {
+        let mut stream_error: Option<String> = None;
         if transform == StreamTransform::None {
             while let Some(chunk) = upstream.next().await {
                 match chunk {
-                    Ok(chunk) => yield Ok::<Bytes, Infallible>(chunk),
-                    Err(_) => break,
+                    Ok(chunk) => {
+                        if let Some(trace) = trace.as_mut() { trace.observe(&chunk); }
+                        yield Ok::<Bytes, Infallible>(chunk)
+                    }
+                    Err(error) => {
+                        stream_error = Some(error.to_string());
+                        break;
+                    }
                 }
             }
         } else {
@@ -3924,11 +5174,13 @@ fn streaming_response(reply: StreamingReply) -> Response {
             while let Some(chunk) = upstream.next().await {
                 match chunk {
                     Ok(chunk) => {
+                        if let Some(trace) = trace.as_mut() { trace.observe(&chunk); }
                         let output = converter.push(&chunk);
                         if !output.is_empty() { yield Ok::<Bytes, Infallible>(Bytes::from(output)); }
                     }
                     Err(error) => {
                         let message = error.to_string();
+                        stream_error = Some(message.clone());
                         let output = if transform == StreamTransform::ResponseToAnthropic {
                             format!("event: error\ndata: {}\n\n", json!({"type": "error", "error": {"type": "api_error", "message": message}}))
                         } else {
@@ -3941,6 +5193,9 @@ fn streaming_response(reply: StreamingReply) -> Response {
             }
             let output = converter.finish();
             if !output.is_empty() { yield Ok::<Bytes, Infallible>(Bytes::from(output)); }
+        }
+        if let Some(trace) = trace.as_mut() {
+            trace.finish(status, stream_error, Some(false)).await;
         }
     };
     builder
@@ -5620,9 +6875,14 @@ async fn handle_websocket(
                         } else if !ws_send_json(&mut socket, json!({"type": "error", "status": reply.status.as_u16(), "error": {"type": "upstream_error", "message": String::from_utf8_lossy(&reply.body)}})).await { return; }
                     }
                     Ok(ProxyResult::Streaming(reply)) => {
+                        let status = reply.status.as_u16();
+                        let mut trace = reply.trace;
                         let mut upstream = reply.upstream.bytes_stream();
                         let mut buffer = String::new();
                         while let Some(Ok(chunk)) = upstream.next().await {
+                            if let Some(trace) = trace.as_mut() {
+                                trace.observe(&chunk);
+                            }
                             buffer.push_str(&String::from_utf8_lossy(&chunk));
                             while let Some(index) = buffer.find("\n\n") {
                                 let frame = buffer[..index].to_owned();
@@ -5636,6 +6896,9 @@ async fn handle_websocket(
                             for (_, event) in parse_sse_events(&format!("{buffer}\n\n")) {
                                 if event.as_str() != Some("[DONE]") && !ws_send_json(&mut socket, event).await { return; }
                             }
+                        }
+                        if let Some(trace) = trace.as_mut() {
+                            trace.finish(status, None, Some(false)).await;
                         }
                     }
                     Err(_) => {
@@ -6236,6 +7499,8 @@ mod tests {
         config.models_cache_ttl = Duration::from_secs(60);
         config.upstream_timeout = Duration::from_secs(5);
         config.trace_path = Some(trace_path.clone());
+        config.trace_include_body = true;
+        config.trace_include_headers = true;
 
         let state = EdgeState::new(config).await.unwrap();
         let (edge_url, edge_task) = start_server(build_router(state)).await;
@@ -6292,13 +7557,32 @@ mod tests {
         drop(request_bodies);
 
         let trace_contents = fs::read_to_string(&trace_path).await.unwrap();
-        let trace = trace_contents
+        let traces = trace_contents
             .lines()
             .map(|line| serde_json::from_str::<Value>(line).unwrap())
-            .find(|entry| entry["route"] == "/v1/responses")
+            .filter(|entry| entry["route"] == "/v1/responses")
+            .collect::<Vec<_>>();
+        let trace = traces
+            .iter()
+            .find(|entry| entry["traceKind"] == "upstream-attempt")
             .unwrap();
         assert_eq!(trace["model"], "gpt-5.6-sol");
         assert_eq!(trace["provider"], "openai");
+        assert_eq!(trace["usageStatus"], "measured");
+        assert_eq!(trace["tokensInput"], 1);
+        assert_eq!(trace["tokensOutput"], 1);
+        assert_eq!(trace["tokensTotal"], 2);
+        assert_eq!(trace["assistantEmptyOutput"], false);
+        assert_eq!(trace["lifecycleState"], "completed");
+        assert!(trace["costUsd"].as_f64().is_some());
+        assert_eq!(trace["requestBody"]["model"], "gpt-5.6-sol");
+        assert_eq!(trace["requestHeaders"]["authorization"], "[REDACTED]");
+        let client_trace = traces
+            .iter()
+            .find(|entry| entry["traceKind"] == "client-request")
+            .unwrap();
+        assert_eq!(client_trace["providerAttempts"], 1);
+        assert_eq!(client_trace["status"], 200);
 
         let response = client
             .get(format!(
@@ -6349,7 +7633,7 @@ mod tests {
                             "event: response.output_text.delta\n",
                             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"native\"}\n\n",
                             "event: response.completed\n",
-                            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-stream\",\"object\":\"response\",\"status\":\"completed\",\"output\":[]}}\n\n",
+                            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-stream\",\"object\":\"response\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n",
                         )))
                         .unwrap()
                 }),
@@ -6358,6 +7642,7 @@ mod tests {
 
         let store_path = temporary_path("native-stream");
         let jobs_path = temporary_path("native-stream-jobs");
+        let trace_path = temporary_path("native-stream-trace");
         fs::write(
             &store_path,
             serde_json::to_vec(&store_with_accounts(vec![account("openai-1")])).unwrap(),
@@ -6371,6 +7656,7 @@ mod tests {
         config.configured_api_keys = vec![("stream-app".to_owned(), "stream-key".to_owned())];
         config.models_cache_ttl = Duration::from_secs(60);
         config.upstream_timeout = Duration::from_secs(5);
+        config.trace_path = Some(trace_path.clone());
 
         let state = EdgeState::new(config).await.unwrap();
         let (edge_url, edge_task) = start_server(build_router(state)).await;
@@ -6396,11 +7682,41 @@ mod tests {
         let body = response.text().await.unwrap();
         assert!(body.contains("response.output_text.delta"));
         assert!(body.contains("resp-stream"));
+        let trace_contents = fs::read_to_string(&trace_path).await.unwrap();
+        let traces = trace_contents
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|entry| entry["route"] == "/v1/responses")
+            .collect::<Vec<_>>();
+        let trace = traces
+            .iter()
+            .find(|entry| entry["traceKind"] == "upstream-attempt")
+            .unwrap();
+        assert_eq!(trace["usageStatus"], "measured");
+        assert_eq!(trace["tokensInput"], 3);
+        assert_eq!(trace["tokensOutput"], 2);
+        assert_eq!(trace["tokensTotal"], 5);
+        assert!(trace["ttftMs"].as_u64().is_some());
+        assert_eq!(trace["assistantEmptyOutput"], false);
+        assert_eq!(
+            trace["responseStreamDiagnostics"]["sawResponseCompleted"],
+            true
+        );
+        assert_eq!(
+            trace["responseStreamDiagnostics"]["outputTextDeltaCount"],
+            1
+        );
+        assert!(
+            traces
+                .iter()
+                .any(|entry| entry["traceKind"] == "client-request")
+        );
 
         edge_task.abort();
         upstream_task.abort();
         let _ = fs::remove_file(store_path).await;
         let _ = fs::remove_file(jobs_path).await;
+        let _ = fs::remove_file(trace_path).await;
     }
 
     #[tokio::test]
