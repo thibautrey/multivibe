@@ -600,6 +600,10 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
       path.join(repositoryRoot, "web", "public", "assets", "brand", "favicon-32x32.png"),
       path.join(contents, "Resources", "MultiVibeMenuBarIcon.png"),
     );
+    await cp(
+      path.join(repositoryRoot, "packaging", "macos", "MultiVibeMenuBarTemplate.png"),
+      path.join(contents, "Resources", "MultiVibeMenuBarTemplate.png"),
+    );
     await mkdir(path.join(contents, "Resources", "update"), { recursive: true, mode: 0o755 });
     await cp(
       path.join(repositoryRoot, "packaging", "macos", "install.sh"),

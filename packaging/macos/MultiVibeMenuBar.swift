@@ -122,6 +122,11 @@ private final class QuotaBarView: NSView {
 
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 7) }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         let track = NSBezierPath(roundedRect: bounds, xRadius: 3.5, yRadius: 3.5)
@@ -135,6 +140,67 @@ private final class QuotaBarView: NSView {
         let color: NSColor = safeValue <= 10 ? MenuBarPalette.danger : safeValue <= 30 ? MenuBarPalette.warning : MenuBarPalette.primary
         color.setFill()
         fill.fill()
+    }
+}
+
+private final class AdaptiveLayerView: NSView {
+    private let adaptiveBackgroundColor: NSColor?
+    private let adaptiveBorderColor: NSColor?
+
+    init(backgroundColor: NSColor? = nil, borderColor: NSColor? = nil) {
+        adaptiveBackgroundColor = backgroundColor
+        adaptiveBorderColor = borderColor
+        super.init(frame: .zero)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = adaptiveBackgroundColor?.cgColor
+            layer?.borderColor = adaptiveBorderColor?.cgColor
+        }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+}
+
+private final class AdaptiveLayerTextField: NSTextField {
+    private let adaptiveBackgroundColor: NSColor
+    private let adaptiveBorderColor: NSColor
+
+    init(labelWithString string: String, backgroundColor: NSColor, borderColor: NSColor) {
+        adaptiveBackgroundColor = backgroundColor
+        adaptiveBorderColor = borderColor
+        super.init(frame: .zero)
+        stringValue = string
+        isEditable = false
+        isSelectable = false
+        isBezeled = false
+        drawsBackground = false
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = adaptiveBackgroundColor.cgColor
+            layer?.borderColor = adaptiveBorderColor.cgColor
+        }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
     }
 }
 
@@ -159,9 +225,7 @@ private final class HostPopoverController: NSViewController {
     private let startAtLoginButton = NSButton(checkboxWithTitle: "Start MultiVibe Host when I log in", target: nil, action: nil)
 
     override func loadView() {
-        let background = NSView()
-        background.wantsLayer = true
-        background.layer?.backgroundColor = MenuBarPalette.background.cgColor
+        let background = AdaptiveLayerView(backgroundColor: MenuBarPalette.background)
         view = background
 
         let header = makeHeader()
@@ -295,10 +359,7 @@ private final class HostPopoverController: NSViewController {
     }
 
     private func makeDivider() -> NSView {
-        let divider = NSView()
-        divider.wantsLayer = true
-        divider.layer?.backgroundColor = MenuBarPalette.line.cgColor
-        return divider
+        AdaptiveLayerView(backgroundColor: MenuBarPalette.line)
     }
 
     private enum ButtonKind {
@@ -335,8 +396,6 @@ private final class HostPopoverController: NSViewController {
         startAtLogin: Bool
     ) {
         loadViewIfNeeded()
-        view.wantsLayer = true
-        view.layer?.backgroundColor = MenuBarPalette.background.cgColor
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
         headerTitle.stringValue = "MultiVibe"
         headerStatus.stringValue = status
@@ -376,12 +435,9 @@ private final class HostPopoverController: NSViewController {
     }
 
     private func card() -> NSView {
-        let view = NSView()
-        view.wantsLayer = true
+        let view = AdaptiveLayerView(backgroundColor: MenuBarPalette.panel, borderColor: MenuBarPalette.line)
         view.layer?.cornerRadius = 15
         view.layer?.borderWidth = 1
-        view.layer?.borderColor = MenuBarPalette.line.cgColor
-        view.layer?.backgroundColor = MenuBarPalette.panel.cgColor
         view.layer?.masksToBounds = true
         view.translatesAutoresizingMaskIntoConstraints = false
         view.widthAnchor.constraint(equalToConstant: 384).isActive = true
@@ -525,12 +581,15 @@ private final class HostPopoverController: NSViewController {
         default:
             (copy, color, background) = ("Attention", MenuBarPalette.danger, MenuBarPalette.dangerSoft)
         }
-        let badge = label("\u{00a0}\(copy)\u{00a0}", size: 10, weight: .semibold, color: color)
-        badge.wantsLayer = true
+        let badge = AdaptiveLayerTextField(
+            labelWithString: "\u{00a0}\(copy)\u{00a0}",
+            backgroundColor: background,
+            borderColor: color.withAlphaComponent(0.2)
+        )
+        badge.font = .systemFont(ofSize: 10, weight: .semibold)
+        badge.textColor = color
         badge.layer?.cornerRadius = 8
         badge.layer?.borderWidth = 0.5
-        badge.layer?.borderColor = color.withAlphaComponent(0.2).cgColor
-        badge.layer?.backgroundColor = background.cgColor
         return badge
     }
 
@@ -704,9 +763,7 @@ private final class GitHubStarPromptController: NSViewController {
     private let starButton = NSButton(title: "⭐ Star MultiVibe on GitHub", target: nil, action: nil)
 
     override func loadView() {
-        let background = NSView()
-        background.wantsLayer = true
-        background.layer?.backgroundColor = MenuBarPalette.background.cgColor
+        let background = AdaptiveLayerView(backgroundColor: MenuBarPalette.background)
 
         messageLabel.font = .systemFont(ofSize: 13)
         messageLabel.textColor = MenuBarPalette.text
@@ -783,7 +840,6 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
     private var githubStarPromptPresented = false
     private var githubStarPromptCloseWorkItem: DispatchWorkItem?
     private var githubStarPromptAcknowledged = UserDefaults.standard.bool(forKey: githubStarPromptAcknowledgedKey)
-    private var appearanceObserver: NSObjectProtocol?
 #if DEBUG
     private var previewWindow: NSWindow?
 #endif
@@ -808,13 +864,6 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         didFinishLaunching = true
         configureStatusItem()
         configurePopover()
-        appearanceObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didChangeEffectiveAppearanceNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.render()
-        }
         configureTerminationSignals()
         render()
         ensureServiceIsRunning()
@@ -934,15 +983,12 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
         githubStarPromptCloseWorkItem?.cancel()
-        if let appearanceObserver {
-            NotificationCenter.default.removeObserver(appearanceObserver)
-        }
         if let process = ownedService, process.isRunning { process.terminate() }
     }
 
     private func configureStatusItem() {
         guard let button = statusItem.button else { return }
-        let iconURL = Bundle.main.resourceURL?.appendingPathComponent("MultiVibeMenuBarIcon.png")
+        let iconURL = Bundle.main.resourceURL?.appendingPathComponent("MultiVibeMenuBarTemplate.png")
         if let iconURL, let image = NSImage(contentsOf: iconURL) {
             image.size = NSSize(width: 18, height: 18)
             image.isTemplate = true
