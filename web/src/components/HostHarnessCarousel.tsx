@@ -184,16 +184,8 @@ export function HostHarnessCards({ onApiKeysChanged, variant = "default" }: Prop
   return (
     <section
       className={`panel host-harness-browser host-harness-${variant}`}
-      aria-label={variant === "onboarding" ? "Detected coding tools" : undefined}
-      aria-labelledby={variant === "default" ? "host-harness-title" : undefined}
+      aria-label={variant === "default" ? "Coding agents" : variant === "onboarding" ? "Detected coding tools" : undefined}
     >
-      {variant === "default" && <div className="section-split-header host-harness-header">
-        <div>
-          <h2 id="host-harness-title">Connect your coding agents</h2>
-        </div>
-        <span className="badge">{harnesses.length} detected</span>
-      </div>}
-
       {loaded && harnesses.length === 0 && variant === "onboarding" && (
         <div className="compact-empty-state">
           <strong>No supported harness detected</strong>
