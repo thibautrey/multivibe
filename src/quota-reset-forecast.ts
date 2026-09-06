@@ -9,6 +9,9 @@ export type CodexQuotaResetForecast = {
   horizonHours?: number;
 };
 
+export const CODEX_QUOTA_RESET_FORECAST_CACHE_MS = 5 * 60_000;
+export const CODEX_QUOTA_RESET_FORECAST_RETRY_MS = 60_000;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -41,4 +44,40 @@ export async function fetchCodexQuotaResetForecast(
       ? { horizonHours }
       : {}),
   };
+}
+
+export class CodexQuotaResetForecastCache {
+  private value?: CodexQuotaResetForecast;
+  private failure?: unknown;
+  private expiresAt = 0;
+  private inFlight?: Promise<CodexQuotaResetForecast>;
+
+  constructor(
+    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  async get(): Promise<CodexQuotaResetForecast> {
+    const now = this.now();
+    if (this.value && now < this.expiresAt) return this.value;
+    if (this.failure && now < this.expiresAt) throw this.failure;
+    if (this.inFlight) return this.inFlight;
+    this.inFlight = fetchCodexQuotaResetForecast(this.fetchImpl)
+      .then((value) => {
+        this.value = value;
+        this.failure = undefined;
+        this.expiresAt = this.now() + CODEX_QUOTA_RESET_FORECAST_CACHE_MS;
+        return value;
+      })
+      .catch((error) => {
+        this.expiresAt = this.now() + CODEX_QUOTA_RESET_FORECAST_RETRY_MS;
+        if (this.value) return this.value;
+        this.failure = error;
+        throw error;
+      })
+      .finally(() => {
+        this.inFlight = undefined;
+      });
+    return this.inFlight;
+  }
 }

@@ -22,6 +22,26 @@ export type AutoResetResult =
   | { status: "consumed"; result: unknown }
   | { status: "failed"; error: string };
 
+export async function scheduleWeeklyReset(
+  account: Account,
+  store: AccountStore,
+): Promise<"scheduled" | "already-scheduled"> {
+  if (normalizeProvider(account) !== "openai") {
+    throw new Error("only OpenAI accounts support reset credits");
+  }
+  if (account.state?.scheduledWeeklyReset) return "already-scheduled";
+  account.state = {
+    ...account.state,
+    scheduledWeeklyReset: {
+      scheduledAt: Date.now(),
+      idempotencyKey: randomUUID(),
+      thresholdRemainingPercent: WEEKLY_RESET_REMAINING_THRESHOLD_PERCENT,
+    },
+  };
+  await store.addOrUpdate(account);
+  return "scheduled";
+}
+
 function openAiAccountHeaders(account: Account): Record<string, string> {
   const headers: Record<string, string> = {
     authorization: `Bearer ${account.accessToken}`,

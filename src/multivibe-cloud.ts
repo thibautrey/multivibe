@@ -11,6 +11,7 @@ const SCOPES = [
   "billing:read",
   "projects:read",
   "projects:write",
+  "provider:read",
 ].join(" ");
 const FLOW_LIFETIME_MS = 10 * 60_000;
 const API_KEY_LIFETIME_MS = 365 * 24 * 60 * 60_000;
@@ -33,6 +34,17 @@ export type MultivibeCloudStatus = {
   subscription?: string;
   apiKeyExpiresAt?: string;
   topupUrl: string;
+  autoTopup?: {
+    enabled: true;
+    thresholdUsd: string;
+    rechargeUsd: string;
+  };
+  workerEarnings?: {
+    currency: "USD";
+    lifetimeNetUsd: string;
+    monthNetUsd: string;
+    averageMonthlyNetUsd: string;
+  };
 };
 
 export type MultivibeCloudServiceOptions = {
@@ -71,6 +83,35 @@ function usdValue(value: unknown): string | undefined {
   if (!text || !/^(?:0|[1-9]\d{0,12})(?:\.\d{1,6})?$/.test(text)) return undefined;
   const amount = Number(text);
   return Number.isFinite(amount) && amount >= 0 ? text : undefined;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function autoTopupValue(value: unknown): MultivibeCloudStatus["autoTopup"] {
+  const root = recordValue(value);
+  if (root?.monetaryEffectsApplied !== true) return undefined;
+  const data = recordValue(root?.current) ?? recordValue(root?.data) ?? root;
+  if (!data || data.state !== "active") return undefined;
+  const thresholdUsd = usdValue(data.thresholdUsd);
+  const rechargeUsd = usdValue(data.rechargeUsd);
+  return thresholdUsd && rechargeUsd
+    ? { enabled: true, thresholdUsd, rechargeUsd }
+    : undefined;
+}
+
+function workerEarningsValue(value: unknown): MultivibeCloudStatus["workerEarnings"] {
+  const data = recordValue(value);
+  if (data?.monetaryEffectsApplied !== true) return undefined;
+  const lifetimeNetUsd = usdValue(data?.lifetimeNetUsd);
+  const monthNetUsd = usdValue(data?.monthNetUsd);
+  const averageMonthlyNetUsd = usdValue(data?.averageMonthlyNetUsd);
+  return data?.currency === "USD" && lifetimeNetUsd && monthNetUsd && averageMonthlyNetUsd
+    ? { currency: "USD", lifetimeNetUsd, monthNetUsd, averageMonthlyNetUsd }
+    : undefined;
 }
 
 function expiresAtFromToken(value: unknown): number | undefined {
@@ -258,9 +299,11 @@ export class MultivibeCloudService {
       await this.ensureCloudAccount(connection);
       const account = existingCloudAccount(await this.store.listAccounts());
       if (!account) return { status: "disconnected", topupUrl: this.topupUrl };
-      const [creditsResult, subscriptionResult] = await Promise.allSettled([
+      const [creditsResult, subscriptionResult, autoTopupResult, earningsResult] = await Promise.allSettled([
         this.requestJson("/client/v1/credits", connection.accessToken),
         this.requestJson("/client/v1/billing/subscription", connection.accessToken),
+        this.requestJson("/client/v1/auto-recharge", connection.accessToken),
+        this.requestJson("/provider/v1/earnings", connection.accessToken),
       ]);
       if (creditsResult.status !== "fulfilled") throw creditsResult.reason;
       const credits = creditsResult.value as Record<string, unknown>;
@@ -269,12 +312,18 @@ export class MultivibeCloudService {
       const subscription = subscriptionResult.status === "fulfilled"
         ? subscriptionResult.value as Record<string, unknown> : undefined;
       const subscriptionName = subscriptionLabel(subscription?.data);
+      const autoTopup = autoTopupResult.status === "fulfilled"
+        ? autoTopupValue(autoTopupResult.value) : undefined;
+      const workerEarnings = earningsResult.status === "fulfilled"
+        ? workerEarningsValue(earningsResult.value) : undefined;
       return {
         status: "connected",
         balanceUsd: balance,
         ...(subscriptionName ? { subscription: subscriptionName } : {}),
         ...(account.expiresAt ? { apiKeyExpiresAt: new Date(account.expiresAt).toISOString() } : {}),
         topupUrl: this.topupUrl,
+        ...(autoTopup ? { autoTopup } : {}),
+        ...(workerEarnings ? { workerEarnings } : {}),
       };
     } catch (error) {
       if (error instanceof CloudHttpError && (error.status === 400 || error.status === 401)) {
