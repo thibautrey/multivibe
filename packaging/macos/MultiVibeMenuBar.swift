@@ -61,6 +61,20 @@ private struct MenuBarSummary: Decodable {
     let earnings: Earnings
 }
 
+private struct LocalWorkerStatusResponse: Decodable {
+    struct LocalWorker: Decodable {
+        let configurationState: String
+        let connectURL: URL
+
+        enum CodingKeys: String, CodingKey {
+            case configurationState = "configuration_state"
+            case connectURL = "connect_url"
+        }
+    }
+
+    let localWorker: LocalWorker?
+}
+
 private struct DesktopSession: Decodable {
     let path: String
 }
@@ -112,6 +126,7 @@ private final class FlippedView: NSView {
 
 private final class HostPopoverController: NSViewController {
     var openDashboard: (() -> Void)?
+    var configureWorker: (() -> Void)?
     var checkForUpdates: (() -> Void)?
     var installUpdate: (() -> Void)?
     var setStartAtLogin: ((Bool) -> Void)?
@@ -302,6 +317,7 @@ private final class HostPopoverController: NSViewController {
 
     func render(
         summary: MenuBarSummary?,
+        workerNeedsSetup: Bool,
         status: String,
         operational: Bool,
         updateStatus: HostUpdateStatus?,
@@ -331,8 +347,13 @@ private final class HostPopoverController: NSViewController {
         } else {
             contentStack.addArrangedSubview(emptyAccountsCard(operational: operational))
         }
-        contentStack.addArrangedSubview(sectionHeader("Earnings", symbol: "chart.bar.fill", tint: .systemGreen))
-        contentStack.addArrangedSubview(earningsCard(summary?.earnings))
+        if workerNeedsSetup {
+            contentStack.addArrangedSubview(sectionHeader("Worker", symbol: "desktopcomputer", tint: .systemBlue))
+            contentStack.addArrangedSubview(workerSetupCard())
+        } else {
+            contentStack.addArrangedSubview(sectionHeader("Earnings", symbol: "chart.bar.fill", tint: .systemGreen))
+            contentStack.addArrangedSubview(earningsCard(summary?.earnings))
+        }
         contentStack.addArrangedSubview(sectionHeader("Host Updates", symbol: "megaphone.fill", tint: .systemOrange))
         contentStack.addArrangedSubview(updateCard(updateStatus, busy: updateBusy))
         startAtLoginButton.state = startAtLogin ? .on : .off
@@ -678,6 +699,37 @@ private final class HostPopoverController: NSViewController {
         return container
     }
 
+    private func workerSetupCard() -> NSView {
+        let container = card(backgroundColor: NSColor.systemBlue.withAlphaComponent(0.09))
+        let icon = iconBubble(symbol: "desktopcomputer", color: .systemBlue, size: 32)
+        let title = label("Set up your local worker", size: 12, weight: .semibold)
+        let detail = label("Connect this Mac to MultiVibe Cloud to start earning.", size: 10, color: .secondaryLabelColor)
+        detail.maximumNumberOfLines = 2
+        let copy = NSStackView(views: [title, detail])
+        copy.orientation = .vertical
+        copy.alignment = .leading
+        copy.spacing = 3
+        copy.translatesAutoresizingMaskIntoConstraints = false
+        let configureButton = NSButton(title: "Configure", target: self, action: #selector(didConfigureWorker))
+        configureButton.bezelStyle = .rounded
+        configureButton.controlSize = .small
+        let body = NSStackView(views: [icon, copy, NSView(), configureButton])
+        body.orientation = .horizontal
+        body.alignment = .centerY
+        body.spacing = 8
+        body.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(body)
+        NSLayoutConstraint.activate([
+            icon.widthAnchor.constraint(equalToConstant: 32),
+            icon.heightAnchor.constraint(equalToConstant: 32),
+            body.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
+            body.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
+            body.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
+            body.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
+        ])
+        return container
+    }
+
     private func updateCard(_ update: HostUpdateStatus?, busy: Bool) -> NSView {
         let isCurrent = update?.availableVersion == nil && update?.status == "current"
         let container = card(backgroundColor: isCurrent
@@ -810,6 +862,7 @@ private final class HostPopoverController: NSViewController {
     }
 
     @objc private func didOpenDashboard() { openDashboard?() }
+    @objc private func didConfigureWorker() { configureWorker?() }
     @objc private func didCheckForUpdates() { checkForUpdates?() }
     @objc private func didInstallUpdate() { installUpdate?() }
     @objc private func didChangeStartAtLogin() { setStartAtLogin?(startAtLoginButton.state == .on) }
@@ -891,6 +944,8 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
     private var operational = false
     private var statusText = "Starting…"
     private var summary: MenuBarSummary?
+    private var workerConfigurationState: String?
+    private var workerSetupURL: URL?
     private var refreshing = false
     private var updateStatus: HostUpdateStatus?
     private var updateBusy = false
@@ -1073,6 +1128,11 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
             self?.popover.performClose(nil)
             self?.openDashboard()
         }
+        popoverController.configureWorker = { [weak self] in
+            guard let self, let workerSetupURL = self.workerSetupURL else { return }
+            self.popover.performClose(nil)
+            NSWorkspace.shared.open(workerSetupURL)
+        }
         popoverController.checkForUpdates = { [weak self] in self?.runUpdateAction(path: "/admin/host-update/check") }
         popoverController.installUpdate = { [weak self] in self?.runUpdateAction(path: "/admin/host-update/apply") }
         popoverController.setStartAtLogin = { [weak self] enabled in self?.setStartAtLogin(enabled) }
@@ -1109,6 +1169,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         button.toolTip = "MultiVibe Host — \(statusText)"
         popoverController.render(
             summary: summary,
+            workerNeedsSetup: workerConfigurationState == "unconfigured" && workerSetupURL != nil,
             status: statusText,
             operational: operational,
             updateStatus: updateStatus,
@@ -1160,6 +1221,8 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         render()
         guard let request = authorizedRequest(path: "/admin/host/menu-bar") else {
             refreshing = false
+            workerConfigurationState = nil
+            workerSetupURL = nil
             updateState(operational: false, status: "Starting…")
             if ownedService?.isRunning != true { ensureServiceIsRunning() }
             return
@@ -1170,18 +1233,47 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
                   let summary = try? JSONDecoder().decode(MenuBarSummary.self, from: data) else {
                 DispatchQueue.main.async {
                     self?.refreshing = false
+                    self?.workerConfigurationState = nil
+                    self?.workerSetupURL = nil
                     self?.updateState(operational: false, status: "Unavailable")
                     if self?.ownedService?.isRunning != true { self?.launchService(avoidingOccupiedPort: http != nil) }
                 }
                 return
             }
             DispatchQueue.main.async {
-                self?.refreshing = false
                 self?.summary = summary
                 self?.updateState(operational: summary.operational, status: summary.operational ? "Operational" : "Unavailable")
                 if summary.operational, self?.pendingDashboardOpen == true { self?.requestDashboardSession() }
                 if summary.operational, self?.pendingEnrollmentToken != nil { self?.submitPendingEnrollment() }
                 self?.refreshUpdateStatus()
+                self?.refreshLocalWorkerStatus()
+            }
+        }.resume()
+    }
+
+    private func refreshLocalWorkerStatus() {
+        guard let request = authorizedRequest(path: "/admin/provider-agent/local-worker") else {
+            workerConfigurationState = nil
+            workerSetupURL = nil
+            refreshing = false
+            render()
+            return
+        }
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
+            let worker = data
+                .flatMap { try? JSONDecoder().decode(LocalWorkerStatusResponse.self, from: $0) }
+            let isSuccessful = (response as? HTTPURLResponse)?.statusCode == 200
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if isSuccessful, let localWorker = worker?.localWorker {
+                    self.workerConfigurationState = localWorker.configurationState
+                    self.workerSetupURL = localWorker.configurationState == "unconfigured" ? localWorker.connectURL : nil
+                } else {
+                    self.workerConfigurationState = nil
+                    self.workerSetupURL = nil
+                }
+                self.refreshing = false
+                self.render()
             }
         }.resume()
     }
