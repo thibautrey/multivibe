@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -15,12 +19,13 @@ import (
 )
 
 const (
-	runtimeBackendContractVersion    = "provider-runtime-backend-v1"
-	runtimeWorkloadProfileVersion    = "provider-runtime-workload-profile-v2"
-	runtimeBackendOverridesVersion   = "provider-runtime-overrides-v1"
-	runtimeBackendMetricsVersion     = "provider-runtime-metrics-v1"
-	runtimeBackendOllamaID           = "ollama-managed"
-	runtimeBackendMaximumConcurrency = 1024
+	runtimeBackendContractVersion       = "provider-runtime-backend-v1"
+	runtimeWorkloadProfileVersion       = "provider-runtime-workload-profile-v2"
+	runtimeBackendOverridesVersion      = "provider-runtime-overrides-v1"
+	runtimeBackendMetricsVersion        = "provider-runtime-metrics-v1"
+	runtimeBackendOllamaID              = "ollama-managed"
+	runtimeBackendMaximumConcurrency    = 1024
+	runtimeBackendMaximumExecutionBytes = uint64(12 * 1024 * 1024)
 )
 
 var (
@@ -39,6 +44,15 @@ var (
 	runtimeBackendPinnedImagePattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9./_-]{0,255}@sha256:[a-f0-9]{64}$`)
 	runtimeExecutionIDPattern          = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 )
+
+func containsRuntimeModelID(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
 
 type runtimeBackendCapabilities struct {
 	Prepare         bool `json:"prepare"`
@@ -353,7 +367,7 @@ func validateRuntimeBackendDescriptor(descriptor runtimeBackendDescriptor) error
 		!descriptor.Capabilities.Prepare || !descriptor.Capabilities.Load || !descriptor.Capabilities.Health || !descriptor.Capabilities.Readiness ||
 		!descriptor.Capabilities.Metrics || !descriptor.Capabilities.Cleanup || !descriptor.Capabilities.Stop ||
 		(descriptor.Capabilities.Stream && !descriptor.Capabilities.Execute) || (descriptor.Capabilities.Cancel && !descriptor.Capabilities.Execute) ||
-		!descriptor.Capabilities.ShadowOnly || descriptor.Capabilities.CustomerTraffic ||
+		(descriptor.Capabilities.CustomerTraffic && (!descriptor.Capabilities.Execute || descriptor.Capabilities.ShadowOnly)) ||
 		len(descriptor.Accelerators) == 0 || len(descriptor.Accelerators) > 8 {
 		return errRuntimeBackendInvalid
 	}
@@ -410,7 +424,7 @@ func validateRuntimeBackendDescriptor(descriptor runtimeBackendDescriptor) error
 		resources.MaximumConcurrency > runtimeBackendMaximumConcurrency || resources.MaximumModelBytes == 0 ||
 		resources.MaximumModelBytes > maximumProviderArtifactBytes || resources.MaximumMemoryBytes == 0 || resources.MaximumMemoryBytes > maximumProviderVRAMBytes ||
 		resources.MaximumContextTokens == 0 || resources.MaximumContextTokens > 131072 ||
-		resources.MaximumCommandOutput == 0 || resources.MaximumCommandOutput > uint64(managedOllamaCommandOutputMaxBytes) ||
+		resources.MaximumCommandOutput == 0 || resources.MaximumCommandOutput > runtimeBackendMaximumExecutionBytes ||
 		resources.MaximumInstallSeconds == 0 || resources.MaximumInstallSeconds > uint64(managedOllamaDefaultInstallTimeout.Seconds()) ||
 		resources.MaximumPrepareSeconds == 0 || resources.MaximumPrepareSeconds > uint64(managedOllamaDefaultPullTimeout.Seconds()) {
 		return errRuntimeBackendInvalid
@@ -685,6 +699,12 @@ type ollamaRuntimeBackend struct {
 	catalog                providerModelCatalog
 	dependencyManifest     managedOllamaDependencyManifest
 	descriptor             runtimeBackendDescriptor
+	client                 *http.Client
+	endpoint               string
+	mu                     sync.Mutex
+	loadedModels           map[string]string
+	executions             map[string]context.CancelFunc
+	metrics                runtimeBackendMetrics
 }
 
 // pinnedManagedControllerRuntime consumes immutable values captured by the
@@ -723,9 +743,9 @@ func newOllamaRuntimeBackend(runtime managedControllerRuntime, catalogPath, depe
 		ID:              runtimeBackendOllamaID,
 		Priority:        100,
 		Capabilities: runtimeBackendCapabilities{
-			Prepare: true, Load: true, Execute: false, Stream: false, Cancel: false,
+			Prepare: true, Load: true, Execute: true, Stream: true, Cancel: true,
 			Health: true, Readiness: true, Metrics: true, Cleanup: true, Stop: true,
-			ShadowOnly: true, CustomerTraffic: false,
+			ShadowOnly: false, CustomerTraffic: true,
 		},
 		Accelerators: []runtimeBackendAcceleratorConstraint{
 			{Profile: "apple-silicon", OS: "darwin", Architecture: "arm64", Kind: "metal"},
@@ -740,7 +760,7 @@ func newOllamaRuntimeBackend(runtime managedControllerRuntime, catalogPath, depe
 			Resources: runtimeBackendResourceBounds{
 				MaximumModels: managedOllamaMaximumModels, MaximumConcurrency: 1, MaximumModelBytes: maximumProviderArtifactBytes,
 				MaximumMemoryBytes:   maximumProviderVRAMBytes,
-				MaximumContextTokens: 131072, MaximumCommandOutput: uint64(managedOllamaCommandOutputMaxBytes),
+				MaximumContextTokens: 131072, MaximumCommandOutput: runtimeBackendMaximumExecutionBytes,
 				MaximumInstallSeconds: uint64(managedOllamaDefaultInstallTimeout.Seconds()), MaximumPrepareSeconds: uint64(managedOllamaDefaultPullTimeout.Seconds()),
 			},
 			Provenance: runtimeBackendProvenance{
@@ -751,9 +771,20 @@ func newOllamaRuntimeBackend(runtime managedControllerRuntime, catalogPath, depe
 	if err := validateRuntimeBackendDescriptor(descriptor); err != nil {
 		return nil, err
 	}
+	executionOrigin := "http://" + managedOllamaDefaultListenAddress
+	if configured, ok := runtime.(interface{ executionOrigin() string }); ok && configured.executionOrigin() != "" {
+		executionOrigin = configured.executionOrigin()
+	}
 	return &ollamaRuntimeBackend{
 		runtime: runtime, pinnedRuntime: pinnedRuntime, catalogPath: catalogPath, dependencyManifestPath: dependencyManifestPath,
 		catalog: cloneRuntimeBackendCatalog(catalog), dependencyManifest: cloneRuntimeBackendDependencyManifest(manifest), descriptor: descriptor,
+		client: &http.Client{
+			Timeout:       5 * time.Minute,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+		},
+		endpoint:     executionOrigin,
+		loadedModels: make(map[string]string), executions: make(map[string]context.CancelFunc),
+		metrics: runtimeBackendMetrics{SchemaVersion: runtimeBackendMetricsVersion},
 	}, nil
 }
 
@@ -802,22 +833,217 @@ func (backend *ollamaRuntimeBackend) Load(ctx context.Context, request runtimeLo
 	if record.CanonicalModelID != request.Profile.Model.ModelID || record.ManifestSHA256 != request.Profile.Model.ContentDigest {
 		return runtimeLoadedModel{}, errRuntimeBackendIncompatible
 	}
+	backend.mu.Lock()
+	backend.loadedModels[record.CanonicalModelID] = record.OllamaModel
+	backend.mu.Unlock()
 	return runtimeLoadedModel{BackendID: backend.descriptor.ID, ModelID: record.CanonicalModelID, ContentDigest: request.Profile.Model.ContentDigest}, nil
 }
 
-func (backend *ollamaRuntimeBackend) Execute(context.Context, runtimeExecuteRequest) (runtimeExecuteResult, error) {
-	return runtimeExecuteResult{}, errRuntimeBackendExecutionDisabled
+func (backend *ollamaRuntimeBackend) beginExecution(ctx context.Context, request runtimeExecuteRequest) (context.Context, string, func(error), error) {
+	if ctx == nil || !runtimeExecutionIDPattern.MatchString(request.ExecutionID) || !validSelectedModelID(request.ModelID) ||
+		len(request.Input) == 0 || uint64(len(request.Input)) > backend.descriptor.Launch.Resources.MaximumCommandOutput ||
+		request.MaximumOutput == 0 || request.MaximumOutput > backend.descriptor.Launch.Resources.MaximumCommandOutput {
+		return nil, "", nil, errRuntimeBackendInvalid
+	}
+	if err := ctx.Err(); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, "", nil, errRuntimeBackendTimedOut
+		}
+		return nil, "", nil, errRuntimeBackendCancelled
+	}
+	backend.mu.Lock()
+	ollamaModel, loaded := backend.loadedModels[request.ModelID]
+	if !loaded || ollamaModel == "" || len(backend.executions) >= int(backend.descriptor.Launch.Resources.MaximumConcurrency) {
+		backend.mu.Unlock()
+		return nil, "", nil, errRuntimeBackendIncompatible
+	}
+	if _, duplicate := backend.executions[request.ExecutionID]; duplicate {
+		backend.mu.Unlock()
+		return nil, "", nil, errRuntimeBackendInvalid
+	}
+	executionContext, cancel := context.WithCancel(ctx)
+	backend.executions[request.ExecutionID] = cancel
+	backend.metrics.InFlight = uint32(len(backend.executions))
+	backend.metrics.Running = true
+	backend.mu.Unlock()
+	complete := func(executionError error) {
+		backend.mu.Lock()
+		if current, found := backend.executions[request.ExecutionID]; found {
+			current()
+			delete(backend.executions, request.ExecutionID)
+		}
+		backend.metrics.InFlight = uint32(len(backend.executions))
+		backend.metrics.ExecutionSamples++
+		if executionError != nil {
+			backend.metrics.ExecutionErrors++
+			switch {
+			case errors.Is(executionError, errRuntimeBackendOutOfMemory):
+				backend.metrics.OutOfMemoryErrors++
+			case errors.Is(executionError, errRuntimeBackendCrashed):
+				backend.metrics.CrashErrors++
+			case errors.Is(executionError, errRuntimeBackendTimedOut):
+				backend.metrics.TimeoutErrors++
+			case errors.Is(executionError, errRuntimeBackendCancelled):
+				backend.metrics.CancelledExecutions++
+			}
+		}
+		backend.mu.Unlock()
+	}
+	return executionContext, ollamaModel, complete, nil
 }
 
-func (backend *ollamaRuntimeBackend) ExecuteStream(context.Context, runtimeExecuteRequest, func(runtimeExecuteChunk) error) (runtimeExecutionSummary, error) {
-	return runtimeExecutionSummary{}, errRuntimeBackendExecutionDisabled
+func ollamaExecutionBody(input []byte, model string, stream bool) ([]byte, error) {
+	if validateUniqueJSONKeys(input) != nil {
+		return nil, errRuntimeBackendInvalid
+	}
+	var payload map[string]json.RawMessage
+	if json.Unmarshal(input, &payload) != nil || payload == nil {
+		return nil, errRuntimeBackendInvalid
+	}
+	modelJSON, _ := json.Marshal(model)
+	streamJSON, _ := json.Marshal(stream)
+	payload["model"] = modelJSON
+	payload["stream"] = streamJSON
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, errRuntimeBackendInvalid
+	}
+	return encoded, nil
+}
+
+func normalizeOllamaExecutionError(ctx context.Context, status int, body []byte, err error) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) || status == http.StatusRequestTimeout || status == http.StatusGatewayTimeout {
+		return errRuntimeBackendTimedOut
+	}
+	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+		return errRuntimeBackendCancelled
+	}
+	if status == http.StatusInsufficientStorage || bytes.Contains(bytes.ToLower(body), []byte("out of memory")) {
+		return errRuntimeBackendOutOfMemory
+	}
+	if err != nil || status >= 500 {
+		return errRuntimeBackendCrashed
+	}
+	if status >= 400 {
+		return errRuntimeBackendInvalid
+	}
+	return nil
+}
+
+func (backend *ollamaRuntimeBackend) openExecution(ctx context.Context, request runtimeExecuteRequest, stream bool) (*http.Response, func(error), error) {
+	executionContext, model, complete, err := backend.beginExecution(ctx, request)
+	if err != nil {
+		return nil, nil, err
+	}
+	body, err := ollamaExecutionBody(request.Input, model, stream)
+	if err != nil {
+		complete(err)
+		return nil, nil, err
+	}
+	httpRequest, err := http.NewRequestWithContext(executionContext, http.MethodPost, backend.endpoint+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		complete(errRuntimeBackendInvalid)
+		return nil, nil, errRuntimeBackendInvalid
+	}
+	httpRequest.Header.Set("accept", map[bool]string{true: "text/event-stream", false: "application/json"}[stream])
+	httpRequest.Header.Set("content-type", "application/json")
+	response, requestErr := backend.client.Do(httpRequest)
+	if requestErr != nil {
+		normalized := normalizeOllamaExecutionError(executionContext, 0, nil, requestErr)
+		complete(normalized)
+		return nil, nil, normalized
+	}
+	if response.StatusCode != http.StatusOK {
+		failureBody, _ := io.ReadAll(io.LimitReader(response.Body, 4097))
+		response.Body.Close()
+		normalized := normalizeOllamaExecutionError(executionContext, response.StatusCode, failureBody, nil)
+		complete(normalized)
+		return nil, nil, normalized
+	}
+	return response, complete, nil
+}
+
+func (backend *ollamaRuntimeBackend) Execute(ctx context.Context, request runtimeExecuteRequest) (result runtimeExecuteResult, resultErr error) {
+	response, complete, err := backend.openExecution(ctx, request, false)
+	if err != nil {
+		return runtimeExecuteResult{}, err
+	}
+	defer response.Body.Close()
+	defer func() { complete(resultErr) }()
+	output, err := io.ReadAll(io.LimitReader(response.Body, int64(request.MaximumOutput)+1))
+	if err != nil {
+		resultErr = normalizeOllamaExecutionError(ctx, 0, nil, err)
+		return runtimeExecuteResult{}, resultErr
+	}
+	if uint64(len(output)) > request.MaximumOutput {
+		resultErr = errRuntimeBackendInvalid
+		return runtimeExecuteResult{}, resultErr
+	}
+	return runtimeExecuteResult{Output: output}, nil
+}
+
+func (backend *ollamaRuntimeBackend) ExecuteStream(ctx context.Context, request runtimeExecuteRequest, emit func(runtimeExecuteChunk) error) (summary runtimeExecutionSummary, resultErr error) {
+	if emit == nil {
+		return runtimeExecutionSummary{}, errRuntimeBackendInvalid
+	}
+	response, complete, err := backend.openExecution(ctx, request, true)
+	if err != nil {
+		return runtimeExecutionSummary{}, err
+	}
+	defer response.Body.Close()
+	defer func() { complete(resultErr) }()
+	buffer := make([]byte, 32*1024)
+	var pending []byte
+	for {
+		count, readErr := response.Body.Read(buffer)
+		if count > 0 {
+			summary.OutputBytes += uint64(count)
+			if summary.OutputBytes > request.MaximumOutput {
+				resultErr = errRuntimeBackendInvalid
+				return runtimeExecutionSummary{}, resultErr
+			}
+			if pending != nil {
+				if err := emit(runtimeExecuteChunk{Output: pending}); err != nil {
+					resultErr = err
+					return runtimeExecutionSummary{}, err
+				}
+			}
+			pending = append([]byte{}, buffer[:count]...)
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			resultErr = normalizeOllamaExecutionError(ctx, 0, nil, readErr)
+			return runtimeExecutionSummary{}, resultErr
+		}
+	}
+	if len(pending) == 0 {
+		resultErr = errRuntimeBackendCrashed
+		return runtimeExecutionSummary{}, resultErr
+	}
+	if err := emit(runtimeExecuteChunk{Output: pending, Final: true}); err != nil {
+		resultErr = err
+		return runtimeExecutionSummary{}, err
+	}
+	summary.OutputTokens = 1
+	return summary, nil
 }
 
 func (backend *ollamaRuntimeBackend) Cancel(_ context.Context, executionID string) error {
 	if !runtimeExecutionIDPattern.MatchString(executionID) {
 		return errRuntimeBackendInvalid
 	}
-	return errRuntimeBackendCapabilityMissing
+	backend.mu.Lock()
+	cancel, found := backend.executions[executionID]
+	if found {
+		cancel()
+	}
+	backend.mu.Unlock()
+	if !found {
+		return errRuntimeBackendExecutionUnknown
+	}
+	return nil
 }
 
 func (backend *ollamaRuntimeBackend) Health(_ context.Context, policy *capacityPolicyStateDocument) (runtimeBackendHealth, error) {
@@ -836,9 +1062,12 @@ func (backend *ollamaRuntimeBackend) Metrics(_ context.Context, policy *capacity
 		return runtimeBackendMetrics{}, err
 	}
 	status := backend.runtime.status(policy)
-	metrics := runtimeBackendMetrics{
-		SchemaVersion: runtimeBackendMetricsVersion, Running: status.Running, InstalledModels: uint32(len(inventory)), InFlight: 0,
-	}
+	backend.mu.Lock()
+	metrics := backend.metrics
+	backend.mu.Unlock()
+	metrics.SchemaVersion = runtimeBackendMetricsVersion
+	metrics.Running = status.Running
+	metrics.InstalledModels = uint32(len(inventory))
 	if err := validateRuntimeBackendMetrics(backend.descriptor, metrics); err != nil {
 		return runtimeBackendMetrics{}, err
 	}
@@ -857,6 +1086,9 @@ func (backend *ollamaRuntimeBackend) Cleanup(ctx context.Context, request runtim
 		if err := backend.pinnedRuntime.deactivateModelPinned(ctx, request.Policy, cloneRuntimeBackendCatalog(backend.catalog), modelID); err != nil {
 			return err
 		}
+		backend.mu.Lock()
+		delete(backend.loadedModels, modelID)
+		backend.mu.Unlock()
 		previous = modelID
 	}
 	if request.StopRuntime {
@@ -866,6 +1098,11 @@ func (backend *ollamaRuntimeBackend) Cleanup(ctx context.Context, request runtim
 }
 
 func (backend *ollamaRuntimeBackend) Stop(ctx context.Context) error {
+	backend.mu.Lock()
+	for _, cancel := range backend.executions {
+		cancel()
+	}
+	backend.mu.Unlock()
 	return backend.runtime.stop(ctx)
 }
 
@@ -903,14 +1140,27 @@ func (backend *ollamaRuntimeBackend) authorizeModelActivation(policy *capacityPo
 	if catalogPath != backend.catalogPath {
 		return managedOllamaModelRecord{}, errRuntimeBackendInvalid
 	}
-	return backend.pinnedRuntime.authorizeModelActivationPinned(policy, cloneRuntimeBackendCatalog(backend.catalog), modelID)
+	record, err := backend.pinnedRuntime.authorizeModelActivationPinned(policy, cloneRuntimeBackendCatalog(backend.catalog), modelID)
+	if err != nil {
+		return managedOllamaModelRecord{}, err
+	}
+	backend.mu.Lock()
+	backend.loadedModels[record.CanonicalModelID] = record.OllamaModel
+	backend.mu.Unlock()
+	return record, nil
 }
 
 func (backend *ollamaRuntimeBackend) deactivateModel(ctx context.Context, policy *capacityPolicyStateDocument, catalogPath, modelID string) error {
 	if catalogPath != backend.catalogPath {
 		return errRuntimeBackendInvalid
 	}
-	return backend.pinnedRuntime.deactivateModelPinned(ctx, policy, cloneRuntimeBackendCatalog(backend.catalog), modelID)
+	if err := backend.pinnedRuntime.deactivateModelPinned(ctx, policy, cloneRuntimeBackendCatalog(backend.catalog), modelID); err != nil {
+		return err
+	}
+	backend.mu.Lock()
+	delete(backend.loadedModels, modelID)
+	backend.mu.Unlock()
+	return nil
 }
 
 func (backend *ollamaRuntimeBackend) managedInventory(policy *capacityPolicyStateDocument) ([]string, error) {
@@ -934,6 +1184,32 @@ type ollamaRuntimeBackendSDKBridge struct {
 	mu            sync.Mutex
 	runtimeOwners map[runtimeBackendSDKOwner]struct{}
 	downloads     map[runtimeBackendSDKDownloadIdentity]runtimebackendapi.DownloadedModel
+	loadedModels  map[runtimeBackendSDKDownloadIdentity]runtimebackendapi.LoadedModel
+	executions    map[string]runtimeBackendSDKExecutionIdentity
+}
+
+// WaitUntilExecuting is a test-observation boundary used by the shared
+// contract suite. It exposes only whether a caller-supplied execution ID is
+// active and never returns execution ownership or payload data.
+func (bridge *ollamaRuntimeBackendSDKBridge) WaitUntilExecuting(ctx context.Context, executionID string) error {
+	if !runtimeExecutionIDPattern.MatchString(executionID) {
+		return runtimebackendapi.ErrInvalid
+	}
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		bridge.mu.Lock()
+		_, found := bridge.executions[executionID]
+		bridge.mu.Unlock()
+		if found {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return runtimeBackendSDKContextError(ctx)
+		case <-ticker.C:
+		}
+	}
 }
 
 type runtimeBackendSDKOwner struct {
@@ -948,6 +1224,11 @@ type runtimeBackendSDKDownloadIdentity struct {
 	trafficClass   runtimebackendapi.TrafficClass
 	modelID        string
 	contentDigest  string
+}
+
+type runtimeBackendSDKExecutionIdentity struct {
+	owner   runtimeBackendSDKOwner
+	modelID string
 }
 
 func newRuntimeBackendSDKRegistry(backend *ollamaRuntimeBackend, policies *capacityPolicyStore, capability hostCapability) (*runtimebackendapi.Registry, error) {
@@ -971,7 +1252,9 @@ func newOllamaRuntimeBackendSDKBridge(
 	bridge := &ollamaRuntimeBackendSDKBridge{
 		backend: backend, policies: policies, capability: capability, now: now,
 		lifecycle: make(chan struct{}, 1), runtimeOwners: make(map[runtimeBackendSDKOwner]struct{}),
-		downloads: make(map[runtimeBackendSDKDownloadIdentity]runtimebackendapi.DownloadedModel),
+		downloads:    make(map[runtimeBackendSDKDownloadIdentity]runtimebackendapi.DownloadedModel),
+		loadedModels: make(map[runtimeBackendSDKDownloadIdentity]runtimebackendapi.LoadedModel),
+		executions:   make(map[string]runtimeBackendSDKExecutionIdentity),
 	}
 	bridge.lifecycle <- struct{}{}
 	descriptor := bridge.Descriptor()
@@ -1178,8 +1461,111 @@ func (bridge *ollamaRuntimeBackendSDKBridge) Load(ctx context.Context, request r
 	}
 	bridge.mu.Lock()
 	bridge.runtimeOwners[runtimeBackendSDKOwnerKey(request.Grant)] = struct{}{}
+	bridge.loadedModels[runtimeBackendSDKDownloadKey(request.Grant, request.Model)] = runtimebackendapi.LoadedModel{
+		BackendID: loaded.BackendID, ModelID: loaded.ModelID, ContentDigest: loaded.ContentDigest,
+	}
 	bridge.mu.Unlock()
 	return runtimebackendapi.LoadedModel{BackendID: loaded.BackendID, ModelID: loaded.ModelID, ContentDigest: loaded.ContentDigest}, nil
+}
+
+func (bridge *ollamaRuntimeBackendSDKBridge) beginSDKExecution(ctx context.Context, request runtimebackendapi.ExecutionRequest) (func(), error) {
+	if err := runtimebackendapi.ValidateExecutionRequestForDescriptor(bridge.Descriptor(), request, bridge.now()); err != nil {
+		return nil, err
+	}
+	if _, err := bridge.authorizedPolicy(request.Grant); err != nil {
+		return nil, err
+	}
+	owner := runtimeBackendSDKOwnerKey(request.Grant)
+	bridge.mu.Lock()
+	defer bridge.mu.Unlock()
+	if _, running := bridge.runtimeOwners[owner]; !running {
+		return nil, runtimebackendapi.ErrExecutionDisabled
+	}
+	loaded := false
+	for identity, receipt := range bridge.loadedModels {
+		if runtimeBackendSDKDownloadOwnerMatches(identity, request.Grant) && receipt.ModelID == request.ModelID {
+			loaded = true
+			break
+		}
+	}
+	if !loaded {
+		return nil, runtimebackendapi.ErrInvalid
+	}
+	if existing, duplicate := bridge.executions[request.ExecutionID]; duplicate {
+		if existing.owner != owner {
+			return nil, runtimebackendapi.ErrGrantMismatch
+		}
+		return nil, runtimebackendapi.ErrInvalid
+	}
+	bridge.executions[request.ExecutionID] = runtimeBackendSDKExecutionIdentity{owner: owner, modelID: request.ModelID}
+	return func() {
+		bridge.mu.Lock()
+		delete(bridge.executions, request.ExecutionID)
+		bridge.mu.Unlock()
+	}, nil
+}
+
+func (bridge *ollamaRuntimeBackendSDKBridge) Execute(ctx context.Context, request runtimebackendapi.ExecutionRequest) (runtimebackendapi.ExecutionResult, error) {
+	complete, err := bridge.beginSDKExecution(ctx, request)
+	if err != nil {
+		return runtimebackendapi.ExecutionResult{}, err
+	}
+	defer complete()
+	result, err := bridge.backend.Execute(ctx, runtimeExecuteRequest{
+		ExecutionID: request.ExecutionID, ModelID: request.ModelID,
+		Input: append([]byte{}, request.Input...), MaximumOutput: request.MaximumOutputBytes,
+	})
+	if err != nil {
+		return runtimebackendapi.ExecutionResult{}, runtimeBackendSDKError(err)
+	}
+	return runtimebackendapi.ExecutionResult{Output: append([]byte{}, result.Output...)}, nil
+}
+
+func (bridge *ollamaRuntimeBackendSDKBridge) ExecuteStream(ctx context.Context, request runtimebackendapi.ExecutionRequest, emit runtimebackendapi.EmitFunc) (runtimebackendapi.ExecutionSummary, error) {
+	if emit == nil {
+		return runtimebackendapi.ExecutionSummary{}, runtimebackendapi.ErrInvalid
+	}
+	complete, err := bridge.beginSDKExecution(ctx, request)
+	if err != nil {
+		return runtimebackendapi.ExecutionSummary{}, err
+	}
+	defer complete()
+	summary, err := bridge.backend.ExecuteStream(ctx, runtimeExecuteRequest{
+		ExecutionID: request.ExecutionID, ModelID: request.ModelID,
+		Input: append([]byte{}, request.Input...), MaximumOutput: request.MaximumOutputBytes,
+	}, func(chunk runtimeExecuteChunk) error {
+		return emit(runtimebackendapi.ExecutionChunk{
+			Event:  runtimebackendapi.ExecutionEventOutput,
+			Output: append([]byte{}, chunk.Output...), Final: chunk.Final,
+		})
+	})
+	if err != nil {
+		return runtimebackendapi.ExecutionSummary{}, runtimeBackendSDKError(err)
+	}
+	return runtimebackendapi.ExecutionSummary{OutputBytes: summary.OutputBytes, OutputTokens: summary.OutputTokens}, nil
+}
+
+func (bridge *ollamaRuntimeBackendSDKBridge) Cancel(ctx context.Context, request runtimebackendapi.CancelRequest) error {
+	if err := runtimeBackendSDKContextError(ctx); err != nil {
+		return err
+	}
+	if err := runtimebackendapi.ValidateCancelRequest(request, bridge.now()); err != nil {
+		return err
+	}
+	if _, err := bridge.authorizedPolicy(request.Grant); err != nil {
+		return err
+	}
+	owner := runtimeBackendSDKOwnerKey(request.Grant)
+	bridge.mu.Lock()
+	existing, found := bridge.executions[request.ExecutionID]
+	bridge.mu.Unlock()
+	if !found {
+		return runtimebackendapi.ErrExecutionUnknown
+	}
+	if existing.owner != owner {
+		return runtimebackendapi.ErrGrantMismatch
+	}
+	return runtimeBackendSDKError(bridge.backend.Cancel(ctx, request.ExecutionID))
 }
 
 func (bridge *ollamaRuntimeBackendSDKBridge) Health(ctx context.Context, grant runtimebackendapi.OperationGrant) (runtimebackendapi.Health, error) {
@@ -1269,6 +1655,15 @@ func (bridge *ollamaRuntimeBackendSDKBridge) Cleanup(ctx context.Context, reques
 			}
 		}
 	}
+	for _, execution := range bridge.executions {
+		if execution.owner != owner {
+			otherOwnerExists = true
+		}
+		if request.StopRuntime || containsRuntimeModelID(request.ModelIDs, execution.modelID) {
+			bridge.mu.Unlock()
+			return runtimebackendapi.ErrExecutionDisabled
+		}
+	}
 	bridge.mu.Unlock()
 	if request.StopRuntime && otherOwnerExists {
 		return runtimebackendapi.ErrGrantMismatch
@@ -1296,8 +1691,19 @@ func (bridge *ollamaRuntimeBackendSDKBridge) Cleanup(ctx context.Context, reques
 			}
 		}
 	}
+	for key := range bridge.loadedModels {
+		if !runtimeBackendSDKDownloadOwnerMatches(key, request.Grant) {
+			continue
+		}
+		for _, modelID := range request.ModelIDs {
+			if key.modelID == modelID {
+				delete(bridge.loadedModels, key)
+			}
+		}
+	}
 	if request.StopRuntime {
 		clear(bridge.runtimeOwners)
+		clear(bridge.loadedModels)
 	} else if !bridge.hasDownloadsForOwnerLocked(request.Grant) {
 		delete(bridge.runtimeOwners, owner)
 	}
@@ -1328,6 +1734,7 @@ func (bridge *ollamaRuntimeBackendSDKBridge) Stop(ctx context.Context, grant run
 	}
 	bridge.mu.Lock()
 	clear(bridge.runtimeOwners)
+	clear(bridge.loadedModels)
 	bridge.mu.Unlock()
 	return nil
 }
@@ -1365,6 +1772,10 @@ func (bridge *ollamaRuntimeBackendSDKBridge) authorizedPolicy(grant runtimebacke
 	policy := bridge.policies.snapshot()
 	if policy == nil || validateCapacityPolicyState(*policy) != nil || policy.Revision != grant.PolicyRevision {
 		return nil, runtimebackendapi.ErrIncompatible
+	}
+	if grant.TrafficClass == runtimebackendapi.TrafficClassCustomer &&
+		(policy.Paused == nil || *policy.Paused || policy.AllowCloudWorkloads == nil || !*policy.AllowCloudWorkloads) {
+		return nil, runtimebackendapi.ErrExecutionDisabled
 	}
 	return policy, nil
 }
@@ -1443,6 +1854,11 @@ func (bridge *ollamaRuntimeBackendSDKBridge) hasResourcesForAnotherOwnerLocked(g
 	}
 	for identity := range bridge.downloads {
 		if !runtimeBackendSDKDownloadOwnerMatches(identity, grant) {
+			return true
+		}
+	}
+	for _, execution := range bridge.executions {
+		if execution.owner != owner {
 			return true
 		}
 	}

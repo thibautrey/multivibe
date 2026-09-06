@@ -710,6 +710,7 @@ func main() {
 	trustedDemandKeysRaw := strings.TrimSpace(os.Getenv("MULTIVIBE_PROVIDER_DEMAND_TRUSTED_KEYS"))
 	var demand *providerDemandService
 	var plans *providerDemandPlanStore
+	var trustedDemandKeys trustedProviderDemandKeys
 	demandConfigurationFields := 0
 	for _, value := range []string{demandPlanPath, modelCatalogPath, trustedDemandKeysRaw} {
 		if value != "" {
@@ -735,6 +736,7 @@ func main() {
 			logger.Error("provider_agent_configuration_invalid", "error", err.Error())
 			os.Exit(2)
 		}
+		trustedDemandKeys = trustedKeys
 	}
 	managedRoot := strings.TrimSpace(os.Getenv("MULTIVIBE_PROVIDER_MANAGED_ROOT"))
 	bundledOllamaRoot := strings.TrimSpace(os.Getenv("MULTIVIBE_PROVIDER_BUNDLED_OLLAMA_ROOT"))
@@ -749,6 +751,7 @@ func main() {
 		}
 	}
 	var controller *managedProviderController
+	var managedBackend *ollamaRuntimeBackend
 	if managedConfigurationFields != 0 || bundledOllamaRoot != "" || ollamaListenAddress != "" || cudaVisibleDevices != "" {
 		if managedConfigurationFields != 3 || demand == nil || plans == nil || capacityPolicyPath == "" {
 			logger.Error("provider_agent_configuration_invalid", "error", "managed Ollama requires its root, dependency manifest, planner state, capacity policy and signed demand planning")
@@ -773,7 +776,8 @@ func main() {
 			logger.Error("provider_agent_configuration_invalid", "error", "managed Ollama runtime configuration is invalid")
 			os.Exit(2)
 		}
-		managedBackend, backendErr := newOllamaRuntimeBackend(managedRuntime, modelCatalogPath, dependencyManifestPath)
+		var backendErr error
+		managedBackend, backendErr = newOllamaRuntimeBackend(managedRuntime, modelCatalogPath, dependencyManifestPath)
 		backendRegistry, registryErr := newRuntimeBackendRegistry(managedBackend)
 		sdkRegistry, sdkRegistryErr := newRuntimeBackendSDKRegistry(managedBackend, capacity, capability)
 		if backendErr != nil || registryErr != nil || sdkRegistryErr != nil ||
@@ -828,6 +832,7 @@ func main() {
 	var enrollment *cloudEnrollmentService
 	var workerTest *workerTestService
 	var modelLifecycle *providerModelLifecycleService
+	var outboundWorker *communityOutboundWorker
 	if identity != nil {
 		enrollment = newCloudEnrollmentService(cloudURL, client, identity, enrollmentStore)
 		workerTest = newWorkerTestService(cloudURL, client, identity, enrollmentStore, runtimes)
@@ -836,13 +841,28 @@ func main() {
 			cloudURL, client, identity, enrollmentStore, runtimes, capacity, demand, controller,
 		)
 		go modelLifecycle.run(context.Background())
+		if managedBackend != nil && demand != nil {
+			replay, replayErr := openCommunityOutboundReplayStore(filepath.Join(managedRoot, "state", "community-outbound-replay.json"))
+			if replayErr != nil {
+				logger.Error("provider_agent_configuration_invalid", "error", replayErr.Error())
+				os.Exit(2)
+			}
+			outboundWorker, err = newCommunityOutboundWorker(
+				cloudURL, client, modelLifecycle.relay, enrollmentStore, capacity, managedBackend, trustedDemandKeys, replay,
+			)
+			if err != nil {
+				logger.Error("provider_agent_configuration_invalid", "error", err.Error())
+				os.Exit(2)
+			}
+			go outboundWorker.run(context.Background())
+		}
 	}
 	listener, err := openProviderAgentListener(listenAddress, bootstrap)
 	if err != nil {
 		logger.Error("provider_agent_listen_failed", "error", err.Error())
 		os.Exit(1)
 	}
-	logger.Info("provider_agent_started", "address", listener.Addr().String(), "selected_model_count", len(selections.snapshot().SelectedModels), "selection_persistent", statePath != "", "manual_runtime_count", len(runtimes.snapshot().Endpoints), "runtime_state_persistent", runtimeStatePath != "", "device_identity_persistent", deviceKeyPath != "", "cloud_enrollment_persistent", enrollmentStatePath != "", "worker_test_enabled", workerTest != nil, "model_lifecycle_enabled", modelLifecycle != nil, "capacity_policy_configured", capacity.snapshot() != nil, "capacity_policy_persistent", capacityPolicyPath != "", "demand_planning_enabled", demand != nil, "demand_plan_persistent", demandPlanPath != "", "managed_ollama_enabled", controller != nil)
+	logger.Info("provider_agent_started", "address", listener.Addr().String(), "selected_model_count", len(selections.snapshot().SelectedModels), "selection_persistent", statePath != "", "manual_runtime_count", len(runtimes.snapshot().Endpoints), "runtime_state_persistent", runtimeStatePath != "", "device_identity_persistent", deviceKeyPath != "", "cloud_enrollment_persistent", enrollmentStatePath != "", "worker_test_enabled", workerTest != nil, "model_lifecycle_enabled", modelLifecycle != nil, "community_outbound_enabled", outboundWorker != nil, "capacity_policy_configured", capacity.snapshot() != nil, "capacity_policy_persistent", capacityPolicyPath != "", "demand_planning_enabled", demand != nil, "demand_plan_persistent", demandPlanPath != "", "managed_ollama_enabled", controller != nil)
 	server := newProviderHTTPServer(providerHandlerWithModelLifecycle(core, selections, runtimes, identity, enrollment, capacity, demand, controller, capability, modelLifecycle, client, controlToken))
 	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("provider_agent_failed", "error", fmt.Sprint(err))

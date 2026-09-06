@@ -26,10 +26,10 @@ const (
 )
 
 type providerModelInventoryItem struct {
-	ReportedID       string  `json:"reportedId"`
+	ReportedID       string   `json:"reportedId"`
 	Modalities       []string `json:"modalities"`
-	ContentDigest    *string `json:"contentDigest"`
-	ArtifactVerified bool    `json:"artifactVerified"`
+	ContentDigest    *string  `json:"contentDigest"`
+	ArtifactVerified bool     `json:"artifactVerified"`
 }
 
 type providerModelInventoryRuntime struct {
@@ -69,23 +69,69 @@ type signedProviderModelInventory struct {
 }
 
 type providerModelAdmissionStatus struct {
-	RuntimeFamily   string `json:"runtimeFamily"`
-	ReportedModelID string `json:"reportedModelId"`
+	RuntimeFamily    string `json:"runtimeFamily"`
+	ReportedModelID  string `json:"reportedModelId"`
 	CanonicalModelID string `json:"canonicalModelId,omitempty"`
-	State           string `json:"state"`
-	ReasonCode      string `json:"reasonCode"`
-	UpdatedAt       string `json:"updatedAt"`
+	State            string `json:"state"`
+	ReasonCode       string `json:"reasonCode"`
+	UpdatedAt        string `json:"updatedAt"`
 }
 
 type providerModelLifecycleResponse struct {
-	ProtocolVersion       string                         `json:"protocolVersion"`
-	NodeID                string                         `json:"nodeId"`
-	InventoryGeneration   uint64                         `json:"inventoryGeneration"`
-	InventoryAccepted     bool                           `json:"inventoryAccepted"`
-	Replay                bool                           `json:"replay"`
+	ProtocolVersion        string                         `json:"protocolVersion"`
+	NodeID                 string                         `json:"nodeId"`
+	InventoryGeneration    uint64                         `json:"inventoryGeneration"`
+	InventoryAccepted      bool                           `json:"inventoryAccepted"`
+	Replay                 bool                           `json:"replay"`
 	NextReportAfterSeconds uint64                         `json:"nextReportAfterSeconds"`
-	Admissions            []providerModelAdmissionStatus `json:"admissions"`
+	Admissions             []providerModelAdmissionStatus `json:"admissions"`
 	DemandEnvelope         json.RawMessage                `json:"demandEnvelope,omitempty"`
+	RelaySession           *communityOutboundSession      `json:"relaySession,omitempty"`
+}
+
+type communityOutboundSession struct {
+	Token       string `json:"token"`
+	ExpiresAt   string `json:"expiresAt"`
+	PollAfterMS uint64 `json:"pollAfterMs"`
+}
+
+type communityOutboundSessionStore struct {
+	mu      sync.RWMutex
+	session *communityOutboundSession
+}
+
+func (store *communityOutboundSessionStore) replace(session *communityOutboundSession, now time.Time) error {
+	if session == nil {
+		store.mu.Lock()
+		store.session = nil
+		store.mu.Unlock()
+		return nil
+	}
+	expiresAt, err := canonicalTimestamp(session.ExpiresAt)
+	decoded, decodeErr := base64.RawURLEncoding.DecodeString(session.Token)
+	if err != nil || decodeErr != nil || len(decoded) != 32 || base64.RawURLEncoding.EncodeToString(decoded) != session.Token ||
+		session.PollAfterMS < 50 || session.PollAfterMS > 10_000 || !expiresAt.After(now) || expiresAt.Sub(now) > 2*time.Minute {
+		return errors.New("provider model lifecycle relay session is invalid")
+	}
+	copy := *session
+	store.mu.Lock()
+	store.session = &copy
+	store.mu.Unlock()
+	return nil
+}
+
+func (store *communityOutboundSessionStore) snapshot(now time.Time) *communityOutboundSession {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if store.session == nil {
+		return nil
+	}
+	expiresAt, err := canonicalTimestamp(store.session.ExpiresAt)
+	if err != nil || !expiresAt.After(now) {
+		return nil
+	}
+	copy := *store.session
+	return &copy
 }
 
 type providerModelLifecycleStatus struct {
@@ -111,6 +157,7 @@ type providerModelLifecycleService struct {
 	capacity   *capacityPolicyStore
 	demand     *providerDemandService
 	controller *managedProviderController
+	relay      *communityOutboundSessionStore
 	now        func() time.Time
 
 	mu     sync.Mutex
@@ -135,7 +182,8 @@ func newProviderModelLifecycleService(
 	runtimeClient.Timeout = 5 * time.Second
 	return &providerModelLifecycleService{
 		baseURL: baseURL, cloud: &cloud, runtime: &runtimeClient, identity: identity, enrollment: enrollment,
-		runtimes: runtimes, capacity: capacity, demand: demand, controller: controller, now: time.Now,
+		runtimes: runtimes, capacity: capacity, demand: demand, controller: controller,
+		relay: &communityOutboundSessionStore{}, now: time.Now,
 		status: providerModelLifecycleStatus{SchemaVersion: "provider-model-lifecycle-status-v1", State: "waiting_for_enrollment"},
 	}
 }
@@ -243,9 +291,9 @@ func (service *providerModelLifecycleService) signInventory(
 		DeviceKeyID: enrollment.DeviceKeyID, CredentialEpoch: enrollment.CredentialEpoch,
 		Generation: service.identity.sequence, MaxConcurrency: enrollment.DeclaredMaxConcurrency,
 		AvailableConcurrency: enrollment.DeclaredMaxConcurrency,
-		ObservedAt: observedAt.Format("2006-01-02T15:04:05.000Z"), IssuedAt: now.Format("2006-01-02T15:04:05.000Z"),
+		ObservedAt:           observedAt.Format("2006-01-02T15:04:05.000Z"), IssuedAt: now.Format("2006-01-02T15:04:05.000Z"),
 		ExpiresAt: now.Add(time.Minute).Format("2006-01-02T15:04:05.000Z"),
-		Runtimes: service.inventoryRuntimes(detected, policy), Diagnostics: diagnostics,
+		Runtimes:  service.inventoryRuntimes(detected, policy), Diagnostics: diagnostics,
 	}
 	unsigned := map[string]any{
 		"envelopeVersion": providerModelInventoryEnvelopeVersion,
@@ -253,7 +301,7 @@ func (service *providerModelLifecycleService) signInventory(
 		"payload":         payload,
 		"signature": map[string]any{
 			"algorithm": relaySignatureAlgorithm,
-			"keyId":    enrollment.DeviceKeyID,
+			"keyId":     enrollment.DeviceKeyID,
 		},
 	}
 	canonical, err := canonicalJSON(unsigned, providerModelInventoryMaximumBytes)
@@ -298,6 +346,9 @@ func (service *providerModelLifecycleService) submit(ctx context.Context, envelo
 		result.InventoryGeneration != envelope.Payload.Generation || !result.InventoryAccepted ||
 		result.NextReportAfterSeconds < 5 || result.NextReportAfterSeconds > 300 || len(result.Admissions) > 1000 {
 		return providerModelLifecycleResponse{}, errors.New("provider model inventory Cloud response is invalid")
+	}
+	if service.relay.replace(result.RelaySession, service.now().UTC()) != nil {
+		return providerModelLifecycleResponse{}, errors.New("provider model inventory Cloud relay session is invalid")
 	}
 	return result, nil
 }
@@ -374,6 +425,7 @@ func (service *providerModelLifecycleService) run(ctx context.Context) {
 			err = service.applyPlan(ctx, response)
 		}
 		if err != nil {
+			_ = service.relay.replace(nil, now)
 			service.updateStatus(func(status *providerModelLifecycleStatus) {
 				status.State = "degraded"
 				status.LastErrorCode = providerModelLifecycleErrorCode(err)

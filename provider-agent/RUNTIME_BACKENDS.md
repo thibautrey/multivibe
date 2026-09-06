@@ -101,11 +101,14 @@ Runtime-specific tests remain mandatory for private launch and artifact logic.
 
 ## Ollama reference bridge
 
-The current managed Ollama bridge proves the lifecycle SDK against the existing
-controller while keeping execution disabled in its descriptor. It is
-`shadow_only=true`, never advertises customer traffic, and does not create a
-customer routing or compensation path. Runtime `0.33.2`, its platform artifact,
-model manifest and every referenced blob remain digest-pinned and re-attested.
+The managed Ollama bridge now implements bounded execution, streaming and
+explicit cancellation against the loopback controller. Its inventory and
+loaded-model state feed the separately authorized outbound Cloud relay; the
+relay starts only with local `allow_cloud_workloads` consent, a live Cloud
+session and a signed demand plan. The generic community contribution registry
+remains shadow-only, so adding an adapter still cannot activate customer
+traffic by itself. Runtime `0.33.2`, its platform artifact, model manifest and
+every referenced blob remain digest-pinned and re-attested.
 
 Ollama is a reference integration, not a universal optimum. `llama.cpp`, vLLM,
 TensorRT-LLM, MLX and other future adapters must pass through the same compiled

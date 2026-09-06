@@ -177,8 +177,10 @@ The managed runtime is reached through the compiled, process-local backend
 contract documented in
 [runtimebackend/CONTRIBUTING.md](runtimebackend/CONTRIBUTING.md). That
 contract defines explicit primary/fallback selection, immutable launch and
-provenance allowlists, normalized metrics and lifecycle capabilities while
-keeping the current Ollama adapter strictly shadow-only.
+provenance allowlists, normalized metrics and lifecycle capabilities. The
+managed Ollama adapter can execute signed Cloud jobs through the outbound relay
+only while the owner has enabled `allow_cloud_workloads`; runtime registration
+alone never grants customer traffic.
 
 `POST /v1/cloud-shadow/demand` accepts only the bounded
 `multivibe-provider-demand-envelope-v1` contract. The agent rejects duplicate
