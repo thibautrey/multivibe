@@ -120,6 +120,34 @@ test("request tracing records one final client outcome beside provider attempts"
   assert.equal(traces[0].application, "test-app");
   assert.equal(traces[0].status, 200);
 });
+
+test("request tracing never records a confidential request body", async (t) => {
+  const traces: any[] = [];
+  const app = express();
+  app.use(express.json());
+  app.use(createRequestTracingMiddleware({
+    traceManager: { recordTrace: (entry: any) => traces.push(entry) } as any,
+    includeBody: true,
+    includeHeaders: false,
+  }));
+  app.post("/v1/responses", (_req, res) => res.json({ ok: true }));
+  const server = http.createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve()))));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  assert.equal(await request(
+    address.port,
+    "/v1/responses",
+    "POST",
+    { model: "test", input: "trace canary" },
+    { "x-multivibe-privacy": "confidential_verified" },
+  ), 200);
+  assert.equal(traces.length, 1);
+  assert.equal(traces[0].requestBody, undefined);
+  assert.doesNotMatch(JSON.stringify(traces), /trace canary/u);
+});
 test("request tracing collapses a nested inference request into its parent outcome", async (t) => {
   const traces: any[] = [];
   const app = express();

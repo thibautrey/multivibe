@@ -127,8 +127,20 @@ app.use((req, res, next) => {
   if (
     MULTIVIBE_CLOUD_PRIVACY_MODE === "confidential_verified"
     && req.method === "POST"
-    && /\/(?:responses|chat\/completions)$/.test(req.path)
   ) {
+    const confidentialPath = /\/(?:responses|chat\/completions)$/.test(req.path);
+    const unsupportedSensitivePath = req.path.startsWith("/v1/")
+      || /\/(?:messages|responses\/compact|realtime)$/.test(req.path);
+    if (!confidentialPath && unsupportedSensitivePath) {
+      return res.status(409).json({
+        error: {
+          message: "This request is not yet supported by verified confidential computing.",
+          type: "invalid_request_error",
+          code: "confidential_surface_not_supported",
+        },
+      });
+    }
+    if (!confidentialPath) return next();
     const requested = req.header("x-multivibe-privacy");
     if (requested && requested !== "confidential_verified") {
       return res.status(409).json({
@@ -246,6 +258,11 @@ const confidentialTrustPolicy = parseConfidentialTrustPolicy(
 if (MULTIVIBE_CLOUD_PRIVACY_MODE === "confidential_verified" && !confidentialTrustPolicy) {
   throw new Error(
     "MULTIVIBE_CONFIDENTIAL_INFERENCE_TRUST_POLICY is required for confidential_verified mode",
+  );
+}
+if (MULTIVIBE_CLOUD_PRIVACY_MODE === "confidential_verified" && MULTIVIBE_CONTROL_PLANE) {
+  throw new Error(
+    "confidential_verified mode is unavailable while the native Rust /v1 edge owns inference",
   );
 }
 const confidentialInference = confidentialTrustPolicy
@@ -813,7 +830,7 @@ const jobRunner = new JobRunner(
 );
 hostUpdateController?.attachJobRunner(jobRunner);
 
-if (!MULTIVIBE_CONTROL_PLANE) {
+if (!MULTIVIBE_CONTROL_PLANE && MULTIVIBE_CLOUD_PRIVACY_MODE !== "confidential_verified") {
   installResponsesWebsocketProxy({
     server,
     port: nodePort,

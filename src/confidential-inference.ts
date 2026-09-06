@@ -397,7 +397,12 @@ async function boundedJson(response: Response, maximum: number, disposition: Con
   if (Number.isFinite(declared) && declared > maximum) {
     failure(disposition, "confidential_response_too_large", "Confidential response exceeds the size limit");
   }
-  const bytes = Buffer.from(await response.arrayBuffer());
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(await response.arrayBuffer());
+  } catch (error) {
+    failure(disposition, "confidential_transport_failed", "Confidential response could not be read", error);
+  }
   if (bytes.length > maximum) failure(disposition, "confidential_response_too_large", "Confidential response exceeds the size limit");
   try { return JSON.parse(bytes.toString("utf8")); }
   catch (error) { failure(disposition, "invalid_confidential_response", "Confidential response is not valid JSON", error); }
@@ -534,7 +539,7 @@ export class ConfidentialInferenceClient {
         state === "not_sent" ? "not_sent" : "execution_uncertain",
         state === "not_sent" ? "confidential_request_not_sent" : "confidential_execution_uncertain",
         state === "not_sent"
-          ? "The protected runtime did not accept the message. The message was not sent."
+          ? "The protected runtime did not start the request. No unprotected fallback was attempted."
           : "The confidential execution outcome is uncertain.",
       );
     }
