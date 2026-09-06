@@ -314,9 +314,19 @@ private final class HostPopoverController: NSViewController {
 
     private func summaryCard(_ quota: MenuBarQuota?) -> NSView {
         let container = card()
-        let fiveHour = quotaCell(title: "5 hours", value: quota?.fiveHourRemainingPercent, detail: accountCount(quota?.fiveHourAccountCount ?? 0))
         let weekly = quotaCell(title: "Weekly", value: quota?.weeklyRemainingPercent, detail: accountCount(quota?.weeklyAccountCount ?? 0))
-        let stack = NSStackView(views: [fiveHour, weekly])
+        var quotaCells: [NSView] = []
+        if quota?.fiveHourAccountCount ?? 0 > 0 {
+            quotaCells.append(
+                quotaCell(
+                    title: "5 hours",
+                    value: quota?.fiveHourRemainingPercent,
+                    detail: accountCount(quota?.fiveHourAccountCount ?? 0),
+                ),
+            )
+        }
+        quotaCells.append(weekly)
+        let stack = NSStackView(views: quotaCells)
         stack.orientation = .horizontal
         stack.distribution = .fillEqually
         stack.spacing = 18
