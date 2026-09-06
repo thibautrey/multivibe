@@ -554,6 +554,23 @@ export function createAdmissionMiddleware(coordinator: SmartRoutingCoordinator):
     if (rawExecution && !["sync", "auto", "defer"].includes(rawExecution)) {
       return res.status(400).json({ error: "invalid X-MultiVibe-Execution" });
     }
+    const rawPrivacy = req.header("x-multivibe-privacy");
+    if (rawPrivacy && !["standard", "confidential_verified"].includes(rawPrivacy)) {
+      return res.status(400).json({ error: "invalid X-MultiVibe-Privacy" });
+    }
+    if (
+      rawPrivacy === "confidential_verified"
+      && rawExecution
+      && rawExecution !== "sync"
+    ) {
+      return res.status(400).json({
+        error: {
+          message: "Verified confidential requests currently require synchronous execution.",
+          type: "invalid_request_error",
+          code: "confidential_execution_mode_not_supported",
+        },
+      });
+    }
     const rawMaxWait = req.header("x-multivibe-max-wait-ms");
     if (rawMaxWait && !/^\d+$/.test(rawMaxWait.trim())) {
       return res.status(400).json({ error: "X-MultiVibe-Max-Wait-Ms must be a non-negative integer" });

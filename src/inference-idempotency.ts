@@ -500,6 +500,10 @@ export function createInferenceIdempotencyMiddleware(
     if (req.method !== "POST") return next();
     const route = normalizedRoute(req.path);
     if (!route) return next();
+    if (req.header("x-multivibe-privacy") === "confidential_verified") {
+      res.setHeader(INFERENCE_IDEMPOTENCY_STATUS_HEADER, "bypass");
+      return next();
+    }
 
     const rawKey = req.header("x-multivibe-idempotency-key");
     const key = rawKey?.trim();

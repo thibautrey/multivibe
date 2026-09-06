@@ -81,6 +81,8 @@ import {
   MULTIVIBE_CLOUD_API_BASE_URL,
   MULTIVIBE_CLOUD_INFERENCE_BASE_URL,
   MULTIVIBE_CLOUD_REDIRECT_URI,
+  MULTIVIBE_CLOUD_PRIVACY_MODE,
+  MULTIVIBE_CONFIDENTIAL_INFERENCE_TRUST_POLICY,
 } from "./config.js";
 import { ModuleManager } from "./module-manager.js";
 import { createProviderWorkerEstimateClient } from "./provider-worker-estimate.js";
@@ -114,9 +116,33 @@ import {
 import { CodexQuotaResetForecastCache } from "./quota-reset-forecast.js";
 import { HostUpdateController } from "./host-update-controller.js";
 import { MultivibeCloudService } from "./multivibe-cloud.js";
+import {
+  ConfidentialInferenceClient,
+  parseConfidentialTrustPolicy,
+} from "./confidential-inference.js";
 
 const app = express();
 app.use(createBodyParserMiddleware());
+app.use((req, res, next) => {
+  if (
+    MULTIVIBE_CLOUD_PRIVACY_MODE === "confidential_verified"
+    && req.method === "POST"
+    && /\/(?:responses|chat\/completions)$/.test(req.path)
+  ) {
+    const requested = req.header("x-multivibe-privacy");
+    if (requested && requested !== "confidential_verified") {
+      return res.status(409).json({
+        error: {
+          message: "This Core instance requires verified confidential computing.",
+          type: "invalid_request_error",
+          code: "privacy_policy_downgrade_rejected",
+        },
+      });
+    }
+    req.headers["x-multivibe-privacy"] = "confidential_verified";
+  }
+  next();
+});
 const nodePort = MULTIVIBE_CONTROL_PLANE ? CONTROL_PLANE_PORT : PORT;
 const nodeHost = MULTIVIBE_CONTROL_PLANE ? "127.0.0.1" : HOST;
 if (MULTIVIBE_CONTROL_PLANE && !V1_EDGE_INTERNAL_JOB_TOKEN) {
@@ -214,6 +240,17 @@ const providerAgent = startEmbeddedProviderAgent({
 const hostUpdateController = MULTIVIBE_HOST_APPLICATION
   ? new HostUpdateController(MULTIVIBE_HOST_UPDATER_BINARY, providerAgent)
   : undefined;
+const confidentialTrustPolicy = parseConfidentialTrustPolicy(
+  MULTIVIBE_CONFIDENTIAL_INFERENCE_TRUST_POLICY,
+);
+if (MULTIVIBE_CLOUD_PRIVACY_MODE === "confidential_verified" && !confidentialTrustPolicy) {
+  throw new Error(
+    "MULTIVIBE_CONFIDENTIAL_INFERENCE_TRUST_POLICY is required for confidential_verified mode",
+  );
+}
+const confidentialInference = confidentialTrustPolicy
+  ? new ConfidentialInferenceClient(confidentialTrustPolicy)
+  : undefined;
 const providerWorkerEstimateClient = createProviderWorkerEstimateClient(ANONYMOUS_USAGE_API_BASE_URL);
 const multivibeCloud = new MultivibeCloudService(store, oauthStore, {
   authBaseUrl: MULTIVIBE_CLOUD_AUTH_BASE_URL,
@@ -221,6 +258,7 @@ const multivibeCloud = new MultivibeCloudService(store, oauthStore, {
   inferenceBaseUrl: MULTIVIBE_CLOUD_INFERENCE_BASE_URL,
   redirectUri: MULTIVIBE_CLOUD_REDIRECT_URI,
   topupUrl: `${MULTIVIBE_CLOUD_API_BASE_URL}/billing`,
+  privacyMode: MULTIVIBE_CLOUD_PRIVACY_MODE,
 });
 const quotaResetForecastCache = new CodexQuotaResetForecastCache();
 const HOST_CLOUD_STATUS_CACHE_MS = 60_000;
@@ -309,6 +347,7 @@ const proxyRouter = createProxyRouter({
   capacityTracker,
   smartRoutingCoordinator: smartRouting,
   moduleManager,
+  ...(confidentialInference ? { confidentialInference } : {}),
 });
 
 const realtimeRouter = createRealtimeRouter({

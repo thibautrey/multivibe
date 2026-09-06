@@ -36,6 +36,8 @@ export function createRequestTracingMiddleware(options: {
     const route = req.originalUrl || req.url;
     const traceRoute = `${req.method} ${route}`;
     const inferenceRequest = isInferenceTraceRoute(traceRoute);
+    const confidentialRequest =
+      req.header("x-multivibe-privacy") === "confidential_verified";
     const requestedParentId = req.header(REQUEST_TRACE_PARENT_HEADER);
     const parentContext = requestedParentId
       ? activeRequestTraceContexts.get(requestedParentId)
@@ -118,7 +120,7 @@ export function createRequestTracingMiddleware(options: {
         status: clientOutcomeStatus,
         stream: inferenceRequest && Boolean(req.body?.stream),
         latencyMs: Date.now() - startedAt,
-        requestBody: includeBody ? req.body : undefined,
+        requestBody: includeBody && !confidentialRequest ? req.body : undefined,
       });
     };
 

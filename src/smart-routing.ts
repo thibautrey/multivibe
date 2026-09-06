@@ -9,6 +9,7 @@ import type {
   ModelAlias,
   PriorityClass,
   ProviderId,
+  PrivacyMode,
   RoutingCandidateConfig,
   RoutingObjectives,
   RoutingRule,
@@ -36,6 +37,7 @@ export type RoutingRequest = {
   priority: PriorityClass;
   executionMode: ExecutionMode;
   optedIn: boolean;
+  privacyMode?: PrivacyMode;
   maxWaitMs: number;
   deadlineAt?: number;
   idempotencyKey?: string;
@@ -52,6 +54,7 @@ export type ResourceSnapshot = {
   model: string;
   provider: ProviderId;
   location: ExecutionLocation;
+  privacyMode?: PrivacyMode;
   enabled: boolean;
   inFlight: number;
   maxConcurrent: number;
@@ -112,6 +115,7 @@ export function parseRoutingHeaders(
     ? (rawPriority as PriorityClass)
     : "standard";
   const rawExecution = headerValue(headers, "x-multivibe-execution");
+  const rawPrivacy = headerValue(headers, "x-multivibe-privacy");
   const optedIn = [
     rawPriority,
     rawExecution,
@@ -119,10 +123,13 @@ export function parseRoutingHeaders(
     headerValue(headers, "x-multivibe-deadline"),
     headerValue(headers, "x-multivibe-idempotency-key"),
     headerValue(headers, "x-multivibe-webhook"),
+    rawPrivacy,
   ].some(Boolean);
   const executionMode: ExecutionMode =
     rawExecution === "sync" || rawExecution === "auto" || rawExecution === "defer"
       ? rawExecution
+      : rawPrivacy === "confidential_verified"
+        ? "sync"
       : optedIn
         ? defaultExecution(priority)
         : "sync";
@@ -138,6 +145,9 @@ export function parseRoutingHeaders(
     priority,
     executionMode,
     optedIn,
+    privacyMode: rawPrivacy === "confidential_verified"
+      ? "confidential_verified"
+      : "standard",
     maxWaitMs,
     deadlineAt: Number.isFinite(parsedDeadline) ? parsedDeadline : undefined,
     idempotencyKey: headerValue(headers, "x-multivibe-idempotency-key"),
@@ -318,6 +328,10 @@ export function validateSmartAlias(alias: ModelAlias): string[] {
       )
     ) errors.push(`rule ${rule.id} has an invalid allowed location`);
     if (
+      rule.constraints?.requiredPrivacy
+      && !["standard", "confidential_verified"].includes(rule.constraints.requiredPrivacy)
+    ) errors.push(`rule ${rule.id} has an invalid privacy requirement`);
+    if (
       rule.cloudBudget &&
       (!Number.isFinite(rule.cloudBudget.amountUsd) ||
         rule.cloudBudget.amountUsd <= 0 ||
@@ -491,6 +505,12 @@ export function evaluateAliasPolicy(
         }
         if (constraints?.allowedLocations?.length && !constraints.allowedLocations.includes(location)) {
           rejectedReasons.push("location_not_allowed");
+        }
+        const requiredPrivacy = request.privacyMode === "confidential_verified"
+          ? "confidential_verified"
+          : constraints?.requiredPrivacy;
+        if (requiredPrivacy && (resource.privacyMode ?? "standard") !== requiredPrivacy) {
+          rejectedReasons.push("privacy_mode_not_allowed");
         }
         if (constraints?.maxPredictedWaitMs !== undefined && resource.predictedWaitMs > constraints.maxPredictedWaitMs) {
           rejectedReasons.push("predicted_wait_exceeded");
@@ -689,6 +709,7 @@ export class CapacityTracker extends EventEmitter {
         model: entry.model,
         provider: entry.provider,
         location,
+        privacyMode: account.privacyMode ?? "standard",
         enabled:
           account.enabled &&
           entry.enabled !== false &&

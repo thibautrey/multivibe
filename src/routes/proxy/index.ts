@@ -114,6 +114,11 @@ import {
   canServeStaleSnapshot,
 } from "../../async-refresh.js";
 import { fetchUpstreamWithRetry } from "../../upstream-retry.js";
+import {
+  CONFIDENTIAL_PRIVACY_MODE,
+  ConfidentialInferenceClient,
+  ConfidentialInferenceError,
+} from "../../confidential-inference.js";
 import type { RequestTraceContext } from "../../request-tracing.js";
 import {
   authorizationForAccountRequest,
@@ -192,6 +197,7 @@ type ProxyRoutesOptions = {
   moduleManager?: ModuleManager;
   sessionAffinityCache?: SessionAffinityCache;
   sessionAffinityEnabled?: boolean;
+  confidentialInference?: ConfidentialInferenceClient;
 };
 
 const modelsCache: {
@@ -1987,6 +1993,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
     capacityTracker,
     smartRoutingCoordinator,
     moduleManager,
+    confidentialInference,
   } = options;
   const { recordTrace } = traceManager;
   const router = express.Router();
@@ -2310,7 +2317,21 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
       res.status(status).json(payload);
     };
 
+    const requestedPrivacy = req.header("x-multivibe-privacy");
+    if (requestedPrivacy && requestedPrivacy !== "standard"
+      && requestedPrivacy !== CONFIDENTIAL_PRIVACY_MODE) {
+      return sendPreparationError(400, {
+        message: "X-MultiVibe-Privacy is invalid.",
+        type: "invalid_request_error",
+        code: "invalid_privacy_mode",
+      });
+    }
     let accounts = store.getCachedAccounts();
+    if (requestedPrivacy === CONFIDENTIAL_PRIVACY_MODE) {
+      accounts = accounts.filter(
+        (account) => account.privacyMode === CONFIDENTIAL_PRIVACY_MODE,
+      );
+    }
     if (!accounts.length)
       return sendPreparationError(503, "no accounts configured");
 
@@ -2787,7 +2808,11 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
             }),
           );
         }
-        const requestBody = TRACE_INCLUDE_BODY ? req.body : undefined;
+        const confidentialExecution =
+          selected.privacyMode === CONFIDENTIAL_PRIVACY_MODE;
+        const requestBody = TRACE_INCLUDE_BODY && !confidentialExecution
+          ? req.body
+          : undefined;
         const executionLocation =
           selected.location === "local" ? ("local" as const) : ("cloud" as const);
         const latencyBreakdown = {
@@ -3010,8 +3035,35 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
               upstreamError: error?.slice(0, 500),
             });
           };
-          const fetchWithTracing = () =>
-            fetchUpstreamWithRetry(
+          const fetchWithTracing = () => {
+            if (confidentialExecution) {
+              upstreamAttemptStartedAt = Date.now();
+              currentUpstreamAttempt = ++upstreamAttemptCount;
+              setProviderAttemptCount(upstreamAttemptCount);
+              if (!confidentialInference) {
+                throw new ConfidentialInferenceError(
+                  "not_sent",
+                  "confidential_client_unavailable",
+                  "Verified confidential computing is not configured. The message was not sent.",
+                );
+              }
+              if (upstreamPath !== "/v1/responses" && upstreamPath !== "/v1/chat/completions") {
+                throw new ConfidentialInferenceError(
+                  "not_sent",
+                  "confidential_path_not_supported",
+                  "This request is not supported by verified confidential computing. The message was not sent.",
+                );
+              }
+              return confidentialInference.execute({
+                baseUrl: upstreamBaseUrl,
+                accessToken: selected.accessToken,
+                model: candidate.resolvedModel ?? blockModel,
+                path: upstreamPath,
+                body: serializeUpstreamPayload(payloadToUpstream),
+                signal: requestSignal,
+              });
+            }
+            return fetchUpstreamWithRetry(
               upstreamUrl,
               {
                 method: "POST",
@@ -3031,8 +3083,9 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
                 },
               },
             );
+          };
           let upstream = await fetchWithTracing();
-          if (upstream.status === 400) {
+          if (upstream.status === 400 && !confidentialExecution) {
             const errorText = await upstream.text();
             const correction = applyUnsupportedValueCorrection(
               payloadToUpstream,
@@ -4721,6 +4774,39 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
               }
             }
             return;
+          }
+          if (err instanceof ConfidentialInferenceError) {
+            const status = err.disposition === "not_sent" ? 503 : 502;
+            setClientOutcomeStatus(status);
+            try {
+              recordTrace({
+                at: Date.now(),
+                route: req.path,
+                accountId: selected.id,
+                accountEmail: selected.email,
+                model: tracedModel,
+                ...traceModelResolution,
+                status,
+                stream: clientRequestedStream,
+                latencyMs: Date.now() - startedAt,
+                error: err.code,
+                requestBody: undefined,
+                ...traceImage,
+                lifecycleState: err.disposition === "not_sent" ? "completed" : "interrupted",
+              });
+            } catch (traceError) {
+              console.error("failed to record confidential inference error", traceError);
+            }
+            if (isNativeResponsesStream && res.headersSent && !res.writableEnded) {
+              res.write(nativeResponsesErrorFrame(err.message, err.code));
+              res.end();
+              return;
+            }
+            return sendPreparationError(status, {
+              message: err.message,
+              type: "upstream_error",
+              code: err.code,
+            });
           }
           const msg = err?.message ?? String(err);
           rememberError(selected, msg);

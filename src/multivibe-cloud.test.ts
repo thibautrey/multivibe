@@ -29,6 +29,12 @@ function fakeStores(initial: {
       else accounts[index] = account;
       return account;
     },
+    async patchAccount(id: string, patch: Partial<Account>) {
+      const index = accounts.findIndex((candidate) => candidate.id === id);
+      if (index === -1) throw new Error("account not found");
+      accounts[index] = { ...accounts[index]!, ...patch };
+      return accounts[index]!;
+    },
     async flushIfDirty() {},
   } as unknown as AccountStore;
   const oauthStore = {
@@ -62,6 +68,7 @@ function response(value: unknown, status = 200): Response {
 function service(
   stores: ReturnType<typeof fakeStores>,
   fetchImpl: typeof fetch,
+  privacyMode: "standard" | "confidential_verified" = "standard",
 ) {
   return new MultivibeCloudService(stores.store, stores.oauthStore, {
     authBaseUrl: "https://auth.example.test",
@@ -69,9 +76,34 @@ function service(
     inferenceBaseUrl: "https://api.example.test",
     redirectUri: "http://127.0.0.1:1455/admin/cloud/oauth/callback",
     topupUrl: "https://app.example.test/billing",
+    privacyMode,
     fetchImpl,
   });
 }
+
+test("Cloud connection persists confidential mode on an existing managed account", async () => {
+  const stores = fakeStores({
+    settings: { multivibeCloud: { accessToken: "cloud-access", projectId } },
+    accounts: [{
+      id: "multivibe-cloud",
+      provider: "openai-compatible",
+      accessToken: "mvk_cloud_secret",
+      baseUrl: "https://api.example.test",
+      enabled: true,
+      location: "cloud",
+      multivibeCloud: true,
+      expiresAt: Date.now() + 2 * 86_400_000,
+    }],
+  });
+  const cloud = service(stores, async (input) => {
+    if (String(input).endsWith("/client/v1/credits")) return response({ totalAvailableUsd: "1" });
+    if (String(input).endsWith("/client/v1/billing/subscription")) return response({ data: null });
+    throw new Error("unexpected Cloud call");
+  }, "confidential_verified");
+
+  assert.equal((await cloud.getStatus()).status, "connected");
+  assert.equal(stores.accounts[0]?.privacyMode, "confidential_verified");
+});
 
 test("Cloud connection uses PKCE and provisions a local API-key account", async () => {
   const stores = fakeStores();

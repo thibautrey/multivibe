@@ -20,6 +20,7 @@ export const PRIORITY_CLASSES = [
 export type PriorityClass = (typeof PRIORITY_CLASSES)[number];
 export type ExecutionMode = "sync" | "auto" | "defer";
 export type ExecutionLocation = "local" | "cloud";
+export type PrivacyMode = "standard" | "confidential_verified";
 export type CapacityState = "ready" | "degraded" | "queue_only" | "unavailable";
 
 export type CapacityProfile = {
@@ -136,6 +137,8 @@ export type Account = {
   localRuntime?: LocalRuntimeMetadata;
   /** Internal account created by the automatic MultiVibe Cloud connection flow. */
   multivibeCloud?: boolean;
+  /** Enforced transport for this account. Confidential accounts cannot use the ordinary provider path. */
+  privacyMode?: PrivacyMode;
   usage?: UsageSnapshot;
   state?: AccountState;
 };
@@ -161,6 +164,7 @@ export type RoutingRuleMatch = {
 
 export type RoutingRuleConstraints = {
   allowedLocations?: ExecutionLocation[];
+  requiredPrivacy?: PrivacyMode;
   maxPredictedWaitMs?: number;
   minContextWindow?: number;
   minQuality?: number;
