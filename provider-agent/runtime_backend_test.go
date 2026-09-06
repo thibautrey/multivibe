@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -329,7 +333,11 @@ func runRuntimeBackendContract(t *testing.T, backend runtimeBackend, profile run
 	if err != nil || validateRuntimeBackendMetrics(descriptor, metrics) != nil || !metrics.Running || metrics.InstalledModels != 1 {
 		t.Fatalf("metrics contract failed: %#v %v", metrics, err)
 	}
-	request := runtimeExecuteRequest{ExecutionID: "contract-execute", ModelID: profile.Model.ModelID, Input: []byte("probe"), MaximumOutput: 16}
+	executionInput := []byte("probe")
+	if descriptor.ID == runtimeBackendOllamaID {
+		executionInput = []byte(`{"messages":[{"role":"user","content":"probe"}]}`)
+	}
+	request := runtimeExecuteRequest{ExecutionID: "contract-execute", ModelID: profile.Model.ModelID, Input: executionInput, MaximumOutput: 64}
 	result, executeErr := backend.Execute(context.Background(), request)
 	if descriptor.Capabilities.Execute {
 		if executeErr != nil || string(result.Output) != "probe" {
@@ -353,7 +361,10 @@ func runRuntimeBackendContract(t *testing.T, backend runtimeBackend, profile run
 		t.Fatalf("disabled stream capability did not fail closed: %v", streamErr)
 	}
 	if descriptor.Capabilities.Cancel {
-		if err := backend.Cancel(context.Background(), request.ExecutionID); err != nil {
+		err := backend.Cancel(context.Background(), request.ExecutionID)
+		if descriptor.ID == runtimeBackendOllamaID && !errors.Is(err, errRuntimeBackendExecutionUnknown) {
+			t.Fatalf("completed Ollama execution remained cancellable: %v", err)
+		} else if descriptor.ID != runtimeBackendOllamaID && err != nil {
 			t.Fatalf("cancel contract failed: %v", err)
 		}
 	} else if err := backend.Cancel(context.Background(), request.ExecutionID); !errors.Is(err, errRuntimeBackendCapabilityMissing) {
@@ -386,6 +397,13 @@ func TestRuntimeBackendContractAgainstFakeAndOllama(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			response.WriteHeader(http.StatusOK)
+			_, _ = response.Write([]byte("probe"))
+		}))
+		defer server.Close()
+		backend.endpoint = server.URL
+		backend.client = server.Client()
 		profile := runtimeBackendTestProfile(runtimeBackendOllamaID)
 		profile.Runtime.Provenance = []runtimeProvenancePin{runtimeProvenancePinFromDescriptor(backend.Descriptor())}
 		profile.Model.ContentDigest = "sha256:" + managedOllamaTestSHA(manifest)
@@ -500,7 +518,7 @@ func TestRuntimeBackendLaunchPolicyIsImmutableAndStrict(t *testing.T) {
 	}
 }
 
-func TestOllamaRuntimeBackendRemainsShadowOnly(t *testing.T) {
+func TestOllamaRuntimeBackendAdvertisesBoundedCustomerExecution(t *testing.T) {
 	base := t.TempDir()
 	manifest := []byte(`{"schemaVersion":2,"layers":[]}`)
 	backend, err := newOllamaRuntimeBackend(
@@ -512,11 +530,11 @@ func TestOllamaRuntimeBackendRemainsShadowOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	capabilities := backend.Descriptor().Capabilities
-	if !capabilities.ShadowOnly || capabilities.CustomerTraffic || capabilities.Execute || capabilities.Stream || capabilities.Cancel {
-		t.Fatalf("Ollama adapter crossed the shadow boundary: %#v", capabilities)
+	if capabilities.ShadowOnly || !capabilities.CustomerTraffic || !capabilities.Execute || !capabilities.Stream || !capabilities.Cancel {
+		t.Fatalf("Ollama execution capabilities are incomplete: %#v", capabilities)
 	}
-	if _, err := backend.Execute(context.Background(), runtimeExecuteRequest{}); !errors.Is(err, errRuntimeBackendExecutionDisabled) {
-		t.Fatalf("Ollama execution did not fail closed: %v", err)
+	if _, err := backend.Execute(context.Background(), runtimeExecuteRequest{}); !errors.Is(err, errRuntimeBackendInvalid) {
+		t.Fatalf("invalid Ollama execution did not fail closed: %v", err)
 	}
 }
 
@@ -637,7 +655,7 @@ func TestRuntimeBackendNormalizesExecutionFailuresAndCancellation(t *testing.T) 
 
 func TestOllamaRuntimeBackendPublicSDKBridgeContract(t *testing.T) {
 	base := t.TempDir()
-	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	manifest := []byte(`{"schemaVersion":2,"layers":[]}`)
 	catalogPath := writeManagedOllamaTestCatalog(t, base, "sha256:"+managedOllamaTestSHA(manifest))
 	dependencyPath := writeManagedOllamaTestDependencies(t, base, strings.Repeat("d", 64))
@@ -646,6 +664,24 @@ func TestOllamaRuntimeBackendPublicSDKBridgeContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	input := []byte(`{"prompt":"shadow"}`)
+	blockingInput := []byte(`{"prompt":"BLOCK"}`)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		raw, _ := io.ReadAll(request.Body)
+		if bytes.Contains(raw, []byte("BLOCK")) {
+			<-request.Context().Done()
+			return
+		}
+		response.WriteHeader(http.StatusOK)
+		if bytes.Contains(raw, []byte(`"stream":true`)) {
+			_, _ = response.Write(input)
+			return
+		}
+		_, _ = response.Write(input)
+	}))
+	defer server.Close()
+	legacy.endpoint = server.URL
+	legacy.client = server.Client()
 	policy := managedOllamaTestPolicy(filepath.Join(base, "models"), 7, false, true)
 	policies := newMemoryCapacityPolicyStore()
 	policies.current = cloneCapacityPolicyState(*policy)
@@ -686,10 +722,13 @@ func TestOllamaRuntimeBackendPublicSDKBridgeContract(t *testing.T) {
 		AllowedModelIDs: []string{model.ID},
 		Limits: runtimebackendapi.Limits{
 			MaximumModels: 1, MaximumConcurrency: 1, MaximumModelBytes: 16, MaximumMemoryBytes: 4096,
-			MaximumContextTokens: 2048, MaximumInputBytes: 16, MaximumOutputBytes: 16,
+			MaximumContextTokens: 2048, MaximumInputBytes: 64, MaximumOutputBytes: 64,
 		},
 	}
-	contracttest.Run(t, bridge, contracttest.Fixture{EvaluationTime: now, Grant: grant, Model: model, Input: []byte("shadow")})
+	contracttest.Run(t, bridge, contracttest.Fixture{
+		EvaluationTime: now, Grant: grant, Model: model, Input: input, BlockingInput: blockingInput,
+		WaitUntilExecuting: bridge.WaitUntilExecuting,
+	})
 	runtime.mu.Lock()
 	calls := append([]string{}, runtime.calls...)
 	runtime.mu.Unlock()
@@ -796,15 +835,15 @@ func TestOllamaRuntimeBackendSDKBridgeCleanupKeepsOtherGrantRevisionAndTrafficCl
 	}
 	if err := bridge.Cleanup(context.Background(), runtimebackendapi.CleanupRequest{
 		Grant: oppositeClass, ModelIDs: []string{model.ID},
-	}); !errors.Is(err, runtimebackendapi.ErrExecutionDisabled) {
-		t.Fatalf("shadow-only bridge accepted cleanup under a customer-traffic grant: %v", err)
+	}); err != nil {
+		t.Fatalf("customer-capable bridge rejected scoped customer cleanup: %v", err)
 	}
 	bridge.mu.Lock()
 	_, oppositeClassFound = bridge.downloads[oppositeClassKey]
 	remaining = len(bridge.downloads)
 	bridge.mu.Unlock()
-	if !oppositeClassFound || remaining != 3 {
-		t.Fatalf("rejected opposite-class cleanup mutated receipts: found=%t remaining=%d", oppositeClassFound, remaining)
+	if oppositeClassFound || remaining != 2 {
+		t.Fatalf("customer cleanup did not remove its scoped receipt: found=%t remaining=%d", oppositeClassFound, remaining)
 	}
 }
 

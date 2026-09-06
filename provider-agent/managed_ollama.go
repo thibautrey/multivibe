@@ -285,6 +285,10 @@ type managedOllama struct {
 	pullCancel         context.CancelFunc
 }
 
+func (manager *managedOllama) executionOrigin() string {
+	return manager.loopbackOrigin
+}
+
 func newManagedOllama(config managedOllamaConfig) (*managedOllama, error) {
 	if config.GOOS == "" {
 		config.GOOS = runtime.GOOS
