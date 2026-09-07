@@ -7,6 +7,7 @@
 //! boundary on the hot path.
 
 mod confidential;
+mod dashboard;
 mod idempotency;
 mod token_refresh;
 
@@ -87,6 +88,8 @@ const PUBLIC_RESPONSE_HEADERS: &[&str] = &[
 #[derive(Clone, Debug)]
 pub struct EdgeConfig {
     pub app_version: String,
+    pub app_git_sha: String,
+    pub app_build_id: String,
     pub listen_host: String,
     pub listen_port: u16,
     pub node_control_plane_url: String,
@@ -146,6 +149,8 @@ impl Default for EdgeConfig {
     fn default() -> Self {
         Self {
             app_version: "0.2.0".to_owned(),
+            app_git_sha: "unknown".to_owned(),
+            app_build_id: "unknown".to_owned(),
             listen_host: "0.0.0.0".to_owned(),
             listen_port: 1455,
             node_control_plane_url: "http://127.0.0.1:1456".to_owned(),
@@ -253,6 +258,8 @@ impl EdgeConfig {
         let realtime_url = env("REALTIME_WEBRTC_CALL_URL");
         Self {
             app_version: env("APP_VERSION").unwrap_or(defaults.app_version),
+            app_git_sha: env("APP_GIT_SHA").unwrap_or(defaults.app_git_sha),
+            app_build_id: env("APP_BUILD_ID").unwrap_or(defaults.app_build_id),
             listen_host,
             listen_port,
             node_control_plane_url: env("NODE_CONTROL_PLANE_URL")
@@ -525,6 +532,8 @@ pub struct ApplicationWebhook {
     pub url: String,
     pub secret: String,
     pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -4322,6 +4331,7 @@ pub struct EdgeState {
     admission: Arc<AdmissionController>,
     drain: DrainController,
     job_runner_started: Arc<AtomicBool>,
+    dashboard: Arc<dashboard::DashboardState>,
 }
 
 impl EdgeState {
@@ -4401,6 +4411,7 @@ impl EdgeState {
             drain: DrainController::default(),
             capacity_version,
             job_runner_started: Arc::new(AtomicBool::new(false)),
+            dashboard: Arc::new(dashboard::DashboardState::default()),
         })
     }
 
@@ -10597,6 +10608,20 @@ async fn fallback_handler(State(state): State<EdgeState>, req: Request<Body>) ->
             json!({"error": {"message": "Unknown /v1 endpoint", "type": "invalid_request_error", "code": "not_found"}}),
         );
     }
+    if dashboard::path_requires_session(&path)
+        && !dashboard::request_authorized(req.headers(), &state.config)
+    {
+        return json_response(StatusCode::UNAUTHORIZED, json!({"error": "unauthorized"}));
+    }
+    if req.method() == Method::GET {
+        match path.as_str() {
+            "/admin/proxy-api-keys" => return dashboard::proxy_api_keys(&state).await,
+            "/admin/application-policies" => {
+                return dashboard::application_policies(&state).await;
+            }
+            _ => {}
+        }
+    }
     let target = format!(
         "{}{}",
         trim_slashes(&state.config.node_control_plane_url),
@@ -10722,6 +10747,22 @@ async fn drain_resume_handler(State(state): State<EdgeState>, headers: HeaderMap
 
 pub fn build_router(state: EdgeState) -> Router {
     Router::new()
+        // Rust owns the dashboard REST boundary incrementally. Session
+        // establishment and access control terminate here; authenticated
+        // resource routes still fall back to the loopback control plane until
+        // their business logic is migrated.
+        .route("/health", get(dashboard::health))
+        .route(
+            "/admin/session",
+            get(dashboard::session_status)
+                .post(dashboard::session_create)
+                .delete(dashboard::session_delete),
+        )
+        .route(
+            "/admin/desktop-session",
+            post(dashboard::desktop_session_create),
+        )
+        .route("/desktop/session", get(dashboard::desktop_session_consume))
         // Every inference route, both the canonical `/v1` surface and its
         // historical root aliases, terminates in this native edge. Node
         // remains a control-plane peer and hosts the internal adapter for SDK
@@ -12641,6 +12682,7 @@ mod tests {
                 url: format!("{webhook_url}/job"),
                 secret: "webhook-secret".to_owned(),
                 enabled: true,
+                created_at: None,
             }],
         });
         fs::write(&store_path, serde_json::to_vec(&store).unwrap())
@@ -12744,6 +12786,7 @@ mod tests {
                 url: format!("{webhook_url}/job"),
                 secret: "webhook-secret".to_owned(),
                 enabled: true,
+                created_at: None,
             }],
         });
         fs::write(&store_path, serde_json::to_vec(&store).unwrap())
@@ -14280,6 +14323,282 @@ mod tests {
 
         edge_task.abort();
         upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn dashboard_session_health_and_admin_guard_terminate_in_rust() {
+        let control_plane_requests = Arc::new(AtomicUsize::new(0));
+        let seen_requests = control_plane_requests.clone();
+        let control_plane = Router::new().fallback(move |req: Request<Body>| {
+            let seen_requests = seen_requests.clone();
+            async move {
+                seen_requests.fetch_add(1, AtomicOrdering::Relaxed);
+                (StatusCode::OK, req.uri().path().to_owned())
+            }
+        });
+        let (control_plane_url, control_plane_task) = start_server(control_plane).await;
+
+        let store_path = temporary_path("dashboard-store");
+        let jobs_path = temporary_path("dashboard-jobs");
+        let store = StoreFile {
+            proxy_api_keys: vec![StoredProxyApiKey {
+                id: "managed-key".to_owned(),
+                application: "desktop".to_owned(),
+                key: "mv_managed_secret_1234".to_owned(),
+                created_at: Some(1_788_803_484_000),
+            }],
+            application_policies: vec![ApplicationPolicy {
+                application: "desktop".to_owned(),
+                fairness_weight: Some(2.5),
+                webhooks: vec![ApplicationWebhook {
+                    id: "webhook-1".to_owned(),
+                    url: "https://example.test/jobs".to_owned(),
+                    secret: "webhook-secret".to_owned(),
+                    enabled: true,
+                    created_at: Some(1_788_803_485_000),
+                }],
+            }],
+            ..Default::default()
+        };
+        fs::write(&store_path, serde_json::to_vec(&store).unwrap())
+            .await
+            .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.node_control_plane_url = control_plane_url;
+        config.admin_token = "dashboard-secret".to_owned();
+        config.configured_api_keys = vec![(
+            "environment-app".to_owned(),
+            "mv_environment_secret_5678".to_owned(),
+        )];
+        config.app_version = "0.2.99".to_owned();
+        config.app_git_sha = "abc123".to_owned();
+        config.app_build_id = "build-7".to_owned();
+        config.upstream_timeout = Duration::from_secs(5);
+
+        let edge_state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(edge_state)).await;
+        let client = reqwest::Client::new();
+
+        let health: Value = client
+            .get(format!("{edge_url}/health"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            health,
+            json!({"ok": true, "version": "0.2.99", "gitSha": "abc123", "buildId": "build-7"})
+        );
+
+        let session: Value = client
+            .get(format!("{edge_url}/admin/session"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(session, json!({"authenticated": false}));
+
+        let invalid = client
+            .post(format!("{edge_url}/admin/session"))
+            .json(&json!({"token": "wrong"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::UNAUTHORIZED);
+
+        let login = client
+            .post(format!("{edge_url}/admin/session"))
+            .header("x-forwarded-proto", "https")
+            .json(&json!({"token": "dashboard-secret"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(login.status(), StatusCode::OK);
+        let set_cookie = login
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert!(set_cookie.contains("HttpOnly"));
+        assert!(set_cookie.contains("SameSite=Strict"));
+        assert!(set_cookie.contains("Secure"));
+        let cookie = set_cookie.split(';').next().unwrap().to_owned();
+
+        let session: Value = client
+            .get(format!("{edge_url}/admin/session"))
+            .header(header::COOKIE, &cookie)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(session, json!({"authenticated": true}));
+
+        let keys: Value = client
+            .get(format!("{edge_url}/admin/proxy-api-keys"))
+            .header(header::COOKIE, &cookie)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(keys["proxyApiKeys"].as_array().unwrap().len(), 2);
+        assert_eq!(keys["proxyApiKeys"][0]["source"], "environment");
+        assert_eq!(keys["proxyApiKeys"][1]["source"], "dashboard");
+        assert_eq!(
+            keys["proxyApiKeys"][1]["createdAt"],
+            1_788_803_484_000_u64
+        );
+        let keys_json = keys.to_string();
+        assert!(!keys_json.contains("mv_environment_secret_5678"));
+        assert!(!keys_json.contains("mv_managed_secret_1234"));
+
+        let policies: Value = client
+            .get(format!("{edge_url}/admin/application-policies"))
+            .header(header::COOKIE, &cookie)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            policies["applicationPolicies"][0]["fairnessWeight"],
+            2.5
+        );
+        assert_eq!(
+            policies["applicationPolicies"][0]["webhooks"][0]["createdAt"],
+            1_788_803_485_000_u64
+        );
+        assert!(!policies.to_string().contains("webhook-secret"));
+        assert_eq!(control_plane_requests.load(AtomicOrdering::Relaxed), 1);
+
+        let rejected = client
+            .get(format!("{edge_url}/admin/config"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(control_plane_requests.load(AtomicOrdering::Relaxed), 1);
+
+        let forwarded = client
+            .get(format!("{edge_url}/admin/config"))
+            .header("x-admin-token", "dashboard-secret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(forwarded.status(), StatusCode::OK);
+        assert_eq!(forwarded.text().await.unwrap(), "/admin/config");
+
+        for path in ["/admin/cloud/oauth/callback", "/admin/codex-sessions"] {
+            let request = if path.ends_with("codex-sessions") {
+                client.post(format!("{edge_url}{path}"))
+            } else {
+                client.get(format!("{edge_url}{path}"))
+            };
+            assert_eq!(request.send().await.unwrap().status(), StatusCode::OK);
+        }
+        assert_eq!(control_plane_requests.load(AtomicOrdering::Relaxed), 4);
+
+        let desktop: Value = client
+            .post(format!("{edge_url}/admin/desktop-session"))
+            .header(header::COOKIE, &cookie)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let desktop_path = desktop["path"].as_str().unwrap();
+        assert!(desktop_path.starts_with("/desktop/session?code="));
+        let no_redirect_client = reqwest::Client::builder()
+            .redirect(Policy::none())
+            .build()
+            .unwrap();
+        let consumed = no_redirect_client
+            .get(format!("{edge_url}{desktop_path}"))
+            .header("x-forwarded-proto", "https")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(consumed.status(), StatusCode::SEE_OTHER);
+        assert_eq!(consumed.headers()[header::LOCATION], "/");
+        assert!(
+            consumed.headers()[header::SET_COOKIE]
+                .to_str()
+                .unwrap()
+                .contains("Secure")
+        );
+        assert_eq!(
+            no_redirect_client
+                .get(format!("{edge_url}{desktop_path}"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+
+        let logout = client
+            .delete(format!("{edge_url}/admin/session"))
+            .header("x-forwarded-proto", "https")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(logout.status(), StatusCode::OK);
+        let cleared = logout.headers()[header::SET_COOKIE].to_str().unwrap();
+        assert!(cleared.contains("Max-Age=0"));
+        assert!(cleared.contains("Secure"));
+
+        for _ in 0..18 {
+            assert_eq!(
+                client
+                    .post(format!("{edge_url}/admin/session"))
+                    .json(&json!({"token": "wrong"}))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        let limited = client
+            .post(format!("{edge_url}/admin/session"))
+            .json(&json!({"token": "wrong"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(limited.headers()[header::CACHE_CONTROL], "no-store");
+        assert!(limited.headers().contains_key(header::RETRY_AFTER));
+        assert_eq!(control_plane_requests.load(AtomicOrdering::Relaxed), 4);
+
+        control_plane_task.abort();
+        let _ = control_plane_task.await;
+        let unavailable = client
+            .get(format!("{edge_url}/health"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            unavailable.json::<Value>().await.unwrap(),
+            json!({"ok": false, "error": "control_plane_unavailable"})
+        );
+
+        edge_task.abort();
         let _ = fs::remove_file(store_path).await;
         let _ = fs::remove_file(jobs_path).await;
     }

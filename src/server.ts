@@ -647,9 +647,11 @@ app.get("/health", (_req, res) =>
 
 app.head("/api/hello", (_req, res) => res.sendStatus(200));
 
-app.get("/admin/session", (req, res) => {
-  res.json({ authenticated: !ADMIN_TOKEN || hasAdminSession(req) });
-});
+if (!MULTIVIBE_CONTROL_PLANE) {
+  app.get("/admin/session", (req, res) => {
+    res.json({ authenticated: !ADMIN_TOKEN || hasAdminSession(req) });
+  });
+}
 
 app.get("/admin/host/menu-bar", adminGuard, async (req, res) => {
   res.setHeader("cache-control", "no-store");
@@ -712,34 +714,36 @@ app.post("/admin/host/weekly-auto-reset", adminGuard, async (_req, res) => {
   return res.json({ ok: true });
 });
 
-app.post("/admin/desktop-session", adminGuard, (_req, res) => {
-  const now = Date.now();
-  for (const [code, expiresAt] of desktopSessionCodes) {
-    if (expiresAt <= now) desktopSessionCodes.delete(code);
-  }
-  if (desktopSessionCodes.size >= 16) {
-    const oldest = desktopSessionCodes.keys().next().value;
-    if (oldest) desktopSessionCodes.delete(oldest);
-  }
-  const code = crypto.randomBytes(32).toString("base64url");
-  desktopSessionCodes.set(code, now + DESKTOP_SESSION_MAX_AGE_MS);
-  res.setHeader("cache-control", "no-store");
-  res.json({ path: `/desktop/session?code=${encodeURIComponent(code)}` });
-});
+if (!MULTIVIBE_CONTROL_PLANE) {
+  app.post("/admin/desktop-session", adminGuard, (_req, res) => {
+    const now = Date.now();
+    for (const [code, expiresAt] of desktopSessionCodes) {
+      if (expiresAt <= now) desktopSessionCodes.delete(code);
+    }
+    if (desktopSessionCodes.size >= 16) {
+      const oldest = desktopSessionCodes.keys().next().value;
+      if (oldest) desktopSessionCodes.delete(oldest);
+    }
+    const code = crypto.randomBytes(32).toString("base64url");
+    desktopSessionCodes.set(code, now + DESKTOP_SESSION_MAX_AGE_MS);
+    res.setHeader("cache-control", "no-store");
+    res.json({ path: `/desktop/session?code=${encodeURIComponent(code)}` });
+  });
 
-app.get("/desktop/session", (req, res) => {
-  const code = typeof req.query.code === "string" ? req.query.code : "";
-  const expiresAt = desktopSessionCodes.get(code);
-  if (!code || !expiresAt || expiresAt <= Date.now()) {
-    if (code) desktopSessionCodes.delete(code);
-    return res.status(401).type("text/plain").send("This desktop session link is invalid or expired.");
-  }
-  desktopSessionCodes.delete(code);
-  setAdminSession(req, res);
-  res.setHeader("cache-control", "no-store");
-  res.setHeader("referrer-policy", "no-referrer");
-  return res.redirect(303, "/");
-});
+  app.get("/desktop/session", (req, res) => {
+    const code = typeof req.query.code === "string" ? req.query.code : "";
+    const expiresAt = desktopSessionCodes.get(code);
+    if (!code || !expiresAt || expiresAt <= Date.now()) {
+      if (code) desktopSessionCodes.delete(code);
+      return res.status(401).type("text/plain").send("This desktop session link is invalid or expired.");
+    }
+    desktopSessionCodes.delete(code);
+    setAdminSession(req, res);
+    res.setHeader("cache-control", "no-store");
+    res.setHeader("referrer-policy", "no-referrer");
+    return res.redirect(303, "/");
+  });
+}
 
 app.post(
   "/admin/codex-sessions",
@@ -754,19 +758,21 @@ app.post(
   },
 );
 
-app.post("/admin/session", createAuthRateLimiter({ limit: 20 }), (req, res) => {
-  if (!ADMIN_TOKEN) return res.json({ authenticated: true });
-  const token = String(req.body?.token ?? "");
-  if (!safeEqual(token, ADMIN_TOKEN))
-    return res.status(401).json({ error: "unauthorized" });
-  setAdminSession(req, res);
-  res.json({ authenticated: true });
-});
+if (!MULTIVIBE_CONTROL_PLANE) {
+  app.post("/admin/session", createAuthRateLimiter({ limit: 20 }), (req, res) => {
+    if (!ADMIN_TOKEN) return res.json({ authenticated: true });
+    const token = String(req.body?.token ?? "");
+    if (!safeEqual(token, ADMIN_TOKEN))
+      return res.status(401).json({ error: "unauthorized" });
+    setAdminSession(req, res);
+    res.json({ authenticated: true });
+  });
 
-app.delete("/admin/session", (req, res) => {
-  clearAdminSession(req, res);
-  res.json({ authenticated: false });
-});
+  app.delete("/admin/session", (req, res) => {
+    clearAdminSession(req, res);
+    res.json({ authenticated: false });
+  });
+}
 
 app.use("/admin", adminGuard, adminRouter);
 
