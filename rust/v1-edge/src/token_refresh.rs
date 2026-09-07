@@ -77,6 +77,8 @@ impl TokenRefreshManager {
             return Ok(current);
         }
 
+        // Validate persistence before rotating a provider refresh token.
+        persistence_url(&config.node_control_plane_url, &current.id)?;
         let expected_access_token = current.access_token.clone();
         let refresh_result = refresh_token(client, config, &current).await;
         let refreshed = match refresh_result {

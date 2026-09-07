@@ -11194,6 +11194,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn credential_transport_returns_redirects_without_following_them() {
+        let destination_calls = Arc::new(AtomicUsize::new(0));
+        let counter = destination_calls.clone();
+        let routes = Router::new()
+            .route("/redirect", post(|| async { axum::response::Redirect::temporary("/done") }))
+            .route("/done", post(move || {
+                let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, AtomicOrdering::SeqCst);
+                    StatusCode::NO_CONTENT
+                }
+            }));
+        let (url, task) = start_server(routes).await;
+        let mut config = EdgeConfig::default();
+        config.store_path = temporary_path("redirect-accounts");
+        config.jobs_path = temporary_path("redirect-jobs");
+        config.legacy_jobs_db_path = None;
+        let state = EdgeState::new(config).await.unwrap();
+        let response = state.webhook_client.post(format!("{url}/redirect"))
+            .body("request").send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(destination_calls.load(AtomicOrdering::SeqCst), 0);
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn native_token_refresh_is_single_flight_and_persisted_through_control_plane() {
         let store_path = temporary_path("token-refresh-accounts");
         let jobs_path = temporary_path("token-refresh-jobs");
