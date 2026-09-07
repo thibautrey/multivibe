@@ -1,9 +1,10 @@
-import React, { useMemo, useState } from "react";
+import React from "react";
 import { Metric } from "../Metric";
 import { WidgetGrid } from "../WidgetGrid";
 import { ProgressStat } from "../ProgressStat";
 import { HostHarnessCards } from "../../host/HostHarnessCarousel";
 import { usd } from "../../lib/ui";
+import { AvailableModels } from "../AvailableModels";
 import type { ExposedModel, TraceStats } from "../../types";
 
 type Props = {
@@ -27,22 +28,6 @@ export function OverviewTab({
   hostApplication,
   onHarnessesChanged,
 }: Props) {
-  const [providerTab, setProviderTab] = useState<
-    "all" | "openai" | "openai-compatible" | "opencode" | "mistral" | "zai" | "xai"
-  >("all");
-
-  const filteredModels = useMemo(() => {
-    if (providerTab === "all") return models;
-    return models.filter((model) => {
-      const providers = model.metadata?.provider_candidates?.length
-        ? model.metadata.provider_candidates
-        : model.metadata?.provider
-          ? [model.metadata.provider]
-          : [];
-      return providers.includes(providerTab);
-    });
-  }, [models, providerTab]);
-
   const isReady = stats.enabled > 0 && models.length > 0;
   const hasTraffic = traceStats.totals.requests > 0;
   const isEverythingRunning = Boolean(stats.total && models.length && hasTraffic);
@@ -98,34 +83,15 @@ export function OverviewTab({
             </div>
             <span className="badge">{usageStats.primaryCount + usageStats.secondaryCount} windows</span>
           </div>
-          <ProgressStat label="Next 5 hours" value={usageStats.primaryAvg} count={usageStats.primaryCount} />
-          <ProgressStat label="This week" value={usageStats.secondaryAvg} count={usageStats.secondaryCount} />
+          {usageStats.primaryCount > 0 && (
+            <ProgressStat label="Next 5 hours" value={usageStats.primaryAvg} count={usageStats.primaryCount} />
+          )}
+          {usageStats.secondaryCount > 0 && (
+            <ProgressStat label="This week" value={usageStats.secondaryAvg} count={usageStats.secondaryCount} />
+          )}
         </div>
 
-        <div className="panel overview-models-panel">
-          <div className="section-split-header">
-            <div>
-              <h2>Available models</h2>
-              <small>Choose a model to open a ready-to-run request.</small>
-            </div>
-            <label className="compact-field overview-provider-filter">
-              Provider
-              <select value={providerTab} onChange={(event) => setProviderTab(event.target.value as typeof providerTab)}>
-                <option value="all">All providers</option><option value="openai">OpenAI</option>
-                <option value="openai-compatible">OpenAI-compatible</option><option value="opencode">OpenCode</option>
-                <option value="mistral">Mistral</option><option value="zai">z.ai</option><option value="xai">Grok Build</option>
-              </select>
-            </label>
-          </div>
-          <div className="chips overview-model-list">
-            {filteredModels.map((model) => (
-              <button key={model.id} className="chip mono model-docs-link" onClick={() => openModelInDocs(model.id)} aria-label={`Test ${model.id} in API reference`}>
-                <span>{model.id}</span><span className="model-docs-link-icon" aria-hidden="true">→</span>
-              </button>
-            ))}
-            {!filteredModels.length && <span className="muted">No models available for this provider.</span>}
-          </div>
-        </div>
+        <AvailableModels models={models} openModelInDocs={openModelInDocs} />
       </section>
     </>
   );

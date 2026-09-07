@@ -2861,7 +2861,7 @@ export function AccountsTab(props: Props) {
 
       {showAddAccount && !oauthDialog && (
         <ModalPortal><div className="modal-backdrop" onClick={() => { if (!isSubmitting) closeModal(); }}>
-          <div ref={providerModalRef} className={`modal panel provider-setup-modal${onboardingProviderSetup ? " onboarding-provider-modal" : ""}`} role="dialog" aria-modal="true" aria-labelledby="provider-setup-title" tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(event) => {
+          <div ref={providerModalRef} className={`modal panel provider-setup-modal${onboardingProviderSetup ? " onboarding-provider-modal" : ""}`} role="dialog" aria-modal="true" aria-label={providerStep === 0 ? "Choose your provider" : undefined} aria-labelledby={providerStep > 0 ? "provider-setup-title" : undefined} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(event) => {
             if (event.key === "Escape" && !isSubmitting) { event.stopPropagation(); closeModal(); }
             if (event.key === "Tab") {
               const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), summary, [href]')).filter((item) => item.getClientRects().length > 0);
@@ -2889,11 +2889,11 @@ export function AccountsTab(props: Props) {
             <ol className="provider-setup-steps" aria-label="Setup progress">
               {["Choose provider", "Connect", "Review"].map((label, index) => <li key={label} className={index === providerStep ? "active" : index < providerStep ? "complete" : ""} aria-current={index === providerStep ? "step" : undefined}><span>{index < providerStep ? "✓" : index + 1}</span>{label}</li>)}
             </ol>
-            <div className="provider-setup-heading">
-              {providerStep > 0 && <ProviderMark provider={provider} sdkProvider={sdkProvider} />}
-              <div><h2 id="provider-setup-title">{providerStep === 0 ? "Choose your provider" : providerStep === 1 ? `Connect ${selectedProviderName}` : "Ready to connect?"}</h2>
-              <p className="muted">{providerStep === 0 ? "Bring your subscription, API key, or local endpoint." : providerStep === 1 ? "Enter your connection details to continue." : "Check your connection and customize routing if needed."}</p></div>
-            </div>
+            {providerStep > 0 && <div className="provider-setup-heading">
+              <ProviderMark provider={provider} sdkProvider={sdkProvider} />
+              <div><h2 id="provider-setup-title">{providerStep === 1 ? `Connect ${selectedProviderName}` : "Ready to connect?"}</h2>
+              <p className="muted">{providerStep === 1 ? "Enter your connection details to continue." : "Check your connection and customize routing if needed."}</p></div>
+            </div>}
             {providerStep === 0 && <ProviderPicker value={provider} sdkProvider={sdkProvider} cloudProviders={sdkProviders} error={sdkCatalogError} onChange={selectProvider} />}
             {providerStep === 1 && <div className="grid modal-grid provider-setup-fields">
 
