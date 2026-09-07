@@ -64,3 +64,31 @@ Profiles for llama.cpp, vLLM, TensorRT-LLM, MLX or another compiled adapter can
 use the same contract without adding backend logic to the selector. Hardware
 measurements should be contributed as reviewed profiles or matching benchmark
 evidence, never as an opaque auto-tuning rule.
+
+## Checking and updating reviewed metadata
+
+Run `npm run catalog:check` from the repository root (Go 1.24 or newer is
+required; npm dependencies are not needed). The check recomputes profile and
+catalog digests, checks managed Ollama artifact references against the dependency
+manifest, and compares the golden fixture. It does not contact GitHub or download
+runtime archives: independently verify upstream checksums before editing them.
+
+After an intentional metadata change, reconcile the profiles with the dependency
+manifest, run `npm run catalog:refresh`, and review and commit the generated
+catalog and golden fixture together. Refresh uses `runtimeprofile.Finalize` and
+refuses inconsistent dependency references. Historical benchmark evidence is not
+rewritten by this command.
+
+Every pull request runs the catalog check, Go catalog/benchmark tests and archive
+verification fixtures, without secrets or publishing permissions. Release builds
+wait for the same workflow. Forks can run these checks without access to the
+upstream repository's credentials. Branch-protection requirements remain a
+maintainer setting; this change does not alter them.
+
+An optional, advisory pre-push hook can be enabled with
+`git config --local core.hooksPath .githooks`. Inspect your existing
+`git config --get core.hooksPath` first: this selects a hook directory rather than
+merging existing hooks. The hook checks the current checkout, not every commit
+being pushed; CI checks the PR/release commit. It allows the push even when Go is
+missing or validation fails. To disable it, restore your previous hooksPath, or
+run `git config --local --unset core.hooksPath` if none was previously set.

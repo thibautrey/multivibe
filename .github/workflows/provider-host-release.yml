@@ -39,8 +39,13 @@ jobs:
           fi
           printf 'value=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
+  validate-catalog:
+    uses: ./.github/workflows/catalog-validation.yml
+    permissions:
+      contents: read
+
   build-linux:
-    needs: validate-tag
+    needs: [validate-tag, validate-catalog]
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     permissions:
@@ -133,7 +138,7 @@ jobs:
           compression-level: 0
 
   build-macos:
-    needs: validate-tag
+    needs: [validate-tag, validate-catalog]
     name: build-macos-${{ matrix.architecture }}
     strategy:
       fail-fast: false
@@ -272,7 +277,7 @@ jobs:
           compression-level: 0
 
   build-windows:
-    needs: validate-tag
+    needs: [validate-tag, validate-catalog]
     # node-gyp bundled with the pinned npm supports Visual Studio 2022.
     runs-on: windows-2022
     timeout-minutes: 150
