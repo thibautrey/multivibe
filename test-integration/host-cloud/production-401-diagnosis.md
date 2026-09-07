@@ -1,6 +1,27 @@
 # Live project-key 401 diagnosis — 2026-09-07
 
-## Proven production observations
+## Post-sync result — supersedes the original mismatch
+
+The primary task reports a bounded production update: only identity's
+`service-key-hash-pepper` was copied into `multivibe-cloud-api-runtime`, guarded
+by UID/resourceVersion tests and automatic rollback, followed by an API-only
+restart. API revision **50** is ready with **2/2** replicas.
+
+Its audit at **2026-09-07T20:32:08Z** found all six API/identity/billing pods ready
+in one pepper group, the same API/identity database, exactly two active keys,
+no associated entitlement/balance rows, and `driftGatePassed=true`.
+A fresh `/v1/models` request with the user key still returned **401**, as reported
+by the primary task. This documentation task did not obtain or replay that key.
+The remaining shadow verifier entitlement/balance/lease barrier is therefore
+consistent with the post-sync request; pepper drift is no longer the live blocker.
+Lease absence itself was not separately established.
+
+All three activation flags remain false. No billing, entitlement, balance, lease
+or inference activation is authorized by this update. Alignment success does
+not establish authenticated Host catalog access or enrollment persistence.
+See [post-sync evidence](production-post-sync-2026-09-07.json).
+
+## Original pre-sync observations (historical)
 
 At approximately 20:20 UTC, read-only Kubernetes and PostgreSQL probes established:
 
@@ -30,7 +51,7 @@ Therefore these findings cover the observed recent keys and deployment state;
 **the exact user key was not matched or independently replayed**. Its reported
 HTTP 401 is user-provided evidence, not a fresh request executed by this audit.
 
-## Why this deployment returns 401
+## Original two-barrier diagnosis (first barrier now resolved)
 
 The deployed source has two independent barriers:
 
@@ -53,8 +74,10 @@ historical source of the divergent secret values is not established by this audi
 
 ## Concrete repair sequence and rollback boundary
 
-No production mutation was made. No secret was copied, rotated, read out, patched,
-or moved across planes, and no entitlement/credit/identity was fabricated.
+The original audit made no production mutation. The primary task subsequently
+completed the bounded field synchronization and API restart described above.
+The following sequence records the original repair boundaries; steps 1–2 are
+completed, and steps 3–4 are not authorization to activate services.
 
 1. The secret owner must choose the canonical **existing** service-key pepper
    used for dashboard-issued keys and synchronize the API runtime's designated
@@ -83,8 +106,8 @@ or moved across planes, and no entitlement/credit/identity was fabricated.
    separate proof from project-key authentication.
 
 A blind secret edit or activation of live billing would not be a complete or
-reversible fix for the two observed barriers. Those production changes were not
-executed under the guise of an inference test.
+reversible fix for the two observed barriers. No live billing or inference activation was performed. The bounded pepper
+update is recorded separately above.
 
 ## Reproduce the read-only evidence
 
@@ -98,12 +121,14 @@ It uses no raw API key; executes only environment comparisons and bounded SELECT
 with `default_transaction_read_only=on` and a five-second statement timeout;
 never runs a Kubernetes write, inference or billing action. It uses a fresh random
 HMAC challenge for each run and prints workload equivalence groups, never hashes.
-Exit 1 means a complete audit found disagreement; exit 2 means it could not finish.
+Exit 1 means the alignment/readiness gate failed (including missing or unready
+replicas); exit 2 means the audit could not finish.
 
 The sanitized [runtime evidence](production-audit-2026-09-07.json) records the
 snapshot, deployment digests, pod names and allowed public key prefixes. It contains
 no raw key, cookie, DB URL, pepper, token, prompt, answer or application log.
 
-**Remaining live proof:** controlled runtime-secret alignment plus an actually
-ready live inference profile and usable test project access. Until then Host Cloud
+**Remaining live proof:** resolve the catalog authentication contract for the
+current disabled-live profile without granting financial capabilities. Host Cloud
 authentication, Cloud enrollment persistence and real inference remain unverified.
+No further pepper synchronization is pending on the observed deployment.

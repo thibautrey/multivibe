@@ -190,3 +190,9 @@ latest-five query. These sequential observations are not an atomic snapshot.
 The alignment gate rejects missing workloads, unexpected replica counts and
 unready pods, as well as unequal peppers or databases. This detects drift; it
 does not prevent independent Secret updates. See [readiness evidence](pepper-sync-readiness.md).
+
+Post-sync: the primary task's 2026-09-07 20:32:08Z audit passed after the bounded
+API pepper update and API-only rollout to revision 50. Its fresh user-key catalog
+request still returned 401 under the shadow verifier. See the
+[post-sync result and proof boundaries](production-401-diagnosis.md).
+Alignment is not a successful Host connection or permission to enable inference.

@@ -1,6 +1,11 @@
 # Pepper synchronization readiness — 2026-09-07
 
-Read-only inspection; no Secret patch, dry-run patch, rollout, activation or inference was performed.
+This is the historical pre-sync readiness inspection. Its statement that no
+patch or rollout had occurred was true at inspection time and is superseded by
+the [post-sync diagnosis](production-401-diagnosis.md): the primary task performed
+the bounded one-field sync and API-only rollout, with UID/resourceVersion tests
+and automatic rollback. Revision 50 is ready and the 20:32:08Z audit passed.
+This documentation update makes no production changes.
 
 ## Permissions and provisioning
 
@@ -39,18 +44,22 @@ cryptographic verification using the raw key, nor protection against concurrent
 issuance, a future rotation, or another database. Recheck population and source
 versions immediately before an approved change.
 
-A protected previous-value rollback has not been established. Deployment
+At the time of this readiness inspection, a protected previous-value rollback
+had not been established. Deployment
 rollback alone does not restore a mutated Secret. The canonical source ownership
-and a suitable narrow provisioning path still need operator approval.
+and a suitable narrow provisioning path still needed operator approval at that
+time. The primary task subsequently reports automatic rollback protection;
+this documentation task has not independently exercised rollback.
 
-## Remaining production action — not executed
+## Original proposed production action — subsequently completed
 
 After the secret owner approves the canonical identity/billing source and a
 protected rollback, synchronize only `service-key-hash-pepper` in
 `multivibe-cloud-api-runtime`, with source/target version fences. Preserve all
 other fields and activation flags, then restart only API through the approved
-rollout path and repeat the complete replica audit. No production write is
-included in this readiness task.
+rollout path and repeat the complete replica audit. This readiness inspection itself included no production write. The primary
+task subsequently completed the sync and rollout; do not repeat them based on
+this historical proposal.
 
 Pepper agreement alone is insufficient for successful catalog authentication:
 the current shadow verifier also requires entitlement/balance/lease joins, and
