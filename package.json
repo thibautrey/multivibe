@@ -27,7 +27,8 @@
     "test": "tsx --test \"src/**/*.test.ts\" \"web/test/**/*.test.ts\"",
     "start": "node --import ./dist/instrument.js dist/server.js",
     "catalog:sdk:refresh": "node scripts/refresh-ai-sdk-catalog.mjs",
-    "demo": "npm --prefix web run demo"
+    "demo": "npm --prefix web run demo",
+    "test:integration:cloud": "node --import tsx --test test-integration/cloud-core.test.mjs"
   },
   "dependencies": {
     "@foxglove/wasm-zstd": "^1.0.1",
