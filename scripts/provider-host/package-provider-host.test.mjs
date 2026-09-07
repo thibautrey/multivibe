@@ -187,3 +187,9 @@ test("Windows npm invocation rejects an invalid npm executable path", () => {
     /npm_execpath must be an absolute path to npm-cli\.js on Windows/u,
   );
 });
+
+test("packaging runs web and API builds in separate npm processes", async () => {
+  const source = await readFile(packager, "utf8");
+  assert.match(source, /await command\("npm", \["run", "build:web"\]\);\s+await command\("npm", \["run", "build:api"\]\);/u);
+  assert.doesNotMatch(source, /await command\("npm", \["run", "build"\]\);/u);
+});
