@@ -461,6 +461,7 @@ pub struct Account {
     pub expires_at: Option<u64>,
     pub chatgpt_account_id: Option<String>,
     pub opencode_console_url: Option<String>,
+    pub opencode_org_id: Option<String>,
     pub opencode_api_key: Option<String>,
     #[serde(default)]
     pub opencode_headers: HashMap<String, String>,
@@ -1108,16 +1109,34 @@ fn is_local_runtime(account: &Account) -> bool {
         && account.base_url.is_some()
 }
 
+fn account_inference_token(account: &Account) -> &str {
+    if normalize_provider(account) != "opencode" {
+        return &account.access_token;
+    }
+    match account.opencode_api_key.as_deref().map(str::trim) {
+        None | Some("") | Some("{env:OPENCODE_CONSOLE_TOKEN}") => &account.access_token,
+        // Never send an unresolved config reference as a provider credential.
+        Some(key) if key.contains("{env:") || key.contains("{file:") => "",
+        Some(key) => key,
+    }
+}
+
+fn apply_opencode_headers(account: &Account, headers: &mut HeaderMap) {
+    for (name, value) in &account.opencode_headers {
+        if !name.eq_ignore_ascii_case("authorization") {
+            set_header(headers, name, value);
+        }
+    }
+    if let Some(org_id) = &account.opencode_org_id {
+        set_header(headers, "x-org-id", org_id);
+    }
+}
+
 fn account_usable(account: &Account, model: &str, blocked: &HashMap<String, u64>) -> bool {
     if !account.enabled {
         return false;
     }
-    if account.access_token.is_empty()
-        && account
-            .opencode_api_key
-            .as_deref()
-            .is_none_or(str::is_empty)
-        && !is_local_runtime(account)
+    if account_inference_token(account).is_empty() && !is_local_runtime(account)
     {
         return false;
     }
@@ -4617,14 +4636,7 @@ fn upstream_headers(
     let mut headers = HeaderMap::new();
     set_header(&mut headers, "content-type", "application/json");
     set_header(&mut headers, "accept", "text/event-stream");
-    let token = if provider == "opencode" {
-        account
-            .opencode_api_key
-            .as_deref()
-            .unwrap_or(&account.access_token)
-    } else {
-        &account.access_token
-    };
+    let token = account_inference_token(account);
     if !token.is_empty() && !is_local_runtime(account) {
         set_header(&mut headers, "authorization", format!("Bearer {token}"));
     }
@@ -4657,9 +4669,7 @@ fn upstream_headers(
         }
     }
     if provider == "opencode" {
-        for (name, value) in &account.opencode_headers {
-            set_header(&mut headers, name, value);
-        }
+        apply_opencode_headers(account, &mut headers);
     }
     if let Some(session) = request_session_id(incoming) {
         set_header(&mut headers, "session_id", session);
@@ -8808,6 +8818,7 @@ fn catalog_signature(store: &StoreFile, config: &EdgeConfig) -> String {
                 "access_token": secret_signature(Some(&account.access_token)),
                 "opencode_api_key": secret_signature(account.opencode_api_key.as_deref()),
                 "opencode_headers": account.opencode_headers,
+        "opencode_org_id": account.opencode_org_id,
                 "local_runtime": account.local_runtime,
             })
         })
@@ -8828,6 +8839,7 @@ fn account_model_source_signature(account: &Account, config: &EdgeConfig) -> Str
         "discovery_url": model_discovery_url(account, config),
         "chatgpt_account_id": account.chatgpt_account_id,
         "opencode_headers": account.opencode_headers,
+        "opencode_org_id": account.opencode_org_id,
         "local_runtime": account.local_runtime,
         "models_client_version": config.models_client_version,
         "zai_models_path": config.zai_models_path,
@@ -8889,14 +8901,7 @@ fn model_discovery_headers(account: &Account) -> HeaderMap {
     let provider = normalize_provider(account);
     let mut headers = HeaderMap::new();
     set_header(&mut headers, "accept", "application/json");
-    let token = if provider == "opencode" {
-        account
-            .opencode_api_key
-            .as_deref()
-            .unwrap_or(&account.access_token)
-    } else {
-        &account.access_token
-    };
+    let token = account_inference_token(account);
     if !token.is_empty() && !is_local_runtime(account) {
         set_header(&mut headers, "authorization", format!("Bearer {token}"));
     }
@@ -8912,9 +8917,7 @@ fn model_discovery_headers(account: &Account) -> HeaderMap {
         set_header(&mut headers, "user-agent", "grok-pager/0.2.114");
     }
     if provider == "opencode" {
-        for (name, value) in &account.opencode_headers {
-            set_header(&mut headers, name, value);
-        }
+        apply_opencode_headers(account, &mut headers);
     }
     headers
 }
@@ -9044,12 +9047,7 @@ async fn exposed_models(state: &EdgeState, store: &StoreFile, force: bool) -> Ve
         .iter()
         .filter(|account| {
             account.enabled
-                && (!account.access_token.is_empty()
-                    || account
-                        .opencode_api_key
-                        .as_deref()
-                        .is_some_and(|value| !value.is_empty())
-                    || is_local_runtime(account))
+                && (!account_inference_token(account).is_empty() || is_local_runtime(account))
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -10759,6 +10757,30 @@ pub fn build_router(state: EdgeState) -> Router {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn opencode_headers_resolve_current_token_and_workspace_for_inference_and_discovery() {
+        let mut account: Account = serde_json::from_value(serde_json::json!({
+            "id": "console", "provider": "opencode", "enabled": true,
+            "accessToken": "old-session", "opencodeApiKey": "{env:OPENCODE_CONSOLE_TOKEN}",
+            "opencodeOrgId": "org_selected",
+            "opencodeHeaders": {"x-opencode-org-id": "org_selected", "Authorization": "Bearer stale"}
+        })).unwrap();
+        account.access_token = "refreshed-session".to_owned();
+        let inference = upstream_headers(&account, &HeaderMap::new(),
+            "https://opencode.ai/inference/openai/v1/responses", None, &EdgeConfig::default());
+        let discovery = model_discovery_headers(&account);
+        for headers in [&inference, &discovery] {
+            assert_eq!(headers["authorization"], "Bearer refreshed-session");
+            assert_eq!(headers["x-org-id"], "org_selected");
+            assert_eq!(headers["x-opencode-org-id"], "org_selected");
+        }
+        account.opencode_api_key = Some("inference-key".to_owned());
+        assert_eq!(model_discovery_headers(&account)["authorization"], "Bearer inference-key");
+        account.opencode_api_key = Some("{env:UNRELATED_SECRET}".to_owned());
+        assert!(!account_usable(&account, "test", &HashMap::new()));
+        assert!(!model_discovery_headers(&account).contains_key("authorization"));
+    }
+
     use super::*;
     use axum::{
         Json,

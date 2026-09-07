@@ -347,9 +347,20 @@ remote, or use device OAuth. A different `OAUTH_REDIRECT_URI` also requires an
 ### OpenCode
 
 Choose **OpenCode Zen / Go** to enter an API key, or use **Connect OpenCode
-account** for the official `opencode-cli` device flow. Quota endpoints are not
-available for every plan; unsupported usage is displayed as `N/A` without
-disabling routing.
+account** for the official `opencode-cli` device flow. OpenCode Go API keys expose
+5-hour, weekly, and monthly usage through `/zen/go/v1/usage`. Monthly resets
+follow the subscription period, so MultiVibe uses the provider's reset timestamp.
+
+Console device connections using `/inference/openai` do not expose this Go usage
+endpoint. MultiVibe shows `N/A` with an explanation for those connections; connect
+a Go API key separately to monitor Go quotas. An explicit missing Go subscription
+also shows `N/A`. Authentication, workspace, endpoint, and malformed-response
+errors stay visible as failed quota refreshes without disabling inference.
+
+Console credentials and workspace headers are resolved for each request, including
+after token refresh. Reauthentication preserves the previously selected workspace.
+See [OpenCode integration notes](docs/opencode-integration.md) for the verified
+contracts and validation limits.
 
 ### Grok Build
 

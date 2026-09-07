@@ -396,6 +396,7 @@ function shouldDisplayOptionalQuotaWindow(
   return (
     !account.usage ||
     account.usage.quotaStatus === "unsupported" ||
+    account.usage.quotaStatus === "error" ||
     Boolean(account.usage[window])
   );
 }
@@ -430,6 +431,7 @@ function usageAgeLabel(fetchedAt?: number) {
 function usageStatusLabel(account: Account, usageCacheTtlMs: number) {
   if (!account.usage) return "Usage not checked";
   if (account.usage.quotaStatus === "unsupported") return "Usage not exposed";
+  if (account.usage.quotaStatus === "error") return "Usage refresh failed";
   if (
     typeof account.usage.fetchedAt === "number" &&
     Date.now() - account.usage.fetchedAt >= usageCacheTtlMs
@@ -2094,6 +2096,9 @@ export function AccountsTab(props: Props) {
                       </div>
                     )}
                   </div>
+                  {a.usage?.quotaMessage && (
+                    <p className="muted">{a.usage.quotaMessage}</p>
+                  )}
                 </div>
                 <div className="provider-card-footer">
                   <div className="state-stack">
@@ -2896,7 +2901,7 @@ export function AccountsTab(props: Props) {
               )}
               {provider === "opencode" && (
                 <div className="muted">
-                  Enter an OpenCode API key, or use the device-login button below to connect an OpenCode Console account. Go quotas are detected automatically.
+                  Enter an OpenCode API key, or use the device-login button below to connect an OpenCode Console account. Go API keys support 5h, weekly and monthly quotas. Console device connections may not expose these quotas.
                 </div>
               )}
               {!onboardingProviderSetup && <label>
