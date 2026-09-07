@@ -45,7 +45,8 @@ The bounded adapter registry also describes Ollama, llama.cpp/llama-server/llama
 vLLM, SGLang, LocalAI, Hugging Face TGI and Transformers Serve, Xinference,
 MLX-LM, MLC LLM, Exo, Jan, GPT4All, KoboldCpp, text-generation-webui,
 Aphrodite, TabbyAPI, llama-box, mistral.rs, NVIDIA NIM, TensorRT-LLM, Triton,
-OpenLLM, BentoML, MTPLX and a manual OpenAI-compatible adapter. Each entry
+OpenLLM, BentoML, MTPLX, NVIDIA Personal AI Router (PAIR) and a manual
+OpenAI-compatible adapter. Each entry
 declares its protocol, health and catalog contract, capabilities, authentication,
 measurement units and bounded limits. Entries without a reliably identifiable
 official probe remain manual and have no automatic candidates. MultiVibe does
@@ -53,6 +54,21 @@ not guess their ports or inspect processes, files, service registries, or the LA
 
 Detection remains local until the user selects models. Cloud receives only the
 selected model identifiers and the metadata allowlist shown before consent.
+
+### NVIDIA PAIR
+
+PAIR is registered as a dedicated, tokenless OpenAI-compatible adapter. It must
+be configured explicitly with the loopback endpoint displayed by PAIR. PAIR's
+documented default proxies deliberately impersonate the engine they front:
+port `11434` exposes an Ollama-compatible surface and port `1234` exposes an
+LM Studio/OpenAI-compatible surface. Its model-list response has no stable
+PAIR-specific signature. MultiVibe therefore does not guess whether either
+port belongs to PAIR and does not add automatic PAIR candidates.
+
+The endpoint connects locally, but PAIR may execute a request on another paired
+machine on the user's trusted local network. MultiVibe treats this adapter as a
+personal-cluster execution boundary rather than proof that execution stayed on
+the machine running Core.
 
 ## Network and authentication boundary
 
