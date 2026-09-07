@@ -1,0 +1,148 @@
+{
+  "checkedAt": "2026-09-07T20:19:54.023956+00:00",
+  "namespace": "multivibe-cloud",
+  "readOnly": true,
+  "deployments": [
+    {
+      "name": "multivibe-cloud-api",
+      "revision": "49",
+      "sourceCommit": "5c1fbd240c0802e7232eedf6979915b423d2703a",
+      "images": [
+        "ghcr.io/pleiades-solutions/multivibe-cloud@sha256:68a67a81d6d00e02837ab493cec9dace22a814e24ad44f6b99ce8d4c9b87231a"
+      ],
+      "pepperSecretRefs": [
+        {
+          "key": "service-key-hash-pepper",
+          "name": "multivibe-cloud-api-runtime",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "multivibe-cloud-identity",
+      "revision": "63",
+      "sourceCommit": "5c1fbd240c0802e7232eedf6979915b423d2703a",
+      "images": [
+        "ghcr.io/pleiades-solutions/multivibe-cloud@sha256:68a67a81d6d00e02837ab493cec9dace22a814e24ad44f6b99ce8d4c9b87231a"
+      ],
+      "pepperSecretRefs": [
+        {
+          "key": "service-key-hash-pepper",
+          "name": "multivibe-cloud-identity-runtime",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "multivibe-billing-live",
+      "revision": "3",
+      "sourceCommit": "cfeeb11d7114207f0917114f8d7465d69c575987",
+      "images": [
+        "ghcr.io/pleiades-solutions/multivibe-cloud@sha256:9ff09062a584d06a551284d9b57730846a69a21ef21f8434ea17e0e727addedb"
+      ],
+      "pepperSecretRefs": [
+        {
+          "key": "service-key-hash-pepper",
+          "name": "multivibe-billing-live-runtime",
+          "optional": false
+        }
+      ]
+    }
+  ],
+  "pods": [
+    {
+      "name": "multivibe-billing-live-587cd87c94-c5mmd",
+      "ready": true,
+      "imageIds": [
+        "ghcr.io/pleiades-solutions/multivibe-cloud@sha256:9ff09062a584d06a551284d9b57730846a69a21ef21f8434ea17e0e727addedb"
+      ]
+    },
+    {
+      "name": "multivibe-billing-live-587cd87c94-njxl2",
+      "ready": true,
+      "imageIds": [
+        "ghcr.io/pleiades-solutions/multivibe-cloud@sha256:9ff09062a584d06a551284d9b57730846a69a21ef21f8434ea17e0e727addedb"
+      ]
+    },
+    {
+      "name": "multivibe-cloud-api-79648d86d-8dsk9",
+      "ready": true,
+      "imageIds": [
+        "ghcr.io/pleiades-solutions/multivibe-cloud@sha256:68a67a81d6d00e02837ab493cec9dace22a814e24ad44f6b99ce8d4c9b87231a"
+      ]
+    },
+    {
+      "name": "multivibe-cloud-api-79648d86d-crfj5",
+      "ready": true,
+      "imageIds": [
+        "ghcr.io/pleiades-solutions/multivibe-cloud@sha256:68a67a81d6d00e02837ab493cec9dace22a814e24ad44f6b99ce8d4c9b87231a"
+      ]
+    },
+    {
+      "name": "multivibe-cloud-identity-749d4b7c7d-tnn4m",
+      "ready": true,
+      "imageIds": [
+        "ghcr.io/pleiades-solutions/multivibe-cloud@sha256:68a67a81d6d00e02837ab493cec9dace22a814e24ad44f6b99ce8d4c9b87231a"
+      ]
+    },
+    {
+      "name": "multivibe-cloud-identity-749d4b7c7d-v25mv",
+      "ready": true,
+      "imageIds": [
+        "ghcr.io/pleiades-solutions/multivibe-cloud@sha256:68a67a81d6d00e02837ab493cec9dace22a814e24ad44f6b99ce8d4c9b87231a"
+      ]
+    }
+  ],
+  "specificUserKeyMatched": false,
+  "equalPepperGroups": [
+    [
+      "multivibe-billing-live-587cd87c94-c5mmd",
+      "multivibe-billing-live-587cd87c94-njxl2",
+      "multivibe-cloud-identity-749d4b7c7d-tnn4m",
+      "multivibe-cloud-identity-749d4b7c7d-v25mv"
+    ],
+    [
+      "multivibe-cloud-api-79648d86d-8dsk9",
+      "multivibe-cloud-api-79648d86d-crfj5"
+    ]
+  ],
+  "allPepperValuesAligned": false,
+  "apiIdentitySameDatabase": true,
+  "apiFlags": {
+    "MANAGED_LIVE_INFERENCE_ENABLED": false,
+    "MONETARY_EFFECTS_ENABLED": false,
+    "MARKETPLACE_ROUTING_ENABLED": false
+  },
+  "recentKeyStates": [
+    {
+      "key_prefix": "mvk_ev1lOR8y",
+      "scopes": [
+        "models:read",
+        "responses:write"
+      ],
+      "created_at": "2026-09-07T20:07:57.491Z",
+      "expires_at": "2026-12-06T20:07:57.456Z",
+      "revoked_at": null,
+      "unexpired": true,
+      "creation_event_persisted": true,
+      "has_any_entitlement": false,
+      "has_any_balance": false
+    },
+    {
+      "key_prefix": "mvk_YkAFrHEv",
+      "scopes": [
+        "models:read",
+        "responses:write"
+      ],
+      "created_at": "2026-09-07T19:56:26.416Z",
+      "expires_at": "2026-12-06T19:56:26.383Z",
+      "revoked_at": null,
+      "unexpired": true,
+      "creation_event_persisted": true,
+      "has_any_entitlement": false,
+      "has_any_balance": false
+    }
+  ],
+  "realInferenceAttempted": false,
+  "rawKeyUsed": false
+}
