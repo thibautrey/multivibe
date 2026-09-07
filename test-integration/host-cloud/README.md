@@ -196,3 +196,6 @@ API pepper update and API-only rollout to revision 50. Its fresh user-key catalo
 request still returned 401 under the shadow verifier. See the
 [post-sync result and proof boundaries](production-401-diagnosis.md).
 Alignment is not a successful Host connection or permission to enable inference.
+
+See [the USD 2 live-test readiness check](live-two-dollar-readiness.md) for the
+subsequent authorized spending attempt and the missing auditable funding mechanism.
