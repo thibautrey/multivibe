@@ -1,0 +1,1 @@
+Provider icons are vendored from @lobehub/icons-static-svg (https://github.com/lobehub/lobe-icons), under the accompanying MIT license. Provider names and marks belong to their respective owners. Icons are served locally; setup does not request third-party assets.
