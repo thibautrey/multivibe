@@ -69,3 +69,12 @@
 .provider-setup-results { margin: 12px 0; font-size: 12px; }
 .provider-setup-picker .provider-setup-cards { max-height: min(45vh, 460px); overflow-y: auto; overscroll-behavior: contain; padding: 4px; }
 .provider-setup-empty { padding: 24px; text-align: center; color: var(--muted); }
+
+.provider-access-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+.provider-access-badge { border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+.provider-access-badge:hover { border-color: var(--primary); }
+.provider-access-badge.selected { background: var(--primary-soft); border-color: var(--primary); color: var(--primary); }
+.provider-access-badge:focus-visible, .provider-access-clear:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.provider-access-clear { background: none; border: 0; color: var(--muted); font: inherit; font-size: 12px; text-decoration: underline; cursor: pointer; }
+.provider-access-help { font-size: 11px; line-height: 1.5; margin: 10px 0; }
+.provider-setup-card-copy .provider-access-label { font-size: 10px; line-height: 1.3; }
