@@ -1167,8 +1167,6 @@ Available scripts:
 - [Complete plugins guide](./docs/plugins.md)
 - [Deferred batch integration](./docs/batch-jobs.md)
 - [Reusable batch implementation prompt](./docs/prompts/implement-multivibe-batch.md)
-- [Reliability and performance audit](./docs/reliability-performance-audit-2026-08-23.md)
-- [Tracing page audit](./docs/tracing-page-audit.md)
 - [Official logo kit and usage guidance](./assets/brand/README.md)
 
 Benchmark reports and targeted performance investigations are available in
