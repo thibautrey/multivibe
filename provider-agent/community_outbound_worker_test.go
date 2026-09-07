@@ -52,8 +52,8 @@ func TestCommunityOutboundBackendSelectionIsExactAndFailsClosed(t *testing.T) {
 }
 
 func signedCommunityOutboundClaim(t *testing.T, now time.Time) (communityOutboundClaim, ed25519.PublicKey) {
- t.Helper()
- return signedCommunityOutboundClaimForStream(t, now, false)
+	t.Helper()
+	return signedCommunityOutboundClaimForStream(t, now, false)
 }
 
 func signedCommunityOutboundClaimForStream(t *testing.T, now time.Time, stream bool) (communityOutboundClaim, ed25519.PublicKey) {
@@ -69,6 +69,9 @@ func signedCommunityOutboundClaimForStream(t *testing.T, now time.Time, stream b
 	keyDigest := sha256.Sum256(spki)
 	keyID := "ed25519:" + base64.RawURLEncoding.EncodeToString(keyDigest[:])
 	body := []byte(`{"model":"qwen2.5:0.5b","messages":[{"role":"user","content":"hello"}]}`)
+	if stream {
+		body = []byte(`{"model":"qwen2.5:0.5b","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	}
 	bodyDigest := sha256.Sum256(body)
 	payload := communityInferencePayload{
 		Kind: "inference_request", ProtocolVersion: communityInferenceProtocol,
