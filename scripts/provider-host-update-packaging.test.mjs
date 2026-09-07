@@ -26,10 +26,10 @@ test("native packages include the updater and platform schedulers", async () => 
     read("packaging/macos/install.sh"), read("packaging/windows/install.ps1"),
     read("scripts/verify-provider-host.mjs"), read("packaging/linux/uninstall.sh"),
   ]);
-  assert.match(packager, /buildGo\(path\.join\(repositoryRoot, "host-updater"\)/u);
+  assert.match(packager, /buildGo\(path\.join\(repositoryRoot, "host", "updater"\)/u);
   assert.match(packager, /buildRustEdge\(edgeDestination\)/u);
   assert.match(packager, /path\.join\(contents, "Helpers", "multivibe-v1-edge"\)/u);
-  assert.match(packager, /buildGo\(\s*path\.join\(repositoryRoot, "host-menu"\)/u);
+  assert.match(packager, /buildGo\(\s*path\.join\(repositoryRoot, "host", "menu"\)/u);
   assert.match(packager, /CGO_ENABLED: selectedTarget\.goos === "linux" \? "1" : "0"/u);
   assert.match(packager, /favicon-32x32\.png/u);
   assert.match(packager, /MultiVibeMenuBarTemplate\.png/u);
@@ -83,7 +83,7 @@ test("native packages include the updater and platform schedulers", async () => 
 
 test("Docker updates stay outside the container and roll back through Compose", async () => {
   const [dockerfile, installer, updater] = await Promise.all([
-    read("packaging/container/Dockerfile"), read("packaging/docker/install-host-updater.sh"), read("host-updater/docker.go"),
+    read("packaging/container/Dockerfile"), read("packaging/docker/install-host-updater.sh"), read("host/updater/docker.go"),
   ]);
   assert.match(dockerfile, /MULTIVIBE_HOST_CONTAINER=true/u);
   assert.doesNotMatch(dockerfile, /docker\.sock/u);

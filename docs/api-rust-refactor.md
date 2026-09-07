@@ -31,7 +31,7 @@ mesurées sur une charge représentative après déploiement.
 | Bootstrap edge | `rust/v1-edge/src/main.rs` | Lecture de la configuration, bind `V1_EDGE_HOST:V1_EDGE_PORT`, shutdown |
 | Plan de contrôle | `src/server.ts` | Dashboard, `/admin/*`, OAuth, stores, agent, tâches et fallback hors `/v1` |
 | Store partagé | `data/accounts.json` via `AccountStore` Rust/Node | Comptes, aliases, clés et politiques applicatives |
-| Runtime local | `provider-agent/`, `host-application/` | Agent Go et intégration des runtimes locaux |
+| Runtime local | `provider-agent/`, `host/application/` | Agent Go et intégration des runtimes locaux |
 | Compatibilité historique | `src/routes/proxy/`, `src/realtime-proxy.ts`, `src/websocket-responses.ts` | Montée seulement dans le profil Express non natif |
 
 Le code TypeScript peut donc rester chargé en mémoire dans le plan de contrôle,
