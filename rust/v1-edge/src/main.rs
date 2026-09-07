@@ -8,6 +8,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind_address = format!("{}:{}", config.listen_host, config.listen_port);
     let state = EdgeState::new(config.clone()).await?;
     let model_catalog_monitor = state.start_model_catalog_monitor();
+    let job_runner = state.start_job_runner();
     let router: Router = build_router(state);
     let listener = TcpListener::bind(&bind_address).await?;
 
@@ -20,6 +21,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     model_catalog_monitor.abort();
+    if let Some(job_runner) = job_runner {
+        job_runner.abort();
+    }
     Ok(())
 }
 

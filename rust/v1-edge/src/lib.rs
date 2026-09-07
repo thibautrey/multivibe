@@ -6,6 +6,9 @@
 //! means request bytes, upstream bytes and SSE frames do not cross a JS/native
 //! boundary on the hot path.
 
+mod confidential;
+mod idempotency;
+
 use async_stream::stream;
 use axum::{
     Router,
@@ -15,7 +18,7 @@ use axum::{
         ws::{Message, WebSocket},
     },
     http::{
-        HeaderMap, Method, Request, StatusCode,
+        HeaderMap, Method, Request, StatusCode, Uri,
         header::{self, HeaderName, HeaderValue},
     },
     response::Response,
@@ -35,11 +38,11 @@ use std::{
     convert::Infallible,
     io::{Cursor, Read},
     path::PathBuf,
-    sync::Arc,
-    sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::{Arc, Mutex as StdMutex},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::broadcast;
+use tokio::sync::{Notify, Semaphore, broadcast};
 use tokio::{
     fs,
     sync::{Mutex, RwLock},
@@ -86,8 +89,16 @@ pub struct EdgeConfig {
     pub session_affinity_max_entries: usize,
     pub upstream_timeout: Duration,
     pub max_account_retry_attempts: usize,
+    pub max_upstream_retries: usize,
+    pub upstream_retry_base_delay: Duration,
     pub idempotency_ttl: Duration,
+    pub idempotency_in_flight_timeout: Duration,
+    pub idempotency_max_entries: usize,
+    pub idempotency_max_bytes: usize,
     pub idempotency_max_response_bytes: usize,
+    pub cloud_privacy_mode: String,
+    pub confidential_inference_trust_policy: Option<String>,
+    pub job_worker_concurrency: usize,
     pub chatgpt_base_url: String,
     pub mistral_base_url: String,
     pub mistral_upstream_path: String,
@@ -128,8 +139,16 @@ impl Default for EdgeConfig {
             session_affinity_max_entries: 10_000,
             upstream_timeout: Duration::from_secs(10 * 60),
             max_account_retry_attempts: 10,
+            max_upstream_retries: 5,
+            upstream_retry_base_delay: Duration::from_secs(2),
             idempotency_ttl: Duration::from_secs(5 * 60),
+            idempotency_in_flight_timeout: Duration::from_secs(5 * 60),
+            idempotency_max_entries: 1_000,
+            idempotency_max_bytes: 32 * 1024 * 1024,
             idempotency_max_response_bytes: 1024 * 1024,
+            cloud_privacy_mode: "standard".to_owned(),
+            confidential_inference_trust_policy: None,
+            job_worker_concurrency: 16,
             chatgpt_base_url: "https://chatgpt.com".to_owned(),
             mistral_base_url: "https://api.mistral.ai".to_owned(),
             mistral_upstream_path: "/v1/responses".to_owned(),
@@ -236,16 +255,47 @@ impl EdgeConfig {
                 .and_then(|v| v.parse::<usize>().ok())
                 .unwrap_or(defaults.max_account_retry_attempts)
                 .max(1),
+            max_upstream_retries: env("MAX_UPSTREAM_RETRIES")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(defaults.max_upstream_retries),
+            upstream_retry_base_delay: Duration::from_millis(
+                env("UPSTREAM_BASE_DELAY_MS")
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(defaults.upstream_retry_base_delay.as_millis() as u64),
+            ),
             idempotency_ttl: Duration::from_millis(
                 env("INFERENCE_IDEMPOTENCY_TTL_MS")
                     .and_then(|v| v.parse::<u64>().ok())
                     .unwrap_or(defaults.idempotency_ttl.as_millis() as u64)
                     .max(1_000),
             ),
+            idempotency_in_flight_timeout: Duration::from_millis(
+                env("INFERENCE_IDEMPOTENCY_IN_FLIGHT_TIMEOUT_MS")
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(defaults.idempotency_in_flight_timeout.as_millis() as u64)
+                    .max(1_000),
+            ),
+            idempotency_max_entries: env("INFERENCE_IDEMPOTENCY_MAX_ENTRIES")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(defaults.idempotency_max_entries)
+                .max(1),
+            idempotency_max_bytes: env("INFERENCE_IDEMPOTENCY_MAX_BYTES")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(defaults.idempotency_max_bytes)
+                .max(1_024),
             idempotency_max_response_bytes: env("INFERENCE_IDEMPOTENCY_MAX_RESPONSE_BYTES")
                 .and_then(|v| v.parse::<usize>().ok())
                 .unwrap_or(defaults.idempotency_max_response_bytes)
                 .max(1_024),
+            cloud_privacy_mode: env("MULTIVIBE_CLOUD_PRIVACY_MODE")
+                .unwrap_or(defaults.cloud_privacy_mode),
+            confidential_inference_trust_policy: env(
+                "MULTIVIBE_CONFIDENTIAL_INFERENCE_TRUST_POLICY",
+            ),
+            job_worker_concurrency: env("JOB_WORKER_CONCURRENCY")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(defaults.job_worker_concurrency)
+                .max(1),
             chatgpt_base_url: env("CHATGPT_BASE_URL").unwrap_or(defaults.chatgpt_base_url),
             mistral_base_url: env("MISTRAL_BASE_URL").unwrap_or(defaults.mistral_base_url),
             mistral_upstream_path: env("MISTRAL_UPSTREAM_PATH")
@@ -375,6 +425,7 @@ pub struct Account {
     pub priority: Option<i64>,
     pub location: Option<String>,
     pub capacity_profile: Option<CapacityProfile>,
+    pub privacy_mode: Option<String>,
     pub usage: Option<UsageSnapshot>,
     pub state: Option<AccountState>,
     pub local_runtime: Option<LocalRuntime>,
@@ -840,6 +891,74 @@ fn normalize_provider(account: &Account) -> String {
     }
 }
 
+fn account_is_confidential(account: &Account) -> bool {
+    account.privacy_mode.as_deref() == Some("confidential_verified")
+}
+
+fn privacy_error(status: StatusCode, code: &str, message: &str) -> Response {
+    json_response(
+        status,
+        json!({
+            "error": {
+                "message": message,
+                "type": "invalid_request_error",
+                "code": code,
+            },
+        }),
+    )
+}
+
+fn confidential_error_response(error: &confidential::ConfidentialError) -> Response {
+    let status = if error.disposition == "not_sent" {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::BAD_GATEWAY
+    };
+    json_response(
+        status,
+        json!({
+            "error": {
+                "message": error.message,
+                "type": "upstream_error",
+                "code": error.code,
+                "execution_state": error.disposition,
+            },
+        }),
+    )
+}
+
+fn confidential_requested(config: &EdgeConfig, headers: &HeaderMap) -> Result<bool, Response> {
+    let requested = header_value(headers, "x-multivibe-privacy")
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    if config.cloud_privacy_mode == "confidential_verified" {
+        if requested.as_deref().is_some_and(|value| value != "confidential_verified") {
+            return Err(privacy_error(
+                StatusCode::CONFLICT,
+                "privacy_policy_downgrade_rejected",
+                "This Core instance requires verified confidential computing.",
+            ));
+        }
+        return Ok(true);
+    }
+    match requested.as_deref() {
+        None | Some("standard") => Ok(false),
+        Some("confidential_verified") => Ok(true),
+        Some(_) => Err(privacy_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_privacy_mode",
+            "X-MultiVibe-Privacy is invalid.",
+        )),
+    }
+}
+
+fn confidential_path_supported(path: &str) -> bool {
+    matches!(
+        idempotency::normalized_route(path),
+        Some("/responses" | "/chat/completions")
+    )
+}
+
 fn normalize_model_key(model: &str) -> String {
     let value = model.trim().to_ascii_lowercase();
     value.rsplit('/').next().unwrap_or(&value).to_owned()
@@ -1161,6 +1280,73 @@ fn routes_for_model(
             account_ids: account_ids_for_model(requested, catalog),
         })
         .collect()
+}
+
+fn payload_has_image(body: &Value) -> bool {
+    fn value_type_has_image(value: &Value) -> bool {
+        value
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind.to_ascii_lowercase().contains("image"))
+    }
+
+    body.get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .chain(
+            body.get("input")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten(),
+        )
+        .any(|item| {
+            value_type_has_image(item)
+                || item
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|content| content.iter().any(value_type_has_image))
+        })
+}
+
+fn image_aware_routing_model(
+    store: &StoreFile,
+    catalog: &[Value],
+    body: &Value,
+    requested_model: &str,
+) -> String {
+    if !payload_has_image(body) {
+        return requested_model.to_owned();
+    }
+    let Some(override_model) = store
+        .settings
+        .image_request_model_override
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    else {
+        return requested_model.to_owned();
+    };
+    let valid_model = catalog_model(catalog, override_model).is_some();
+    let valid_alias = store.model_aliases.iter().any(|alias| {
+        alias.enabled && normalize_model_key(&alias.id) == normalize_model_key(override_model)
+    });
+    if valid_model || valid_alias {
+        override_model.to_owned()
+    } else {
+        requested_model.to_owned()
+    }
+}
+
+fn alias_default(store: &StoreFile, model: &str, key: &str) -> Option<String> {
+    store
+        .model_aliases
+        .iter()
+        .find(|alias| alias.enabled && normalize_model_key(&alias.id) == normalize_model_key(model))
+        .and_then(|alias| alias.defaults.as_ref())
+        .and_then(|defaults| defaults.get(key))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
 }
 
 fn trim_slashes(value: &str) -> String {
@@ -2383,6 +2569,7 @@ struct StreamingReply {
     transform: StreamTransform,
     requested_model: String,
     trace: Option<StreamingTrace>,
+    capacity_lease: AdmissionLease,
 }
 
 enum ProxyResult {
@@ -2390,17 +2577,369 @@ enum ProxyResult {
     Streaming(StreamingReply),
 }
 
-#[derive(Clone)]
-struct CachedReply {
-    expires_at: u64,
-    reply: Arc<BufferedReplyData>,
+const MAX_ADMISSION_WAIT_MS: u64 = 24 * 60 * 60 * 1_000;
+
+#[derive(Default)]
+struct AdmissionCounters {
+    active_by_account: HashMap<String, u32>,
+    waiters: HashMap<u64, HashSet<String>>,
+    next_waiter_id: u64,
 }
 
-#[derive(Clone)]
-struct BufferedReplyData {
-    status: StatusCode,
-    headers: Vec<(String, String)>,
-    body: Bytes,
+struct AdmissionController {
+    counters: StdMutex<AdmissionCounters>,
+    changed: Notify,
+    version: Arc<AtomicU64>,
+}
+
+impl AdmissionController {
+    fn new(version: Arc<AtomicU64>) -> Self {
+        Self {
+            counters: StdMutex::new(AdmissionCounters::default()),
+            changed: Notify::new(),
+            version,
+        }
+    }
+
+    fn counters(&self) -> std::sync::MutexGuard<'_, AdmissionCounters> {
+        self.counters
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn bump(&self) {
+        self.version.fetch_add(1, AtomicOrdering::Relaxed);
+    }
+
+    fn try_acquire(
+        self: &Arc<Self>,
+        accounts: &[Account],
+    ) -> Option<(usize, AdmissionLease)> {
+        let mut counters = self.counters();
+        let index = accounts.iter().position(|account| {
+            let active = counters
+                .active_by_account
+                .get(&account.id)
+                .copied()
+                .unwrap_or_default();
+            active < account_max_concurrent(account)
+        })?;
+        let account_id = accounts[index].id.clone();
+        *counters
+            .active_by_account
+            .entry(account_id.clone())
+            .or_default() += 1;
+        drop(counters);
+        self.bump();
+        Some((
+            index,
+            AdmissionLease {
+                controller: self.clone(),
+                account_id: Some(account_id),
+            },
+        ))
+    }
+
+    fn register_waiter(self: &Arc<Self>, accounts: &[Account]) -> AdmissionWaiter {
+        let mut counters = self.counters();
+        counters.next_waiter_id = counters.next_waiter_id.wrapping_add(1).max(1);
+        let id = counters.next_waiter_id;
+        counters.waiters.insert(
+            id,
+            accounts
+                .iter()
+                .map(|account| account.id.clone())
+                .collect(),
+        );
+        drop(counters);
+        self.bump();
+        AdmissionWaiter {
+            controller: self.clone(),
+            id: Some(id),
+        }
+    }
+
+    fn has_capacity(&self, accounts: &[Account]) -> bool {
+        let counters = self.counters();
+        accounts.iter().any(|account| {
+            counters
+                .active_by_account
+                .get(&account.id)
+                .copied()
+                .unwrap_or_default()
+                < account_max_concurrent(account)
+        })
+    }
+
+    async fn wait_for_capacity(
+        self: &Arc<Self>,
+        accounts: &[Account],
+        max_wait: Duration,
+    ) -> bool {
+        if self.has_capacity(accounts) {
+            return true;
+        }
+        if max_wait.is_zero() {
+            return false;
+        }
+
+        let _waiter = self.register_waiter(accounts);
+        let deadline = tokio::time::Instant::now() + max_wait;
+        loop {
+            let notified = self.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.has_capacity(accounts) {
+                return true;
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                return false;
+            }
+        }
+    }
+
+    fn acquire_any(self: &Arc<Self>, accounts: &[Account]) -> Option<(usize, AdmissionLease)> {
+        self.try_acquire(accounts)
+    }
+
+    fn snapshot(&self, accounts: &[Account]) -> (u64, u64) {
+        let account_ids = accounts
+            .iter()
+            .map(|account| account.id.as_str())
+            .collect::<HashSet<_>>();
+        let counters = self.counters();
+        let free_slots = accounts
+            .iter()
+            .map(|account| {
+                let active = counters
+                    .active_by_account
+                    .get(&account.id)
+                    .copied()
+                    .unwrap_or_default();
+                account_max_concurrent(account).saturating_sub(active) as u64
+            })
+            .sum();
+        let queue_depth = counters
+            .waiters
+            .values()
+            .filter(|waiter_accounts| {
+                waiter_accounts
+                    .iter()
+                    .any(|account_id| account_ids.contains(account_id.as_str()))
+            })
+            .count() as u64;
+        (free_slots, queue_depth)
+    }
+
+    fn unregister_waiter(&self, id: u64) {
+        if self.counters().waiters.remove(&id).is_some() {
+            self.bump();
+        }
+    }
+
+    fn release(&self, account_id: &str) {
+        let mut counters = self.counters();
+        let removed = if let Some(active) = counters.active_by_account.get_mut(account_id) {
+            *active = active.saturating_sub(1);
+            let remove = *active == 0;
+            if remove {
+                counters.active_by_account.remove(account_id);
+            }
+            true
+        } else {
+            false
+        };
+        drop(counters);
+        if removed {
+            self.bump();
+            self.changed.notify_waiters();
+        }
+    }
+}
+
+struct AdmissionWaiter {
+    controller: Arc<AdmissionController>,
+    id: Option<u64>,
+}
+
+impl Drop for AdmissionWaiter {
+    fn drop(&mut self) {
+        if let Some(id) = self.id.take() {
+            self.controller.unregister_waiter(id);
+        }
+    }
+}
+
+struct AdmissionLease {
+    controller: Arc<AdmissionController>,
+    account_id: Option<String>,
+}
+
+impl Drop for AdmissionLease {
+    fn drop(&mut self) {
+        if let Some(account_id) = self.account_id.take() {
+            self.controller.release(&account_id);
+        }
+    }
+}
+
+fn account_max_concurrent(account: &Account) -> u32 {
+    account
+        .capacity_profile
+        .as_ref()
+        .and_then(|profile| profile.max_concurrent)
+        .unwrap_or(1)
+        .max(1)
+}
+
+fn admission_wait(headers: &HeaderMap) -> Result<Duration, Response> {
+    let Some(raw) = header_value(headers, "x-multivibe-max-wait-ms") else {
+        return Ok(Duration::ZERO);
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(Duration::ZERO);
+    }
+    if !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "X-MultiVibe-Max-Wait-Ms must be a non-negative integer",
+            "invalid_max_wait",
+        ));
+    }
+    let milliseconds = raw
+        .parse::<u64>()
+        .unwrap_or(u64::MAX)
+        .min(MAX_ADMISSION_WAIT_MS);
+    Ok(Duration::from_millis(milliseconds))
+}
+
+const ROUTING_OPT_IN_HEADERS: &[&str] = &[
+    "x-multivibe-priority",
+    "x-multivibe-execution",
+    "x-multivibe-max-wait-ms",
+    "x-multivibe-deadline",
+    "x-multivibe-idempotency-key",
+    "x-multivibe-webhook",
+    "x-multivibe-privacy",
+];
+
+fn routing_headers_opted_in(headers: &HeaderMap) -> bool {
+    ROUTING_OPT_IN_HEADERS
+        .iter()
+        .any(|name| header_value(headers, name).is_some_and(|value| !value.trim().is_empty()))
+}
+
+fn apply_alias_defaults(headers: &mut HeaderMap, store: &StoreFile, model: &str) {
+    if routing_headers_opted_in(headers) {
+        return;
+    }
+    if let Some(priority) = alias_default(store, model, "priority")
+        && matches!(
+            priority.as_str(),
+            "critical" | "interactive" | "standard" | "batch"
+        )
+        && let Ok(value) = HeaderValue::from_str(&priority)
+    {
+        headers.insert(HeaderName::from_static("x-multivibe-priority"), value);
+    }
+    if let Some(execution) = alias_default(store, model, "executionMode")
+        && matches!(execution.as_str(), "sync" | "auto" | "defer")
+        && let Ok(value) = HeaderValue::from_str(&execution)
+    {
+        headers.insert(HeaderName::from_static("x-multivibe-execution"), value);
+    }
+}
+
+fn validate_routing_headers(
+    headers: &HeaderMap,
+    store: &StoreFile,
+    application: &str,
+) -> Result<(), Response> {
+    if let Some(priority) = header_value(headers, "x-multivibe-priority")
+        .filter(|value| !value.trim().is_empty())
+        && !matches!(
+            priority.as_str(),
+            "critical" | "interactive" | "standard" | "batch"
+        )
+    {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "X-MultiVibe-Priority must be critical, interactive, standard, or batch",
+            "invalid_priority",
+        ));
+    }
+    if let Some(execution) = header_value(headers, "x-multivibe-execution")
+        .filter(|value| !value.trim().is_empty())
+        && !matches!(execution.as_str(), "sync" | "auto" | "defer")
+    {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid X-MultiVibe-Execution",
+            "invalid_execution",
+        ));
+    }
+    admission_wait(headers)?;
+    if let Some(deadline) = header_value(headers, "x-multivibe-deadline")
+        .filter(|value| !value.trim().is_empty())
+        && chrono::DateTime::parse_from_rfc3339(deadline.trim()).is_err()
+    {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "X-MultiVibe-Deadline must be RFC 3339",
+            "invalid_deadline",
+        ));
+    }
+    if let Some(privacy) = header_value(headers, "x-multivibe-privacy")
+        .filter(|value| !value.trim().is_empty())
+        && !matches!(privacy.as_str(), "standard" | "confidential_verified")
+    {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid X-MultiVibe-Privacy",
+            "invalid_privacy",
+        ));
+    }
+    if let Some(idempotency_key) = header_value(headers, "x-multivibe-idempotency-key")
+        && idempotency_key.trim().len() > 200
+    {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "X-MultiVibe-Idempotency-Key is too long",
+            "invalid_idempotency_key",
+        ));
+    }
+    if let Some(webhook) = header_value(headers, "x-multivibe-webhook")
+        .filter(|value| !value.trim().is_empty())
+    {
+        let webhook = webhook.trim();
+        if webhook.len() > 100 {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "X-MultiVibe-Webhook is too long",
+                "invalid_webhook",
+            ));
+        }
+        let registered = !webhook.is_empty()
+            && store
+                .application_policies
+                .iter()
+                .find(|policy| policy.application == application)
+                .is_some_and(|policy| {
+                    policy
+                        .webhooks
+                        .iter()
+                        .any(|candidate| candidate.enabled && candidate.id == webhook)
+                });
+        if !registered {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "webhook is not registered for this application",
+                "invalid_webhook",
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Default)]
@@ -3599,17 +4138,38 @@ pub struct EdgeState {
     pub client: reqwest::Client,
     blocked: Arc<Mutex<HashMap<String, u64>>>,
     selected: Arc<Mutex<HashMap<String, String>>>,
-    idempotency: Arc<Mutex<HashMap<String, CachedReply>>>,
+    confidential: Option<confidential::ConfidentialClient>,
+    idempotency: idempotency::Cache,
     model_catalog: Arc<Mutex<ModelCatalogCache>>,
     model_catalog_refresh: Arc<Mutex<()>>,
     session_affinity: Arc<Mutex<SessionAffinityCache>>,
     pub jobs: Arc<JobManager>,
     trace: Arc<TraceSink>,
     capacity_version: Arc<AtomicU64>,
+    admission: Arc<AdmissionController>,
+    job_runner_started: Arc<AtomicBool>,
 }
 
 impl EdgeState {
     pub async fn new(config: EdgeConfig) -> Result<Self, String> {
+        if !matches!(config.cloud_privacy_mode.as_str(), "standard" | "confidential_verified") {
+            return Err(
+                "MULTIVIBE_CLOUD_PRIVACY_MODE must be standard or confidential_verified"
+                    .to_owned(),
+            );
+        }
+        let confidential = config
+            .confidential_inference_trust_policy
+            .as_deref()
+            .map(|policy| confidential::ConfidentialClient::new(policy, config.upstream_timeout))
+            .transpose()
+            .map_err(|error| format!("{}: {}", error.code, error.message))?;
+        if config.cloud_privacy_mode == "confidential_verified" && confidential.is_none() {
+            return Err(
+                "MULTIVIBE_CONFIDENTIAL_INFERENCE_TRUST_POLICY is required for confidential_verified mode"
+                    .to_owned(),
+            );
+        }
         let client = reqwest::Client::builder()
             .redirect(Policy::limited(5))
             .build()
@@ -3618,6 +4178,14 @@ impl EdgeState {
             config.session_affinity_ttl,
             config.session_affinity_max_entries,
         );
+        let idempotency = idempotency::Cache::new(idempotency::Options {
+            ttl: config.idempotency_ttl,
+            in_flight_timeout: config.idempotency_in_flight_timeout,
+            max_entries: config.idempotency_max_entries,
+            max_bytes: config.idempotency_max_bytes,
+            max_response_bytes: config.idempotency_max_response_bytes,
+        });
+        let capacity_version = Arc::new(AtomicU64::new(1));
         Ok(Self {
             store: AccountStore::new(config.store_path.clone()),
             jobs: Arc::new(JobManager::new(config.jobs_path.clone()).await?),
@@ -3629,12 +4197,27 @@ impl EdgeState {
             client,
             blocked: Arc::new(Mutex::new(HashMap::new())),
             selected: Arc::new(Mutex::new(HashMap::new())),
-            idempotency: Arc::new(Mutex::new(HashMap::new())),
+            confidential,
+            idempotency,
             model_catalog: Arc::new(Mutex::new(ModelCatalogCache::default())),
             model_catalog_refresh: Arc::new(Mutex::new(())),
             session_affinity: Arc::new(Mutex::new(session_affinity)),
-            capacity_version: Arc::new(AtomicU64::new(1)),
+            admission: Arc::new(AdmissionController::new(capacity_version.clone())),
+            capacity_version,
+            job_runner_started: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    pub fn start_job_runner(&self) -> Option<tokio::task::JoinHandle<()>> {
+        if self
+            .job_runner_started
+            .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+            .is_err()
+        {
+            return None;
+        }
+        let state = self.clone();
+        Some(tokio::spawn(async move { job_dispatch_loop(state).await }))
     }
 
     async fn mark_blocked(&self, account: &Account, model: &str, duration: Duration) {
@@ -3644,34 +4227,6 @@ impl EdgeState {
         );
     }
 
-    async fn cached_idempotency(&self, key: &str) -> Option<BufferedReply> {
-        let mut cache = self.idempotency.lock().await;
-        let now = now_ms();
-        cache.retain(|_, value| value.expires_at > now);
-        cache.get(key).map(|value| BufferedReply {
-            status: value.reply.status,
-            headers: value.reply.headers.clone(),
-            body: value.reply.body.clone(),
-        })
-    }
-
-    async fn store_idempotency(&self, key: String, reply: &BufferedReply) {
-        if reply.body.len() > self.config.idempotency_max_response_bytes {
-            return;
-        }
-        let mut cache = self.idempotency.lock().await;
-        cache.insert(
-            key,
-            CachedReply {
-                expires_at: now_ms() + self.config.idempotency_ttl.as_millis() as u64,
-                reply: Arc::new(BufferedReplyData {
-                    status: reply.status,
-                    headers: reply.headers.clone(),
-                    body: reply.body.clone(),
-                }),
-            },
-        );
-    }
 }
 
 fn set_header(headers: &mut HeaderMap, name: &str, value: impl AsRef<str>) {
@@ -3829,6 +4384,10 @@ fn build_trace_context(
     provider_attempts: usize,
     trace_kind: &'static str,
 ) -> TraceContext {
+    let confidential = state.config.cloud_privacy_mode == "confidential_verified"
+        || header_value(headers, "x-multivibe-privacy").as_deref()
+            == Some("confidential_verified")
+        || account.is_some_and(account_is_confidential);
     let requested_model = (!requested_model.trim().is_empty()).then(|| requested_model.to_owned());
     let resolved_model = (!resolved_model.trim().is_empty()
         && resolved_model != requested_model.as_deref().unwrap_or_default())
@@ -3872,7 +4431,7 @@ fn build_trace_context(
         latency_breakdown: None,
         account_selection: None,
         input_context: trace_input_context(body),
-        request_body: state.config.trace_include_body.then(|| body.clone()),
+        request_body: (state.config.trace_include_body && !confidential).then(|| body.clone()),
         request_headers: state
             .config
             .trace_include_headers
@@ -4074,6 +4633,140 @@ fn should_retry_status(status: StatusCode, body: &str) -> bool {
         )
 }
 
+fn should_retry_same_account(status: StatusCode, body: &str) -> bool {
+    if is_quota_error(status, body) {
+        return false;
+    }
+    matches!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR
+            | StatusCode::BAD_GATEWAY
+            | StatusCode::SERVICE_UNAVAILABLE
+            | StatusCode::GATEWAY_TIMEOUT
+    ) || {
+        let body = body.to_ascii_lowercase();
+        body.contains("overloaded")
+            || body.contains("service unavailable")
+            || body.contains("service-unavailable")
+            || body.contains("upstream connect")
+            || body.contains("connection refused")
+    }
+}
+
+fn retry_after_delay(headers: &HeaderMap) -> Option<Duration> {
+    let raw = headers.get(header::RETRY_AFTER)?.to_str().ok()?.trim();
+    if let Ok(seconds) = raw.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let retry_at = chrono::DateTime::parse_from_rfc2822(raw).ok()?;
+    let remaining_ms = retry_at
+        .timestamp_millis()
+        .saturating_sub(chrono::Utc::now().timestamp_millis());
+    Some(Duration::from_millis(remaining_ms.max(0) as u64))
+}
+
+fn upstream_retry_delay(headers: Option<&HeaderMap>, attempt: usize, base: Duration) -> Duration {
+    let exponent = attempt.min(16) as u32;
+    let backoff = base
+        .checked_mul(1_u32 << exponent)
+        .unwrap_or(Duration::MAX);
+    headers
+        .and_then(retry_after_delay)
+        .map(|retry_after| retry_after.max(backoff))
+        .unwrap_or(backoff)
+}
+
+struct BufferedUpstreamError {
+    status: StatusCode,
+    headers: Vec<(String, String)>,
+    content_type: String,
+    body: Bytes,
+}
+
+enum UpstreamSendResult {
+    Success(reqwest::Response),
+    HttpError(BufferedUpstreamError),
+}
+
+enum UpstreamSendError {
+    Transport(String),
+    Timeout,
+}
+
+async fn send_upstream_with_retry(
+    state: &EdgeState,
+    url: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Result<UpstreamSendResult, UpstreamSendError> {
+    for retry in 0..=state.config.max_upstream_retries {
+        let request = state
+            .client
+            .request(Method::POST, url)
+            .headers(headers.clone())
+            .body(body.to_vec());
+        match timeout(state.config.upstream_timeout, request.send()).await {
+            Ok(Ok(response)) if response.status().is_success() => {
+                return Ok(UpstreamSendResult::Success(response));
+            }
+            Ok(Ok(response)) => {
+                let status = response.status();
+                let raw_headers = response.headers().clone();
+                let headers = copy_public_headers(&raw_headers);
+                let content_type = raw_headers
+                    .get(header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default()
+                    .to_owned();
+                let body = response.bytes().await.unwrap_or_default();
+                let text = String::from_utf8_lossy(&body);
+                if retry < state.config.max_upstream_retries
+                    && should_retry_same_account(status, &text)
+                {
+                    tokio::time::sleep(upstream_retry_delay(
+                        Some(&raw_headers),
+                        retry,
+                        state.config.upstream_retry_base_delay,
+                    ))
+                    .await;
+                    continue;
+                }
+                return Ok(UpstreamSendResult::HttpError(BufferedUpstreamError {
+                    status,
+                    headers,
+                    content_type,
+                    body,
+                }));
+            }
+            Ok(Err(error)) => {
+                let message = error.to_string();
+                if retry < state.config.max_upstream_retries
+                    && !is_quota_error(StatusCode::BAD_GATEWAY, &message)
+                {
+                    tokio::time::sleep(upstream_retry_delay(
+                        None,
+                        retry,
+                        state.config.upstream_retry_base_delay,
+                    ))
+                    .await;
+                    continue;
+                }
+                return Err(UpstreamSendError::Transport(message));
+            }
+            Err(_) if retry < state.config.max_upstream_retries => {
+                tokio::time::sleep(upstream_retry_delay(
+                    None,
+                    retry,
+                    state.config.upstream_retry_base_delay,
+                ))
+                .await;
+            }
+            Err(_) => return Err(UpstreamSendError::Timeout),
+        }
+    }
+    Err(UpstreamSendError::Timeout)
+}
+
 fn copy_public_headers(headers: &HeaderMap) -> Vec<(String, String)> {
     headers
         .iter()
@@ -4155,6 +4848,16 @@ async fn proxy_inference(
     application: &str,
 ) -> Result<ProxyResult, Response> {
     let started_at = now_ms();
+    let admission_started_at = Instant::now();
+    let max_admission_wait = admission_wait(headers)?;
+    let require_confidential = confidential_requested(&state.config, headers)?;
+    if require_confidential && !confidential_path_supported(path) {
+        return Err(privacy_error(
+            StatusCode::CONFLICT,
+            "confidential_surface_not_supported",
+            "This request is not yet supported by verified confidential computing.",
+        ));
+    }
     let client_request_id = header_value(headers, "x-multivibe-trace-parent")
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -4171,6 +4874,8 @@ async fn proxy_inference(
         .map(String::as_str)
         .unwrap_or("unknown");
     let catalog = exposed_models(state, &store, false).await;
+    let routing_model =
+        image_aware_routing_model(&store, &catalog, body, &routing_model);
     let routes = routes_for_model(&store, &routing_model, default_model, &catalog);
     let client_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let session_id = request_session_id(headers);
@@ -4180,8 +4885,12 @@ async fn proxy_inference(
     let mut last_error = "no eligible account configured".to_owned();
     let mut attempted = 0_usize;
     let mut had_account = false;
+    let mut capacity_exhausted = false;
 
-    for route in routes {
+    'admission: loop {
+        capacity_exhausted = false;
+        let mut saturated_accounts = Vec::new();
+        for route in routes.clone() {
         if attempted >= state.config.max_account_retry_attempts {
             break;
         }
@@ -4198,6 +4907,9 @@ async fn proxy_inference(
             &blocked,
             &selected,
         );
+        if require_confidential {
+            accounts.retain(account_is_confidential);
+        }
         if accounts.is_empty() {
             continue;
         }
@@ -4230,10 +4942,17 @@ async fn proxy_inference(
         }
         had_account = true;
         let eligible_account_count = accounts.len();
-        for account in accounts {
+        while !accounts.is_empty() {
             if attempted >= state.config.max_account_retry_attempts {
                 break;
             }
+            let Some((account_index, capacity_lease)) = state.admission.acquire_any(&accounts)
+            else {
+                capacity_exhausted = true;
+                saturated_accounts.extend(accounts);
+                break;
+            };
+            let account = accounts.remove(account_index);
             attempted += 1;
             let provider = normalize_provider(&account);
             let mut trace_context = build_trace_context(
@@ -4252,7 +4971,7 @@ async fn proxy_inference(
                 attempted,
                 "upstream-attempt",
             );
-            let client_context = build_trace_context(
+            let mut client_context = build_trace_context(
                 state,
                 path,
                 headers,
@@ -4268,6 +4987,10 @@ async fn proxy_inference(
                 attempted,
                 "client-request",
             );
+            if account_is_confidential(&account) {
+                trace_context.request_body = None;
+                client_context.request_body = None;
+            }
             trace_context.account_selection = Some(json!({
                 "reason": "quota-headroom",
                 "provider": provider,
@@ -4324,6 +5047,140 @@ async fn proxy_inference(
                     ));
                 }
             };
+            if account_is_confidential(&account) {
+                let confidential_started_at = now_ms();
+                let result = match state.confidential.as_ref() {
+                    Some(client) => {
+                        let upstream_path = if sends_chat {
+                            "/v1/chat/completions"
+                        } else {
+                            "/v1/responses"
+                        };
+                        client
+                            .execute(
+                                account.base_url.as_deref().unwrap_or_default(),
+                                &account.access_token,
+                                &route.model,
+                                upstream_path,
+                                &serialized,
+                            )
+                            .await
+                    }
+                    None => Err(confidential::ConfidentialError::not_sent(
+                        "confidential_client_unavailable",
+                        "Verified confidential computing is not configured. The message was not sent.",
+                    )),
+                };
+                trace_context.latency_breakdown = Some(json!({
+                    "preparationMs": confidential_started_at.saturating_sub(started_at),
+                    "upstreamHeadersMs": now_ms().saturating_sub(confidential_started_at),
+                }));
+                let confidential_reply = match result {
+                    Ok(reply) => reply,
+                    Err(error) => {
+                        let status = if error.disposition == "not_sent" {
+                            StatusCode::SERVICE_UNAVAILABLE
+                        } else {
+                            StatusCode::BAD_GATEWAY
+                        };
+                        let completed_at = now_ms();
+                        state
+                            .trace
+                            .record(
+                                &trace_context,
+                                TraceOutcome {
+                                    status: status.as_u16(),
+                                    completed_at,
+                                    lifecycle_state: if error.disposition == "not_sent" {
+                                        "completed"
+                                    } else {
+                                        "interrupted"
+                                    },
+                                    usage: None,
+                                    error: Some(error.code.to_owned()),
+                                    upstream_error: Some(error.code.to_owned()),
+                                    upstream_content_type: None,
+                                    upstream_empty_body: Some(true),
+                                    ttft_ms: None,
+                                    response_stream_diagnostics: None,
+                                    assistant_empty_output: None,
+                                    assistant_finish_reason: None,
+                                    client_disconnected: Some(false),
+                                },
+                            )
+                            .await;
+                        state
+                            .trace
+                            .record(
+                                &client_context,
+                                client_trace_outcome(
+                                    status.as_u16(),
+                                    completed_at,
+                                    Some(error.code.to_owned()),
+                                    Some(false),
+                                ),
+                            )
+                            .await;
+                        return Err(confidential_error_response(&error));
+                    }
+                };
+
+                let content_type = confidential_reply
+                    .headers
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+                    .map(|(_, value)| value.clone())
+                    .unwrap_or_default();
+                let upstream_empty_body = confidential_reply.body.is_empty();
+                let clear_body = Bytes::from(confidential_reply.body);
+                let reply = if confidential_reply.status.is_success() {
+                    state
+                        .selected
+                        .lock()
+                        .await
+                        .insert(provider.clone(), account.id.clone());
+                    render_buffered_success(
+                        path,
+                        &account,
+                        client_stream,
+                        &requested_model.clone().if_empty_then(default_model),
+                        &content_type,
+                        &clear_body,
+                        confidential_reply.headers,
+                    )
+                } else {
+                    BufferedReply {
+                        status: confidential_reply.status,
+                        headers: confidential_reply.headers,
+                        body: clear_body,
+                    }
+                };
+                let outcome = if confidential_reply.status.is_success() {
+                    buffered_trace_outcome(&reply, &content_type, upstream_empty_body)
+                } else {
+                    transport_trace_outcome(
+                        confidential_reply.status,
+                        "confidential upstream returned an authenticated error".to_owned(),
+                    )
+                };
+                let completed_at = outcome.completed_at;
+                let client_status = outcome.status;
+                let client_error = outcome.error.clone();
+                state.trace.record(&trace_context, outcome).await;
+                state
+                    .trace
+                    .record(
+                        &client_context,
+                        client_trace_outcome(
+                            client_status,
+                            completed_at,
+                            client_error,
+                            Some(false),
+                        ),
+                    )
+                    .await;
+                return Ok(ProxyResult::Buffered(reply));
+            }
             let request = state
                 .client
                 .request(Method::POST, &url)
@@ -4548,6 +5405,7 @@ async fn proxy_inference(
                     transform,
                     requested_model: requested_model.clone().if_empty_then(default_model),
                     trace: Some(streaming_trace),
+                    capacity_lease,
                 }));
             }
             let bytes = response.bytes().await.unwrap_or_default();
@@ -4574,7 +5432,35 @@ async fn proxy_inference(
                 .await;
             return Ok(ProxyResult::Buffered(reply));
         }
+        }
+        if capacity_exhausted && attempted < state.config.max_account_retry_attempts {
+            let remaining_wait =
+                max_admission_wait.saturating_sub(admission_started_at.elapsed());
+            if state
+                .admission
+                .wait_for_capacity(&saturated_accounts, remaining_wait)
+                .await
+            {
+                continue 'admission;
+            }
+        }
+        break;
     }
+    let (status, final_error, error_code) = if capacity_exhausted {
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            "No admissible capacity is currently available.".to_owned(),
+            "capacity_unavailable",
+        )
+    } else if had_account {
+        (last_status, last_error, "upstream_error")
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            last_error,
+            "no_accounts",
+        )
+    };
     let trace_model = requested_model.clone().if_empty_then(default_model);
     let no_account_context = build_trace_context(
         state,
@@ -4597,27 +5483,20 @@ async fn proxy_inference(
         .record(
             &no_account_context,
             client_trace_outcome(
-                last_status.as_u16(),
+                status.as_u16(),
                 now_ms(),
-                Some(last_error.clone()),
+                Some(final_error.clone()),
                 Some(false),
             ),
         )
         .await;
-    let status = if had_account {
-        last_status
-    } else {
-        StatusCode::SERVICE_UNAVAILABLE
-    };
-    Err(error_response(
-        status,
-        last_error,
-        if had_account {
-            "upstream_error"
-        } else {
-            "no_accounts"
-        },
-    ))
+    let mut response = error_response(status, final_error, error_code);
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    }
+    Err(response)
 }
 
 trait EmptyStringFallback {
@@ -5210,7 +6089,11 @@ fn streaming_response(reply: StreamingReply) -> Response {
     let status = reply.status.as_u16();
     let mut trace = reply.trace;
     let mut upstream = reply.upstream.bytes_stream();
+    let capacity_lease = reply.capacity_lease;
     let body = stream! {
+        // The lease lives for exactly as long as the response body. Dropping
+        // the client body cancels this generator and releases the account.
+        let _capacity_lease = capacity_lease;
         let mut stream_error: Option<String> = None;
         if transform == StreamTransform::None {
             while let Some(chunk) = upstream.next().await {
@@ -5270,16 +6153,152 @@ struct Job {
     status: String,
     priority: String,
     model: Option<String>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
     created_at: u64,
     updated_at: u64,
     not_before: u64,
     deadline_at: Option<u64>,
     attempts: u32,
+    #[serde(default = "default_job_max_attempts")]
+    max_attempts: u32,
     response_status: Option<u16>,
     response_headers: Option<Vec<(String, String)>>,
     result: Option<Value>,
     error: Option<String>,
     consumed_at: Option<u64>,
+    #[serde(default)]
+    completed_at: Option<u64>,
+}
+
+const JOB_RETRY_BASE_MS: u64 = 1_000;
+const JOB_RETRY_MAX_MS: u64 = 60_000;
+
+fn default_job_max_attempts() -> u32 {
+    3
+}
+
+#[derive(Debug, Clone)]
+struct SchedulingCandidate {
+    id: String,
+    application: String,
+    priority: String,
+    created_at: u64,
+}
+
+#[derive(Default)]
+struct WeightedFairScheduler {
+    priority_scores: HashMap<String, f64>,
+    application_scores: HashMap<String, f64>,
+}
+
+fn job_priority_weight(priority: &str) -> f64 {
+    match priority {
+        "critical" => 16.0,
+        "interactive" => 8.0,
+        "standard" => 4.0,
+        "batch" => 1.0,
+        _ => 0.0,
+    }
+}
+
+fn valid_job_priority(priority: &str) -> bool {
+    job_priority_weight(priority) > 0.0
+}
+
+impl WeightedFairScheduler {
+    fn choose(
+        &mut self,
+        candidates: &[SchedulingCandidate],
+        application_weights: &HashMap<String, f64>,
+    ) -> Option<String> {
+        if candidates.is_empty() {
+            return None;
+        }
+        let priorities = ["critical", "interactive", "standard", "batch"]
+            .into_iter()
+            .filter(|priority| {
+                candidates
+                    .iter()
+                    .any(|candidate| candidate.priority == *priority)
+            })
+            .collect::<Vec<_>>();
+        let priority_total = priorities
+            .iter()
+            .map(|priority| job_priority_weight(priority))
+            .sum::<f64>();
+        let mut selected_priority = priorities.first().copied()?;
+        let mut selected_score = f64::NEG_INFINITY;
+        for priority in priorities {
+            let score = self
+                .priority_scores
+                .entry(priority.to_owned())
+                .or_default();
+            *score += job_priority_weight(priority);
+            if *score > selected_score {
+                selected_score = *score;
+                selected_priority = priority;
+            }
+        }
+        *self
+            .priority_scores
+            .entry(selected_priority.to_owned())
+            .or_default() -= priority_total;
+
+        let mut applications = Vec::new();
+        for candidate in candidates
+            .iter()
+            .filter(|candidate| candidate.priority == selected_priority)
+        {
+            if !applications.contains(&candidate.application) {
+                applications.push(candidate.application.clone());
+            }
+        }
+        let application_weight = |application: &str| {
+            application_weights
+                .get(application)
+                .copied()
+                .unwrap_or(1.0)
+                .clamp(0.1, 100.0)
+        };
+        let application_total = applications
+            .iter()
+            .map(|application| application_weight(application))
+            .sum::<f64>();
+        let mut selected_application = applications.first()?.clone();
+        let mut selected_score = f64::NEG_INFINITY;
+        for application in applications {
+            let key = format!("{selected_priority}:{application}");
+            let score = self.application_scores.entry(key).or_default();
+            *score += application_weight(&application);
+            if *score > selected_score {
+                selected_score = *score;
+                selected_application = application;
+            }
+        }
+        let key = format!("{selected_priority}:{selected_application}");
+        *self.application_scores.entry(key).or_default() -= application_total;
+        candidates
+            .iter()
+            .find(|candidate| {
+                candidate.priority == selected_priority
+                    && candidate.application == selected_application
+            })
+            .map(|candidate| candidate.id.clone())
+    }
+}
+
+struct JobCreateResult {
+    job: Job,
+    created: bool,
+}
+
+#[derive(Debug)]
+enum JobCreateError {
+    InvalidPriority,
+    InvalidDeadline,
+    ExpiredDeadline,
+    IdempotencyConflict,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -5300,27 +6319,67 @@ struct JobState {
 pub struct JobManager {
     path: PathBuf,
     state: Mutex<JobState>,
+    persist_lock: Mutex<()>,
+    scheduler: Mutex<WeightedFairScheduler>,
+    changed: Notify,
     events: broadcast::Sender<JobEvent>,
 }
 
 impl JobManager {
     async fn new(path: PathBuf) -> Result<Self, String> {
         let (events, _) = broadcast::channel(256);
-        let jobs = match fs::read(&path).await {
-            Ok(raw) => serde_json::from_slice::<Vec<Job>>(&raw).unwrap_or_default(),
-            Err(_) => Vec::new(),
+        let mut jobs = match fs::read(&path).await {
+            Ok(raw) => serde_json::from_slice::<Vec<Job>>(&raw)
+                .map_err(|error| format!("invalid job store {}: {error}", path.display()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => {
+                return Err(format!("cannot read job store {}: {error}", path.display()));
+            }
         };
-        Ok(Self {
+        let now = now_ms();
+        let mut recovered = false;
+        for job in &mut jobs {
+            if matches!(job.status.as_str(), "queued" | "retry" | "running")
+                && job.deadline_at.is_some_and(|deadline| deadline <= now)
+            {
+                job.status = "expired".to_owned();
+                job.updated_at = now;
+                job.completed_at = Some(now);
+                job.error = Some("job deadline expired".to_owned());
+                recovered = true;
+            } else if job.status == "running" {
+                if job.attempts >= job.max_attempts {
+                    job.status = "failed".to_owned();
+                    job.completed_at = Some(now);
+                    job.error = Some("worker stopped after maximum attempts".to_owned());
+                } else {
+                    job.status = "queued".to_owned();
+                    job.not_before = now;
+                    job.error = Some("recovered after worker restart".to_owned());
+                }
+                job.updated_at = now;
+                recovered = true;
+            }
+        }
+        let manager = Self {
             path,
             state: Mutex::new(JobState {
                 jobs: jobs.into_iter().map(|job| (job.id.clone(), job)).collect(),
                 next_event_id: 1,
             }),
+            persist_lock: Mutex::new(()),
+            scheduler: Mutex::new(WeightedFairScheduler::default()),
+            changed: Notify::new(),
             events,
-        })
+        };
+        if recovered {
+            manager.persist().await;
+        }
+        Ok(manager)
     }
 
     async fn persist(&self) {
+        let _persist_guard = self.persist_lock.lock().await;
         let jobs = {
             let state = self.state.lock().await;
             state.jobs.values().cloned().collect::<Vec<_>>()
@@ -5358,8 +6417,40 @@ impl JobManager {
         route: &str,
         headers: &HeaderMap,
         body: &Value,
-    ) -> Job {
+        max_attempts: u32,
+    ) -> Result<JobCreateResult, JobCreateError> {
         let now = now_ms();
+        let priority = header_value(headers, "x-multivibe-priority")
+            .unwrap_or_else(|| "batch".to_owned());
+        if !valid_job_priority(&priority) {
+            return Err(JobCreateError::InvalidPriority);
+        }
+        let deadline_at = match header_value(headers, "x-multivibe-deadline") {
+            Some(value) => Some(
+                parse_rfc3339_ms(&value).ok_or(JobCreateError::InvalidDeadline)?,
+            ),
+            None => None,
+        };
+        if deadline_at.is_some_and(|deadline| deadline <= now) {
+            return Err(JobCreateError::ExpiredDeadline);
+        }
+        let idempotency_key = header_value(headers, "x-multivibe-idempotency-key")
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        let mut state = self.state.lock().await;
+        if let Some(key) = idempotency_key.as_deref()
+            && let Some(existing) = state.jobs.values().find(|job| {
+                job.application == application && job.idempotency_key.as_deref() == Some(key)
+            })
+        {
+            if existing.route != route || existing.request_body != *body {
+                return Err(JobCreateError::IdempotencyConflict);
+            }
+            return Ok(JobCreateResult {
+                job: existing.clone(),
+                created: false,
+            });
+        }
         let job = Job {
             id: new_id("job"),
             application: application.to_owned(),
@@ -5372,30 +6463,29 @@ impl JobManager {
                 .collect(),
             request_body: body.clone(),
             status: "queued".to_owned(),
-            priority: header_value(headers, "x-multivibe-priority")
-                .unwrap_or_else(|| "batch".to_owned()),
+            priority,
             model: value_string(body.get("model")),
+            idempotency_key,
             created_at: now,
             updated_at: now,
             not_before: now,
-            deadline_at: header_value(headers, "x-multivibe-deadline")
-                .and_then(|value| parse_rfc3339_ms(&value)),
+            deadline_at,
             attempts: 0,
+            max_attempts: max_attempts.max(1),
             response_status: None,
             response_headers: None,
             result: None,
             error: None,
             consumed_at: None,
+            completed_at: None,
         };
-        self.state
-            .lock()
-            .await
-            .jobs
-            .insert(job.id.clone(), job.clone());
+        state.jobs.insert(job.id.clone(), job.clone());
+        drop(state);
         self.persist().await;
-        self.emit(&job, "job.created", json!({"status": "queued"}))
+        self.emit(&job, "job.queued", json!({"status": "queued"}))
             .await;
-        job
+        self.changed.notify_one();
+        Ok(JobCreateResult { job, created: true })
     }
 
     async fn get_for(&self, application: &str, id: &str) -> Option<Job> {
@@ -5423,61 +6513,191 @@ impl JobManager {
         jobs
     }
 
-    async fn set_running(&self, id: &str) -> Option<Job> {
-        let job = {
+    async fn acquire_next(&self, application_weights: &HashMap<String, f64>) -> Option<Job> {
+        let now = now_ms();
+        let (job, expired) = {
             let mut state = self.state.lock().await;
-            let job = state.jobs.get_mut(id)?;
-            if job.status != "queued" {
-                return None;
+            let mut expired = Vec::new();
+            for job in state.jobs.values_mut() {
+                if matches!(job.status.as_str(), "queued" | "retry")
+                    && job.deadline_at.is_some_and(|deadline| deadline <= now)
+                {
+                    job.status = "expired".to_owned();
+                    job.updated_at = now;
+                    job.completed_at = Some(now);
+                    job.error = Some("job deadline expired".to_owned());
+                    expired.push(job.clone());
+                } else if matches!(job.status.as_str(), "queued" | "retry")
+                    && job.attempts >= job.max_attempts
+                {
+                    job.status = "failed".to_owned();
+                    job.updated_at = now;
+                    job.completed_at = Some(now);
+                    job.error = Some("maximum attempts reached".to_owned());
+                    expired.push(job.clone());
+                }
             }
-            job.status = "running".to_owned();
-            job.attempts += 1;
-            job.updated_at = now_ms();
-            job.clone()
+            let mut candidates = state
+                .jobs
+                .values()
+                .filter(|job| {
+                    matches!(job.status.as_str(), "queued" | "retry")
+                        && job.not_before <= now
+                        && job.attempts < job.max_attempts
+                        && job.deadline_at.is_none_or(|deadline| deadline > now)
+                })
+                .map(|job| SchedulingCandidate {
+                    id: job.id.clone(),
+                    application: job.application.clone(),
+                    priority: job.priority.clone(),
+                    created_at: job.created_at,
+                })
+                .collect::<Vec<_>>();
+            candidates.sort_by(|left, right| {
+                left.created_at
+                    .cmp(&right.created_at)
+                    .then_with(|| left.id.cmp(&right.id))
+            });
+            let selected = self
+                .scheduler
+                .lock()
+                .await
+                .choose(&candidates, application_weights);
+            let job = selected.and_then(|id| state.jobs.get_mut(&id)).map(|job| {
+                job.status = "running".to_owned();
+                job.attempts += 1;
+                job.updated_at = now;
+                job.error = None;
+                job.clone()
+            });
+            (job, expired)
         };
-        self.persist().await;
-        self.emit(&job, "job.started", json!({"status": "running"}))
+        if job.is_some() || !expired.is_empty() {
+            self.persist().await;
+        }
+        for expired_job in expired {
+            let event = if expired_job.status == "expired" {
+                "job.expired"
+            } else {
+                "job.failed"
+            };
+            self.emit(&expired_job, event, json!({"error": expired_job.error}))
+                .await;
+        }
+        if let Some(job) = job {
+            self.emit(
+                &job,
+                "job.started",
+                json!({"status": "running", "attempt": job.attempts}),
+            )
             .await;
-        Some(job)
+            Some(job)
+        } else {
+            None
+        }
+    }
+
+    async fn next_wakeup(&self) -> Duration {
+        let now = now_ms();
+        let next = self
+            .state
+            .lock()
+            .await
+            .jobs
+            .values()
+            .filter(|job| matches!(job.status.as_str(), "queued" | "retry"))
+            .map(|job| {
+                job.deadline_at
+                    .map(|deadline| deadline.min(job.not_before))
+                    .unwrap_or(job.not_before)
+            })
+            .min();
+        Duration::from_millis(
+            next.map(|at| at.saturating_sub(now)).unwrap_or(60_000).clamp(1, 60_000),
+        )
     }
 
     async fn succeed(&self, id: &str, reply: BufferedReply) {
+        let now = now_ms();
         let job = {
             let mut state = self.state.lock().await;
             let Some(job) = state.jobs.get_mut(id) else {
                 return;
             };
-            job.status = "succeeded".to_owned();
-            job.updated_at = now_ms();
-            job.response_status = Some(reply.status.as_u16());
-            job.response_headers = Some(reply.headers);
-            job.result = serde_json::from_slice(&reply.body).ok();
-            job.error = None;
+            if job.status != "running" {
+                return;
+            }
+            if job.deadline_at.is_some_and(|deadline| deadline <= now) {
+                job.status = "expired".to_owned();
+                job.error = Some("job deadline expired while running".to_owned());
+            } else {
+                job.status = "succeeded".to_owned();
+                job.response_status = Some(reply.status.as_u16());
+                job.response_headers = Some(reply.headers);
+                job.result = serde_json::from_slice(&reply.body).ok();
+                job.error = None;
+            }
+            job.updated_at = now;
+            job.completed_at = Some(now);
             job.clone()
         };
         self.persist().await;
-        self.emit(&job, "job.succeeded", json!({"status": "succeeded"}))
-            .await;
+        let event = if job.status == "expired" {
+            "job.expired"
+        } else {
+            "job.succeeded"
+        };
+        self.emit(&job, event, json!({"status": job.status})).await;
+        self.changed.notify_one();
     }
 
-    async fn fail(&self, id: &str, message: &str) {
+    async fn fail(&self, id: &str, message: &str, transient: bool) {
+        let now = now_ms();
         let job = {
             let mut state = self.state.lock().await;
             let Some(job) = state.jobs.get_mut(id) else {
                 return;
             };
-            job.status = "failed".to_owned();
-            job.updated_at = now_ms();
+            if job.status != "running" {
+                return;
+            }
+            if job.deadline_at.is_some_and(|deadline| deadline <= now) {
+                job.status = "expired".to_owned();
+                job.completed_at = Some(now);
+            } else if transient && job.attempts < job.max_attempts {
+                let exponent = job.attempts.saturating_sub(1).min(16);
+                let delay = JOB_RETRY_BASE_MS
+                    .saturating_mul(1_u64 << exponent)
+                    .min(JOB_RETRY_MAX_MS);
+                job.status = "retry".to_owned();
+                job.not_before = now.saturating_add(delay);
+                job.completed_at = None;
+            } else {
+                job.status = "failed".to_owned();
+                job.completed_at = Some(now);
+            }
+            job.updated_at = now;
             job.error = Some(message.to_owned());
             job.clone()
         };
         self.persist().await;
+        let event = match job.status.as_str() {
+            "retry" => "job.retry",
+            "expired" => "job.expired",
+            _ => "job.failed",
+        };
         self.emit(
             &job,
-            "job.failed",
-            json!({"status": "failed", "error": message}),
+            event,
+            json!({
+                "status": job.status,
+                "error": message,
+                "attempt": job.attempts,
+                "nextAttemptAt": (job.status == "retry").then_some(job.not_before),
+            }),
         )
         .await;
+        self.changed.notify_one();
     }
 
     async fn cancel(&self, application: &str, id: &str) -> Result<(), StatusCode> {
@@ -5489,16 +6709,19 @@ impl JobManager {
             if job.application != application {
                 return Err(StatusCode::NOT_FOUND);
             }
-            if !matches!(job.status.as_str(), "queued" | "running") {
+            if !matches!(job.status.as_str(), "queued" | "retry" | "running") {
                 return Err(StatusCode::CONFLICT);
             }
             job.status = "cancelled".to_owned();
-            job.updated_at = now_ms();
+            let now = now_ms();
+            job.updated_at = now;
+            job.completed_at = Some(now);
             job.clone()
         };
         self.persist().await;
         self.emit(&job, "job.cancelled", json!({"status": "cancelled"}))
             .await;
+        self.changed.notify_one();
         Ok(())
     }
 
@@ -5518,37 +6741,11 @@ impl JobManager {
 }
 
 fn parse_rfc3339_ms(value: &str) -> Option<u64> {
-    // The edge only needs deadline ordering. A strict RFC3339 parser is kept
-    // dependency-free; invalid values are rejected by the request handler.
-    let value = value.trim();
-    if value.ends_with('Z') {
-        let without_zone = value.trim_end_matches('Z');
-        let (date, time) = without_zone.split_once('T')?;
-        let mut date_parts = date.split('-').map(|part| part.parse::<u64>().ok());
-        let year = date_parts.next()??;
-        let month = date_parts.next()??;
-        let day = date_parts.next()??;
-        let time = time.split('.').next()?;
-        let mut time_parts = time.split(':').map(|part| part.parse::<u64>().ok());
-        let hour = time_parts.next()??;
-        let minute = time_parts.next()??;
-        let second = time_parts.next()??;
-        // Howard Hinnant's civil-date conversion, expressed without a date
-        // dependency so the edge stays small.
-        let adjusted_year = year - u64::from(month <= 2);
-        let era = adjusted_year / 400;
-        let year_of_era = adjusted_year - era * 400;
-        let month_index = month as i64 + if month > 2 { -3 } else { 9 };
-        let day_of_year = (153 * month_index + 2) / 5 + day as i64 - 1;
-        let day_of_era =
-            year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year as u64;
-        Some(
-            ((era * 146097 + day_of_era - 719468) * 86_400 + hour * 3600 + minute * 60 + second)
-                * 1000,
-        )
-    } else {
-        None
-    }
+    chrono::DateTime::parse_from_rfc3339(value.trim())
+        .ok()?
+        .timestamp_millis()
+        .try_into()
+        .ok()
 }
 
 fn public_job(job: &Job) -> Value {
@@ -5559,6 +6756,7 @@ fn public_job(job: &Job) -> Value {
         "priority": job.priority,
         "model": job.model,
         "attempts": job.attempts,
+        "max_attempts": job.max_attempts,
         "created_at": job.created_at,
         "updated_at": job.updated_at,
         "not_before": job.not_before,
@@ -5572,10 +6770,64 @@ fn public_job(job: &Job) -> Value {
     value
 }
 
-async fn run_job(state: EdgeState, job: Job) {
-    let Some(running) = state.jobs.set_running(&job.id).await else {
-        return;
-    };
+fn application_fairness_weights(store: &StoreFile) -> HashMap<String, f64> {
+    store
+        .application_policies
+        .iter()
+        .map(|policy| {
+            let weight = policy
+                .fairness_weight
+                .filter(|weight| weight.is_finite())
+                .unwrap_or(1.0)
+                .clamp(0.1, 100.0);
+            (
+                policy.application.clone(),
+                weight,
+            )
+        })
+        .collect()
+}
+
+async fn job_dispatch_loop(state: EdgeState) {
+    let slots = Arc::new(Semaphore::new(state.config.job_worker_concurrency.max(1)));
+    loop {
+        if slots.available_permits() == 0 {
+            state.jobs.changed.notified().await;
+            continue;
+        }
+        let weights = state
+            .store
+            .snapshot()
+            .await
+            .map(|store| application_fairness_weights(&store))
+            .unwrap_or_default();
+        let mut dispatched = false;
+        while let Ok(permit) = slots.clone().try_acquire_owned() {
+            let Some(job) = state.jobs.acquire_next(&weights).await else {
+                drop(permit);
+                break;
+            };
+            dispatched = true;
+            let job_state = state.clone();
+            tokio::spawn(async move { run_claimed_job(job_state, job, permit).await });
+        }
+        if dispatched {
+            tokio::task::yield_now().await;
+            continue;
+        }
+        let wake_after = state.jobs.next_wakeup().await;
+        tokio::select! {
+            _ = state.jobs.changed.notified() => {}
+            _ = tokio::time::sleep(wake_after) => {}
+        }
+    }
+}
+
+async fn run_claimed_job(
+    state: EdgeState,
+    running: Job,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) {
     let headers = running
         .request_headers
         .iter()
@@ -5586,39 +6838,141 @@ async fn run_job(state: EdgeState, job: Job) {
             ))
         })
         .collect::<HeaderMap>();
-    match proxy_inference(
+    let execution = proxy_inference(
         &state,
         &running.route,
         &headers,
         &running.request_body,
         &running.application,
-    )
-    .await
-    {
-        Ok(ProxyResult::Buffered(reply)) => state.jobs.succeed(&running.id, reply).await,
+    );
+    let result = if let Some(deadline) = running.deadline_at {
+        match timeout(
+            Duration::from_millis(deadline.saturating_sub(now_ms()).max(1)),
+            execution,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                state
+                    .jobs
+                    .fail(&running.id, "job deadline expired while running", false)
+                    .await;
+                drop(permit);
+                state.jobs.changed.notify_one();
+                return;
+            }
+        }
+    } else {
+        execution.await
+    };
+    match result {
+        Ok(ProxyResult::Buffered(reply)) if reply.status.is_success() => {
+            state.jobs.succeed(&running.id, reply).await
+        }
+        Ok(ProxyResult::Buffered(reply)) => {
+            let status = reply.status;
+            let message = serde_json::from_slice::<Value>(&reply.body)
+                .ok()
+                .and_then(|body| {
+                    value_string(body.get("error").and_then(|error| error.get("message")))
+                        .or_else(|| value_string(body.get("error")))
+                })
+                .unwrap_or_else(|| format!("deferred upstream returned {status}"));
+            state
+                .jobs
+                .fail(
+                    &running.id,
+                    &message,
+                    status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
+                )
+                .await;
+        }
         Ok(ProxyResult::Streaming(_)) => {
             state
                 .jobs
-                .fail(&running.id, "deferred jobs cannot return a stream")
+                .fail(
+                    &running.id,
+                    "deferred jobs cannot return a stream",
+                    false,
+                )
                 .await
         }
-        Err(_error) => {
+        Err(error) => {
+            let status = error.status();
+            let bytes = to_bytes(error.into_body(), 1024 * 1024)
+                .await
+                .unwrap_or_default();
+            let message = serde_json::from_slice::<Value>(&bytes)
+                .ok()
+                .and_then(|body| {
+                    value_string(body.get("error").and_then(|error| error.get("message")))
+                })
+                .unwrap_or_else(|| format!("deferred inference failed with {status}"));
             state
                 .jobs
-                .fail(&running.id, "deferred inference failed")
+                .fail(
+                    &running.id,
+                    &message,
+                    status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
+                )
                 .await
         }
     }
+    drop(permit);
+    state.jobs.changed.notify_one();
 }
 
-fn idempotency_key(path: &str, application: &str, key: &str, body: &Value) -> String {
-    let serialized = serde_json::to_vec(body).unwrap_or_default();
-    let digest = Sha256::digest(serialized);
-    let digest = digest
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    format!("{application}:{path}:{key}:{digest}")
+fn set_idempotency_status(headers: &mut Vec<(String, String)>, status: &str) {
+    headers.retain(|(name, _)| !name.eq_ignore_ascii_case(idempotency::STATUS_HEADER));
+    headers.push((idempotency::STATUS_HEADER.to_owned(), status.to_owned()));
+}
+
+fn set_response_idempotency_status(response: &mut Response, status: &str) {
+    if let Ok(value) = HeaderValue::from_str(status) {
+        response.headers_mut().insert(
+            HeaderName::from_static(idempotency::STATUS_HEADER),
+            value,
+        );
+    }
+}
+
+fn response_from_idempotency(response: idempotency::StoredResponse, status: &str) -> Response {
+    let mut reply = BufferedReply {
+        status: response.status,
+        headers: response.headers,
+        body: response.body,
+    };
+    set_idempotency_status(&mut reply.headers, status);
+    response_from_buffer(reply)
+}
+
+fn idempotency_error(
+    path: &str,
+    status: StatusCode,
+    code: &str,
+    message: &str,
+) -> Response {
+    if idempotency::normalized_route(path) == Some("/messages") {
+        json_response(
+            status,
+            json!({
+                "type": "error",
+                "error": {"type": "invalid_request_error", "message": message},
+            }),
+        )
+    } else {
+        json_response(
+            status,
+            json!({
+                "error": {
+                    "message": message,
+                    "type": "invalid_request_error",
+                    "code": code,
+                },
+            }),
+        )
+    }
 }
 
 fn safe_job_headers(headers: &HeaderMap) -> HeaderMap {
@@ -5673,7 +7027,7 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
         Ok(auth) => auth,
         Err(response) => return response,
     };
-    let (headers, body, _) = match read_json_body(
+    let (mut headers, body, _) = match read_json_body(
         req,
         if path.ends_with("/messages") {
             state.config.request_body_limit.min(100 * 1024 * 1024)
@@ -5687,24 +7041,6 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
         Ok(value) => value,
         Err(response) => return response,
     };
-    let client_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
-    let raw_execution = header_value(&headers, "x-multivibe-execution");
-    if let Some(execution) = raw_execution.as_deref() {
-        if !matches!(execution, "sync" | "auto" | "defer") {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid X-MultiVibe-Execution",
-                "invalid_execution",
-            );
-        }
-    }
-    if client_stream && raw_execution.as_deref() == Some("defer") {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "Streaming, WebSocket and Realtime requests cannot be deferred.",
-            "stream_cannot_be_deferred",
-        );
-    }
     let model = value_string(body.get("model")).unwrap_or_else(|| {
         state
             .config
@@ -5713,25 +7049,159 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
             .cloned()
             .unwrap_or_default()
     });
-    let request_idempotency = header_value(&headers, "x-multivibe-idempotency-key");
-    let cache_key = request_idempotency
-        .as_deref()
-        .filter(|_| !client_stream)
-        .map(|key| idempotency_key(&path, &auth.application, key, &body));
-    if let Some(key) = cache_key.as_deref() {
-        if let Some(reply) = state.cached_idempotency(key).await {
-            return response_from_buffer(reply);
+    apply_alias_defaults(&mut headers, &store, &model);
+    if let Err(response) = validate_routing_headers(&headers, &store, &auth.application) {
+        return response;
+    }
+    let client_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+    let raw_execution = header_value(&headers, "x-multivibe-execution");
+    if client_stream && raw_execution.as_deref() == Some("defer") {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Streaming, WebSocket and Realtime requests cannot be deferred.",
+            "stream_cannot_be_deferred",
+        );
+    }
+    let confidential = match confidential_requested(&state.config, &headers) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    if confidential && !confidential_path_supported(&path) {
+        return privacy_error(
+            StatusCode::CONFLICT,
+            "confidential_surface_not_supported",
+            "This request is not yet supported by verified confidential computing.",
+        );
+    }
+    if confidential && raw_execution.as_deref() == Some("defer") {
+        return privacy_error(
+            StatusCode::CONFLICT,
+            "confidential_surface_not_supported",
+            "Verified confidential requests cannot be stored as deferred jobs.",
+        );
+    }
+    let route = idempotency::normalized_route(&path);
+    let request_idempotency = header_value(&headers, "x-multivibe-idempotency-key")
+        .map(|key| key.trim().to_owned())
+        .filter(|key| !key.is_empty());
+    if route.is_some() && request_idempotency.as_ref().is_some_and(|key| key.len() > 200) {
+        return idempotency_error(
+            &path,
+            StatusCode::BAD_REQUEST,
+            "invalid_idempotency_key",
+            "X-MultiVibe-Idempotency-Key is too long",
+        );
+    }
+
+    let skip_idempotency = raw_execution.as_deref() == Some("defer")
+        || header_value(&headers, "x-multivibe-internal-job").as_deref() == Some("1");
+    let mut idempotency_leader = None;
+    let mut idempotency_status = confidential.then_some("bypass");
+    if !confidential
+        && !skip_idempotency
+        && let (Some(route), Some(key)) = (route, request_idempotency.as_deref())
+    {
+        if !idempotency::is_eligible_body(&body) {
+            idempotency_status = Some("bypass");
+        } else {
+            let scope = idempotency::scope(&auth.application, route, key);
+            let request_hash = idempotency::request_hash(&body, &headers);
+            loop {
+                match state
+                    .idempotency
+                    .claim(scope.clone(), request_hash.clone())
+                    .await
+                {
+                    idempotency::Claim::Leader(leader) => {
+                        idempotency_leader = Some(leader);
+                        idempotency_status = Some("created");
+                        break;
+                    }
+                    idempotency::Claim::Follower(follower) => {
+                        if let Some(response) = follower.wait().await {
+                            return response_from_idempotency(response, "coalesced");
+                        }
+                    }
+                    idempotency::Claim::Replay(response) => {
+                        return response_from_idempotency(response, "replayed");
+                    }
+                    idempotency::Claim::Conflict => {
+                        return idempotency_error(
+                            &path,
+                            StatusCode::CONFLICT,
+                            "idempotency_key_reused",
+                            "This idempotency key was already used with a different request payload.",
+                        );
+                    }
+                    idempotency::Claim::Bypass => {
+                        idempotency_status = Some("bypass");
+                        break;
+                    }
+                }
+            }
         }
     }
     if raw_execution.as_deref() == Some("defer") {
         let job_headers = safe_job_headers(&headers);
-        let job = state
+        let created = match state
             .jobs
-            .create(&auth.application, &path, &job_headers, &body)
-            .await;
-        let response = json_response(StatusCode::ACCEPTED, public_job(&job));
-        let state_for_job = state.clone();
-        tokio::spawn(run_job(state_for_job, job));
+            .create(
+                &auth.application,
+                &path,
+                &job_headers,
+                &body,
+                default_job_max_attempts(),
+            )
+            .await
+        {
+            Ok(created) => created,
+            Err(JobCreateError::InvalidPriority) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "X-MultiVibe-Priority must be critical, interactive, standard, or batch",
+                    "invalid_priority",
+                );
+            }
+            Err(JobCreateError::InvalidDeadline) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "X-MultiVibe-Deadline must be RFC 3339",
+                    "invalid_deadline",
+                );
+            }
+            Err(JobCreateError::ExpiredDeadline) => {
+                return error_response(
+                    StatusCode::REQUEST_TIMEOUT,
+                    "deadline already expired",
+                    "deadline_expired",
+                );
+            }
+            Err(JobCreateError::IdempotencyConflict) => {
+                return idempotency_error(
+                    &path,
+                    StatusCode::CONFLICT,
+                    "idempotency_key_reused",
+                    "This idempotency key was already used with a different deferred request payload.",
+                );
+            }
+        };
+        let mut response = json_response(StatusCode::ACCEPTED, public_job(&created.job));
+        if let Ok(location) = HeaderValue::from_str(&format!("/v1/jobs/{}", created.job.id)) {
+            response.headers_mut().insert(header::LOCATION, location);
+        }
+        response.headers_mut().insert(
+            HeaderName::from_static("x-multivibe-decision"),
+            HeaderValue::from_static("queued"),
+        );
+        if let Ok(priority) = HeaderValue::from_str(&created.job.priority) {
+            response
+                .headers_mut()
+                .insert(HeaderName::from_static("x-multivibe-priority"), priority);
+        }
+        set_response_idempotency_status(
+            &mut response,
+            if created.created { "created" } else { "replayed" },
+        );
         return response;
     }
     match proxy_inference(&state, &path, &headers, &body, &auth.application).await {
@@ -5741,8 +7211,16 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
                 header_value(&headers, "x-multivibe-priority").as_deref(),
                 &model,
             );
-            if let Some(key) = cache_key {
-                state.store_idempotency(key, &reply).await;
+            if let Some(status) = idempotency_status {
+                set_idempotency_status(&mut reply.headers, status);
+            }
+            if let Some(leader) = idempotency_leader {
+                let stored = idempotency::StoredResponse::new(
+                    reply.status,
+                    &reply.headers,
+                    reply.body.clone(),
+                );
+                leader.complete(stored).await;
             }
             response_from_buffer(reply)
         }
@@ -5767,9 +7245,20 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
                     .headers
                     .push(("x-multivibe-resolved-model".to_owned(), model));
             }
+            if let Some(status) = idempotency_status {
+                set_idempotency_status(&mut reply.headers, status);
+            }
             streaming_response(reply)
         }
-        Err(response) => response,
+        Err(mut response) => {
+            if let Some(status) = idempotency_status {
+                set_response_idempotency_status(&mut response, status);
+            }
+            if let Some(leader) = idempotency_leader {
+                leader.fail().await;
+            }
+            response
+        }
     }
 }
 
@@ -6549,16 +8038,7 @@ async fn capacity_handler(
     let blocked = state.blocked.lock().await.clone();
     let selected = state.selected.lock().await.clone();
     let accounts = select_accounts(&store.accounts, &route, &blocked, &selected);
-    let free_slots = accounts
-        .iter()
-        .map(|account| {
-            account
-                .capacity_profile
-                .as_ref()
-                .and_then(|profile| profile.max_concurrent)
-                .unwrap_or(1) as u64
-        })
-        .sum::<u64>();
+    let (free_slots, queue_depth) = state.admission.snapshot(&accounts);
     let state_name = if accounts.is_empty() {
         "unavailable"
     } else if free_slots > 0 {
@@ -6577,8 +8057,8 @@ async fn capacity_handler(
             "decision": accounts.first().and_then(|account| account.location.as_deref()).unwrap_or("cloud"),
             "admissibleLocations": accounts.iter().filter_map(|account| account.location.clone()).collect::<Vec<_>>(),
             "freeSlots": free_slots,
-            "queueDepth": 0,
-            "recommendation": if accounts.is_empty() { "defer" } else { "sync" },
+            "queueDepth": queue_depth,
+            "recommendation": if free_slots > 0 { "sync" } else { "defer" },
             "version": state.capacity_version.load(AtomicOrdering::Relaxed),
             "generatedAt": now_ms(),
             "confidence": "declared"
@@ -7334,7 +8814,9 @@ async fn websocket_handler(
     State(state): State<EdgeState>,
     ws: WebSocketUpgrade,
     headers: HeaderMap,
+    uri: Uri,
 ) -> Response {
+    let path = uri.path().to_owned();
     let store = match state.store.snapshot().await {
         Ok(store) => store,
         Err(_) => {
@@ -7344,7 +8826,7 @@ async fn websocket_handler(
                 .unwrap_or_else(|_| Response::new(Body::empty()));
         }
     };
-    let auth = match authorize(&headers, "/v1/responses", &store, &state.config) {
+    let auth = match authorize(&headers, &path, &store, &state.config) {
         Ok(auth) => auth,
         Err(_) => {
             return Response::builder()
@@ -7353,7 +8835,7 @@ async fn websocket_handler(
                 .unwrap_or_else(|_| Response::new(Body::empty()));
         }
     };
-    ws.on_upgrade(move |socket| handle_websocket(socket, state, headers, auth.application))
+    ws.on_upgrade(move |socket| handle_websocket(socket, state, headers, auth.application, path))
 }
 
 async fn ws_send_json(socket: &mut WebSocket, value: Value) -> bool {
@@ -7368,6 +8850,7 @@ async fn handle_websocket(
     state: EdgeState,
     headers: HeaderMap,
     application: String,
+    path: String,
 ) {
     while let Some(Ok(message)) = socket.next().await {
         match message {
@@ -7394,7 +8877,7 @@ async fn handle_websocket(
                 }
                 match proxy_inference(
                     &state,
-                    "/v1/responses",
+                    &path,
                     &headers,
                     &frame,
                     &application,
@@ -7419,6 +8902,7 @@ async fn handle_websocket(
                         let status = reply.status.as_u16();
                         let mut trace = reply.trace;
                         let mut upstream = reply.upstream.bytes_stream();
+                        let _capacity_lease = reply.capacity_lease;
                         let mut buffer = String::new();
                         while let Some(Ok(chunk)) = upstream.next().await {
                             if let Some(trace) = trace.as_mut() {
@@ -7547,9 +9031,29 @@ async fn fallback_handler(State(state): State<EdgeState>, req: Request<Body>) ->
 
 pub fn build_router(state: EdgeState) -> Router {
     Router::new()
-        // Every `/v1` route terminates in this native edge.  Node remains a
-        // control-plane peer for the dashboard and OAuth, never an HTTP hop
-        // for the public API.
+        // Every inference route, both the canonical `/v1` surface and its
+        // historical root aliases, terminates in this native edge. Node
+        // remains a control-plane peer for the dashboard and OAuth, never an
+        // HTTP hop for the public API.
+        .route(
+            "/models",
+            get(list_models_handler).post(method_not_allowed),
+        )
+        .route(
+            "/models/{id}",
+            get(get_model_handler).post(method_not_allowed),
+        )
+        .route("/props", get(props_handler))
+        .route(
+            "/responses",
+            get(websocket_handler).post(inference_handler),
+        )
+        .route("/responses/compact", post(inference_handler))
+        .route("/chat/completions", post(inference_handler))
+        .route("/messages", post(inference_handler))
+        .route("/realtime/calls", post(realtime_call_handler))
+        .route("/realtime/voices", get(realtime_voices_handler))
+        .route("/settings/voices", get(realtime_voices_handler))
         .route(
             "/v1/models",
             get(list_models_handler).post(method_not_allowed),
@@ -7749,6 +9253,302 @@ mod tests {
     }
 
     #[test]
+    fn image_override_requires_an_image_and_an_exposed_model_or_alias() {
+        let image = json!({
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "image_url", "image_url": {"url": "https://example.test/image.png"}}]
+            }]
+        });
+        let text = json!({"input": [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}]});
+        let catalog = vec![json!({"id": "openai/gpt-vision"})];
+        let mut store = StoreFile::default();
+        store.settings.image_request_model_override = Some("gpt-vision".to_owned());
+
+        assert!(payload_has_image(&image));
+        assert!(!payload_has_image(&text));
+        assert_eq!(
+            image_aware_routing_model(&store, &catalog, &image, "gpt-text"),
+            "gpt-vision"
+        );
+        assert_eq!(
+            image_aware_routing_model(&store, &catalog, &text, "gpt-text"),
+            "gpt-text"
+        );
+
+        store.settings.image_request_model_override = Some("vision-alias".to_owned());
+        store.model_aliases.push(ModelAlias {
+            id: "vision-alias".to_owned(),
+            enabled: true,
+            defaults: Some(json!({"priority": "interactive", "executionMode": "auto"})),
+            ..Default::default()
+        });
+        assert_eq!(
+            image_aware_routing_model(&store, &catalog, &image, "gpt-text"),
+            "vision-alias"
+        );
+        assert_eq!(alias_default(&store, "vision-alias", "priority").as_deref(), Some("interactive"));
+
+        store.settings.image_request_model_override = Some("missing-model".to_owned());
+        assert_eq!(
+            image_aware_routing_model(&store, &catalog, &image, "gpt-text"),
+            "gpt-text"
+        );
+    }
+
+    #[test]
+    fn same_account_retry_honors_transient_status_retry_after_and_quota_rotation() {
+        assert!(should_retry_same_account(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "temporarily unavailable"
+        ));
+        assert!(should_retry_same_account(
+            StatusCode::BAD_REQUEST,
+            "upstream connection refused"
+        ));
+        assert!(!should_retry_same_account(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate limit"
+        ));
+        assert!(!should_retry_same_account(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "provider capacity quota exhausted"
+        ));
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::RETRY_AFTER, HeaderValue::from_static("7"));
+        assert_eq!(
+            upstream_retry_delay(Some(&headers), 0, Duration::from_secs(2)),
+            Duration::from_secs(7)
+        );
+        assert_eq!(
+            upstream_retry_delay(None, 2, Duration::from_secs(2)),
+            Duration::from_secs(8)
+        );
+    }
+
+    #[tokio::test]
+    async fn admission_leases_are_atomic_and_reflected_in_capacity() {
+        let version = Arc::new(AtomicU64::new(1));
+        let admission = Arc::new(AdmissionController::new(version.clone()));
+        let mut target = account("capacity-one");
+        target.capacity_profile = Some(CapacityProfile {
+            max_concurrent: Some(1),
+            ..Default::default()
+        });
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let mut tasks = Vec::new();
+        for _ in 0..2 {
+            let admission = admission.clone();
+            let barrier = barrier.clone();
+            let target = target.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                admission
+                    .acquire_any(&[target])
+                    .map(|(_, lease)| lease)
+            }));
+        }
+        barrier.wait().await;
+        let mut leases = Vec::new();
+        for task in tasks {
+            if let Some(lease) = task.await.unwrap() {
+                leases.push(lease);
+            }
+        }
+
+        assert_eq!(leases.len(), 1, "only one concurrent lease may be issued");
+        assert_eq!(admission.snapshot(&[target.clone()]), (0, 0));
+        assert!(version.load(AtomicOrdering::Relaxed) > 1);
+
+        drop(leases);
+        assert_eq!(admission.snapshot(&[target]), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn admission_wait_is_bounded_queued_and_released_on_drop() {
+        let admission = Arc::new(AdmissionController::new(Arc::new(AtomicU64::new(1))));
+        let mut target = account("capacity-wait");
+        target.capacity_profile = Some(CapacityProfile {
+            max_concurrent: Some(1),
+            ..Default::default()
+        });
+        let (_, first_lease) = admission
+            .acquire_any(&[target.clone()])
+            .unwrap();
+
+        let waiting_admission = admission.clone();
+        let waiting_target = target.clone();
+        let waiter = tokio::spawn(async move {
+            let accounts = [waiting_target];
+            if waiting_admission
+                .wait_for_capacity(&accounts, Duration::from_secs(1))
+                .await
+            {
+                waiting_admission
+                    .acquire_any(&accounts)
+                    .map(|(_, lease)| lease)
+            } else {
+                None
+            }
+        });
+        timeout(Duration::from_secs(1), async {
+            while admission.snapshot(&[target.clone()]).1 != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(admission.snapshot(&[target.clone()]), (0, 1));
+
+        drop(first_lease);
+        let second_lease = timeout(Duration::from_secs(1), waiter)
+            .await
+            .unwrap()
+            .unwrap()
+            .expect("the queued request should acquire the released slot");
+        assert_eq!(admission.snapshot(&[target.clone()]), (0, 0));
+        drop(second_lease);
+        assert_eq!(admission.snapshot(&[target.clone()]), (1, 0));
+
+        let (_, held_lease) = admission
+            .acquire_any(&[target.clone()])
+            .unwrap();
+        let timed_out = admission
+            .wait_for_capacity(&[target.clone()], Duration::from_millis(10))
+            .await;
+        assert!(!timed_out);
+        assert_eq!(admission.snapshot(&[target.clone()]), (0, 0));
+        drop(held_lease);
+    }
+
+    #[test]
+    fn admission_wait_header_is_validated_and_capped() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(admission_wait(&headers).unwrap(), Duration::ZERO);
+        headers.insert(
+            "x-multivibe-max-wait-ms",
+            HeaderValue::from_static("invalid"),
+        );
+        assert_eq!(
+            admission_wait(&headers).unwrap_err().status(),
+            StatusCode::BAD_REQUEST
+        );
+        headers.insert(
+            "x-multivibe-max-wait-ms",
+            HeaderValue::from_static("999999999999999999999999"),
+        );
+        assert_eq!(
+            admission_wait(&headers).unwrap(),
+            Duration::from_millis(MAX_ADMISSION_WAIT_MS)
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_response_holds_capacity_until_the_client_drops_it() {
+        let upstream = Router::new()
+            .route(
+                "/backend-api/codex/models",
+                get(|| async { Json(json!({"models": [{"slug": "gpt-capacity"}]})) }),
+            )
+            .route(
+                "/backend-api/codex/responses",
+                post(|| async {
+                    let body = stream! {
+                        yield Ok::<Bytes, Infallible>(Bytes::from_static(
+                            b"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"held\"}\n\n",
+                        ));
+                        std::future::pending::<()>().await;
+                    };
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "text/event-stream")
+                        .body(Body::from_stream(body))
+                        .unwrap()
+                }),
+            );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+
+        let store_path = temporary_path("stream-capacity");
+        let jobs_path = temporary_path("stream-capacity-jobs");
+        let mut target = account("capacity-stream");
+        target.capacity_profile = Some(CapacityProfile {
+            max_concurrent: Some(1),
+            ..Default::default()
+        });
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![target])).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.chatgpt_base_url = upstream_url;
+        config.configured_api_keys = vec![("capacity-app".to_owned(), "edge-secret".to_owned())];
+        config.models_cache_ttl = Duration::from_secs(60);
+        config.upstream_timeout = Duration::from_secs(5);
+
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("{edge_url}/v1/responses"))
+            .header("authorization", "Bearer edge-secret")
+            .json(&json!({
+                "model": "gpt-capacity",
+                "input": "hello",
+                "stream": true
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let capacity: Value = client
+            .get(format!(
+                "{edge_url}/v1/capacity?model=gpt-capacity&priority=standard"
+            ))
+            .header("authorization", "Bearer edge-secret")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(capacity["freeSlots"], 0);
+
+        drop(response);
+        timeout(Duration::from_secs(2), async {
+            loop {
+                let capacity: Value = client
+                    .get(format!(
+                        "{edge_url}/v1/capacity?model=gpt-capacity&priority=standard"
+                    ))
+                    .header("authorization", "Bearer edge-secret")
+                    .send()
+                    .await
+                    .unwrap()
+                    .json()
+                    .await
+                    .unwrap();
+                if capacity["freeSlots"] == 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("dropping the client stream should release its capacity lease");
+
+        edge_task.abort();
+        upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[test]
     fn session_affinity_is_scoped_expiring_and_lru_bounded() {
         let mut cache = SessionAffinityCache::new(Duration::from_millis(100), 2);
         cache.remember("app-one", "thread", "openai", "account-one", 1_000);
@@ -7922,6 +9722,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn job_scheduler_is_weighted_and_fair_across_priorities_and_applications() {
+        let priorities = ["critical", "interactive", "standard", "batch"];
+        let candidates = priorities
+            .iter()
+            .map(|priority| SchedulingCandidate {
+                id: (*priority).to_owned(),
+                application: (*priority).to_owned(),
+                priority: (*priority).to_owned(),
+                created_at: 0,
+            })
+            .collect::<Vec<_>>();
+        let mut scheduler = WeightedFairScheduler::default();
+        let mut counts = HashMap::<String, usize>::new();
+        for _ in 0..2_900 {
+            let selected = scheduler.choose(&candidates, &HashMap::new()).unwrap();
+            *counts.entry(selected).or_default() += 1;
+        }
+        assert_eq!(counts.get("critical"), Some(&1_600));
+        assert_eq!(counts.get("interactive"), Some(&800));
+        assert_eq!(counts.get("standard"), Some(&400));
+        assert_eq!(counts.get("batch"), Some(&100));
+
+        let candidates = ["heavy", "light"]
+            .iter()
+            .map(|application| SchedulingCandidate {
+                id: (*application).to_owned(),
+                application: (*application).to_owned(),
+                priority: "standard".to_owned(),
+                created_at: 0,
+            })
+            .collect::<Vec<_>>();
+        let weights = HashMap::from([("heavy".to_owned(), 3.0), ("light".to_owned(), 1.0)]);
+        let mut scheduler = WeightedFairScheduler::default();
+        let mut counts = HashMap::<String, usize>::new();
+        for _ in 0..400 {
+            let selected = scheduler.choose(&candidates, &weights).unwrap();
+            *counts.entry(selected).or_default() += 1;
+        }
+        assert_eq!(counts.get("heavy"), Some(&300));
+        assert_eq!(counts.get("light"), Some(&100));
+    }
+
     #[tokio::test]
     async fn jobs_are_persisted_and_results_are_application_scoped() {
         let path = temporary_path("jobs");
@@ -7932,10 +9775,13 @@ mod tests {
                 "/v1/responses",
                 &HeaderMap::new(),
                 &json!({"model": "gpt-5.3-codex", "input": "hello"}),
+                3,
             )
-            .await;
+            .await
+            .unwrap()
+            .job;
         assert_eq!(job.status, "queued");
-        let running = manager.set_running(&job.id).await.unwrap();
+        let running = manager.acquire_next(&HashMap::new()).await.unwrap();
         assert_eq!(running.status, "running");
         manager
             .succeed(
@@ -7956,6 +9802,207 @@ mod tests {
         let reloaded = JobManager::new(path.clone()).await.unwrap();
         assert_eq!(reloaded.list_for("batch-app", 10).await.len(), 1);
         let _ = fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn jobs_enforce_creation_idempotency_retries_deadlines_and_restart_recovery() {
+        let path = temporary_path("robust-jobs");
+        let manager = JobManager::new(path.clone()).await.unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-multivibe-idempotency-key",
+            HeaderValue::from_static("job-key"),
+        );
+        headers.insert(
+            "x-multivibe-priority",
+            HeaderValue::from_static("critical"),
+        );
+        let body = json!({"model": "gpt-job", "input": "same"});
+        let created = manager
+            .create("app-a", "/v1/responses", &headers, &body, 3)
+            .await
+            .unwrap();
+        assert!(created.created);
+        let replay = manager
+            .create("app-a", "/v1/responses", &headers, &body, 3)
+            .await
+            .unwrap();
+        assert!(!replay.created);
+        assert_eq!(replay.job.id, created.job.id);
+        assert!(matches!(
+            manager
+                .create(
+                    "app-a",
+                    "/v1/responses",
+                    &headers,
+                    &json!({"model": "gpt-job", "input": "different"}),
+                    3,
+                )
+                .await,
+            Err(JobCreateError::IdempotencyConflict)
+        ));
+
+        let running = manager.acquire_next(&HashMap::new()).await.unwrap();
+        assert_eq!(running.attempts, 1);
+        drop(manager);
+
+        let manager = JobManager::new(path.clone()).await.unwrap();
+        let recovered = manager.get_for("app-a", &created.job.id).await.unwrap();
+        assert_eq!(recovered.status, "queued");
+        let running = manager.acquire_next(&HashMap::new()).await.unwrap();
+        assert_eq!(running.id, created.job.id);
+        assert_eq!(running.attempts, 2);
+        manager
+            .fail(&running.id, "temporary outage", true)
+            .await;
+        let retry = manager.get_for("app-a", &running.id).await.unwrap();
+        assert_eq!(retry.status, "retry");
+        assert!(retry.not_before > retry.updated_at);
+        {
+            let mut state = manager.state.lock().await;
+            state.jobs.get_mut(&running.id).unwrap().not_before = now_ms();
+        }
+        let final_attempt = manager.acquire_next(&HashMap::new()).await.unwrap();
+        manager
+            .fail(&final_attempt.id, "permanent failure", false)
+            .await;
+        assert_eq!(
+            manager
+                .get_for("app-a", &final_attempt.id)
+                .await
+                .unwrap()
+                .status,
+            "failed"
+        );
+        let other_application = manager
+            .create("app-b", "/v1/responses", &headers, &body, 3)
+            .await
+            .unwrap();
+        assert!(other_application.created);
+        assert_ne!(other_application.job.id, created.job.id);
+
+        let mut invalid_deadline = HeaderMap::new();
+        invalid_deadline.insert(
+            "x-multivibe-deadline",
+            HeaderValue::from_static("tomorrow"),
+        );
+        assert!(matches!(
+            manager
+                .create("app-a", "/v1/responses", &invalid_deadline, &body, 3)
+                .await,
+            Err(JobCreateError::InvalidDeadline)
+        ));
+        let past_deadline = (chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339();
+        invalid_deadline.insert(
+            "x-multivibe-deadline",
+            HeaderValue::from_str(&past_deadline).unwrap(),
+        );
+        assert!(matches!(
+            manager
+                .create("app-a", "/v1/responses", &invalid_deadline, &body, 3)
+                .await,
+            Err(JobCreateError::ExpiredDeadline)
+        ));
+        assert_eq!(
+            parse_rfc3339_ms("2026-08-28T07:00:00+02:00"),
+            parse_rfc3339_ms("2026-08-28T05:00:00Z")
+        );
+
+        let _ = fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn native_job_runner_bounds_global_concurrency() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let upstream_active = active.clone();
+        let upstream_maximum = maximum.clone();
+        let upstream = Router::new()
+            .route(
+                "/backend-api/codex/models",
+                get(|| async { Json(json!({"models": [{"slug": "gpt-job"}]})) }),
+            )
+            .route(
+                "/backend-api/codex/responses",
+                post(move || {
+                    let active = upstream_active.clone();
+                    let maximum = upstream_maximum.clone();
+                    async move {
+                        let current = active.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+                        maximum.fetch_max(current, AtomicOrdering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        active.fetch_sub(1, AtomicOrdering::SeqCst);
+                        Json(json!({
+                            "id": new_id("resp"),
+                            "object": "response",
+                            "model": "gpt-job",
+                            "status": "completed",
+                            "output": [],
+                            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+                        }))
+                    }
+                }),
+            );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+
+        let store_path = temporary_path("job-runner-accounts");
+        let jobs_path = temporary_path("job-runner-jobs");
+        let mut job_account = account("job-account");
+        job_account.capacity_profile = Some(CapacityProfile {
+            max_concurrent: Some(10),
+            ..Default::default()
+        });
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![job_account])).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.chatgpt_base_url = upstream_url;
+        config.job_worker_concurrency = 2;
+        config.upstream_timeout = Duration::from_secs(5);
+        let state = EdgeState::new(config).await.unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-multivibe-priority",
+            HeaderValue::from_static("standard"),
+        );
+        for index in 0..6 {
+            state
+                .jobs
+                .create(
+                    "batch-app",
+                    "/v1/responses",
+                    &headers,
+                    &json!({"model": "gpt-job", "input": format!("job-{index}")}),
+                    3,
+                )
+                .await
+                .unwrap();
+        }
+        let runner = state.start_job_runner().unwrap();
+        assert!(state.start_job_runner().is_none());
+
+        let completed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let jobs = state.jobs.list_for("batch-app", 10).await;
+                if jobs.iter().all(|job| job.status == "succeeded") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(completed.is_ok(), "jobs did not complete before the timeout");
+        assert_eq!(maximum.load(AtomicOrdering::SeqCst), 2);
+
+        runner.abort();
+        upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
     }
 
     #[tokio::test]
@@ -8134,7 +10181,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.json::<Value>().await.unwrap()["state"], "ready");
+        let capacity: Value = response.json().await.unwrap();
+        assert_eq!(capacity["state"], "ready");
+        assert_eq!(capacity["freeSlots"], 1);
 
         let response = client
             .get(format!("{edge_url}/v1/jobs"))
@@ -8527,6 +10576,236 @@ mod tests {
         socket.close(None).await.unwrap();
 
         edge_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn root_inference_aliases_are_served_by_rust_without_node_fallback() {
+        let control_plane_requests = Arc::new(AtomicUsize::new(0));
+        let upstream = Router::new()
+            .route(
+                "/backend-api/codex/models",
+                get(|| async {
+                    Json(json!({
+                        "models": [{
+                            "slug": "gpt-root",
+                            "display_name": "GPT Root",
+                            "supported_tool_types": ["function"]
+                        }]
+                    }))
+                }),
+            )
+            .route(
+                "/backend-api/codex/responses",
+                post(|| async {
+                    Json(json!({
+                        "id": "resp-root",
+                        "object": "response",
+                        "model": "gpt-root",
+                        "status": "completed",
+                        "output": [{
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "root alias"}]
+                        }],
+                        "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+                    }))
+                }),
+            )
+            .route(
+                "/backend-api/codex/responses/compact",
+                post(|| async {
+                    Json(json!({
+                        "id": "resp-root-compact",
+                        "object": "response",
+                        "model": "gpt-root",
+                        "status": "completed",
+                        "output": [],
+                        "usage": {"input_tokens": 1, "output_tokens": 0, "total_tokens": 1}
+                    }))
+                }),
+            )
+            .route(
+                "/backend-api/realtime/calls",
+                post(|| async {
+                    Response::builder()
+                        .status(StatusCode::CREATED)
+                        .header(header::CONTENT_TYPE, "application/sdp")
+                        .body(Body::from("v=0\\r\\na=answer\\r\\n"))
+                        .unwrap()
+                }),
+            )
+            .route(
+                "/backend-api/settings/voices",
+                get(|| async { Json(json!({"voices": ["cove"]})) }),
+            );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+
+        let control_requests = control_plane_requests.clone();
+        let control_plane = Router::new().fallback(move || {
+            let control_requests = control_requests.clone();
+            async move {
+                control_requests.fetch_add(1, AtomicOrdering::Relaxed);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "unexpected control-plane request",
+                )
+            }
+        });
+        let (control_plane_url, control_plane_task) = start_server(control_plane).await;
+
+        let store_path = temporary_path("root-aliases");
+        let jobs_path = temporary_path("root-aliases-jobs");
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![account("openai-1")])).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.chatgpt_base_url = upstream_url;
+        config.node_control_plane_url = control_plane_url;
+        config.configured_api_keys = vec![("root-app".to_owned(), "root-key".to_owned())];
+        config.models_cache_ttl = Duration::from_secs(60);
+        config.upstream_timeout = Duration::from_secs(5);
+
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let client = reqwest::Client::new();
+        let authorized_get = |path: &str| {
+            client
+                .get(format!("{edge_url}{path}"))
+                .header("authorization", "Bearer root-key")
+        };
+        let authorized_post = |path: &str| {
+            client
+                .post(format!("{edge_url}{path}"))
+                .header("authorization", "Bearer root-key")
+        };
+
+        let response = authorized_get("/models").send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.json::<Value>().await.unwrap()["data"][0]["id"],
+            "gpt-root"
+        );
+
+        let response = authorized_get("/models/gpt-root").send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.json::<Value>().await.unwrap()["id"], "gpt-root");
+
+        let response = authorized_get("/props").send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.json::<Value>().await.unwrap()["models_url"],
+            "/v1/models"
+        );
+
+        let response = authorized_post("/responses")
+            .json(&json!({"model": "gpt-root", "input": "hello"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.json::<Value>().await.unwrap()["id"], "resp-root");
+
+        let response = authorized_post("/responses/compact")
+            .json(&json!({"model": "gpt-root", "input": "hello"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.json::<Value>().await.unwrap()["id"],
+            "resp-root-compact"
+        );
+
+        let response = authorized_post("/chat/completions")
+            .json(&json!({
+                "model": "gpt-root",
+                "messages": [{"role": "user", "content": "hello"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.json::<Value>().await.unwrap()["object"],
+            "chat.completion"
+        );
+
+        let response = authorized_post("/messages")
+            .json(&json!({
+                "model": "gpt-root",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "hello"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.json::<Value>().await.unwrap()["type"], "message");
+
+        let response = authorized_post("/realtime/calls")
+            .header(header::CONTENT_TYPE, "application/sdp")
+            .body("v=0\\r\\n")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(response.text().await.unwrap(), "v=0\\r\\na=answer\\r\\n");
+
+        for path in ["/realtime/voices", "/settings/voices"] {
+            let response = authorized_get(path).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.json::<Value>().await.unwrap()["voices"][0], "cove");
+        }
+
+        let mut request = format!("{}/responses", edge_url.replace("http://", "ws://"))
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer root-key"),
+        );
+        let (mut socket, _) = connect_async(request).await.unwrap();
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                r#"{"type":"response.create","model":"gpt-root","generate":false}"#.into(),
+            ))
+            .await
+            .unwrap();
+        let created = socket.next().await.unwrap().unwrap();
+        assert!(matches!(
+            created,
+            tokio_tungstenite::tungstenite::Message::Text(_)
+        ));
+        let completed = socket.next().await.unwrap().unwrap();
+        let completed = match completed {
+            tokio_tungstenite::tungstenite::Message::Text(value) => {
+                serde_json::from_str::<Value>(&value).unwrap()
+            }
+            other => panic!("expected response.completed text frame, got {other:?}"),
+        };
+        assert_eq!(completed["type"], "response.completed");
+        socket.close(None).await.unwrap();
+
+        let response = client
+            .post(format!("{edge_url}/messages"))
+            .json(&json!({"model": "gpt-root", "messages": []}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.json::<Value>().await.unwrap()["type"], "error");
+        assert_eq!(control_plane_requests.load(AtomicOrdering::Relaxed), 0);
+
+        edge_task.abort();
+        upstream_task.abort();
+        control_plane_task.abort();
         let _ = fs::remove_file(store_path).await;
         let _ = fs::remove_file(jobs_path).await;
     }

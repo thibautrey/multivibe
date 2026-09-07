@@ -228,6 +228,24 @@ await Promise.all([
   traceManager.initialize(),
   moduleManager.initialize(),
 ]);
+if (MULTIVIBE_CONTROL_PLANE) {
+  const incompatibleInferenceModules = moduleManager
+    .list()
+    .filter(
+      (entry) =>
+        entry.enabled &&
+        entry.loaded &&
+        Boolean(entry.manifest?.hooks?.length),
+    )
+    .map((entry) => entry.id);
+  if (incompatibleInferenceModules.length) {
+    throw new Error(
+      `Native Rust inference cannot start while JavaScript inference modules are enabled: ${incompatibleInferenceModules.join(
+        ", ",
+      )}`,
+    );
+  }
+}
 const providerAgent = startEmbeddedProviderAgent({
   enabled: PROVIDER_AGENT_ENABLED,
   binaryPath: PROVIDER_AGENT_BINARY,
@@ -263,11 +281,6 @@ const confidentialTrustPolicy = parseConfidentialTrustPolicy(
 if (MULTIVIBE_CLOUD_PRIVACY_MODE === "confidential_verified" && !confidentialTrustPolicy) {
   throw new Error(
     "MULTIVIBE_CONFIDENTIAL_INFERENCE_TRUST_POLICY is required for confidential_verified mode",
-  );
-}
-if (MULTIVIBE_CLOUD_PRIVACY_MODE === "confidential_verified" && MULTIVIBE_CONTROL_PLANE) {
-  throw new Error(
-    "confidential_verified mode is unavailable while the native Rust /v1 edge owns inference",
   );
 }
 const confidentialInference = confidentialTrustPolicy
@@ -757,16 +770,16 @@ if (!MULTIVIBE_CONTROL_PLANE) {
   );
   app.use("/v1", realtimeRouter);
   app.use("/v1", proxyRouter);
+  app.use(
+    "/",
+    rootProxyGuard,
+    hostUpdateController?.inferenceMiddleware ?? ((_req, _res, next) => next()),
+    inferenceIdempotencyMiddleware,
+    admissionMiddleware,
+    realtimeRouter,
+  );
+  app.use("/", proxyRouter);
 }
-app.use(
-  "/",
-  rootProxyGuard,
-  hostUpdateController?.inferenceMiddleware ?? ((_req, _res, next) => next()),
-  inferenceIdempotencyMiddleware,
-  admissionMiddleware,
-  realtimeRouter,
-);
-app.use("/", proxyRouter);
 
 app.use(express.static(webDist));
 app.get("*", (req, res, next) => {
@@ -846,7 +859,9 @@ const jobRunner = new JobRunner(
     store.getApplicationPolicy(application).webhooks.find((webhook) => webhook.id === id),
   JOB_WORKER_CONCURRENCY,
 );
-hostUpdateController?.attachJobRunner(jobRunner);
+if (!MULTIVIBE_CONTROL_PLANE) {
+  hostUpdateController?.attachJobRunner(jobRunner);
+}
 
 if (!MULTIVIBE_CONTROL_PLANE && MULTIVIBE_CLOUD_PRIVACY_MODE !== "confidential_verified") {
   installResponsesWebsocketProxy({
@@ -860,7 +875,9 @@ if (!MULTIVIBE_CONTROL_PLANE && MULTIVIBE_CLOUD_PRIVACY_MODE !== "confidential_v
 }
 
 server.listen(nodeHost ? { port: nodePort, host: nodeHost } : { port: nodePort }, () => {
-  jobRunner.start();
+  if (!MULTIVIBE_CONTROL_PLANE) {
+    jobRunner.start();
+  }
   smartRouting.startHealthMonitoring();
   console.log(
     `multivibe control plane listening on ${nodeHost ?? "all interfaces"}:${nodePort}`,
