@@ -1855,15 +1855,20 @@ export function AccountsTab(props: Props) {
                 )}
                 <div className="provider-card-header">
                   <div className="provider-card-identity">
-                    <span className="provider-badge">
-                      <img
-                        className="provider-icon"
-                        src={runtimeIdentity.iconUrl}
-                        alt={`${runtimeIdentity.label} icon`}
-                        loading="lazy"
-                      />
-                      {runtimeIdentity.label}
-                    </span>
+                    <div className="provider-card-badges">
+                      <span className="provider-badge">
+                        <img
+                          className="provider-icon"
+                          src={runtimeIdentity.iconUrl}
+                          alt={`${runtimeIdentity.label} icon`}
+                          loading="lazy"
+                        />
+                        {runtimeIdentity.label}
+                      </span>
+                      <span className={a.enabled ? "badge badge-live" : "badge badge-warn"}>
+                        {a.enabled ? "Enabled" : "Disabled"}
+                      </span>
+                    </div>
                     <div className="provider-card-account">
                       <strong>
                         {sanitized ? maskEmail(a.email) : (a.email ?? "No email set")}
@@ -2141,22 +2146,23 @@ export function AccountsTab(props: Props) {
                     <p className="muted">{a.usage.quotaMessage}</p>
                   )}
                 </div>
-                <div className="provider-card-footer">
-                  <div className="state-stack">
-                    <span className={a.enabled ? "badge badge-live" : "badge badge-warn"}>
-                      {a.enabled ? "Enabled" : "Disabled"}
-                    </span>
+                {modelBlocks.length > 0 && (
+                  <div className="state-stack provider-card-blocks">
                     {modelBlocks.map(([model, block]) => (
                       <span className="badge badge-warn" key={model}>
                         {`${model} blocked until ${fmt(block.until)}`}
                       </span>
                     ))}
                   </div>
-                  <div className="provider-card-error">
-                    <span className="provider-card-label">Last error</span>
-                    <span className="mono">{a.state?.lastError?.slice(0, 120) ?? "-"}</span>
+                )}
+                {a.state?.lastError && (
+                  <div className="provider-card-footer">
+                    <div className="provider-card-error">
+                      <span className="provider-card-label">Last error</span>
+                      <span className="mono">{a.state.lastError.slice(0, 120)}</span>
+                    </div>
                   </div>
-                </div>
+                )}
               </article>
             );
           })}
