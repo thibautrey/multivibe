@@ -3,12 +3,20 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { AnonymousModelOutputTotal } from "./traces.js";
 import type { StoreSettings } from "./types.js";
+import { solveAnonymousUsageProof } from "./anonymous-usage-proof.js";
 
 const DAY_MS = 86_400_000;
 const MAX_ALLOWLIST_BYTES = 2 * 1024 * 1024;
 const MAX_STATE_BYTES = 32 * 1024;
 const MAX_MODELS = 50;
 const OUTPUT_TOKEN_THOUSANDS_CAP = 1_000_000;
+
+class AnonymousUsageHttpError extends Error {
+  constructor(readonly stage: "allowlist" | "admission" | "ingestion", readonly status: number) {
+    super(`anonymous usage ${stage} is unavailable`);
+    this.name = "AnonymousUsageHttpError";
+  }
+}
 
 export type AnonymousUsageEnvelope = {
   schemaVersion: 1;
@@ -134,9 +142,23 @@ async function readBoundedJson(response: Response, maximumBytes: number): Promis
   if (declared && /^\d+$/u.test(declared) && Number(declared) > maximumBytes) {
     throw new Error("anonymous usage response exceeds its size limit");
   }
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length > maximumBytes) throw new Error("anonymous usage response exceeds its size limit");
-  return JSON.parse(bytes.toString("utf8"));
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("anonymous usage response is empty");
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      length += next.value.length;
+      if (length > maximumBytes) throw new Error("anonymous usage response exceeds its size limit");
+      chunks.push(next.value);
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
 export function createAnonymousUsageSharingWorker(options: AnonymousUsageSharingWorkerOptions) {
@@ -147,6 +169,7 @@ export function createAnonymousUsageSharingWorker(options: AnonymousUsageSharing
   const apiBaseUrl = new URL(options.apiBaseUrl ?? "https://api.multivibe.cloud");
   const allowlistUrl = new URL("/telemetry/v1/model-allowlist", apiBaseUrl);
   const usageUrl = new URL("/telemetry/v1/model-usage", apiBaseUrl);
+  const admissionUrl = new URL("/telemetry/v1/admission", apiBaseUrl);
   let cachedAllowlist: Record<string, string> | undefined;
   let cachedAllowlistEtag: string | undefined;
   let activeController: AbortController | undefined;
@@ -184,13 +207,16 @@ export function createAnonymousUsageSharingWorker(options: AnonymousUsageSharing
     await fs.rm(options.statePath, { force: true });
   }
 
-  async function request(url: URL, init: RequestInit): Promise<Response> {
+  function request(url: URL, init: RequestInit): Promise<Response>;
+  function request<T>(url: URL, init: RequestInit, consume: (response: Response) => Promise<T>): Promise<T>;
+  async function request<T>(url: URL, init: RequestInit, consume?: (response: Response) => Promise<T>): Promise<Response | T> {
     const controller = new AbortController();
     activeController = controller;
     const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
     timeout.unref?.();
     try {
-      return await fetchFn(url, { ...init, redirect: "error", signal: controller.signal });
+      const response = await fetchFn(url, { ...init, redirect: "error", signal: controller.signal });
+      return consume ? await consume(response) : response;
     } finally {
       clearTimeout(timeout);
       if (activeController === controller) activeController = undefined;
@@ -198,19 +224,20 @@ export function createAnonymousUsageSharingWorker(options: AnonymousUsageSharing
   }
 
   async function fetchAllowlist(): Promise<Record<string, string>> {
-    const response = await request(allowlistUrl, {
+    return request(allowlistUrl, {
       method: "GET",
       headers: {
         accept: "application/json",
         ...(cachedAllowlistEtag ? { "if-none-match": cachedAllowlistEtag } : {}),
       },
-    });
+    }, async (response) => {
     if (response.status === 304 && cachedAllowlist) return cachedAllowlist;
-    if (response.status !== 200) throw new Error("anonymous usage allowlist is unavailable");
+    if (response.status !== 200) throw new AnonymousUsageHttpError("allowlist", response.status);
     const allowlist = validateAllowlist(await readBoundedJson(response, MAX_ALLOWLIST_BYTES));
     cachedAllowlist = allowlist;
     cachedAllowlistEtag = response.headers.get("etag") ?? undefined;
     return allowlist;
+    });
   }
 
   async function sendPending(state: AnonymousUsageState, epoch: number): Promise<AnonymousUsageRunOutcome> {
@@ -219,12 +246,28 @@ export function createAnonymousUsageSharingWorker(options: AnonymousUsageSharing
       await discardState();
       return "disabled";
     }
-    const response = await request(usageUrl, {
+    const admission = await request(admissionUrl, {
       method: "POST",
       headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify({ eventId: state.pending.eventId }),
+    }, async (response) => {
+      if (response.status !== 200) throw new AnonymousUsageHttpError("admission", response.status);
+      return readBoundedJson(response, 2_048);
+    });
+    const proof = await solveAnonymousUsageProof(
+      admission, state.pending.eventId,
+      () => !sharingEnabled || settingsEpoch !== epoch || stopped, clock(),
+    );
+    if (!sharingEnabled || settingsEpoch !== epoch || stopped) return sharingEnabled ? "skipped" : "disabled";
+    const response = await request(usageUrl, {
+      method: "POST",
+      headers: {
+        accept: "application/json", "content-type": "application/json",
+        "x-telemetry-ticket": proof.ticketId, "x-telemetry-proof": proof.nonce,
+      },
       body: JSON.stringify(state.pending),
     });
-    if (response.status !== 202) throw new Error("anonymous usage ingestion is unavailable");
+    if (response.status !== 202) throw new AnonymousUsageHttpError("ingestion", response.status);
     if (!sharingEnabled || settingsEpoch !== epoch) {
       await discardState();
       return "disabled";
@@ -306,6 +349,7 @@ export function createAnonymousUsageSharingWorker(options: AnonymousUsageSharing
       }
       console.warn("anonymous usage sharing cycle failed", {
         errorType: error instanceof Error ? error.name : "unknown",
+        ...(error instanceof AnonymousUsageHttpError ? { stage: error.stage, status: error.status } : {}),
       });
       return "failed";
     }).finally(() => {
