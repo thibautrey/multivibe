@@ -1,6 +1,8 @@
 import React from "react";
 
 type Props = {
+  widgetId?: string;
+  required?: boolean;
   title: string;
   value: string;
   detail?: string;
