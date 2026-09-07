@@ -9,33 +9,72 @@
 </p>
 
 <p align="center">
-  <strong>One local AI gateway for every provider, account, coding agent, and supported GPU.</strong>
+  <strong>Your providers. Your hardware. One AI gateway.</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/thibautrey/multivibe/releases/latest"><img alt="Latest MultiVibe release" src="https://img.shields.io/github/v/release/thibautrey/multivibe?display_name=tag&amp;sort=semver&amp;style=for-the-badge" /></a>
-  <a href="https://github.com/thibautrey/multivibe/releases"><img alt="MultiVibe downloads" src="https://img.shields.io/github/downloads/thibautrey/multivibe/total?style=for-the-badge" /></a>
-  <a href="https://github.com/thibautrey/multivibe"><img alt="GitHub stars" src="https://img.shields.io/github/stars/thibautrey/multivibe?style=for-the-badge" /></a>
-  <a href="./LICENSE"><img alt="Apache 2.0 license" src="https://img.shields.io/github/license/thibautrey/multivibe?style=for-the-badge" /></a>
+  <a href="https://github.com/thibautrey/multivibe/releases/latest"><img alt="Latest MultiVibe release" src="https://img.shields.io/github/v/release/thibautrey/multivibe?display_name=tag&amp;sort=semver&amp;style=flat-square&amp;color=147D72" /></a>
+  <a href="https://github.com/thibautrey/multivibe/releases"><img alt="MultiVibe downloads" src="https://img.shields.io/github/downloads/thibautrey/multivibe/total?style=flat-square&amp;color=147D72" /></a>
+  <a href="https://github.com/thibautrey/multivibe"><img alt="GitHub stars" src="https://img.shields.io/github/stars/thibautrey/multivibe?style=flat-square&amp;color=147D72" /></a>
+  <a href="./LICENSE"><img alt="Apache 2.0 license" src="https://img.shields.io/github/license/thibautrey/multivibe?style=flat-square&amp;color=147D72" /></a>
 </p>
 
-MultiVibe is a 100% free self-hosted AI gateway and native Provider Host. Use one stable,
-OpenAI-compatible endpoint to route OpenAI, Anthropic, Codex, and compatible
-clients across provider accounts, or run local models on your own supported
-hardware. Quota-aware failover, model policies, deferred jobs, Realtime and
-WebSocket support, and the administration dashboard stay under your control.
+<p align="center">
+  A free, self-hosted gateway for coding agents and AI apps.<br />
+  Connect provider accounts, route around quotas, and run models on your own supported hardware.
+</p>
 
-[Download MultiVibe Host](#download-multivibe-host) ·
-[Run the gateway](#-quick-start) ·
-[Latest release](https://github.com/thibautrey/multivibe/releases/latest) ·
-[Dashboard](#-dashboard) ·
-[Providers](#-providers-and-onboarding) ·
-[API](#-api-surface) ·
-[Routing](#-routing-strategy) ·
-[Plugins](#-plugins) ·
-[Configuration](#-configuration) ·
-[Development](#-local-development) ·
-[Brand kit](./assets/brand/README.md)
+<p align="center">
+  <a href="#download-multivibe-host"><strong>Download MultiVibe Host</strong></a> ·
+  <a href="#-quick-start"><strong>Run the gateway</strong></a> ·
+  <a href="#-api-surface">Explore the API</a> ·
+  <a href="#-local-development">Contribute</a>
+</p>
+
+<p align="center">
+  <a href="#-dashboard">
+    <img src="./assets/screen-overview.jpg" alt="MultiVibe dashboard showing account health, usage, and available models" width="1100" />
+  </a>
+  <br />
+  <sub>Account health, model routing, and usage in one dashboard. Screenshot uses sanitized data.</sub>
+</p>
+
+## ✨ At a glance
+
+| One endpoint | Resilient routing | Your infrastructure |
+| --- | --- | --- |
+| Connect OpenAI-compatible clients, Codex, and Anthropic Messages clients. | Discover models, balance quota headroom, and fail over between accounts. | Self-host the gateway or run the complete Host on supported hardware. |
+| Responses, Chat Completions, SSE, Realtime, and WebSocket support. | Add model aliases, local/cloud policies, budgets, and deferred jobs. | Manage API keys, inspect traces, and track tokens, costs, and latency. |
+
+<details>
+<summary><strong>Full capabilities and gateway architecture</strong></summary>
+
+| Area | What MultiVibe provides |
+| --- | --- |
+| Client APIs | Responses, Chat Completions, Anthropic Messages, models, Realtime WebRTC, SSE, and Responses over WebSocket |
+| Providers | OpenAI/ChatGPT, generic OpenAI-compatible APIs, OpenCode Zen/Go, Mistral, z.ai Coding Plan, and Grok Build subscriptions |
+| Account routing | Automatic model discovery, quota headroom selection, account/model blocks, retries, and optional Codex session affinity |
+| Smart aliases | Conditional schema-v2 policies, local/cloud candidates, capacity constraints, scoring, budgets, simulation, and queue/reject fallbacks |
+| Deferred work | Durable edge jobs, priority and application fairness, idempotency, polling/SSE results, cancellation, and signed webhooks |
+| Operations | Admin dashboard, lifecycle plugins, dynamic application API keys, traces, cost/token/latency statistics, project attribution, exports, and Sentry integration |
+
+MultiVibe exposes the same inference routes under `/v1` and at the root for
+clients that expect either style. In the shipped Compose profile, the public
+`:1455` socket is served directly by the native Rust edge; Node.js remains on
+loopback `127.0.0.1:1456` for the dashboard, OAuth, static assets, and
+control-plane routes. Compatibility endpoints for Ollama- and LiteLLM-style
+discovery are also available.
+
+</details>
+
+### Find your way
+
+| Get started | Use the gateway | Operate and extend |
+| --- | --- | --- |
+| [Download the Host](#download-multivibe-host) | [Providers and onboarding](#-providers-and-onboarding) | [Tracing and projects](#-tracing-and-project-attribution) |
+| [Gateway quick start](#-quick-start) | [API reference and examples](#-api-surface) | [Storage and local models](#-persistence) |
+| [Dashboard tour](#-dashboard) | [Routing and aliases](#-routing-strategy) | [Configuration](#-configuration) |
+| [Installation guide](./packaging/PROVIDER-HOST-README.md) | [Plugins](#-plugins) | [Development](#-local-development) · [More docs](#-additional-documentation) |
 
 ---
 
@@ -54,6 +93,9 @@ model runtime. Official builds are published together in one verified release.
 | **Windows** | Verified native `.zip` for amd64 | Windows amd64 with an NVIDIA GPU, compute capability 7.0+ | **[Download the latest Windows release →](https://github.com/thibautrey/multivibe/releases/latest)** |
 | **Docker / Unraid** | Hardened image on GitHub Container Registry | Linux `x86_64`, Docker or Unraid, NVIDIA container runtime | **[Open the latest Docker release →](https://github.com/thibautrey/multivibe/releases/latest)** |
 
+<details>
+<summary><strong>macOS installation</strong></summary>
+
 ### macOS
 
 Open the latest release and choose the disk image for your Mac:
@@ -67,6 +109,11 @@ Its menu-bar label shows aggregate remaining OpenAI weekly and five-hour
 capacity when available. Opening it presents a native account overview with
 per-account quota windows, reset times, and health without exposing account
 tokens to the interface process.
+
+</details>
+
+<details>
+<summary><strong>Linux installation</strong></summary>
 
 ### Linux
 
@@ -83,6 +130,11 @@ starts the Host. It installs for the current user and does not require root.
 On systems with a user systemd manager it also enables the signed automatic
 update timer. The timer checks hourly but the updater itself schedules one
 network check every 10 to 14 hours with a local random offset.
+
+</details>
+
+<details>
+<summary><strong>Windows installation</strong></summary>
 
 ### Windows
 
@@ -107,6 +159,11 @@ feed and ZIP contents, stops only MultiVibe processes whose executable paths
 belong to the managed installation, and restores the previous version if the
 new Host does not pass its health check.
 
+</details>
+
+<details>
+<summary><strong>Docker and Unraid installation</strong></summary>
+
 ### Docker and Unraid
 
 The current Host release workflow publishes the same verified Linux bundle to
@@ -120,6 +177,10 @@ For reproducible deployments, use the versioned tag or immutable digest shown
 in the matching [latest GitHub release](https://github.com/thibautrey/multivibe/releases/latest).
 Docker Compose and Unraid setup are documented in
 [Provider Host container](#provider-host-container-docker-compose-and-unraid).
+
+</details>
+
+### Updates and release verification
 
 Native macOS, Linux, and Windows installations check an authenticated release feed and,
 by default, download and install an eligible stable release while the Host is
@@ -146,25 +207,6 @@ mechanism with the published `latest` tag.
 
 ---
 
-## ✨ At a glance
-
-| Area | What MultiVibe provides |
-| --- | --- |
-| Client APIs | Responses, Chat Completions, Anthropic Messages, models, Realtime WebRTC, SSE, and Responses over WebSocket |
-| Providers | OpenAI/ChatGPT, generic OpenAI-compatible APIs, OpenCode Zen/Go, Mistral, z.ai Coding Plan, and Grok Build subscriptions |
-| Account routing | Automatic model discovery, quota headroom selection, account/model blocks, retries, and optional Codex session affinity |
-| Smart aliases | Conditional schema-v2 policies, local/cloud candidates, capacity constraints, scoring, budgets, simulation, and queue/reject fallbacks |
-| Deferred work | Durable edge jobs, priority and application fairness, idempotency, polling/SSE results, cancellation, and signed webhooks |
-| Operations | Admin dashboard, lifecycle plugins, dynamic application API keys, traces, cost/token/latency statistics, project attribution, exports, and Sentry integration |
-
-MultiVibe exposes the same inference routes under `/v1` and at the root for
-clients that expect either style. In the shipped Compose profile, the public
-`:1455` socket is served directly by the native Rust edge; Node.js remains on
-loopback `127.0.0.1:1456` for the dashboard, OAuth, static assets, and
-control-plane routes. Compatibility endpoints for Ollama- and LiteLLM-style
-discovery are also available.
-
----
 
 ## 🚀 Quick start
 
@@ -176,10 +218,10 @@ discovery are also available.
 
 ### 1. Clone and secure the deployment
 
-~~~bash
+```bash
 git clone https://github.com/thibautrey/multivibe.git
 cd multivibe
-~~~
+```
 
 > [!WARNING]
 > MultiVibe controls upstream accounts that may carry paid quotas. The shipped
@@ -191,44 +233,44 @@ cd multivibe
 
 Store both initial secrets in the ignored `.env` file:
 
-~~~dotenv
+```dotenv
 ADMIN_TOKEN=<long-random-admin-secret>
 PROXY_API_KEY=<long-random-proxy-secret>
-~~~
+```
 
 The existing proxy-key entry already reads `.env`. Replace the literal admin
 entry in `docker-compose.yml` with required interpolation so Compose cannot
 start without the secret:
 
-~~~yaml
+```yaml
 - ADMIN_TOKEN=${ADMIN_TOKEN:?ADMIN_TOKEN must be set in .env}
-~~~
+```
 
 Do not commit either value. For a managed deployment, use its secret-injection
 mechanism instead of `.env`.
 
 ### 2. Build and deploy
 
-~~~bash
+```bash
 ./scripts/deploy.sh
-~~~
+```
 
 The deployment script records the current commit identity in `.env`, rebuilds
 and recreates the container, then waits for `/health` to report the same
 `gitSha` and `buildId`. Use `HEALTH_URL` for a remote deployment:
 
-~~~bash
+```bash
 HEALTH_URL=https://multivibe.example/health ./scripts/deploy.sh
-~~~
+```
 
 After startup:
 
 - Dashboard: [http://localhost:1455](http://localhost:1455)
 - Health: [http://localhost:1455/health](http://localhost:1455/health)
 
-~~~bash
+```bash
 curl -fsS http://localhost:1455/health
-~~~
+```
 
 `/health` is a liveness and build-identity check only; it does not validate
 storage or provider access. The authenticated `/v1/models` request in step 4 is
@@ -242,12 +284,12 @@ manual-key options differ by provider; see
 
 ### 4. Call the API
 
-~~~bash
+```bash
 export MULTIVIBE_API_KEY="replace-with-your-proxy-key"
 
 curl -H "Authorization: Bearer $MULTIVIBE_API_KEY" \
   http://localhost:1455/v1/models
-~~~
+```
 
 Point an OpenAI-compatible client at `http://localhost:1455/v1` and use the
 same key. The requested model can be a discovered provider model or an enabled
@@ -255,7 +297,7 @@ MultiVibe alias.
 
 ### Routine operations
 
-~~~bash
+```bash
 # Container state and recent logs
 docker compose ps
 docker compose logs -f --tail=200 multivibe
@@ -267,7 +309,7 @@ docker compose start multivibe
 # Update to the latest fast-forward commit and rebuild
 git pull --ff-only
 ./scripts/deploy.sh
-~~~
+```
 
 `docker compose restart` only restarts the existing image; it does not rebuild
 new code. To roll back from a clean deployment checkout, switch to a known-good
@@ -292,13 +334,9 @@ system themes.
 | API reference | Endpoint documentation, generated examples, model selection, and a live request console |
 
 <details>
-<summary>Dashboard gallery</summary>
+<summary><strong>Explore the dashboard — accounts, tracing, and API console</strong></summary>
 
 All screenshots use sanitized mode (`?sanitized=1`).
-
-### Overview
-
-![Overview dashboard](./assets/screen-overview.jpg)
 
 ### Accounts
 
@@ -336,9 +374,9 @@ flow automatically.
 
 The bundled OpenAI client ID is registered for this browser callback:
 
-~~~text
+```text
 http://localhost:1455/auth/callback
-~~~
+```
 
 Keep this localhost callback for the copy-and-paste flow even when MultiVibe is
 remote, or use device OAuth. A different `OAUTH_REDIRECT_URI` also requires an
@@ -372,14 +410,14 @@ rotate.
 
 To import a host file into Docker, mount it read-only:
 
-~~~yaml
+```yaml
 services:
   multivibe:
     environment:
       - XAI_AUTH_PATH=/run/secrets/grok-auth.json
     volumes:
       - /absolute/path/to/.grok/auth.json:/run/secrets/grok-auth.json:ro
-~~~
+```
 
 Grok Build subscription access is intended for the account owner or another
 trusted operator. Review current provider terms before offering it to other
@@ -431,7 +469,7 @@ enabled alias returned by your own `GET /v1/models` response.
 
 ### Responses example
 
-~~~bash
+```bash
 curl -X POST http://localhost:1455/v1/responses \
   -H "Authorization: Bearer $MULTIVIBE_API_KEY" \
   -H "content-type: application/json" \
@@ -439,13 +477,13 @@ curl -X POST http://localhost:1455/v1/responses \
     "model": "gpt-5.3-codex",
     "input": "Explain quota-aware routing in one sentence."
   }'
-~~~
+```
 
 Set `"stream": true` and use `curl -N` for SSE.
 
 ### Chat Completions example
 
-~~~bash
+```bash
 curl -X POST http://localhost:1455/v1/chat/completions \
   -H "Authorization: Bearer $MULTIVIBE_API_KEY" \
   -H "content-type: application/json" \
@@ -453,11 +491,11 @@ curl -X POST http://localhost:1455/v1/chat/completions \
     "model": "gpt-5.3-codex",
     "messages": [{"role": "user", "content": "Hello"}]
   }'
-~~~
+```
 
 ### Anthropic Messages example
 
-~~~bash
+```bash
 curl -X POST http://localhost:1455/v1/messages \
   -H "x-api-key: $MULTIVIBE_API_KEY" \
   -H "anthropic-version: 2023-06-01" \
@@ -467,7 +505,7 @@ curl -X POST http://localhost:1455/v1/messages \
     "max_tokens": 512,
     "messages": [{"role": "user", "content": "Hello"}]
   }'
-~~~
+```
 
 MultiVibe maps Anthropic text, images, tools, tool results, usage, errors, and
 stream events to the selected upstream dialect.
@@ -477,7 +515,7 @@ stream events to the selected upstream dialect.
 Connect to `ws://localhost:1455/v1/responses`, authenticate during the upgrade,
 and send Codex-style `response.create` frames:
 
-~~~js
+```js
 import WebSocket from "ws";
 
 const ws = new WebSocket("ws://localhost:1455/v1/responses", {
@@ -492,7 +530,7 @@ ws.on("open", () => {
     stream: true,
   }));
 });
-~~~
+```
 
 WebSocket transport is available for `/responses` only.
 This is a Node.js example using the installed `ws` package; browser WebSocket
@@ -504,16 +542,16 @@ MultiVibe proxies the native multipart SDP handshake; audio then flows directly
 over the negotiated WebRTC connection. By default it selects an eligible
 OpenAI/ChatGPT account:
 
-~~~dotenv
+```dotenv
 REALTIME_PROVIDER=openai
-~~~
+```
 
 To use a billed OpenAI-compatible Realtime API account, opt in explicitly:
 
-~~~dotenv
+```dotenv
 REALTIME_PROVIDER=openai-compatible
 REALTIME_WEBRTC_CALL_URL=https://api.openai.com/v1/realtime/calls
-~~~
+```
 
 This mode is never selected silently as a fallback from a ChatGPT subscription.
 
@@ -597,7 +635,7 @@ background, and conversation-linked requests bypass this layer. Errors,
 partial results, tool-call responses, and responses over the configured byte
 limit are shared only with already waiting followers and are not retained.
 
-~~~bash
+```bash
 curl -X POST http://localhost:1455/v1/responses \
   -H "Authorization: Bearer $MULTIVIBE_API_KEY" \
   -H "content-type: application/json" \
@@ -605,7 +643,7 @@ curl -X POST http://localhost:1455/v1/responses \
   -H "X-MultiVibe-Execution: defer" \
   -H "X-MultiVibe-Idempotency-Key: nightly-translation-42" \
   -d '{"model": "gpt-5.3-codex", "input": "..."}'
-~~~
+```
 
 Job endpoints are application-isolated:
 
@@ -665,12 +703,12 @@ trust the hook with `/hooks` inside Codex.
 
 Manual installation from this checkout:
 
-~~~bash
+```bash
 read -s MULTIVIBE_PROJECT_TOKEN
 export MULTIVIBE_PROJECT_TOKEN
 node scripts/install-codex-project-hook.mjs --url https://multivibe.example
 unset MULTIVIBE_PROJECT_TOKEN
-~~~
+```
 
 The installer preserves existing `~/.codex/hooks.json` entries and stores its
 secret with mode `0600`. Exact session mapping wins; deterministic
@@ -932,6 +970,9 @@ Compose uses `.env` for interpolation only. Variables not listed under the
 service's `environment` section must be added there or supplied by an override
 file before they reach the container.
 
+<details>
+<summary><strong>Core settings — ports, storage, credentials, and models</strong></summary>
+
 ### Core settings
 
 | Variable | Default | Purpose |
@@ -985,8 +1026,10 @@ file before they reach the container.
 | `CLAUDE_CODE_MODEL` | `gpt-5.6-luna` | Claude Code opus/sonnet upstream |
 | `CLAUDE_CODE_FAST_MODEL` | `gpt-5.4-mini` | Claude Code haiku/fast upstream |
 
+</details>
+
 <details>
-<summary>Routing, cache, retry, and block tuning</summary>
+<summary><strong>Routing, cache, retry, and block tuning</strong></summary>
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -1015,7 +1058,7 @@ file before they reach the container.
 </details>
 
 <details>
-<summary>Provider, OAuth, Realtime, and observability settings</summary>
+<summary><strong>Provider, OAuth, Realtime, and observability settings</strong></summary>
 
 | Variable | Default |
 | --- | --- |
@@ -1051,16 +1094,16 @@ also be overridden. The authoritative definitions live in
 
 Use Node.js 22 or later. The repository has separate API and web lockfiles:
 
-~~~bash
+```bash
 npm ci
 npm --prefix web ci
-~~~
+```
 
 Application storage defaults to `/data`, which is normally writable only in
 the container. Point all persistent paths at the ignored checkout-local
 `data/` directory before running the API directly:
 
-~~~bash
+```bash
 mkdir -p data
 export STORE_PATH="$PWD/data/accounts.json"
 export OAUTH_STATE_PATH="$PWD/data/oauth-state.json"
@@ -1068,29 +1111,29 @@ export TRACE_FILE_PATH="$PWD/data/requests-trace.jsonl"
 export TRACE_STATS_HISTORY_PATH="$PWD/data/requests-stats-history.jsonl"
 export CODEX_PROJECTS_PATH="$PWD/data/codex-projects.json"
 export JOBS_DB_PATH="$PWD/data/jobs.sqlite"
-~~~
+```
 
 Set non-placeholder `ADMIN_TOKEN` and `PROXY_API_KEY` values as well if the
 development server is reachable beyond your machine. Build the dashboard once
 before starting the watched API server:
 
-~~~bash
+```bash
 npm run build:web
 npm run dev
-~~~
+```
 
 Production-style validation:
 
-~~~bash
+```bash
 npm run build
 npm test
 npm start
-~~~
+```
 
 To exercise the native edge locally, build the Rust workspace and start the
 control-plane pair with the same loopback split used by Compose:
 
-~~~bash
+```bash
 cargo test -p multivibe-v1-edge
 # Terminal 1: Node control plane
 MULTIVIBE_CONTROL_PLANE=true \
@@ -1102,7 +1145,7 @@ V1_EDGE_PORT=1455 V1_EDGE_HOST=0.0.0.0 \
   NODE_CONTROL_PLANE_URL=http://127.0.0.1:1456 \
   V1_EDGE_INTERNAL_JOB_TOKEN="local-development-only" \
   cargo run -p multivibe-v1-edge
-~~~
+```
 
 Available scripts:
 
