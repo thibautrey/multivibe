@@ -118,6 +118,12 @@ export const USAGE_STALE_MAX_AGE_MS = Math.max(
   0,
   Number(process.env.USAGE_STALE_MAX_AGE_MS ?? 30 * 60_000),
 );
+/** Background quota checks run even when no inference request is in flight. */
+export const USAGE_REFRESH_INTERVAL_MS = finiteAtLeast(
+  process.env.USAGE_REFRESH_INTERVAL_MS,
+  10 * 60_000,
+  1_000,
+);
 export const MODELS_STALE_WHILE_REVALIDATE =
   (process.env.MODELS_STALE_WHILE_REVALIDATE ?? "true") !== "false";
 export const MODELS_STALE_MAX_AGE_MS = Math.max(

@@ -38,6 +38,41 @@ export class UsageRefreshCoordinator {
     private readonly refreshUsage: RefreshUsage = refreshUsageIfNeeded,
   ) {}
 
+  /**
+   * Start (or join) a usage probe for one account. Keeping this single-flight
+   * operation in the coordinator lets request-triggered and scheduled probes
+   * share the same upstream call.
+   */
+  async refresh(
+    account: Account,
+    baseUrl: string,
+    force = false,
+  ): Promise<Account> {
+    if (!force && !isUsageRefreshNeeded(account)) return account;
+    return this.start(account, baseUrl, force).active.promise;
+  }
+
+  private start(
+    account: Account,
+    baseUrl: string,
+    force = false,
+  ): { active: InFlightRefresh; shared: boolean } {
+    const key = `${account.id}\u0000${baseUrl}`;
+    let active = this.inFlight.get(key);
+    const shared = Boolean(active);
+    if (!active) {
+      const snapshot = structuredClone(account);
+      const promise = this.refreshUsage(snapshot, baseUrl, force).finally(() => {
+        if (this.inFlight.get(key)?.promise === promise) {
+          this.inFlight.delete(key);
+        }
+      });
+      active = { promise };
+      this.inFlight.set(key, active);
+    }
+    return { active, shared };
+  }
+
   async prepare(
     account: Account,
     baseUrl: string,
@@ -47,19 +82,7 @@ export class UsageRefreshCoordinator {
       return { account, mode: "fresh", shared: false };
     }
 
-    const key = `${account.id}\u0000${baseUrl}`;
-    let active = this.inFlight.get(key);
-    const shared = Boolean(active);
-    if (!active) {
-      const snapshot = structuredClone(account);
-      const promise = this.refreshUsage(snapshot, baseUrl).finally(() => {
-        if (this.inFlight.get(key)?.promise === promise) {
-          this.inFlight.delete(key);
-        }
-      });
-      active = { promise };
-      this.inFlight.set(key, active);
-    }
+    const { active, shared } = this.start(account, baseUrl);
 
     const staleAgeMs = account.usage
       ? Math.max(0, Date.now() - account.usage.fetchedAt)
