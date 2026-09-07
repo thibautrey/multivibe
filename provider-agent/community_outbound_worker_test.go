@@ -20,8 +20,8 @@ import (
 type communityBackendSelectionStub struct{ runtimeID string }
 
 func (backend *communityBackendSelectionStub) CommunityRuntimeID() string { return backend.runtimeID }
-func (backend *communityBackendSelectionStub) CommunityCatalog() providerModelCatalog {
-	return providerModelCatalog{}
+func (backend *communityBackendSelectionStub) CommunityCatalog() []communityModelBinding {
+	return nil
 }
 func (backend *communityBackendSelectionStub) Execute(context.Context, runtimeExecuteRequest) (runtimeExecuteResult, error) {
 	return runtimeExecuteResult{}, nil
@@ -96,9 +96,9 @@ func communityOutboundVerificationWorker(t *testing.T, claim communityOutboundCl
 	enrollment.current = &cloudEnrollmentView{ProviderID: "provider-one"}
 	return &communityOutboundWorker{
 		enrollment: enrollment,
-		catalog: providerModelCatalog{SchemaVersion: providerModelCatalogSchemaVersion, Models: []providerModelCatalogEntry{{
-			CanonicalModelID: "hf:qwen/qwen2.5-0.5b-instruct", OllamaModel: "qwen2.5:0.5b",
-		}}},
+		catalog: []communityModelBinding{{
+			CanonicalModelID: "hf:qwen/qwen2.5-0.5b-instruct", UpstreamModel: "qwen2.5:0.5b",
+		}},
 		trusted: trustedProviderDemandKeys{keyID: key},
 	}
 }
@@ -229,5 +229,24 @@ func TestCommunityOutboundStatusRouteRequiresLocalControlAuthentication(t *testi
 	handler.ServeHTTP(authorized, request)
 	if authorized.Code != http.StatusOK || !strings.Contains(authorized.Body.String(), "community-outbound-worker-status-v1") {
 		t.Fatalf("unexpected authenticated status: %d %s", authorized.Code, authorized.Body.String())
+	}
+}
+
+func TestCommunityBindingsAreRuntimeNeutralAndPinned(t *testing.T) {
+	bindings := []communityModelBinding{{CanonicalModelID: "hf:qwen/qwen2.5-0.5b-instruct", UpstreamModel: "pair-model",
+		ContentDigest: "sha256:" + strings.Repeat("a", 64), RuntimeID: "nvidia-pair"}}
+	if err := validateCommunityBindings("nvidia-pair", bindings); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCommunityBindings("ollama", bindings); err == nil {
+		t.Fatal("runtime mismatch accepted")
+	}
+	worker := &communityOutboundWorker{catalog: bindings}
+	if id, ok := worker.catalogModel("qwen/qwen2.5-0.5b-instruct", "pair-model"); !ok || id != bindings[0].CanonicalModelID {
+		t.Fatal("generic binding rejected")
+	}
+	bindings[0].ContentDigest = ""
+	if err := validateCommunityBindings("nvidia-pair", bindings); err == nil {
+		t.Fatal("unpinned binding accepted")
 	}
 }
