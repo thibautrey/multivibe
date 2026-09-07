@@ -1,0 +1,52 @@
+name: Distribution package validation
+on:
+  pull_request:
+    paths:
+      - 'packaging/**'
+      - 'scripts/distribution/**'
+      - '.github/workflows/distribution-*.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  manifests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - run: node --test scripts/distribution/*.test.mjs
+      - run: ruby -c packaging/homebrew/Casks/multivibe-host.rb
+      - run: bash -n scripts/distribution/publish-dockerhub.sh
+      - run: docker compose -f packaging/casaos/Apps/MultiVibeHost/docker-compose.yml config --quiet
+      - name: Validate TrueNAS custom Compose
+        env:
+          MULTIVIBE_HOST_PUBLIC_URL: http://192.0.2.10:1455
+          MULTIVIBE_DATA_DIR: /tmp/multivibe-test/data
+          MULTIVIBE_MODELS_DIR: /tmp/multivibe-test/models
+          NVIDIA_GPU_UUID: GPU-00000000-0000-0000-0000-000000000000
+        run: docker compose -f packaging/truenas/docker-compose.custom.yml config --quiet
+  windows-wrapper:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Parse PowerShell packaging scripts
+        shell: pwsh
+        run: |
+          Get-ChildItem scripts/distribution/*.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count) { throw ($errors | Out-String) }
+          }
+      - name: Install pinned compiler
+        shell: pwsh
+        run: ./scripts/distribution/install-inno.ps1
+      - name: Exercise silent wrapper install, failure and uninstall
+        shell: pwsh
+        run: ./scripts/distribution/test-windows-wrapper.ps1 -Compiler "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe"

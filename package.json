@@ -5,6 +5,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test:distribution": "node --test scripts/distribution/*.test.mjs",
     "catalog:check": "go -C provider-agent run ./cmd/catalog-check",
     "catalog:refresh": "go -C provider-agent run ./cmd/catalog-check --write",
     "dev": "tsx watch --import ./src/instrument.ts src/server.ts",

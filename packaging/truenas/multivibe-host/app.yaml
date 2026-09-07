@@ -1,0 +1,63 @@
+{
+  "annotations": {
+    "min_scale_version": "24.10.2.2"
+  },
+  "app_version": "0.2.32",
+  "capabilities": [
+    {
+      "name": "CHOWN",
+      "description": "Prepare dedicated storage and drop to UID/GID 10001 at startup"
+    },
+    {
+      "name": "FOWNER",
+      "description": "Prepare dedicated storage and drop to UID/GID 10001 at startup"
+    },
+    {
+      "name": "SETGID",
+      "description": "Prepare dedicated storage and drop to UID/GID 10001 at startup"
+    },
+    {
+      "name": "SETUID",
+      "description": "Prepare dedicated storage and drop to UID/GID 10001 at startup"
+    }
+  ],
+  "categories": [
+    "ai"
+  ],
+  "changelog_url": "https://github.com/thibautrey/multivibe/releases",
+  "date_added": "2026-09-07",
+  "description": "Local AI model Host for x86_64 NVIDIA GPUs (compute capability 7.0+). Sharing and model downloads are opt-in.",
+  "home": "https://github.com/thibautrey/multivibe",
+  "host_mounts": [],
+  "icon": "https://raw.githubusercontent.com/thibautrey/multivibe/main/assets/brand/favicon/favicon-256x256.png",
+  "keywords": [
+    "ai",
+    "llm",
+    "nvidia"
+  ],
+  "lib_version": "2.3.11",
+  "lib_version_hash": "874636814efb275e5276ea9d709b7cd665fed42bb1d50328e853d9253a2e1229",
+  "maintainers": [
+    {
+      "name": "MultiVibe",
+      "url": "https://github.com/thibautrey/multivibe/issues"
+    }
+  ],
+  "name": "multivibe-host",
+  "run_as_context": [
+    {
+      "uid": 0,
+      "gid": 0,
+      "user_name": "root",
+      "group_name": "root",
+      "description": "Entrypoint prepares dedicated mounts, then runs as UID/GID 10001 with no capabilities."
+    }
+  ],
+  "screenshots": [],
+  "sources": [
+    "https://github.com/thibautrey/multivibe"
+  ],
+  "title": "MultiVibe Host",
+  "train": "community",
+  "version": "1.0.0"
+}
