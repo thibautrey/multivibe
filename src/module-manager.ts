@@ -181,6 +181,7 @@ export class ModuleManager {
   constructor(
     private root: string,
     private bundledRoot?: string,
+    private bundledEnabled = true,
   ) {}
 
   private get lockPath() { return path.join(this.root, LOCK_FILE); }
@@ -211,15 +212,23 @@ export class ModuleManager {
       try {
         const manifest = await readModuleManifest(this.bundledRoot);
         this.upsertMarketplace({ id: manifest.id, origin: normalizePublicGitHubUrl(manifest.repository), commit: "bundled", submittedAt: new Date(0).toISOString(), manifest });
-        if (!this.locks.some((entry) => entry.id === manifest.id)) {
+        const bundledLock = this.locks.find((entry) => entry.id === manifest.id);
+        if (!bundledLock) {
           this.locks.push({
             id: manifest.id,
             origin: normalizePublicGitHubUrl(manifest.repository),
             commit: "bundled",
-            enabled: true,
+            enabled: this.bundledEnabled,
             settings: manifest.defaultSettings ?? {},
             source: "bundled",
           });
+          await this.saveLocks();
+        } else if (
+          bundledLock.source === "bundled" &&
+          !this.bundledEnabled &&
+          bundledLock.enabled
+        ) {
+          bundledLock.enabled = false;
           await this.saveLocks();
         }
       } catch (error) {
