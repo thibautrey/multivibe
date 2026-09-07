@@ -1,3 +1,5 @@
+import { createAuthRateLimiter } from "../../auth-rate-limit.js";
+import { trimTrailingSlashes } from "../../string-utils.js";
 import { sdkProviderCatalog } from "../../ai-sdk/catalog.js";
 import { validateSdkAccount } from "../../ai-sdk/providers.js";
 import express from "express";
@@ -145,7 +147,7 @@ function normalizeApplicationName(value: unknown): string | null {
 function normalizeBaseUrl(value: unknown): string | undefined {
   const raw = String(value ?? "").trim();
   if (!raw) return undefined;
-  return raw.replace(/\/+$/, "");
+  return trimTrailingSlashes(raw);
 }
 
 function normalizeUpstreamMode(value: unknown): UpstreamMode | undefined {
@@ -218,11 +220,12 @@ function redact(account: Account) {
 }
 
 function sanitizeAliasId(value: unknown): string {
-  return String(value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+  const normalized = String(value ?? "").trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+  let start = 0;
+  let end = normalized.length;
+  while (start < end && normalized[start] === "-") start++;
+  while (end > start && normalized[end - 1] === "-") end--;
+  return normalized.slice(start, end);
 }
 
 function normalizeAliasTargets(value: unknown): string[] {
@@ -1290,7 +1293,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     });
   }
 
-  router.post("/grok/import", async (_req, res) => {
+  router.post("/grok/import", createAuthRateLimiter({ limit: 5 }), async (_req, res) => {
     try {
       const credentials = await loadXaiAuthFile();
       const existingAccounts = await store.listAccounts();
@@ -2110,7 +2113,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     return Date.now() + (Number(device.expires_in ?? 900) || 900) * 1000;
   }
 
-  router.post("/oauth/start", async (req, res) => {
+  router.post("/oauth/start", createAuthRateLimiter({ limit: 10 }), async (req, res) => {
     const email = String(req.body?.email ?? "").trim();
     const targetAccountId = String(req.body?.accountId ?? "").trim() || undefined;
     const provider =
@@ -2237,7 +2240,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     });
   });
 
-  router.post("/oauth/complete", async (req, res) => {
+  router.post("/oauth/complete", createAuthRateLimiter({ limit: 30 }), async (req, res) => {
     const flowId = String(req.body?.flowId ?? "").trim();
     const input = String(req.body?.input ?? "").trim();
     if (!flowId || !input)
@@ -2275,7 +2278,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
   });
 
-  router.post("/oauth/device/poll", async (req, res) => {
+  router.post("/oauth/device/poll", createAuthRateLimiter({ limit: 60 }), async (req, res) => {
     const flowId = String(req.body?.flowId ?? "").trim();
     if (!flowId) return res.status(400).json({ error: "flowId is required" });
 

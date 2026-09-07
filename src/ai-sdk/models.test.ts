@@ -17,7 +17,7 @@ for (const provider of ["anthropic", "google", "groq"]) test(`uses the real ${pr
       return Response.json({id: "msg_test", type: "message", role: "assistant", model: "claude-sonnet-4-6", content: [{type: "text", text: "Hi"}], stop_reason: "end_turn", stop_sequence: null, usage: {input_tokens: 5, output_tokens: 2}});
     }
     if (provider === "google") {
-      assert.match(url, /^https:\/\/generativelanguage.googleapis.com\/v1beta\/models\/.+:generateContent$/);
+      assert.match(url, /^https:\/\/generativelanguage\.googleapis\.com\/v1beta\/models\/.+:generateContent$/);
       assert.equal(headers.get("x-goog-api-key"), "account-key");
       assert.equal(body.contents[0].parts[0].text, "Hello");
       return Response.json({candidates: [{content: {role: "model", parts: [{text: "Hi"}]}, finishReason: "STOP"}], usageMetadata: {promptTokenCount: 5, candidatesTokenCount: 2, totalTokenCount: 7}});
