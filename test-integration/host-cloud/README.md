@@ -184,3 +184,9 @@ creation-event and entitlement-presence evidence. It never prints secret values 
 comparison hashes and makes no production mutation or inference request.
 
 See [the measured 401 diagnosis and repair boundaries](production-401-diagnosis.md).
+
+The audit also counts the entire service-key population separately from the
+latest-five query. These sequential observations are not an atomic snapshot.
+The alignment gate rejects missing workloads, unexpected replica counts and
+unready pods, as well as unequal peppers or databases. This detects drift; it
+does not prevent independent Secret updates. See [readiness evidence](pepper-sync-readiness.md).

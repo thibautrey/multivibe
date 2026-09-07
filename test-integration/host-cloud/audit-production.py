@@ -75,6 +75,29 @@ def key_state_code() -> str:
             '.catch(()=>{process.exitCode=1}).finally(()=>p.end());')
 
 
+def population_code() -> str:
+    sql = """SELECT count(*)::int AS total_keys,
+      count(*) FILTER(WHERE revoked_at IS NULL AND expires_at>now())::int AS active_keys,
+      count(*) FILTER(WHERE NOT EXISTS(SELECT 1 FROM service_key_management_events e
+        WHERE e.service_key_id=k.id AND e.action='created'))::int AS keys_without_creation_event,
+      min(created_at) AS earliest_creation, max(created_at) AS latest_creation
+      FROM service_keys k"""
+    return ('const {Pool}=require("pg");const p=new Pool({connectionString:process.env.DATABASE_URL,max:1,'
+            'options:"-c default_transaction_read_only=on -c statement_timeout=5000"});'
+            '(async()=>{const r=await p.query(' + json.dumps(sql) + ');console.log(JSON.stringify(r.rows[0]));})()'
+            '.catch(()=>{process.exitCode=1}).finally(()=>p.end());')
+
+
+def drift_gate(report: dict) -> bool:
+    # Agreement alone is insufficient when a workload or replica is missing/unready.
+    return (report.get('allWorkloadsObserved') is True
+            and report.get('allExpectedReplicasObserved') is True
+            and report.get('allPepperValuesAligned') is True
+            and report.get('apiIdentitySameDatabase') is True
+            and bool(report.get('pods'))
+            and all(p.get('ready') is True for p in report['pods']))
+
+
 def collect() -> dict:
     nonce = secrets.token_hex(32)
     report = {'checkedAt': datetime.now(timezone.utc).isoformat(), 'namespace': NAMESPACE,
@@ -85,7 +108,7 @@ def collect() -> dict:
         containers = deployment['spec']['template']['spec']['containers']
         source = annotations.get('multivibe.cloud/cloud-source-sha')
         report['deployments'].append({
-            'name': name, 'revision': annotations.get('deployment.kubernetes.io/revision'),
+            'name': name, 'expectedReplicas': deployment['spec'].get('replicas', 1), 'revision': annotations.get('deployment.kubernetes.io/revision'),
             'sourceCommit': source if source and re.fullmatch('[0-9a-f]{40}', source) else None,
             'images': [c['image'] for c in containers],
             'pepperSecretRefs': [e.get('valueFrom', {}).get('secretKeyRef') for c in containers
@@ -99,10 +122,11 @@ def collect() -> dict:
             continue
         statuses = pod['status'].get('containerStatuses', [])
         report['pods'].append({'name': name, 'ready': bool(statuses) and all(c.get('ready') for c in statuses),
-                               'imageIds': [c.get('imageID') for c in statuses]})
+                               'startedAt': pod['status'].get('startTime'), 'imageIds': [c.get('imageID') for c in statuses]})
         digests[name] = kubectl('exec', name, '--', 'node', '-e', pepper_code(nonce)).strip()
     report['equalPepperGroups'] = comparison_groups(digests)
     report['allWorkloadsObserved'] = all(any(name.startswith(workload + '-') for name in digests) for workload in WORKLOADS)
+    report['allExpectedReplicasObserved'] = all(sum(name.startswith(d['name'] + '-') for name in digests) == d['expectedReplicas'] and d['expectedReplicas'] > 0 for d in report['deployments'])
     report['allPepperValuesAligned'] = len(report['equalPepperGroups']) == 1 and report['allWorkloadsObserved']
     db_values = [digest_value(kubectl('exec', 'deployment/' + name, '--', 'node', '-e', database_code(nonce)).strip())
                  for name in WORKLOADS[:2]]
@@ -111,6 +135,9 @@ def collect() -> dict:
     flags_code = 'console.log(JSON.stringify(Object.fromEntries(["MANAGED_LIVE_INFERENCE_ENABLED","MONETARY_EFFECTS_ENABLED","MARKETPLACE_ROUTING_ENABLED"].map(k=>[k,process.env[k]==="true"]))));'
     report['apiFlags'] = json.loads(kubectl('exec', 'deployment/multivibe-cloud-api', '--', 'node', '-e', flags_code))
     report['recentKeyStates'] = json.loads(kubectl('exec', 'deployment/multivibe-cloud-api', '--', 'node', '-e', key_state_code()))
+    report['keyPopulation'] = json.loads(kubectl('exec', 'deployment/multivibe-cloud-api', '--', 'node', '-e', population_code()))
+    report['recentQueryCoversAllKeys'] = report['keyPopulation']['total_keys'] == len(report['recentKeyStates'])
+    report['driftGatePassed'] = drift_gate(report)
     report['realInferenceAttempted'] = False
     report['rawKeyUsed'] = False
     return report
@@ -127,7 +154,7 @@ def main() -> int:
                           else 'Invalid audit response; raw output withheld'}))
         return 2
     print(json.dumps(report, indent=2))
-    return int(args.require_aligned and not (report['allPepperValuesAligned'] and report['apiIdentitySameDatabase']))
+    return int(args.require_aligned and not report['driftGatePassed'])
 
 
 if __name__ == '__main__':
