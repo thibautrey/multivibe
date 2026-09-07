@@ -17,17 +17,23 @@ import (
 	"time"
 )
 
-type communityBackendSelectionStub struct{ runtimeID string }
+type communityBackendSelectionStub struct {
+	runtimeID  string
+	executions int
+	streams    int
+}
 
 func (backend *communityBackendSelectionStub) CommunityRuntimeID() string { return backend.runtimeID }
 func (backend *communityBackendSelectionStub) CommunityCatalog() []communityModelBinding {
 	return nil
 }
 func (backend *communityBackendSelectionStub) Execute(context.Context, runtimeExecuteRequest) (runtimeExecuteResult, error) {
+	backend.executions++
 	return runtimeExecuteResult{}, nil
 }
-func (backend *communityBackendSelectionStub) ExecuteStream(context.Context, runtimeExecuteRequest, func(runtimeExecuteChunk) error) (runtimeExecutionSummary, error) {
-	return runtimeExecutionSummary{}, nil
+func (backend *communityBackendSelectionStub) ExecuteStream(_ context.Context, _ runtimeExecuteRequest, emit func(runtimeExecuteChunk) error) (runtimeExecutionSummary, error) {
+	backend.streams++
+	return runtimeExecutionSummary{}, emit(runtimeExecuteChunk{Final: true})
 }
 
 func TestCommunityOutboundBackendSelectionIsExactAndFailsClosed(t *testing.T) {
@@ -248,5 +254,27 @@ func TestCommunityBindingsAreRuntimeNeutralAndPinned(t *testing.T) {
 	bindings[0].ContentDigest = ""
 	if err := validateCommunityBindings("nvidia-pair", bindings); err == nil {
 		t.Fatal("unpinned binding accepted")
+	}
+}
+
+func TestCommunitySelectedBackendExecutesBothModesWithoutOllamaFallback(t *testing.T) {
+	ollama := &communityBackendSelectionStub{runtimeID: "ollama"}
+	pair := &communityBackendSelectionStub{runtimeID: "nvidia-pair"}
+	selected, err := communityBackendForRuntime("nvidia-pair", ollama, pair)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := selected.Execute(context.Background(), runtimeExecuteRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	emitted := false
+	if _, err := selected.ExecuteStream(context.Background(), runtimeExecuteRequest{}, func(chunk runtimeExecuteChunk) error {
+		emitted = chunk.Final
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !emitted || pair.executions != 1 || pair.streams != 1 || ollama.executions != 0 || ollama.streams != 0 {
+		t.Fatal("wrong backend executed")
 	}
 }
