@@ -452,6 +452,8 @@ pub struct LocalRuntime {
 pub struct Account {
     pub id: String,
     pub provider: Option<String>,
+    pub sdk_provider: Option<String>,
+    pub sdk_models: Option<Vec<String>>,
     pub upstream_mode: Option<String>,
     pub compatibility_mode: Option<String>,
     pub email: Option<String>,
@@ -930,6 +932,7 @@ fn decompress_zstd(input: &[u8], limit: usize) -> Result<Bytes, String> {
 
 fn normalize_provider(account: &Account) -> String {
     match account.provider.as_deref() {
+        Some("ai-sdk") => "ai-sdk".to_owned(),
         Some("openai-compatible") => "openai-compatible".to_owned(),
         Some("opencode") => "opencode".to_owned(),
         Some("mistral") => "mistral".to_owned(),
@@ -1429,6 +1432,8 @@ fn trim_slashes(value: &str) -> String {
 
 fn account_base_url(account: &Account, config: &EdgeConfig) -> String {
     match normalize_provider(account).as_str() {
+        "ai-sdk" => format!("{}/internal/ai-sdk/{}", trim_slashes(&config.node_control_plane_url),
+            url::form_urlencoded::byte_serialize(account.id.as_bytes()).collect::<String>()),
         "openai-compatible" => account.base_url.clone().unwrap_or_default(),
         "opencode" => account
             .base_url
@@ -1445,6 +1450,7 @@ fn account_base_url(account: &Account, config: &EdgeConfig) -> String {
 }
 
 fn resolve_upstream_mode(account: &Account, chat_route: bool, compact: bool) -> bool {
+    if normalize_provider(account) == "ai-sdk" { return true; }
     if let Some(mode) = account.upstream_mode.as_deref() {
         return mode == "chat/completions";
     }
@@ -1478,7 +1484,7 @@ fn upstream_path(
                 config.zai_upstream_path.clone()
             }
         }
-        "openai-compatible" | "opencode" => {
+        "openai-compatible" | "opencode" | "ai-sdk" => {
             if sends_chat {
                 "/v1/chat/completions".to_owned()
             } else {
@@ -4636,7 +4642,8 @@ fn upstream_headers(
     let mut headers = HeaderMap::new();
     set_header(&mut headers, "content-type", "application/json");
     set_header(&mut headers, "accept", "text/event-stream");
-    let token = account_inference_token(account);
+    let token = if provider == "ai-sdk" { config.internal_job_token.as_deref().unwrap_or("") }
+        else { account_inference_token(account) };
     if !token.is_empty() && !is_local_runtime(account) {
         set_header(&mut headers, "authorization", format!("Bearer {token}"));
     }
@@ -8681,6 +8688,12 @@ fn model_entry_from_upstream(
             metadata.insert("supported_tool_types".to_owned(), json!(types));
         }
     }
+    if provider == "ai-sdk" {
+        for key in ["catalog_source", "catalog_fetched_at", "pricing", "input_modalities"] {
+            if let Some(value) = upstream.get(key) { metadata.insert(key.to_owned(), value.clone()); }
+        }
+        if let Some(value) = upstream.get("owned_by") { metadata.insert("sdk_provider".to_owned(), value.clone()); }
+    }
     if provider == "openai" && upstream.is_object() {
         entry["codexModelInfo"] = upstream.clone();
     }
@@ -8809,6 +8822,8 @@ fn catalog_signature(store: &StoreFile, config: &EdgeConfig) -> String {
             json!({
                 "id": account.id,
                 "provider": account.provider,
+                "sdk_provider": account.sdk_provider,
+                "sdk_models": account.sdk_models,
                 "upstream_mode": account.upstream_mode,
                 "compatibility_mode": account.compatibility_mode,
                 "base_url": account.base_url,
@@ -8837,6 +8852,8 @@ fn account_model_source_signature(account: &Account, config: &EdgeConfig) -> Str
         "id": account.id,
         "provider": account.provider,
         "discovery_url": model_discovery_url(account, config),
+        "sdk_provider": account.sdk_provider,
+        "sdk_models": account.sdk_models,
         "chatgpt_account_id": account.chatgpt_account_id,
         "opencode_headers": account.opencode_headers,
         "opencode_org_id": account.opencode_org_id,
@@ -8897,11 +8914,12 @@ fn model_discovery_url(account: &Account, config: &EdgeConfig) -> String {
     }
 }
 
-fn model_discovery_headers(account: &Account) -> HeaderMap {
+fn model_discovery_headers(account: &Account, config: &EdgeConfig) -> HeaderMap {
     let provider = normalize_provider(account);
     let mut headers = HeaderMap::new();
     set_header(&mut headers, "accept", "application/json");
-    let token = account_inference_token(account);
+    let token = if provider == "ai-sdk" { config.internal_job_token.as_deref().unwrap_or("") }
+        else { account_inference_token(account) };
     if !token.is_empty() && !is_local_runtime(account) {
         set_header(&mut headers, "authorization", format!("Bearer {token}"));
     }
@@ -8984,7 +9002,7 @@ async fn discover_account_models(
         state
             .client
             .get(url)
-            .headers(model_discovery_headers(&account))
+            .headers(model_discovery_headers(&account, &state.config))
             .send(),
     )
     .await
@@ -10552,6 +10570,9 @@ async fn handle_websocket(
 
 async fn fallback_handler(State(state): State<EdgeState>, req: Request<Body>) -> Response {
     let path = req.uri().path().to_owned();
+    if path == "/internal/ai-sdk" || path.starts_with("/internal/ai-sdk/") {
+        return error_response(StatusCode::NOT_FOUND, "Not found", "not_found");
+    }
     if path == "/v1" || path.starts_with("/v1/") {
         let headers = req.headers().clone();
         let store = match state.store.snapshot().await {
@@ -10695,8 +10716,8 @@ pub fn build_router(state: EdgeState) -> Router {
     Router::new()
         // Every inference route, both the canonical `/v1` surface and its
         // historical root aliases, terminates in this native edge. Node
-        // remains a control-plane peer for the dashboard and OAuth, never an
-        // HTTP hop for the public API.
+        // remains a control-plane peer and hosts the internal adapter for SDK
+        // providers; public routing and protocol conversion stay in this edge.
         .route("/models", get(list_models_handler).post(method_not_allowed))
         .route(
             "/models/{id}",
@@ -10774,7 +10795,7 @@ mod tests {
             None,
             &EdgeConfig::default(),
         );
-        let discovery = model_discovery_headers(&account);
+        let discovery = model_discovery_headers(&account, &EdgeConfig::default());
         for headers in [&inference, &discovery] {
             assert_eq!(headers["authorization"], "Bearer refreshed-session");
             assert_eq!(headers["x-org-id"], "org_selected");
@@ -10782,12 +10803,12 @@ mod tests {
         }
         account.opencode_api_key = Some("inference-key".to_owned());
         assert_eq!(
-            model_discovery_headers(&account)["authorization"],
+            model_discovery_headers(&account, &EdgeConfig::default())["authorization"],
             "Bearer inference-key"
         );
         account.opencode_api_key = Some("{env:UNRELATED_SECRET}".to_owned());
         assert!(!account_usable(&account, "test", &HashMap::new()));
-        assert!(!model_discovery_headers(&account).contains_key("authorization"));
+        assert!(!model_discovery_headers(&account, &EdgeConfig::default()).contains_key("authorization"));
     }
 
     use super::*;
@@ -10834,6 +10855,62 @@ mod tests {
         });
         tokio::task::yield_now().await;
         (format!("http://{address}"), task)
+    }
+
+    #[tokio::test]
+    async fn ai_sdk_routes_discovery_and_inference_through_authenticated_adapter() {
+        let adapter = Router::new()
+            .route("/internal/ai-sdk/sdk-account/v1/models", get(|headers: HeaderMap| async move {
+                assert_eq!(headers["authorization"], "Bearer adapter-secret");
+                Json(json!({"data": [{"id": "anthropic/test", "owned_by": "anthropic", "context_window": 200000,
+                    "catalog_source": "https://models.dev/api.json", "pricing": {"input": 3}, "supports_tools": true}]}))
+            }))
+            .route("/internal/ai-sdk/sdk-account/v1/chat/completions", post(|headers: HeaderMap, Json(body): Json<Value>| async move {
+                assert_eq!(headers["authorization"], "Bearer adapter-secret");
+                assert_eq!(body["model"], "anthropic/test");
+                assert!(body["messages"].is_array());
+                if body["stream"] == true {
+                    return ([("content-type", "text/event-stream")],
+                        "data: {\"id\":\"chat-sdk\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chat-sdk\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n").into_response();
+                }
+                Json(json!({"id": "chat-sdk", "object": "chat.completion", "model": "anthropic/test", "created": 1,
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "Hi"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})).into_response()
+            }));
+        let (adapter_url, adapter_task) = start_server(adapter).await;
+        let store_path = temporary_path("sdk-store");
+        let jobs_path = temporary_path("sdk-jobs");
+        let mut sdk = account("sdk-account");
+        sdk.provider = Some("ai-sdk".to_owned());
+        sdk.sdk_provider = Some("anthropic".to_owned());
+        sdk.access_token = "provider-secret-never-sent-to-adapter".to_owned();
+        fs::write(&store_path, serde_json::to_vec(&store_with_accounts(vec![sdk])).unwrap()).await.unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone(); config.jobs_path = jobs_path.clone();
+        config.node_control_plane_url = adapter_url; config.internal_job_token = Some("adapter-secret".to_owned());
+        config.configured_api_keys = vec![("test".to_owned(), "proxy-secret".to_owned())];
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let client = reqwest::Client::new();
+        let catalog: Value = client.get(format!("{edge_url}/v1/models")).bearer_auth("proxy-secret").send().await.unwrap().json().await.unwrap();
+        let model = catalog["data"].as_array().unwrap().iter().find(|model| model["id"] == "anthropic/test").unwrap();
+        assert_eq!(model["metadata"]["provider"], "ai-sdk");
+        assert_eq!(model["metadata"]["sdk_provider"], "anthropic");
+        assert_eq!(model["metadata"]["context_window"], 200000);
+        assert_eq!(model["metadata"]["pricing"]["input"], 3);
+        for (path, payload) in [
+            ("/v1/chat/completions", json!({"model": "anthropic/test", "messages": [{"role": "user", "content": "Hello"}]})),
+            ("/v1/responses", json!({"model": "anthropic/test", "input": "Hello"})),
+            ("/v1/responses", json!({"model": "anthropic/test", "input": "Hello", "stream": true})),
+            ("/v1/messages", json!({"model": "anthropic/test", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50})),
+        ] {
+            let response = client.post(format!("{edge_url}{path}")).bearer_auth("proxy-secret").json(&payload).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert!(response.text().await.unwrap().contains("Hi"), "{path}");
+        }
+        assert_eq!(client.get(format!("{edge_url}/internal/ai-sdk/sdk-account/v1/models")).bearer_auth("adapter-secret").send().await.unwrap().status(), StatusCode::NOT_FOUND);
+        edge_task.abort(); adapter_task.abort();
+        let _ = fs::remove_file(store_path).await; let _ = fs::remove_file(jobs_path).await;
     }
 
     #[test]

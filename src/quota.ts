@@ -27,6 +27,7 @@ const FIVE_HOUR_NEAR_LIMIT_PERCENT = (() => {
 const lastSelectedAccountByProvider = new Map<ProviderId, string>();
 
 export function normalizeProvider(account?: Pick<Account, "provider">): ProviderId {
+  if (account?.provider === "ai-sdk") return "ai-sdk";
   if (account?.provider === "openai-compatible") return "openai-compatible";
   if (account?.provider === "opencode") return "opencode";
   if (account?.provider === "mistral") return "mistral";
@@ -599,6 +600,11 @@ export function isUsageRefreshNeeded(
 export async function refreshUsageIfNeeded(account: Account, chatgptBaseUrl: string, force = false): Promise<Account> {
   if (!force && !isUsageRefreshNeeded(account)) return account;
   const provider = normalizeProvider(account);
+  if (provider === "ai-sdk") {
+    account.usage = { fetchedAt: Date.now(), quotaStatus: "unsupported",
+      quotaMessage: "This provider does not expose subscription quota windows. Request token usage is tracked separately." };
+    return account;
+  }
   const shouldUseZaiQuotaEndpoint =
     provider === "zai" || (provider === "openai-compatible" && isZaiQuotaBaseUrl(chatgptBaseUrl));
 

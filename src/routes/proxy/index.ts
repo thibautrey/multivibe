@@ -1,3 +1,4 @@
+import { sdkAdapterBaseUrl } from "../../ai-sdk/connection.js";
 import { openCodeAccountHeaders, openCodeInferenceToken } from "../../opencode.js";
 import {
   EXCLUDED_PROVIDER_MODELS,
@@ -282,6 +283,11 @@ export type ExposedModel = {
     supported_tool_types: string[];
     is_alias?: boolean;
     alias_targets?: string[];
+    catalog_source?: string;
+    catalog_fetched_at?: string;
+    sdk_provider?: string;
+    pricing?: Record<string, number>;
+    input_modalities?: string[];
   };
 };
 
@@ -556,7 +562,7 @@ function modelObject(
     "maxOutputTokens",
     "max_completion_tokens",
   ]);
-  const toolTypesRaw = upstreamObject.tool_types;
+  const toolTypesRaw = upstreamObject.tool_types ?? upstreamObject.supported_tool_types;
   const supportedToolTypes = Array.isArray(toolTypesRaw)
     ? toolTypesRaw.filter(
         (x): x is string => typeof x === "string" && x.trim().length > 0,
@@ -587,6 +593,13 @@ function modelObject(
       supports_reasoning: supportsReasoning,
       supports_tools: supportsTools,
       supported_tool_types: supportedToolTypes,
+      ...(provider === "ai-sdk" ? {
+        catalog_source: String(upstreamObject.catalog_source ?? ""),
+        catalog_fetched_at: String(upstreamObject.catalog_fetched_at ?? ""),
+        sdk_provider: String(upstreamObject.owned_by ?? ""),
+        pricing: upstreamObject.pricing as Record<string, number> | undefined,
+        input_modalities: upstreamObject.input_modalities as string[] | undefined,
+      } : {}),
     },
   };
 }
@@ -611,12 +624,13 @@ export function shouldForwardDecodedResponseHeader(name: string): boolean {
 }
 
 function accountBaseUrl(
-  account: { provider?: ProviderId; baseUrl?: string | undefined },
+  account: { id: string; provider?: ProviderId; baseUrl?: string | undefined },
   openaiBaseUrl: string,
   mistralBaseUrl: string,
   zaiBaseUrl: string,
 ): string {
   const provider = normalizeProvider(account);
+  if (provider === "ai-sdk") return sdkAdapterBaseUrl(account);
   if (provider === "openai-compatible") {
     return trimTrailingSlash(String(account.baseUrl ?? ""));
   }
@@ -640,8 +654,9 @@ export function resolveUpstreamMode(
   isChatCompletionsPath: boolean,
   isResponsesCompactPath: boolean,
 ): UpstreamMode {
-  if (account.upstreamMode) return account.upstreamMode;
   const provider = normalizeProvider(account);
+  if (provider === "ai-sdk") return "chat/completions";
+  if (account.upstreamMode) return account.upstreamMode;
   if (provider === "zai") return "chat/completions";
   if (isResponsesCompactPath) return "responses";
   if (provider === "openai-compatible") {
@@ -2983,7 +2998,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
               : mistralUpstreamPath;
           } else if (
             candidate.provider === "openai-compatible" ||
-            candidate.provider === "opencode"
+            candidate.provider === "opencode" || candidate.provider === "ai-sdk"
           ) {
             upstreamPath = shouldSendChatCompletions
               ? "/v1/chat/completions"
