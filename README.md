@@ -33,7 +33,7 @@
 
 
 <p align="center">
-  <a href="#-dashboard"><img src="./assets/screenshots/home.png" alt="Current MultiVibe Home dashboard with fictional demo data" width="1100" /></a>
+  <a href="#-dashboard"><img src="./assets/screenshots/home.jpg" alt="Current MultiVibe Home dashboard with fictional demo data" width="1100" /></a>
   <br />
   <sub>Current dashboard · Fictional data from the local demo instance</sub>
 </p>
@@ -339,11 +339,11 @@ Captured from the current UI on September 7, 2026, using the fictional demo data
 
 ### Activity — performance
 
-![Current Activity dashboard with fictional latency measurements](./assets/screenshots/activity.png)
+![Current Activity dashboard with fictional latency measurements](./assets/screenshots/activity.jpg)
 
 ### API workspace
 
-![Current API workspace connected to the local demo API](./assets/screenshots/api-workspace.png)
+![Current API workspace connected to the local demo API](./assets/screenshots/api-workspace.jpg)
 
 </details>
 
