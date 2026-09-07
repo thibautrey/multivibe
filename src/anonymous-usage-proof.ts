@@ -8,7 +8,7 @@ export async function solveAnonymousUsageProof(
   eventId: string,
   cancelled: () => boolean,
   now = new Date(),
-): Promise<{ ticketId: string; nonce: string }> {
+): Promise<{ ticketId: string; nonce: string; challenge: string; expiresAt: string }> {
   const ticket = value as Ticket | null;
   if (!ticket || typeof ticket !== "object" ||
       typeof ticket.ticketId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(ticket.ticketId) ||
@@ -30,7 +30,7 @@ export async function solveAnonymousUsageProof(
     }
     const nonce = counter.toString(16);
     const digest = createHash("sha256").update(prefix + nonce).digest();
-    if (digest.readUInt32BE(0) < 2 ** 14) return { ticketId: ticket.ticketId, nonce };
+    if (digest.readUInt32BE(0) < 2 ** 14) return { ticketId: ticket.ticketId, nonce, challenge: ticket.challenge, expiresAt: ticket.expiresAt };
   }
   throw new Error("anonymous usage admission work limit reached");
 }
