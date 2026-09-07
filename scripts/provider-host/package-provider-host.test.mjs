@@ -143,3 +143,9 @@ test("Windows packaging uses the ZIP64-capable .NET archive writer", async () =>
   assert.match(verifierSource, /-EncodedCommand/u);
   assert.doesNotMatch(source, /Compress-Archive/u);
 });
+
+test("Windows packaging resolves the npm command shim without enabling a shell", async () => {
+  const source = await readFile(packager, "utf8");
+  assert.match(source, /process\.platform === "win32" && program === "npm" \? "npm\.cmd" : program/u);
+  assert.match(source, /shell: false/u);
+});
