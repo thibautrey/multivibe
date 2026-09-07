@@ -1042,25 +1042,28 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             let connected = (200...299).contains(status)
                 && data.flatMap { try? JSONDecoder().decode(CloudEnrollmentResult.self, from: $0) }?.state == "submitted"
+            let providerUnavailable = status == 503
             DispatchQueue.main.async {
                 self.pendingEnrollmentToken = nil
                 self.enrollmentInProgress = false
-                self.showEnrollmentAlert(success: connected, invalidLink: false)
+                self.showEnrollmentAlert(success: connected, invalidLink: false, providerUnavailable: providerUnavailable)
                 self.refreshNow()
             }
         }.resume()
     }
 
-    private func showEnrollmentAlert(success: Bool, invalidLink: Bool) {
+    private func showEnrollmentAlert(success: Bool, invalidLink: Bool, providerUnavailable: Bool = false) {
         NSApplication.shared.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.alertStyle = success ? .informational : .warning
         alert.messageText = success ? "This Mac is connected" : "This Mac could not be connected"
         alert.informativeText = success
-            ? "Its public identity and selected local model were registered securely."
+            ? "Its public identity was registered securely. MultiVibe Cloud will assign compatible models."
             : (invalidLink
                 ? "The MultiVibe connection link is invalid or incomplete. Start again from MultiVibe Cloud."
-                : "Make sure one local model is selected in MultiVibe Host, then try again from MultiVibe Cloud.")
+                : (providerUnavailable
+                    ? "The local worker service is unavailable. Restart MultiVibe Host, then try again from MultiVibe Cloud."
+                    : "MultiVibe Cloud rejected the connection. Start again from MultiVibe Cloud with a new connection link."))
         alert.addButton(withTitle: "OK")
         alert.runModal()
     }

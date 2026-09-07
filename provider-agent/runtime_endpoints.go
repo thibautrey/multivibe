@@ -108,6 +108,33 @@ func normalizeRuntimeEndpoints(endpoints []runtimeEndpoint, registry adapterRegi
 	return values, nil
 }
 
+func migrateAutomaticRuntimeEndpoints(endpoints []runtimeEndpoint, registry adapterRegistryDocument) ([]runtimeEndpoint, bool) {
+	adapters := make(map[string]runtimeAdapter, len(registry.Adapters))
+	for _, adapter := range registry.Adapters {
+		adapters[adapter.ID] = adapter
+	}
+	values := make([]runtimeEndpoint, 0, len(endpoints))
+	migrated := false
+	for _, endpoint := range endpoints {
+		adapter, exists := adapters[endpoint.AdapterID]
+		remove := false
+		if exists && endpoint.BearerToken == "" {
+			for _, candidate := range adapter.Candidates {
+				if endpoint.Endpoint == candidate.Endpoint {
+					remove = true
+					break
+				}
+			}
+		}
+		if remove {
+			migrated = true
+			continue
+		}
+		values = append(values, endpoint)
+	}
+	return values, migrated
+}
+
 func newMemoryRuntimeEndpointStore() *runtimeEndpointStore {
 	return &runtimeEndpointStore{revision: 1, endpoints: []runtimeEndpoint{}}
 }
@@ -134,20 +161,31 @@ func openRuntimeEndpointStore(path string, registry adapterRegistryDocument) (*r
 	if err != nil {
 		return nil, errors.New("provider runtime state cannot be opened")
 	}
-	defer file.Close()
 	var document runtimeEndpointsStateDocument
 	decoder := json.NewDecoder(io.LimitReader(file, 64*1024+1))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&document); err != nil || ensureJSONEOF(decoder) != nil ||
 		document.SchemaVersion != runtimeEndpointsSchemaVersion || document.Revision < 1 {
+		_ = file.Close()
 		return nil, errors.New("provider runtime state is invalid")
 	}
+	if err := file.Close(); err != nil {
+		return nil, errors.New("provider runtime state cannot be closed")
+	}
+	var migrated bool
+	document.Endpoints, migrated = migrateAutomaticRuntimeEndpoints(document.Endpoints, registry)
 	values, err := normalizeRuntimeEndpoints(document.Endpoints, registry)
 	if err != nil {
 		return nil, errors.New("provider runtime state is invalid")
 	}
 	store.revision = document.Revision
 	store.endpoints = values
+	if migrated {
+		store.revision++
+		if err := store.persistLocked(); err != nil {
+			return nil, err
+		}
+	}
 	return store, nil
 }
 
