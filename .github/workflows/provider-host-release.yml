@@ -567,6 +567,15 @@ jobs:
         with:
           name: provider-host-container-release
           path: container-release
+      - name: Generate versioned distribution packages
+        if: ${{ !contains(needs.validate-tag.outputs.version, '-') }}
+        run: |
+          node scripts/distribution/generate.mjs container-release/container-release.json release/SHA256SUMS distribution-packages
+          cp -R packaging/truenas/multivibe-host/templates distribution-packages/truenas/multivibe-host/
+          cp packaging/truenas/multivibe-host/questions.yaml packaging/truenas/multivibe-host/app_migrations.yaml distribution-packages/truenas/multivibe-host/
+          if [ -f "release/multivibe-host_${{ needs.validate-tag.outputs.version }}_windows_amd64_setup.exe" ]; then
+            node scripts/distribution/winget.mjs '${{ needs.validate-tag.outputs.version }}' 'release/multivibe-host_${{ needs.validate-tag.outputs.version }}_windows_amd64_setup.exe' distribution-packages/winget
+          fi
       - name: Publish the immutable GitHub release
         shell: bash
         env:
@@ -608,15 +617,6 @@ jobs:
             --title "MultiVibe Host ${{ needs.validate-tag.outputs.version }}" \
             --notes "$container_notes" \
             --generate-notes
-      - name: Generate versioned distribution packages
-        if: ${{ !contains(needs.validate-tag.outputs.version, '-') }}
-        run: |
-          node scripts/distribution/generate.mjs container-release/container-release.json release/SHA256SUMS distribution-packages
-          cp -R packaging/truenas/multivibe-host/templates distribution-packages/truenas/multivibe-host/
-          cp packaging/truenas/multivibe-host/questions.yaml packaging/truenas/multivibe-host/app_migrations.yaml distribution-packages/truenas/multivibe-host/
-          if [ -f "release/multivibe-host_${{ needs.validate-tag.outputs.version }}_windows_amd64_setup.exe" ]; then
-            node scripts/distribution/winget.mjs '${{ needs.validate-tag.outputs.version }}' 'release/multivibe-host_${{ needs.validate-tag.outputs.version }}_windows_amd64_setup.exe' distribution-packages/winget
-          fi
       - name: Upload catalog submission files
         if: ${{ !contains(needs.validate-tag.outputs.version, '-') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
