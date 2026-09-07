@@ -63,7 +63,9 @@ Compatibility: deployments using remote cleartext `NODE_CONTROL_PLANE_URL` must 
 
 - Worktree: source/diff review, `git diff --check`, and Node's dependency-free TypeScript syntax checks for the new utility and middleware passed. No dependencies were installed in the worktree.
 - Main: `npm run build:api` passed. Targeted TypeScript tests passed (47 tests), covering auth budgets, string normalization, harness integration including quoted TOML keys, real SDK codecs, OAuth, OpenCode/quota behavior, and account redaction.
-- Rust and Go validation: results recorded below after completion.
+- Main: `cargo test --locked -p multivibe-v1-edge` passed all 66 tests, including credential transport, persistence URL policy, refresh single-flight/persistence, and realtime token-refresh integration. Rust 1.98.1; separate writable target cache as described below.
+- Main: `go test ./... -run 'Test(Extract|CleanArchive|SafeWindows|ArchivePath)' -count=1` in `host/updater` passed. `go test ./... -run 'Test.*(Ollama.*(Zip|Archive|Path)|ExtractManaged)' -count=1` in `provider-agent` passed. These exercise existing archive/path defenses; packages without matching tests were not counted as coverage. Go 1.27.1.
+- Full JavaScript and Go suites were not run; validation was scoped to the changed behavior and the reported archive alerts. Hosted CodeQL was not rerun.
 
 The initial Rust command could not open the pre-existing `target/debug/.cargo-build-lock` (permission denied). Main-branch Rust validation uses `CARGO_TARGET_DIR=/home/codex/.cache/multivibe-security-target` instead. Missing Rust/Go toolchains were installed outside the checkout; no lockfiles or generated dependency artifacts were changed.
 
