@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { archiveBundle, commandInvocation } from "./package-provider-host.mjs";
+import { archiveBundle, commandInvocation, validateOllamaWindowsFiles } from "./package-provider-host.mjs";
 
 const packager = fileURLToPath(new URL("./package-provider-host.mjs", import.meta.url));
 const verifier = fileURLToPath(new URL("./verify-provider-host.mjs", import.meta.url));
@@ -192,4 +192,17 @@ test("packaging runs web and API builds in separate npm processes", async () => 
   const source = await readFile(packager, "utf8");
   assert.match(source, /await command\("npm", \["run", "build:web"\]\);\s+await command\("npm", \["run", "build:api"\]\);/u);
   assert.doesNotMatch(source, /await command\("npm", \["run", "build"\]\);/u);
+});
+
+
+test("the checksum-verified Ollama Windows inventory is accepted", async () => {
+  const fixture = JSON.parse(await readFile(new URL("./ollama-windows-inventory.fixture.json", import.meta.url), "utf8"));
+  const dependencies = JSON.parse(await readFile(new URL("../../packaging/provider-host-dependencies.json", import.meta.url), "utf8"));
+  assert.equal(fixture.sha256, dependencies.ollama.artifacts["windows-amd64"].sha256);
+  assert.equal(fixture.url, dependencies.ollama.artifacts["windows-amd64"].url);
+  validateOllamaWindowsFiles(fixture.files);
+  for (const unexpected of ["lib/ollama/other++.dll", "lib/ollama/cuda_v12/libc++.dll", "lib/ollama/start.ps1", "lib/ollama/../evil.dll"]) {
+    assert.throws(() => validateOllamaWindowsFiles([...fixture.files, unexpected]), /unexpected runtime file/);
+  }
+  assert.throws(() => validateOllamaWindowsFiles(fixture.files.filter(file => file !== "lib/ollama/llama-server.exe")), /missing a required runtime executable/);
 });
