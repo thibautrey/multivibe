@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,7 +16,11 @@ func TestWorkerTestCancelsInferenceBeforeClaimExpiry(t *testing.T) {
 			_, _ = w.Write([]byte(`{"data":[{"id":"registered/model"}]}`))
 			return
 		}
-		<-r.Context().Done()
+		_, _ = io.Copy(io.Discard, r.Body)
+		select {
+		case <-r.Context().Done():
+		case <-time.After(4 * time.Second):
+		}
 		close(cancelled)
 	}))
 	defer server.Close()
