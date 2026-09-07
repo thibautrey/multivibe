@@ -47,7 +47,7 @@ export function WidgetGrid({ storageKey, label, children }: Props) {
             <button type="button" className="btn btn-secondary" onClick={() => setDraft(normalizeWidgets(definitions, null))}>Reset layout</button>
             <button type="button" className="btn btn-secondary" onClick={finish}>Cancel</button>
             <button type="button" className="btn" onClick={save}>Done</button>
-          </> : <button ref={editButton} type="button" className="btn btn-secondary widget-customize" onClick={() => { setDraft(layout); setMessage(""); }}><span aria-hidden="true">▦</span> Customize widgets</button>}
+          </> : <button ref={editButton} type="button" className="btn widget-customize" onClick={() => { setDraft(layout); setMessage(""); }}><span aria-hidden="true">▦</span> Customize widgets</button>}
         </div>
       </div>
       <div className="widget-grid">
