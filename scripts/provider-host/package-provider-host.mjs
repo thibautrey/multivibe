@@ -95,9 +95,15 @@ async function runWindowsPowerShell(script, variables) {
   ], { env: environment });
 }
 
+function commandProgram(program) {
+  // Windows command shims such as npm are .cmd files. Node's spawn does not
+  // resolve those shims when shell is disabled, which is required here.
+  return process.platform === "win32" && program === "npm" ? "npm.cmd" : program;
+}
+
 async function command(program, args, options = {}) {
   return await new Promise((resolve, reject) => {
-    const child = spawn(program, args, {
+    const child = spawn(commandProgram(program), args, {
       cwd: options.cwd ?? repositoryRoot,
       env: options.env ?? process.env,
       stdio: options.capture ? ["ignore", "pipe", "inherit"] : "inherit",
