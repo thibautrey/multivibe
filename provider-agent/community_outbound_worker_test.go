@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -15,6 +16,34 @@ import (
 	"testing"
 	"time"
 )
+
+type communityBackendSelectionStub struct{ runtimeID string }
+
+func (backend *communityBackendSelectionStub) CommunityRuntimeID() string { return backend.runtimeID }
+func (backend *communityBackendSelectionStub) CommunityCatalog() providerModelCatalog {
+	return providerModelCatalog{}
+}
+func (backend *communityBackendSelectionStub) Execute(context.Context, runtimeExecuteRequest) (runtimeExecuteResult, error) {
+	return runtimeExecuteResult{}, nil
+}
+func (backend *communityBackendSelectionStub) ExecuteStream(context.Context, runtimeExecuteRequest, func(runtimeExecuteChunk) error) (runtimeExecutionSummary, error) {
+	return runtimeExecutionSummary{}, nil
+}
+
+func TestCommunityOutboundBackendSelectionIsExactAndFailsClosed(t *testing.T) {
+	ollama := &communityBackendSelectionStub{runtimeID: "ollama"}
+	pair := &communityBackendSelectionStub{runtimeID: "nvidia-pair"}
+	selected, err := communityBackendForRuntime("ollama", pair, ollama)
+	if err != nil || selected != ollama {
+		t.Fatalf("exact runtime backend was not selected: selected=%T err=%v", selected, err)
+	}
+	if _, err := communityBackendForRuntime("vllm", ollama, pair); err == nil {
+		t.Fatal("unknown runtime silently selected a backend")
+	}
+	if _, err := communityBackendForRuntime("ollama", ollama, &communityBackendSelectionStub{runtimeID: "ollama"}); err == nil {
+		t.Fatal("ambiguous runtime backend registration was accepted")
+	}
+}
 
 func signedCommunityOutboundClaim(t *testing.T, now time.Time) (communityOutboundClaim, ed25519.PublicKey) {
 	t.Helper()

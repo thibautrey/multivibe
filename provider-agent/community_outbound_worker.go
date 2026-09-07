@@ -176,12 +176,45 @@ type communityOutboundWorker struct {
 	sessions   *communityOutboundSessionStore
 	enrollment *cloudEnrollmentStore
 	policy     *capacityPolicyStore
-	backend    *ollamaRuntimeBackend
+	backend    communityOutboundExecutionBackend
 	catalog    providerModelCatalog
 	trusted    trustedProviderDemandKeys
 	replay     *communityOutboundReplayStore
 	now        func() time.Time
 	stats      *communityOutboundWorkerStats
+}
+
+// communityOutboundExecutionBackend is intentionally narrower than the full
+// managed lifecycle contract. A discovered OpenAI-compatible endpoint does not
+// qualify: a backend must be compiled, identify the signed demand runtime, and
+// provide the reviewed canonical-model mapping and bounded execution methods.
+type communityOutboundExecutionBackend interface {
+	CommunityRuntimeID() string
+	CommunityCatalog() providerModelCatalog
+	Execute(context.Context, runtimeExecuteRequest) (runtimeExecuteResult, error)
+	ExecuteStream(context.Context, runtimeExecuteRequest, func(runtimeExecuteChunk) error) (runtimeExecutionSummary, error)
+}
+
+func communityBackendForRuntime(runtimeID string, backends ...communityOutboundExecutionBackend) (communityOutboundExecutionBackend, error) {
+	if runtimeID == "" || len(backends) < 1 || len(backends) > 32 {
+		return nil, errors.New("community outbound runtime backend is unavailable")
+	}
+	var selected communityOutboundExecutionBackend
+	for _, backend := range backends {
+		if backend == nil || backend.CommunityRuntimeID() == "" {
+			return nil, errors.New("community outbound runtime backend is invalid")
+		}
+		if backend.CommunityRuntimeID() == runtimeID {
+			if selected != nil {
+				return nil, errors.New("community outbound runtime backend is ambiguous")
+			}
+			selected = backend
+		}
+	}
+	if selected == nil {
+		return nil, errors.New("community outbound runtime backend is unavailable")
+	}
+	return selected, nil
 }
 
 type communityOutboundWorkerStatus struct {
@@ -224,12 +257,17 @@ func newCommunityOutboundWorker(
 	sessions *communityOutboundSessionStore,
 	enrollment *cloudEnrollmentStore,
 	policy *capacityPolicyStore,
-	backend *ollamaRuntimeBackend,
+	backend communityOutboundExecutionBackend,
 	trusted trustedProviderDemandKeys,
 	replay *communityOutboundReplayStore,
 ) (*communityOutboundWorker, error) {
-	if baseURL == nil || sessions == nil || enrollment == nil || policy == nil || backend == nil || replay == nil || len(trusted) < 1 {
+	if baseURL == nil || sessions == nil || enrollment == nil || policy == nil || backend == nil || replay == nil || len(trusted) < 1 ||
+		backend.CommunityRuntimeID() != providerDemandRuntime {
 		return nil, errors.New("community outbound worker configuration is incomplete")
+	}
+	catalog := backend.CommunityCatalog()
+	if validateProviderModelCatalog(&catalog) != nil {
+		return nil, errors.New("community outbound worker backend catalog is invalid")
 	}
 	cloud := *client
 	cloud.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
@@ -240,7 +278,7 @@ func newCommunityOutboundWorker(
 	}
 	return &communityOutboundWorker{
 		baseURL: baseURL, cloud: &cloud, sessions: sessions, enrollment: enrollment, policy: policy,
-		backend: backend, catalog: cloneRuntimeBackendCatalog(backend.catalog), trusted: keys, replay: replay, now: time.Now,
+		backend: backend, catalog: cloneRuntimeBackendCatalog(catalog), trusted: keys, replay: replay, now: time.Now,
 		stats: newCommunityOutboundWorkerStats(),
 	}, nil
 }

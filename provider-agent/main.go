@@ -855,13 +855,18 @@ func main() {
 		)
 		go modelLifecycle.run(context.Background())
 		if managedBackend != nil && demand != nil {
+			outboundBackend, selectionErr := communityBackendForRuntime(providerDemandRuntime, managedBackend)
+			if selectionErr != nil {
+				logger.Error("provider_agent_configuration_invalid", "error", selectionErr.Error())
+				os.Exit(2)
+			}
 			replay, replayErr := openCommunityOutboundReplayStore(filepath.Join(managedRoot, "state", "community-outbound-replay.json"))
 			if replayErr != nil {
 				logger.Error("provider_agent_configuration_invalid", "error", replayErr.Error())
 				os.Exit(2)
 			}
 			outboundWorker, err = newCommunityOutboundWorker(
-				cloudURL, client, modelLifecycle.relay, enrollmentStore, capacity, managedBackend, trustedDemandKeys, replay,
+				cloudURL, client, modelLifecycle.relay, enrollmentStore, capacity, outboundBackend, trustedDemandKeys, replay,
 			)
 			if err != nil {
 				logger.Error("provider_agent_configuration_invalid", "error", err.Error())
