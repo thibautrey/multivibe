@@ -1,3 +1,4 @@
+import { sdkAdapterBaseUrl, SDK_INTERNAL_TOKEN } from "./ai-sdk/connection.js";
 import { openCodeInferenceToken } from "./opencode.js";
 import type {
   Account,
@@ -447,6 +448,12 @@ export function authorizationForAccountRequest(
   account: Account,
   requestUrl: string,
 ): string | undefined {
+  if (account.provider === "ai-sdk") {
+    if (!requestUrl.startsWith(`${sdkAdapterBaseUrl(account)}/v1/`)) {
+      throw new Error("SDK adapter request is outside its account boundary");
+    }
+    return `Bearer ${SDK_INTERNAL_TOKEN}`;
+  }
   const token = account.provider === "opencode"
     ? openCodeInferenceToken(account)
     : account.accessToken;

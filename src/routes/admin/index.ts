@@ -1,3 +1,5 @@
+import { sdkProviderCatalog } from "../../ai-sdk/catalog.js";
+import { validateSdkAccount } from "../../ai-sdk/providers.js";
 import express from "express";
 import { randomBytes, randomUUID } from "node:crypto";
 import { AccountStore, OAuthStateStore } from "../../store.js";
@@ -959,6 +961,8 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
   });
 
+  router.get("/provider-catalog", (_req, res) => res.json(sdkProviderCatalog()));
+
   router.get("/accounts", async (_req, res) =>
     res.json({ accounts: (await store.listAccounts()).filter((account) => !account.multivibeCloud).map(redact) }),
   );
@@ -1813,6 +1817,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     if (!body.accessToken)
       return res.status(400).json({ error: "accessToken required" });
     const provider =
+      body.provider === "ai-sdk" ? "ai-sdk" :
       body.provider === "mistral"
         ? "mistral"
         : body.provider === "zai"
@@ -1824,6 +1829,11 @@ export function createAdminRouter(options: AdminRoutesOptions) {
           : body.provider === "openai-compatible"
             ? "openai-compatible"
             : "openai";
+    if (provider === "ai-sdk") {
+      try { validateSdkAccount(body); } catch (error: any) {
+        return res.status(400).json({ error: error.message });
+      }
+    }
     const baseUrl = normalizeBaseUrl(body.baseUrl);
     const upstreamMode = normalizeUpstreamMode(body.upstreamMode);
     const compatibilityMode = normalizeCompatibilityMode(
@@ -1841,7 +1851,9 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     const account: Account = {
       id: body.id ?? randomUUID(),
       provider,
-      upstreamMode,
+      sdkProvider: provider === "ai-sdk" ? body.sdkProvider : undefined,
+      sdkModels: provider === "ai-sdk" ? body.sdkModels : undefined,
+      upstreamMode: provider === "ai-sdk" ? "chat/completions" : upstreamMode,
       compatibilityMode,
       email: body.email,
       accessToken: body.accessToken,
@@ -1906,6 +1918,10 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     const existing = (await store.listAccounts()).find((a) => a.id === req.params.id);
     if (!existing) return res.status(404).json({ error: "not found" });
     const next = { ...existing, ...body };
+    if (next.provider === "ai-sdk") {
+      try { validateSdkAccount(next); } catch (error: any) { return res.status(400).json({ error: error.message }); }
+      body.upstreamMode = "chat/completions";
+    }
     if (normalizeProvider(next) === "openai-compatible" && !next.baseUrl) {
       return res.status(400).json({ error: "baseUrl required for openai-compatible accounts" });
     }

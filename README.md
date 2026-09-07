@@ -382,6 +382,19 @@ Keep this localhost callback for the copy-and-paste flow even when MultiVibe is
 remote, or use device OAuth. A different `OAUTH_REDIRECT_URI` also requires an
 `OAUTH_CLIENT_ID` whose provider registration includes that exact URI.
 
+### Additional cloud providers
+
+Choose **More cloud providers** to connect Anthropic, Google Gemini, OpenRouter,
+DeepSeek, Groq, Together AI, Cerebras, or Perplexity with an API key. These use AI
+SDK adapters and a bundled models.dev catalog. Models appear as
+`provider/model-id`, and you can optionally enter specific model IDs during setup.
+
+The native Rust edge keeps public routing and uses an authenticated internal Node
+adapter for these providers. Existing provider integrations keep their current
+paths. Model metadata does not imply account entitlement or subscription quotas.
+See [AI SDK provider integration](docs/ai-sdk-providers.md) for architecture,
+supported features, and catalog refresh instructions.
+
 ### OpenCode
 
 Choose **OpenCode Zen / Go** to enter an API key, or use **Connect OpenCode
