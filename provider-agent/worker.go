@@ -22,6 +22,7 @@ const (
 	workerTestMaxOutputBytes = 64 * 1024
 	workerTestPrompt         = "Reply with exactly MULTIVIBE_WORKER_OK."
 	workerTestExpectedOutput = "MULTIVIBE_WORKER_OK"
+	managedWorkerAdapterID   = "ollama"
 )
 
 var providerWorkerSessionToken = regexp.MustCompile(`^mwt_[A-Za-z0-9_-]{43}$`)
@@ -79,10 +80,11 @@ type workerTestService struct {
 	identity   *deviceIdentity
 	enrollment *cloudEnrollmentStore
 	runtimes   *runtimeEndpointStore
+	managed    *runtimeEndpoint
 	now        func() time.Time
 }
 
-func newWorkerTestService(baseURL *url.URL, client *http.Client, identity *deviceIdentity, enrollment *cloudEnrollmentStore, runtimes *runtimeEndpointStore) *workerTestService {
+func newWorkerTestService(baseURL *url.URL, client *http.Client, identity *deviceIdentity, enrollment *cloudEnrollmentStore, runtimes *runtimeEndpointStore, managed *runtimeEndpoint) *workerTestService {
 	cloud := *client
 	cloud.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	if cloud.Timeout <= 0 || cloud.Timeout > 10*time.Second {
@@ -91,7 +93,7 @@ func newWorkerTestService(baseURL *url.URL, client *http.Client, identity *devic
 	runtime := *client
 	runtime.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	runtime.Timeout = 2 * time.Minute
-	return &workerTestService{baseURL: baseURL, cloud: &cloud, runtime: &runtime, identity: identity, enrollment: enrollment, runtimes: runtimes, now: time.Now}
+	return &workerTestService{baseURL: baseURL, cloud: &cloud, runtime: &runtime, identity: identity, enrollment: enrollment, runtimes: runtimes, managed: managed, now: time.Now}
 }
 
 func workerTestPayloadMap(payload workerTestSessionPayload) map[string]any {
@@ -291,53 +293,30 @@ func (service *workerTestService) runtimeEndpoint(ctx context.Context, family, m
 }
 
 func (service *workerTestService) cloudManagedRuntime(ctx context.Context, model string) (runtimeEndpoint, string, error) {
-	if service.runtime == nil {
+	if service.runtime == nil || service.managed == nil || service.managed.AdapterID != managedWorkerAdapterID {
 		return runtimeEndpoint{}, "", errors.New("worker test runtime is unavailable")
 	}
-	registry := runtimeAdapterRegistry()
-	adapters := make(map[string]runtimeAdapter, len(registry.Adapters))
-	for _, adapter := range registry.Adapters {
-		adapters[adapter.ID] = adapter
-	}
-	choose := func(endpoint runtimeEndpoint, adapter runtimeAdapter, candidates []adapterCandidate) (runtimeEndpoint, string, error) {
-		for _, candidate := range candidates {
-			candidate.Endpoint = endpoint.Endpoint
-			candidate.HealthURL = endpoint.Endpoint + adapter.HealthPath
-			candidate.CatalogURL = endpoint.Endpoint + adapter.CatalogPath
-			models, err := probeRuntimeCatalogAuthenticated(ctx, adapter, candidate, endpoint.BearerToken, service.runtime)
-			if err != nil {
-				continue
-			}
-			for _, detected := range models {
-				if model == providerCloudAssignedModel || detected == model {
-					return endpoint, detected, nil
-				}
-			}
+	var adapter runtimeAdapter
+	for _, candidate := range runtimeAdapterRegistry().Adapters {
+		if candidate.ID == managedWorkerAdapterID {
+			adapter = candidate
+			break
 		}
+	}
+	if adapter.ID == "" {
 		return runtimeEndpoint{}, "", errors.New("worker test runtime is unavailable")
 	}
-	if service.runtimes != nil {
-		for _, endpoint := range service.runtimes.configured() {
-			adapter, exists := adapters[endpoint.AdapterID]
-			if !exists {
-				continue
-			}
-			resolved, detected, err := choose(endpoint, adapter, []adapterCandidate{{Endpoint: endpoint.Endpoint}})
-			if err == nil {
-				return resolved, detected, nil
-			}
-		}
+	candidate := adapterCandidate{
+		Endpoint: service.managed.Endpoint, HealthURL: service.managed.Endpoint + adapter.HealthPath,
+		CatalogURL: service.managed.Endpoint + adapter.CatalogPath,
 	}
-	for _, adapter := range registry.Adapters {
-		if len(adapter.Candidates) == 0 {
-			continue
-		}
-		for _, candidate := range adapter.Candidates {
-			endpoint := runtimeEndpoint{AdapterID: adapter.ID, Endpoint: candidate.Endpoint}
-			resolved, detected, err := choose(endpoint, adapter, []adapterCandidate{candidate})
-			if err == nil {
-				return resolved, detected, nil
-			}
+	models, err := probeManagedRuntimeCatalog(ctx, adapter, candidate, service.runtime)
+	if err != nil {
+		return runtimeEndpoint{}, "", errors.New("worker test runtime is unavailable")
+	}
+	for _, detected := range models {
+		if model == providerCloudAssignedModel || detected == model {
+			return *service.managed, detected, nil
 		}
 	}
 	return runtimeEndpoint{}, "", errors.New("worker test runtime is unavailable")

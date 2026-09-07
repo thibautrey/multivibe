@@ -855,7 +855,11 @@ func main() {
 	var outboundWorker *communityOutboundWorker
 	if identity != nil {
 		enrollment = newCloudEnrollmentService(cloudURL, client, identity, enrollmentStore)
-		workerTest = newWorkerTestService(cloudURL, client, identity, enrollmentStore, runtimes)
+		var managedWorkerRuntime *runtimeEndpoint
+		if managedBackend != nil {
+			managedWorkerRuntime = &runtimeEndpoint{AdapterID: managedWorkerAdapterID, Endpoint: managedBackend.endpoint}
+		}
+		workerTest = newWorkerTestService(cloudURL, client, identity, enrollmentStore, runtimes, managedWorkerRuntime)
 		go workerTest.run(context.Background())
 		modelLifecycle = newProviderModelLifecycleService(
 			cloudURL, client, identity, enrollmentStore, runtimes, capacity, demand, controller,

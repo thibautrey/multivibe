@@ -129,7 +129,8 @@ func TestWorkerTestUsesCloudManagedModelFromLoopbackRuntime(t *testing.T) {
 	if _, conflict, err := runtimes.replace(1, []runtimeEndpoint{{AdapterID: "manual-openai-compatible", Endpoint: runtimeServer.URL}}, runtimeAdapterRegistry()); err != nil || conflict {
 		t.Fatalf("runtime setup failed: conflict=%v err=%v", conflict, err)
 	}
-	service := newWorkerTestService(cloudURL, http.DefaultClient, identity, store, runtimes)
+	managed := &runtimeEndpoint{AdapterID: managedWorkerAdapterID, Endpoint: runtimeServer.URL}
+	service := newWorkerTestService(cloudURL, http.DefaultClient, identity, store, runtimes, managed)
 	service.now = func() time.Time { return now }
 	session, err := service.openSession(context.Background(), *store.snapshot())
 	if err != nil {
@@ -173,13 +174,36 @@ func TestWorkerTestRequiresTheExactSyntheticResponse(t *testing.T) {
 			if _, conflict, err := runtimes.replace(1, []runtimeEndpoint{{AdapterID: "manual-openai-compatible", Endpoint: runtimeServer.URL}}, runtimeAdapterRegistry()); err != nil || conflict {
 				t.Fatalf("runtime setup failed: conflict=%v err=%v", conflict, err)
 			}
-			service := newWorkerTestService(nil, http.DefaultClient, nil, nil, runtimes)
+			service := newWorkerTestService(nil, http.DefaultClient, nil, nil, runtimes, nil)
 			claim := workerTestClaim{Model: "registered/model", Prompt: "Reply with exactly MULTIVIBE_WORKER_OK.", TestOnly: true, ExpiresAt: time.Now().UTC().Add(time.Minute).Format("2006-01-02T15:04:05.000Z")}
 			enrollment := cloudEnrollmentView{RuntimeFamily: "manual-openai-compatible"}
 			if _, _, _, err := service.infer(context.Background(), enrollment, claim); err == nil {
 				t.Fatal("non-exact synthetic response was accepted")
 			}
 		})
+	}
+}
+
+func TestCloudManagedWorkerNeverFallsBackToLocalRuntime(t *testing.T) {
+	runtimeCalled := false
+	runtimeServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		runtimeCalled = true
+		response.Header().Set("content-type", "application/json")
+		_, _ = response.Write([]byte(`{"data":[{"id":"local/model"}]}`))
+	}))
+	defer runtimeServer.Close()
+	runtimes := newMemoryRuntimeEndpointStore()
+	if _, conflict, err := runtimes.replace(1, []runtimeEndpoint{{
+		AdapterID: "manual-openai-compatible", Endpoint: runtimeServer.URL,
+	}}, runtimeAdapterRegistry()); err != nil || conflict {
+		t.Fatalf("local runtime setup failed: conflict=%v err=%v", conflict, err)
+	}
+	service := newWorkerTestService(nil, http.DefaultClient, nil, nil, runtimes, nil)
+	if _, _, err := service.cloudManagedRuntime(context.Background(), providerCloudAssignedModel); err == nil {
+		t.Fatal("Cloud-managed execution accepted a local runtime without a managed backend")
+	}
+	if runtimeCalled {
+		t.Fatal("Cloud-managed execution probed a local-only runtime")
 	}
 }
 
@@ -216,7 +240,7 @@ func TestWorkerTestRejectsUnregisteredModelBeforeRuntimeCall(t *testing.T) {
 		t.Fatalf("runtime setup failed: conflict=%v err=%v", conflict, err)
 	}
 	cloudURL, _ := cloudAPIURL(server.URL)
-	service := newWorkerTestService(cloudURL, http.DefaultClient, nil, store, runtimes)
+	service := newWorkerTestService(cloudURL, http.DefaultClient, nil, store, runtimes, nil)
 	service.now = func() time.Time { return now }
 	if _, err := service.poll(context.Background(), "mwt_"+strings.Repeat("a", 43)); err == nil {
 		t.Fatal("an unregistered model must be rejected")
