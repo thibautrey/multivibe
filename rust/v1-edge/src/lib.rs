@@ -7161,6 +7161,11 @@ impl JobManager {
         self.persistence_uncertain.load(AtomicOrdering::SeqCst)
     }
 
+    fn notify_changed(&self) {
+        self.changed.notify_waiters();
+        self.changed.notify_one();
+    }
+
     async fn create(
         &self,
         application: &str,
@@ -7302,14 +7307,28 @@ impl JobManager {
         &self,
         application_weights: &HashMap<String, f64>,
     ) -> Result<Option<Job>, String> {
-        self.acquire_next_at(application_weights, now_ms()).await
+        self.acquire_next_with_clock(application_weights, now_ms)
+            .await
     }
 
+    #[cfg(test)]
     async fn acquire_next_at(
         &self,
         application_weights: &HashMap<String, f64>,
         now: u64,
     ) -> Result<Option<Job>, String> {
+        self.acquire_next_with_clock(application_weights, || now)
+            .await
+    }
+
+    async fn acquire_next_with_clock<F>(
+        &self,
+        application_weights: &HashMap<String, f64>,
+        clock: F,
+    ) -> Result<Option<Job>, String>
+    where
+        F: FnOnce() -> u64,
+    {
         let persist_guard = self.persist_lock.clone().lock_owned().await;
         if self.persistence_uncertain.load(AtomicOrdering::SeqCst) {
             return Err(
@@ -7317,6 +7336,7 @@ impl JobManager {
             );
         }
         let state_guard = self.state.clone().lock_owned().await;
+        let now = clock();
         let mut proposed = state_guard.clone();
         let mut terminal = Vec::new();
         let mut changed = false;
@@ -7885,6 +7905,9 @@ async fn job_dispatch_loop(state: EdgeState) {
 async fn webhook_delivery_loop(state: EdgeState) {
     let mut last_purge_at = 0_u64;
     loop {
+        if state.jobs.persistence_requires_restart() {
+            return;
+        }
         if state.drain.is_draining() {
             tokio::select! {
                 _ = state.jobs.changed.notified() => {}
@@ -7896,11 +7919,19 @@ async fn webhook_delivery_loop(state: EdgeState) {
         if now.saturating_sub(last_purge_at) >= 60_000 {
             match state.jobs.purge_due(now).await {
                 Ok(()) => last_purge_at = now,
-                Err(error) => eprintln!("job retention purge paused: {error}"),
+                Err(error) => {
+                    eprintln!("job retention purge paused: {error}");
+                    if state.jobs.persistence_requires_restart() {
+                        return;
+                    }
+                }
             }
         }
         let deliveries = state.jobs.pending_webhook_deliveries(now).await;
         for (job, delivery) in deliveries {
+            if state.jobs.persistence_requires_restart() {
+                return;
+            }
             let Some(_activity_lease) = state.drain.admit(ActivityKind::Job) else {
                 break;
             };
@@ -7933,7 +7964,7 @@ async fn webhook_delivery_loop(state: EdgeState) {
                 {
                     eprintln!("webhook state persistence paused: {error}");
                     if state.jobs.persistence_requires_restart() {
-                        break;
+                        return;
                     }
                     tokio::time::sleep(Duration::from_millis(250)).await;
                 }
@@ -7978,7 +8009,7 @@ async fn webhook_delivery_loop(state: EdgeState) {
             {
                 eprintln!("webhook completion persistence paused: {persist_error}");
                 if state.jobs.persistence_requires_restart() {
-                    break;
+                    return;
                 }
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
@@ -8004,7 +8035,7 @@ async fn run_claimed_job(
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        drop(permit);
+        release_job_slot(permit, &state.jobs);
         return;
     }
     let headers = running
@@ -8045,8 +8076,7 @@ async fn run_claimed_job(
                     }
                     tokio::time::sleep(Duration::from_millis(250)).await;
                 }
-                drop(permit);
-                state.jobs.changed.notify_one();
+                release_job_slot(permit, &state.jobs);
                 return;
             }
         }
@@ -8120,8 +8150,7 @@ async fn run_claimed_job(
                     }
                     tokio::time::sleep(Duration::from_millis(250)).await;
                 }
-                drop(permit);
-                state.jobs.changed.notify_one();
+                release_job_slot(permit, &state.jobs);
                 return;
             }
             if error_code == Some("capacity_unavailable") {
@@ -8136,7 +8165,7 @@ async fn run_claimed_job(
                     }
                     tokio::time::sleep(Duration::from_millis(250)).await;
                 }
-                drop(permit);
+                release_job_slot(permit, &state.jobs);
                 return;
             }
             let message = parsed
@@ -8161,8 +8190,12 @@ async fn run_claimed_job(
             }
         }
     }
+    release_job_slot(permit, &state.jobs);
+}
+
+fn release_job_slot(permit: tokio::sync::OwnedSemaphorePermit, jobs: &JobManager) {
     drop(permit);
-    state.jobs.changed.notify_one();
+    jobs.notify_changed();
 }
 
 fn set_idempotency_status(headers: &mut Vec<(String, String)>, status: &str) {
@@ -11940,6 +11973,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn batch_acquisition_reads_the_clock_after_waiting_for_persistence() {
+        let path = temporary_path("batch-clock-after-lock");
+        let manager = Arc::new(JobManager::new(path.clone()).await.unwrap());
+        let mut headers = HeaderMap::new();
+        headers.insert("x-multivibe-priority", HeaderValue::from_static("standard"));
+        let job = manager
+            .create(
+                "batch-app",
+                "/v1/responses",
+                &headers,
+                &json!({"model": "gpt-job", "input": "hello"}),
+                3,
+            )
+            .await
+            .unwrap()
+            .job;
+        let after_window = parse_rfc3339_ms("2026-07-01T05:00:00Z").unwrap();
+        let next_window = parse_rfc3339_ms("2026-07-01T20:00:00Z").unwrap();
+        {
+            let mut state = manager.state.lock().await;
+            let stored = state.jobs.get_mut(&job.id).unwrap();
+            stored.priority = "batch".to_owned();
+            stored.not_before = after_window.saturating_sub(1);
+        }
+
+        let persistence_guard = manager.persist_lock.lock().await;
+        let clock_called = Arc::new(AtomicBool::new(false));
+        let acquisition_manager = manager.clone();
+        let acquisition_clock_called = clock_called.clone();
+        let acquisition = tokio::spawn(async move {
+            acquisition_manager
+                .acquire_next_with_clock(&HashMap::new(), || {
+                    acquisition_clock_called.store(true, AtomicOrdering::SeqCst);
+                    after_window
+                })
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(!clock_called.load(AtomicOrdering::SeqCst));
+        drop(persistence_guard);
+
+        assert!(acquisition.await.unwrap().unwrap().is_none());
+        assert!(clock_called.load(AtomicOrdering::SeqCst));
+        assert_eq!(
+            manager
+                .get_for("batch-app", &job.id)
+                .await
+                .unwrap()
+                .not_before,
+            next_window
+        );
+
+        let _ = fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
     async fn batch_retries_and_restart_recovery_return_to_the_next_window() {
         let retry_path = temporary_path("batch-retry-window");
         let retry_manager = JobManager::new(retry_path.clone()).await.unwrap();
@@ -12442,6 +12531,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn webhook_delivery_stops_when_job_persistence_requires_restart() {
+        let deliveries = Arc::new(AtomicUsize::new(0));
+        let counted_deliveries = deliveries.clone();
+        let webhook = Router::new().route(
+            "/job",
+            post(move || {
+                let counted_deliveries = counted_deliveries.clone();
+                async move {
+                    counted_deliveries.fetch_add(1, AtomicOrdering::SeqCst);
+                    StatusCode::NO_CONTENT
+                }
+            }),
+        );
+        let (webhook_url, webhook_task) = start_server(webhook).await;
+        let store_path = temporary_path("uncertain-webhook-accounts");
+        let jobs_path = temporary_path("uncertain-webhook-jobs");
+        let mut store = StoreFile::default();
+        store.application_policies.push(ApplicationPolicy {
+            application: "webhook-app".to_owned(),
+            fairness_weight: Some(1.0),
+            webhooks: vec![ApplicationWebhook {
+                id: "result-hook".to_owned(),
+                url: format!("{webhook_url}/job"),
+                secret: "webhook-secret".to_owned(),
+                enabled: true,
+            }],
+        });
+        fs::write(&store_path, serde_json::to_vec(&store).unwrap())
+            .await
+            .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.legacy_jobs_db_path = None;
+        let state = EdgeState::new(config).await.unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-multivibe-priority", HeaderValue::from_static("standard"));
+        headers.insert(
+            "x-multivibe-webhook",
+            HeaderValue::from_static("result-hook"),
+        );
+        let job = state
+            .jobs
+            .create(
+                "webhook-app",
+                "/v1/responses",
+                &headers,
+                &json!({"model": "gpt-webhook", "input": "hello"}),
+                3,
+            )
+            .await
+            .unwrap()
+            .job;
+        state.jobs.acquire_next(&HashMap::new()).await.unwrap();
+        state
+            .jobs
+            .succeed(
+                &job.id,
+                BufferedReply {
+                    status: StatusCode::OK,
+                    headers: Vec::new(),
+                    body: Bytes::from_static(br#"{"ok":true}"#),
+                },
+            )
+            .await
+            .unwrap();
+        state
+            .jobs
+            .persistence_uncertain
+            .store(true, AtomicOrdering::SeqCst);
+
+        timeout(Duration::from_secs(1), webhook_delivery_loop(state))
+            .await
+            .unwrap();
+        assert_eq!(deliveries.load(AtomicOrdering::SeqCst), 0);
+
+        webhook_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
     async fn jobs_enforce_creation_idempotency_retries_deadlines_and_restart_recovery() {
         let path = temporary_path("robust-jobs");
         let manager = JobManager::new(path.clone()).await.unwrap();
@@ -12662,6 +12833,29 @@ mod tests {
 
         let _ = fs::remove_file(store_path).await;
         let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn releasing_a_job_slot_wakes_every_dispatch_consumer() {
+        let path = temporary_path("job-slot-release");
+        let manager = JobManager::new(path.clone()).await.unwrap();
+        let slots = Arc::new(Semaphore::new(1));
+        let permit = slots.clone().acquire_owned().await.unwrap();
+        let mut dispatcher = Box::pin(manager.changed.notified());
+        dispatcher.as_mut().enable();
+        let mut webhooks = Box::pin(manager.changed.notified());
+        webhooks.as_mut().enable();
+
+        release_job_slot(permit, &manager);
+
+        timeout(Duration::from_secs(1), async {
+            tokio::join!(dispatcher, webhooks);
+        })
+        .await
+        .unwrap();
+        assert_eq!(slots.available_permits(), 1);
+
+        let _ = fs::remove_file(path).await;
     }
 
     #[tokio::test]
