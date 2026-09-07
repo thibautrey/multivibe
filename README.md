@@ -857,6 +857,13 @@ and output-token volume rounded down to thousands, capped at one billion tokens
 per model. The envelope also contains the UTC-day window and a random event UUID
 used only to retry that day safely.
 
+Before each send, Core obtains a short-lived, single-use Cloud admission ticket
+and solves a bounded computational challenge. This limits mass submission without
+an installation ID; it does not prove the reported usage. Cloud labels these
+volumes self-reported and excludes them from popularity ranking and billing.
+Admission requires the corresponding updated Cloud deployment and migration;
+failed admission retains the pending envelope for a later retry.
+
 Core never shares prompts, responses, input-token volumes, projects, accounts,
 emails, hardware, hostnames, request headers, fine-grained timestamps, or a
 stable installation ID. If the allowlist or Cloud API is unavailable, the
