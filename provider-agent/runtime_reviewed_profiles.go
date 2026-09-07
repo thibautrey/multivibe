@@ -151,5 +151,50 @@ func reviewedOllamaExecutionBody(input []byte, model string, stream bool) ([]byt
 			return nil, errRuntimeBackendInvalid
 		}
 	}
-	return ollamaExecutionBody(input, model, stream)
+	// Ollama can fetch image URLs itself. An inference job must not grant the
+	// model a network fetch capability; accept inline images only.
+	var messages []struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if raw, exists := payload["messages"]; exists {
+		if json.Unmarshal(raw, &messages) != nil {
+			return nil, errRuntimeBackendInvalid
+		}
+		for _, message := range messages {
+			message.Content = bytes.TrimSpace(message.Content)
+			var parts []struct {
+				Type     string          `json:"type"`
+				ImageURL json.RawMessage `json:"image_url"`
+			}
+			if len(message.Content) == 0 || message.Content[0] != '[' {
+				continue
+			}
+			if json.Unmarshal(message.Content, &parts) != nil {
+				return nil, errRuntimeBackendInvalid
+			}
+			for _, part := range parts {
+				if part.Type != "image_url" {
+					continue
+				}
+				var image struct {
+					URL string `json:"url"`
+				}
+				if json.Unmarshal(part.ImageURL, &image) != nil || !strings.HasPrefix(image.URL, "data:image/") {
+					return nil, errRuntimeBackendInvalid
+				}
+			}
+		}
+	}
+	// Defense in depth: identity metadata is not needed by the local model.
+	for _, key := range []string{"user", "metadata", "safety_identifier", "prompt_cache_key", "prompt_cache_retention"} {
+		delete(payload, key)
+	}
+	if _, exists := payload["store"]; exists {
+		payload["store"] = json.RawMessage("false")
+	}
+	minimized, err := json.Marshal(payload)
+	if err != nil {
+		return nil, errRuntimeBackendInvalid
+	}
+	return ollamaExecutionBody(minimized, model, stream)
 }

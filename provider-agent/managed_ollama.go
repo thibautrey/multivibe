@@ -1460,22 +1460,10 @@ func (manager *managedOllama) start(ctx context.Context, policyState *capacityPo
 	}
 	manager.state = "starting"
 	manager.mu.Unlock()
-	logPath := filepath.Join(manager.root, "logs", "ollama.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	// Upstream diagnostics can include request content. Keep structured lifecycle
+	// status, but never persist the inference runtime's raw stdout or stderr.
+	process, err := manager.commands.Start(binaryPath, []string{"serve"}, manager.commandEnvironment(policy.modelStoragePath), manager.root, io.Discard, io.Discard)
 	if err != nil {
-		manager.setStateIfIdle("failed")
-		manager.lifecycleMu.Unlock()
-		return manager.status(policyState), errors.New("managed Ollama log cannot be opened")
-	}
-	if err := secureProviderPrivateFile(logPath); err != nil {
-		_ = logFile.Close()
-		manager.setStateIfIdle("failed")
-		manager.lifecycleMu.Unlock()
-		return manager.status(policyState), errors.New("managed Ollama log cannot be secured")
-	}
-	process, err := manager.commands.Start(binaryPath, []string{"serve"}, manager.commandEnvironment(policy.modelStoragePath), manager.root, logFile, logFile)
-	if err != nil {
-		_ = logFile.Close()
 		manager.setStateIfIdle("failed")
 		manager.lifecycleMu.Unlock()
 		return manager.status(policyState), errors.New("managed Ollama runtime cannot be started")
@@ -1488,7 +1476,6 @@ func (manager *managedOllama) start(ctx context.Context, policyState *capacityPo
 	manager.lifecycleMu.Unlock()
 	go func() {
 		waitErr := process.Wait()
-		_ = logFile.Close()
 		done <- waitErr
 		close(done)
 		manager.mu.Lock()

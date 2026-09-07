@@ -532,7 +532,10 @@ func TestManagedOllamaConcurrentStartUsesOneProcessAndPauseWins(t *testing.T) {
 	base := t.TempDir()
 	process := newManagedOllamaTestProcess(true)
 	commands := &managedOllamaTestCommands{}
-	commands.start = func(_ string, arguments, environment []string, _ string, _, _ io.Writer) (managedOllamaProcess, error) {
+	commands.start = func(_ string, arguments, environment []string, _ string, stdout, stderr io.Writer) (managedOllamaProcess, error) {
+		if stdout != io.Discard || stderr != io.Discard {
+			t.Fatal("raw runtime logs must not be persisted")
+		}
 		if len(arguments) != 1 || arguments[0] != "serve" {
 			t.Fatalf("unexpected start args: %v", arguments)
 		}
