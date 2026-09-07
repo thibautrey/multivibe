@@ -173,3 +173,14 @@ node --test test-integration/host-cloud/existing-access.test.mjs
 
 See [existing credential investigation](existing-credential-investigation.md) for
 the actual outcome of the metadata inspection and official dev/E2E review.
+
+## Diagnose a production 401 without handling the raw key
+
+Use `python3 test-integration/host-cloud/audit-production.py --require-aligned`
+with the existing Kubernetes context. This read-only command compares runtime
+peppers across API/identity/billing replicas, checks API/identity database identity,
+and lists only the five most recent public key prefixes with expiry/revocation,
+creation-event and entitlement-presence evidence. It never prints secret values or
+comparison hashes and makes no production mutation or inference request.
+
+See [the measured 401 diagnosis and repair boundaries](production-401-diagnosis.md).
