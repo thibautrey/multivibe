@@ -150,3 +150,65 @@ test("creates an OpenCode account and discovers its Go API root", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("resolves Console credential references on every request and scopes legacy accounts", async () => {
+  const { openCodeInferenceToken, openCodeAccountHeaders } = await import("./opencode.js");
+  const { authorizationForAccountRequest } = await import("./local-runtime-discovery.js");
+  const account = {
+    id: "console", provider: "opencode" as const, enabled: true,
+    accessToken: "old-session", opencodeApiKey: "{env:OPENCODE_CONSOLE_TOKEN}",
+    opencodeOrgId: "org_selected",
+    opencodeHeaders: { "x-opencode-org-id": "org_selected", Authorization: "Bearer stale" },
+  };
+  assert.equal(openCodeInferenceToken(account), "old-session");
+  account.accessToken = "refreshed-session";
+  assert.equal(authorizationForAccountRequest(account, "https://opencode.ai/inference/openai/v1/responses"), "Bearer refreshed-session");
+  assert.deepEqual(openCodeAccountHeaders(account), {
+    "x-opencode-org-id": "org_selected", "x-org-id": "org_selected",
+  });
+  account.opencodeApiKey = "inference-key";
+  assert.equal(authorizationForAccountRequest(account, "https://opencode.ai/zen/v1/responses"), "Bearer inference-key");
+  account.opencodeApiKey = "{env:UNRELATED_SECRET}";
+  assert.throws(() => openCodeInferenceToken(account), /unsupported credential reference/);
+  assert.equal(openCodeUsageUrl("https://opencode.ai/inference/openai/v1/"), undefined);
+});
+
+test("reauthentication keeps the selected workspace even when another sorts first", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/api/user")) return Response.json({ id: "usr_123", email: "user@example.test" });
+    if (url.endsWith("/api/orgs")) return Response.json([
+      { id: "org_other", name: "AAA Other" }, { id: "org_selected", name: "ZZ Selected" },
+    ]);
+    assert.ok(url.endsWith("/api/config"));
+    assert.equal(new Headers(init?.headers).get("x-org-id"), "org_selected");
+    return Response.json({ config: { provider: { opencode: {
+      api: "https://opencode.ai/inference/openai", options: { apiKey: "{env:OPENCODE_CONSOLE_TOKEN}" },
+    } } } });
+  };
+  const account = await accountFromOpenCodeOAuth(
+    { id: "flow", email: "", codeVerifier: "", createdAt: Date.now(), status: "pending" },
+    { accessToken: "new-session" },
+    { id: "existing", provider: "opencode", accessToken: "old-session", enabled: true,
+      opencodeAccountId: "usr_123", opencodeOrgId: "org_selected" },
+  );
+  assert.equal(account.opencodeOrgId, "org_selected");
+  assert.equal(account.baseUrl, "https://opencode.ai/inference/openai");
+});
+
+test("fails OAuth connection when inference config discovery fails", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/api/user")) return Response.json({ id: "usr_123", email: "user@example.test" });
+    if (url.endsWith("/api/orgs")) return Response.json([{ id: "org_selected", name: "Selected" }]);
+    return Response.json({ error: "Unavailable" }, { status: 503 });
+  };
+  await assert.rejects(accountFromOpenCodeOAuth(
+    { id: "flow", email: "", codeVerifier: "", createdAt: Date.now(), status: "pending" },
+    { accessToken: "session" },
+  ), /config.*failed 503/);
+});

@@ -204,8 +204,10 @@ function parseQueryNumber(v: unknown): number | undefined {
 }
 
 function redact(account: Account) {
+  const { opencodeHeaders: _opencodeHeaders, opencodeApiKey, ...publicAccount } = account;
   return {
-    ...account,
+    ...publicAccount,
+    opencodeApiKey: opencodeApiKey ? "[redacted]" : undefined,
     accessToken: account.accessToken ? `${account.accessToken.slice(0, 8)}...` : "",
     refreshToken: account.refreshToken
       ? `${account.refreshToken.slice(0, 8)}...`

@@ -326,3 +326,12 @@ test("clearing empty-response history tolerates a malformed block without a reas
 
   assert.ok(account.state?.modelBlocks?.[MODEL]);
 });
+
+test("OpenCode monthly exhaustion blocks until the monthly reset", () => {
+  const account = makeAccount();
+  account.provider = "opencode";
+  const monthlyReset = Date.now() + 12 * DAY;
+  account.usage!.monthly = { usedPercent: 100, resetAt: monthlyReset };
+  markQuotaHit(account, MODEL, "quota/rate-limit: 429", '{"error":{"type":"usage_limit_reached"}}');
+  assert.equal(account.state?.modelBlocks?.[MODEL]?.until, monthlyReset + MINUTE);
+});

@@ -313,8 +313,8 @@ test("treats unavailable OpenCode Go quotas as unsupported instead of an account
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
     Response.json(
-      { type: "error", error: { message: "not found" } },
-      { status: 404 },
+      { type: "error", error: { type: "EntitlementError", message: "OpenCode Go subscription required." } },
+      { status: 403 },
     );
   const opencode: Account = {
     id: "opencode-zen",
@@ -370,5 +370,71 @@ test("keeps OpenCode authentication failures visible", async () => {
     assert.notEqual(refreshed.usage?.quotaStatus, "unsupported");
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("Console quota refresh avoids nonexistent inference usage routes and clears stale windows", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; throw new Error("unexpected fetch"); };
+  const a: Account = {
+    id: "console", provider: "opencode", accessToken: "session", enabled: true,
+    baseUrl: "https://opencode.ai/inference/openai",
+    usage: { fetchedAt: 0, monthly: { usedPercent: 100, resetAt: Date.now() - 1000 } },
+    state: { lastError: "upstream 403: Workspace selection is required" },
+  };
+  await refreshUsageIfNeeded(a, a.baseUrl!, true);
+  assert.equal(calls, 0);
+  assert.equal(a.usage?.quotaStatus, "unsupported");
+  assert.match(a.usage?.quotaMessage ?? "", /Console.*Go API key/);
+  assert.equal(a.usage?.monthly, undefined);
+  assert.match(a.state?.lastError ?? "", /Workspace selection/);
+});
+
+test("Go quota requests use the configured inference key and workspace", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = async (input, init) => {
+    assert.equal(String(input), "https://opencode.ai/zen/go/v1/usage");
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get("authorization"), "Bearer inference-key");
+    assert.equal(headers.get("x-org-id"), "org_selected");
+    return Response.json({ usage: { rolling: { percent: 0 }, weekly: { percent: 12 }, monthly: { percent: 34 } } });
+  };
+  const a: Account = {
+    id: "go", provider: "opencode", enabled: true, accessToken: "oauth-session",
+    opencodeApiKey: "inference-key", opencodeOrgId: "org_selected",
+    opencodeHeaders: { Authorization: "Bearer stale" },
+    state: { lastError: "upstream inference failed" },
+  };
+  await refreshUsageIfNeeded(a, "https://opencode.ai/zen", true);
+  assert.equal(a.usage?.quotaStatus, "available");
+  assert.equal(a.usage?.monthly?.usedPercent, 34);
+  assert.equal(a.state?.lastError, "upstream inference failed");
+});
+
+test("OpenCode quota errors are visible instead of being classified as unsupported", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  for (const [status, body] of [
+    [403, { error: { message: "Workspace selection is required" } }],
+    [403, { cloudflare_error: true }],
+    [404, { error: { message: "not found" } }],
+    [401, { error: { type: "AuthError" } }],
+    [200, { usage: {} }],
+  ] as const) {
+    globalThis.fetch = async () => Response.json(body, { status });
+    const a: Account = {
+      id: "go", provider: "opencode", enabled: true, accessToken: "key",
+      usage: { quotaStatus: "unsupported", fetchedAt: 0 },
+    };
+    await refreshUsageIfNeeded(a, "https://opencode.ai/zen/go", true);
+    assert.equal(a.usage?.quotaStatus, "error");
+    assert.ok(a.usage?.quotaMessage);
+    assert.ok(a.state?.lastError);
+  }
+  for (const data of [null, {}, { usage: {} }, { usage: { monthly: { percent: "bad" } } }]) {
+    assert.throws(() => parseOpenCodeUsage(data), /no recognized quota windows/);
   }
 });

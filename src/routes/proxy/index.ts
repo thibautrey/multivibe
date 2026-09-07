@@ -1,3 +1,4 @@
+import { openCodeAccountHeaders, openCodeInferenceToken } from "../../opencode.js";
 import {
   EXCLUDED_PROVIDER_MODELS,
   CODEX_CLI_ORIGINATOR,
@@ -950,6 +951,7 @@ async function refreshModels(
               })
             : {
                 accept: "application/json",
+                ...(provider === "opencode" ? openCodeAccountHeaders(account) : {}),
               };
         let url = "";
 
@@ -2938,12 +2940,12 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
         const headers = buildUpstreamRequestHeaders(
           candidate.provider,
           candidate.provider === "opencode"
-            ? selected.opencodeApiKey ?? selected.accessToken
+            ? openCodeInferenceToken(selected)
             : selected.accessToken,
           {
             model: candidate.resolvedModel,
             conversationId: sessionId,
-            opencodeHeaders: selected.opencodeHeaders,
+            opencodeHeaders: candidate.provider === "opencode" ? openCodeAccountHeaders(selected) : undefined,
           },
         );
         if (candidate.provider === "openai") {
