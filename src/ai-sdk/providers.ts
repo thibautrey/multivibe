@@ -15,7 +15,8 @@ export function sdkProvider(id: unknown) {
   return SDK_PROVIDERS.find((provider) => provider.id === id);
 }
 
-export function validateSdkAccount(account: { sdkProvider?: unknown; sdkModels?: unknown; accessToken?: unknown; baseUrl?: unknown }) {
+export function validateSdkAccount(account: { id?: unknown; sdkProvider?: unknown; sdkModels?: unknown; accessToken?: unknown; baseUrl?: unknown }) {
+  if (account.id !== undefined && (typeof account.id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(account.id))) throw new Error("Invalid provider account ID");
   if (!sdkProvider(account.sdkProvider)) throw new Error("Choose a supported cloud provider");
   if (typeof account.accessToken !== "string" || !account.accessToken.trim()) throw new Error("API key required");
   if (account.baseUrl) throw new Error("SDK providers use their registered endpoint; use a custom endpoint account for other servers");

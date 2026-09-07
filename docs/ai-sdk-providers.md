@@ -64,6 +64,9 @@ Pricing is models.dev's advertised USD per million tokens, not measured billing
 or an account-specific quote. Catalog inclusion does not prove entitlement or
 current availability. Upstream failures remain authoritative.
 
+Input modalities describe the upstream catalog; the adapter currently accepts
+text and supported image inputs only.
+
 Neither AI SDK nor models.dev provides account subscription quotas. These new
 accounts report quota windows as unsupported; request token usage remains in
 normal traces and statistics. Provider-specific quota integrations can be added
@@ -77,6 +80,18 @@ adapter factory in `models.ts` plus its pinned package dependency. Add the ID to
 the catalog refresh script and refresh metadata. Add request/response fixtures
 and account-isolation tests before exposing the new provider in setup. A catalog
 entry alone never implies inference support.
+
+## Validation
+
+Worktree checks passed: `git diff --check` and syntax checking the catalog refresh
+script. Dependencies were installed and validation run on local main: web/API
+builds, 41 targeted TypeScript tests (including OpenCode and quota regressions),
+and the Rust `ai_sdk` integration test using Rust 1.88. The native test covers
+discovery, Chat Completions, Responses, streaming, Messages, and internal-route
+isolation. The protocol tests passed again after account-ID validation was added.
+Browser checks verified provider selection, review, saved vendor labels, and
+unavailable quota explanations. SDK codec tests use mock upstream responses;
+live paid-provider inference and production deployment were not performed.
 
 Sources checked during implementation:
 

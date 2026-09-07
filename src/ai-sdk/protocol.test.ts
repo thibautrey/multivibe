@@ -69,5 +69,9 @@ test("maps buffered results and keeps provider namespaces distinct", () => {
   assert.throws(() => sdkModelId(account, "openrouter/unknown"));
   assert.equal(sdkProviderCatalog().providers.length, 8);
   assert.throws(() => validateSdkAccount({...account, sdkProvider: "uninstalled-package"}));
+  for (const id of ["../other", "a/b", "a?b", "", "a".repeat(129)]) {
+    assert.throws(() => validateSdkAccount({...account, id}), /Invalid provider account ID/);
+  }
+  assert.doesNotThrow(() => validateSdkAccount({...account, id: "sdk-account_123"}));
   assert.throws(() => validateSdkAccount({...account, baseUrl: "https://untrusted.test"}));
 });
