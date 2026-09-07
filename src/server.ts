@@ -807,7 +807,7 @@ if (!MULTIVIBE_CONTROL_PLANE) {
 }
 
 app.use(express.static(webDist));
-app.get("*", (req, res, next) => {
+app.get("/{*path}", (req, res, next) => {
   if (
     req.path.startsWith("/admin/") ||
     req.path.startsWith("/v1/") ||

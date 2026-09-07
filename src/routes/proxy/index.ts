@@ -5181,7 +5181,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
     });
   });
 
-  router.all("*", (req, res, next) => {
+  router.all("/{*path}", (req, res, next) => {
     if (req.baseUrl !== "/v1" && !shouldHandleRootPassthrough(req)) {
       return next();
     }
