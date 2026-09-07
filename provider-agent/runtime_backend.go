@@ -16,6 +16,7 @@ import (
 	"time"
 
 	runtimebackendapi "github.com/thibautrey/multivibe/provider-agent/runtimebackend"
+	"github.com/thibautrey/multivibe/provider-agent/runtimeprofile"
 )
 
 const (
@@ -703,6 +704,9 @@ type ollamaRuntimeBackend struct {
 	endpoint               string
 	mu                     sync.Mutex
 	loadedModels           map[string]string
+	reviewedProfiles       *runtimeprofile.Catalog
+	localCapability        hostCapability
+	loadedProfiles         map[string]runtimeprofile.Profile
 	executions             map[string]context.CancelFunc
 	metrics                runtimeBackendMetrics
 }
@@ -846,6 +850,9 @@ func (backend *ollamaRuntimeBackend) Load(ctx context.Context, request runtimeLo
 	if record.CanonicalModelID != request.Profile.Model.ModelID || record.ManifestSHA256 != request.Profile.Model.ContentDigest {
 		return runtimeLoadedModel{}, errRuntimeBackendIncompatible
 	}
+	if err := backend.bindReviewedProfile(record.CanonicalModelID, request.Policy, request.Profile.Model.RequiredContext); err != nil {
+		return runtimeLoadedModel{}, err
+	}
 	backend.mu.Lock()
 	backend.loadedModels[record.CanonicalModelID] = record.OllamaModel
 	backend.mu.Unlock()
@@ -952,6 +959,16 @@ func (backend *ollamaRuntimeBackend) openExecution(ctx context.Context, request 
 	if err != nil {
 		complete(err)
 		return nil, nil, err
+	}
+	if backend.reviewedProfiles != nil {
+		model, err = backend.prepareReviewedAlias(executionContext, request.ModelID, model)
+		if err == nil {
+			body, err = reviewedOllamaExecutionBody(request.Input, model, stream)
+		}
+		if err != nil {
+			complete(err)
+			return nil, nil, err
+		}
 	}
 	httpRequest, err := http.NewRequestWithContext(executionContext, http.MethodPost, backend.endpoint+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
@@ -1096,6 +1113,9 @@ func (backend *ollamaRuntimeBackend) Cleanup(ctx context.Context, request runtim
 		if !validSelectedModelID(modelID) || modelID <= previous {
 			return errRuntimeBackendInvalid
 		}
+		if err := backend.unloadReviewedAlias(ctx, modelID); err != nil {
+			return err
+		}
 		if err := backend.pinnedRuntime.deactivateModelPinned(ctx, request.Policy, cloneRuntimeBackendCatalog(backend.catalog), modelID); err != nil {
 			return err
 		}
@@ -1157,6 +1177,9 @@ func (backend *ollamaRuntimeBackend) authorizeModelActivation(policy *capacityPo
 	if err != nil {
 		return managedOllamaModelRecord{}, err
 	}
+	if err := backend.bindReviewedProfile(modelID, policy, 1); err != nil {
+		return managedOllamaModelRecord{}, err
+	}
 	backend.mu.Lock()
 	backend.loadedModels[record.CanonicalModelID] = record.OllamaModel
 	backend.mu.Unlock()
@@ -1166,6 +1189,9 @@ func (backend *ollamaRuntimeBackend) authorizeModelActivation(policy *capacityPo
 func (backend *ollamaRuntimeBackend) deactivateModel(ctx context.Context, policy *capacityPolicyStateDocument, catalogPath, modelID string) error {
 	if catalogPath != backend.catalogPath {
 		return errRuntimeBackendInvalid
+	}
+	if err := backend.unloadReviewedAlias(ctx, modelID); err != nil {
+		return err
 	}
 	if err := backend.pinnedRuntime.deactivateModelPinned(ctx, policy, cloneRuntimeBackendCatalog(backend.catalog), modelID); err != nil {
 		return err
