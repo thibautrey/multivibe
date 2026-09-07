@@ -9,7 +9,9 @@ const expected: Record<string, [number, number, number, number?]> = {
   "daybreak-blue-latest": [4, 0.4, 20, 5],
   "gpt-daybreak-blue-latest": [4, 0.4, 20, 5],
   "gpt-5.5": [5, 0.5, 30],
-  "gpt-5.7": [10, 1, 50, 12.5],
+  "gpt-6-astra": [10, 1, 50, 12.5],
+  "gpt-5.6-cyber": [12.5, 1.25, 75, 15.625],
+  "gpt-daybreak-red-latest": [12.5, 1.25, 75, 15.625],
   "gpt-5.4": [2.5, 0.25, 15],
   "gpt-5.4-mini": [0.75, 0.075, 4.5],
   "gpt-5.3-codex": [1.75, 0.175, 14],
@@ -29,6 +31,8 @@ test("uses current standard API prices for the requested metered models", () => 
         ? { longContext: { thresholdTokens: 272_000, inputPer1M: 5, cachedInputPer1M: 0.5, outputPer1M: 22.5 } }
         : model === "gpt-5.5"
           ? { longContext: { thresholdTokens: 272_000, inputPer1M: 10, cachedInputPer1M: 1, outputPer1M: 45 } }
+          : model === "gpt-6-astra"
+            ? { longContext: { thresholdTokens: 272_000, inputPer1M: 20, cachedInputPer1M: 2, cacheWriteInputPer1M: 25, outputPer1M: 75 } }
           : {}),
     });
   }
@@ -55,16 +59,17 @@ test("charges GPT-5.6 cache writes at 1.25x without double-counting input", () =
   assert.equal(cost, 4.475);
 });
 
-test("charges GPT-5.7 cache writes at 1.25x without double-counting input", () => {
+test("charges GPT-6 Astra cache writes at 1.25x without double-counting input", () => {
   assert.equal(
-    estimateCostUsd("gpt-5.7", 1_000_000, 1_000_000, 200_000, 300_000),
+    estimateCostUsd("gpt-6-astra", 1_000_000, 1_000_000, 200_000, 300_000),
     58.95,
   );
-  assert.deepEqual(getModelPricing("gpt-5.7-2026-08-01"), {
+  assert.deepEqual(getModelPricing("gpt-6-astra-2026-08-01"), {
     inputPer1M: 10,
     cachedInputPer1M: 1,
     cacheWriteInputPer1M: 12.5,
     outputPer1M: 50,
+    longContext: { thresholdTokens: 272_000, inputPer1M: 20, cachedInputPer1M: 2, cacheWriteInputPer1M: 25, outputPer1M: 75 },
   });
 });
 
