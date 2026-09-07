@@ -4354,6 +4354,8 @@ impl EdgeState {
             .redirect(Policy::none())
             .build()
             .map_err(|error| format!("failed to create control-plane HTTP client: {error}"))?;
+        // Also used for credential refresh/persistence: redirects must not
+        // forward token bodies or the internal authentication header.
         let webhook_client = reqwest::Client::builder()
             .redirect(Policy::none())
             .build()
@@ -5203,7 +5205,7 @@ async fn proxy_inference(
                 if token_refresh::TokenRefreshManager::needs_refresh(&account, now_ms()) {
                     match state
                         .token_refresh
-                        .refresh(&state.client, &state.config, &state.store, &account, false)
+                        .refresh(&state.webhook_client, &state.config, &state.store, &account, false)
                         .await
                     {
                         Ok(refreshed) => account = refreshed,
@@ -5429,7 +5431,7 @@ async fn proxy_inference(
                     {
                         match state
                             .token_refresh
-                            .refresh(&state.client, &state.config, &state.store, &account, true)
+                            .refresh(&state.webhook_client, &state.config, &state.store, &account, true)
                             .await
                         {
                             Ok(refreshed) if refreshed.access_token != account.access_token => {
@@ -9871,7 +9873,7 @@ async fn realtime_call_handler(State(state): State<EdgeState>, req: Request<Body
         if token_refresh::TokenRefreshManager::needs_refresh(&account, now_ms()) {
             match state
                 .token_refresh
-                .refresh(&state.client, &state.config, &state.store, &account, false)
+                .refresh(&state.webhook_client, &state.config, &state.store, &account, false)
                 .await
             {
                 Ok(refreshed) => account = refreshed,
@@ -9976,7 +9978,7 @@ async fn realtime_call_handler(State(state): State<EdgeState>, req: Request<Body
             {
                 match state
                     .token_refresh
-                    .refresh(&state.client, &state.config, &state.store, &account, true)
+                    .refresh(&state.webhook_client, &state.config, &state.store, &account, true)
                     .await
                 {
                     Ok(refreshed) if refreshed.access_token != account.access_token => {
@@ -10193,7 +10195,7 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
     if token_refresh::TokenRefreshManager::needs_refresh(&account, now_ms()) {
         match state
             .token_refresh
-            .refresh(&state.client, &state.config, &state.store, &account, false)
+            .refresh(&state.webhook_client, &state.config, &state.store, &account, false)
             .await
         {
             Ok(refreshed) => account = refreshed,
@@ -10347,7 +10349,7 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
         {
             match state
                 .token_refresh
-                .refresh(&state.client, &state.config, &state.store, &account, true)
+                .refresh(&state.webhook_client, &state.config, &state.store, &account, true)
                 .await
             {
                 Ok(refreshed) if refreshed.access_token != account.access_token => {
@@ -11263,14 +11265,14 @@ mod tests {
         let selected = state.store.snapshot().await.unwrap().accounts.remove(0);
 
         let first = state.token_refresh.refresh(
-            &state.client,
+            &state.webhook_client,
             &state.config,
             &state.store,
             &selected,
             false,
         );
         let second = state.token_refresh.refresh(
-            &state.client,
+            &state.webhook_client,
             &state.config,
             &state.store,
             &selected,
