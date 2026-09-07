@@ -63,6 +63,8 @@ function tabFromSearch(search: string): Tab {
     : "overview";
 }
 
+const demo = import.meta.env.DEV && import.meta.env.MODE === "demo";
+
 const initialTab = tabFromSearch(window.location.search);
 
 const USAGE_REFRESH_MIN_INTERVAL_MS = 50_000;
@@ -137,8 +139,8 @@ export default function App() {
   const [loginBusy, setLoginBusy] = useState(false);
   const [themeMode, setThemeMode] = useState<ThemeMode>(initialThemeMode);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
-  const [githubPromotionOpen, setGitHubPromotionOpen] = useState(!githubPromotion.dismissed && Date.now() >= githubPromotion.showAt);
-  const [githubPromotionDismissed, setGitHubPromotionDismissed] = useState(githubPromotion.dismissed);
+  const [githubPromotionOpen, setGitHubPromotionOpen] = useState(!demo && !githubPromotion.dismissed && Date.now() >= githubPromotion.showAt);
+  const [githubPromotionDismissed, setGitHubPromotionDismissed] = useState(demo || githubPromotion.dismissed);
   const [usageCacheTtlMs, setUsageCacheTtlMs] = useState(300_000);
   const [oauthRedirectUri, setOauthRedirectUri] = useState("");
   const [error, setError] = useState("");
@@ -1074,7 +1076,7 @@ export default function App() {
             <div className="sidebar-status">
               <span className="status-dot" />
               <span>
-                <strong>{sanitized ? "Sanitized view" : "System online"}</strong>
+                <strong>{demo ? "Demo instance" : sanitized ? "Sanitized view" : "System online"}</strong>
                 <small>{accounts.length} accounts · {models.length} models</small>
               </span>
             </div>
@@ -1154,7 +1156,7 @@ export default function App() {
               <div className="mobile-navigation-status">
                 <span className="status-dot" />
                 <span>
-                  <strong>{sanitized ? "Sanitized view" : "System online"}</strong>
+                  <strong>{demo ? "Demo instance" : sanitized ? "Sanitized view" : "System online"}</strong>
                   <small>{accounts.length} accounts · {models.length} models</small>
                 </span>
               </div>
@@ -1213,7 +1215,7 @@ export default function App() {
             <div className="topbar-actions">
               <span className="badge badge-live topbar-status">
                 <span className="status-dot" />
-                {sanitized ? "Sanitized" : "Live"}
+                {demo ? "Demo data" : sanitized ? "Sanitized" : "Live"}
               </span>
               {tab === "tracing" && (
                 <div className="trace-range-controls topbar-trace-controls">
@@ -1245,6 +1247,8 @@ export default function App() {
               </button>
             </div>
           </header>
+
+          {demo && <div className="demo-notice" role="note"><strong>Demo instance</strong><span>Fictional data · Read-only · No providers connected</span></div>}
 
           {error && <div className="panel error workspace-error">{error}</div>}
 

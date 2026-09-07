@@ -31,13 +31,6 @@
   <a href="#-local-development">Contribute</a>
 </p>
 
-<p align="center">
-  <a href="#-dashboard">
-    <img src="./assets/screen-overview.jpg" alt="MultiVibe dashboard showing account health, usage, and available models" width="1100" />
-  </a>
-  <br />
-  <sub>Account health, model routing, and usage in one dashboard. Screenshot uses sanitized data.</sub>
-</p>
 
 ## ✨ At a glance
 
@@ -333,24 +326,30 @@ system themes.
 | Plugins | Install, pin, enable, update, disable, and remove trusted lifecycle modules |
 | API reference | Endpoint documentation, generated examples, model selection, and a live request console |
 
-<details>
-<summary><strong>Explore the dashboard — accounts, tracing, and API console</strong></summary>
+### Try the current UI with sample data
 
-All screenshots use sanitized mode (`?sanitized=1`).
+Run a separate, read-only demo instance of the current dashboard:
 
-### Accounts
+```bash
+npm --prefix web ci
+npm run demo
+```
 
-![Accounts dashboard](./assets/screen-accounts.jpg)
+Open [http://localhost:4173](http://localhost:4173). The demo includes fictional
+provider accounts, quota windows, model policies, application keys, and two weeks
+of request activity. Filters, time ranges, pagination, and trace details work
+with the sample data. A visible **Demo data** label distinguishes it from a live
+installation.
 
-### Tracing
+The demo serves mock API responses inside the Vite development server. It needs
+no provider credentials, does not start the gateway or discover real runtimes,
+and does not read or write account storage. Provider connections, configuration
+changes, exports, and inference calls are unavailable. Refreshing preserves the
+fixture set; restarting generates its timestamps relative to the new start time.
+Normal development and production builds do not enable the mock API.
 
-![Tracing dashboard](./assets/screen-tracing.jpg)
+See [the demo guide](./docs/dashboard-demo.md) for screenshot instructions.
 
-### API reference
-
-![API reference dashboard](./assets/screen-docs.jpg)
-
-</details>
 
 ---
 
