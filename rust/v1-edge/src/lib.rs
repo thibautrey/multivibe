@@ -2927,7 +2927,13 @@ fn account_max_concurrent(account: &Account) -> u32 {
         .capacity_profile
         .as_ref()
         .and_then(|profile| profile.max_concurrent)
-        .unwrap_or(1)
+        .unwrap_or_else(|| {
+            if account.location.as_deref() == Some("cloud") {
+                8
+            } else {
+                1
+            }
+        })
         .max(1)
 }
 
@@ -11426,6 +11432,23 @@ mod tests {
 
         drop(leases);
         assert_eq!(admission.snapshot(&[target]), (1, 0));
+    }
+
+    #[test]
+    fn admission_uses_cloud_capacity_default_without_relaxing_local_capacity() {
+        let mut cloud = account("cloud-capacity");
+        cloud.location = Some("cloud".to_owned());
+        assert_eq!(account_max_concurrent(&cloud), 8);
+
+        let mut local = account("local-capacity");
+        local.location = Some("local".to_owned());
+        assert_eq!(account_max_concurrent(&local), 1);
+
+        cloud.capacity_profile = Some(CapacityProfile {
+            max_concurrent: Some(3),
+            ..Default::default()
+        });
+        assert_eq!(account_max_concurrent(&cloud), 3);
     }
 
     #[tokio::test]
