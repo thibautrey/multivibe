@@ -32,7 +32,12 @@ func (backend *ollamaRuntimeBackend) bindReviewedProfile(modelID string, policy 
 		return errRuntimeBackendIncompatible
 	}
 	host := backend.localCapability
-	available := host.AcceleratorMemoryBytes / 100 * uint64(*policy.Policy.GPUVRAMPercent)
+	percent := uint64(*policy.Policy.GPUVRAMPercent)
+	budget, ok := checkedMultiply(host.AcceleratorMemoryBytes, percent)
+	if !ok || percent < 1 || percent > 100 {
+		return errRuntimeBackendIncompatible
+	}
+	available := budget / 100
 	artifact := backend.descriptor.Launch.Provenance.ArtifactSHA256[host.OS+"-"+host.Architecture]
 	for _, entry := range backend.catalog.Models {
 		if entry.CanonicalModelID != modelID {
@@ -48,7 +53,7 @@ func (backend *ollamaRuntimeBackend) bindReviewedProfile(modelID string, policy 
 			}
 			selection, err := runtimeprofile.Select(*backend.reviewedProfiles, runtimeprofile.SelectionRequest{
 				ModelID: modelID, ContentDigest: entry.ContentDigest, Format: profile.Model.Format, Quantization: profile.Model.Quantization,
-				RequiredContextTokens: contextTokens, Hardware: profile.Hardware, AvailableMemoryBytes: available,
+				RequiredContextTokens: contextTokens, Hardware: profile.Hardware, AvailableMemoryBytes: host.AcceleratorMemoryBytes,
 				Runtimes: []runtimeprofile.RuntimeCapability{{BackendID: backend.descriptor.ID, ContractVersion: runtimeBackendContractVersion,
 					Available: true, Formats: []string{profile.Model.Format}, Quantizations: []string{profile.Model.Quantization},
 					HardwareClasses: []string{profile.Hardware.Class}, MaximumContextTokens: backend.descriptor.Launch.Resources.MaximumContextTokens,
