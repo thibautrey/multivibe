@@ -1104,7 +1104,7 @@ function isUpstreamAttemptTrace(trace: TraceEntry): boolean {
   return trace.traceKind === undefined || trace.traceKind === "upstream-attempt";
 }
 
-function buildTraceStats(traces: TraceEntry[]): TraceStats {
+export function buildTraceStats(traces: TraceEntry[]): TraceStats {
   const clientTraces = traces.filter(isClientRequestTrace);
   const attemptTraces = traces.filter(isUpstreamAttemptTrace);
   const requests = clientTraces.length;
