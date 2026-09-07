@@ -4949,7 +4949,7 @@ body:has(> .modal-backdrop) {
 .overview-model-list { list-style: none; padding: 0; margin: 0; max-height: 440px; overflow-y: auto; }
 .overview-model-list li + li { border-top: 1px solid var(--border); }
 .overview-model-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 8px; border: 0; border-radius: 8px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
-.overview-model-row:hover { background: var(--surface-2); }
+.overview-model-row:hover { background: var(--surface-muted); }
 .overview-model-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .overview-model-row .provider-setup-mark { width: 32px; height: 32px; flex: 0 0 32px; }
 .overview-model-info { display: grid; gap: 4px; min-width: 0; flex: 1; }
