@@ -1,179 +1,234 @@
-# Audit et plan de migration de l’inférence vers Rust
+# État de la migration de l'inférence vers Rust
 
-Date : 7 septembre 2026. Référence analysée : `a4a4ba0528b93c470a7d8a1ef75360ca47bf2f9b`.
-Audit statique du code ; aucune implémentation ni mesure de production réalisée.
+Date : 7 septembre 2026.
 
-## Conclusion et périmètre
+Ce document décrit l'implémentation présente dans le profil natif
+`MULTIVIBE_CONTROL_PLANE=true`. Il remplace le plan par lots rédigé avant le
+portage.
 
-Le transport et l’orchestration d’inférence encore en TypeScript peuvent devenir
-entièrement Rust. Une grande partie existe déjà dans `rust/v1-edge/src/lib.rs` :
-il faut terminer la parité puis supprimer le parcours historique, plutôt que
-réécrire une troisième implémentation. Cela ne signifie pas migrer le calcul
-des modèles : les runtimes et le provider-agent Go sont des sous-systèmes distincts.
+## Conclusion
 
-`src/server.ts:749` réserve le montage `/v1` Express au mode non natif, mais
-`src/server.ts:761` monte toujours les routes racine. Le fallback Rust
-(`rust/v1-edge/src/lib.rs:7459`) relaie les routes hors `/v1` vers Node.
-Le mode natif n’élimine donc pas tout passage d’inférence par JavaScript.
-Ce constat concerne le code et ses profils, pas la configuration actuellement déployée.
+Le chemin public d'inférence du profil natif appartient désormais à
+`rust/v1-edge`. Axum reçoit les routes canoniques `/v1` et leurs alias
+racine, authentifie l'application, choisit le modèle, le provider et le compte,
+applique l'admission, convertit les protocoles, relaie JSON, SSE ou WebSocket et
+exécute les jobs différés. Une requête d'inférence servie par ce profil ne
+traverse plus Express.
 
-Le JavaScript `.mjs` de benchmark/build n’est pas un moteur d’inférence à migrer.
-Les wrappers natifs éventuels sont à retirer seulement après recherche de leurs
-consommateurs restants ; déplacer de petites fonctions via N-API n’est pas la cible.
-Les benchmarks `docs/protocol-conversion-benchmark.json` et
-`docs/raw-protocol-conversion-benchmark.json` montrent précisément que le coût du
-passage JS/Rust peut annuler le bénéfice de la conversion.
+Node reste volontairement lancé sur `127.0.0.1:1456` comme plan de contrôle.
+Il sert le dashboard et les assets, les routes d'administration, l'onboarding
+et les callbacks OAuth, la gestion des comptes, clés, alias, politiques,
+webhooks et modules, ainsi que la coordination du Host. Rust relaie vers ce
+plan de contrôle les surfaces qu'il ne possède pas. Le provider-agent Go et les
+runtimes de modèles restent aussi des sous-systèmes distincts.
 
-## Inventaire des migrations définitives possibles
+Le profil historique en processus unique
+`MULTIVIBE_CONTROL_PLANE=false` conserve les routeurs d'inférence Express
+pour le développement et la compatibilité. Leur présence dans le dépôt ne
+signifie donc pas qu'ils participent au chemin natif.
 
-« Définitive » signifie : Rust devient le propriétaire de la fonction et la
-version TypeScript d’inférence est supprimée après validation de parité.
-Cela n’autorise pas la suppression globale d’un fichier partagé avec l’administration.
+## Surface publique possédée par Rust
 
-| Bloc et sources TypeScript | État Rust constaté | Travail restant / destination proposée |
+Les routes suivantes terminent dans le même handler Rust avec ou sans le
+préfixe `/v1` :
+
+| Méthode | Route canonique | Alias racine |
 | --- | --- | --- |
-| Routage HTTP : `src/routes/proxy/index.ts`, branchement dans `src/server.ts` | `/v1` natif dans `build_router` | Prendre aussi les alias racine en charge ; préserver auth, méthodes, erreurs et compatibilité ; retirer les routeurs Express d’inférence et le profil concurrent en fin de migration. |
-| Conversions : `src/responses-bridge.ts`, `src/responses/{converters,payloads,sanitizers,helpers,upstream-payload-serializer,payload-inspection}.ts`, `src/anthropic-compat.ts` | Conversions Chat/Responses/Anthropic, sanitation et SSE déjà présentes dans l’edge ; noyau `rust/proxy-core` existant | Consolider le code pur dans le noyau, compléter les cas outils personnalisés, arguments imbriqués, images, reasoning, sorties vides et paramètres provider par fixtures différentielles. Ne pas déclarer la parité sur le seul nom des fonctions. |
-| Streaming et transports : `src/websocket-responses.ts`, `src/realtime-proxy.ts`, `src/responses/{websocket-sse-relay,sse-stream-tap,stream-diagnostics}.ts` | SSE, WebSocket Responses et négociation realtime/voix déjà natives | Vérifier ordre des événements, fragments UTF-8, EOF incomplet, annulation, clients lents, erreurs après début du flux, auth et reconnexion ; retirer les relais JS après recette. |
-| Sélection comptes/providers : `src/routes/proxy/index.ts`, `src/quota.ts`, `src/session-affinity.ts` | Sélection quota-aware, blocages et affinité Rust existants | Porter les écarts de politique, choix image et failover ; séparer décision pure et accès réseau. `image_request_model_override` est désérialisé en Rust mais aucun usage de cette valeur n’a été trouvé dans le fichier edge. |
-| Résilience : `src/upstream-retry.ts`, correction de paramètres et boucles de reprise dans `src/routes/proxy/index.ts` | Rotation et classification de statuts existantes | Aligner retry sur même compte, Retry-After/backoff/jitter, rotation immédiate pour quota, attente bornée, correction des valeurs non supportées et reprise sur sortie vide. Ne jamais rejouer une génération après émission au client sans contrat explicite. |
-| Idempotence : `src/inference-idempotency.ts` | Cache des réponses terminées | Porter réservation atomique, attente des doublons en vol, conflit même clé/autre payload, expiration des requêtes en vol, bornes globales en entrées/octets, règles d’éligibilité et headers de statut. |
-| Admission et capacité : `src/smart-routing.ts`, `src/smart-routing-routes.ts`, presets d’alias | Routage et endpoint capacité simplifiés | Porter politiques d’alias, modalités, fenêtres horaires, priorités, budgets/deadlines, attente et report automatique, leases, libération sur annulation et mesures de santé. Conserver côté Node les écrans et l’édition des politiques. |
-| Jobs : `src/jobs.ts`, exécuteur dans `src/server.ts` | Jobs JSON persistés et lancement Tokio | Porter scheduler équitable, concurrence bornée, leases/reprise, retries, fenêtres batch, idempotence et webhooks signés ; unifier la propriété et le stockage. Prévoir migration du SQLite TS et du JSON Rust avec sauvegarde et retour arrière. |
-| Catalogue/usage : découverte dans `src/routes/proxy/index.ts`, `src/async-refresh.ts`, `src/usage-refresh.ts`, `src/usage-refresh-monitor.ts` | Catalogue caché, rafraîchissement dédupliqué et conservation de données antérieures | Porter les sémantiques stale-while-revalidate restantes et les observations nécessaires au routage. Exposer les snapshots à l’admin pour éviter deux caches contradictoires. Les tâches d’administration sans rôle d’inférence peuvent rester TS. |
-| Tokens : portion de `src/account-utils.ts` appelée par proxy/realtime, support OAuth | Credentials lus par Rust ; champ refresh token présent mais pas de flux de renouvellement trouvé dans l’edge | Porter renouvellement automatique et reprise après 401, déduplication par compte et persistance sans écraser les modifications admin. L’onboarding et les callbacks OAuth peuvent rester Node. |
-| Confidentialité : `src/confidential-inference.ts`, intégration dans proxy/admission | Aucun traitement `confidential_verified` trouvé dans l’edge inspecté | Porter validation d’attestation, JSON canonique, vérification cryptographique, échange de clés, chiffrement/déchiffrement et restrictions de routage ; utiliser des bibliothèques éprouvées et les vecteurs TS. Refuser explicitement ce mode tant que le contrat natif n’est pas implémenté. |
-| Télémétrie d’inférence : `src/request-tracing.ts`, `src/trace-headers.ts`, diagnostics SSE et fonctions de coût/usage | `TraceSink`, diagnostics, usage/coût et événements Rust déjà substantiels | Aligner les champs et la redaction, terminer l’observation de capacité ; laisser lecture historique, agrégation et UI en Node si utile. Il ne s’agit pas d’une migration de télémétrie depuis zéro. |
-| Drain host : portion inférence de `src/host/update-controller.ts` | Compteurs et admission host branchés sur Express et son WebSocket | Donner à Rust la propriété des requêtes, tours WS et jobs actifs ; exposer begin-drain/status au contrôleur host. Le lanceur/updater lui-même n’a pas besoin d’être réécrit. |
+| `GET` | `/v1/models`, `/v1/models/:id` | `/models`, `/models/:id` |
+| `GET` | compatibilité catalogue | `/api/v1/models`, `/api/v1/models/:id`, `/api/tags` |
+| `GET` | compatibilité version | `/version` |
+| `GET` | `/v1/props` | `/props` |
+| `POST` | `/v1/responses` | `/responses` |
+| `GET` avec upgrade | `/v1/responses` | `/responses` |
+| `POST` | `/v1/responses/compact` | `/responses/compact` |
+| `POST` | `/v1/chat/completions` | `/chat/completions` |
+| `POST` | `/v1/messages` | `/messages` |
+| `POST` | `/v1/realtime/calls` | `/realtime/calls` |
+| `GET` | `/v1/realtime/voices`, `/v1/settings/voices` | `/realtime/voices`, `/settings/voices` |
 
-## Écarts qui empêchent une suppression immédiate
+La capacité et les jobs restent exposés uniquement sous `/v1`. Un chemin
+`/v1` inconnu est authentifié puis reçoit un `404` Rust ; il n'est jamais
+transmis à Node. Les compatibilités de découverte `/api/tags`,
+`/api/v1/models` et `/version` sont elles aussi résolues par Rust et ne
+transportent pas de prompt.
 
-1. **Idempotence** : `rust/v1-edge/src/lib.rs:5614` inclut le digest du body
-   dans la clé du cache. Deux payloads différents utilisant une même clé
-   deviennent deux entrées, contrairement au conflit détecté par
-   `src/inference-idempotency.ts:562`. Le cache Rust (`:3647`) ne réserve pas
-   de requête en vol et n’applique pas les plafonds globaux du cache TS.
-2. **Capacité** : `rust/v1-edge/src/lib.rs:6507` additionne les maximums
-   déclarés, expose `queueDepth: 0`, sans soustraire de leases actives.
-   Le TypeScript acquiert et libère une réservation dans
-   `src/smart-routing-routes.ts:764`. Les deux endpoints ne représentent pas
-   aujourd’hui la même notion de capacité libre.
-3. **Exécution différée** : le handler natif (`:5726`) crée un job puis lance
-   directement `tokio::spawn`. `run_job` (`:5575`) ne reproduit pas le scheduler
-   équitable ni les livraisons webhook de `src/jobs.ts`. `auto` est accepté
-   dans le handler mais n’y possède pas le parcours admission/report du TS.
-4. **Deux exécuteurs** : `src/server.ts:798` construit toujours le JobRunner
-   TS, puis le démarre ; en mode natif il soumet ses jobs à l’edge. Il faut
-   inventorier et reprendre les deux stocks de jobs avant de retirer ce runner.
-5. **Fonctions de confiance et disponibilité** : les chemins TS de refresh
-   token, confidentialité et drain ne deviennent pas natifs simplement parce
-   que `/v1` est maintenant servi par Axum.
+## Fonctions d'inférence maintenant natives
 
-## Cas qui nécessite une décision de compatibilité
+| Bloc | Implémentation effective |
+| --- | --- |
+| Protocoles et transport | Responses, Chat Completions et Anthropic Messages, conversions provider, JSON, SSE, Responses WebSocket, Realtime et zstd sont traités dans Rust. |
+| Routage | Le catalogue, les alias, le filtrage quota/policy, la rotation de comptes, les retries upstream et l'affinité de session facultative sont appliqués dans l'edge. |
+| Idempotence synchrone | Le cache `rust/v1-edge/src/idempotency.rs` réserve atomiquement une clé avant l'appel upstream et partage le résultat avec les doublons simultanés. |
+| Admission et capacité | Les limites `maxConcurrent` sont matérialisées par des leases par compte ; les attentes sont bornées et les snapshots soustraient les leases actives. |
+| Jobs différés | Le dispatcher Tokio possède la concurrence, la fenêtre batch, la fairness, les deadlines, les retries, la reprise après redémarrage et les webhooks. Le runner TypeScript n'est pas démarré dans le profil natif. |
+| Refresh OAuth | Rust renouvelle les tokens OpenAI, OpenCode et xAI avant expiration ou une fois après `401`, avec single-flight par compte et persistance CAS via le plan de contrôle. |
+| Confidentialité | La vérification d'attestation, la politique de confiance locale, l'échange X25519/HKDF, les enveloppes AES-256-GCM et l'authentification de la réponse sont natifs. |
+| Drain | Rust refuse le nouveau travail pendant un drain et compte séparément les requêtes, tours WebSocket et jobs actifs pour le contrôleur Host. |
+| Traces | Les traces d'inférence, de tentatives upstream, de flux et d'usage sont produites dans Rust ; le dashboard et les agrégations restent dans le plan de contrôle. |
 
-`src/module-sdk.ts` définit des hooks JavaScript capables de remplacer une
-requête, répondre directement, transformer une réponse et appliquer une politique
-d’échec. `src/routes/proxy/index.ts` invoque notamment `request.received`,
-`request.beforeUpstream`, `response.received` et `response.beforeClient`.
+## Garanties de l'idempotence
 
-Ces modules tiers ne peuvent pas être convertis automatiquement en Rust en
-préservant une API JavaScript arbitraire. Cible recommandée : hooks déclaratifs
-pour les politiques simples, contrat versionné Rust/WASM pour les transformations.
-Un pont Node peut assurer une transition, mais il maintient JavaScript dans
-l’inférence des requêtes concernées. Ne retirer le SDK actuel qu’après inventaire
-des modules réellement utilisés et portage/remplacement de chacun. Ne jamais
-ignorer silencieusement un module configuré comme obligatoire.
+L'idempotence synchrone est isolée par application, route normalisée et clé.
+Une même clé avec une empreinte de requête différente renvoie `409
+idempotency_key_reused`. Pour une requête identique :
 
-## Plan d’implémentation ordonné
+- le premier appel reçoit le statut `created` ;
+- les appels concurrents attendent la réservation en vol et reçoivent
+  `coalesced` sans lancer une seconde génération ;
+- une réponse terminée et conservable est renvoyée avec `replayed` pendant
+  le TTL ;
+- une requête non éligible ou un cache saturé sans entrée évictable reçoit
+  `bypass`.
 
-### Lot 0 — Figer les contrats avant portage
+Le nombre d'entrées, le total d'octets, la taille d'une réponse, le TTL et la
+durée maximale d'une réservation en vol sont bornés par configuration. Une
+réponse trop grande ou non conservable peut être livrée aux followers déjà en
+attente, puis la clé reste seulement marquée comme vue afin d'empêcher un
+rejeu ambigu. Le cache volontairement exclut les flux, outils, contenus
+multimodaux, conversations liées et requêtes stockées ou en arrière-plan.
 
-- Constituer une matrice route × profil × provider × protocole × streaming.
-- Réutiliser les fixtures et tests TS/Rust existants ; ajouter un harnais
-  différentiel avec upstreams simulés, horloge contrôlée et résultats normalisés.
-- Comparer statuts, erreurs, headers, choix compte/modèle, body et événements,
-  y compris refus de confidentialité et modules obligatoires non supportés.
-- Inventorier imports partagés avec l’admin, modules actifs, profils de packaging
-  et données des deux runners. Définir le protocole d’état partagé et son écrivain.
+## Admission et capacité
 
-Sortie : liste exhaustive des écarts testables et critères de suppression par bloc.
+L'admission acquiert une lease sur un compte admissible avant l'appel provider.
+La lease reste détenue jusqu'à la fin du JSON, du flux SSE, du tour WebSocket
+ou du job ; son `Drop` la libère aussi lors d'une annulation ou d'une
+déconnexion client. `X-MultiVibe-Max-Wait-Ms` permet d'attendre un changement
+de capacité jusqu'à une durée bornée à 24 heures. Sans capacité à l'expiration,
+l'edge renvoie `429 capacity_unavailable`.
 
-### Lot 1 — Structurer et compléter le moteur Rust
+`GET /v1/capacity` calcule `freeSlots` à partir des limites déclarées moins
+les leases actives et `queueDepth` à partir des waiters visant les mêmes
+comptes. Chaque acquisition, libération ou changement de file incrémente la
+version de capacité. La confiance du snapshot reste `declared` : il décrit
+l'admission locale, pas une garantie temps réel du provider distant.
 
-Extraire progressivement le grand `lib.rs` en modules transport, protocoles,
-providers, routage, idempotence, jobs et télémétrie, sans changement de comportement.
-Réutiliser `proxy-core` pour les fonctions pures compatibles avec son contrat.
-Compléter conversions/résilience et idempotence atomique avec mémoire bornée.
+## Jobs, migration et webhooks
 
-Sortie : mêmes résultats sur fixtures, un seul appel upstream pour des doublons
-simultanés éligibles, conflit de payload conforme et arrêt effectif à l’annulation.
+Le store natif autoritaire est le fichier JSON désigné par
+`V1_EDGE_JOBS_PATH`, écrit via un fichier temporaire, un renommage atomique
+et des permissions `0600` sous Unix. Au démarrage, Rust récupère un job resté
+`running` en le remettant en file si des tentatives restent, ou en le
+terminant en échec si son budget est épuisé. Les deadlines déjà dépassées
+deviennent `expired`.
 
-### Lot 2 — Donner à Rust la propriété des décisions et de l’état actif
+Lorsque `JOBS_DB_PATH` pointe vers l'ancien SQLite TypeScript, Rust :
 
-Porter admission, politiques, réservations, compteurs, attente et capacité SSE.
-Ajouter le renouvellement de tokens, les caches nécessaires et le contrat de drain.
-Node reste propriétaire des modifications administratives ; Rust publie les
-observations et persiste les tokens via un mécanisme versionné/atomique convenu.
-Éviter deux écrivains indépendants remplaçant le même snapshot de comptes.
+1. ouvre la base source en lecture seule ;
+2. crée une sauvegarde SQLite cohérente
+   `*.pre-rust-backup.sqlite` si elle n'existe pas déjà ;
+3. importe les jobs et livraisons webhook dans le store JSON ;
+   l'historique d'événements disponible est également repris ;
+4. déduplique les redémarrages par identifiant de job, ou par application et
+   clé d'idempotence.
 
-Sortie : pas de sur-admission sous concurrence, libération sur toutes les sorties,
-équivalence de routage, refresh unique et drain qui attend réellement les flux actifs.
+La base SQLite reste intacte et sert de source de migration/retour arrière ;
+elle n'est plus le store d'exécution du runner natif.
 
-### Lot 3 — Unifier les jobs
+Les jobs `batch` créés entre 07:00 et 22:00 attendent 22:00 selon
+`Europe/Paris`, avec prise en charge des changements d'heure. Le dispatcher
+pondère les priorités `critical`, `interactive`, `standard`, `batch`,
+puis les applications de même priorité. Il borne la concurrence globale,
+applique les deadlines et retente les erreurs transitoires jusqu'au maximum du
+job.
 
-Implémenter dans Rust le contrat durable TS, de préférence sur SQLite pour
-conserver ses transactions et faciliter la reprise du schéma existant, sous réserve
-de revue du schéma. Ajouter import du JSON natif, migrations versionnées et exercice
-de restauration. Basculer les producteurs/admin vers le service de jobs Rust,
-puis arrêter le runner TS. Ne pas faire fonctionner deux consommateurs sans
-mécanisme commun de claim/lease.
+Un webhook de résultat est résolu dans la politique de l'application au moment
+de la livraison. Rust signe les octets exacts du JSON avec HMAC-SHA-256,
+envoie `X-MultiVibe-Event-Id` et
+`X-MultiVibe-Signature: sha256=<hex>`, refuse les redirections et applique
+un timeout de dix secondes. Une réponse hors `2xx`, une erreur réseau ou un
+timeout déclenche un backoff exponentiel plafonné à une heure ; les tentatives
+restent éligibles pendant 24 heures.
 
-Sortie : reprise après crash, annulation/deadline, fairness, unicité d’exécution
-selon le contrat, signatures et retries webhook vérifiés sur serveur local simulé.
+Chaque job conserve jusqu'à 1 000 événements dans le même store. Le flux
+`/v1/jobs/:id/events` rejoue les événements postérieurs à `Last-Event-ID`,
+reste abonné aux nouveaux événements et envoie un heartbeat toutes les quinze
+secondes. Si le canal en mémoire prend du retard, il se recale sur l'historique
+persisté.
 
-### Lot 4 — Fermer les écarts spécialisés
+## Refresh OAuth avec écriture CAS
 
-Porter le client confidentiel avec vecteurs croisés, tests de rejet et absence de
-sortie en clair. Implémenter le contrat de modules choisi et migrer les extensions.
-Finaliser la parité traces/usage et realtime. Ce lot bloque le retrait de TS pour
-les fonctionnalités concernées ; ne pas les présenter comme déjà compatibles.
+Le manager Rust déduplique les refresh concurrents avec un mutex par compte.
+Il renouvelle proactivement un token arrivant dans sa marge d'expiration et
+peut forcer un unique refresh/retry après `401`, y compris pour Realtime.
+Après attente du verrou, il recharge d'abord le store et réutilise un token
+déjà renouvelé par une autre requête.
 
-### Lot 5 — Basculer les routes et retirer le code historique
+Rust transmet ensuite le nouveau credential à la route interne Node
+`/internal/v1-edge/accounts/:id/token`, authentifiée par
+`V1_EDGE_INTERNAL_JOB_TOKEN`. La requête contient l'ancien access token
+attendu. Le store Node n'applique le patch que si ce token est encore courant ;
+un `409` fait relire et adopter la version plus récente. Cette petite écriture
+de contrôle évite que Rust écrase une réauthentification ou une modification
+administrative concurrente.
 
-Monter les alias racine explicitement dans Rust, sans redirection HTTP des POST,
-avec normalisation du chemin et conservation des contrats auth/idempotence.
-Faire du lancement Rust + control plane le profil de développement/support commun.
-Mettre à jour packaging et tests de démarrage, puis retirer les routeurs,
-converters, middlewares et wrappers TS devenus inutiles. Garder les helpers
-encore importés par l’admin, ou les remplacer par des lectures du service Rust.
-Supprimer dépendances et options de fallback seulement après inventaire final.
+## Inférence confidentielle
 
-Sortie : toutes les routes d’inférence supportées, avec et sans `/v1`, restent
-traitées dans Rust ; un control plane simulé échouant sur toute requête d’inférence
-ne fait échouer aucun scénario de recette. Les échanges de contrôle explicitement
-prévus restent distincts du transport des prompts et réponses.
+Le mode `confidential_verified` filtre les comptes sur leur
+`privacyMode` et ne retombe jamais sur un compte standard. Avant d'envoyer
+le prompt, Rust récupère une attestation liée à un challenge, au modèle et à
+une politique de confiance locale Ed25519. Il dérive des clés de requête et de
+réponse distinctes, chiffre une enveloppe authentifiée et vérifie le lien de
+la réponse avec la requête et l'attestation.
 
-## Validation à exécuter lors de l’implémentation
+Un échec avant l'envoi est signalé comme `not_sent`; une rupture après un
+envoi potentiel est signalée comme résultat incertain et ne provoque pas de
+fallback ordinaire. Les redirects sont désactivés pour ce transport. Les
+traces n'enregistrent jamais le body clair d'une requête confidentielle, même
+si `TRACE_INCLUDE_BODY=true`.
 
-- Dans les worktrees : revue ciblée et `git diff --check` ; pas de réparation des
-  dépendances absentes. Intégrer les commits dans `main` avant validation dépendante.
-- Sur `main` : `cargo fmt --all -- --check`, `cargo check -p multivibe-v1-edge`,
-  `cargo test -p multivibe-proxy-core`, `cargo test -p multivibe-v1-edge`,
-  `npm run build:api`, `npm test`. Tests N-API tant que ce pont existe ; tests host
-  et packaging lorsque leur contrat de démarrage/drain change.
-- Recette différentielle HTTP/SSE/WS/realtime ; scénarios concurrence,
-  déconnexions, quota/401/429/5xx, outils/images, reprise jobs et isolement application.
-- Mesurer avant/après TTFT, p50/p95/p99, débit, erreurs, CPU et RSS total
-  Rust + Node sur mêmes payloads, providers simulés et charges lentes/rapides.
-  Fixer les budgets d’acceptation sur cette baseline ; aucun gain chiffré n’est
-  déduit du langage ou des seuls micro-benchmarks existants.
-- Déploiement progressif et retour arrière couvrant également les formats persistés.
+Cette garantie porte sur Responses et Chat Completions. Anthropic Messages et
+les jobs différés confidentiels sont refusés explicitement. Une requête HTTP
+avec `stream=true` reste scellée jusqu'à la réponse complète, puis Rust produit
+le format SSE demandé ; elle ne fournit donc pas un flux confidentiel
+progressif. Realtime n'appartient pas à cette surface vérifiée.
 
-## Hors du chantier
+## Drain et modules JavaScript
 
-Dashboard/web, administration, onboarding OAuth, catalogue commercial, scripts
-de build/benchmark, agent Go et moteurs locaux restent hors migration Rust
-de l’inférence. La suppression de Node du produit entier serait un autre chantier.
+Les routes internes Rust `begin`, `status` et `resume` sont protégées par
+le token interne. `begin` ferme l'admission aux nouvelles requêtes, nouveaux
+tours WebSocket et nouveaux jobs. Le statut devient prêt quand les trois
+compteurs actifs atteignent zéro. Le contrôleur Host Node combine cet état avec
+les opérations actives du provider-agent avant une mise à jour et réactive
+l'admission si le drain doit être annulé.
 
-Validation de ce livrable : audit statique et contrôle de diff uniquement.
-Aucun build/test applicatif exécuté pour cette modification documentaire.
+Après l'initialisation du gestionnaire de modules, le profil natif refuse de
+démarrer lorsqu'un module JavaScript chargé et activé déclare des hooks. Aucun
+hook d'inférence n'est donc ignoré silencieusement. Les modules doivent être
+désactivés, remplacés par une politique native ou utilisés avec le profil
+historique Express.
+
+## Limites restantes et périmètre conservé
+
+- Les jobs natifs persistent en JSON. SQLite est uniquement la source
+  historique importée et sauvegardée.
+- Les politiques et limites de capacité sont des déclarations locales ; elles
+  ne remplacent pas les quotas et erreurs renvoyés par le provider.
+- Le code TypeScript d'inférence reste requis par le profil
+  `MULTIVIBE_CONTROL_PLANE=false`. Sa suppression physique demanderait de
+  retirer explicitement ce profil.
+- Dashboard, administration, OAuth onboarding/callbacks, édition du store,
+  modules, updater Host, provider-agent Go et runtimes locaux restent hors du
+  chantier Rust de l'inférence.
+
+## Validation
+
+La couverture du dépôt comprend des tests Rust ciblés pour les alias racine
+sans fallback Node, le single-flight et les conflits d'idempotence, les leases
+d'admission, la libération des flux, la fenêtre `Europe/Paris`, la reprise et
+l'import SQLite, les webhooks signés, le refresh OAuth et le drain. Les tests
+TypeScript couvrent l'écriture CAS, le refus des modules actifs et la
+coordination du contrôleur Host.
+
+Avant livraison, exécuter depuis la branche intégrée :
+
+```bash
+cargo fmt --all -- --check
+cargo check -p multivibe-v1-edge
+cargo test -p multivibe-v1-edge
+npm run build:api
+npm test
+docker compose config
+```
+
+Une recette de déploiement doit encore mesurer p50/p95/p99, débit, erreurs,
+CPU et RSS du couple Rust + Node sur des providers simulés puis réels.
