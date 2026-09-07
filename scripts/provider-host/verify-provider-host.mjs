@@ -663,7 +663,8 @@ async function inspectArchive(archive) {
 
 function validateDependency(name, dependency, expectedArchives) {
   if (!exactKeys(dependency, ["version", "artifacts"]) || !/^\d+\.\d+\.\d+$/u.test(dependency.version) ||
-    !exactKeys(dependency.artifacts, ["darwin-amd64", "darwin-arm64", "linux-amd64", "windows-amd64"])) {
+    !(exactKeys(dependency.artifacts, ["darwin-amd64", "darwin-arm64", "linux-amd64", "windows-amd64"]) ||
+      exactKeys(dependency.artifacts, ["darwin-amd64", "darwin-arm64", "linux-amd64", "linux-arm64", "windows-amd64"]))) {
     throw new Error(`${name} dependency metadata is invalid`);
   }
   for (const [target, artifact] of Object.entries(dependency.artifacts)) {
@@ -698,9 +699,9 @@ async function readBinaryHeader(file, bytes = 4096) {
   }
 }
 
-function isELFAmd64(header) {
+function isELFArchitecture(header, architecture) {
   return header.length >= 20 && header[0] === 0x7f && header.subarray(1, 4).toString("ascii") === "ELF" &&
-    header[4] === 2 && header[5] === 1 && header.readUInt16LE(18) === 0x3e;
+    header[4] === 2 && header[5] === 1 && header.readUInt16LE(18) === (architecture === "arm64" ? 0xb7 : architecture === "amd64" ? 0x3e : -1);
 }
 
 function isPEAmd64(header) {
@@ -756,7 +757,7 @@ async function validateNativeFiles(root, manifest) {
     const macCPUType = manifest.architecture === "arm64" ? 0x0100000c : manifest.architecture === "amd64" ? 0x01000007 : null;
     const valid = mac ? (macCPUType !== null && isMachO(header) &&
       (entry.path.startsWith(runtimePrefix) && !explicit.includes(entry.path) || isMachOArchitecture(header, macCPUType))) :
-      windows ? isPEAmd64(header) : isELFAmd64(header);
+      windows ? isPEAmd64(header) : isELFArchitecture(header, manifest.architecture);
     if (!valid) {
       throw new Error(`provider-host native file has the wrong architecture: ${entry.path}`);
     }
@@ -1135,7 +1136,7 @@ async function validateTree(root, options, archiveInspection) {
   const manifestKeys = ["schemaVersion", "product", "version", "sourceCommit", "platform", "architecture",
     "sourceTreeDirty", "releaseReady", "macOSSignature", "node", "managedRuntime", "files"];
   const targetIsValid = (manifest.platform === "darwin" && ["arm64", "amd64"].includes(manifest.architecture)) ||
-    ((manifest.platform === "linux" || manifest.platform === "windows") && manifest.architecture === "amd64");
+    ((manifest.platform === "linux" && ["amd64", "arm64"].includes(manifest.architecture)) || (manifest.platform === "windows" && manifest.architecture === "amd64"));
   if (!exactKeys(manifest, manifestKeys) || manifest.schemaVersion !== 1 || manifest.product !== "multivibe-host" ||
     typeof manifest.version !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(manifest.version) ||
     typeof manifest.sourceCommit !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(manifest.sourceCommit) ||
@@ -1150,10 +1151,10 @@ async function validateTree(root, options, archiveInspection) {
     throw new Error("provider-host release-readiness metadata is inconsistent");
   }
   validateDependency("Node", manifest.node, {
-    "darwin-amd64": "tar-gzip", "darwin-arm64": "tar-gzip", "linux-amd64": "tar-gzip", "windows-amd64": "zip",
+    "darwin-amd64": "tar-gzip", "darwin-arm64": "tar-gzip", "linux-amd64": "tar-gzip", "linux-arm64": "tar-gzip", "windows-amd64": "zip",
   });
   validateDependency("Ollama", manifest.managedRuntime, {
-    "darwin-amd64": "tar-gzip", "darwin-arm64": "tar-gzip", "linux-amd64": "tar-zstd", "windows-amd64": "zip",
+    "darwin-amd64": "tar-gzip", "darwin-arm64": "tar-gzip", "linux-amd64": "tar-zstd", "linux-arm64": "tar-zstd", "windows-amd64": "zip",
   });
 
   if (archiveInspection) {
@@ -1318,7 +1319,7 @@ async function validateTree(root, options, archiveInspection) {
     }
     const nativeTarget = (manifest.platform === "darwin" && process.platform === "darwin" &&
       ((manifest.architecture === "arm64" && process.arch === "arm64") || (manifest.architecture === "amd64" && process.arch === "x64"))) ||
-      (manifest.platform === "linux" && manifest.architecture === "amd64" && process.platform === "linux" && process.arch === "x64") ||
+      (manifest.platform === "linux" && process.platform === "linux" && ((manifest.architecture === "amd64" && process.arch === "x64") || (manifest.architecture === "arm64" && process.arch === "arm64"))) ||
       (manifest.platform === "windows" && manifest.architecture === "amd64" && process.platform === "win32" && process.arch === "x64");
     if (!nativeTarget) throw new Error("provider-host runtime verification requires the matching target host");
     const hostVersion = await command(host, ["version"], { capture: true, captureLimit: 4096 });

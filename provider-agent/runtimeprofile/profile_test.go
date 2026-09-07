@@ -310,7 +310,7 @@ func TestPackagedCatalogMatchesReviewedGoldenAndValidates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("packaged catalog is invalid: %v", err)
 	}
-	if len(catalog.Profiles) != 3 || catalog.Profiles[1].ID != "qwen2.5-0.5b-q4km-cuda8-ollama-apple-silicon" ||
+	if len(catalog.Profiles) != 5 || catalog.Profiles[1].ID != "qwen2.5-0.5b-q4km-cuda8-ollama-apple-silicon" ||
 		catalog.Profiles[1].Hardware.OS != "darwin" || catalog.Profiles[1].Hardware.Architecture != "arm64" ||
 		catalog.Profiles[1].Hardware.AcceleratorKind != "metal" || !catalog.Profiles[1].Hardware.UnifiedMemory {
 		t.Fatalf("packaged Apple Silicon profile is missing or invalid: %#v", catalog.Profiles)

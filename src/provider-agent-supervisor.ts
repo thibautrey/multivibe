@@ -24,10 +24,10 @@ export type ProviderHostCapability = {
   schema_version: "multivibe-host-capability-v1";
   agent_version: string;
   supported: boolean;
-  profile?: "apple-silicon" | "intel-mac" | "linux-nvidia" | "windows-nvidia";
+  profile?: "apple-silicon" | "intel-mac" | "linux-nvidia" | "linux-cpu" | "windows-nvidia";
   os: string;
   architecture: string;
-  accelerator?: "metal" | "cuda";
+  accelerator?: "metal" | "cuda" | "cpu";
   hardware_model?: string;
   accelerator_memory_bytes?: number;
   gpus?: Array<{
@@ -201,7 +201,7 @@ export type ProviderManagedOllamaView = {
     schema_version: "managed-ollama-status-v1";
     state: string;
     version: string;
-    platform: "darwin-arm64" | "linux-amd64";
+    platform: "darwin-arm64" | "darwin-amd64" | "linux-amd64" | "linux-arm64" | "windows-amd64";
     runtime_installed: boolean;
     running: boolean;
     paused: boolean;
@@ -364,6 +364,7 @@ export function readProviderAgentBootstrap(
 }
 
 const PROVIDER_AGENT_ENVIRONMENT_KEYS = [
+  "MULTIVIBE_PROVIDER_ACCELERATOR",
   "MULTIVIBE_CORE_LOOPBACK_URL",
   "MULTIVIBE_PROVIDER_AGENT_LISTEN",
   "MULTIVIBE_PROVIDER_SELECTED_MODELS",

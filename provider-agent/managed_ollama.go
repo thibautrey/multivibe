@@ -244,6 +244,7 @@ type managedOllamaConfig struct {
 	BundledRuntimeRoot string
 	ListenAddress      string
 	CUDAVisibleDevices string
+	CPUOnly            bool
 	GOOS               string
 	GOARCH             string
 	TarPath            string
@@ -264,6 +265,7 @@ type managedOllama struct {
 	listenAddress      string
 	loopbackOrigin     string
 	cudaVisibleDevices string
+	cpuOnly            bool
 	goos               string
 	goarch             string
 	platform           string
@@ -339,8 +341,12 @@ func newManagedOllama(config managedOllamaConfig) (*managedOllama, error) {
 	if config.KillTimeout <= 0 {
 		config.KillTimeout = managedOllamaDefaultKillTimeout
 	}
+	if config.CPUOnly && (config.GOOS != "linux" || config.CUDAVisibleDevices != "") {
+		return nil, errors.New("CPU runtime requires Linux without a CUDA device pin")
+	}
 	manager := &managedOllama{
-		root: config.ManagedRoot, bundledRuntimeRoot: config.BundledRuntimeRoot,
+		cpuOnly: config.CPUOnly,
+		root:    config.ManagedRoot, bundledRuntimeRoot: config.BundledRuntimeRoot,
 		listenAddress: listenAddress, loopbackOrigin: loopbackOrigin, cudaVisibleDevices: config.CUDAVisibleDevices,
 		goos: config.GOOS, goarch: config.GOARCH, platform: platform,
 		tarPath: tarPath, commands: config.Commands, startupTimeout: config.StartupTimeout,
@@ -401,13 +407,13 @@ func managedOllamaPlatform(goos, goarch string) (string, error) {
 	if goos == "darwin" && goarch == "amd64" {
 		return "darwin-amd64", nil
 	}
-	if goos == "linux" && goarch == "amd64" {
-		return "linux-amd64", nil
+	if goos == "linux" && (goarch == "amd64" || goarch == "arm64") {
+		return "linux-" + goarch, nil
 	}
 	if goos == "windows" && goarch == "amd64" {
 		return "windows-amd64", nil
 	}
-	return "", errors.New("managed Ollama supports only darwin/arm64, darwin/amd64, linux/amd64 and windows/amd64")
+	return "", errors.New("managed Ollama supports only darwin/arm64, darwin/amd64, linux/amd64, linux/arm64 and windows/amd64")
 }
 
 func resolveManagedOllamaTar(goos, configured string) (string, error) {
@@ -465,11 +471,15 @@ func openManagedOllamaDependencyManifest(path string) (managedOllamaDependencyMa
 }
 
 func validateManagedOllamaDependencyManifest(document managedOllamaDependencyManifest) error {
-	if document.SchemaVersion != 1 || len(document.Node) == 0 || document.Ollama.Version != managedOllamaVersion || len(document.Ollama.Artifacts) != 4 {
+	if document.SchemaVersion != 1 || len(document.Node) == 0 || document.Ollama.Version != managedOllamaVersion || (len(document.Ollama.Artifacts) != 4 && len(document.Ollama.Artifacts) != 5) {
 		return errors.New("managed Ollama dependency manifest is invalid")
 	}
 	expectedArchive := map[string]string{"darwin-arm64": "tar-gzip", "darwin-amd64": "tar-gzip", "linux-amd64": "tar-zstd", "windows-amd64": "zip"}
 	expectedFilename := map[string]string{"darwin-arm64": "ollama-darwin.tgz", "darwin-amd64": "ollama-darwin.tgz", "linux-amd64": "ollama-linux-amd64.tar.zst", "windows-amd64": "ollama-windows-amd64.zip"}
+	if len(document.Ollama.Artifacts) == 5 {
+		expectedArchive["linux-arm64"] = "tar-zstd"
+		expectedFilename["linux-arm64"] = "ollama-linux-arm64.tar.zst"
+	}
 	for platform, archive := range expectedArchive {
 		artifact, exists := document.Ollama.Artifacts[platform]
 		if !exists || artifact.Archive != archive || !validManagedOllamaSHA256(artifact.SHA256) {
@@ -985,7 +995,7 @@ func managedOllamaTarArguments(platform, archivePath, staging string) ([]string,
 	switch platform {
 	case "darwin-arm64", "darwin-amd64":
 		return []string{"-tzf", archivePath}, []string{"-xzf", archivePath, "-C", staging, "--no-same-owner"}, nil
-	case "linux-amd64":
+	case "linux-amd64", "linux-arm64":
 		return []string{"--zstd", "-tf", archivePath}, []string{"--zstd", "-xf", archivePath, "-C", staging, "--no-same-owner"}, nil
 	default:
 		return nil, nil, errors.New("managed Ollama archive platform is unsupported")
@@ -1165,7 +1175,7 @@ func managedOllamaPathWithin(root, candidate string) bool {
 }
 
 func managedOllamaBinaryRelativePath(platform string) string {
-	if platform == "linux-amd64" {
+	if platform == "linux-amd64" || platform == "linux-arm64" {
 		return filepath.Join("bin", "ollama")
 	}
 	if platform == "windows-amd64" {
@@ -1413,6 +1423,9 @@ func (manager *managedOllama) commandEnvironment(modelStoragePath string) []stri
 	}
 	if (manager.goos == "linux" || manager.goos == "windows") && manager.cudaVisibleDevices != "" {
 		environment = append(environment, "CUDA_VISIBLE_DEVICES="+manager.cudaVisibleDevices)
+	}
+	if manager.cpuOnly {
+		environment = append(environment, "CUDA_VISIBLE_DEVICES=-1", "ROCR_VISIBLE_DEVICES=-1", "GGML_VK_VISIBLE_DEVICES=-1", "OLLAMA_VULKAN=false")
 	}
 	environment = append(environment, "OLLAMA_NUM_PARALLEL=1", "OLLAMA_MAX_LOADED_MODELS=1")
 	sort.Strings(environment)

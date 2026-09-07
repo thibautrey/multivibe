@@ -530,7 +530,7 @@ func coreEnvironment(layout bundleLayout, dataDirectory, managedDirectory string
 	if inheritedEnvironment("MULTIVIBE_HOST_CONTAINER") != "true" {
 		environment = append(environment, "MULTIVIBE_HOST_UPDATER_BINARY="+layout.Updater)
 	}
-	for _, name := range []string{"HOME", "LANG", "LC_ALL", "SSL_CERT_DIR", "SSL_CERT_FILE", "TMPDIR", "TZ"} {
+	for _, name := range []string{"MULTIVIBE_PROVIDER_ACCELERATOR", "HOME", "LANG", "LC_ALL", "SSL_CERT_DIR", "SSL_CERT_FILE", "TMPDIR", "TZ"} {
 		if value := inheritedEnvironment(name); value != "" {
 			environment = append(environment, name+"="+value)
 		}

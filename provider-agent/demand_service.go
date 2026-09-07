@@ -282,6 +282,15 @@ func providerAcceleratorMemoryCapacity(capability hostCapability) (uint64, error
 		return 0, errors.New("provider accelerator capacity is unavailable")
 	}
 	switch capability.Accelerator {
+	case "cpu":
+		if capability.OS != "linux" || capability.Profile != "linux-cpu" ||
+			(capability.Architecture != "amd64" && capability.Architecture != "arm64") ||
+			len(capability.GPUs) != 0 || capability.CUDADevice != 0 ||
+			capability.AcceleratorMemoryBytes < minimumDarwinUnifiedMemoryBytes/2 ||
+			capability.AcceleratorMemoryBytes > maximumDarwinUnifiedMemoryBytes/2 {
+			return 0, errors.New("provider CPU memory capacity is invalid")
+		}
+		return capability.AcceleratorMemoryBytes, nil
 	case "metal":
 		validDarwinProfile := (capability.Architecture == "arm64" && capability.Profile == "apple-silicon") ||
 			(capability.Architecture == "amd64" && capability.Profile == "intel-mac")

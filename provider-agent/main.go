@@ -786,7 +786,7 @@ func main() {
 		}
 		managedRuntime, runtimeErr := newManagedOllama(managedOllamaConfig{
 			ManagedRoot: managedRoot, BundledRuntimeRoot: bundledOllamaRoot, ListenAddress: ollamaListenAddress,
-			CUDAVisibleDevices: cudaVisibleDevices, GOOS: capability.OS, GOARCH: capability.Architecture,
+			CPUOnly: capability.Accelerator == "cpu", CUDAVisibleDevices: cudaVisibleDevices, GOOS: capability.OS, GOARCH: capability.Architecture,
 		})
 		plannerState, plannerErr := openManagedPlannerStateStore(managedPlannerStatePath)
 		if runtimeErr != nil || plannerErr != nil {

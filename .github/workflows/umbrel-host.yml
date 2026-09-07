@@ -1,0 +1,180 @@
+name: Umbrel CPU Host
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish tested images and generate the Umbrel package (stable tag required)
+        type: boolean
+        default: false
+
+permissions: {}
+concurrency:
+  group: umbrel-cpu-host
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      MULTIVIBE_PROVIDER_ACCELERATOR: cpu
+      IMAGE: ghcr.io/thibautrey/multivibe-host-umbrel
+      ARCH: ${{ matrix.architecture }}
+      PUBLISH: ${{ inputs.publish }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: true
+      - name: Require a stable release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == thibautrey/multivibe ]]
+          [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.23.2
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: 1.25.13
+          cache: false
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libgtk-3-dev pkg-config zstd
+          npm ci --no-audit --no-fund
+          npm --prefix web ci --no-audit --no-fund
+      - name: Validate CPU runtime and catalog
+        run: |
+          npm run catalog:check
+          go -C provider-agent test -race ./...
+          go -C host/application test -race ./...
+          node --test scripts/umbrel/generate.test.mjs scripts/provider-host/provider-host-native-dependencies.test.mjs scripts/provider-host/verify-provider-host-archive-fixtures.test.mjs
+      - name: Build and execute the native archive
+        run: |
+          set -euo pipefail
+          npm run package:provider-host -- --version "$VERSION" --output release-umbrel
+          archive="release-umbrel/multivibe-host_${VERSION}_linux_${ARCH}.tar.gz"
+          npm run verify:provider-host -- --require-runtime "$archive"
+          mkdir -p container-context/bundle
+          tar -xzf "$archive" -C container-context/bundle --strip-components=1
+          cp packaging/container/entrypoint.sh container-context/
+          cp packaging/umbrel/Dockerfile container-context/Dockerfile
+      - name: Build and smoke-test the native CPU container
+        run: |
+          set -euo pipefail
+          docker build --build-arg "MULTIVIBE_VERSION=$VERSION" --build-arg "MULTIVIBE_SOURCE_COMMIT=$GITHUB_SHA" -t "$IMAGE:$VERSION-$ARCH" container-context
+          docker run --rm --read-only --tmpfs /tmp "$IMAGE:$VERSION-$ARCH" version
+          docker run --rm --read-only --tmpfs /tmp "$IMAGE:$VERSION-$ARCH" doctor
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: release-umbrel/*.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: umbrel-host-${{ matrix.architecture }}
+          path: release-umbrel/*
+          compression-level: 0
+          if-no-files-found: error
+      - name: Publish immutable architecture image
+        if: inputs.publish
+        id: image
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          if docker manifest inspect "$IMAGE:$VERSION-$ARCH" >/dev/null 2>&1; then
+            echo 'Refusing to replace an existing versioned image.' >&2
+            exit 1
+          fi
+          docker push "$IMAGE:$VERSION-$ARCH"
+          digest="$(docker buildx imagetools inspect "$IMAGE:$VERSION-$ARCH" --format '{{.Manifest.Digest}}')"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          mkdir -p image-digests
+          printf '%s\n' "$digest" > "image-digests/$ARCH"
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        if: inputs.publish
+        with:
+          subject-name: ghcr.io/thibautrey/multivibe-host-umbrel
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: inputs.publish
+        with:
+          name: umbrel-digest-${{ matrix.architecture }}
+          path: image-digests/*
+          if-no-files-found: error
+
+  package:
+    if: inputs.publish
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      IMAGE: ghcr.io/thibautrey/multivibe-host-umbrel
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: umbrel-digest-*
+          merge-multiple: true
+          path: image-digests
+      - name: Publish and verify the multiarchitecture index
+        id: index
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          if docker manifest inspect "$IMAGE:$version" >/dev/null 2>&1; then
+            echo 'Refusing to replace an existing versioned index.' >&2
+            exit 1
+          fi
+          amd64="$(cat image-digests/amd64)"
+          arm64="$(cat image-digests/arm64)"
+          [[ "$amd64" =~ ^sha256:[a-f0-9]{64}$ && "$arm64" =~ ^sha256:[a-f0-9]{64}$ ]]
+          docker buildx imagetools create --tag "$IMAGE:$version" "$IMAGE@$amd64" "$IMAGE@$arm64"
+          docker buildx imagetools inspect "$IMAGE:$version" --format '{{json .Manifest}}' > umbrel-index.json
+          node scripts/umbrel/generate.mjs "$version" umbrel-index.json umbrel-package/multivibe-host
+          digest="$(docker buildx imagetools inspect "$IMAGE:$version" --format '{{.Manifest.Digest}}')"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-name: ghcr.io/thibautrey/multivibe-host-umbrel
+          subject-digest: ${{ steps.index.outputs.digest }}
+          push-to-registry: true
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            umbrel-index.json
+            umbrel-package/multivibe-host/*
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: umbrel-package
+          path: |
+            umbrel-index.json
+            umbrel-package/*
+          if-no-files-found: error

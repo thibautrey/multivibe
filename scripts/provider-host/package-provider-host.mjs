@@ -71,13 +71,16 @@ function target() {
   if (process.platform === "darwin" && process.arch === "x64") {
     return { key: "darwin-amd64", goos: "darwin", goarch: "amd64", archive: "dmg" };
   }
+  if (process.platform === "linux" && process.arch === "arm64") {
+    return { key: "linux-arm64", goos: "linux", goarch: "arm64", archive: "tar.gz" };
+  }
   if (process.platform === "linux" && process.arch === "x64") {
     return { key: "linux-amd64", goos: "linux", goarch: "amd64", archive: "tar.gz" };
   }
   if (process.platform === "win32" && process.arch === "x64") {
     return { key: "windows-amd64", goos: "windows", goarch: "amd64", archive: "zip" };
   }
-  throw new Error("provider-host packages can be built only on macOS arm64, macOS amd64, Linux amd64, or Windows amd64");
+  throw new Error("provider-host packages can be built only on macOS arm64, macOS amd64, Linux amd64/arm64, or Windows amd64");
 }
 
 function windowsPowerShellPath() {
@@ -820,7 +823,7 @@ async function main() {
     !/^\d+\.\d+\.\d+$/u.test(dependencies.ollama?.version ?? "")) {
     throw new Error("provider-host dependency manifest is invalid");
   }
-  for (const key of ["darwin-arm64", "darwin-amd64", "linux-amd64", "windows-amd64"]) {
+  for (const key of ["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64", "windows-amd64"]) {
     validateDependency(`Node ${key}`, dependencies.node?.artifacts?.[key], key === "windows-amd64" ? "zip" : "tar-gzip");
     validateDependency(
       `Ollama ${key}`,
