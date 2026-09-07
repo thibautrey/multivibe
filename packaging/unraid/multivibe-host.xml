@@ -1,13 +1,13 @@
 <Container version="2">
-  <Name>MultiVibe Host</Name>
+  <Name>multivibe-host</Name>
   <Repository>ghcr.io/thibautrey/multivibe-host:latest</Repository>
-  <Registry>https://ghcr.io/thibautrey/multivibe-host</Registry>
+  <Registry>https://github.com/thibautrey/multivibe/pkgs/container/multivibe-host</Registry>
   <Network>bridge</Network>
   <Shell>sh</Shell>
   <Privileged>false</Privileged>
   <ExtraParams>--runtime=nvidia --init --read-only --tmpfs=/tmp:rw,nosuid,nodev,noexec,mode=1777,size=512m --security-opt=no-new-privileges:true --cap-drop=ALL --cap-add=CHOWN --cap-add=FOWNER --cap-add=SETGID --cap-add=SETUID</ExtraParams>
 
-  <Icon>https://raw.githubusercontent.com/thibautrey/multivibe/main/assets/brand/vector/multivibe-app-icon.svg</Icon>
+  <Icon>https://raw.githubusercontent.com/thibautrey/multivibe/main/assets/brand/favicon/favicon-256x256.png</Icon>
   <WebUI>http://[IP]:[PORT:1455]</WebUI>
   <Overview>Run the security-bounded MultiVibe provider Host on your own supported NVIDIA GPU. Credentials and device identity are generated inside persistent appdata; the provider agent and managed Ollama stay loopback-only inside the container. Sharing and automatic downloads remain disabled until you explicitly configure the local capacity policy.</Overview>
   <Support>https://github.com/thibautrey/multivibe/issues</Support>
@@ -18,14 +18,14 @@
   <ExtraSearchTerms>AI LLM Ollama provider GPU NVIDIA inference</ExtraSearchTerms>
   <Requires>Unraid on x86_64, the Unraid Nvidia Driver plugin, and an NVIDIA GPU with compute capability 7.0 or newer. Set the Public URL to the exact LAN or HTTPS reverse-proxy origin used by browsers.</Requires>
   <Changes>Initial beta container template.</Changes>
-  <Date>2026-09-03</Date>
+  <Date>2026-09-07</Date>
   <Beta>true</Beta>
   <License>Apache-2.0</License>
 
   <Config Name="Web UI" Target="1455" Default="1455" Mode="tcp" Description="Host port for the protected MultiVibe dashboard and API." Type="Port" Display="always" Required="true" Mask="false">1455</Config>
   <Config Name="Application data" Target="/data" Default="/mnt/user/appdata/multivibe-host" Mode="rw" Description="Persistent private credentials, device identity, policy, database and logs." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/multivibe-host</Config>
   <Config Name="Model storage" Target="/models" Default="/mnt/user/multivibe-models" Mode="rw" Description="Persistent managed runtime and model weights. Use /models/weights when creating the local capacity policy." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/multivibe-models</Config>
-  <Config Name="Public URL" Target="MULTIVIBE_HOST_PUBLIC_URL" Default="http://[IP]:[PORT:1455]" Mode="" Description="Exact browser-facing HTTP(S) origin with no path or trailing slash. Use the reverse-proxy HTTPS origin when applicable." Type="Variable" Display="always" Required="true" Mask="false">http://[IP]:[PORT:1455]</Config>
+  <Config Name="Public URL" Target="MULTIVIBE_HOST_PUBLIC_URL" Default="" Mode="" Description="Required: enter your actual origin, for example http://192.168.1.10:1455. Match the Web UI host port; do not use [IP] or [PORT] placeholders. No path or trailing slash. Use the reverse-proxy HTTPS origin when applicable." Type="Variable" Display="always" Required="true" Mask="false"></Config>
   <Config Name="NVIDIA GPU" Target="NVIDIA_VISIBLE_DEVICES" Default="all" Mode="" Description="GPU UUID from the Nvidia Driver plugin, or all. Exposing one supported GPU is recommended; it is index 0 inside the container." Type="Variable" Display="always" Required="true" Mask="false">all</Config>
   <Config Name="NVIDIA capabilities" Target="NVIDIA_DRIVER_CAPABILITIES" Default="compute,utility" Mode="" Description="Required CUDA compute and nvidia-smi capabilities." Type="Variable" Display="advanced" Required="true" Mask="false">compute,utility</Config>
   <Config Name="Managed runtime directory" Target="MULTIVIBE_HOST_MANAGED_DIR" Default="/models/runtime" Mode="" Description="Container path for the verified managed Ollama runtime. Model weights are selected separately in the local capacity policy." Type="Variable" Display="advanced" Required="true" Mask="false">/models/runtime</Config>

@@ -255,7 +255,9 @@ state is inferred from mounting the directory.
 The source repository contains `packaging/unraid/multivibe-host.xml` for Unraid. It is
 marked beta and requires the Unraid Nvidia Driver plugin plus an NVIDIA GPU of
 compute capability 7.0 or newer. A source template is not evidence that
-Community Applications has accepted or listed the app.
+Community Applications has accepted or listed the app. See the
+[Unraid installation and submission guide](unraid/README.md) for private-template
+installation, required settings, and the public listing process.
 
 ## Uninstalling
 

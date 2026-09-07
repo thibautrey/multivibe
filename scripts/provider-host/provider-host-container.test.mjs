@@ -61,6 +61,13 @@ test("the Unraid template is beta, GPU-bounded and does not request credentials"
   assert.match(profile, /^<CommunityApplications>[\s\S]*<Profile>/u);
   assert.match(template, /^<Container version="2">/u);
   assert.match(template, /<Repository>ghcr\.io\/thibautrey\/multivibe-host:latest<\/Repository>/u);
+  const name = template.match(/<Name>([^<]+)<\/Name>/u)?.[1];
+  assert.match(name ?? "", /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/u, "Docker container names cannot contain spaces");
+  const publicUrl = template.match(/<Config\b[^>]*Target="MULTIVIBE_HOST_PUBLIC_URL"[^>]*>[\s\S]*?<\/Config>/u)?.[0];
+  assert.ok(publicUrl, "the public origin must be configurable");
+  assert.match(publicUrl, /Default=""/u);
+  assert.match(publicUrl, /Required="true"/u);
+  assert.match(publicUrl, /></u, "require an operator-supplied origin instead of WebUI substitution tokens");
   assert.match(template, /<Privileged>false<\/Privileged>/u);
   assert.match(template, /<Beta>true<\/Beta>/u);
   assert.match(template, /--runtime=nvidia/u);
