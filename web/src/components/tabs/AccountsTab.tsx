@@ -1,3 +1,4 @@
+import ModalPortal from "../ModalPortal";
 import type { Account, ProviderId, StoreSettings, TraceStats } from "../../types";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { fmt, maskEmail, maskId, usd } from "../../lib/ui";
@@ -2790,7 +2791,7 @@ export function AccountsTab(props: Props) {
         )}
 
       {showAddAccount && !oauthDialog && (
-        <div className="modal-backdrop" onClick={() => { if (!isSubmitting) closeModal(); }}>
+        <ModalPortal><div className="modal-backdrop" onClick={() => { if (!isSubmitting) closeModal(); }}>
           <div ref={providerModalRef} className={`modal panel provider-setup-modal${onboardingProviderSetup ? " onboarding-provider-modal" : ""}`} role="dialog" aria-modal="true" aria-labelledby="provider-setup-title" tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(event) => {
             if (event.key === "Escape" && !isSubmitting) { event.stopPropagation(); closeModal(); }
             if (event.key === "Tab") {
@@ -3030,11 +3031,11 @@ export function AccountsTab(props: Props) {
               </div>}
             </div>
           </div>
-        </div>
+        </div></ModalPortal>
       )}
 
       {editingAccount && (
-        <div className="modal-backdrop" onClick={closeEditModal}>
+        <ModalPortal><div className="modal-backdrop" onClick={closeEditModal}>
           <div className="modal panel" onClick={(e) => e.stopPropagation()}>
             <div className="inline wrap row-between">
               <h2>Update account</h2>
@@ -3218,11 +3219,11 @@ export function AccountsTab(props: Props) {
               </button>
             </div>
           </div>
-        </div>
+        </div></ModalPortal>
       )}
 
       {oauthDialog && (
-        <div className="modal-backdrop" onClick={closeOauthDialog}>
+        <ModalPortal><div className="modal-backdrop" onClick={closeOauthDialog}>
           <div className="modal panel" onClick={(e) => e.stopPropagation()}>
             <div className="inline wrap row-between">
               <h2>
@@ -3342,7 +3343,7 @@ export function AccountsTab(props: Props) {
               </button>
             </div>
           </div>
-        </div>
+        </div></ModalPortal>
       )}
     </>
   );
