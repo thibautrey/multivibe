@@ -88,7 +88,7 @@ export type MultivibeCloudProvider = {
   topupUrl: string;
 };
 
-type AccountProvider = ProviderId;
+type AccountProvider = ProviderId | "nvidia-pair";
 type OAuthMethod = "browser" | "device";
 
 type QuotaResetForecast = {
@@ -126,7 +126,7 @@ type EditAccountState = {
   baseUrl: string;
   priority: string;
   enabled: boolean;
-  location: "local" | "cloud";
+  location: "local" | "personal-cluster" | "cloud";
   maxConcurrent: string;
   prefillTokensPerSecond: string;
   decodeTokensPerSecond: string;
@@ -505,7 +505,7 @@ export function AccountsTab(props: Props) {
     useState<OAuthMethod>("browser");
   const [manualPriority, setManualPriority] = useState("0");
   const [manualEnabled, setManualEnabled] = useState(true);
-  const [manualLocation, setManualLocation] = useState<"" | "local" | "cloud">("");
+  const [manualLocation, setManualLocation] = useState<"" | "local" | "personal-cluster" | "cloud">("");
   const [manualMaxConcurrent, setManualMaxConcurrent] = useState("");
   const [manualPrefill, setManualPrefill] = useState("");
   const [manualDecode, setManualDecode] = useState("");
@@ -1202,17 +1202,17 @@ export function AccountsTab(props: Props) {
       return;
     }
 
-    if (!manualAccessToken.trim()) return;
-    if (provider === "openai-compatible" && !manualBaseUrl.trim()) return;
+    if (provider !== "nvidia-pair" && !manualAccessToken.trim()) return;
+    if ((provider === "openai-compatible" || provider === "nvidia-pair") && !manualBaseUrl.trim()) return;
     setIsSubmitting(true);
     try {
       await createAccount({
         provider,
         email: manualEmail.trim() || undefined,
-        accessToken: manualAccessToken.trim(),
+        accessToken: provider === "nvidia-pair" ? undefined : manualAccessToken.trim(),
         refreshToken: manualRefreshToken.trim() || undefined,
         baseUrl:
-          provider === "openai-compatible" ? manualBaseUrl.trim() : undefined,
+          provider === "openai-compatible" || provider === "nvidia-pair" ? manualBaseUrl.trim() : undefined,
         upstreamMode: manualUpstreamMode || undefined,
         priority: Number(manualPriority) || 0,
         enabled: manualEnabled,
@@ -2794,6 +2794,7 @@ export function AccountsTab(props: Props) {
                 >
                   <option value="openai">OpenAI</option>
                   <option value="openai-compatible">OpenAI-compatible</option>
+                  <option value="nvidia-pair">NVIDIA Personal AI Router (PAIR)</option>
                   <option value="opencode">OpenCode Zen / Go</option>
                   <option value="mistral">Mistral</option>
                   <option value="zai">z.ai</option>
@@ -2827,13 +2828,13 @@ export function AccountsTab(props: Props) {
                   </select>
                 </label>
               )}
-              {provider === "openai-compatible" && (
+              {(provider === "openai-compatible" || provider === "nvidia-pair") && (
                 <label>
                   Base URL
                   <input
                     value={manualBaseUrl}
                     onChange={(e) => setManualBaseUrl(e.target.value)}
-                    placeholder="https://your-api.example.com"
+                    placeholder={provider === "nvidia-pair" ? "http://127.0.0.1:11434" : "https://your-api.example.com"}
                   />
                 </label>
               )}
@@ -2856,7 +2857,7 @@ export function AccountsTab(props: Props) {
               </label>}
               {!onboardingProviderSetup && isManualTokenProvider(provider) && (
                 <>
-                  <label>Execution location<select value={manualLocation} onChange={(e) => setManualLocation(e.target.value as "" | "local" | "cloud")}><option value="">Infer from URL/provider</option><option value="local">Local</option><option value="cloud">Cloud</option></select></label>
+                  <label>Execution location<select value={manualLocation} onChange={(e) => setManualLocation(e.target.value as "" | "local" | "personal-cluster" | "cloud")}><option value="">Infer from URL/provider</option><option value="local">Local</option><option value="personal-cluster">Personal cluster</option><option value="cloud">Cloud</option></select></label>
                   <label>Concurrent slots<input type="number" min="1" value={manualMaxConcurrent} onChange={(e) => setManualMaxConcurrent(e.target.value)} placeholder="1 local / 8 cloud" /></label>
                   <label>Prefill tokens/s<input type="number" min="0" value={manualPrefill} onChange={(e) => setManualPrefill(e.target.value)} /></label>
                   <label>Decode tokens/s<input type="number" min="0" value={manualDecode} onChange={(e) => setManualDecode(e.target.value)} /></label>
@@ -2865,7 +2866,9 @@ export function AccountsTab(props: Props) {
                   <label>Metrics URL<input type="url" value={manualMetricsUrl} onChange={(e) => setManualMetricsUrl(e.target.value)} placeholder="Optional JSON metrics" /></label>
                 </>
               )}
-              {isManualTokenProvider(provider) ? (
+              {provider === "nvidia-pair" ? (
+                <div className="muted">PAIR is probed without a token and is isolated as personal-cluster capacity.</div>
+              ) : isManualTokenProvider(provider) ? (
                 <>
                   <label>
                     API key
@@ -2920,8 +2923,8 @@ export function AccountsTab(props: Props) {
                   isSubmitting ||
                   (isOAuthProvider(provider)
                     ? provider === "openai" && !manualEmail.trim()
-                    : !manualAccessToken.trim() ||
-                      (provider === "openai-compatible" &&
+                    : (provider !== "nvidia-pair" && !manualAccessToken.trim()) ||
+                      ((provider === "openai-compatible" || provider === "nvidia-pair") &&
                         !manualBaseUrl.trim()))
                 }
                 onClick={() => void submitManualAccount()}
@@ -3066,7 +3069,7 @@ export function AccountsTab(props: Props) {
                   </option>
                 </select>
               </label>
-              <label>Execution location<select value={editingAccount.location} onChange={(e) => setEditingAccount((current) => current ? { ...current, location: e.target.value as "local" | "cloud" } : current)}><option value="local">Local</option><option value="cloud">Cloud</option></select></label>
+              <label>Execution location<select value={editingAccount.location} onChange={(e) => setEditingAccount((current) => current ? { ...current, location: e.target.value as "local" | "personal-cluster" | "cloud" } : current)}><option value="local">Local</option><option value="personal-cluster">Personal cluster</option><option value="cloud">Cloud</option></select></label>
               <label>Concurrent slots<input type="number" min="1" value={editingAccount.maxConcurrent} onChange={(e) => setEditingAccount((current) => current ? { ...current, maxConcurrent: e.target.value } : current)} /></label>
               <label>Prefill tokens/s<input type="number" min="0" value={editingAccount.prefillTokensPerSecond} onChange={(e) => setEditingAccount((current) => current ? { ...current, prefillTokensPerSecond: e.target.value } : current)} /></label>
               <label>Decode tokens/s<input type="number" min="0" value={editingAccount.decodeTokensPerSecond} onChange={(e) => setEditingAccount((current) => current ? { ...current, decodeTokensPerSecond: e.target.value } : current)} /></label>

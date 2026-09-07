@@ -19,7 +19,7 @@ export const PRIORITY_CLASSES = [
 ] as const;
 export type PriorityClass = (typeof PRIORITY_CLASSES)[number];
 export type ExecutionMode = "sync" | "auto" | "defer";
-export type ExecutionLocation = "local" | "cloud";
+export type ExecutionLocation = "local" | "personal-cluster" | "cloud";
 export type PrivacyMode = "standard" | "confidential_verified";
 export type CapacityState = "ready" | "degraded" | "queue_only" | "unavailable";
 
@@ -103,7 +103,7 @@ export type LocalRuntimeAdapterId =
   | "manual-openai-compatible";
 
 export type LocalRuntimeMetadata = {
-  source: "multivibe-local-discovery";
+  source: "multivibe-local-discovery" | "multivibe-local-configuration";
   adapter: LocalRuntimeAdapterId;
   endpoint: string;
   confirmedModelIds: string[];
