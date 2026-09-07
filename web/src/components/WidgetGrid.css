@@ -2,8 +2,9 @@
 .widget-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
 .widget-toolbar p { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
 .widget-toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.widget-customize { font-size: 12px; }
-.widget-customize > span { font-size: 19px; margin-right: 6px; }
+.btn.widget-customize { display: inline-flex; align-items: center; gap: 5px; min-height: 32px; padding: 5px 8px; border-color: transparent; border-radius: 6px; background: transparent; color: var(--muted-strong); font-size: 12px; font-weight: 500; line-height: 20px; box-shadow: none; }
+.btn.widget-customize:hover { border-color: transparent; background: var(--surface-muted); color: var(--text); box-shadow: none; }
+.widget-customize > span { font-size: 14px; }
 .widget-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
 .widget-tile { min-width: 0; position: relative; border-radius: 20px; transition: box-shadow .18s, opacity .18s; }
 .widget-tile > .metric { height: 100%; min-height: 130px; box-sizing: border-box; border-radius: 20px; display: flex; flex-direction: column; justify-content: center; overflow-wrap: anywhere; }
