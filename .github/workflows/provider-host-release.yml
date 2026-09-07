@@ -273,7 +273,8 @@ jobs:
 
   build-windows:
     needs: validate-tag
-    runs-on: windows-2025
+    # node-gyp bundled with the pinned npm supports Visual Studio 2022.
+    runs-on: windows-2022
     timeout-minutes: 150
     permissions:
       contents: read
@@ -307,7 +308,9 @@ jobs:
         shell: pwsh
         run: |
           npm ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Root npm ci failed.' }
           npm --prefix web ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Web npm ci failed.' }
       - name: Compile Windows provider tests
         shell: pwsh
         run: |
