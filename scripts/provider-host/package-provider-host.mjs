@@ -823,7 +823,11 @@ async function main() {
   if (initialStatus && !options.allowDirty) throw new Error("release packaging requires a clean worktree");
   const sourceCommit = await command("git", ["rev-parse", "HEAD"], { capture: true });
   const buildNumber = await command("git", ["rev-list", "--count", "HEAD"], { capture: true });
-  await command("npm", ["run", "build"]);
+  // Keep each build in a fresh npm process. On Windows, an npm script that
+  // chains a --prefix invocation can leave the following command without the
+  // repository's node_modules/.bin on PATH.
+  await command("npm", ["run", "build:web"]);
+  await command("npm", ["run", "build:api"]);
   await command("npm", ["run", "build:proxy-core-native"]);
   const finalStatus = await command("git", ["status", "--porcelain"], { capture: true });
   if (finalStatus && !options.allowDirty) throw new Error("the application build changed the release worktree");
