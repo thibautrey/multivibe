@@ -398,7 +398,7 @@ function budgetPeriodStart(period: "hour" | "day" | "month", at: number) {
 export function setDecisionHeaders(
   res: express.Response,
   data: {
-    decision: "local" | "cloud" | "queued" | "rejected";
+    decision: "local" | "personal-cluster" | "cloud" | "queued" | "rejected";
     priority: PriorityClass;
     resolvedModel?: string;
     waitMs?: number;
