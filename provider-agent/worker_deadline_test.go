@@ -28,7 +28,7 @@ func TestWorkerTestCancelsInferenceBeforeClaimExpiry(t *testing.T) {
 	if _, conflict, err := runtimes.replace(1, []runtimeEndpoint{{AdapterID: "manual-openai-compatible", Endpoint: server.URL}}, runtimeAdapterRegistry()); err != nil || conflict {
 		t.Fatal("runtime setup failed", err)
 	}
-	service := newWorkerTestService(nil, http.DefaultClient, nil, nil, runtimes)
+	service := newWorkerTestService(nil, http.DefaultClient, nil, nil, runtimes, nil)
 	claim := workerTestClaim{Model: "registered/model", Prompt: workerTestPrompt, TestOnly: true, ExpiresAt: time.Now().UTC().Add(11 * time.Second).Format("2006-01-02T15:04:05.000Z")}
 	started := time.Now()
 	if _, _, _, err := service.infer(context.Background(), cloudEnrollmentView{RuntimeFamily: "manual-openai-compatible"}, claim); err == nil {

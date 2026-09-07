@@ -6,7 +6,9 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -98,8 +100,12 @@ func detectedModels(ctx context.Context, registry adapterRegistryDocument, confi
 		document.Runtimes = append(document.Runtimes, detectedRuntime{AdapterID: adapter.ID, Models: models})
 		document.Diagnostics = append(document.Diagnostics, detectedRuntimeDiagnostic{AdapterID: adapter.ID, Status: "available", Code: "catalog_ok"})
 	}
-	sort.Slice(document.Runtimes, func(left, right int) bool { return document.Runtimes[left].AdapterID < document.Runtimes[right].AdapterID })
-	sort.Slice(document.Diagnostics, func(left, right int) bool { return document.Diagnostics[left].AdapterID < document.Diagnostics[right].AdapterID })
+	sort.Slice(document.Runtimes, func(left, right int) bool {
+		return document.Runtimes[left].AdapterID < document.Runtimes[right].AdapterID
+	})
+	sort.Slice(document.Diagnostics, func(left, right int) bool {
+		return document.Diagnostics[left].AdapterID < document.Diagnostics[right].AdapterID
+	})
 	return document
 }
 
@@ -108,17 +114,38 @@ func probeRuntimeCatalog(ctx context.Context, adapter runtimeAdapter, candidate 
 }
 
 func probeRuntimeCatalogAuthenticated(ctx context.Context, adapter runtimeAdapter, candidate adapterCandidate, bearerToken string, client *http.Client) ([]string, error) {
+	return probeRuntimeCatalogAuthenticatedMode(ctx, adapter, candidate, bearerToken, client, false)
+}
+
+func probeManagedRuntimeCatalog(ctx context.Context, adapter runtimeAdapter, candidate adapterCandidate, client *http.Client) ([]string, error) {
+	return probeRuntimeCatalogAuthenticatedMode(ctx, adapter, candidate, "", client, true)
+}
+
+func probeRuntimeCatalogAuthenticatedMode(ctx context.Context, adapter runtimeAdapter, candidate adapterCandidate, bearerToken string, client *http.Client, managed bool) ([]string, error) {
 	if err := validateLoopbackCandidate(adapter, candidate); err != nil {
-		if len(adapter.Candidates) != 0 {
+		if managed {
+			parsed, parseErr := url.Parse(candidate.Endpoint)
+			host := ""
+			if parseErr == nil {
+				host = strings.TrimPrefix(strings.TrimSuffix(parsed.Hostname(), "]"), "[")
+			}
+			if adapter.ID != managedWorkerAdapterID || bearerToken != "" || parseErr != nil || parsed.Scheme != "http" ||
+				parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Port() == "" ||
+				(host != "127.0.0.1" && host != "::1") || (parsed.Path != "" && parsed.Path != "/") ||
+				candidate.HealthURL != candidate.Endpoint+adapter.HealthPath || candidate.CatalogURL != candidate.Endpoint+adapter.CatalogPath {
+				return nil, errors.New("managed provider runtime probe is invalid")
+			}
+		} else if len(adapter.Candidates) != 0 {
 			return nil, err
-		}
-		configured, configuredErr := normalizeRuntimeEndpoints([]runtimeEndpoint{{
-			AdapterID: adapter.ID, Endpoint: candidate.Endpoint, BearerToken: bearerToken,
-		}}, runtimeAdapterRegistry())
-		if configuredErr != nil || len(configured) != 1 ||
-			candidate.HealthURL != configured[0].Endpoint+adapter.HealthPath ||
-			candidate.CatalogURL != configured[0].Endpoint+adapter.CatalogPath {
-			return nil, errors.New("provider runtime manual probe is invalid")
+		} else {
+			configured, configuredErr := normalizeRuntimeEndpoints([]runtimeEndpoint{{
+				AdapterID: adapter.ID, Endpoint: candidate.Endpoint, BearerToken: bearerToken,
+			}}, runtimeAdapterRegistry())
+			if configuredErr != nil || len(configured) != 1 ||
+				candidate.HealthURL != configured[0].Endpoint+adapter.HealthPath ||
+				candidate.CatalogURL != configured[0].Endpoint+adapter.CatalogPath {
+				return nil, errors.New("provider runtime manual probe is invalid")
+			}
 		}
 	}
 	if client == nil {
