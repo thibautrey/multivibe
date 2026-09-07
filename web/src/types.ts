@@ -1,4 +1,5 @@
 export type ProviderId =
+  | "ai-sdk"
   | "openai"
   | "openai-compatible"
   | "opencode"
@@ -25,6 +26,8 @@ export type LocalRuntimeMetadata = {
 export type Account = {
   id: string;
   provider?: ProviderId;
+  sdkProvider?: string;
+  sdkModels?: string[];
   upstreamMode?: "responses" | "chat/completions";
   compatibilityMode?: "auto" | "responses" | "chat-completions-bridge";
   email?: string;
@@ -89,10 +92,10 @@ export type Trace = {
   projectHost?: string;
   accountId?: string;
   accountEmail?: string;
-  provider?: "openai" | "openai-compatible" | "opencode" | "mistral" | "zai" | "xai";
+  provider?: ProviderId;
   accountSelection?: {
     reason: "sticky" | "policy-preferred" | "quota-headroom";
-    provider: "openai" | "openai-compatible" | "opencode" | "mistral" | "zai" | "xai";
+    provider: ProviderId;
     candidateCount: number;
     eligibleCount: number;
     nearLimitCount: number;
@@ -178,7 +181,7 @@ export type TraceStats = {
     latencyP95Ms: number;
   }>;
   ttftByProviderModel: Array<{
-    provider: "openai" | "openai-compatible" | "opencode" | "mistral" | "zai" | "xai";
+    provider: ProviderId;
     model: string;
     inputTokenBucket:
       | "lt1k"
@@ -311,9 +314,9 @@ export type ExposedModel = {
   id: string;
   owned_by?: string;
   metadata?: {
-    provider?: "openai" | "openai-compatible" | "opencode" | "mistral" | "zai" | "xai";
+    provider?: ProviderId;
     provider_candidates?: Array<
-      "openai" | "openai-compatible" | "opencode" | "mistral" | "zai" | "xai"
+      ProviderId
     >;
     is_alias?: boolean;
     alias_targets?: string[];
@@ -336,7 +339,7 @@ export type PriorityClass = "critical" | "interactive" | "standard" | "batch";
 
 export type RoutingCandidate = {
   model: string;
-  provider?: "openai" | "openai-compatible" | "opencode" | "mistral" | "zai" | "xai";
+  provider?: ProviderId;
   accountIds?: string[];
   location?: "local" | "personal-cluster" | "cloud";
   quality?: number;

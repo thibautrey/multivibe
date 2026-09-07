@@ -373,7 +373,7 @@ function isOAuthProvider(provider: AccountProvider) {
 }
 
 function isManualTokenProvider(provider: AccountProvider) {
-  return provider === "mistral" || provider === "openai-compatible" || provider === "opencode" || provider === "zai";
+  return provider === "ai-sdk" || provider === "mistral" || provider === "openai-compatible" || provider === "opencode" || provider === "zai";
 }
 
 function oauthProviderLabel(provider: "openai" | "opencode" | "xai") {
@@ -498,6 +498,17 @@ export function AccountsTab(props: Props) {
     }
   };
   const [provider, setProvider] = useState<AccountProvider>("openai");
+  const [sdkProviders, setSdkProviders] = useState<Array<{id: string; name: string; models: Array<{id: string; name: string}>}>>([]);
+  const [sdkProvider, setSdkProvider] = useState("anthropic");
+  const [sdkModels, setSdkModels] = useState("");
+  const [sdkCatalogError, setSdkCatalogError] = useState("");
+  useEffect(() => {
+    let active = true;
+    void api("/admin/provider-catalog").then((catalog) => {
+      if (active) setSdkProviders(catalog.providers);
+    }).catch(() => { if (active) setSdkCatalogError("Provider list could not be loaded. Reload to try again."); });
+    return () => { active = false; };
+  }, []);
   const [manualEmail, setManualEmail] = useState("");
   const [manualAccessToken, setManualAccessToken] = useState("");
   const [manualRefreshToken, setManualRefreshToken] = useState("");
@@ -1089,7 +1100,8 @@ export function AccountsTab(props: Props) {
   const providerConnectionReady = isOAuthProvider(provider)
     ? provider !== "openai" || Boolean(manualEmail.trim())
     : (provider === "nvidia-pair" || provider === "opencode" || Boolean(manualAccessToken.trim())) &&
-      (!(provider === "openai-compatible" || provider === "nvidia-pair") || Boolean(manualBaseUrl.trim()));
+      (!(provider === "openai-compatible" || provider === "nvidia-pair") || Boolean(manualBaseUrl.trim())) &&
+      (provider !== "ai-sdk" || sdkProviders.some((entry) => entry.id === sdkProvider));
 
   useEffect(() => {
     if (!showAddAccount || oauthDialog) return;
@@ -1107,6 +1119,8 @@ export function AccountsTab(props: Props) {
     setProviderStep(0);
     setProviderError("");
     setProvider("openai");
+    setSdkProvider("anthropic");
+    setSdkModels("");
     setManualEmail("");
     setManualAccessToken("");
     setManualRefreshToken("");
@@ -1233,6 +1247,8 @@ export function AccountsTab(props: Props) {
     try {
       await createAccount({
         provider,
+        sdkProvider: provider === "ai-sdk" ? sdkProvider : undefined,
+        sdkModels: provider === "ai-sdk" ? sdkModels.split(/[\n,]+/).map((id) => id.trim()).filter(Boolean) : undefined,
         email: manualEmail.trim() || undefined,
         accessToken: provider === "nvidia-pair" ? undefined : manualAccessToken.trim(),
         refreshToken: manualRefreshToken.trim() || undefined,
@@ -1260,6 +1276,7 @@ export function AccountsTab(props: Props) {
   const openEditModal = (account: Account) => {
     setOpenMenu(null);
     const nextProvider: AccountProvider =
+      account.provider === "ai-sdk" ? "ai-sdk" :
       account.provider === "mistral"
         ? "mistral"
         : account.provider === "zai"
@@ -2872,6 +2889,18 @@ export function AccountsTab(props: Props) {
                   />
                 </label>
               )}
+              {provider === "ai-sdk" && <>
+                <label>Cloud provider
+                  <select value={sdkProvider} onChange={(event) => { setSdkProvider(event.target.value); setSdkModels(""); }}>
+                    {sdkProviders.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+                  </select>
+                </label>
+                {sdkCatalogError && <p role="alert">{sdkCatalogError}</p>}
+                <label>Model IDs (optional)
+                  <textarea value={sdkModels} onChange={(event) => setSdkModels(event.target.value)} placeholder="Leave empty for the catalog, or enter model IDs separated by commas" />
+                </label>
+                <p className="muted">{sdkProviders.find((entry) => entry.id === sdkProvider)?.models.length ?? 0} text-generation models listed by models.dev. Access and pricing depend on your provider account. Subscription quotas are not supplied by the catalog.</p>
+              </>}
               {provider === "nvidia-pair" ? (
                 <div className="muted">PAIR is probed without a token and is isolated as personal-cluster capacity.</div>
               ) : isManualTokenProvider(provider) ? (
@@ -2910,7 +2939,7 @@ export function AccountsTab(props: Props) {
             </div>}
             {providerStep === 2 && <>
               <dl className="provider-setup-summary">
-                <div><dt>Provider</dt><dd>{SETUP_PROVIDERS.find((item) => item.id === provider)?.name}</dd></div>
+                <div><dt>Provider</dt><dd>{provider === "ai-sdk" ? sdkProviders.find((item) => item.id === sdkProvider)?.name : SETUP_PROVIDERS.find((item) => item.id === provider)?.name}</dd></div>
                 <div><dt>Account</dt><dd>{manualEmail.trim() || "No email label"}</dd></div>
                 <div><dt>Connection</dt><dd>{isOAuthProvider(provider) ? manualOAuthMethod === "device" ? "Device sign-in" : "Browser sign-in" : provider === "opencode" && !manualAccessToken.trim() ? "OpenCode device sign-in" : provider === "nvidia-pair" ? "Token-free endpoint" : "API key provided"}</dd></div>
                 {(provider === "openai-compatible" || provider === "nvidia-pair") && <div><dt>Endpoint</dt><dd>{manualBaseUrl}</dd></div>}

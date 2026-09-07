@@ -1,3 +1,5 @@
+import { createSdkAdapterRouter } from "./ai-sdk/routes.js";
+import { SDK_INTERNAL_TOKEN } from "./ai-sdk/connection.js";
 import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -498,6 +500,8 @@ function adminGuard(
   next();
 }
 
+app.use("/internal/ai-sdk", createSdkAdapterRouter({ store, internalToken: SDK_INTERNAL_TOKEN }));
+
 if (MULTIVIBE_CONTROL_PLANE) {
   app.use(
     "/internal/v1-edge",
@@ -763,7 +767,7 @@ app.use("/admin", adminGuard, adminRouter);
 
 // These middleware instances remain available to the single-process profile.
 // The native profile does not mount them on `/v1`: that surface terminates in
-// the Rust edge and reaches Node only for the separate control-plane routes.
+// the Rust edge. SDK-backed providers use the separate internal SDK adapter.
 const inferenceIdempotencyMiddleware = createInferenceIdempotencyMiddleware({
   ttlMs: INFERENCE_IDEMPOTENCY_TTL_MS,
   inFlightTimeoutMs: INFERENCE_IDEMPOTENCY_IN_FLIGHT_TIMEOUT_MS,
