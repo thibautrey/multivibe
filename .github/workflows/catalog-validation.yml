@@ -26,4 +26,4 @@ jobs:
       - run: npm run catalog:check
       - run: go -C provider-agent test ./cmd/catalog-check ./runtimeprofile ./cmd/runtime-benchmark
       - name: Verify release archive fixtures
-        run: node --test scripts/provider-host/verify-provider-host-archive-fixtures.test.mjs
+        run: node --test scripts/provider-host/package-provider-host.test.mjs scripts/provider-host/verify-provider-host-archive-fixtures.test.mjs
