@@ -157,7 +157,10 @@ export default function App() {
   const localRuntimeDiscoveryGenerationRef = useRef(0);
   const mobileNavigationRef = useRef<HTMLDialogElement>(null);
   const mobileNavigationTriggerRef = useRef<HTMLButtonElement>(null);
-  const activeTabItem = TAB_ITEMS.find((item) => item.id === tab) ?? TAB_ITEMS[0];
+  const visibleTabItems = hostApplication
+    ? TAB_ITEMS
+    : TAB_ITEMS.filter((item) => item.id !== "updates");
+  const activeTabItem = visibleTabItems.find((item) => item.id === tab) ?? visibleTabItems[0];
   const sanitized = useMemo(() => {
     const params = new URLSearchParams(locationSearch);
     return params.get("sanitized") === "1" || params.get("safe") === "1";
@@ -1031,9 +1034,9 @@ export default function App() {
           </button>
 
           <nav className="sidebar-nav" aria-label="Primary navigation">
-            {TAB_ITEMS.map((item, index) => (
+            {visibleTabItems.map((item, index) => (
               <React.Fragment key={item.id}>
-              {(index === 0 || TAB_ITEMS[index - 1].group !== item.group) && <span className="sidebar-nav-label">{item.group}</span>}
+              {(index === 0 || visibleTabItems[index - 1].group !== item.group) && <span className="sidebar-nav-label">{item.group}</span>}
               <button
                 type="button"
                 className={tab === item.id ? "nav-tab active" : "nav-tab"}
@@ -1108,9 +1111,9 @@ export default function App() {
             </header>
 
             <nav className="mobile-navigation-list" aria-label="Mobile primary navigation">
-              {TAB_ITEMS.map((item, index) => (
+              {visibleTabItems.map((item, index) => (
                 <React.Fragment key={item.id}>
-                {(index === 0 || TAB_ITEMS[index - 1].group !== item.group) && <span className="mobile-navigation-group">{item.group}</span>}
+                {(index === 0 || visibleTabItems[index - 1].group !== item.group) && <span className="mobile-navigation-group">{item.group}</span>}
                 <button
                   type="button"
                   className={tab === item.id ? "mobile-navigation-item active" : "mobile-navigation-item"}
