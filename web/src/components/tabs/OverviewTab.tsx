@@ -98,8 +98,12 @@ export function OverviewTab({
             </div>
             <span className="badge">{usageStats.primaryCount + usageStats.secondaryCount} windows</span>
           </div>
-          <ProgressStat label="Next 5 hours" value={usageStats.primaryAvg} count={usageStats.primaryCount} />
-          <ProgressStat label="This week" value={usageStats.secondaryAvg} count={usageStats.secondaryCount} />
+          {usageStats.primaryCount > 0 && (
+            <ProgressStat label="Next 5 hours" value={usageStats.primaryAvg} count={usageStats.primaryCount} />
+          )}
+          {usageStats.secondaryCount > 0 && (
+            <ProgressStat label="This week" value={usageStats.secondaryAvg} count={usageStats.secondaryCount} />
+          )}
         </div>
 
         <div className="panel overview-models-panel">
