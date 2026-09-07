@@ -52,6 +52,11 @@ func TestCommunityOutboundBackendSelectionIsExactAndFailsClosed(t *testing.T) {
 }
 
 func signedCommunityOutboundClaim(t *testing.T, now time.Time) (communityOutboundClaim, ed25519.PublicKey) {
+ t.Helper()
+ return signedCommunityOutboundClaimForStream(t, now, false)
+}
+
+func signedCommunityOutboundClaimForStream(t *testing.T, now time.Time, stream bool) (communityOutboundClaim, ed25519.PublicKey) {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -70,7 +75,7 @@ func signedCommunityOutboundClaim(t *testing.T, now time.Time) (communityOutboun
 		CanonicalizationVersion: relayCanonicalization, RequestID: "request-one", AttemptID: "attempt-one",
 		RouteID: "route-one", ProviderID: "provider-one", Model: "qwen/qwen2.5-0.5b-instruct",
 		UpstreamModel: "qwen2.5:0.5b", Protocol: "openai", Operation: "chat_completions",
-		Path: "/v1/chat/completions", Stream: false,
+		Path: "/v1/chat/completions", Stream: stream,
 		RequestDigest: communityRequestDigest("openai", "chat_completions", "/v1/chat/completions", body),
 		BodyDigest:    hex.EncodeToString(bodyDigest[:]), BodyBytes: uint64(len(body)),
 		Nonce:     base64.RawURLEncoding.EncodeToString(make([]byte, 32)),
