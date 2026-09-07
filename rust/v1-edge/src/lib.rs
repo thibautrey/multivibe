@@ -6607,6 +6607,7 @@ pub struct JobManager {
     persist_lock: Arc<Mutex<()>>,
     scheduler: Arc<Mutex<WeightedFairScheduler>>,
     changed: Arc<Notify>,
+    webhooks_changed: Arc<Notify>,
     events: broadcast::Sender<JobEvent>,
     persistence_uncertain: Arc<AtomicBool>,
     #[cfg(test)]
@@ -6894,6 +6895,7 @@ impl JobManager {
             persist_lock: Arc::new(Mutex::new(())),
             scheduler: Arc::new(Mutex::new(WeightedFairScheduler::default())),
             changed: Arc::new(Notify::new()),
+            webhooks_changed: Arc::new(Notify::new()),
             events,
             persistence_uncertain: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
@@ -7035,6 +7037,7 @@ impl JobManager {
         let persistence_uncertain = self.persistence_uncertain.clone();
         let event_sender = self.events.clone();
         let changed = self.changed.clone();
+        let webhooks_changed = self.webhooks_changed.clone();
         #[cfg(test)]
         let commit_test_gate = self.commit_test_gate.lock().await.clone();
         let operation = operation.to_owned();
@@ -7058,6 +7061,8 @@ impl JobManager {
                     }
                     changed.notify_waiters();
                     changed.notify_one();
+                    webhooks_changed.notify_waiters();
+                    webhooks_changed.notify_one();
                     Ok(())
                 }
                 Err(error) if error.is_uncertain() => {
@@ -7071,6 +7076,8 @@ impl JobManager {
                     }
                     changed.notify_waiters();
                     changed.notify_one();
+                    webhooks_changed.notify_waiters();
+                    webhooks_changed.notify_one();
                     Err(format!(
                         "job store persistence became uncertain during {operation}: {}; restart required",
                         error.message()
@@ -7164,6 +7171,8 @@ impl JobManager {
     fn notify_changed(&self) {
         self.changed.notify_waiters();
         self.changed.notify_one();
+        self.webhooks_changed.notify_waiters();
+        self.webhooks_changed.notify_one();
     }
 
     async fn create(
@@ -7853,10 +7862,11 @@ async fn job_dispatch_loop(state: EdgeState) {
             }
             continue;
         }
-        if slots.available_permits() == 0 {
-            state.jobs.changed.notified().await;
-            continue;
-        }
+        let first_permit = slots
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("job slot semaphore remains open");
         let weights = state
             .store
             .snapshot()
@@ -7864,7 +7874,8 @@ async fn job_dispatch_loop(state: EdgeState) {
             .map(|store| application_fairness_weights(&store))
             .unwrap_or_default();
         let mut dispatched = false;
-        while let Ok(permit) = slots.clone().try_acquire_owned() {
+        let mut next_permit = Some(first_permit);
+        while let Some(permit) = next_permit.take() {
             let Some(job_activity) = state.drain.admit(ActivityKind::Job) else {
                 drop(permit);
                 break;
@@ -7889,6 +7900,7 @@ async fn job_dispatch_loop(state: EdgeState) {
             tokio::spawn(
                 async move { run_claimed_job(job_state, job, permit, job_activity).await },
             );
+            next_permit = slots.clone().try_acquire_owned().ok();
         }
         if dispatched {
             tokio::task::yield_now().await;
@@ -7910,7 +7922,7 @@ async fn webhook_delivery_loop(state: EdgeState) {
         }
         if state.drain.is_draining() {
             tokio::select! {
-                _ = state.jobs.changed.notified() => {}
+                _ = state.jobs.webhooks_changed.notified() => {}
                 _ = tokio::time::sleep(Duration::from_millis(100)) => {}
             }
             continue;
@@ -8015,7 +8027,7 @@ async fn webhook_delivery_loop(state: EdgeState) {
             }
         }
         tokio::select! {
-            _ = state.jobs.changed.notified() => {}
+            _ = state.jobs.webhooks_changed.notified() => {}
             _ = tokio::time::sleep(Duration::from_millis(250)) => {}
         }
     }
@@ -10657,7 +10669,7 @@ async fn drain_begin_handler(State(state): State<EdgeState>, headers: HeaderMap)
         return json_response(StatusCode::UNAUTHORIZED, json!({"error": "unauthorized"}));
     }
     state.drain.begin();
-    state.jobs.changed.notify_waiters();
+    state.jobs.notify_changed();
     drain_status_response(&state)
 }
 
@@ -10666,7 +10678,7 @@ async fn drain_resume_handler(State(state): State<EdgeState>, headers: HeaderMap
         return json_response(StatusCode::UNAUTHORIZED, json!({"error": "unauthorized"}));
     }
     state.drain.resume();
-    state.jobs.changed.notify_waiters();
+    state.jobs.notify_changed();
     drain_status_response(&state)
 }
 
@@ -12270,6 +12282,11 @@ mod tests {
             .unwrap()
             .unwrap();
         let _ = timeout(Duration::from_millis(1), manager.changed.notified()).await;
+        let _ = timeout(
+            Duration::from_millis(1),
+            manager.webhooks_changed.notified(),
+        )
+        .await;
         let gate = CommitTestGate {
             started: Arc::new(Notify::new()),
             release: Arc::new(Notify::new()),
@@ -12293,7 +12310,7 @@ mod tests {
             );
         let mut first_notified = Box::pin(manager.changed.notified());
         first_notified.as_mut().enable();
-        let mut second_notified = Box::pin(manager.changed.notified());
+        let mut second_notified = Box::pin(manager.webhooks_changed.notified());
         second_notified.as_mut().enable();
         gate.release.notify_one();
         timeout(Duration::from_secs(2), async {
@@ -12843,7 +12860,7 @@ mod tests {
         let permit = slots.clone().acquire_owned().await.unwrap();
         let mut dispatcher = Box::pin(manager.changed.notified());
         dispatcher.as_mut().enable();
-        let mut webhooks = Box::pin(manager.changed.notified());
+        let mut webhooks = Box::pin(manager.webhooks_changed.notified());
         webhooks.as_mut().enable();
 
         release_job_slot(permit, &manager);
