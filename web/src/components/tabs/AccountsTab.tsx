@@ -68,8 +68,8 @@ export type LocalWorkerProvider = {
   routing_eligible: false;
   compensation_eligible: false;
   capability: {
-    profile: "apple-silicon" | "linux-nvidia" | "windows-nvidia";
-    accelerator: "metal" | "cuda";
+    profile: "apple-silicon" | "intel-mac" | "linux-nvidia" | "linux-cpu" | "windows-nvidia";
+    accelerator: "metal" | "cuda" | "cpu";
     hardware: string;
     accelerator_memory_bytes: number;
   };
@@ -2329,7 +2329,7 @@ export function AccountsTab(props: Props) {
                     </label>
 
                     <label>
-                      GPU use limit (%)
+                      Compute allocation (%)
                       <input
                         type="number"
                         min="1"
@@ -2344,11 +2344,11 @@ export function AccountsTab(props: Props) {
                           event.target.value,
                         )}
                       />
-                      <small>Maximum GPU workload.</small>
+                      <small>Requested runtime workload allocation.</small>
                     </label>
 
                     <label>
-                      GPU memory limit (%)
+                      Runtime memory limit (%)
                       <input
                         type="number"
                         min="1"
@@ -2363,7 +2363,7 @@ export function AccountsTab(props: Props) {
                           event.target.value,
                         )}
                       />
-                      <small>Maximum GPU memory.</small>
+                      <small>Percentage of usable runtime memory. CPU hosting reserves half of system memory first.</small>
                     </label>
 
                     <label className="provider-capacity-wide">

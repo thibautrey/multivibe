@@ -348,6 +348,6 @@ test("provider selection model IDs match the bounded local consent contract", ()
   }
 });
 
- test("CPU accelerator selection survives the supervised environment boundary", () => {
-   assert.equal(providerAgentEnvironment({ MULTIVIBE_PROVIDER_ACCELERATOR: "cpu" }).MULTIVIBE_PROVIDER_ACCELERATOR, "cpu");
- });
+test("CPU accelerator selection survives the supervised environment boundary", () => {
+  assert.equal(providerAgentEnvironment({ MULTIVIBE_PROVIDER_ACCELERATOR: "cpu" }).MULTIVIBE_PROVIDER_ACCELERATOR, "cpu");
+});
