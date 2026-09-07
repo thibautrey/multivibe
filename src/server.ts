@@ -1,3 +1,4 @@
+import { createAuthRateLimiter } from "./auth-rate-limit.js";
 import { createSdkAdapterRouter } from "./ai-sdk/routes.js";
 import { SDK_INTERNAL_TOKEN } from "./ai-sdk/connection.js";
 import express from "express";
@@ -753,7 +754,7 @@ app.post(
   },
 );
 
-app.post("/admin/session", (req, res) => {
+app.post("/admin/session", createAuthRateLimiter({ limit: 20 }), (req, res) => {
   if (!ADMIN_TOKEN) return res.json({ authenticated: true });
   const token = String(req.body?.token ?? "");
   if (!safeEqual(token, ADMIN_TOKEN))

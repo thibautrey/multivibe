@@ -1,3 +1,4 @@
+import { trimTrailingSlashes } from "./string-utils.js";
 import type {
   Account,
   AccountSelectionTelemetry,
@@ -245,7 +246,7 @@ function zaiQuotaUrl(baseUrl: string): string {
     url.hash = "";
     return url.toString().replace(/\/$/, "");
   } catch {
-    const trimmed = raw.replace(/\/+$/, "");
+    const trimmed = trimTrailingSlashes(raw);
     return `${trimmed}/api/monitor/usage/quota/limit`;
   }
 }

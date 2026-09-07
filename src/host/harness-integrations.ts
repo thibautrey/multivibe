@@ -302,7 +302,7 @@ function decodeTomlBasicString(value: string): string | undefined {
 }
 
 function matchTomlTableHeader(line: string): string | undefined {
-  const match = /^\s*\[((?:"(?:\\.|[^"\\])*"|'[^']*'|[^\[\]])+)\]\s*(?:#.*)?$/.exec(line);
+  const match = /^\s*\[((?:"(?:\\.|[^"\\])*"|'[^']*'|[^\[\]\"'])+)\]\s*(?:#.*)?$/.exec(line);
   return match?.[1].trim();
 }
 

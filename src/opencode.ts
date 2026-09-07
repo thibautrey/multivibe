@@ -1,3 +1,4 @@
+import { trimTrailingSlashes } from "./string-utils.js";
 import { randomUUID } from "node:crypto";
 import {
   OPENCODE_BASE_URL,
@@ -68,7 +69,7 @@ async function postConsole<T>(path: string, body: Record<string, string>): Promi
 }
 
 export function normalizeOpenCodeApiRoot(value?: string): string {
-  const normalized = String(value ?? OPENCODE_BASE_URL).trim().replace(/\/+$/, "");
+  const normalized = trimTrailingSlashes(String(value ?? OPENCODE_BASE_URL).trim());
   return normalized.replace(/\/v1$/i, "");
 }
 
