@@ -767,8 +767,8 @@ func newOllamaRuntimeBackend(runtime managedControllerRuntime, catalogPath, depe
 		Accelerators: []runtimeBackendAcceleratorConstraint{
 			{Profile: "apple-silicon", OS: "darwin", Architecture: "arm64", Kind: "metal"},
 			{Profile: "intel-mac", OS: "darwin", Architecture: "amd64", Kind: "metal"},
-			{Profile: "linux-cpu", OS: "linux", Architecture: "arm64", Kind: "cpu"},
 			{Profile: "linux-cpu", OS: "linux", Architecture: "amd64", Kind: "cpu"},
+			{Profile: "linux-cpu", OS: "linux", Architecture: "arm64", Kind: "cpu"},
 			{Profile: "linux-nvidia", OS: "linux", Architecture: "amd64", Kind: "cuda"},
 			{Profile: "windows-nvidia", OS: "windows", Architecture: "amd64", Kind: "cuda"},
 		},

@@ -121,9 +121,10 @@ updates in MultiVibe if they prefer to update solely through WinGet.
 
 ## Umbrel
 
-See `packaging/umbrel/README.md`. Official submission is blocked by missing Linux
-arm64 support and an unverified Umbrel NVIDIA integration. No installable or
-compatible Umbrel package is claimed.
+See `packaging/umbrel/README.md`. Linux ARM64 and amd64 CPU support, conservative
+small-model profiles, native CI builds and a multiarchitecture package generator
+are implemented. Image publication and real Umbrel hardware/browser validation
+remain prerequisites for official submission.
 
 ## Refresh and validate
 

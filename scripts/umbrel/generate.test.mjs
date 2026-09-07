@@ -16,3 +16,16 @@ test('Umbrel rejects incomplete or unpinned images',()=>{
  for(const input of [{...descriptor,digest:'latest'},{...descriptor,manifests:descriptor.manifests.slice(0,1)},{...descriptor,mediaType:'application/vnd.oci.image.manifest.v1+json'}]) assert.throws(()=>umbrelPackage('1.2.3',input));
  assert.throws(()=>umbrelPackage('1.2.3-beta.1',descriptor));
 });
+
+// Exercise the binary boundary, not just the archive platform label.
+import {isELFArchitecture} from '../provider-host/verify-provider-host.mjs';
+test('ELF verification rejects mislabeled ARM and x86 binaries', () => {
+ const header=Buffer.alloc(20);header.set([0x7f,69,76,70,2,1]);header.writeUInt16LE(0xb7,18);
+ assert.equal(isELFArchitecture(header,'arm64'),true);
+ assert.equal(isELFArchitecture(header,'amd64'),false);
+ header.writeUInt16LE(0x3e,18);
+ assert.equal(isELFArchitecture(header,'arm64'),false);
+ assert.equal(isELFArchitecture(header,'amd64'),true);
+ header[5]=2;
+ assert.equal(isELFArchitecture(header,'amd64'),false);
+});
