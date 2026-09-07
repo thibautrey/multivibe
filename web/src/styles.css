@@ -5068,3 +5068,18 @@ body:has(> .modal-backdrop) {
   .overview-summary .metric-detail { font-size: 11px; }
   .overview-detail-grid { gap: 12px; }
 }
+
+/* Only rendered by the explicitly launched development demo. */
+.demo-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin: 0 24px 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.demo-notice strong { color: var(--text); }

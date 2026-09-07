@@ -24,7 +24,8 @@
     "test:source-release": "node --test scripts/source-release.test.mjs",
     "test:source-release-tag": "node --test scripts/verify-source-release-tag.test.mjs",
     "test": "tsx --test \"src/**/*.test.ts\" \"web/test/**/*.test.ts\"",
-    "start": "node --import ./dist/instrument.js dist/server.js"
+    "start": "node --import ./dist/instrument.js dist/server.js",
+    "demo": "npm --prefix web run demo"
   },
   "dependencies": {
     "@foxglove/wasm-zstd": "^1.0.1",
