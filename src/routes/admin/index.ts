@@ -69,7 +69,7 @@ import {
   validateSmartAlias,
 } from "../../smart-routing.js";
 import type { SmartRoutingCoordinator } from "../../smart-routing-routes.js";
-import { discoverAndPersistLocalRuntimes } from "../../local-runtime-discovery.js";
+import { configureNvidiaPairRuntime, discoverAndPersistLocalRuntimes } from "../../local-runtime-discovery.js";
 import {
   isValidProviderRuntimeEndpointInput,
   isValidProviderCapacityPolicy,
@@ -1796,6 +1796,17 @@ export function createAdminRouter(options: AdminRoutesOptions) {
 
   router.post("/accounts", async (req, res) => {
     const body = req.body ?? {};
+    if (body.provider === "nvidia-pair") {
+      if (typeof body.baseUrl !== "string" || !body.baseUrl.trim()) {
+        return res.status(400).json({ error: "baseUrl required for NVIDIA PAIR" });
+      }
+      try {
+        const account = await configureNvidiaPairRuntime(store, body.baseUrl.trim());
+        return res.json({ ok: true, account: redact(account) });
+      } catch (error: any) {
+        return res.status(400).json({ error: error?.message ?? String(error) });
+      }
+    }
     if (!body.accessToken)
       return res.status(400).json({ error: "accessToken required" });
     const provider =
@@ -1850,7 +1861,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
           : body.oidcClientId,
       baseUrl: provider === "opencode" ? baseUrl ?? OPENCODE_BASE_URL : baseUrl,
       location:
-        body.location === "local" || body.location === "cloud"
+        body.location === "local" || body.location === "personal-cluster" || body.location === "cloud"
           ? body.location
           : inferAccountLocation({ provider, baseUrl }),
       capacityProfile,
@@ -1879,8 +1890,8 @@ export function createAdminRouter(options: AdminRoutesOptions) {
         body.compatibilityMode,
       );
     }
-    if ("location" in body && body.location !== "local" && body.location !== "cloud") {
-      return res.status(400).json({ error: "location must be local or cloud" });
+    if ("location" in body && body.location !== "local" && body.location !== "personal-cluster" && body.location !== "cloud") {
+      return res.status(400).json({ error: "location must be local, personal-cluster, or cloud" });
     }
     if ("capacityProfile" in body) {
       try {

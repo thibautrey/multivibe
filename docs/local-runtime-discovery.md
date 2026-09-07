@@ -70,6 +70,21 @@ machine on the user's trusted local network. MultiVibe treats this adapter as a
 personal-cluster execution boundary rather than proof that execution stayed on
 the machine running Core.
 
+The dashboard exposes PAIR in **Add account**. The equivalent authenticated
+admin request is:
+
+```http
+POST /admin/accounts
+Content-Type: application/json
+
+{"provider":"nvidia-pair","baseUrl":"http://127.0.0.1:11434"}
+```
+
+Core probes `/v1/models` before saving the deterministic account. Only a
+literal IPv4 or IPv6 loopback HTTP origin with an explicit port is accepted.
+If an automatically discovered Ollama or LM Studio account uses that same
+origin, the explicit PAIR identity takes precedence.
+
 ## Network and authentication boundary
 
 Automatic probes are limited to the literal IPv4 and IPv6 loopback candidates

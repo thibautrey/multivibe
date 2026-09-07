@@ -405,11 +405,58 @@ export function isDiscoveredLocalRuntimeAccount(account: Account): boolean {
   }
 }
 
+function parseNvidiaPairEndpoint(value: string): URL {
+  const url = new URL(value);
+  if (
+    url.protocol !== "http:" ||
+    (url.hostname !== "127.0.0.1" && url.hostname !== "[::1]") ||
+    !url.port ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error("PAIR endpoint must be a loopback HTTP origin with an explicit port");
+  }
+  return url;
+}
+
+export function isConfiguredNvidiaPairAccount(account: Account): boolean {
+  if (
+    account.id !== "local-runtime-nvidia-pair" ||
+    account.provider !== "openai-compatible" ||
+    account.location !== "personal-cluster" ||
+    account.accessToken !== "" ||
+    account.localRuntime?.source !== "multivibe-local-configuration" ||
+    account.localRuntime.adapter !== "nvidia-pair" ||
+    account.localRuntime.authentication !== "none" ||
+    !account.baseUrl ||
+    !validConfirmedModelIds(account.localRuntime.confirmedModelIds)
+  ) return false;
+  try {
+    return parseNvidiaPairEndpoint(account.baseUrl).origin ===
+      parseNvidiaPairEndpoint(account.localRuntime.endpoint).origin;
+  } catch {
+    return false;
+  }
+}
+
 export function authorizationForAccountRequest(
   account: Account,
   requestUrl: string,
 ): string | undefined {
   if (account.accessToken) return `Bearer ${account.accessToken}`;
+  if (isConfiguredNvidiaPairAccount(account)) {
+    const request = new URL(requestUrl);
+    const endpoint = parseNvidiaPairEndpoint(account.localRuntime!.endpoint);
+    if (
+      request.origin !== endpoint.origin ||
+      !LOOPBACK_OPENAI_REQUEST_PATHS.has(request.pathname) ||
+      request.username || request.password || request.search || request.hash
+    ) throw new Error("request is outside the configured PAIR boundary");
+    return undefined;
+  }
   if (!isDiscoveredLocalRuntimeAccount(account)) {
     throw new Error("account has no credential and is not a discovered local runtime");
   }
@@ -420,6 +467,47 @@ export function authorizationForAccountRequest(
     throw new Error("request origin does not match the discovered local runtime");
   }
   return undefined;
+}
+
+export async function configureNvidiaPairRuntime(
+  store: AccountStore,
+  endpointInput: string,
+  options: LocalRuntimeDiscoveryOptions = {},
+): Promise<Account> {
+  const endpoint = parseNvidiaPairEndpoint(endpointInput).origin;
+  const fetchFn = options.fetchFn ?? fetch;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.max(1, options.timeoutMs ?? LOCAL_RUNTIME_DISCOVERY_TIMEOUT_MS));
+  let confirmedModelIds: string[];
+  try {
+    const response = await fetchFn(`${endpoint}/v1/models`, {
+      method: "GET", headers: { accept: "application/json" }, redirect: "manual", signal: controller.signal,
+    });
+    if (response.status !== 200) throw new Error(`PAIR model catalog probe returned HTTP ${response.status}`);
+    confirmedModelIds = parseModelsPayload(await readBoundedJson(response, options.maxResponseBytes ?? LOCAL_RUNTIME_MAX_RESPONSE_BYTES));
+  } finally {
+    clearTimeout(timeout);
+  }
+  const existing = await store.listAccounts();
+  const current = existing.find((account) => account.id === "local-runtime-nvidia-pair");
+  if (current && !isConfiguredNvidiaPairAccount(current)) throw new Error("refusing to replace existing non-PAIR account");
+  for (const account of existing) {
+    if (
+      (account.localRuntime?.adapter === "ollama" || account.localRuntime?.adapter === "lm-studio") &&
+      account.localRuntime.source === "multivibe-local-discovery" && account.baseUrl
+    ) {
+      try { if (new URL(account.baseUrl).origin === endpoint) await store.deleteAccount(account.id); } catch { /* ignore malformed legacy URL */ }
+    }
+  }
+  const account: Account = {
+    ...current,
+    id: "local-runtime-nvidia-pair", provider: "openai-compatible", upstreamMode: "chat/completions",
+    email: current?.email ?? "NVIDIA Personal AI Router (PAIR)", accessToken: "", baseUrl: endpoint,
+    enabled: current?.enabled ?? true, priority: current?.priority ?? 0, location: "personal-cluster",
+    localRuntime: { source: "multivibe-local-configuration", adapter: "nvidia-pair", endpoint, confirmedModelIds, authentication: "none" },
+  };
+  await store.addOrUpdate(account);
+  return account;
 }
 
 function parseModelsPayload(
@@ -618,10 +706,12 @@ export async function discoverAndPersistLocalRuntimes(
 ): Promise<{ results: LocalRuntimeProbeResult[]; accounts: Account[] }> {
   const results = await discoverLocalRuntimes(options);
   const existingAccounts = await store.listAccounts();
+  const pairOrigins = new Set(existingAccounts.filter(isConfiguredNvidiaPairAccount).map((account) => new URL(account.baseUrl!).origin));
   const accounts: Account[] = [];
 
   for (const result of results) {
     if (result.status !== "discovered") continue;
+    if ((result.adapter === "ollama" || result.adapter === "lm-studio") && pairOrigins.has(result.endpoint)) continue;
     const id = discoveredAccountId(result.adapter);
     const existing = existingAccounts.find((account) => account.id === id);
     if (

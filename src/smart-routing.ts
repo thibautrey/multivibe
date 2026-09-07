@@ -287,7 +287,7 @@ export function validateSmartAlias(alias: ModelAlias): string[] {
       if (candidate.quality !== undefined && (candidate.quality < 0 || candidate.quality > 100)) {
         errors.push(`rule ${rule.id} quality must be between 0 and 100`);
       }
-      if (candidate.location && candidate.location !== "local" && candidate.location !== "cloud") {
+      if (candidate.location && candidate.location !== "local" && candidate.location !== "personal-cluster" && candidate.location !== "cloud") {
         errors.push(`rule ${rule.id} has an invalid candidate location`);
       }
       for (const value of [
@@ -324,7 +324,7 @@ export function validateSmartAlias(alias: ModelAlias): string[] {
     }
     if (
       rule.constraints?.allowedLocations?.some(
-        (location) => location !== "local" && location !== "cloud",
+        (location) => location !== "local" && location !== "personal-cluster" && location !== "cloud",
       )
     ) errors.push(`rule ${rule.id} has an invalid allowed location`);
     if (
@@ -460,7 +460,7 @@ function score(
     (1 + (resource.predictedWaitMs + resource.averageLatencyMs) / 1_000);
   const cost = estimatedCostUsd === undefined ? 0.5 : 1 / (1 + estimatedCostUsd * 10);
   const quality = Math.max(0, Math.min(1, (config.quality ?? 50) / 100));
-  const locality = resource.location === "local" ? 1 : 0;
+  const locality = resource.location === "local" ? 1 : resource.location === "personal-cluster" ? 0.5 : 0;
   return (
     latency * objectives.latency +
     cost * objectives.cost +
@@ -698,7 +698,7 @@ export class CapacityTracker extends EventEmitter {
       const location = account.location ?? inferAccountLocation(account);
       const maxConcurrent = Math.max(
         1,
-        Math.floor(profile.maxConcurrent ?? (location === "local" ? 1 : 8)),
+        Math.floor(profile.maxConcurrent ?? (location === "cloud" ? 8 : 1)),
       );
       const averageLatencyMs = observed.latencyMs ?? 10_000;
       const freeSlots = Math.max(0, maxConcurrent - observed.inFlight);

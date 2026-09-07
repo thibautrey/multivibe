@@ -60,7 +60,7 @@ export type TraceEntry = {
   requestedModel?: string;
   resolvedModel?: string;
   priority?: "critical" | "interactive" | "standard" | "batch";
-  routingDecision?: "local" | "cloud" | "queued" | "rejected";
+  routingDecision?: "local" | "personal-cluster" | "cloud" | "queued" | "rejected";
   routingRule?: string;
   routingScores?: Array<{
     model: string;
@@ -70,7 +70,7 @@ export type TraceEntry = {
   }>;
   admissionWaitMs?: number;
   jobId?: string;
-  executionLocation?: "local" | "cloud";
+  executionLocation?: "local" | "personal-cluster" | "cloud";
   capacityVersion?: number;
   status: number;
   isError: boolean;
