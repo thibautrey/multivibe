@@ -31,6 +31,7 @@ import {
   CHATGPT_BASE_URL,
   MISTRAL_BASE_URL,
   MISTRAL_UPSTREAM_PATH,
+  OPENCODE_BASE_URL,
   MISTRAL_COMPACT_UPSTREAM_PATH,
   ZAI_BASE_URL,
   ZAI_UPSTREAM_PATH,
@@ -89,6 +90,10 @@ import { createProviderWorkerEstimateClient } from "./provider-worker-estimate.j
 import { createBodyParserMiddleware } from "./middleware/decompression.js";
 import http from "node:http";
 import { scheduleWeeklyReset, startScheduledWeeklyResetMonitor } from "./rate-limit-reset.js";
+import {
+  startUsageRefreshMonitor,
+} from "./usage-refresh-monitor.js";
+import { UsageRefreshCoordinator } from "./usage-refresh.js";
 import {
   identifyProxyApplication,
   parseProxyApiKeys,
@@ -311,6 +316,17 @@ startScheduledWeeklyResetMonitor({
   oauthConfig,
   openaiBaseUrl: CHATGPT_BASE_URL,
 });
+const usageRefreshCoordinator = new UsageRefreshCoordinator();
+const usageRefreshMonitor = startUsageRefreshMonitor({
+  store,
+  oauthConfig,
+  openaiBaseUrl: CHATGPT_BASE_URL,
+  mistralBaseUrl: MISTRAL_BASE_URL,
+  zaiBaseUrl: ZAI_BASE_URL,
+  opencodeBaseUrl: OPENCODE_BASE_URL,
+  xaiBaseUrl: XAI_BASE_URL,
+  coordinator: usageRefreshCoordinator,
+});
 
 app.use(
   createRequestTracingMiddleware({
@@ -332,6 +348,7 @@ const adminRouter = createAdminRouter({
   codexProjectRegistrationToken: CODEX_PROJECT_REGISTRATION_TOKEN,
   configuredProxyApiKeys,
   smartRouting,
+  usageRefreshCoordinator,
   anonymousUsageSharing,
   providerAgent,
   hostApplication: MULTIVIBE_HOST_APPLICATION,
@@ -363,6 +380,7 @@ const proxyRouter = createProxyRouter({
   oauthConfig,
   capacityTracker,
   smartRoutingCoordinator: smartRouting,
+  usageRefreshCoordinator,
   moduleManager,
   ...(confidentialInference ? { confidentialInference } : {}),
 });
@@ -858,6 +876,7 @@ async function shutdown(signal: NodeJS.Signals) {
   shuttingDown = true;
   jobRunner.stop();
   smartRouting.stopHealthMonitoring();
+  usageRefreshMonitor.stop();
   anonymousUsageSharing.stop();
   await providerAgent.stop();
   console.log(`received ${signal}, flushing persistent state`);

@@ -968,6 +968,7 @@ file before they reach the container.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `USAGE_CACHE_TTL_MS` | `300000` | Usage snapshot freshness |
+| `USAGE_REFRESH_INTERVAL_MS` | `600000` | Background quota refresh interval when no requests are running |
 | `USAGE_TIMEOUT_MS` | `10000` | Provider usage-probe timeout |
 | `USAGE_STALE_WHILE_REVALIDATE` | `true` | Route with bounded stale/missing usage while refreshing |
 | `USAGE_STALE_MAX_AGE_MS` | `1800000` | Maximum stale usage age |

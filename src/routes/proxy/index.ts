@@ -194,6 +194,7 @@ type ProxyRoutesOptions = {
   oauthConfig: OAuthConfig;
   capacityTracker?: CapacityTracker;
   smartRoutingCoordinator?: SmartRoutingCoordinator;
+  usageRefreshCoordinator?: UsageRefreshCoordinator;
   moduleManager?: ModuleManager;
   sessionAffinityCache?: SessionAffinityCache;
   sessionAffinityEnabled?: boolean;
@@ -1997,7 +1998,8 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
   } = options;
   const { recordTrace } = traceManager;
   const router = express.Router();
-  const usageRefreshCoordinator = new UsageRefreshCoordinator();
+  const usageRefreshCoordinator =
+    options.usageRefreshCoordinator ?? new UsageRefreshCoordinator();
 
   function rejectNonPost(routeLabel: string): express.RequestHandler {
     return (req, res, next) => {

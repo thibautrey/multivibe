@@ -17,6 +17,7 @@ import {
   refreshUsageIfNeeded,
   USAGE_CACHE_TTL_MS,
 } from "../../quota.js";
+import type { UsageRefreshCoordinator } from "../../usage-refresh.js";
 import {
   accountFromOAuth,
   buildAuthorizationUrl,
@@ -43,6 +44,7 @@ import {
   XAI_OAUTH_CLIENT_ID,
   XAI_OAUTH_ISSUER,
   OPENCODE_BASE_URL,
+  USAGE_REFRESH_INTERVAL_MS,
 } from "../../config.js";
 import {
   accountFromXaiOAuth,
@@ -115,6 +117,7 @@ export type AdminRoutesOptions = {
   configuredProxyApiKeys: ProxyApiKey[];
   storagePaths: StoragePaths;
   smartRouting?: SmartRoutingCoordinator;
+  usageRefreshCoordinator?: UsageRefreshCoordinator;
   anonymousUsageSharing?: AnonymousUsageSharingController;
   providerAgent?: ProviderAgentControl;
   hostApplication?: boolean;
@@ -729,8 +732,21 @@ export function createAdminRouter(options: AdminRoutesOptions) {
         const valid = tokenRefreshNeeded
           ? await ensureValidToken(account, oauthConfig)
           : account;
-        await refreshUsageIfNeeded(valid, usageBaseUrlForAccount(valid), force);
-        return { account: valid, modified: true };
+        let refreshedAccount = valid;
+        if (options.usageRefreshCoordinator) {
+          refreshedAccount = await options.usageRefreshCoordinator.refresh(
+            valid,
+            usageBaseUrlForAccount(valid),
+            force,
+          );
+        } else {
+          refreshedAccount = await refreshUsageIfNeeded(
+            valid,
+            usageBaseUrlForAccount(valid),
+            force,
+          );
+        }
+        return { account: refreshedAccount, modified: true };
       }),
     );
     await Promise.all(
@@ -893,6 +909,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       oauthRedirectUri: oauthConfig.redirectUri,
       xaiAuthPath: XAI_AUTH_PATH,
       usageCacheTtlMs: USAGE_CACHE_TTL_MS,
+      usageRefreshIntervalMs: USAGE_REFRESH_INTERVAL_MS,
       storage: {
         accountsPath: storagePaths.accountsPath,
         oauthStatePath: storagePaths.oauthStatePath,
