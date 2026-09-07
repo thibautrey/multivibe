@@ -21,6 +21,8 @@ const (
 	workerTestPollInterval   = 2 * time.Second
 	workerTestMaxBodyBytes   = 70 * 1024
 	workerTestMaxOutputBytes = 64 * 1024
+	workerTestPrompt         = "Reply with exactly MULTIVIBE_WORKER_OK."
+	workerTestExpectedOutput = "MULTIVIBE_WORKER_OK"
 )
 
 var providerWorkerSessionToken = regexp.MustCompile(`^mwt_[A-Za-z0-9_-]{43}$`)
@@ -213,7 +215,7 @@ func (service *workerTestService) poll(ctx context.Context, token string) (*work
 	enrollment := service.enrollment.snapshot()
 	if !providerUUID.MatchString(claim.JobID) || !providerUUID.MatchString(claim.NodeID) ||
 		enrollment == nil || claim.NodeID != enrollment.NodeID || !validSelectedModelID(claim.Model) ||
-		claim.Prompt != "Reply with exactly MULTIVIBE_WORKER_OK." || err != nil || !expiresAt.After(service.now()) || !claim.TestOnly {
+		claim.Prompt != workerTestPrompt || err != nil || !expiresAt.After(service.now()) || !claim.TestOnly {
 		return nil, errors.New("worker test claim is invalid")
 	}
 	// Cloud owns model scheduling. Validate the claim against the live local
@@ -384,11 +386,11 @@ func (service *workerTestService) infer(ctx context.Context, enrollment cloudEnr
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil || len(result.Choices) != 1 ||
-		strings.TrimSpace(result.Choices[0].Message.Content) == "" ||
+		result.Choices[0].Message.Content != workerTestExpectedOutput ||
 		len([]byte(result.Choices[0].Message.Content)) > workerTestMaxOutputBytes {
 		return "", 0, 0, errors.New("worker test runtime response is invalid")
 	}
-	return strings.TrimSpace(result.Choices[0].Message.Content), result.Usage.PromptTokens, result.Usage.CompletionTokens, nil
+	return result.Choices[0].Message.Content, result.Usage.PromptTokens, result.Usage.CompletionTokens, nil
 }
 
 func (service *workerTestService) complete(ctx context.Context, token string, claim workerTestClaim, output string, inputTokens, outputTokens uint64, inferenceErr error) error {

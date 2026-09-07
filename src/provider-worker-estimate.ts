@@ -15,7 +15,7 @@ export type ProviderWorkerEstimateClient = {
 };
 
 type HardwareCohort = {
-  profile: "apple-silicon" | "linux-nvidia";
+  profile: "apple-silicon" | "linux-nvidia" | "windows-nvidia";
   accelerator: "metal" | "cuda";
   chip: string;
   memory_bucket_gib: number;
@@ -86,7 +86,7 @@ function readCatalog(value: unknown): HardwareEstimateCatalog {
   for (const item of document.cohorts) {
     if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("estimate cohort is invalid");
     const cohort = item as Record<string, unknown>;
-    if (!["apple-silicon", "linux-nvidia"].includes(String(cohort.profile)) ||
+    if (!["apple-silicon", "linux-nvidia", "windows-nvidia"].includes(String(cohort.profile)) ||
         !["metal", "cuda"].includes(String(cohort.accelerator)) ||
         (cohort.profile === "apple-silicon" ? cohort.accelerator !== "metal" : cohort.accelerator !== "cuda") ||
         typeof cohort.chip !== "string" || cohort.chip.trim() !== cohort.chip || cohort.chip.length < 2 || cohort.chip.length > 120 ||
@@ -104,7 +104,7 @@ function capabilityChip(capability: ProviderHostCapability): string | undefined 
   if (capability.profile === "apple-silicon" && capability.accelerator === "metal") {
     return capability.hardware_model?.trim() || undefined;
   }
-  if (capability.profile === "linux-nvidia" && capability.accelerator === "cuda") {
+  if ((capability.profile === "linux-nvidia" || capability.profile === "windows-nvidia") && capability.accelerator === "cuda") {
     const selected = capability.cuda_device ?? 0;
     return capability.gpus?.[selected]?.name.trim() || undefined;
   }
