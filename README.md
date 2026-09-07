@@ -32,6 +32,12 @@
 </p>
 
 
+<p align="center">
+  <a href="#-dashboard"><img src="./assets/screenshots/home.png" alt="Current MultiVibe Home dashboard with fictional demo data" width="1100" /></a>
+  <br />
+  <sub>Current dashboard · Fictional data from the local demo instance</sub>
+</p>
+
 ## ✨ At a glance
 
 | One endpoint | Resilient routing | Your infrastructure |
@@ -325,6 +331,21 @@ system themes.
 | Tracing | Paginated requests, payload diagnostics, project attribution, cost/token/latency views, time ranges, and ZIP export |
 | Plugins | Install, pin, enable, update, disable, and remove trusted lifecycle modules |
 | API reference | Endpoint documentation, generated examples, model selection, and a live request console |
+
+<details>
+<summary><strong>Current dashboard previews — Activity and API workspace</strong></summary>
+
+Captured from the current UI on September 7, 2026, using the fictional demo dataset.
+
+### Activity — performance
+
+![Current Activity dashboard with fictional latency measurements](./assets/screenshots/activity.png)
+
+### API workspace
+
+![Current API workspace connected to the local demo API](./assets/screenshots/api-workspace.png)
+
+</details>
 
 ### Try the current UI with sample data
 
