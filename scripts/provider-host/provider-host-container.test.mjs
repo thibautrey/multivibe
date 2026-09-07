@@ -55,7 +55,7 @@ test("the Compose deployment exposes only Core and keeps state and models separa
 
 test("the Unraid template is beta, GPU-bounded and does not request credentials", async () => {
   const [profile, template] = await Promise.all([
-    read("packaging/unraid/ca_profile.xml"),
+    read("ca_profile.xml"),
     read("packaging/unraid/multivibe-host.xml"),
   ]);
   assert.match(profile, /^<CommunityApplications>[\s\S]*<Profile>/u);
