@@ -62,8 +62,10 @@ export type LocalWorkerProvider = {
   kind: "system-local-worker";
   name: "MultiVibe Worker";
   location: "local";
-  configuration_state: "unconfigured" | "submitted";
-  agent_state: "detected" | "selected" | "submitted";
+  enrollment_state: "not_enrolled" | "enrolled";
+  capacity_state: "not_configured" | "disabled" | "paused" | "enabled";
+  cloud_runtime: "managed-ollama";
+  trust_tier: "community";
   removable: false;
   routing_eligible: false;
   compensation_eligible: false;
@@ -569,8 +571,7 @@ export function AccountsTab(props: Props) {
   const [openMenu, setOpenMenu] = useState<OpenAccountMenu | null>(null);
   const accountActionMenuRef = useRef<HTMLDivElement | null>(null);
   const accountActionTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const [makeMoneyPreviewAccount, setMakeMoneyPreviewAccount] =
-    useState<Account | null>(null);
+  const [workerSetupOpen, setWorkerSetupOpen] = useState(false);
   const [providerPreviewStatus, setProviderPreviewStatus] =
     useState<ProviderPreviewStatus>("idle");
   const [providerSelection, setProviderSelection] =
@@ -595,9 +596,9 @@ export function AccountsTab(props: Props) {
   const [providerCapacityStatus, setProviderCapacityStatus] =
     useState<ProviderCapacityStatus>("idle");
   const [providerCapacityMessage, setProviderCapacityMessage] = useState("");
-  const makeMoneyDialogRef = useRef<HTMLDivElement | null>(null);
-  const makeMoneyTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const makeMoneyCloseRef = useRef<HTMLButtonElement | null>(null);
+  const workerSetupDialogRef = useRef<HTMLDivElement | null>(null);
+  const workerSetupTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const workerSetupCloseRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (providerSetupRequest) setShowAddAccount(true);
@@ -692,7 +693,7 @@ export function AccountsTab(props: Props) {
   }, [openMenu?.accountId]);
 
   useEffect(() => {
-    if (!makeMoneyPreviewAccount) return;
+    if (!workerSetupOpen) return;
 
     let cancelled = false;
     setProviderPreviewStatus("loading");
@@ -772,10 +773,10 @@ export function AccountsTab(props: Props) {
     return () => {
       cancelled = true;
     };
-  }, [makeMoneyPreviewAccount]);
+  }, [workerSetupOpen]);
 
   useEffect(() => {
-    if (!makeMoneyPreviewAccount) return;
+    if (!workerSetupOpen) return;
 
     const previouslyFocused =
       document.activeElement instanceof HTMLElement
@@ -784,18 +785,18 @@ export function AccountsTab(props: Props) {
     const previousBodyOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const focusFrame = window.requestAnimationFrame(() => {
-      makeMoneyCloseRef.current?.focus();
+      workerSetupCloseRef.current?.focus();
     });
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        setMakeMoneyPreviewAccount(null);
+        setWorkerSetupOpen(false);
         return;
       }
       if (event.key !== "Tab") return;
 
-      const dialog = makeMoneyDialogRef.current;
+      const dialog = workerSetupDialogRef.current;
       if (!dialog) return;
       const focusable = Array.from(
         dialog.querySelectorAll<HTMLElement>(dialogFocusableSelector),
@@ -826,11 +827,11 @@ export function AccountsTab(props: Props) {
       document.removeEventListener("keydown", onKeyDown);
       document.body.style.overflow = previousBodyOverflow;
       window.requestAnimationFrame(() => {
-        const focusTarget = makeMoneyTriggerRef.current ?? previouslyFocused;
+        const focusTarget = workerSetupTriggerRef.current ?? previouslyFocused;
         if (focusTarget?.isConnected) focusTarget.focus();
       });
     };
-  }, [makeMoneyPreviewAccount]);
+  }, [workerSetupOpen]);
 
   const toggleProviderSelection = (model: string) => {
     setProviderSelectionDraft((current) =>
@@ -1842,8 +1843,17 @@ export function AccountsTab(props: Props) {
               <div>
                 <div className="inline wrap">
                   <h3 id="local-worker-provider-title">{localWorker.name}</h3>
-                  <span className="badge badge-warn">
-                    {localWorker.configuration_state === "submitted" ? "Submitted" : "Unconfigured"}
+                  <span className={localWorker.enrollment_state === "enrolled" ? "badge badge-live" : "badge badge-warn"}>
+                    {localWorker.enrollment_state === "enrolled" ? "Enrolled" : "Not enrolled"}
+                  </span>
+                  <span className={localWorker.capacity_state === "enabled" ? "badge badge-live" : "badge"}>
+                    {localWorker.capacity_state === "enabled"
+                      ? "Capacity enabled"
+                      : localWorker.capacity_state === "paused"
+                        ? "Capacity paused"
+                        : localWorker.capacity_state === "disabled"
+                          ? "Cloud work disabled"
+                          : "Capacity not configured"}
                   </span>
                 </div>
                 <p className="muted">
@@ -1852,8 +1862,20 @@ export function AccountsTab(props: Props) {
               </div>
             </div>
             <div className="local-worker-provider-actions">
+              <button
+                ref={workerSetupTriggerRef}
+                type="button"
+                className="btn secondary"
+                aria-haspopup="dialog"
+                aria-controls="make-money-preview-dialog"
+                onClick={() => setWorkerSetupOpen(true)}
+              >
+                Configure this worker
+              </button>
               <a className="btn" href={localWorker.connect_url} target="_blank" rel="noreferrer">
-                Connect Multivibe Cloud and start earning
+                {localWorker.enrollment_state === "enrolled"
+                  ? "Open worker in MultiVibe Cloud"
+                  : "Connect this Mac to MultiVibe Cloud"}
               </a>
             </div>
           </article>
@@ -2117,21 +2139,6 @@ export function AccountsTab(props: Props) {
                         capacity: {a.capacityProfile.maxConcurrent ?? "?"} slots · {a.capacityProfile.prefillTokensPerSecond ?? "?"} prefill tok/s · {a.capacityProfile.decodeTokensPerSecond ?? "?"} decode tok/s · {a.capacityProfile.contextWindow ?? "?"} ctx
                       </span>
                     )}
-                    {a.location === "local" && (
-                      <button
-                        type="button"
-                        className="btn secondary make-money-preview-trigger"
-                        aria-haspopup="dialog"
-                        aria-controls="make-money-preview-dialog"
-                        onClick={(event) => {
-                          makeMoneyTriggerRef.current = event.currentTarget;
-                          setOpenMenu(null);
-                          setMakeMoneyPreviewAccount(a);
-                        }}
-                      >
-                        Share models · Preview
-                      </button>
-                    )}
                     {isOpenAiAccount(a) && (
                       <div className="reset-quota-actions">
                         <button
@@ -2215,20 +2222,20 @@ export function AccountsTab(props: Props) {
         ) : null}
       </section>
 
-      {makeMoneyPreviewAccount &&
+      {workerSetupOpen && localWorker &&
         createPortal(
           <div
           className="modal-backdrop make-money-preview-backdrop"
           role="presentation"
           onClick={(event) => {
             if (event.target === event.currentTarget) {
-              setMakeMoneyPreviewAccount(null);
+              setWorkerSetupOpen(false);
             }
           }}
         >
           <div
             id="make-money-preview-dialog"
-            ref={makeMoneyDialogRef}
+            ref={workerSetupDialogRef}
             className="modal panel make-money-preview-modal"
             role="dialog"
             aria-modal="true"
@@ -2239,20 +2246,21 @@ export function AccountsTab(props: Props) {
             <div className="modal-title-row make-money-preview-header">
               <div>
                 <span className="badge badge-warn">
-                  {runtimeIdentityForAccount(makeMoneyPreviewAccount).label} local · Preview
+                  This computer · {localWorker.trust_tier === "community" ? "Community worker" : localWorker.trust_tier}
                 </span>
-                <h2 id="make-money-preview-title">Share your GPU</h2>
+                <h2 id="make-money-preview-title">Configure Cloud capacity</h2>
                 <p id="make-money-preview-summary" className="muted">
-                  Choose how much of this computer you want to share. You can
-                  pause it anytime.
+                  Cloud jobs use only MultiVibe&apos;s managed Ollama runtime. Your
+                  oMLX, LM Studio, Ollama and compatible local endpoints remain
+                  available for local inference and are never used for Cloud work.
                 </p>
               </div>
               <button
-                ref={makeMoneyCloseRef}
+                ref={workerSetupCloseRef}
                 type="button"
                 className="btn ghost modal-close-button"
-                aria-label="Close Make money preview"
-                onClick={() => setMakeMoneyPreviewAccount(null)}
+                aria-label="Close worker setup"
+                onClick={() => setWorkerSetupOpen(false)}
               >
                 Close
               </button>
@@ -2552,8 +2560,8 @@ export function AccountsTab(props: Props) {
             <details className="make-money-preview-advanced">
               <summary>
                 <span className="make-money-preview-advanced-copy">
-                  <strong>Advanced setup</strong>
-                  <span>Connect a local server and choose models.</span>
+                  <strong>Local-only runtime settings</strong>
+                  <span>Configure local inference; these settings never supply Cloud jobs.</span>
                 </span>
               </summary>
 
@@ -2731,12 +2739,12 @@ export function AccountsTab(props: Props) {
             <section className="provider-selection-panel" aria-labelledby="provider-selection-title">
               <div className="provider-selection-heading">
                 <div>
-                  <span className="eyebrow">Local consent manifest</span>
-                  <h3 id="provider-selection-title">Choose models you may want to share</h3>
+                  <span className="eyebrow">Local inference preferences</span>
+                  <h3 id="provider-selection-title">Choose locally approved models</h3>
                   <p>
                     Detection and selection stay on this machine. Saving only
-                    updates Core&apos;s protected local selection file; it does not
-                    submit, approve, publish or activate any model.
+                    updates Core&apos;s protected local selection file. These models
+                    are never submitted to or selected for MultiVibe Cloud work.
                   </p>
                 </div>
                 {providerSelection && (
@@ -2844,12 +2852,12 @@ export function AccountsTab(props: Props) {
 
             <div className="modal-actions make-money-preview-actions">
               <span className="muted">
-                Nothing is shared yet
+                Cloud work still requires enrollment and your explicit saved consent
               </span>
               <button
                 type="button"
                 className="btn"
-                onClick={() => setMakeMoneyPreviewAccount(null)}
+                onClick={() => setWorkerSetupOpen(false)}
               >
                 Got it
               </button>

@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import test from "node:test";
 import express from "express";
 import { createAdminRouter, type AdminRoutesOptions } from "./index.js";
+import { ProviderAgentControlRequestError } from "../../provider-agent-supervisor.js";
 import type {
   ProviderAgentControl,
   ProviderHostCapability,
@@ -99,11 +100,8 @@ const appleCapability = (): ProviderHostCapability => ({
 test("Host projects a supported local worker as an unconfigured non-removable provider", async () => {
   const control = providerAgentControl({
     getCapability: async () => appleCapability(),
-    getManifest: async () => ({
-      protocol_version: "provider-agent-v1",
-      state: "detected",
-      selected_models: [],
-    }),
+    getCloudEnrollment: async () => { throw new ProviderAgentControlRequestError(404); },
+    getCapacityPolicy: async () => { throw new ProviderAgentControlRequestError(404); },
   });
   await withAdminServer(control, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/admin/provider-agent/local-worker`);
@@ -111,7 +109,10 @@ test("Host projects a supported local worker as an unconfigured non-removable pr
     assert.equal(response.headers.get("cache-control"), "no-store");
     const payload = await response.json() as { localWorker: Record<string, any> };
     assert.equal(payload.localWorker.name, "MultiVibe Worker");
-    assert.equal(payload.localWorker.configuration_state, "unconfigured");
+    assert.equal(payload.localWorker.enrollment_state, "not_enrolled");
+    assert.equal(payload.localWorker.capacity_state, "not_configured");
+    assert.equal(payload.localWorker.cloud_runtime, "managed-ollama");
+    assert.equal(payload.localWorker.trust_tier, "community");
     assert.equal(payload.localWorker.removable, false);
     assert.equal(payload.localWorker.routing_eligible, false);
     assert.equal(payload.localWorker.compensation_eligible, false);
@@ -150,17 +151,49 @@ test("Host projects a supported Windows NVIDIA worker", async () => {
         { name: "NVIDIA GeForce RTX 4090", memory_mib: 24576, compute_capability: 8.9 },
       ],
     }),
-    getManifest: async () => ({
-      protocol_version: "provider-agent-v1",
-      state: "detected",
-      selected_models: [],
-    }),
+    getCloudEnrollment: async () => { throw new ProviderAgentControlRequestError(404); },
+    getCapacityPolicy: async () => { throw new ProviderAgentControlRequestError(404); },
   });
   await withAdminServer(control, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/admin/provider-agent/local-worker`);
     const payload = await response.json() as { localWorker: Record<string, any> };
     assert.equal(payload.localWorker.capability.hardware, "NVIDIA GeForce RTX 4090");
     assert.equal(payload.localWorker.capability.profile, "windows-nvidia");
+  }, { hostApplication: true });
+});
+
+test("Host projects enrollment and capacity as independent machine-level states", async () => {
+  const control = providerAgentControl({
+    getCapability: async () => appleCapability(),
+    getCloudEnrollment: async () => ({
+      schema_version: "provider-cloud-enrollment-v1",
+      revision: 1,
+      state: "submitted",
+      provider_id: "10000000-0000-4000-8000-000000000001",
+      node_id: "20000000-0000-4000-8000-000000000002",
+      device_key_id: `ed25519:${"b".repeat(43)}`,
+      credential_epoch: 1,
+      manifest_digest: "c".repeat(64),
+      runtime_family: "cloud-managed",
+      declared_max_concurrency: 1,
+      cloud_api_origin: "https://auth.multivibe.cloud",
+      submitted_at: "2026-09-07T18:00:00.000Z",
+      routing_eligible: false,
+      compensation_eligible: false,
+      safety_profile: "shadow_only_no_routing_no_compensation",
+    }),
+    getCapacityPolicy: async () => ({
+      ...capacityPolicy(),
+      paused: true,
+      allow_cloud_workloads: true,
+    }),
+  });
+  await withAdminServer(control, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/admin/provider-agent/local-worker`);
+    assert.equal(response.status, 200);
+    const payload = await response.json() as { localWorker: Record<string, any> };
+    assert.equal(payload.localWorker.enrollment_state, "enrolled");
+    assert.equal(payload.localWorker.capacity_state, "paused");
   }, { hostApplication: true });
 });
 
@@ -537,7 +570,7 @@ test("admin relay shadow route signs only bounded non-commercial session opens",
   });
 });
 
-test("admin Cloud enrollment forwards explicit consent once and never returns the grant", async () => {
+test("admin Cloud enrollment forwards only the managed identity handshake and never returns the grant", async () => {
   const grant = `mve_${"a".repeat(43)}`;
   let receivedGrant = "";
   const view = {
@@ -549,8 +582,8 @@ test("admin Cloud enrollment forwards explicit consent once and never returns th
     device_key_id: `ed25519:${"b".repeat(43)}`,
     credential_epoch: 1,
     manifest_digest: "c".repeat(64),
-    runtime_family: "omlx" as const,
-    declared_max_concurrency: 4,
+    runtime_family: "cloud-managed" as const,
+    declared_max_concurrency: 1,
     cloud_api_origin: "https://auth.multivibe.cloud",
     submitted_at: "2026-09-02T12:00:00.000Z",
     routing_eligible: false as const,
@@ -568,9 +601,9 @@ test("admin Cloud enrollment forwards explicit consent once and never returns th
     const request = {
       enrollment_token: grant,
       core_version: "0.2.0",
-      runtime_family: "omlx",
-      selected_models: [{ reported_id: "publisher/model", modalities: ["text"] }],
-      declared_max_concurrency: 4,
+      runtime_family: "cloud-managed",
+      selected_models: [],
+      declared_max_concurrency: 1,
     };
     const enrolled = await fetch(`${baseUrl}/admin/provider-agent/cloud-shadow/enroll`, {
       method: "POST",
@@ -587,12 +620,16 @@ test("admin Cloud enrollment forwards explicit consent once and never returns th
     const status = await fetch(`${baseUrl}/admin/provider-agent/cloud-shadow/enrollment`);
     assert.equal(status.status, 200);
 
-    const invalid = await fetch(`${baseUrl}/admin/provider-agent/cloud-shadow/enroll`, {
+    const localRuntime = await fetch(`${baseUrl}/admin/provider-agent/cloud-shadow/enroll`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...request, selected_models: [{ reported_id: "publisher/model", modalities: ["text", "text"] }] }),
+      body: JSON.stringify({
+        ...request,
+        runtime_family: "omlx",
+        selected_models: [{ reported_id: "publisher/model", modalities: ["text"] }],
+      }),
     });
-    assert.equal(invalid.status, 400);
+    assert.equal(localRuntime.status, 400);
   });
 });
 
@@ -608,7 +645,7 @@ test("the macOS handoff only exchanges the device identity and defers model sele
     device_key_id: `ed25519:${"b".repeat(43)}`,
     credential_epoch: 1,
     manifest_digest: "c".repeat(64),
-    runtime_family: "omlx" as const,
+    runtime_family: "cloud-managed" as const,
     declared_max_concurrency: 1,
     cloud_api_origin: "https://auth.multivibe.cloud",
     submitted_at: "2026-09-03T20:00:00.000Z",

@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,7 +38,6 @@ var (
 	providerUUID                 = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 	providerDigest               = regexp.MustCompile(`^[a-f0-9]{64}$`)
 	providerVersion              = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+:/-]{0,63}$`)
-	providerModality             = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,31}$`)
 	providerEnrollmentToken      = regexp.MustCompile(`^mve_[A-Za-z0-9_-]{43}$`)
 	providerDeviceKeyID          = regexp.MustCompile(`^ed25519:[A-Za-z0-9_-]{43}$`)
 	providerRuntimeFamilies      = func() map[string]bool {
@@ -272,33 +270,14 @@ func newCloudEnrollmentService(baseURL *url.URL, client *http.Client, identity *
 
 func normalizeEnrollmentInput(input cloudEnrollmentInput) (cloudEnrollmentManifest, error) {
 	if !providerEnrollmentToken.MatchString(input.EnrollmentToken) || !providerVersion.MatchString(input.CoreVersion) ||
-		!providerRuntimeFamilies[input.RuntimeFamily] || input.DeclaredMaxConcurrency < 1 || input.DeclaredMaxConcurrency > 1000 ||
-		len(input.SelectedModels) > 100 {
+		input.RuntimeFamily != providerCloudManagedRuntime || input.SelectedModels == nil || len(input.SelectedModels) != 0 ||
+		input.DeclaredMaxConcurrency != 1 {
 		return cloudEnrollmentManifest{}, errInvalidCloudEnrollment
-	}
-	models := append([]cloudEnrollmentModel(nil), input.SelectedModels...)
-	for index := range models {
-		model := &models[index]
-		if !validSelectedModelID(model.ReportedID) || len(model.Modalities) < 1 || len(model.Modalities) > 16 {
-			return cloudEnrollmentManifest{}, errInvalidCloudEnrollment
-		}
-		sort.Strings(model.Modalities)
-		for modalityIndex, modality := range model.Modalities {
-			if !providerModality.MatchString(modality) || (modalityIndex > 0 && modality == model.Modalities[modalityIndex-1]) {
-				return cloudEnrollmentManifest{}, errInvalidCloudEnrollment
-			}
-		}
-	}
-	sort.Slice(models, func(left, right int) bool { return models[left].ReportedID < models[right].ReportedID })
-	for index, model := range models {
-		if index > 0 && model.ReportedID == models[index-1].ReportedID {
-			return cloudEnrollmentManifest{}, errInvalidCloudEnrollment
-		}
 	}
 	return cloudEnrollmentManifest{
 		ManifestVersion: providerManifestVersion, ProtocolVersion: providerControlProtocol,
-		CompanionVersion: providerCompanionVersion, CoreVersion: input.CoreVersion, RuntimeFamily: input.RuntimeFamily,
-		SelectedModels: models, DeclaredMaxConcurrency: input.DeclaredMaxConcurrency,
+		CompanionVersion: providerCompanionVersion, CoreVersion: input.CoreVersion, RuntimeFamily: providerCloudManagedRuntime,
+		SelectedModels: []cloudEnrollmentModel{}, DeclaredMaxConcurrency: 1,
 	}, nil
 }
 

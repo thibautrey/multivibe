@@ -412,9 +412,9 @@ func (app *menuApplication) submitPendingEnrollment() {
 	app.pendingEnrollmentToken = ""
 	app.pendingEnrollmentAccept = false
 	if connected {
-		showMessage("This Windows host is connected", "Its public identity and selected local model were registered securely.", false)
+		showMessage("This Windows host is connected", "Its public identity was registered securely. Cloud jobs use only MultiVibe's managed Ollama runtime and still require saved capacity consent.", false)
 	} else {
-		showMessage("This Windows host could not be connected", "Make sure one local model is selected in MultiVibe Host, then try again from MultiVibe Cloud.", true)
+		showMessage("This Windows host could not be connected", "MultiVibe Cloud rejected the connection. Start again from MultiVibe Cloud with a new connection link.", true)
 	}
 }
 

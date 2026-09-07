@@ -51,6 +51,7 @@ test("the Compose deployment exposes only Core and keeps state and models separa
   assert.match(compose, /cap_drop:\r?\n\s+- ALL/u);
   assert.doesNotMatch(compose, /privileged:\s*true/u);
   assert.doesNotMatch(compose, /ADMIN_TOKEN|PROXY_API_KEY/u);
+  assert.doesNotMatch(compose, /PROVIDER_DEMAND_TRUSTED_KEYS/u);
 });
 
 test("the Unraid template is beta, GPU-bounded and does not request credentials", async () => {
@@ -77,6 +78,7 @@ test("the Unraid template is beta, GPU-bounded and does not request credentials"
   assert.match(template, /Target="NVIDIA_VISIBLE_DEVICES"/u);
   assert.match(template, /compute capability 7\.0 or newer/u);
   assert.doesNotMatch(template, /ADMIN_TOKEN|PROXY_API_KEY/u);
+  assert.doesNotMatch(template, /PROVIDER_DEMAND_TRUSTED_KEYS/u);
 });
 
 test("the root README offers truthful latest-release paths for every Host format", async () => {
@@ -115,6 +117,8 @@ test("the release workflow publishes a tested image from the verified Linux arch
   assert.match(workflow, /subject-digest: \$\{\{ steps\.publish\.outputs\.digest \}\}/u);
   assert.match(workflow, /push-to-registry: true/u);
   assert.match(workflow, /name: provider-host-container-release/u);
+  assert.match(workflow, /vars\.PROVIDER_DEMAND_TRUSTED_KEYS_JSON/u);
+  assert.equal((workflow.match(/--provider-demand-trust-file/g) ?? []).length, 3);
   assert.match(workflow, /container-release\/container-release\.json/u);
   assert.match(workflow, /MULTIVIBE_UPDATE_SIGNING_KEY_BASE64/u);
   assert.match(workflow, /build-provider-host-update-feed\.mjs/u);

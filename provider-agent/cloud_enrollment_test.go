@@ -28,37 +28,29 @@ func enrollmentRequestBody(token string) string {
 	encoded, _ := json.Marshal(cloudEnrollmentInput{
 		EnrollmentToken: token, CoreVersion: "0.2.0", RuntimeFamily: providerCloudManagedRuntime,
 		SelectedModels:         []cloudEnrollmentModel{},
-		DeclaredMaxConcurrency: 4,
+		DeclaredMaxConcurrency: 1,
 	})
 	return string(encoded)
 }
 
-func TestCloudEnrollmentAcceptsEveryRegisteredRuntimeAndRejectsUnknownOnes(t *testing.T) {
-	for _, adapter := range runtimeAdapterRegistry().Adapters {
-		input := cloudEnrollmentInput{
-			EnrollmentToken: "mve_" + strings.Repeat("a", 43), CoreVersion: "0.2.0", RuntimeFamily: adapter.ID,
-			SelectedModels:         []cloudEnrollmentModel{{ReportedID: "publisher/model", Modalities: []string{"text"}}},
-			DeclaredMaxConcurrency: 1,
-		}
-		manifest, err := normalizeEnrollmentInput(input)
-		if err != nil || manifest.RuntimeFamily != adapter.ID {
-			t.Fatalf("registered runtime %s was rejected: %#v %v", adapter.ID, manifest, err)
-		}
-	}
-	managed, err := normalizeEnrollmentInput(cloudEnrollmentInput{
+func TestCloudEnrollmentAcceptsOnlyTheManagedIdentityHandshake(t *testing.T) {
+	valid := cloudEnrollmentInput{
 		EnrollmentToken: "mve_" + strings.Repeat("a", 43), CoreVersion: "0.2.0",
 		RuntimeFamily: providerCloudManagedRuntime, SelectedModels: []cloudEnrollmentModel{}, DeclaredMaxConcurrency: 1,
-	})
+	}
+	managed, err := normalizeEnrollmentInput(valid)
 	if err != nil || managed.RuntimeFamily != providerCloudManagedRuntime || len(managed.SelectedModels) != 0 {
 		t.Fatalf("cloud-managed runtime with no local model was rejected: %#v %v", managed, err)
 	}
-	invalid := cloudEnrollmentInput{
-		EnrollmentToken: "mve_" + strings.Repeat("a", 43), CoreVersion: "0.2.0", RuntimeFamily: "unknown-runtime",
-		SelectedModels:         []cloudEnrollmentModel{{ReportedID: "publisher/model", Modalities: []string{"text"}}},
-		DeclaredMaxConcurrency: 1,
-	}
-	if _, err := normalizeEnrollmentInput(invalid); !errors.Is(err, errInvalidCloudEnrollment) {
-		t.Fatalf("unknown runtime must fail closed: %v", err)
+	for name, invalid := range map[string]cloudEnrollmentInput{
+		"local runtime": {EnrollmentToken: valid.EnrollmentToken, CoreVersion: valid.CoreVersion, RuntimeFamily: "omlx", SelectedModels: []cloudEnrollmentModel{}, DeclaredMaxConcurrency: 1},
+		"local model":   {EnrollmentToken: valid.EnrollmentToken, CoreVersion: valid.CoreVersion, RuntimeFamily: providerCloudManagedRuntime, SelectedModels: []cloudEnrollmentModel{{ReportedID: "publisher/model", Modalities: []string{"text"}}}, DeclaredMaxConcurrency: 1},
+		"nil models":    {EnrollmentToken: valid.EnrollmentToken, CoreVersion: valid.CoreVersion, RuntimeFamily: providerCloudManagedRuntime, SelectedModels: nil, DeclaredMaxConcurrency: 1},
+		"concurrency":   {EnrollmentToken: valid.EnrollmentToken, CoreVersion: valid.CoreVersion, RuntimeFamily: providerCloudManagedRuntime, SelectedModels: []cloudEnrollmentModel{}, DeclaredMaxConcurrency: 2},
+	} {
+		if _, err := normalizeEnrollmentInput(invalid); !errors.Is(err, errInvalidCloudEnrollment) {
+			t.Fatalf("%s must fail closed: %v", name, err)
+		}
 	}
 }
 
@@ -113,7 +105,7 @@ func TestCloudEnrollmentSubmitsExactConsentPersistsNoGrantAndStaysNonCommercial(
 				begin.Manifest.ManifestVersion != providerManifestVersion || begin.Manifest.ProtocolVersion != providerControlProtocol ||
 				begin.Manifest.CompanionVersion != providerCompanionVersion || begin.Manifest.CoreVersion != "0.2.0" ||
 				begin.Manifest.RuntimeFamily != providerCloudManagedRuntime || len(begin.Manifest.SelectedModels) != 0 ||
-				begin.Manifest.DeclaredMaxConcurrency != 4 {
+				begin.Manifest.DeclaredMaxConcurrency != 1 {
 				t.Fatalf("unexpected consent manifest: %#v", begin)
 			}
 			response.WriteHeader(http.StatusCreated)
@@ -207,16 +199,16 @@ func TestCloudEnrollmentSubmitsExactConsentPersistsNoGrantAndStaysNonCommercial(
 	}
 	manifestResponse := httptest.NewRecorder()
 	handler.ServeHTTP(manifestResponse, httptest.NewRequest(http.MethodGet, "/v1/manifest", nil))
-	if manifestResponse.Code != http.StatusOK || !strings.Contains(manifestResponse.Body.String(), `"state":"submitted"`) {
-		t.Fatalf("manifest did not advance to submitted: %d %s", manifestResponse.Code, manifestResponse.Body.String())
+	if manifestResponse.Code != http.StatusOK || !strings.Contains(manifestResponse.Body.String(), `"state":"detected"`) {
+		t.Fatalf("local manifest was coupled to Cloud enrollment: %d %s", manifestResponse.Code, manifestResponse.Body.String())
 	}
-	selectionUpdate := httptest.NewRequest(http.MethodPut, "/v1/selection", strings.NewReader(`{"revision":1,"selected_models":[]}`))
+	selectionUpdate := httptest.NewRequest(http.MethodPut, "/v1/selection", strings.NewReader(`{"revision":1,"selected_models":["local/model"]}`))
 	selectionUpdate.Header.Set("authorization", "Bearer "+controlToken)
 	selectionUpdate.Header.Set("content-type", "application/json")
 	selectionResponse := httptest.NewRecorder()
 	handler.ServeHTTP(selectionResponse, selectionUpdate)
-	if selectionResponse.Code != http.StatusConflict {
-		t.Fatalf("submitted selection was not frozen: %d %s", selectionResponse.Code, selectionResponse.Body.String())
+	if selectionResponse.Code != http.StatusOK || !strings.Contains(selectionResponse.Body.String(), `"selected_models":["local/model"]`) {
+		t.Fatalf("Cloud enrollment prevented local inference configuration: %d %s", selectionResponse.Code, selectionResponse.Body.String())
 	}
 
 	retry := httptest.NewRecorder()
@@ -245,12 +237,12 @@ func TestCloudEnrollmentRejectsMalformedModelsAndUntrustedOriginsBeforeNetwork(t
 	baseURL, _ := cloudAPIURL("http://127.0.0.1:65534")
 	service := newCloudEnrollmentService(baseURL, http.DefaultClient, identity, newMemoryCloudEnrollmentStore())
 	input := cloudEnrollmentInput{
-		EnrollmentToken: "mve_" + strings.Repeat("a", 43), CoreVersion: "0.2.0", RuntimeFamily: "omlx",
-		SelectedModels:         []cloudEnrollmentModel{{ReportedID: "https://different.example/model", Modalities: []string{"text"}}},
+		EnrollmentToken: "mve_" + strings.Repeat("a", 43), CoreVersion: "0.2.0", RuntimeFamily: providerCloudManagedRuntime,
+		SelectedModels:         []cloudEnrollmentModel{{ReportedID: "publisher/model", Modalities: []string{"text"}}},
 		DeclaredMaxConcurrency: 1,
 	}
 	if _, err := service.enroll(context.Background(), input); !errors.Is(err, errInvalidCloudEnrollment) {
-		t.Fatalf("unselected model did not fail before network: %v", err)
+		t.Fatalf("local model enrollment did not fail before network: %v", err)
 	}
 }
 

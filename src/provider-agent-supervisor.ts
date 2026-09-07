@@ -76,14 +76,12 @@ export const PROVIDER_CLOUD_MANAGED_RUNTIME_FAMILY = "cloud-managed" as const;
 export type ProviderRuntimeFamily = typeof PROVIDER_RUNTIME_FAMILIES[number];
 export type ProviderEnrollmentRuntimeFamily = ProviderRuntimeFamily | typeof PROVIDER_CLOUD_MANAGED_RUNTIME_FAMILY;
 
-const PROVIDER_RUNTIME_FAMILY_SET = new Set<string>(PROVIDER_RUNTIME_FAMILIES);
-
 export type ProviderCloudEnrollmentRequest = {
   enrollment_token: string;
   core_version: string;
-  runtime_family: ProviderEnrollmentRuntimeFamily;
-  selected_models: Array<{ reported_id: string; modalities: string[] }>;
-  declared_max_concurrency: number;
+  runtime_family: typeof PROVIDER_CLOUD_MANAGED_RUNTIME_FAMILY;
+  selected_models: [];
+  declared_max_concurrency: 1;
 };
 
 export type ProviderCloudEnrollmentView = {
@@ -493,24 +491,10 @@ export function isValidProviderCloudEnrollmentRequest(
   if (Object.keys(request).length !== keys.length || keys.some((key) => !(key in request))) return false;
   if (typeof request.enrollment_token !== "string" || !/^mve_[A-Za-z0-9_-]{43}$/.test(request.enrollment_token)) return false;
   if (typeof request.core_version !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._+:/-]{0,63}$/.test(request.core_version)) return false;
-  if (request.runtime_family !== PROVIDER_CLOUD_MANAGED_RUNTIME_FAMILY
-    && !PROVIDER_RUNTIME_FAMILY_SET.has(String(request.runtime_family))) return false;
-  if (!Number.isSafeInteger(request.declared_max_concurrency)
-    || (request.declared_max_concurrency as number) < 1 || (request.declared_max_concurrency as number) > 1_000) return false;
-  if (!Array.isArray(request.selected_models) || request.selected_models.length > 100) return false;
-  const ids = new Set<string>();
-  for (const value of request.selected_models) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-    const model = value as Record<string, unknown>;
-    if (Object.keys(model).length !== 2 || !("reported_id" in model) || !("modalities" in model)
-      || !isValidProviderSelectedModelId(model.reported_id) || ids.has(model.reported_id)) return false;
-    ids.add(model.reported_id);
-    if (!Array.isArray(model.modalities) || model.modalities.length < 1 || model.modalities.length > 16
-      || new Set(model.modalities).size !== model.modalities.length
-      || model.modalities.some((modality) => typeof modality !== "string"
-        || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,31}$/.test(modality))) return false;
-  }
-  return true;
+  return request.runtime_family === PROVIDER_CLOUD_MANAGED_RUNTIME_FAMILY
+    && request.declared_max_concurrency === 1
+    && Array.isArray(request.selected_models)
+    && request.selected_models.length === 0;
 }
 
 export function providerCloudEnrollmentRequestFromLocalState(input: {
@@ -573,6 +557,50 @@ function providerCloudApiUrl(value: string): string {
   if ((!production && !loopback) || parsed.username || parsed.password || parsed.search || parsed.hash
     || (parsed.pathname !== "/" && parsed.pathname !== "")) throw new Error("provider Cloud API URL is invalid");
   return parsed.origin;
+}
+
+export function validateProviderAgentFeatureConfiguration(options: {
+  capacityPolicyPath?: string;
+  demandPlanPath?: string;
+  modelCatalogPath?: string;
+  trustedDemandKeys?: string;
+  managedRoot?: string;
+  bundledOllamaRoot?: string;
+  dependencyManifestPath?: string;
+  managedPlannerStatePath?: string;
+  ollamaListen?: string;
+  cudaVisibleDevices?: string;
+}): void {
+  const demandStateConfigured = Boolean(options.demandPlanPath);
+  const demandTrustConfigured = Boolean(options.trustedDemandKeys);
+  if (demandTrustConfigured && (!demandStateConfigured || !options.modelCatalogPath)) {
+    throw new Error("provider demand trust requires plan path and model catalog");
+  }
+  for (const configuredPath of [options.demandPlanPath, options.modelCatalogPath]) {
+    if (configuredPath && (!path.isAbsolute(configuredPath) || path.normalize(configuredPath) !== configuredPath)) {
+      throw new Error("provider demand planning paths must be clean absolute paths");
+    }
+  }
+  if (options.trustedDemandKeys && Buffer.byteLength(options.trustedDemandKeys) > 64 * 1024) {
+    throw new Error("provider demand trusted keys are too large");
+  }
+  const managedConfiguration = [
+    options.managedRoot,
+    options.bundledOllamaRoot,
+    options.dependencyManifestPath,
+    options.managedPlannerStatePath,
+  ];
+  const managedConfigurationCount = managedConfiguration.filter((value) => Boolean(value)).length;
+  const managedRequested = managedConfigurationCount !== 0 || Boolean(options.ollamaListen) || Boolean(options.cudaVisibleDevices);
+  if (managedRequested && (managedConfigurationCount !== managedConfiguration.length ||
+    !options.modelCatalogPath || !options.demandPlanPath || !options.capacityPolicyPath)) {
+    throw new Error("managed provider runtime requires every local path");
+  }
+  for (const configuredPath of managedConfiguration) {
+    if (configuredPath && (!path.isAbsolute(configuredPath) || path.normalize(configuredPath) !== configuredPath)) {
+      throw new Error("managed provider runtime paths must be clean absolute paths");
+    }
+  }
 }
 
 export function startEmbeddedProviderAgent(options: {
@@ -642,40 +670,7 @@ export function startEmbeddedProviderAgent(options: {
     || path.normalize(options.capacityPolicyPath) !== options.capacityPolicyPath)) {
     throw new Error("provider agent capacity policy path must be a clean absolute path");
   }
-  const demandConfiguration = [options.demandPlanPath, options.modelCatalogPath, options.trustedDemandKeys];
-  const demandConfigurationCount = demandConfiguration.filter((value) => Boolean(value)).length;
-  if (demandConfigurationCount !== 0 && demandConfigurationCount !== demandConfiguration.length) {
-    throw new Error("provider demand planning requires plan path, model catalog and trusted keys");
-  }
-  for (const configuredPath of [options.demandPlanPath, options.modelCatalogPath]) {
-    if (configuredPath && (!path.isAbsolute(configuredPath) || path.normalize(configuredPath) !== configuredPath)) {
-      throw new Error("provider demand planning paths must be clean absolute paths");
-    }
-  }
-  if (options.trustedDemandKeys && Buffer.byteLength(options.trustedDemandKeys) > 64 * 1024) {
-    throw new Error("provider demand trusted keys are too large");
-  }
-  const managedConfiguration = [
-    options.managedRoot,
-    options.bundledOllamaRoot,
-    options.dependencyManifestPath,
-    options.managedPlannerStatePath,
-  ];
-  const managedConfigurationCount = managedConfiguration.filter((value) => Boolean(value)).length;
-  if ((managedConfigurationCount !== 0 && managedConfigurationCount !== managedConfiguration.length) ||
-    (managedConfigurationCount === managedConfiguration.length && !options.modelCatalogPath)) {
-    throw new Error("managed provider runtime requires every local path");
-  }
-  for (const configuredPath of [
-    options.managedRoot,
-    options.bundledOllamaRoot,
-    options.dependencyManifestPath,
-    options.managedPlannerStatePath,
-  ]) {
-    if (configuredPath && (!path.isAbsolute(configuredPath) || path.normalize(configuredPath) !== configuredPath)) {
-      throw new Error("managed provider runtime paths must be clean absolute paths");
-    }
-  }
+  validateProviderAgentFeatureConfiguration(options);
   const cloudApiUrl = providerCloudApiUrl(options.cloudApiUrl ?? "https://auth.multivibe.cloud");
   const sourceEnvironment = options.environment ?? process.env;
   const configuredListenAddress = sourceEnvironment.MULTIVIBE_PROVIDER_AGENT_LISTEN ?? "127.0.0.1:1460";

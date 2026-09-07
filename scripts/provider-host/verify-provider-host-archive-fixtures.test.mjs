@@ -10,11 +10,16 @@ import { deflateRawSync, gzipSync } from "node:zlib";
 import test from "node:test";
 
 import { extractPreflightedTarArchive, preflightTarArchive } from "./provider-host-tar-preflight.mjs";
-import { validateProviderModelCatalogAssessments } from "./verify-provider-host.mjs";
+import { normalizeProviderDemandTrust, validateProviderModelCatalogAssessments } from "./verify-provider-host.mjs";
 
 const verifier = fileURLToPath(new URL("./verify-provider-host.mjs", import.meta.url));
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const extractedCeiling = 6 * 1024 * 1024 * 1024;
+const demandInteropKeyID = "ed25519:BuP9j9opu2CrWVV95h7bCuzbIxE0vjDnW0Vfjht5L6k";
+const demandInteropSPKI = "MCowBQYDK2VwAyEA11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=";
+const demandTrustFixture = normalizeProviderDemandTrust(
+  `{"${demandInteropKeyID}":"${demandInteropSPKI}"}`,
+);
 
 async function inTemporaryDirectory(callback) {
   const directory = await mkdtemp(path.join(tmpdir(), "multivibe-host-negative-fixture-"));
@@ -268,6 +273,7 @@ function completeLinuxBundleTar(mutateFiles = () => {}, mutateEntries = () => {}
       mode: 0o644,
     }],
     ["resources/provider/provider-model-catalog.json", { data: catalogData, mode: 0o644 }],
+    ["resources/provider/provider-demand-trust.json", { data: Buffer.from(demandTrustFixture), mode: 0o644 }],
     ["resources/provider/provider-runtime-profiles.json", { data: packaged("provider-runtime-profiles.json"), mode: 0o644 }],
     ["resources/provider/schemas/provider-runtime-profiles.schema.json", { data: packaged("schemas", "provider-runtime-profiles.schema.json"), mode: 0o644 }],
     ["resources/provider/schemas/provider-runtime-profile-overrides.schema.json", { data: packaged("schemas", "provider-runtime-profile-overrides.schema.json"), mode: 0o644 }],
@@ -373,6 +379,7 @@ function completeWindowsBundleZip(mutateFiles = () => {}) {
       mode: 0o644,
     }],
     ["resources/provider/provider-model-catalog.json", { data: catalogData, mode: 0o644 }],
+    ["resources/provider/provider-demand-trust.json", { data: Buffer.from(demandTrustFixture), mode: 0o644 }],
     ["resources/provider/provider-runtime-profiles.json", { data: packaged("provider-runtime-profiles.json"), mode: 0o644 }],
     ["resources/provider/schemas/provider-runtime-profiles.schema.json", { data: packaged("schemas", "provider-runtime-profiles.schema.json"), mode: 0o644 }],
     ["resources/provider/schemas/provider-runtime-profile-overrides.schema.json", { data: packaged("schemas", "provider-runtime-profile-overrides.schema.json"), mode: 0o644 }],
@@ -713,6 +720,37 @@ test("signed archive rejects empty profiles and placeholder schemas or examples"
       const result = await runVerifier(archive);
       assert.notEqual(result.code, 0, `${name} was accepted: ${result.stdout}`);
       assert.match(result.stderr, /provider runtime/u);
+    });
+  }
+});
+
+test("release demand trust is non-empty, canonical, unique and Ed25519-bound", async () => {
+  assert.equal(
+    normalizeProviderDemandTrust(` { "${demandInteropKeyID}" : "${demandInteropSPKI}" } `),
+    demandTrustFixture,
+  );
+  for (const value of [
+    "{}",
+    `{"${demandInteropKeyID}":"${demandInteropSPKI}","${demandInteropKeyID}":"${demandInteropSPKI}"}`,
+    `{"ed25519:${"A".repeat(43)}":"${demandInteropSPKI}"}`,
+    `{"${demandInteropKeyID}":"AQ=="}`,
+    `${demandTrustFixture}{}`,
+  ]) {
+    assert.throws(() => normalizeProviderDemandTrust(value), /provider demand trust/u);
+  }
+
+  for (const [name, mutate] of [
+    ["missing", (files) => files.delete("resources/provider/provider-demand-trust.json")],
+    ["noncanonical", (files) => files.set("resources/provider/provider-demand-trust.json", {
+      data: Buffer.from(` { "${demandInteropKeyID}" : "${demandInteropSPKI}" } `), mode: 0o644,
+    })],
+  ]) {
+    await inTemporaryDirectory(async (directory) => {
+      const archive = path.join(directory, `${name}.tar.gz`);
+      await writeFile(archive, completeLinuxBundleTar(mutate), { mode: 0o600 });
+      const result = await runVerifier(archive);
+      assert.notEqual(result.code, 0, `${name} demand trust was accepted: ${result.stdout}`);
+      assert.match(result.stderr, /required file|demand trust/u);
     });
   }
 });

@@ -79,12 +79,11 @@ type workerTestService struct {
 	runtime    *http.Client
 	identity   *deviceIdentity
 	enrollment *cloudEnrollmentStore
-	runtimes   *runtimeEndpointStore
 	managed    *runtimeEndpoint
 	now        func() time.Time
 }
 
-func newWorkerTestService(baseURL *url.URL, client *http.Client, identity *deviceIdentity, enrollment *cloudEnrollmentStore, runtimes *runtimeEndpointStore, managed *runtimeEndpoint) *workerTestService {
+func newWorkerTestService(baseURL *url.URL, client *http.Client, identity *deviceIdentity, enrollment *cloudEnrollmentStore, managed *runtimeEndpoint) *workerTestService {
 	cloud := *client
 	cloud.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	if cloud.Timeout <= 0 || cloud.Timeout > 10*time.Second {
@@ -93,7 +92,7 @@ func newWorkerTestService(baseURL *url.URL, client *http.Client, identity *devic
 	runtime := *client
 	runtime.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	runtime.Timeout = 2 * time.Minute
-	return &workerTestService{baseURL: baseURL, cloud: &cloud, runtime: &runtime, identity: identity, enrollment: enrollment, runtimes: runtimes, managed: managed, now: time.Now}
+	return &workerTestService{baseURL: baseURL, cloud: &cloud, runtime: &runtime, identity: identity, enrollment: enrollment, managed: managed, now: time.Now}
 }
 
 func workerTestPayloadMap(payload workerTestSessionPayload) map[string]any {
@@ -219,77 +218,15 @@ func (service *workerTestService) poll(ctx context.Context, token string) (*work
 		claim.Prompt != workerTestPrompt || err != nil || !expiresAt.After(service.now()) || !claim.TestOnly {
 		return nil, errors.New("worker test claim is invalid")
 	}
-	// Cloud owns model scheduling. Validate the claim against the live local
-	// runtime catalog before accepting it; local consent selection is not an
-	// enrollment prerequisite.
-	if claim.Model == providerCloudAssignedModel {
-		_, model, err := service.cloudManagedRuntime(ctx, providerCloudAssignedModel)
-		if err != nil {
-			return nil, errors.New("worker test claim model is unavailable locally")
-		}
-		claim.Model = model
-	} else if _, err := service.runtimeEndpoint(ctx, enrollment.RuntimeFamily, claim.Model); err != nil {
-		return nil, errors.New("worker test claim model is unavailable locally")
+	// Cloud owns model scheduling, but every Cloud test must resolve through
+	// the MultiVibe-managed Ollama endpoint. The enrollment's legacy runtime
+	// metadata and every user-configured local endpoint are deliberately ignored.
+	_, model, err := service.cloudManagedRuntime(ctx, claim.Model)
+	if err != nil {
+		return nil, errors.New("worker test claim model is unavailable in the managed runtime")
 	}
+	claim.Model = model
 	return claim, nil
-}
-
-func (service *workerTestService) runtimeEndpoint(ctx context.Context, family, model string) (runtimeEndpoint, error) {
-	if family == providerCloudManagedRuntime {
-		endpoint, _, err := service.cloudManagedRuntime(ctx, model)
-		return endpoint, err
-	}
-	if service.runtimes != nil {
-		registry := runtimeAdapterRegistry()
-		adapters := make(map[string]runtimeAdapter, len(registry.Adapters))
-		for _, adapter := range registry.Adapters {
-			adapters[adapter.ID] = adapter
-		}
-		for _, endpoint := range service.runtimes.configured() {
-			if endpoint.AdapterID != family {
-				continue
-			}
-			adapter, exists := adapters[endpoint.AdapterID]
-			if !exists {
-				return runtimeEndpoint{}, errors.New("worker test runtime is unavailable")
-			}
-			candidate := adapterCandidate{
-				Endpoint:   endpoint.Endpoint,
-				HealthURL:  endpoint.Endpoint + adapter.HealthPath,
-				CatalogURL: endpoint.Endpoint + adapter.CatalogPath,
-			}
-			models, err := probeRuntimeCatalogAuthenticated(ctx, adapter, candidate, endpoint.BearerToken, service.runtime)
-			if err != nil {
-				return runtimeEndpoint{}, errors.New("worker test runtime is unavailable")
-			}
-			for _, detected := range models {
-				if detected == model {
-					return endpoint, nil
-				}
-			}
-			return runtimeEndpoint{}, errors.New("worker test model is unavailable")
-		}
-	}
-	if service.runtime == nil {
-		return runtimeEndpoint{}, errors.New("worker test runtime is unavailable")
-	}
-	for _, adapter := range runtimeAdapterRegistry().Adapters {
-		if adapter.ID != family {
-			continue
-		}
-		for _, candidate := range adapter.Candidates {
-			models, err := probeRuntimeCatalog(ctx, adapter, candidate, service.runtime)
-			if err != nil {
-				continue
-			}
-			for _, detected := range models {
-				if detected == model {
-					return runtimeEndpoint{AdapterID: family, Endpoint: candidate.Endpoint}, nil
-				}
-			}
-		}
-	}
-	return runtimeEndpoint{}, errors.New("worker test runtime is unavailable")
 }
 
 func (service *workerTestService) cloudManagedRuntime(ctx context.Context, model string) (runtimeEndpoint, string, error) {
@@ -322,7 +259,7 @@ func (service *workerTestService) cloudManagedRuntime(ctx context.Context, model
 	return runtimeEndpoint{}, "", errors.New("worker test runtime is unavailable")
 }
 
-func (service *workerTestService) infer(ctx context.Context, enrollment cloudEnrollmentView, claim workerTestClaim) (string, uint64, uint64, error) {
+func (service *workerTestService) infer(ctx context.Context, claim workerTestClaim) (string, uint64, uint64, error) {
 	deadline, deadlineErr := canonicalTimestamp(claim.ExpiresAt)
 	remaining := deadline.Sub(service.now()) - 10*time.Second
 	if deadlineErr != nil || remaining <= 0 {
@@ -330,7 +267,7 @@ func (service *workerTestService) infer(ctx context.Context, enrollment cloudEnr
 	}
 	ctx, cancel := context.WithTimeout(ctx, remaining)
 	defer cancel()
-	endpoint, err := service.runtimeEndpoint(ctx, enrollment.RuntimeFamily, claim.Model)
+	endpoint, _, err := service.cloudManagedRuntime(ctx, claim.Model)
 	if err != nil {
 		return "", 0, 0, err
 	}
@@ -425,7 +362,7 @@ func (service *workerTestService) run(ctx context.Context) {
 			continue
 		}
 		if claim != nil {
-			output, inputTokens, outputTokens, inferenceErr := service.infer(ctx, *enrollment, *claim)
+			output, inputTokens, outputTokens, inferenceErr := service.infer(ctx, *claim)
 			if service.complete(ctx, token, *claim, output, inputTokens, outputTokens, inferenceErr) != nil {
 				token = ""
 			}

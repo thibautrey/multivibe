@@ -164,10 +164,6 @@ func providerHandlerWithModelLifecycle(core *url.URL, selections *selectionStore
 	})
 	mux.HandleFunc("GET /v1/manifest", func(response http.ResponseWriter, _ *http.Request) {
 		document := selections.snapshot()
-		state := document.State
-		if enrollment != nil && enrollment.store.snapshot() != nil {
-			state = string(StateSubmitted)
-		}
 		keyID := ""
 		publicKeySPKI := ""
 		if identity != nil {
@@ -176,7 +172,7 @@ func providerHandlerWithModelLifecycle(core *url.URL, selections *selectionStore
 		response.Header().Set("cache-control", "no-store")
 		response.Header().Set("content-type", "application/json")
 		_ = json.NewEncoder(response).Encode(manifest{
-			ProtocolVersion: "provider-agent-v1", State: state, SelectedModels: document.SelectedModels,
+			ProtocolVersion: "provider-agent-v1", State: document.State, SelectedModels: document.SelectedModels,
 			DeviceKeyID: keyID, DevicePublicKeySPKI: publicKeySPKI,
 		})
 	})
@@ -201,13 +197,6 @@ func providerHandlerWithModelLifecycle(core *url.URL, selections *selectionStore
 	mux.HandleFunc("PUT /v1/selection", func(response http.ResponseWriter, request *http.Request) {
 		if !authorizeProviderControl(request, controlToken) {
 			http.Error(response, "not found", http.StatusNotFound)
-			return
-		}
-		if enrollment != nil && enrollment.store.snapshot() != nil {
-			response.Header().Set("cache-control", "no-store")
-			response.Header().Set("content-type", "application/json")
-			response.WriteHeader(http.StatusConflict)
-			_ = json.NewEncoder(response).Encode(selections.snapshot())
 			return
 		}
 		mediaType, _, mediaTypeErr := mime.ParseMediaType(request.Header.Get("content-type"))
@@ -721,26 +710,37 @@ func main() {
 	demandPlanPath := strings.TrimSpace(os.Getenv("MULTIVIBE_PROVIDER_DEMAND_PLAN_PATH"))
 	modelCatalogPath := strings.TrimSpace(os.Getenv("MULTIVIBE_PROVIDER_MODEL_CATALOG_PATH"))
 	trustedDemandKeysRaw := strings.TrimSpace(os.Getenv("MULTIVIBE_PROVIDER_DEMAND_TRUSTED_KEYS"))
+	managedRoot := strings.TrimSpace(os.Getenv("MULTIVIBE_PROVIDER_MANAGED_ROOT"))
+	bundledOllamaRoot := strings.TrimSpace(os.Getenv("MULTIVIBE_PROVIDER_BUNDLED_OLLAMA_ROOT"))
+	dependencyManifestPath := strings.TrimSpace(os.Getenv("MULTIVIBE_PROVIDER_DEPENDENCY_MANIFEST_PATH"))
+	managedPlannerStatePath := strings.TrimSpace(os.Getenv("MULTIVIBE_PROVIDER_MANAGED_PLANNER_STATE_PATH"))
+	ollamaListenAddress := strings.TrimSpace(os.Getenv("MULTIVIBE_PROVIDER_OLLAMA_LISTEN"))
+	cudaVisibleDevices := strings.TrimSpace(os.Getenv("MULTIVIBE_PROVIDER_CUDA_VISIBLE_DEVICES"))
+	features := providerFeatureConfiguration{
+		DemandPlanPath: demandPlanPath, ModelCatalogPath: modelCatalogPath, TrustedDemandKeys: trustedDemandKeysRaw,
+		CapacityPolicyPath: capacityPolicyPath, ManagedRoot: managedRoot, BundledOllamaRoot: bundledOllamaRoot,
+		DependencyManifestPath: dependencyManifestPath, ManagedPlannerStatePath: managedPlannerStatePath,
+		OllamaListenAddress: ollamaListenAddress, CUDAVisibleDevices: cudaVisibleDevices,
+	}
+	if err := validateProviderFeatureConfiguration(features); err != nil {
+		logger.Error("provider_agent_configuration_invalid", "error", err.Error())
+		os.Exit(2)
+	}
 	var demand *providerDemandService
 	var plans *providerDemandPlanStore
 	var trustedDemandKeys trustedProviderDemandKeys
-	demandConfigurationFields := 0
-	for _, value := range []string{demandPlanPath, modelCatalogPath, trustedDemandKeysRaw} {
-		if value != "" {
-			demandConfigurationFields++
+	if demandPlanPath != "" {
+		plans, err = openProviderDemandPlanStore(demandPlanPath)
+		if err != nil {
+			logger.Error("provider_agent_configuration_invalid", "error", "provider demand plan state is invalid")
+			os.Exit(2)
 		}
 	}
-	if demandConfigurationFields != 0 && demandConfigurationFields != 3 {
-		logger.Error("provider_agent_configuration_invalid", "error", "provider demand planning requires plan path, model catalog and trusted keys")
-		os.Exit(2)
-	}
-	if demandConfigurationFields == 3 {
+	if trustedDemandKeysRaw != "" {
 		catalog, catalogErr := openProviderModelCatalog(modelCatalogPath)
 		trustedKeys, keysErr := parseTrustedProviderDemandKeys(trustedDemandKeysRaw)
 		capabilityErr := requireProviderComputeCapability(capability, true)
-		var plansErr error
-		plans, plansErr = openProviderDemandPlanStore(demandPlanPath)
-		if catalogErr != nil || keysErr != nil || plansErr != nil || capabilityErr != nil {
+		if catalogErr != nil || keysErr != nil || capabilityErr != nil || plans == nil {
 			logger.Error("provider_agent_configuration_invalid", "error", "provider demand planning configuration is invalid")
 			os.Exit(2)
 		}
@@ -751,25 +751,9 @@ func main() {
 		}
 		trustedDemandKeys = trustedKeys
 	}
-	managedRoot := strings.TrimSpace(os.Getenv("MULTIVIBE_PROVIDER_MANAGED_ROOT"))
-	bundledOllamaRoot := strings.TrimSpace(os.Getenv("MULTIVIBE_PROVIDER_BUNDLED_OLLAMA_ROOT"))
-	dependencyManifestPath := strings.TrimSpace(os.Getenv("MULTIVIBE_PROVIDER_DEPENDENCY_MANIFEST_PATH"))
-	managedPlannerStatePath := strings.TrimSpace(os.Getenv("MULTIVIBE_PROVIDER_MANAGED_PLANNER_STATE_PATH"))
-	ollamaListenAddress := strings.TrimSpace(os.Getenv("MULTIVIBE_PROVIDER_OLLAMA_LISTEN"))
-	cudaVisibleDevices := strings.TrimSpace(os.Getenv("MULTIVIBE_PROVIDER_CUDA_VISIBLE_DEVICES"))
-	managedConfigurationFields := 0
-	for _, value := range []string{managedRoot, dependencyManifestPath, managedPlannerStatePath} {
-		if value != "" {
-			managedConfigurationFields++
-		}
-	}
 	var controller *managedProviderController
 	var managedBackend *ollamaRuntimeBackend
-	if managedConfigurationFields != 0 || bundledOllamaRoot != "" || ollamaListenAddress != "" || cudaVisibleDevices != "" {
-		if managedConfigurationFields != 3 || demand == nil || plans == nil || capacityPolicyPath == "" {
-			logger.Error("provider_agent_configuration_invalid", "error", "managed Ollama requires its root, dependency manifest, planner state, capacity policy and signed demand planning")
-			os.Exit(2)
-		}
+	if features.managedRequested() {
 		if err := requireProviderComputeCapability(capability, true); err != nil {
 			logger.Error("provider_agent_platform_unsupported", "reason", capability.Reason)
 			os.Exit(2)
@@ -813,7 +797,9 @@ func main() {
 			logger.Error("provider_agent_configuration_invalid", "error", err.Error())
 			os.Exit(2)
 		}
-		demand.state = controller.plannerSnapshot
+		if demand != nil {
+			demand.state = controller.plannerSnapshot
+		}
 	}
 	if demand != nil {
 		if err := demand.restorePersisted(); err != nil {
@@ -859,13 +845,13 @@ func main() {
 		if managedBackend != nil {
 			managedWorkerRuntime = &runtimeEndpoint{AdapterID: managedWorkerAdapterID, Endpoint: managedBackend.endpoint}
 		}
-		workerTest = newWorkerTestService(cloudURL, client, identity, enrollmentStore, runtimes, managedWorkerRuntime)
+		workerTest = newWorkerTestService(cloudURL, client, identity, enrollmentStore, managedWorkerRuntime)
 		go workerTest.run(context.Background())
 		modelLifecycle = newProviderModelLifecycleService(
-			cloudURL, client, identity, enrollmentStore, runtimes, capacity, demand, controller,
+			cloudURL, client, identity, enrollmentStore, capacity, demand, controller,
 		)
 		go modelLifecycle.run(context.Background())
-		if managedBackend != nil && demand != nil {
+		if communityOutboundConfigured(managedBackend, demand) {
 			outboundBackend, selectionErr := communityBackendForRuntime(providerDemandRuntime, managedBackend)
 			if selectionErr != nil {
 				logger.Error("provider_agent_configuration_invalid", "error", selectionErr.Error())
@@ -904,6 +890,54 @@ func envDefault(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+type providerFeatureConfiguration struct {
+	DemandPlanPath          string
+	ModelCatalogPath        string
+	TrustedDemandKeys       string
+	CapacityPolicyPath      string
+	ManagedRoot             string
+	BundledOllamaRoot       string
+	DependencyManifestPath  string
+	ManagedPlannerStatePath string
+	OllamaListenAddress     string
+	CUDAVisibleDevices      string
+}
+
+func (configuration providerFeatureConfiguration) managedRequested() bool {
+	for _, value := range []string{
+		configuration.ManagedRoot, configuration.BundledOllamaRoot, configuration.DependencyManifestPath,
+		configuration.ManagedPlannerStatePath, configuration.OllamaListenAddress, configuration.CUDAVisibleDevices,
+	} {
+		if value != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func validateProviderFeatureConfiguration(configuration providerFeatureConfiguration) error {
+	if configuration.TrustedDemandKeys != "" &&
+		(configuration.DemandPlanPath == "" || configuration.ModelCatalogPath == "") {
+		return errors.New("provider demand trust requires plan path and model catalog")
+	}
+	if !configuration.managedRequested() {
+		return nil
+	}
+	for _, required := range []string{
+		configuration.ManagedRoot, configuration.DependencyManifestPath, configuration.ManagedPlannerStatePath,
+		configuration.ModelCatalogPath, configuration.DemandPlanPath, configuration.CapacityPolicyPath,
+	} {
+		if required == "" {
+			return errors.New("managed Ollama requires its root, dependency manifest, planner state, model catalog, demand state and capacity policy")
+		}
+	}
+	return nil
+}
+
+func communityOutboundConfigured(backend *ollamaRuntimeBackend, demand *providerDemandService) bool {
+	return backend != nil && demand != nil
 }
 
 func requireProviderComputeCapability(capability hostCapability, managedComputeRequested bool) error {

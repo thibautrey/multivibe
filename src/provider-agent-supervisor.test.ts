@@ -15,12 +15,12 @@ import {
   isValidProviderRelayShadowSessionRequest,
   isValidProviderCloudEnrollmentRequest,
   isValidProviderCapacityPolicy,
-  PROVIDER_RUNTIME_FAMILIES,
   providerAgentBootstrapBaseUrl,
   providerAgentChildEnvironment,
   providerAgentEnvironment,
   readProviderAgentBootstrap,
   startEmbeddedProviderAgent,
+  validateProviderAgentFeatureConfiguration,
 } from "./provider-agent-supervisor.js";
 
 const execFileAsync = promisify(execFile);
@@ -109,6 +109,40 @@ test("provider agent child receives only generated control and explicit local st
       MULTIVIBE_PROVIDER_BOOTSTRAP_FD: "3",
       MULTIVIBE_PROVIDER_CONTROL_TOKEN: generatedControlToken,
     },
+  );
+});
+
+test("managed provider runtime configures before Cloud demand trust is available", () => {
+  const managed = {
+    capacityPolicyPath: "/data/provider-agent-capacity-policy.json",
+    demandPlanPath: "/data/provider-agent-demand-plan.json",
+    modelCatalogPath: "/opt/multivibe/provider-model-catalog.json",
+    managedRoot: "/data/provider-agent-managed",
+    bundledOllamaRoot: "/opt/multivibe/runtime/ollama",
+    dependencyManifestPath: "/opt/multivibe/provider-host-dependencies.json",
+    managedPlannerStatePath: "/data/provider-agent-managed-planner-state.json",
+  };
+  assert.doesNotThrow(() => validateProviderAgentFeatureConfiguration(managed));
+  const child = providerAgentChildEnvironment(
+    {}, undefined, "generated-process-local-control-token", undefined, undefined, undefined,
+    "/data/provider-agent-capacity-policy.json", "https://auth.multivibe.cloud",
+    managed.demandPlanPath, managed.modelCatalogPath, undefined, managed.managedRoot,
+    managed.bundledOllamaRoot, managed.dependencyManifestPath, managed.managedPlannerStatePath,
+  );
+  assert.equal(child.MULTIVIBE_PROVIDER_MANAGED_ROOT, managed.managedRoot);
+  assert.equal(child.MULTIVIBE_PROVIDER_DEMAND_PLAN_PATH, managed.demandPlanPath);
+  assert.equal(child.MULTIVIBE_PROVIDER_DEMAND_TRUSTED_KEYS, undefined);
+  assert.throws(
+    () => validateProviderAgentFeatureConfiguration({ ...managed, demandPlanPath: undefined }),
+    /managed provider runtime requires every local path/u,
+  );
+  assert.throws(
+    () => validateProviderAgentFeatureConfiguration({ ...managed, capacityPolicyPath: undefined }),
+    /managed provider runtime requires every local path/u,
+  );
+  assert.throws(
+    () => validateProviderAgentFeatureConfiguration({ trustedDemandKeys: "{}" }),
+    /provider demand trust requires plan path and model catalog/u,
   );
 });
 
@@ -283,25 +317,19 @@ test("provider Cloud enrollment accepts a Cloud-managed identity handshake", () 
   const valid = {
     enrollment_token: `mve_${"a".repeat(43)}`,
     core_version: "0.2.0",
-    runtime_family: "omlx",
-    selected_models: [{ reported_id: "publisher/model", modalities: ["text"] }],
-    declared_max_concurrency: 4,
-  };
-  assert.equal(isValidProviderCloudEnrollmentRequest(valid), true);
-  for (const runtime_family of PROVIDER_RUNTIME_FAMILIES) {
-    assert.equal(isValidProviderCloudEnrollmentRequest({ ...valid, runtime_family }), true, runtime_family);
-  }
-  assert.equal(isValidProviderCloudEnrollmentRequest({ ...valid, runtime_family: "unknown-runtime" }), false);
-  assert.equal(isValidProviderCloudEnrollmentRequest({
-    ...valid,
     runtime_family: "cloud-managed",
     selected_models: [],
-  }), true);
+    declared_max_concurrency: 1,
+  };
+  assert.equal(isValidProviderCloudEnrollmentRequest(valid), true);
+  assert.equal(isValidProviderCloudEnrollmentRequest({ ...valid, runtime_family: "omlx" }), false);
+  assert.equal(isValidProviderCloudEnrollmentRequest({ ...valid, runtime_family: "unknown-runtime" }), false);
   assert.equal(isValidProviderCloudEnrollmentRequest({ ...valid, enrollment_token: "secret" }), false);
   assert.equal(isValidProviderCloudEnrollmentRequest({
     ...valid,
-    selected_models: [{ reported_id: "publisher/model", modalities: ["text", "text"] }],
+    selected_models: [{ reported_id: "publisher/model", modalities: ["text"] }],
   }), false);
+  assert.equal(isValidProviderCloudEnrollmentRequest({ ...valid, declared_max_concurrency: 2 }), false);
   assert.equal(isValidProviderCloudEnrollmentRequest({ ...valid, routing_eligible: true }), false);
 });
 

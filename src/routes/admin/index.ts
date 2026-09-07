@@ -646,20 +646,38 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       const selectedGPU = capability.accelerator === "cuda"
         ? capability.gpus?.[capability.cuda_device ?? 0]
         : undefined;
-      const [manifest, estimate] = await Promise.all([
-        options.providerAgent.getManifest(),
+      const optionalLocalState = async <Value>(read: () => Promise<Value>): Promise<Value | null> => {
+        try {
+          return await read();
+        } catch (error) {
+          if (error instanceof ProviderAgentControlRequestError && error.status === 404) return null;
+          throw error;
+        }
+      };
+      const [enrollment, capacityPolicy, estimate] = await Promise.all([
+        optionalLocalState(() => options.providerAgent!.getCloudEnrollment()),
+        optionalLocalState(() => options.providerAgent!.getCapacityPolicy()),
         options.providerWorkerEstimateClient
           ? options.providerWorkerEstimateClient.estimate(capability).catch(() => unavailableProviderWorkerEstimate())
           : Promise.resolve(unavailableProviderWorkerEstimate()),
       ]);
+      const capacityState = !capacityPolicy
+        ? "not_configured"
+        : !capacityPolicy.allow_cloud_workloads
+          ? "disabled"
+          : capacityPolicy.paused
+            ? "paused"
+            : "enabled";
       return res.json({
         localWorker: {
           id: "multivibe-worker-local",
           kind: "system-local-worker",
           name: "MultiVibe Worker",
           location: "local",
-          configuration_state: manifest.state === "submitted" ? "submitted" : "unconfigured",
-          agent_state: manifest.state,
+          enrollment_state: enrollment ? "enrolled" : "not_enrolled",
+          capacity_state: capacityState,
+          cloud_runtime: "managed-ollama",
+          trust_tier: "community",
           removable: false,
           routing_eligible: false,
           compensation_eligible: false,
