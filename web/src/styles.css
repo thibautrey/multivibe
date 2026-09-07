@@ -4941,9 +4941,22 @@ body:has(> .modal-backdrop) {
   min-width: 170px;
 }
 
-.overview-model-list {
-  align-content: flex-start;
-}
+.overview-models-panel { min-width: 0; }
+.overview-model-controls { display: flex; flex-wrap: wrap; gap: 12px; }
+.overview-model-search { flex: 1 1 180px; min-width: 0; }
+.overview-model-controls input, .overview-model-controls select { width: 100%; box-sizing: border-box; }
+.overview-model-count { font-size: 12px; margin: 14px 0 8px; }
+.overview-model-list { list-style: none; padding: 0; margin: 0; max-height: 440px; overflow-y: auto; }
+.overview-model-list li + li { border-top: 1px solid var(--border); }
+.overview-model-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 8px; border: 0; border-radius: 8px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.overview-model-row:hover { background: var(--surface-2); }
+.overview-model-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.overview-model-row .provider-setup-mark { width: 32px; height: 32px; flex: 0 0 32px; }
+.overview-model-info { display: grid; gap: 4px; min-width: 0; flex: 1; }
+.overview-model-name { font-size: 13px; overflow-wrap: anywhere; }
+.overview-model-provider { font-size: 11px; overflow-wrap: anywhere; }
+.overview-model-empty { padding: 20px 0; }
+.overview-model-pagination { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 14px; font-size: 12px; }
 
 .providers-empty-state {
   min-height: 440px;
