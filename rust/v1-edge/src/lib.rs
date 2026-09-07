@@ -4306,6 +4306,7 @@ pub struct EdgeState {
     pub config: Arc<EdgeConfig>,
     pub store: AccountStore,
     pub client: reqwest::Client,
+    control_plane_client: reqwest::Client,
     webhook_client: reqwest::Client,
     blocked: Arc<Mutex<HashMap<String, u64>>>,
     selected: Arc<Mutex<HashMap<String, String>>>,
@@ -4349,6 +4350,10 @@ impl EdgeState {
             .redirect(Policy::limited(5))
             .build()
             .map_err(|error| format!("failed to create upstream HTTP client: {error}"))?;
+        let control_plane_client = reqwest::Client::builder()
+            .redirect(Policy::none())
+            .build()
+            .map_err(|error| format!("failed to create control-plane HTTP client: {error}"))?;
         let webhook_client = reqwest::Client::builder()
             .redirect(Policy::none())
             .build()
@@ -4380,6 +4385,7 @@ impl EdgeState {
             }),
             config: Arc::new(config),
             client,
+            control_plane_client,
             webhook_client,
             blocked: Arc::new(Mutex::new(HashMap::new())),
             selected: Arc::new(Mutex::new(HashMap::new())),
@@ -10619,7 +10625,7 @@ async fn fallback_handler(State(state): State<EdgeState>, req: Request<Body>) ->
     let upstream = match timeout(
         state.config.upstream_timeout,
         state
-            .client
+            .control_plane_client
             .request(method, target)
             .headers(headers)
             .body(body)
@@ -14267,7 +14273,19 @@ mod tests {
         );
         let (upstream_url, upstream_task) = start_server(upstream).await;
 
-        let control_plane = Router::new().fallback(|| async { (StatusCode::OK, "control-plane") });
+        let control_plane = Router::new()
+            .route(
+                "/admin/cloud/oauth/callback",
+                get(|req: Request<Body>| async move {
+                    assert_eq!(req.uri().query(), Some("state=flow-id&code=cloud-code"));
+                    Response::builder()
+                        .status(StatusCode::SEE_OTHER)
+                        .header(header::LOCATION, "/?tab=accounts&cloud=connected")
+                        .body(Body::empty())
+                        .unwrap()
+                }),
+            )
+            .fallback(|| async { (StatusCode::OK, "control-plane") });
         let (control_plane_url, control_plane_task) = start_server(control_plane).await;
 
         let store_path = temporary_path("accounts");
@@ -14344,6 +14362,23 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.text().await.unwrap(), "control-plane");
+
+        let no_redirect_client = reqwest::Client::builder()
+            .redirect(Policy::none())
+            .build()
+            .unwrap();
+        let response = no_redirect_client
+            .get(format!(
+                "{edge_url}/admin/cloud/oauth/callback?state=flow-id&code=cloud-code"
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            "/?tab=accounts&cloud=connected"
+        );
 
         edge_task.abort();
         upstream_task.abort();
