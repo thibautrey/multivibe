@@ -70,6 +70,12 @@ const RUNTIME_CATALOG: Record<string, RuntimeIdentity> = {
     iconUrl: "/assets/runtime/exo.png",
     homepageUrl: "https://github.com/exo-explore/exo",
   },
+  "nvidia-pair": {
+    id: "nvidia-pair",
+    label: "NVIDIA PAIR",
+    iconUrl: GENERIC_RUNTIME_ICON,
+    homepageUrl: "https://github.com/NVIDIA/Personal-AI-Router",
+  },
   "llama-cpp": { id: "llama-cpp", label: "llama.cpp", iconUrl: GENERIC_RUNTIME_ICON },
   vllm: { id: "vllm", label: "vLLM", iconUrl: GENERIC_RUNTIME_ICON },
   sglang: { id: "sglang", label: "SGLang", iconUrl: GENERIC_RUNTIME_ICON },

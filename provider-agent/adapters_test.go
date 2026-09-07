@@ -19,7 +19,8 @@ func TestRuntimeAdapterRegistryIsCompleteAndBounded(t *testing.T) {
 		"huggingface-tgi", "transformers-serve", "xinference", "mlx-lm", "omlx",
 		"mlc-llm", "exo", "jan", "gpt4all", "koboldcpp", "text-generation-webui",
 		"aphrodite", "tabbyapi", "llama-box", "mistral-rs", "nvidia-nim",
-		"tensorrt-llm", "triton", "openllm", "bentoml", "mtplx", "manual-openai-compatible",
+		"tensorrt-llm", "triton", "openllm", "bentoml", "mtplx", "nvidia-pair",
+		"manual-openai-compatible",
 	}
 	actual := make([]string, 0, len(registry.Adapters))
 	automaticCandidates := 0
@@ -52,6 +53,11 @@ func TestRuntimeAdapterRegistryIsCompleteAndBounded(t *testing.T) {
 		}
 		if len(adapter.Candidates) != 2 || adapter.Authentication != "none" {
 			t.Fatalf("unexpected reviewed %s contract: %#v", id, adapter)
+		}
+	}
+	for _, adapter := range registry.Adapters {
+		if adapter.ID == "nvidia-pair" && (adapter.Authentication != "none" || len(adapter.Candidates) != 0) {
+			t.Fatalf("PAIR must be tokenless and manual until it exposes an unambiguous probe: %#v", adapter)
 		}
 	}
 }

@@ -76,7 +76,7 @@ eligibility.
 
 The agent can execute the existing Cloud enrollment shadow protocol after an
 authenticated Core administrator supplies the one-time `mve_…` grant and the
-exact consent manifest. `POST /v1/cloud-shadow/enroll` accepts the exact 28
+exact consent manifest. `POST /v1/cloud-shadow/enroll` accepts the exact 29
 runtime families in the embedded adapter registry, requires every submitted
 model to exactly match the local explicit selection, derives a stable client-node UUID
 from the public device key, and sends the challenge only to

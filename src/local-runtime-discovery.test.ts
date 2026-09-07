@@ -21,6 +21,7 @@ const lmStudio = LOCAL_RUNTIME_ADAPTERS.find((adapter) => adapter.id === "lm-stu
 const omlx = LOCAL_RUNTIME_ADAPTERS.find((adapter) => adapter.id === "omlx")!;
 const exo = LOCAL_RUNTIME_ADAPTERS.find((adapter) => adapter.id === "exo")!;
 const mtplx = LOCAL_RUNTIME_ADAPTERS.find((adapter) => adapter.id === "mtplx")!;
+const nvidiaPair = LOCAL_RUNTIME_ADAPTERS.find((adapter) => adapter.id === "nvidia-pair")!;
 
 function modelsResponse(ids: string[], ownedBy?: string): Response {
   return new Response(
@@ -424,4 +425,27 @@ test("only the exact declared automatic loopback candidates are probed", async (
     },
   });
   assert.equal(manualResults.every((result) => result.status === "not-configured"), true);
+});
+
+test("NVIDIA PAIR is a distinct tokenless adapter without an ambiguous automatic probe", async () => {
+  assert.equal(nvidiaPair.displayName, "NVIDIA Personal AI Router (PAIR)");
+  assert.equal(nvidiaPair.protocol, "openai-compatible");
+  assert.equal(nvidiaPair.authentication, "none");
+  assert.deepEqual(nvidiaPair.candidates, []);
+
+  let calls = 0;
+  const results = await discoverLocalRuntimes({
+    adapters: [nvidiaPair],
+    fetchFn: async () => {
+      calls += 1;
+      return modelsResponse(["must-not-be-probed"]);
+    },
+  });
+  assert.equal(calls, 0);
+  assert.deepEqual(results, [{
+    status: "not-configured",
+    adapter: "nvidia-pair",
+    displayName: "NVIDIA Personal AI Router (PAIR)",
+    attempts: 0,
+  }]);
 });
