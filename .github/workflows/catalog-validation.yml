@@ -24,6 +24,6 @@ jobs:
         with:
           node-version: '22.23.2'
       - run: npm run catalog:check
-      - run: go -C provider-agent test ./cmd/catalog-check ./runtimeprofile ./cmd/runtime-benchmark
+      - run: go -C provider-agent test -race ./...
       - name: Verify release archive fixtures
         run: node --test scripts/provider-host/package-provider-host.test.mjs scripts/provider-host/verify-provider-host-archive-fixtures.test.mjs
