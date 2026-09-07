@@ -1510,6 +1510,16 @@ td .muted {
   min-width: 0;
 }
 
+.provider-card-badges {
+  display: grid;
+  justify-items: start;
+  gap: 7px;
+}
+
+.provider-card-blocks {
+  padding: 0 18px 15px;
+}
+
 .provider-card-account {
   display: grid;
   gap: 7px;
@@ -1591,7 +1601,7 @@ td .muted {
 
 .provider-card-footer {
   display: grid;
-  grid-template-columns: minmax(180px, .7fr) minmax(0, 1.3fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
   align-items: start;
   padding: 13px 18px 15px;
