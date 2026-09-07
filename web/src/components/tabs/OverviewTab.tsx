@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { Metric } from "../Metric";
 import { ProgressStat } from "../ProgressStat";
-import { HostHarnessCards } from "../HostHarnessCarousel";
+import { HostHarnessCards } from "../../host/HostHarnessCarousel";
 import { usd } from "../../lib/ui";
 import type { ExposedModel, TraceStats } from "../../types";
 

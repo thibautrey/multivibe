@@ -781,7 +781,7 @@ not bypass any of the shadow-only routing or compensation locks above.
 ### Provider Host container (Docker Compose and Unraid)
 
 The ordinary `docker-compose.yml` runs Core as a gateway. The separate
-`docker-compose.host.yml` runs the complete security-bounded **MultiVibe Host**
+`packaging/container/docker-compose.host.yml` runs the complete security-bounded **MultiVibe Host**
 bundle for Linux amd64 systems with a supported NVIDIA GPU. Official tagged
 Host releases publish the exact verified Linux bundle as
 `ghcr.io/thibautrey/multivibe-host:<version>` and update the `latest` tag only
@@ -791,7 +791,7 @@ Set the exact URL used by browsers, then start the Host:
 
 ```sh
 MULTIVIBE_HOST_PUBLIC_URL=http://192.168.1.20:1455 \
-  docker compose -f docker-compose.host.yml up -d
+  docker compose -f packaging/container/docker-compose.host.yml up -d
 ```
 
 Use an HTTPS reverse-proxy origin instead when applicable. Container mode sets
@@ -814,7 +814,7 @@ as its model storage path. MultiVibe does not silently create that policy,
 enable downloads, enroll the device, accept Cloud work, or activate
 compensation.
 
-`templates/multivibe-host.xml` and `ca_profile.xml` follow the official Unraid
+`packaging/unraid/multivibe-host.xml` and `packaging/unraid/ca_profile.xml` follow the official Unraid
 Community Applications v2 layout. The template is deliberately marked beta,
 requires the Unraid Nvidia Driver runtime, keeps the app unprivileged, and
 mounts application state separately from models. The files are ready for

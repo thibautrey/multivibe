@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const read = (name) => readFile(path.join(root, name), "utf8");
 
 test("the macOS status item uses a transparent high-resolution template image", async () => {
@@ -22,9 +22,9 @@ test("the macOS status item uses a transparent high-resolution template image", 
 
 test("native packages include the updater and platform schedulers", async () => {
   const [packager, linux, macos, windows, verifier, uninstall] = await Promise.all([
-    read("scripts/package-provider-host.mjs"), read("packaging/linux/install.sh"),
+    read("scripts/provider-host/package-provider-host.mjs"), read("packaging/linux/install.sh"),
     read("packaging/macos/install.sh"), read("packaging/windows/install.ps1"),
-    read("scripts/verify-provider-host.mjs"), read("packaging/linux/uninstall.sh"),
+    read("scripts/provider-host/verify-provider-host.mjs"), read("packaging/linux/uninstall.sh"),
   ]);
   assert.match(packager, /buildGo\(path\.join\(repositoryRoot, "host", "updater"\)/u);
   assert.match(packager, /buildRustEdge\(edgeDestination\)/u);

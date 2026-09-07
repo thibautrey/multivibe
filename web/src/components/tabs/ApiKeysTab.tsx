@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { HostHarnessCards } from "../HostHarnessCarousel";
+import { HostHarnessCards } from "../../host/HostHarnessCarousel";
 import { copyTextToClipboard } from "../../lib/clipboard";
 import type {
   ApplicationPolicy,

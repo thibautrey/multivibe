@@ -3,8 +3,8 @@ import test from "node:test";
 import {
   buildHostMenuBarAccountsSummary,
   buildHostMenuBarGitHubStarPrompt,
-} from "./host-menu-bar.js";
-import type { Account } from "./types.js";
+} from "./menu-bar.js";
+import type { Account } from "../types.js";
 
 test("buildHostMenuBarAccountsSummary preserves SwiftBar quota aggregation", () => {
   const now = 1_800_000_000_000;

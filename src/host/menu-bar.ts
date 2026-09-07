@@ -1,4 +1,4 @@
-import type { Account, UsageWindow } from "./types.js";
+import type { Account, UsageWindow } from "../types.js";
 
 export const GITHUB_STAR_OUTPUT_TOKEN_THRESHOLD = 5_000_000;
 

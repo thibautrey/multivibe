@@ -55,7 +55,7 @@ not a production trust root and is never packaged as one.
 From a source checkout, inspect a release archive without executing it using:
 
 ```sh
-node scripts/verify-provider-host.mjs /path/to/provider-host-archive
+node scripts/provider-host/verify-provider-host.mjs /path/to/provider-host-archive
 ```
 
 Use `--require-runtime` on a matching supported host to additionally execute
@@ -252,7 +252,7 @@ runtime; choose `/models/weights` explicitly when creating the local capacity
 policy. No policy, download permission, Cloud workload consent or compensation
 state is inferred from mounting the directory.
 
-The source repository contains `templates/multivibe-host.xml` for Unraid. It is
+The source repository contains `packaging/unraid/multivibe-host.xml` for Unraid. It is
 marked beta and requires the Unraid Nvidia Driver plugin plus an NVIDIA GPU of
 compute capability 7.0 or newer. A source template is not evidence that
 Community Applications has accepted or listed the app.

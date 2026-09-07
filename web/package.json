@@ -5,7 +5,9 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
+    "predev": "node ../scripts/sync-brand-assets.mjs",
     "dev": "vite",
+    "prebuild": "node ../scripts/sync-brand-assets.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview"
   },

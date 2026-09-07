@@ -84,12 +84,12 @@ import type { ModuleManager } from "../../module-manager.js";
 import {
   HostHarnessIntegrationError,
   type HostHarnessIntegrationManager,
-} from "../../host-harness-integrations.js";
+} from "../../host/harness-integrations.js";
 import {
   unavailableProviderWorkerEstimate,
   type ProviderWorkerEstimateClient,
 } from "../../provider-worker-estimate.js";
-import type { HostUpdateController, HostUpdateStatus } from "../../host-update-controller.js";
+import type { HostUpdateController, HostUpdateStatus } from "../../host/update-controller.js";
 import type { MultivibeCloudService } from "../../multivibe-cloud.js";
 import { fetchCodexQuotaResetForecast } from "../../quota-reset-forecast.js";
 

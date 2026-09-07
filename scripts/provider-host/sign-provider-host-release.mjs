@@ -8,7 +8,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const maximumGitHubReleaseAssetBytes = 1_900 * 1024 * 1024;
 
 async function command(program, args, options = {}) {
@@ -101,7 +101,7 @@ async function main() {
   }
   const reports = [];
   for (const name of entries) {
-    const output = await command(process.execPath, [path.join(repositoryRoot, "scripts", "verify-provider-host.mjs"), path.join(directory, name)], {
+    const output = await command(process.execPath, [path.join(repositoryRoot, "scripts", "provider-host", "verify-provider-host.mjs"), path.join(directory, name)], {
       capture: true,
       captureLimit: 64 * 1024,
     });
