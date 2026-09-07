@@ -32,6 +32,19 @@ type JobRunnerControl = {
   activeCount(): number;
 };
 
+type NativeEdgeControl = {
+  baseUrl: string;
+  internalToken: string;
+};
+
+type NativeDrainStatus = {
+  draining: boolean;
+  ready: boolean;
+  active_requests: number;
+  active_websocket_turns: number;
+  active_jobs: number;
+};
+
 function isUpdateStatus(value: unknown): value is HostUpdateStatus {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const status = value as Record<string, unknown>;
@@ -51,6 +64,7 @@ export class HostUpdateController {
   constructor(
     private readonly binaryPath: string | undefined,
     private readonly providerAgent: ProviderAgentControl | undefined,
+    private readonly nativeEdge?: NativeEdgeControl,
   ) {
     if (binaryPath && (!path.isAbsolute(binaryPath) || path.normalize(binaryPath) !== binaryPath)) {
       throw new Error("Host updater binary path must be a clean absolute path");
@@ -94,12 +108,50 @@ export class HostUpdateController {
     this.activeWebsocketTurns = Math.max(0, this.activeWebsocketTurns - 1);
   };
 
-  beginDrain() {
-    this.draining = true;
-    this.jobRunner?.stop();
+  private async nativeDrain(
+    action: "begin" | "resume" | "status",
+  ): Promise<NativeDrainStatus | undefined> {
+    if (!this.nativeEdge) return undefined;
+    const response = await fetch(
+      `${this.nativeEdge.baseUrl.replace(/\/+$/, "")}/internal/v1-edge/drain/${action}`,
+      {
+        method: action === "status" ? "GET" : "POST",
+        headers: {
+          "x-multivibe-internal-token": this.nativeEdge.internalToken,
+        },
+        signal: AbortSignal.timeout(5_000),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(`native inference drain returned ${response.status}`);
+    }
+    const status = (await response.json()) as Partial<NativeDrainStatus>;
+    if (
+      typeof status.draining !== "boolean" ||
+      typeof status.ready !== "boolean" ||
+      !Number.isFinite(status.active_requests) ||
+      !Number.isFinite(status.active_websocket_turns) ||
+      !Number.isFinite(status.active_jobs)
+    ) {
+      throw new Error("native inference drain returned invalid status");
+    }
+    return status as NativeDrainStatus;
   }
 
-  resume() {
+  async beginDrain() {
+    this.draining = true;
+    this.jobRunner?.stop();
+    try {
+      await this.nativeDrain("begin");
+    } catch (error) {
+      this.draining = false;
+      this.jobRunner?.start();
+      throw error;
+    }
+  }
+
+  async resume() {
+    await this.nativeDrain("resume");
     this.draining = false;
     this.jobRunner?.start();
   }
@@ -109,6 +161,14 @@ export class HostUpdateController {
     if (this.providerAgent?.enabled) {
       const status = await this.providerAgent.getManagedOllamaStatus();
       providerOperation = status.operation?.trim() || null;
+    }
+    const native = await this.nativeDrain("status");
+    if (native) {
+      return {
+        ...native,
+        ready: native.ready && !providerOperation,
+        provider_operation: providerOperation,
+      };
     }
     const activeJobs = this.jobRunner?.activeCount() ?? 0;
     return {

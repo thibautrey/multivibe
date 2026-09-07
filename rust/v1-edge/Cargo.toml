@@ -16,6 +16,7 @@ axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+chrono-tz = "0.10"
 ed25519-dalek = "2"
 futures-util = "0.3"
 hkdf = "0.12"
@@ -24,6 +25,7 @@ http = "1"
 http-body-util = "0.1"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
+rusqlite = { version = "0.32", features = ["backup", "bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

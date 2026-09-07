@@ -315,6 +315,37 @@ export class AccountStore {
     return updated;
   }
 
+  patchAccountTokenIfCurrent(
+    id: string,
+    expectedAccessToken: string,
+    patch: Pick<Account, "accessToken"> &
+      Partial<
+        Pick<
+          Account,
+          | "refreshToken"
+          | "expiresAt"
+          | "chatgptAccountId"
+          | "email"
+          | "state"
+        >
+      >,
+  ):
+    | { status: "not_found" | "conflict" }
+    | { status: "updated"; account: Account } {
+    const existing = this.inMemoryAccounts.find((account) => account.id === id);
+    if (!existing) return { status: "not_found" };
+    if (existing.accessToken !== expectedAccessToken) {
+      return { status: "conflict" };
+    }
+    const updated: Account = {
+      ...existing,
+      ...patch,
+      state: { ...existing.state, ...patch.state },
+    };
+    this.markAccountModified(id, updated);
+    return { status: "updated", account: updated };
+  }
+
   async deleteAccount(id: string): Promise<boolean> {
     const before = this.inMemoryAccounts.length;
     this.inMemoryAccounts = this.inMemoryAccounts.filter((a) => a.id !== id);

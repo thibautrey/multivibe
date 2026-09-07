@@ -1,49 +1,51 @@
 # Integrating deferred batch jobs
 
-MultiVibe can accept a non-streaming inference request now, persist it as a
-durable job, and execute it later when its priority and routing policy allow.
-This is intended for translations, catalog enrichment, indexing, reporting,
-and other work where a result does not have to be returned in the original
-HTTP request.
+MultiVibe accepts a non-streaming inference request, persists it as a durable
+job, and executes it later when its priority, batch window and local admission
+allow. This is intended for translations, catalog enrichment, indexing,
+reporting, and other work whose result does not have to be returned by the
+original HTTP request.
 
-This guide is for application developers integrating an existing project with
-the public MultiVibe API. For the server-side routing and alias schema, see the
-smart alias section in the main [README](../README.md#-routing-strategy).
+This guide describes the native Rust edge used by the shipped split-process
+profile. For server-side aliases, see the smart alias section in the main
+[README](../README.md#-routing-strategy).
 
 ## Key behavior
 
 - A deferred request returns `202 Accepted` with a `multivibe.job` object.
-- Batch jobs submitted outside the default execution window become eligible at
-  22:00 Europe/Paris. The window ends at 07:00.
-- Jobs are durable across MultiVibe restarts and are isolated by application
-  API key.
+- Batch jobs submitted outside the execution window become eligible at 22:00
+  `Europe/Paris`; the window lasts until 07:00 and follows daylight-saving
+  changes.
+- Jobs survive MultiVibe restarts and are isolated by application API key.
 - Scheduling is weighted across priorities (`critical`, `interactive`,
-  `standard`, `batch`) and then across applications of the same priority.
-- A job is executed at least once. Transient failures are attempted up to three
-  times; application-side result handling must therefore also be idempotent.
-- Streaming Responses, streaming Chat Completions, WebSocket, and Realtime
-  requests cannot be deferred.
+  `standard`, `batch`) and then across applications of the selected
+  priority.
+- A running job recovered after a process stop may execute again. Result
+  handling and external side effects must therefore be idempotent.
+- Transient failures are attempted up to three times by default.
+- Streaming Responses, streaming Chat Completions, WebSocket, Realtime and
+  confidential requests cannot be deferred.
 
-Examples below use `multivibe-batch`. This is a deployment-level smart alias,
-not a model built into MultiVibe. The deployment must configure that alias with
-an admissible local or cloud candidate before applications use it.
+Examples use `multivibe-batch`, a deployment-level smart alias. The
+deployment must configure it with an admissible local or cloud candidate.
 
 ## Recommended request flow
 
 1. Generate a stable idempotency key for the business operation.
-2. Submit a non-streaming request with explicit `batch` and `defer` headers.
-3. Persist the returned MultiVibe job ID next to the local business record.
-4. Poll the job or subscribe to its SSE event stream.
-5. Fetch the result when the job reaches `succeeded`.
-6. Apply the result idempotently and mark the local operation complete.
+2. Submit a non-streaming request with explicit `batch` and `defer`
+   headers.
+3. Persist the returned MultiVibe job ID next to the business record.
+4. Poll the durable job resource until it reaches a terminal state.
+5. Fetch the result when the job is `succeeded`.
+6. Apply it idempotently and mark the local operation complete.
 
-Persisting the job ID is essential. A process restart must resume monitoring
-the existing job rather than create unrelated work.
+A restart should resume monitoring the recorded job ID instead of submitting
+unrelated work.
 
 ## Submit a job
 
-The same mechanism is available on Responses, Chat Completions, and Anthropic
-Messages routes. The request must not enable streaming.
+Responses, Chat Completions, and Anthropic Messages routes accept deferred
+non-streaming requests:
 
 ```bash
 curl -X POST "$MULTIVIBE_BASE_URL/v1/responses" \
@@ -52,7 +54,7 @@ curl -X POST "$MULTIVIBE_BASE_URL/v1/responses" \
   -H "X-MultiVibe-Priority: batch" \
   -H "X-MultiVibe-Execution: defer" \
   -H "X-MultiVibe-Idempotency-Key: translation:product-42:fr:v3" \
-  -H "X-MultiVibe-Deadline: 2026-08-28T07:00:00+02:00" \
+  -H "X-MultiVibe-Deadline: 2026-09-09T07:00:00+02:00" \
   -d '{
     "model": "multivibe-batch",
     "input": "Translate the supplied product description into French."
@@ -60,63 +62,64 @@ curl -X POST "$MULTIVIBE_BASE_URL/v1/responses" \
 ```
 
 Always send `X-MultiVibe-Priority: batch` and
-`X-MultiVibe-Execution: defer` when also sending an idempotency key, deadline,
-maximum wait, or webhook header. The presence of any routing header makes the
-request explicit, so alias defaults are no longer applied to missing fields.
+`X-MultiVibe-Execution: defer` when also sending an idempotency key,
+deadline, maximum wait, or webhook header. The presence of a routing header
+makes the request explicit, so alias defaults are not filled into other
+missing routing fields.
 
-The deadline is optional. When provided, it must be an RFC 3339 timestamp and
-must leave enough time for the next batch window. An expired deadline is
-rejected, and a queued job that reaches its deadline becomes `expired`.
+The deadline is optional and must be an unexpired RFC 3339 timestamp. A queued
+or running job that reaches it becomes `expired`. Choose a deadline after the
+next batch window if the job must have an opportunity to run; the API validates
+the timestamp and expiry, not the amount of useful time remaining.
 
-A successful submission returns `202` and headers similar to:
+A new submission returns headers including:
 
 ```text
+HTTP/1.1 202 Accepted
 X-MultiVibe-Decision: queued
 X-MultiVibe-Priority: batch
-X-MultiVibe-Resolved-Model: multivibe-batch
-X-MultiVibe-Estimated-Wait-Ms: 17400000
-X-MultiVibe-Capacity-Version: 42
-Location: /v1/jobs/68f0b7c0-...
+X-MultiVibe-Idempotency-Status: created
+Location: /v1/jobs/job_68f0b7c0...
 ```
 
-The response body is a job resource:
+The body is a job resource. Public timestamps are ISO 8601 UTC strings:
 
 ```json
 {
   "object": "multivibe.job",
-  "id": "68f0b7c0-7e76-4c66-9ee8-24b3f014c17c",
+  "id": "job_68f0b7c0...",
   "status": "queued",
   "priority": "batch",
   "model": "multivibe-batch",
   "attempts": 0,
-  "created_at": "2026-08-26T15:20:00.000Z",
-  "updated_at": "2026-08-26T15:20:00.000Z",
-  "not_before": "2026-08-26T20:00:00.000Z",
-  "deadline": "2026-08-28T05:00:00.000Z",
-  "result_url": "/v1/jobs/68f0b7c0-7e76-4c66-9ee8-24b3f014c17c/result",
-  "events_url": "/v1/jobs/68f0b7c0-7e76-4c66-9ee8-24b3f014c17c/events"
+  "max_attempts": 3,
+  "created_at": "2026-09-07T12:00:00.000Z",
+  "updated_at": "2026-09-07T12:00:00.000Z",
+  "not_before": "2026-09-07T20:00:00.000Z",
+  "deadline": "2026-09-09T05:00:00.000Z",
+  "result_url": "/v1/jobs/job_68f0b7c0.../result",
+  "events_url": "/v1/jobs/job_68f0b7c0.../events",
+  "error": null
 }
 ```
 
-Timestamps in job resources are UTC. In the example, `20:00Z` is 22:00 in
-Europe/Paris during daylight-saving time.
-
-## Idempotency
+## Idempotent submission
 
 `X-MultiVibe-Idempotency-Key` is scoped to the authenticated application and
-may contain at most 200 characters. Repeating a submission with the same key
-returns the original job instead of creating another one.
+may contain at most 200 characters. Repeating the same route and JSON body
+with the same key returns the original job and
+`X-MultiVibe-Idempotency-Status: replayed`.
 
-Use a deterministic key derived from the business entity, target operation,
-locale or variant, and source revision, for example:
+Reusing the key for another route or JSON body returns
+`409 idempotency_key_reused`. Use a deterministic value derived from the
+business entity, operation, locale or variant, and source revision:
 
 ```text
 translation:<product-id>:<locale>:<source-revision>
 ```
 
-Do not reuse a key for a different payload. MultiVibe deduplicates by key; it
-does not compare payload hashes. Do not include secrets or personal data in the
-key because it may appear in operational metadata.
+Do not include secrets or personal data in the key because it can appear in
+operational metadata.
 
 ## Observe job state
 
@@ -126,34 +129,30 @@ List the current application's jobs:
 GET /v1/jobs?limit=100
 ```
 
-`limit` is clamped to the range 1–500. Fetch one job with:
+`limit` is clamped to 1–1000. Fetch one job with:
 
 ```http
 GET /v1/jobs/:id
 ```
 
-Both endpoints require the same application API key that submitted the job.
-A job owned by another application is returned as `404`, preventing cross-
-application discovery.
+Both endpoints require the application API key that submitted the job. A job
+owned by another application is returned as `404`.
 
 | Status | Meaning | Application action |
-|---|---|---|
-| `queued` | Waiting for its time window or capacity | Keep waiting |
-| `running` | Leased by a worker | Keep waiting; do not resubmit |
-| `retry` | A transient attempt failed | Keep waiting |
+| --- | --- | --- |
+| `queued` | Waiting for its window or a worker | Keep polling |
+| `running` | Executing in a Rust worker | Keep polling; do not resubmit |
+| `retry` | A transient attempt failed | Keep polling |
 | `succeeded` | Result is available | Fetch `/result` |
-| `failed` | Attempts are exhausted or the error is permanent | Record failure and alert/review |
+| `failed` | Attempts are exhausted or the error is permanent | Record failure |
 | `cancelled` | Cancellation was accepted | Stop monitoring |
-| `expired` | The deadline or retention limit was reached | Decide whether to submit new work with a new key |
+| `expired` | Deadline or content-retention limit was reached | Decide whether to submit a new key |
 
-For polling, start around 2 seconds and back off to 30–60 seconds. Add jitter
-when many jobs may complete together. Network failures and `5xx` responses from
-the status endpoint should retry the status check; they must not trigger a new
-inference submission.
+Start polling around two seconds and back off to 30–60 seconds with jitter.
+Network failures and `5xx` responses from the status endpoint should retry
+the status check, never the inference submission.
 
 ## Receive progress with SSE
-
-Subscribe to:
 
 ```http
 GET /v1/jobs/:id/events
@@ -161,38 +160,36 @@ Accept: text/event-stream
 ```
 
 Events include `job.queued`, `job.started`, `job.capacity_wait`, `job.retry`,
-`job.succeeded`, `job.failed`, `job.cancelled`, and `job.expired`. Each event
-has an integer SSE ID. Save the latest ID and reconnect with:
+`job.succeeded`, `job.failed`, `job.cancelled`, and `job.expired`, plus webhook
+delivery events. Each event has an integer SSE ID. Save the latest ID and
+reconnect with:
 
 ```http
 Last-Event-ID: <last-seen-id>
 ```
 
-The server emits a heartbeat comment every 15 seconds. Treat SSE as a prompt to
-refresh job state, not as the only source of truth: reconnect after failures
-and periodically reconcile durable local records through `GET /v1/jobs/:id`.
+The native store retains up to 1,000 events per job and replays entries newer
+than the supplied ID. The live stream sends a heartbeat comment every 15
+seconds and recovers a lagged in-memory subscriber from persisted history.
+Polling `GET /v1/jobs/:id` remains the authoritative status check after a
+long disconnection or an event-history truncation.
 
 ## Retrieve a result
 
-After the job is `succeeded`, request:
+After `succeeded`:
 
 ```http
 GET /v1/jobs/:id/result
 ```
 
-The body is the normal upstream response for the original inference protocol.
-Relevant upstream request IDs and content type are restored on the response.
-
-Possible responses are:
-
-- `200`: the result was delivered and marked consumed;
-- `409`: the job is not ready yet, with the current job in the response;
-- `410`: the job ended as `failed`, `cancelled`, or `expired`;
+- `200`: returns the stored inference result and marks it consumed;
+- `409`: the job is not ready;
+- `410`: the job is `failed`, `cancelled`, or `expired`;
 - `404`: no job is visible to this application.
 
-Store and apply the result transactionally where possible. If the application
-crashes after fetching the result but before committing its own state, it must
-be safe to repeat its local apply step.
+Relevant upstream request IDs and the content type are restored when present.
+Store and apply the result transactionally where possible. A crash after the
+fetch but before the application's commit must be safe to recover.
 
 ## Cancel a job
 
@@ -202,75 +199,100 @@ DELETE /v1/jobs/:id
 
 - `204`: cancellation was accepted;
 - `409`: the job can no longer be cancelled;
-- `404`: the job does not exist for this application.
+- `404`: the job is absent or belongs to another application.
 
-Cancellation is best effort for a running upstream request. Do not assume that
-external side effects can be rolled back.
+Cancellation of a running job prevents its result from replacing the terminal
+state, but an already-sent provider request can still finish externally.
 
 ## Optional signed webhook
 
-An administrator must pre-register each webhook URL for an application. The
-application can then submit the returned webhook ID:
+An administrator must pre-register and enable each webhook URL for an
+application. Submit its ID with:
 
 ```text
 X-MultiVibe-Webhook: <registered-webhook-id>
 ```
 
-The callback body has this shape:
+After a successful job, MultiVibe posts:
 
 ```json
 {
   "id": "event-id",
   "type": "job.completed",
-  "createdAt": "2026-08-26T22:14:12.000Z",
+  "createdAt": "2026-09-08T00:14:12.000+00:00",
   "data": {
-    "job": { "object": "multivibe.job", "status": "succeeded" },
+    "job": {
+      "object": "multivibe.job",
+      "status": "succeeded"
+    },
     "result": {}
   }
 }
 ```
 
-MultiVibe sends:
+Headers include:
 
 ```text
 X-MultiVibe-Event-Id: <event-id>
 X-MultiVibe-Signature: sha256=<hex HMAC-SHA256 of the exact request body>
 ```
 
-Verify the signature with a constant-time comparison before parsing or acting
-on the payload. Deduplicate callbacks by event ID. MultiVibe does not follow
-redirects and retries failed delivery with exponential backoff for up to 24
-hours. A successful `2xx` delivery marks the result delivered.
+Verify the signature over the unmodified body with a constant-time comparison
+before parsing or acting. Deduplicate callbacks by event ID. MultiVibe accepts
+any `2xx` as success, follows no redirects, and gives each attempt a
+ten-second timeout. Failures use exponential backoff capped at one hour and
+remain eligible for up to 24 hours.
 
-## Reliability and retention
+## Persistence, migration, and retention
 
-- Jobs and leases are stored in SQLite using WAL mode.
-- Worker leases are renewed during execution and recovered after a restart.
-- Transient upstream errors and `429`/`5xx` responses are retried up to three
-  total attempts with exponential backoff.
-- Waiting for capacity reschedules the job without consuming an attempt.
-- Reading a result or successfully delivering its webhook starts a one-hour
-  grace period before payload and result content can be purged.
-- Unretrieved content is purged after 30 days as a safety limit.
-- Request payloads and results are stored in clear text in the protected
-  `/data/jobs.sqlite` volume. Do not submit content that violates the
-  deployment's data-handling policy.
+Native jobs are stored in the JSON file selected by
+`V1_EDGE_JOBS_PATH` (normally `/data/v1-edge-jobs.json`). Each persistence
+cycle writes a temporary file with mode `0600` on Unix and renames it over
+the destination. Job event history is stored in the same file.
 
-## Migration checklist for an existing project
+On startup:
 
-- Identify operations that are non-interactive and do not use streaming.
-- Keep interactive paths on their current synchronous model.
-- Add configuration for the MultiVibe base URL, application API key, batch
-  alias, and a feature flag.
-- Persist the MultiVibe job ID, idempotency key, status, attempts, and last
-  error in the project's existing durable store.
-- Separate job submission from result monitoring so both survive restarts.
-- Make result application idempotent.
-- Add bounded polling or SSE reconnection with reconciliation.
+- a `running` job is requeued if attempts remain, so it may run again;
+- a job past its deadline becomes `expired`;
+- a running job that exhausted its attempts becomes `failed`;
+- the legacy SQLite database from `JOBS_DB_PATH`, when present, is opened
+  read-only and imported idempotently;
+- before import, Rust creates a consistent
+  `*.pre-rust-backup.sqlite` copy if that backup does not already exist.
+
+SQLite remains unchanged as a migration and rollback artifact. The Rust worker
+does not renew SQLite leases and does not use SQLite as its live store.
+
+Transient network errors, ordinary `429`, and `5xx` outcomes move the job to
+`retry` with exponential backoff while attempts remain. A local
+`capacity_unavailable` result is requeued after a short delay without
+consuming an attempt.
+
+Reading a result or successfully delivering its webhook starts a one-hour
+grace period before request and result content can be purged. Content not
+consumed or delivered is purged after 30 days. The remaining job record
+becomes `expired`.
+
+Request payloads and results are stored in clear text in the protected data
+volume. Protect `V1_EDGE_JOBS_PATH`, its temporary files, the legacy SQLite
+backup, and volume backups according to the deployment's data policy.
+
+## Migration checklist for an application
+
+- Identify non-interactive operations that do not stream and do not require
+  confidential mode.
+- Keep interactive and confidential paths synchronous.
+- Configure the MultiVibe base URL, application API key, batch alias, and a
+  feature flag.
+- Persist the job ID, idempotency key, status, attempts, and last error in the
+  application's durable store.
+- Separate submission from monitoring so both survive restarts.
+- Make result application and webhook processing idempotent.
+- Add bounded polling and reconcile after network failures.
 - Handle every terminal state explicitly.
-- Avoid logging authorization headers, source payloads, or model results.
-- Cover submission, deduplication, restart recovery, success, terminal failure,
-  expiry, cancellation, and malformed responses in automated tests.
+- Avoid logging authorization headers, payloads, or model results.
+- Cover submission replay/conflict, restart recovery, success, retries,
+  expiry, cancellation, webhook deduplication, and malformed responses.
 
-For a self-contained task specification that can be given to a coding agent,
-use [the batch integration prompt](prompts/implement-multivibe-batch.md).
+For a self-contained task specification, use
+[the batch integration prompt](prompts/implement-multivibe-batch.md).

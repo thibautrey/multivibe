@@ -486,16 +486,24 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     if (!options.hostApplication || !options.hostUpdateController?.available()) {
       return res.status(404).json({ error: "Host updater is unavailable" });
     }
-    options.hostUpdateController.beginDrain();
-    return res.json(await options.hostUpdateController.readiness());
+    try {
+      await options.hostUpdateController.beginDrain();
+      return res.json(await options.hostUpdateController.readiness());
+    } catch (error: any) {
+      return res.status(503).json({ error: error?.message ?? "Inference drain failed" });
+    }
   });
 
-  router.post("/host-update/resume", (_req, res) => {
+  router.post("/host-update/resume", async (_req, res) => {
     if (!options.hostApplication || !options.hostUpdateController?.available()) {
       return res.status(404).json({ error: "Host updater is unavailable" });
     }
-    options.hostUpdateController.resume();
-    return res.json({ resumed: true });
+    try {
+      await options.hostUpdateController.resume();
+      return res.json({ resumed: true });
+    } catch (error: any) {
+      return res.status(503).json({ error: error?.message ?? "Inference resume failed" });
+    }
   });
 
   router.get("/host-update/readiness", async (_req, res) => {

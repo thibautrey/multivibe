@@ -32,11 +32,7 @@ pub(crate) struct StoredResponse {
 }
 
 impl StoredResponse {
-    pub(crate) fn new(
-        status: StatusCode,
-        headers: &[(String, String)],
-        body: Bytes,
-    ) -> Self {
+    pub(crate) fn new(status: StatusCode, headers: &[(String, String)], body: Bytes) -> Self {
         Self {
             status,
             headers: headers
@@ -134,12 +130,7 @@ impl Leader {
 
     pub(crate) async fn fail(mut self) {
         self.cache
-            .fail_entry(
-                &self.scope,
-                &self.request_hash,
-                self.id,
-                &self.sender,
-            )
+            .fail_entry(&self.scope, &self.request_hash, self.id, &self.sender)
             .await;
         self.active = false;
     }
@@ -157,9 +148,7 @@ impl Drop for Leader {
         let sender = self.sender.clone();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
-                cache
-                    .fail_entry(&scope, &request_hash, id, &sender)
-                    .await;
+                cache.fail_entry(&scope, &request_hash, id, &sender).await;
             });
         }
     }
@@ -523,8 +512,7 @@ fn is_cacheable_completed_response(response: &StoredResponse) -> bool {
         return false;
     }
     if !response.headers.iter().any(|(name, value)| {
-        name.eq_ignore_ascii_case("content-type")
-            && value.to_ascii_lowercase().contains("json")
+        name.eq_ignore_ascii_case("content-type") && value.to_ascii_lowercase().contains("json")
     }) {
         return false;
     }
@@ -648,8 +636,7 @@ mod tests {
                 ("set-cookie".to_owned(), "private".to_owned()),
             ],
             Bytes::from(
-                serde_json::to_vec(&json!({"id": id, "output": "x".repeat(padding)}))
-                    .unwrap(),
+                serde_json::to_vec(&json!({"id": id, "output": "x".repeat(padding)})).unwrap(),
             ),
         )
     }
@@ -660,8 +647,14 @@ mod tests {
         let first = json!({"model": "test", "input": {"b": 2, "a": 1}});
         let reordered = json!({"input": {"a": 1, "b": 2}, "model": "test"});
         assert_eq!(scope("app", "/responses", "key"), "app\0/responses\0key");
-        assert_eq!(request_hash(&first, &headers), request_hash(&reordered, &headers));
-        assert_ne!(request_hash(&first, &headers), request_hash(&json!({"input": "other"}), &headers));
+        assert_eq!(
+            request_hash(&first, &headers),
+            request_hash(&reordered, &headers)
+        );
+        assert_ne!(
+            request_hash(&first, &headers),
+            request_hash(&json!({"input": "other"}), &headers)
+        );
     }
 
     #[tokio::test]
@@ -683,9 +676,24 @@ mod tests {
         match cache.claim(scope, hash).await {
             Claim::Replay(replayed) => {
                 assert_eq!(replayed.body, expected.body);
-                assert!(replayed.headers.iter().any(|(name, _)| name == "x-multivibe-decision"));
-                assert!(!replayed.headers.iter().any(|(name, _)| name == STATUS_HEADER));
-                assert!(!replayed.headers.iter().any(|(name, _)| name == "set-cookie"));
+                assert!(
+                    replayed
+                        .headers
+                        .iter()
+                        .any(|(name, _)| name == "x-multivibe-decision")
+                );
+                assert!(
+                    !replayed
+                        .headers
+                        .iter()
+                        .any(|(name, _)| name == STATUS_HEADER)
+                );
+                assert!(
+                    !replayed
+                        .headers
+                        .iter()
+                        .any(|(name, _)| name == "set-cookie")
+                );
             }
             _ => panic!("expected replay"),
         }
@@ -828,7 +836,9 @@ mod tests {
 
     #[test]
     fn eligibility_rejects_stateful_and_multimodal_requests() {
-        assert!(is_eligible_body(&json!({"model": "test", "input": "hello"})));
+        assert!(is_eligible_body(
+            &json!({"model": "test", "input": "hello"})
+        ));
         assert!(!is_eligible_body(&json!({"model": "test", "stream": true})));
         assert!(!is_eligible_body(&json!({
             "model": "test",

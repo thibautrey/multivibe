@@ -1,141 +1,163 @@
-# Architecture actuelle de l'API et refactorisation Rust
+# Architecture actuelle de l'API Rust
 
-Date : 4 septembre 2026
+Date : 7 septembre 2026.
 
-## Conclusion
+## Architecture retenue
 
-Dans le profil natif (`MULTIVIBE_CONTROL_PLANE=true`), les chemins publics
-`/v1` ne passent plus par Express. Le binaire Rust/Axum écoute sur `1455` et
-termine directement l'authentification, la lecture du store, la découverte des
-modèles, le routage de compte/provider, les conversions de protocole, le JSON,
-le SSE, le WebSocket, les jobs, la capacité et le realtime.
+Dans le profil natif `MULTIVIBE_CONTROL_PLANE=true`, le port public `1455`
+est servi par Rust/Axum. L'edge possède les requêtes d'inférence sous `/v1`
+et leurs alias racine : authentification, catalogue, routage, conversions,
+admission, retries, JSON, SSE, WebSocket, Realtime, jobs et capacité restent
+dans le même processus Rust jusqu'au provider.
 
-Node/Express reste lancé sur `127.0.0.1:1456` comme plan de contrôle pour le
-dashboard, l'administration, OAuth, la persistance métier et les tâches
-existantes. L'edge Rust lui relaie uniquement les requêtes hors `/v1` qui ne
-sont pas possédées par l'edge. Le profil local historique
-(`MULTIVIBE_CONTROL_PLANE=false`) conserve Express pour permettre le
-développement en processus unique.
+Node/Express écoute sur `127.0.0.1:1456` comme plan de contrôle. Il reste
+responsable du dashboard, des assets, de l'administration, des flux
+d'onboarding et callbacks OAuth, de l'édition du store, des modules et de la
+coordination Host/provider-agent. L'edge lui transmet seulement les routes
+qu'il ne possède pas. Node fournit aussi une route interne étroite pour
+persister les tokens renouvelés par Rust avec une comparaison atomique.
 
-Cette séparation réduit un hop HTTP local, un parsing/re-encodage JavaScript et
-la présence d'objets V8 sur le chemin chaud. Elle ne prouve pas à elle seule un
-gain de bout en bout : la latence du provider, les quotas, le TLS et la durée
-de génération dominent souvent. La mémoire et la stabilité doivent donc être
-mesurées sur une charge représentative après déploiement.
+Le profil `MULTIVIBE_CONTROL_PLANE=false` reste un mode historique en
+processus unique dans lequel Express monte encore les routeurs d'inférence et
+son runner de jobs. Il n'est pas utilisé sur le chemin public du profil natif.
 
-## Structure actuelle
+## Composants
 
 | Couche | Emplacement | Rôle dans le profil natif |
 | --- | --- | --- |
-| Edge HTTP public | `rust/v1-edge/src/lib.rs` | Surface `/v1`, auth, body limit, zstd, routage, conversions et transports |
-| Bootstrap edge | `rust/v1-edge/src/main.rs` | Lecture de la configuration, bind `V1_EDGE_HOST:V1_EDGE_PORT`, shutdown |
-| Plan de contrôle | `src/server.ts` | Dashboard, `/admin/*`, OAuth, stores, agent, tâches et fallback hors `/v1` |
-| Store partagé | `data/accounts.json` via `AccountStore` Rust/Node | Comptes, aliases, clés et politiques applicatives |
+| Edge HTTP public | `rust/v1-edge/src/lib.rs` | Routes d'inférence, auth, body limits, zstd, routage, transports, capacité, jobs et drain |
+| Idempotence | `rust/v1-edge/src/idempotency.rs` | Réservations single-flight, conflits, replay et bornes mémoire |
+| Inférence confidentielle | `rust/v1-edge/src/confidential.rs` | Attestation, politique de confiance, chiffrement et authentification des réponses |
+| Refresh OAuth | `rust/v1-edge/src/token_refresh.rs` | Refresh single-flight OpenAI/OpenCode/xAI et retry après `401` |
+| Bootstrap edge | `rust/v1-edge/src/main.rs` | Configuration, bind et arrêt du serveur |
+| Plan de contrôle | `src/server.ts` | Dashboard, admin, OAuth, édition des comptes/politiques, modules et Host |
+| Persistance CAS | `src/internal-v1-edge-routes.ts`, `src/store.ts` | Écriture conditionnelle des credentials renouvelés |
+| Store partagé | `data/accounts.json` | Comptes, aliases, clés, politiques et webhooks |
+| Jobs natifs | `V1_EDGE_JOBS_PATH` | État JSON autoritaire du dispatcher Rust |
+| Migration jobs | `JOBS_DB_PATH` | Ancien SQLite lu et sauvegardé avant import |
 | Runtime local | `provider-agent/`, `host/application/` | Agent Go et intégration des runtimes locaux |
-| Compatibilité historique | `src/routes/proxy/`, `src/realtime-proxy.ts`, `src/websocket-responses.ts` | Montée seulement dans le profil Express non natif |
 
-Le code TypeScript peut donc rester chargé en mémoire dans le plan de contrôle,
-mais il ne reçoit pas les requêtes `/v1` du port public natif. Les routeurs
-Express historiques ne sont pas montés sous `/v1` lorsque le profil natif est
-actif.
+## Routes possédées par Rust
 
-## Surface `/v1` possédée par Rust
-
-| Méthode | Route | Traitement |
+| Fonction | Routes canoniques | Alias racine natifs |
 | --- | --- | --- |
-| `GET` | `/v1/models`, `/v1/models/:id` | Catalogue statique + découverte upstream mise en cache |
-| `GET` | `/v1/props` | Propriétés de compatibilité |
-| `POST` | `/v1/responses`, `/v1/responses/compact` | Responses JSON/SSE et compaction |
-| `POST` | `/v1/chat/completions` | Chat Completions JSON/SSE |
-| `POST` | `/v1/messages` | Compatibilité Anthropic JSON/SSE |
-| `GET` upgrade | `/v1/responses` | Frames WebSocket Responses |
-| `POST` | `/v1/realtime/calls` | Négociation WebRTC/SDP multipart |
-| `GET` | `/v1/realtime/voices`, `/v1/settings/voices` | Catalogue vocal |
-| `GET` | `/v1/capacity`, `/v1/capacity/events` | Capacité et événements SSE |
-| `GET`/`DELETE` | `/v1/jobs/*` | Jobs différés, événements, résultats et annulation |
+| Modèles | `GET /v1/models`, `GET /v1/models/:id` | `/models`, `/models/:id` |
+| Compatibilité catalogue | — | `/api/v1/models`, `/api/v1/models/:id`, `/api/tags` |
+| Compatibilité version | — | `/version` |
+| Propriétés | `GET /v1/props` | `/props` |
+| Responses | `POST /v1/responses`, `POST /v1/responses/compact` | `/responses`, `/responses/compact` |
+| Responses WebSocket | upgrade `GET /v1/responses` | `/responses` |
+| Chat Completions | `POST /v1/chat/completions` | `/chat/completions` |
+| Anthropic Messages | `POST /v1/messages` | `/messages` |
+| Realtime | `POST /v1/realtime/calls`, catalogues de voix | mêmes chemins sans `/v1` |
+| Capacité | `GET /v1/capacity`, `GET /v1/capacity/events` | aucun |
+| Jobs | `GET/DELETE /v1/jobs/*` | aucun |
 
-Un chemin `/v1` inconnu est authentifié puis renvoie `404` depuis Rust ; il
-n'est pas relégué à Express. Les compatibilités sans préfixe (`/responses`,
-`/chat/completions`, `/messages`, `/models`, `/api/tags`, `/version`, `/props`)
-restent disponibles via le fallback vers le plan de contrôle afin de ne pas
-modifier le contrat existant hors du périmètre demandé.
+Un chemin `/v1` inconnu est authentifié et renvoie `404` depuis Rust. Les
+routes racine et de découverte listées ci-dessus sont résolues avant le
+fallback et ne traversent donc pas Node. Les autres chemins hors `/v1`, dont
+le dashboard et l'administration, sont relayés vers le plan de contrôle
+loopback.
 
-## Chemin d'une requête native
+## Chemin d'une requête
 
 ```text
 client :1455
   -> Rust/Axum
-  -> limite de body + décompression zstd + JSON
-  -> authentification et application
-  -> catalogue/alias/provider/model
-  -> quotas, compte bloqué, policy et session affinity facultative
-  -> conversion Responses/Chat/Anthropic
-  -> requête provider et rotation de compte
-  -> relais JSON ou flux SSE/WebSocket
-  -> trace légère et état des jobs Rust
+  -> limite de body, décompression et parsing
+  -> authentification de l'application
+  -> catalogue, alias, provider et comptes admissibles
+  -> refresh OAuth éventuel
+  -> acquisition d'une lease de capacité
+  -> conversion et appel provider
+  -> JSON, SSE ou WebSocket
+  -> libération de la lease et trace native
 
-requête hors /v1
+route de contrôle non possédée
   -> Rust/Axum
-  -> Node/Express :1456 (loopback)
+  -> Node/Express :1456
 ```
 
-Le store est relu avec cache invalidé par la date de modification du fichier.
-Le catalogue de modèles est rafraîchi sous un verrou de déduplication et sa
-signature ignore les seules valeurs volatiles de quota. Les comptes découverts
-sont associés au modèle via `metadata.provider_candidates` et
-`metadata.account_ids`, ce qui évite de choisir un provider ou un compte qui ne
-figure pas dans la découverte disponible.
+Le store de comptes est relu avec un cache invalidé par sa date de
+modification. Le catalogue est rafraîchi sous un verrou de déduplication.
+L'affinité de session, lorsqu'elle est activée, est isolée par application,
+session et provider, possède un TTL et une taille bornée, et oublie un compte
+devenu inéligible.
 
-La session affinity Rust est désactivée par défaut. Lorsqu'elle est activée,
-la clé est `(application, session, provider)`, le TTL et la taille sont bornés,
-et le compte sticky n'est consulté qu'après les filtres de quota, blocage et
-policy. Un compte devenu inéligible est oublié et le failover remplace le
-mapping ; une application ne peut donc pas récupérer l'affinité d'une autre.
+## Idempotence et admission
 
-## Parité couverte et limites explicites
+Les requêtes JSON synchrones éligibles utilisent une clé isolée par
+application et route normalisée. Une réservation atomique désigne un leader ;
+les doublons en vol attendent son résultat et une réponse conservable peut
+être rejouée pendant le TTL. La réutilisation de la clé avec une autre
+empreinte renvoie `409`. Les statuts
+`X-MultiVibe-Idempotency-Status` sont `created`, `coalesced`,
+`replayed` et `bypass`.
 
-Les tests Rust couvrent notamment :
+Le cache borne les entrées, les octets, la taille d'une réponse et la durée
+d'une réservation. Les flux, outils, contenus multimodaux, requêtes
+conversationnelles, stockées ou en arrière-plan contournent volontairement ce
+replay.
 
-- l'authentification constant-time et l'isolation par application ;
-- la découverte/routage `/v1` sans requête au plan de contrôle Node ;
-- la sélection quota-aware, la session affinity, son TTL, son LRU et son
-  isolation application/provider ;
-- les conversions outils, images, Chat Completions, Responses et Anthropic ;
-- le relais SSE direct, le WebSocket authentifié et les réponses JSON ;
-- la décompression zstd bornée, les jobs persistés et leurs résultats isolés.
+L'admission acquiert une lease par compte selon `maxConcurrent`. Elle la
+conserve jusqu'à la fin réelle de la réponse, y compris lors d'un flux ou d'un
+tour WebSocket, et la libère sur abandon du client. Une attente demandée par
+`X-MultiVibe-Max-Wait-Ms` est bornée ; à défaut de capacité, Rust renvoie
+`429 capacity_unavailable`. Les snapshots de capacité soustraient les
+leases actives et comptent les waiters concernés.
 
-La migration n'est pas une promesse de parité fonctionnelle absolue avec le
-profil Express. Les écarts à traiter ou à accepter explicitement sont :
+## Jobs natifs
 
-- les hooks JavaScript d'inférence et les politiques de modules ;
-- l'admission/smart-routing avancé et les observations de capacité détaillées ;
-- le refresh automatique des tokens OAuth ;
-- les retries, fairness, webhooks et certains détails de reprise des jobs ;
-- le stale-while-revalidate complet du catalogue et des usages ;
-- la télémétrie détaillée du routeur et l'intégration de certains hooks host.
+Le dispatcher Rust :
 
-Ces fonctions restent dans Express pour le profil historique ou doivent être
-portées avec un contrat propre avant d'être annoncées comme natives. Le
-provider-agent Go reste également un sous-système séparé : le fait que l'edge
-soit écrit en Rust ne transforme pas son runtime local.
+- ouvre une fenêtre batch de 22:00 à 07:00 selon `Europe/Paris` ;
+- pondère les quatre priorités puis les applications de même priorité ;
+- borne le nombre de jobs actifs ;
+- applique les deadlines et jusqu'à trois tentatives par défaut ;
+- récupère au redémarrage les jobs restés `running` ;
+- conserve et rejoue jusqu'à 1 000 événements par job avec `Last-Event-ID` ;
+- livre les résultats par webhook HMAC-SHA-256, sans redirect et avec backoff
+  pendant une fenêtre maximale de 24 heures.
 
-## Performance et mémoire
+L'état courant est écrit en JSON dans `V1_EDGE_JOBS_PATH` via un fichier
+temporaire et un renommage atomique. Au premier démarrage avec l'ancien
+`JOBS_DB_PATH`, Rust ouvre SQLite en lecture seule, crée
+`*.pre-rust-backup.sqlite`, puis importe et déduplique les jobs et
+livraisons. Le runner TypeScript n'est pas démarré dans le profil natif.
 
-Un binaire Rust peut être plus léger qu'un serveur Node sur le chemin de
-traitement : pas de V8 pour le transport `/v1`, moins de conversions d'objets,
-et un flux de bytes qui peut rester dans Rust. Mais la consommation totale du
-conteneur inclut encore Node/Express, le dashboard, l'agent Go, les caches et
-les providers. Le profil natif n'est donc pas « Rust seul ».
+## Refresh OAuth et plan de contrôle
 
-Les micro-benchmarks existants dans `docs/` mesurent des fonctions isolées ; ils
-ne valident ni la latence provider ni la stabilité en production. La validation
-à retenir pour une activation est : p50/p95/p99, débit, RSS, heap V8, mémoire
-native, pauses GC, erreurs, reconnexions SSE/WebSocket et consommation CPU sur
-les mêmes payloads et la même configuration.
+Rust déduplique le renouvellement par compte, renouvelle un credential proche
+de l'expiration et effectue au plus un refresh/retry forcé après `401`.
+OpenAI, OpenCode et xAI sont pris en charge sur les chemins HTTP, Realtime et
+WebSocket concernés.
+
+La persistance reste une responsabilité du plan de contrôle, qui est l'écrivain
+du store métier. Rust appelle la route interne authentifiée
+`/internal/v1-edge/accounts/:id/token` avec l'ancien access token attendu.
+Node applique le patch seulement si cette valeur est encore courante. En cas
+de conflit, Rust relit le store et adopte le credential plus récent. Ce contrat
+CAS empêche un refresh de remplacer une réauthentification administrative.
+
+## Confidentialité, drain et modules
+
+Le mode `confidential_verified` n'autorise que les comptes marqués avec le
+même `privacyMode`. Rust vérifie l'attestation contre une politique locale,
+dérive des clés distinctes pour la requête et la réponse, chiffre le payload et
+authentifie la réponse. Il désactive les redirects et ne retombe jamais sur un
+transport standard. Les traces excluent le body clair.
+
+Le drain natif expose des routes internes `begin`, `status` et `resume`
+protégées par le token interne. Il refuse le nouveau travail et suit les
+requêtes, tours WebSocket et jobs actifs. Le contrôleur Host Node attend ces
+compteurs et l'absence d'opération provider avant une mise à jour.
+
+Les hooks JavaScript ne sont pas exécutés dans l'edge. Après le chargement du
+catalogue de modules, le profil natif refuse son démarrage si un module chargé
+et activé déclare des hooks. Cette barrière évite une activation où des
+transformations configurées seraient ignorées.
 
 ## Configuration native
-
-Les variables principales sont :
 
 | Variable | Défaut | Usage |
 | --- | --- | --- |
@@ -143,23 +165,38 @@ Les variables principales sont :
 | `CONTROL_PLANE_PORT` | `1456` | Port Node interne |
 | `V1_EDGE_HOST` | `0.0.0.0` | Adresse d'écoute Rust |
 | `V1_EDGE_PORT` | `1455` | Port public Rust |
-| `NODE_CONTROL_PLANE_URL` | `http://127.0.0.1:1456` | Fallback hors `/v1` |
-| `V1_EDGE_BASE_URL` | `http://127.0.0.1:1455` | URL utilisée par les jobs du plan de contrôle |
-| `V1_EDGE_INTERNAL_JOB_TOKEN` | généré par le launcher | Capability partagée pour les jobs internes |
+| `NODE_CONTROL_PLANE_URL` | `http://127.0.0.1:1456` | Plan de contrôle et persistance CAS |
+| `V1_EDGE_BASE_URL` | `http://127.0.0.1:1455` | URL interne de l'edge |
+| `V1_EDGE_INTERNAL_JOB_TOKEN` | généré par le launcher | Auth des routes internes Rust/Node |
+| `V1_EDGE_JOBS_PATH` | voisin de `STORE_PATH` | Store JSON des jobs natifs |
+| `JOBS_DB_PATH` | `/data/jobs.sqlite` | Source SQLite historique à sauvegarder/importer |
+| `JOB_WORKER_CONCURRENCY` | `16` | Concurrence globale du dispatcher Rust |
 | `MODELS_CACHE_MS` | `600000` | TTL du catalogue Rust |
 | `CODEX_SESSION_AFFINITY` | `false` | Active l'affinité de session |
-| `CODEX_SESSION_AFFINITY_TTL_MS` | `3600000` | TTL d'un mapping en mémoire |
-| `CODEX_SESSION_AFFINITY_MAX_ENTRIES` | `10000` | Limite LRU |
-| `V1_EDGE_JOBS_PATH` | `/data/v1-edge-jobs.json` en Compose | État des jobs natifs |
+| `INFERENCE_IDEMPOTENCY_TTL_MS` | `300000` | Fenêtre de replay |
+| `INFERENCE_IDEMPOTENCY_IN_FLIGHT_TIMEOUT_MS` | `300000` | Durée maximale d'une réservation |
+| `MULTIVIBE_CONFIDENTIAL_INFERENCE_TRUST_POLICY` | vide | Politique de confiance du transport confidentiel |
 
-Compose publie uniquement `1455`. Le launcher démarre ensuite Node sur
-`127.0.0.1:1456` et le binaire `/opt/multivibe/bin/multivibe-v1-edge` sur
-`1455`. Le token interne est généré une seule fois par le launcher puis injecté
-dans les deux processus.
+Dans l'image Compose, seul `1455` est publié. Le launcher injecte le même
+token interne dans les deux processus.
 
-## Validation locale
+## Limites explicites
 
-Depuis la racine du dépôt :
+- La garantie confidentielle couvre Responses et Chat Completions. Messages et
+  jobs confidentiels sont refusés. `stream=true` produit le format SSE après
+  réception de la réponse scellée complète, sans flux progressif ; Realtime
+  reste hors de cette surface vérifiée.
+- La capacité a une confiance `declared` et ne garantit pas la disponibilité
+  réelle du provider.
+- Les routeurs TypeScript restent présents pour le profil historique
+  `MULTIVIBE_CONTROL_PLANE=false`.
+- Node, le provider-agent Go et les moteurs locaux restent nécessaires à leurs
+  responsabilités respectives ; le produit déployé n'est pas un processus
+  Rust unique.
+
+## Validation
+
+Depuis la branche intégrée :
 
 ```bash
 cargo fmt --all -- --check
@@ -170,27 +207,7 @@ npm test
 docker compose config
 ```
 
-Pour une recette native locale, démarrer le plan de contrôle Node sur `1456`
-avec `MULTIVIBE_CONTROL_PLANE=true`, puis le binaire Rust sur `1455`. La
-preuve utile est une requête authentifiée `GET /v1/models` ou
-`POST /v1/responses` qui atteint le provider attendu, tandis qu'un endpoint
-hors `/v1` atteint le plan de contrôle loopback. Les tests d'intégration Rust
-reproduisent cette séparation avec des serveurs upstream et control-plane
-distincts.
-
-## Barrière de non-régression
-
-Avant chaque élargissement de la surface native, conserver des tests qui
-vérifient :
-
-- routes, méthodes, statuts, erreurs et limites de body ;
-- choix modèle/provider/compte pour un snapshot identique ;
-- outils, images, transformations et headers provider ;
-- ordre et fin des événements SSE, EOF, erreur et annulation ;
-- frames WebSocket et authentification de l'application ;
-- isolation des credentials, prompts, réponses, jobs et affinités ;
-- absence de hop Node pour les routes `/v1` du profil natif.
-
-La mise en production doit séparer la preuve du code compilé, le démarrage des
-deux processus, le comportement HTTP vivant et les mesures de charge. Un test
-Rust local seul ne prouve pas la stabilité ou le gain mémoire du déploiement.
+La recette native doit vérifier qu'un serveur de contrôle simulé qui échoue sur
+toute requête d'inférence n'affecte ni les routes `/v1` ni leurs alias
+racine. Les mesures de charge doivent couvrir p50/p95/p99, débit, CPU, RSS,
+erreurs et déconnexions du couple Rust + Node.
