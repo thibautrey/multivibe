@@ -165,7 +165,7 @@ func TestWorkerTestRequiresTheExactSyntheticResponse(t *testing.T) {
 				}
 				_ = json.NewEncoder(response).Encode(map[string]any{
 					"choices": []any{map[string]any{"message": map[string]any{"content": output}}},
-					"usage": map[string]any{"prompt_tokens": 9, "completion_tokens": 6},
+					"usage":   map[string]any{"prompt_tokens": 9, "completion_tokens": 6},
 				})
 			}))
 			defer runtimeServer.Close()
@@ -174,7 +174,7 @@ func TestWorkerTestRequiresTheExactSyntheticResponse(t *testing.T) {
 				t.Fatalf("runtime setup failed: conflict=%v err=%v", conflict, err)
 			}
 			service := newWorkerTestService(nil, http.DefaultClient, nil, nil, runtimes)
-			claim := workerTestClaim{Model: "registered/model", Prompt: "Reply with exactly MULTIVIBE_WORKER_OK.", TestOnly: true}
+			claim := workerTestClaim{Model: "registered/model", Prompt: "Reply with exactly MULTIVIBE_WORKER_OK.", TestOnly: true, ExpiresAt: time.Now().UTC().Add(time.Minute).Format("2006-01-02T15:04:05.000Z")}
 			enrollment := cloudEnrollmentView{RuntimeFamily: "manual-openai-compatible"}
 			if _, _, _, err := service.infer(context.Background(), enrollment, claim); err == nil {
 				t.Fatal("non-exact synthetic response was accepted")

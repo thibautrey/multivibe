@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -28,6 +29,7 @@ const (
 var providerAgentVersion = "dev"
 
 type nvidiaGPUCapability struct {
+	UUID              string  `json:"-"`
 	Name              string  `json:"name"`
 	MemoryMiB         uint64  `json:"memory_mib"`
 	ComputeCapability float64 `json:"compute_capability"`
@@ -137,7 +139,7 @@ func detectHostCapability(ctx context.Context, goos, goarch string, command plat
 	output, err := command(
 		probeContext,
 		"nvidia-smi",
-		"--query-gpu=name,memory.total,compute_cap",
+		"--query-gpu=name,memory.total,compute_cap,uuid",
 		"--format=csv,noheader,nounits",
 	)
 	if err != nil {
@@ -279,14 +281,20 @@ func parseDarwinUnifiedMemory(output []byte) (uint64, error) {
 
 func parseNVIDIACapabilities(output []byte) ([]nvidiaGPUCapability, error) {
 	reader := csv.NewReader(bytes.NewReader(output))
-	reader.FieldsPerRecord = 3
+	reader.FieldsPerRecord = 4
 	reader.TrimLeadingSpace = true
 	records, err := reader.ReadAll()
 	if err != nil || len(records) == 0 || len(records) > 32 {
 		return nil, errors.New("invalid NVIDIA capability list")
 	}
 	gpus := make([]nvidiaGPUCapability, 0, len(records))
+	seen := make(map[string]bool)
 	for _, record := range records {
+		uuid := strings.TrimSpace(record[3])
+		if !validNVIDIAUUID(uuid) || seen[uuid] {
+			return nil, errors.New("invalid NVIDIA GPU identity")
+		}
+		seen[uuid] = true
 		name := strings.TrimSpace(record[0])
 		if name == "" || len(name) > 128 || strings.IndexFunc(name, unicode.IsControl) >= 0 {
 			return nil, errors.New("invalid NVIDIA GPU name")
@@ -300,6 +308,7 @@ func parseNVIDIACapabilities(output []byte) ([]nvidiaGPUCapability, error) {
 			return nil, errors.New("invalid NVIDIA compute capability")
 		}
 		gpus = append(gpus, nvidiaGPUCapability{
+			UUID:              uuid,
 			Name:              name,
 			MemoryMiB:         memory,
 			ComputeCapability: compute,
@@ -307,6 +316,10 @@ func parseNVIDIACapabilities(output []byte) ([]nvidiaGPUCapability, error) {
 	}
 	return gpus, nil
 }
+
+var nvidiaUUIDPattern = regexp.MustCompile(`^GPU-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+func validNVIDIAUUID(value string) bool { return nvidiaUUIDPattern.MatchString(value) }
 
 func runDoctor(output *os.File) int {
 	capability := currentHostCapability()
