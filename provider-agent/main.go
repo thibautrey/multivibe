@@ -581,15 +581,20 @@ func providerHandlerWithModelLifecycle(core *url.URL, selections *selectionStore
 		}
 		view, err := enrollment.enroll(request.Context(), input)
 		if err != nil {
-			if errors.Is(err, errInvalidCloudEnrollment) {
+			switch {
+			case errors.Is(err, errInvalidCloudEnrollment):
 				http.Error(response, "invalid request", http.StatusBadRequest)
-				return
+			case errors.Is(err, errCloudAlreadyEnrolled), errors.Is(err, errCloudEnrollmentConflict):
+				http.Error(response, "enrollment conflict", http.StatusConflict)
+			case errors.Is(err, errCloudEnrollmentExpired):
+				http.Error(response, "enrollment grant expired", http.StatusGone)
+			case errors.Is(err, errCloudEnrollmentRejected):
+				http.Error(response, "provider Cloud enrollment rejected", http.StatusUnprocessableEntity)
+			case errors.Is(err, errCloudEnrollmentUnavailable):
+				http.Error(response, "provider Cloud enrollment unavailable", http.StatusBadGateway)
+			default:
+				http.Error(response, "provider Cloud enrollment unavailable locally", http.StatusServiceUnavailable)
 			}
-			if errors.Is(err, errCloudAlreadyEnrolled) {
-				http.Error(response, "already enrolled", http.StatusConflict)
-				return
-			}
-			http.Error(response, "provider Cloud enrollment failed", http.StatusBadGateway)
 			return
 		}
 		response.Header().Set("cache-control", "no-store")

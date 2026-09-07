@@ -718,7 +718,9 @@ export function startEmbeddedProviderAgent(options: {
       signal: AbortSignal.any(signals),
     });
     if (!acceptedStatuses.includes(response.status)) {
-      if ([400, 404, 409].includes(response.status)) throw new ProviderAgentControlRequestError(response.status);
+      if ([400, 404, 409, 410, 422, 502, 503].includes(response.status)) {
+        throw new ProviderAgentControlRequestError(response.status);
+      }
       throw new Error("provider agent control request failed");
     }
     const declared = response.headers.get("content-length");
