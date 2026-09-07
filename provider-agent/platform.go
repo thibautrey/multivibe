@@ -154,11 +154,16 @@ func detectHostCapability(ctx context.Context, goos, goarch string, command plat
 		return result
 	}
 	result.GPUs = gpus
+	hasSupportedGPU := false
 	for _, gpu := range gpus {
-		if gpu.ComputeCapability < minimumNVIDIAComputeCapability {
-			result.Reason = fmt.Sprintf("NVIDIA compute capability %.1f or newer is required", minimumNVIDIAComputeCapability)
-			return result
+		if gpu.ComputeCapability >= minimumNVIDIAComputeCapability {
+			hasSupportedGPU = true
+			break
 		}
+	}
+	if !hasSupportedGPU {
+		result.Reason = fmt.Sprintf("an NVIDIA GPU with compute capability %.1f or newer is required", minimumNVIDIAComputeCapability)
+		return result
 	}
 	result.Supported = true
 	if goos == "windows" {
@@ -205,15 +210,32 @@ func currentHostCapability() hostCapability {
 
 // selectNVIDIACUDADevice binds advertised capacity to the single physical GPU
 // exposed to the non-sharded managed Ollama runtime. An empty pin is the
-// production default CUDA_VISIBLE_DEVICES=0. Multiple devices must stay
-// rejected until a runtime backend explicitly declares and implements
-// sharding semantics.
+// production default is the first compatible physical device. Multiple
+// devices must stay rejected until a runtime backend explicitly declares and
+// implements sharding semantics.
 func selectNVIDIACUDADevice(capability hostCapability, value string) (hostCapability, error) {
 	if !capability.Supported || capability.Accelerator != "cuda" || len(capability.GPUs) == 0 {
 		return hostCapability{}, errors.New("NVIDIA CUDA capability is unavailable")
 	}
-	device, err := parseNVIDIACUDADevicePin(value)
-	if err != nil || uint64(device) >= uint64(len(capability.GPUs)) {
+	device := uint32(0)
+	var err error
+	if value == "" {
+		found := false
+		for index, gpu := range capability.GPUs {
+			if gpu.ComputeCapability >= minimumNVIDIAComputeCapability {
+				device = uint32(index)
+				found = true
+				break
+			}
+		}
+		if !found {
+			return hostCapability{}, errors.New("compatible NVIDIA CUDA device is unavailable")
+		}
+	} else {
+		device, err = parseNVIDIACUDADevicePin(value)
+	}
+	if err != nil || uint64(device) >= uint64(len(capability.GPUs)) ||
+		capability.GPUs[device].ComputeCapability < minimumNVIDIAComputeCapability {
 		return hostCapability{}, errors.New("NVIDIA CUDA device pin is invalid")
 	}
 	capability.CUDADevice = device

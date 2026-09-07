@@ -154,6 +154,35 @@ func TestWorkerTestUsesCloudManagedModelFromLoopbackRuntime(t *testing.T) {
 	}
 }
 
+func TestWorkerTestRequiresTheExactSyntheticResponse(t *testing.T) {
+	for _, output := range []string{"", " MULTIVIBE_WORKER_OK", "MULTIVIBE_WORKER_OK\n", "anything else"} {
+		t.Run(output, func(t *testing.T) {
+			runtimeServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				response.Header().Set("content-type", "application/json")
+				if request.Method == http.MethodGet && request.URL.Path == "/v1/models" {
+					_, _ = response.Write([]byte(`{"data":[{"id":"registered/model"}]}`))
+					return
+				}
+				_ = json.NewEncoder(response).Encode(map[string]any{
+					"choices": []any{map[string]any{"message": map[string]any{"content": output}}},
+					"usage": map[string]any{"prompt_tokens": 9, "completion_tokens": 6},
+				})
+			}))
+			defer runtimeServer.Close()
+			runtimes := newMemoryRuntimeEndpointStore()
+			if _, conflict, err := runtimes.replace(1, []runtimeEndpoint{{AdapterID: "manual-openai-compatible", Endpoint: runtimeServer.URL}}, runtimeAdapterRegistry()); err != nil || conflict {
+				t.Fatalf("runtime setup failed: conflict=%v err=%v", conflict, err)
+			}
+			service := newWorkerTestService(nil, http.DefaultClient, nil, nil, runtimes)
+			claim := workerTestClaim{Model: "registered/model", Prompt: "Reply with exactly MULTIVIBE_WORKER_OK.", TestOnly: true}
+			enrollment := cloudEnrollmentView{RuntimeFamily: "manual-openai-compatible"}
+			if _, _, _, err := service.infer(context.Background(), enrollment, claim); err == nil {
+				t.Fatal("non-exact synthetic response was accepted")
+			}
+		})
+	}
+}
+
 func TestWorkerTestRejectsUnregisteredModelBeforeRuntimeCall(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	store := newMemoryCloudEnrollmentStore()

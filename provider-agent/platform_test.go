@@ -59,6 +59,22 @@ func TestDetectHostCapabilityRequiresModernNVIDIAOnLinuxAMD64(t *testing.T) {
 	}
 }
 
+func TestDetectHostCapabilityAcceptsACompatibleGPUAlongsideAnOlderGPU(t *testing.T) {
+	capability := detectHostCapability(context.Background(), "windows", "amd64", func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("Tesla P100, 16280, 6.0\nNVIDIA GeForce RTX 4090, 24564, 8.9\n"), nil
+	})
+	if !capability.Supported || capability.Profile != "windows-nvidia" || len(capability.GPUs) != 2 {
+		t.Fatalf("compatible secondary GPU was rejected: %#v", capability)
+	}
+	selected, err := selectNVIDIACUDADevice(capability, "")
+	if err != nil || selected.CUDADevice != 1 || selected.AcceleratorMemoryBytes != 24564*1024*1024 {
+		t.Fatalf("compatible secondary GPU was not selected: %#v %v", selected, err)
+	}
+	if _, err := selectNVIDIACUDADevice(capability, "0"); err == nil {
+		t.Fatal("explicit pin accepted an obsolete GPU")
+	}
+}
+
 func TestDetectHostCapabilityFailsClosed(t *testing.T) {
 	for _, testCase := range []struct {
 		name   string
@@ -169,6 +185,11 @@ func TestSelectNVIDIACUDADeviceRequiresOneAvailableCanonicalPin(t *testing.T) {
 	withoutGPU.GPUs = nil
 	if _, err := selectNVIDIACUDADevice(withoutGPU, ""); err == nil {
 		t.Fatal("default CUDA device was accepted without a GPU inventory")
+	}
+	onlyOldGPU := capability
+	onlyOldGPU.GPUs = []nvidiaGPUCapability{{Name: "GPU 0", MemoryMiB: 16384, ComputeCapability: 6.0}}
+	if _, err := selectNVIDIACUDADevice(onlyOldGPU, ""); err == nil {
+		t.Fatal("default CUDA device accepted an obsolete GPU")
 	}
 }
 

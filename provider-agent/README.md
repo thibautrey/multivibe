@@ -195,7 +195,8 @@ root and is never a runtime default.
 Managed Ollama configuration is all-or-nothing. It requires the signed-demand
 service, a persistent capacity policy, the packaged model catalog and dependency
 manifest, a private managed root, the bundled runtime root and separate planner
-history. On Linux, the runtime defaults to `CUDA_VISIBLE_DEVICES=0`; both that
+history. On Linux and Windows, the runtime defaults to the first compatible
+physical GPU reported by the bounded NVIDIA probe; both that
 pin and the literal-loopback Ollama port can be changed only through validated
 configuration. Runtime, HOME, XDG, temporary files, logs and the managed model
 inventory stay below the private root. The packaged Ollama tree is verified and
