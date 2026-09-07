@@ -327,6 +327,21 @@ async function findOllamaRoot(extraction) {
   return null;
 }
 
+export function validateOllamaWindowsFiles(runtimeFiles) {
+  for (const relative of runtimeFiles) {
+    if (relative === "ollama.exe" || relative === "lib/ollama/libc++.dll") continue;
+    const parts = relative.split("/");
+    const validLocation = parts.length === 4 && parts[0] === "lib" && parts[1] === "ollama" &&
+      new Set(["cuda_v12", "cuda_v13", "vulkan"]).has(parts[2]) && /^(?:[A-Za-z0-9._-]+)\.(?:dll|exe)$/u.test(parts[3]);
+    const validRootRuntime = parts.length === 3 && parts[0] === "lib" && parts[1] === "ollama" &&
+      /^(?:[A-Za-z0-9._-]+)\.(?:dll|exe)$/u.test(parts[2]);
+    if (!validLocation && !validRootRuntime) throw new Error(`Ollama Windows archive contains an unexpected runtime file: ${relative}`);
+  }
+  for (const required of ["ollama.exe", "lib/ollama/llama-server.exe", "lib/ollama/llama-quantize.exe"]) {
+    if (!runtimeFiles.includes(required)) throw new Error("Ollama Windows archive is missing a required runtime executable");
+  }
+}
+
 async function ollamaRuntime(work, destination, dependency, selectedTarget, version) {
   const archiveName = dependency.archive === "zip" ? "ollama.zip" : dependency.archive === "tar-zstd" ? "ollama.tar.zst" : "ollama.tar.gz";
   const archive = path.join(work, archiveName);
@@ -401,18 +416,7 @@ async function ollamaRuntime(work, destination, dependency, selectedTarget, vers
     const libraryInfo = await lstat(runtimeLibraryRoot);
     if (!libraryInfo.isDirectory() || libraryInfo.isSymbolicLink()) throw new Error("Ollama Windows library layout is invalid");
     const runtimeFiles = await allFiles(extraction);
-    for (const relative of runtimeFiles) {
-      if (relative === "ollama.exe") continue;
-      const parts = relative.split("/");
-      const validLocation = parts.length === 4 && parts[0] === "lib" && parts[1] === "ollama" &&
-        new Set(["cuda_v12", "cuda_v13", "vulkan"]).has(parts[2]) && /^(?:[A-Za-z0-9._-]+)\.(?:dll|exe)$/u.test(parts[3]);
-      const validRootRuntime = parts.length === 3 && parts[0] === "lib" && parts[1] === "ollama" &&
-        /^(?:[A-Za-z0-9._-]+)\.(?:dll|exe)$/u.test(parts[2]);
-      if (!validLocation && !validRootRuntime) throw new Error("Ollama Windows archive contains an unexpected runtime file");
-    }
-    for (const required of ["ollama.exe", "lib/ollama/llama-server.exe", "lib/ollama/llama-quantize.exe"]) {
-      if (!runtimeFiles.includes(required)) throw new Error("Ollama Windows archive is missing a required runtime executable");
-    }
+    validateOllamaWindowsFiles(runtimeFiles);
     await cp(path.join(extraction, "lib"), path.join(destination, "lib"), {
       recursive: true,
       dereference: true,
