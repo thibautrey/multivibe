@@ -2403,11 +2403,25 @@ struct BufferedReplyData {
     body: Bytes,
 }
 
+#[derive(Clone, Default)]
+struct AccountModelCatalogCache {
+    source_signature: String,
+    last_success_at: u64,
+    last_attempt_at: u64,
+    models: Vec<Value>,
+    last_error: Option<String>,
+}
+
 #[derive(Default)]
 struct ModelCatalogCache {
     signature: String,
+    /// Last time every active account completed discovery successfully.
     fetched_at: u64,
+    last_attempt_at: u64,
+    next_refresh_at: u64,
+    consecutive_failures: u32,
     models: Vec<Value>,
+    accounts: HashMap<String, AccountModelCatalogCache>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -4156,7 +4170,7 @@ async fn proxy_inference(
         .first()
         .map(String::as_str)
         .unwrap_or("unknown");
-    let catalog = exposed_models(state, &store).await;
+    let catalog = exposed_models(state, &store, false).await;
     let routes = routes_for_model(&store, &routing_model, default_model, &catalog);
     let client_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let session_id = request_session_id(headers);
@@ -6002,6 +6016,22 @@ fn catalog_signature(store: &StoreFile, config: &EdgeConfig) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+fn account_model_source_signature(account: &Account, config: &EdgeConfig) -> String {
+    let value = json!({
+        "id": account.id,
+        "provider": account.provider,
+        "discovery_url": model_discovery_url(account, config),
+        "chatgpt_account_id": account.chatgpt_account_id,
+        "opencode_headers": account.opencode_headers,
+        "local_runtime": account.local_runtime,
+        "models_client_version": config.models_client_version,
+        "zai_models_path": config.zai_models_path,
+        "xai_models_path": config.xai_models_path,
+    });
+    let digest = Sha256::digest(serde_json::to_vec(&value).unwrap_or_default());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn secret_signature(value: Option<&str>) -> Option<String> {
     let value = value.filter(|value| !value.is_empty())?;
     Some(
@@ -6135,7 +6165,10 @@ fn upstream_model_entries(provider: &str, value: &Value) -> Vec<(String, Value)>
         .unwrap_or_default()
 }
 
-async fn discover_account_models(state: &EdgeState, account: Account) -> Vec<Value> {
+async fn discover_account_models(
+    state: &EdgeState,
+    account: &Account,
+) -> Result<Vec<Value>, String> {
     let provider = normalize_provider(&account);
     let url = model_discovery_url(&account, &state.config);
     let response = match timeout(
@@ -6149,30 +6182,51 @@ async fn discover_account_models(state: &EdgeState, account: Account) -> Vec<Val
     .await
     {
         Ok(Ok(response)) if response.status().is_success() => response,
-        _ => return Vec::new(),
+        Ok(Ok(response)) => {
+            return Err(format!(
+                "model discovery returned HTTP {}",
+                response.status().as_u16()
+            ));
+        }
+        Ok(Err(error)) => return Err(format!("model discovery request failed: {error}")),
+        Err(_) => return Err("model discovery request timed out".to_owned()),
     };
     let bytes = match timeout(Duration::from_secs(3), response.bytes()).await {
         Ok(Ok(bytes)) if bytes.len() <= 4 * 1024 * 1024 => bytes,
-        _ => return Vec::new(),
+        Ok(Ok(_)) => return Err("model discovery response exceeded 4 MiB".to_owned()),
+        Ok(Err(error)) => return Err(format!("model discovery response failed: {error}")),
+        Err(_) => return Err("model discovery response timed out".to_owned()),
     };
     let value = match serde_json::from_slice::<Value>(&bytes) {
         Ok(value) => value,
-        Err(_) => return Vec::new(),
+        Err(error) => return Err(format!("model discovery returned invalid JSON: {error}")),
     };
-    upstream_model_entries(&provider, &value)
+    let models = upstream_model_entries(&provider, &value)
         .into_iter()
         .map(|(id, entry)| model_entry_from_upstream(&id, &provider, &account.id, &entry))
-        .collect()
+        .collect::<Vec<_>>();
+    if models.is_empty() {
+        Err("model discovery returned no models".to_owned())
+    } else {
+        Ok(models)
+    }
 }
 
-async fn exposed_models(state: &EdgeState, store: &StoreFile) -> Vec<Value> {
+fn model_catalog_retry_delay(ttl: Duration, consecutive_failures: u32) -> Duration {
+    let exponent = consecutive_failures.saturating_sub(1).min(4);
+    let seconds = 60_u64.saturating_mul(1_u64 << exponent);
+    Duration::from_secs(seconds).min(ttl.max(Duration::from_secs(1)))
+}
+
+async fn exposed_models(state: &EdgeState, store: &StoreFile, force: bool) -> Vec<Value> {
     let _refresh_guard = state.model_catalog_refresh.lock().await;
     let signature = catalog_signature(store, &state.config);
     let now = now_ms();
     {
         let cache = state.model_catalog.lock().await;
-        if cache.signature == signature
-            && cache.fetched_at + state.config.models_cache_ttl.as_millis() as u64 > now
+        if !force
+            && cache.signature == signature
+            && cache.next_refresh_at > now
             && !cache.models.is_empty()
         {
             return cache.models.clone();
@@ -6180,33 +6234,134 @@ async fn exposed_models(state: &EdgeState, store: &StoreFile) -> Vec<Value> {
     }
 
     let mut models = static_exposed_models(store, &state.config);
+    let active_accounts = store
+        .accounts
+        .iter()
+        .filter(|account| {
+            account.enabled
+                && (!account.access_token.is_empty()
+                    || account
+                        .opencode_api_key
+                        .as_deref()
+                        .is_some_and(|value| !value.is_empty())
+                    || is_local_runtime(account))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
     let discovered = join_all(
-        store
-            .accounts
+        active_accounts
             .iter()
-            .filter(|account| {
-                account.enabled
-                    && (!account.access_token.is_empty()
-                        || account
-                            .opencode_api_key
-                            .as_deref()
-                            .is_some_and(|value| !value.is_empty())
-                        || is_local_runtime(account))
-            })
-            .cloned()
             .map(|account| discover_account_models(state, account)),
     )
     .await;
-    for entries in discovered {
+
+    let active_ids = active_accounts
+        .iter()
+        .map(|account| account.id.clone())
+        .collect::<HashSet<_>>();
+    let mut cache = state.model_catalog.lock().await;
+    cache.accounts.retain(|account_id, _| active_ids.contains(account_id));
+    let mut failed = 0_u32;
+    for (account, discovery) in active_accounts.iter().zip(discovered) {
+        let source_signature = account_model_source_signature(account, &state.config);
+        let account_cache = cache.accounts.entry(account.id.clone()).or_default();
+        if account_cache.source_signature != source_signature {
+            *account_cache = AccountModelCatalogCache {
+                source_signature: source_signature.clone(),
+                ..AccountModelCatalogCache::default()
+            };
+        }
+        account_cache.last_attempt_at = now;
+        let entries = match discovery {
+            Ok(entries) => {
+                account_cache.last_success_at = now;
+                account_cache.models = entries.clone();
+                account_cache.last_error = None;
+                entries
+            }
+            Err(error) => {
+                failed += 1;
+                account_cache.last_error = Some(error);
+                account_cache.models.clone()
+            }
+        };
         for entry in entries {
             upsert_model(&mut models, entry);
         }
     }
-    let mut cache = state.model_catalog.lock().await;
+
     cache.signature = signature;
-    cache.fetched_at = now_ms();
+    cache.last_attempt_at = now;
+    if failed == 0 {
+        cache.fetched_at = now;
+        cache.consecutive_failures = 0;
+        cache.next_refresh_at =
+            now.saturating_add(state.config.models_cache_ttl.as_millis() as u64);
+    } else {
+        cache.consecutive_failures = cache.consecutive_failures.saturating_add(1);
+        cache.next_refresh_at = now.saturating_add(
+            model_catalog_retry_delay(
+                state.config.models_cache_ttl,
+                cache.consecutive_failures,
+            )
+            .as_millis() as u64,
+        );
+    }
     cache.models = models.clone();
     models
+}
+
+async fn model_catalog_metadata(state: &EdgeState) -> Value {
+    let cache = state.model_catalog.lock().await;
+    let mut accounts = cache
+        .accounts
+        .iter()
+        .map(|(account_id, account)| {
+            json!({
+                "accountId": account_id,
+                "modelCount": account.models.len(),
+                "lastSuccessAt": (account.last_success_at > 0).then_some(account.last_success_at),
+                "lastAttemptAt": (account.last_attempt_at > 0).then_some(account.last_attempt_at),
+                "lastError": account.last_error,
+            })
+        })
+        .collect::<Vec<_>>();
+    accounts.sort_by(|left, right| {
+        left.get("accountId")
+            .and_then(Value::as_str)
+            .cmp(&right.get("accountId").and_then(Value::as_str))
+    });
+    json!({
+        "refreshedAt": (cache.fetched_at > 0).then_some(cache.fetched_at),
+        "lastAttemptAt": (cache.last_attempt_at > 0).then_some(cache.last_attempt_at),
+        "nextRefreshAt": (cache.next_refresh_at > 0).then_some(cache.next_refresh_at),
+        "stale": cache.consecutive_failures > 0,
+        "accounts": accounts,
+    })
+}
+
+impl EdgeState {
+    pub fn start_model_catalog_monitor(&self) -> tokio::task::JoinHandle<()> {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let poll_interval = state
+                .config
+                .models_cache_ttl
+                .min(Duration::from_secs(60))
+                .max(Duration::from_secs(1));
+            let mut timer = tokio::time::interval(poll_interval);
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                timer.tick().await;
+                match state.store.snapshot().await {
+                    Ok(store) => {
+                        let _ = exposed_models(&state, &store, false).await;
+                    }
+                    Err(error) => eprintln!("[model-cache] failed to read store: {error}"),
+                }
+            }
+        })
+    }
 }
 
 fn openai_model_shape(model: &Value) -> Value {
@@ -6246,16 +6401,25 @@ fn codex_model_shape(model: &Value) -> Option<Value> {
     }))
 }
 
-fn models_list_response(models: &[Value]) -> Value {
+fn models_list_response(models: &[Value], catalog: Value) -> Value {
     let data = models.iter().map(openai_model_shape).collect::<Vec<_>>();
     let native = models
         .iter()
         .filter_map(codex_model_shape)
         .collect::<Vec<_>>();
-    json!({"object": "list", "data": data, "models": native})
+    json!({"object": "list", "data": data, "models": native, "catalog": catalog})
 }
 
-async fn list_models_handler(State(state): State<EdgeState>, req: Request<Body>) -> Response {
+#[derive(Debug, Deserialize)]
+struct ModelsQuery {
+    refresh: Option<bool>,
+}
+
+async fn list_models_handler(
+    State(state): State<EdgeState>,
+    Query(query): Query<ModelsQuery>,
+    req: Request<Body>,
+) -> Response {
     let headers = req.headers().clone();
     let path = req.uri().path();
     let store = match state.store.snapshot().await {
@@ -6277,8 +6441,9 @@ async fn list_models_handler(State(state): State<EdgeState>, req: Request<Body>)
             ]}),
         );
     }
-    let models = exposed_models(&state, &store).await;
-    json_response(StatusCode::OK, models_list_response(&models))
+    let models = exposed_models(&state, &store, query.refresh.unwrap_or(false)).await;
+    let catalog = model_catalog_metadata(&state).await;
+    json_response(StatusCode::OK, models_list_response(&models, catalog))
 }
 
 async fn get_model_handler(
@@ -6296,7 +6461,7 @@ async fn get_model_handler(
     if let Err(response) = authorize(&headers, req.uri().path(), &store, &state.config) {
         return response;
     }
-    let models = exposed_models(&state, &store).await;
+    let models = exposed_models(&state, &store, false).await;
     let model = models.into_iter().find(|model| {
         model
             .get("id")
@@ -6371,7 +6536,7 @@ async fn capacity_handler(
             json!({"error": "invalid priority"}),
         );
     }
-    let catalog = exposed_models(&state, &store).await;
+    let catalog = exposed_models(&state, &store, false).await;
     let route = routes_for_model(&store, &model, &model, &catalog)
         .into_iter()
         .next()
@@ -7987,6 +8152,117 @@ mod tests {
         let _ = fs::remove_file(store_path).await;
         let _ = fs::remove_file(jobs_path).await;
         let _ = fs::remove_file(trace_path).await;
+    }
+
+    #[tokio::test]
+    async fn model_catalog_can_be_forced_and_preserves_last_success_on_failure() {
+        let discovery_mode = Arc::new(AtomicUsize::new(0));
+        let discovery_requests = Arc::new(AtomicUsize::new(0));
+        let mode = discovery_mode.clone();
+        let requests = discovery_requests.clone();
+        let upstream = Router::new().route(
+            "/backend-api/codex/models",
+            get(move || {
+                let mode = mode.clone();
+                let requests = requests.clone();
+                async move {
+                    requests.fetch_add(1, AtomicOrdering::Relaxed);
+                    match mode.load(AtomicOrdering::Relaxed) {
+                        0 => json_response(
+                            StatusCode::OK,
+                            json!({"models": [{"slug": "gpt-cached"}]}),
+                        ),
+                        1 => json_response(
+                            StatusCode::OK,
+                            json!({"models": [{"slug": "gpt-new"}]}),
+                        ),
+                        2 => json_response(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            json!({"error": "temporary failure"}),
+                        ),
+                        _ => json_response(
+                            StatusCode::OK,
+                            json!({"models": [{"slug": "gpt-recovered"}]}),
+                        ),
+                    }
+                }
+            }),
+        );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+
+        let store_path = temporary_path("model-cache-refresh");
+        let jobs_path = temporary_path("model-cache-refresh-jobs");
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![account("openai-1")])).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.chatgpt_base_url = upstream_url;
+        config.configured_api_keys = vec![("test".to_owned(), "edge-secret".to_owned())];
+        config.models_cache_ttl = Duration::from_secs(60);
+
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let client = reqwest::Client::new();
+        let get_catalog = |suffix: &str| {
+            client
+                .get(format!("{edge_url}/v1/models{suffix}"))
+                .header("authorization", "Bearer edge-secret")
+                .send()
+        };
+
+        let first: Value = get_catalog("").await.unwrap().json().await.unwrap();
+        assert!(first["data"].as_array().unwrap().iter().any(|model| model["id"] == "gpt-cached"));
+        assert_eq!(first["catalog"]["stale"], false);
+        assert_eq!(discovery_requests.load(AtomicOrdering::Relaxed), 1);
+
+        discovery_mode.store(1, AtomicOrdering::Relaxed);
+        let cached: Value = get_catalog("").await.unwrap().json().await.unwrap();
+        assert!(cached["data"].as_array().unwrap().iter().any(|model| model["id"] == "gpt-cached"));
+        assert_eq!(discovery_requests.load(AtomicOrdering::Relaxed), 1);
+
+        let refreshed: Value = get_catalog("?refresh=true")
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(refreshed["data"].as_array().unwrap().iter().any(|model| model["id"] == "gpt-new"));
+        assert_eq!(discovery_requests.load(AtomicOrdering::Relaxed), 2);
+
+        discovery_mode.store(2, AtomicOrdering::Relaxed);
+        let stale: Value = get_catalog("?refresh=true")
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(stale["data"].as_array().unwrap().iter().any(|model| model["id"] == "gpt-new"));
+        assert_eq!(stale["catalog"]["stale"], true);
+        assert!(stale["catalog"]["accounts"][0]["lastError"]
+            .as_str()
+            .unwrap()
+            .contains("HTTP 503"));
+
+        discovery_mode.store(3, AtomicOrdering::Relaxed);
+        let recovered: Value = get_catalog("?refresh=true")
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(recovered["data"].as_array().unwrap().iter().any(|model| model["id"] == "gpt-recovered"));
+        assert_eq!(recovered["catalog"]["stale"], false);
+        assert!(recovered["catalog"]["accounts"][0]["lastError"].is_null());
+
+        edge_task.abort();
+        upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
     }
 
     #[tokio::test]

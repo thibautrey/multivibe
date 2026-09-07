@@ -146,3 +146,52 @@ test("coalesces overlapping monitor cycles", async () => {
 
   assert.equal(calls, 1);
 });
+
+test("persists credentials renewed before a background usage probe", async (t) => {
+  const accounts = [
+    account({
+      expiresAt: Date.now() - 1,
+      refreshToken: "old-refresh-token",
+      usage: { fetchedAt: Date.now() - 10 * 60_000 },
+    }),
+  ];
+  const store = storeFor(accounts);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    assert.equal(String(input), "https://auth.example/token");
+    return Response.json({
+      access_token: "renewed-access-token",
+      refresh_token: "renewed-refresh-token",
+      expires_in: 3_600,
+    });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const coordinator = new UsageRefreshCoordinator(async (value) => {
+    value.usage = { fetchedAt: Date.now(), primary: { usedPercent: 4 } };
+    return value;
+  });
+  const monitor = createUsageRefreshMonitor({
+    ...monitorOptions(store, coordinator),
+    oauthConfig: {
+      authorizationUrl: "https://auth.example/authorize",
+      tokenUrl: "https://auth.example/token",
+      deviceAuthorizationUrl: "https://auth.example/device",
+      deviceTokenUrl: "https://auth.example/device-token",
+      deviceVerificationUrl: "https://auth.example/verify",
+      deviceRedirectUri: "https://auth.example/device-callback",
+      clientId: "client-id",
+      scope: "openid",
+      redirectUri: "https://app.example/callback",
+    },
+  });
+
+  const result = await monitor.refreshNow();
+  monitor.stop();
+
+  assert.equal(result.refreshed, 1);
+  assert.equal(accounts[0].accessToken, "renewed-access-token");
+  assert.equal(accounts[0].refreshToken, "renewed-refresh-token");
+  assert.ok((accounts[0].expiresAt ?? 0) > Date.now());
+});

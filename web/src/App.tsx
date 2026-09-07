@@ -326,13 +326,14 @@ export default function App() {
     setTab("docs");
   };
 
-  const loadBase = async () => {
+  const loadBase = async (options: { forceModels?: boolean } = {}) => {
+    const modelsUrl = options.forceModels ? "/v1/models?refresh=true" : "/v1/models";
     const [acc, localWorkerRes, cloudRes, cfg, mdl, aliasRes, settingsRes, apiKeysRes, policiesRes, modulesRes] = await Promise.all([
       api("/admin/accounts"),
       api("/admin/provider-agent/local-worker").catch(() => ({ localWorker: null })),
       api("/admin/cloud").catch(() => ({ status: "unavailable", topupUrl: "https://app.multivibe.cloud/billing" })),
       api("/admin/config"),
-      fetch("/v1/models").then((r) => r.json()),
+      fetch(modelsUrl).then((r) => r.json()),
       api("/admin/model-aliases"),
       api("/admin/settings"),
       api("/admin/proxy-api-keys"),
@@ -496,7 +497,7 @@ export default function App() {
   const refreshData = async () => {
     try {
       setError("");
-      await loadBase();
+      await loadBase({ forceModels: true });
       setAuthenticated(true);
       discoverLocalRuntimesInBackground();
       if (tab === "tracing") {
