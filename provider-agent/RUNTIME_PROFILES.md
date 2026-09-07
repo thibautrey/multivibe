@@ -1,5 +1,27 @@
 # Runtime profile catalog
 
+## Managed execution enforcement
+
+The managed agent loads the adjacent packaged `provider-runtime-profiles.json`
+once at startup. Activation requires a matching reviewed model, license assessment,
+runtime artifact and locally discovered hardware, within the operator's memory
+budget including the profile reserve. Missing or incompatible profiles block managed
+activation; this catalog currently covers Apple Silicon and Linux/Windows NVIDIA.
+Local hardware discovery is not remote attestation.
+
+The Ollama adapter creates a separate, profile-digest-named model using the native
+`/api/create` API and its `num_ctx`, `num_batch` and `num_gpu` parameters. The
+original verified model is preserved. OpenAI-compatible streaming requests target
+that configured model; request-level resource overrides are rejected. The managed
+process fixes parallelism and loaded-model concurrency at one. Cleanup unloads the
+configured model as well as the original. Parameter acceptance by Ollama still
+requires physical qualification to establish actual offload and memory behavior.
+
+The NVIDIA runtime receives the selected physical GPU UUID, including when the
+operator selected an inventory ordinal. UUIDs stay local and are omitted from the
+capability JSON. Synthetic worker tests remain connectivity diagnostics and cannot
+qualify hardware, attest confidentiality, enable customer traffic or grant earnings.
+
 Runtime profiles are reviewed data, not runtime commands. The v3 catalog joins
 one exact model and quantization, one hardware class and one compiled runtime
 adapter. It never carries an executable, argument vector, environment variable,
