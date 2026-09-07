@@ -1,3 +1,4 @@
+import ModalPortal from "./components/ModalPortal";
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import "./styles.css";
 import "./host/styles.css";
@@ -1168,7 +1169,7 @@ export default function App() {
         </dialog>
 
         {githubPromotionOpen && authenticated && (
-          <div className="modal-backdrop github-promotion-backdrop" role="presentation" onClick={(event) => {
+          <ModalPortal><div className="modal-backdrop github-promotion-backdrop" role="presentation" onClick={(event) => {
             if (event.target === event.currentTarget) closeGitHubPromotion();
           }}>
             <section className="modal panel github-promotion-modal" role="dialog" aria-modal="true" aria-labelledby="github-promotion-title">
@@ -1185,7 +1186,7 @@ export default function App() {
               </div>
               <button className="github-promotion-later" type="button" onClick={closeGitHubPromotion}>Maybe later</button>
             </section>
-          </div>
+          </div></ModalPortal>
         )}
 
         {shouldShowHostOnboarding({

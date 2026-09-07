@@ -1,3 +1,4 @@
+import ModalPortal from "../ModalPortal";
 import React, { useState } from "react";
 import { HostHarnessCards } from "../../host/HostHarnessCarousel";
 import { copyTextToClipboard } from "../../lib/clipboard";
@@ -213,7 +214,7 @@ export function ApiKeysTab({
       </details>
 
       {createdKey && (
-        <div className="modal-backdrop" role="presentation">
+        <ModalPortal><div className="modal-backdrop" role="presentation">
           <div className="modal panel api-key-modal" role="dialog" aria-modal="true" aria-labelledby="created-key-title">
             <div>
               <span className="badge badge-live">Key created</span>
@@ -230,11 +231,11 @@ export function ApiKeysTab({
               <button className="btn" onClick={() => setCreatedKey(null)}>I have saved this key</button>
             </div>
           </div>
-        </div>
+        </div></ModalPortal>
       )}
 
       {createdWebhook?.secret && (
-        <div className="modal-backdrop" role="presentation">
+        <ModalPortal><div className="modal-backdrop" role="presentation">
           <div className="modal panel api-key-modal" role="dialog" aria-modal="true">
             <span className="badge badge-live">Webhook registered</span>
             <h2>Copy the HMAC secret</h2>
@@ -242,7 +243,7 @@ export function ApiKeysTab({
             <div className="api-key-secret"><code>{createdWebhook.secret}</code><button className="btn secondary" onClick={() => void copyTextToClipboard(createdWebhook.secret!)}>Copy</button></div>
             <button className="btn" onClick={() => setCreatedWebhook(null)}>I have saved this secret</button>
           </div>
-        </div>
+        </div></ModalPortal>
       )}
     </>
   );

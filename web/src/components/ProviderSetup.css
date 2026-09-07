@@ -1,7 +1,7 @@
 .modal.provider-setup-modal {
   display: flex;
   flex-direction: column;
-  width: min(780px, calc(100vw - 32px));
+  width: min(780px, 100%);
   max-width: 780px;
   padding: 28px;
   border-radius: 24px;

@@ -1,3 +1,4 @@
+import ModalPortal from "../components/ModalPortal";
 import { useState } from "react";
 import { HostHarnessCards } from "./HostHarnessCarousel";
 
@@ -21,7 +22,7 @@ export function HostOnboarding({
   const [step, setStep] = useState(0);
 
   return (
-    <div className="modal-backdrop host-onboarding-backdrop" role="presentation">
+    <ModalPortal><div className="modal-backdrop host-onboarding-backdrop" role="presentation">
       <section
         className="modal panel host-onboarding-modal"
         role="dialog"
@@ -116,6 +117,6 @@ export function HostOnboarding({
           )}
         </footer>
       </section>
-    </div>
+    </div></ModalPortal>
   );
 }
