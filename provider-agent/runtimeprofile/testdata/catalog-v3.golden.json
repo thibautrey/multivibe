@@ -79,7 +79,7 @@
         "backend_id": "ollama-managed",
         "contract_version": "provider-runtime-backend-v1",
         "adapter_version": "ollama-adapter-v1",
-        "runtime_artifact_digest": "sha256:2439cbea65310b1aadf7d8fc41d7faf5d033f920d42e00a476c58bf9bff695e0"
+        "runtime_artifact_digest": "sha256:2439cbea65310b1aadf7d8fc41d7faf5d033f920d42e00a476c58bf9bff6950e"
       },
       "tuning": {
         "context_tokens": 8192,
