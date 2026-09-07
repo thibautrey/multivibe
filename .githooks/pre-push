@@ -1,0 +1,11 @@
+#!/bin/sh
+# Optional, local-only check. CI is authoritative for pushed commits.
+if ! command -v go >/dev/null 2>&1; then
+  echo 'Catalog check skipped: Go is unavailable. CI will validate the pushed commits.' >&2
+  exit 0
+fi
+root=$(git rev-parse --show-toplevel) || exit 0
+if ! (cd "$root/provider-agent" && go run ./cmd/catalog-check); then
+  echo 'Catalog check failed locally; push is allowed. Run npm run catalog:check and inspect CI.' >&2
+fi
+exit 0
