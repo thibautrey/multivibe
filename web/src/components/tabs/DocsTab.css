@@ -421,7 +421,7 @@
   padding: 4px 6px;
   border: 1px solid currentColor;
   border-radius: 6px;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: var(--mono);
   font-size: 9px;
   font-weight: 900;
   line-height: 1;
@@ -627,7 +627,7 @@
 
 .docs-parameter-table > div > span:nth-child(2) {
   color: var(--primary);
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: var(--mono);
   font-size: 10px;
 }
 
