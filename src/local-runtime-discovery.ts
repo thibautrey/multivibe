@@ -1,3 +1,4 @@
+import { openCodeInferenceToken } from "./opencode.js";
 import type {
   Account,
   LocalRuntimeAdapterId,
@@ -446,7 +447,10 @@ export function authorizationForAccountRequest(
   account: Account,
   requestUrl: string,
 ): string | undefined {
-  if (account.accessToken) return `Bearer ${account.accessToken}`;
+  const token = account.provider === "opencode"
+    ? openCodeInferenceToken(account)
+    : account.accessToken;
+  if (token) return /^Bearer\s+/i.test(token) ? token : `Bearer ${token}`;
   if (isConfiguredNvidiaPairAccount(account)) {
     const request = new URL(requestUrl);
     const endpoint = parseNvidiaPairEndpoint(account.localRuntime!.endpoint);

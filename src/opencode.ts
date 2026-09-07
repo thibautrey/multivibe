@@ -72,8 +72,30 @@ export function normalizeOpenCodeApiRoot(value?: string): string {
   return normalized.replace(/\/v1$/i, "");
 }
 
-export function openCodeUsageUrl(baseUrl?: string): string {
+/** Console config contains a token reference, not an inference API key.
+ * Resolve it per request so token refresh also updates inference credentials. */
+export function openCodeInferenceToken(account: Account): string {
+  const key = account.opencodeApiKey?.trim();
+  if (!key || key === "{env:OPENCODE_CONSOLE_TOKEN}") return account.accessToken;
+  if (/\{(?:env|file):/.test(key)) {
+    throw new Error("OpenCode config contains an unsupported credential reference");
+  }
+  return key;
+}
+
+export function openCodeAccountHeaders(account: Account): Record<string, string> {
+  const headers = new Headers(account.opencodeHeaders);
+  // Current Console APIs use x-org-id. Preserve legacy configured headers for
+  // older installations, but always scope requests to the selected workspace.
+  if (account.opencodeOrgId) headers.set("x-org-id", account.opencodeOrgId);
+  headers.delete("authorization");
+  return Object.fromEntries(headers.entries());
+}
+
+export function openCodeUsageUrl(baseUrl?: string): string | undefined {
   const root = normalizeOpenCodeApiRoot(baseUrl);
+  // The Console inference gateway does not expose the legacy Go usage API.
+  if (/^https:\/\/opencode\.ai\/inference\/openai$/i.test(root)) return undefined;
   if (/\/zen$/i.test(root)) return `${root}/go/v1/usage`;
   return `${root}/v1/usage`;
 }
@@ -127,7 +149,7 @@ export async function pollOpenCodeDeviceCode(
   } catch {
     throw new Error(`OpenCode device token returned invalid JSON (${response.status})`);
   }
-  if (data.access_token) {
+  if (response.ok && data.access_token) {
     return {
       status: "success",
       token: {
@@ -197,42 +219,41 @@ async function getConsole<T>(
   return jsonResponse<T>(response, `OpenCode ${path}`);
 }
 
-async function fetchOpenCodeProfile(token: string): Promise<OpenCodeProfile> {
+async function fetchOpenCodeProfile(token: string, orgId?: string): Promise<OpenCodeProfile> {
   const server = configuredConsoleUrl();
   const [user, orgs] = await Promise.all([
     getConsole<{ id: string; email: string }>(server, "/api/user", token),
     getConsole<Array<{ id: string; name: string }>>(server, "/api/orgs", token),
   ]);
-  const org = orgs
-    .slice()
-    .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))[0];
+  const org = orgId
+    ? orgs.find((candidate) => candidate.id === orgId)
+    : orgs.slice().sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))[0];
+  if (!org) throw new Error("OpenCode selected workspace is unavailable");
   let apiRoot: string | undefined;
   let apiKey: string | undefined;
   let headers: Record<string, string> | undefined;
-  try {
-    const remote = await getConsole<any>(server, "/api/config", token, org?.id);
-    const provider = remote?.config?.provider?.opencode;
-    if (typeof provider?.api === "string" && provider.api.trim()) {
-      apiRoot = normalizeOpenCodeApiRoot(provider.api);
-    }
-    const configuredApiKey = provider?.options?.apiKey;
-    const configuredHeaders = provider?.options?.headers;
-    if (typeof configuredApiKey === "string" && configuredApiKey.trim()) {
-      apiKey = configuredApiKey;
-    }
-    if (
-      configuredHeaders &&
-      typeof configuredHeaders === "object" &&
-      !Array.isArray(configuredHeaders)
-    ) {
-      const entries = Object.entries(configuredHeaders).filter(
-        (entry): entry is [string, string] => typeof entry[1] === "string",
-      );
-      if (entries.length) headers = Object.fromEntries(entries);
-    }
-  } catch {
-    // Model routing can use the public OpenCode Zen endpoint if config discovery
-    // is temporarily unavailable.
+  const remote = await getConsole<any>(server, "/api/config", token, org?.id);
+  const provider = remote?.config?.provider?.opencode;
+  if (typeof provider?.api === "string" && provider.api.trim()) {
+    apiRoot = normalizeOpenCodeApiRoot(provider.api);
+  }
+  const configuredApiKey = provider?.options?.apiKey;
+  const configuredHeaders = provider?.options?.headers;
+  if (typeof configuredApiKey === "string" && configuredApiKey.trim()) {
+    apiKey = configuredApiKey;
+  }
+  if (
+    configuredHeaders &&
+    typeof configuredHeaders === "object" &&
+    !Array.isArray(configuredHeaders)
+  ) {
+    const entries = Object.entries(configuredHeaders).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    );
+    if (entries.length) headers = Object.fromEntries(entries);
+  }
+  if (!apiRoot || !apiKey) {
+    throw new Error("OpenCode Console config is missing its inference URL or credential");
   }
   return {
     accountId: user.id,
@@ -250,7 +271,7 @@ export async function accountFromOpenCodeOAuth(
   token: OpenCodeToken,
   existing?: Account,
 ): Promise<Account> {
-  const profile = await fetchOpenCodeProfile(token.accessToken);
+  const profile = await fetchOpenCodeProfile(token.accessToken, existing?.opencodeOrgId);
   if (
     existing?.opencodeAccountId &&
     existing.opencodeAccountId !== profile.accountId
