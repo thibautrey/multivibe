@@ -1,7 +1,7 @@
 {
   "schema_version": "provider-runtime-profile-catalog-v3",
   "format": "multivibe-runtime-profile-catalog",
-  "catalog_digest": "sha256:09da3cbd3ff29b515422c3bd88416fef84996d2a6d9d675aa00479c10b09b2cb",
+  "catalog_digest": "sha256:e58a9fc5816a4c57479c15255cc85aa82279bdd2aa4265bdbf1acfd059a4e328",
   "license": "Apache-2.0",
   "provenance": {
     "source_url": "https://github.com/thibautrey/multivibe/blob/main/packaging/provider-model-catalog.json",
@@ -55,7 +55,7 @@
     {
       "schema_version": "provider-runtime-profile-v3",
       "id": "qwen2.5-0.5b-q4km-cuda8-ollama-windows",
-      "profile_digest": "sha256:f3ef71d536118653b8bc953c3f2bbc995be8ac579435fb5c4b0c40c5b0453fc0",
+      "profile_digest": "sha256:1fed9d486cf13470eb75747907c222598ad4d6937dd563b235cb7599a8f5f657",
       "priority": 100,
       "model": {
         "id": "hf:qwen/qwen2.5-0.5b-instruct",
