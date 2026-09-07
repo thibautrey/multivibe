@@ -18,6 +18,7 @@
 {% do c1.environment.add_env("MULTIVIBE_HOST_PUBLIC_URL", values.multivibe.public_url) %}
 {% do c1.environment.add_env("MULTIVIBE_HOST_MANAGED_DIR", "/models/runtime") %}
 {% do c1.environment.add_env("MULTIVIBE_PROVIDER_CUDA_VISIBLE_DEVICES", "0") %}
+{% do c1.environment.remove_auto_env("NVIDIA_DRIVER_CAPABILITIES") %}
 {% do c1.environment.add_env("NVIDIA_DRIVER_CAPABILITIES", "compute,utility") %}
 {% do tpl.portals.add(values.network.web_port) %}
 {% set rendered = tpl.render() %}
