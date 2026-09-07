@@ -707,6 +707,14 @@ type ollamaRuntimeBackend struct {
 	metrics                runtimeBackendMetrics
 }
 
+func (backend *ollamaRuntimeBackend) CommunityRuntimeID() string {
+	return providerDemandRuntime
+}
+
+func (backend *ollamaRuntimeBackend) CommunityCatalog() providerModelCatalog {
+	return cloneRuntimeBackendCatalog(backend.catalog)
+}
+
 // pinnedManagedControllerRuntime consumes immutable values captured by the
 // adapter constructor. Paths remain only on the legacy compatibility surface;
 // no lifecycle operation reopens a replaceable catalog or dependency file.
