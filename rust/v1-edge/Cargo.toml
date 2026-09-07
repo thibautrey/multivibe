@@ -10,20 +10,26 @@ name = "multivibe-v1-edge"
 path = "src/main.rs"
 
 [dependencies]
+aes-gcm = "0.10"
 async-stream = "0.3"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+ed25519-dalek = "2"
 futures-util = "0.3"
+hkdf = "0.12"
 hmac = "0.12"
 http = "1"
 http-body-util = "0.1"
+rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 uuid = { version = "1", features = ["v4"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 zstd = "0.13"
 
 [dev-dependencies]
