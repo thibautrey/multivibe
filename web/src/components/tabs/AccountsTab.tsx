@@ -1,7 +1,7 @@
 import { findAvailableCount } from "../../lib/resetCredits";
 import ModalPortal from "../ModalPortal";
 import type { Account, ProviderId, StoreSettings, TraceStats } from "../../types";
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { fmt, maskEmail, maskId, usd } from "../../lib/ui";
 import { ApiError, api } from "../../lib/api";
 import {
@@ -16,7 +16,7 @@ import {
   runtimeIdentityForAdapter,
 } from "../../lib/runtimeCatalog";
 
-import { ProviderPicker, ProviderMark, SETUP_PROVIDERS } from "../ProviderPicker";
+import { ProviderPicker, ProviderMark, SETUP_PROVIDERS, type SetupProvider } from "../ProviderPicker";
 import { Metric } from "../Metric";
 import { WidgetGrid } from "../WidgetGrid";
 import { createPortal } from "react-dom";
@@ -491,11 +491,12 @@ export function AccountsTab(props: Props) {
         signal: controller.signal,
       }).then((result) => {
         if (!controller.signal.aborted) {
-          setResetCredits((current) => ({ ...current, [id]: findAvailableCount(result?.credit) }));
+          const count = findAvailableCount(result?.credit);
+          setResetCredits((current) => current[id] === count ? current : { ...current, [id]: count });
         }
       }).catch(() => {
         if (!controller.signal.aborted) {
-          setResetCredits((current) => ({ ...current, [id]: undefined }));
+          setResetCredits((current) => current[id] === undefined ? current : { ...current, [id]: undefined });
         }
       });
     }
@@ -1123,6 +1124,21 @@ export function AccountsTab(props: Props) {
       window.clearTimeout(timer);
     };
   }, [oauthDialog, pollDeviceOAuth, patch]);
+
+  const selectProvider = useCallback((next: SetupProvider, nextSdk?: string) => {
+    if (next === provider && (next !== "ai-sdk" || nextSdk === sdkProvider)) return;
+    setProvider(next);
+    if (nextSdk) setSdkProvider(nextSdk);
+    setSdkModels("");
+    setManualAccessToken("");
+    setManualRefreshToken("");
+    setManualBaseUrl("");
+    setManualOAuthMethod(next === "xai" ? "device" : "browser");
+    setProviderError("");
+  }, [provider, sdkProvider]);
+  const selectedProviderName = provider === "ai-sdk"
+    ? sdkProviders.find((item) => item.id === sdkProvider)?.name
+    : SETUP_PROVIDERS.find((item) => item.id === provider)?.name;
 
   const providerConnectionReady = isOAuthProvider(provider)
     ? provider !== "openai" || Boolean(manualEmail.trim())
@@ -2874,18 +2890,11 @@ export function AccountsTab(props: Props) {
               {["Choose provider", "Connect", "Review"].map((label, index) => <li key={label} className={index === providerStep ? "active" : index < providerStep ? "complete" : ""} aria-current={index === providerStep ? "step" : undefined}><span>{index < providerStep ? "✓" : index + 1}</span>{label}</li>)}
             </ol>
             <div className="provider-setup-heading">
-              {providerStep > 0 && <ProviderMark provider={provider} />}
-              <div><h2 id="provider-setup-title">{providerStep === 0 ? "Choose your provider" : providerStep === 1 ? `Connect ${SETUP_PROVIDERS.find((item) => item.id === provider)?.name}` : "Ready to connect?"}</h2>
+              {providerStep > 0 && <ProviderMark provider={provider} sdkProvider={sdkProvider} />}
+              <div><h2 id="provider-setup-title">{providerStep === 0 ? "Choose your provider" : providerStep === 1 ? `Connect ${selectedProviderName}` : "Ready to connect?"}</h2>
               <p className="muted">{providerStep === 0 ? "Bring your subscription, API key, or local endpoint." : providerStep === 1 ? "Enter your connection details to continue." : "Check your connection and customize routing if needed."}</p></div>
             </div>
-            {providerStep === 0 && <ProviderPicker value={provider} onChange={(next) => {
-              if (next !== provider) {
-                setProvider(next);
-                setManualAccessToken(""); setManualRefreshToken(""); setManualBaseUrl("");
-                setManualOAuthMethod(next === "xai" ? "device" : "browser");
-                setProviderError("");
-              }
-            }} />}
+            {providerStep === 0 && <ProviderPicker value={provider} sdkProvider={sdkProvider} cloudProviders={sdkProviders} error={sdkCatalogError} onChange={selectProvider} />}
             {providerStep === 1 && <div className="grid modal-grid provider-setup-fields">
 
               <label>
@@ -2926,12 +2935,6 @@ export function AccountsTab(props: Props) {
                 </label>
               )}
               {provider === "ai-sdk" && <>
-                <label>Cloud provider
-                  <select value={sdkProvider} onChange={(event) => { setSdkProvider(event.target.value); setSdkModels(""); }}>
-                    {sdkProviders.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
-                  </select>
-                </label>
-                {sdkCatalogError && <p role="alert">{sdkCatalogError}</p>}
                 <label>Model IDs (optional)
                   <textarea value={sdkModels} onChange={(event) => setSdkModels(event.target.value)} placeholder="Leave empty for the catalog, or enter model IDs separated by commas" />
                 </label>
