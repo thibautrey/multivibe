@@ -111,6 +111,7 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
     ENDPOINTS.find((endpoint) => endpoint.id === initialEndpointId)?.id ??
     ENDPOINTS[0].id;
   const [selectedId, setSelectedId] = useState(linkedEndpointId);
+  const [view, setView] = useState<"request" | "reference">("request");
   const [search, setSearch] = useState("");
   const [activeGroup, setActiveGroup] = useState<EndpointGroup | "All">("All");
   const [pathValues, setPathValues] = useState<Record<string, string>>({});
@@ -219,6 +220,7 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
 
   function selectEndpoint(endpoint: ApiEndpoint) {
     abortRef.current?.abort();
+    abortRef.current = null;
     setRunning(false);
     setSelectedId(endpoint.id);
     if (window.innerWidth < 1120) {
@@ -289,6 +291,7 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
         signal: controller.signal,
       });
       const raw = await response.text();
+      if (abortRef.current !== controller) return;
       setResult({
         status: response.status,
         statusText:
@@ -300,6 +303,7 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
         error: !response.ok,
       });
     } catch (error: any) {
+      if (abortRef.current !== controller) return;
       const aborted = error?.name === "AbortError";
       setResult({
         status: null,
@@ -311,8 +315,10 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
         error: !aborted,
       });
     } finally {
-      abortRef.current = null;
-      setRunning(false);
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        setRunning(false);
+      }
     }
   }
 
@@ -324,6 +330,11 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
   return (
     <div className="docs-page">
       <section className="docs-hero">
+        <div className="docs-hero-copy">
+          <span className="docs-kicker">Explore · Build · Test</span>
+          <h2>Your API, ready to explore</h2>
+          <p>Choose an endpoint, adjust the example, and inspect the response. Start with List models to see what’s available.</p>
+        </div>
         <div className="docs-base-url-card">
           <div>
             <span className="control-label">Base URL</span>
@@ -343,9 +354,9 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
           <div className="docs-session-note">
             <span className="status-dot" />
             <span>
-              <strong>Ready to test</strong>
+              <strong>Uses your dashboard session</strong>
               <small>
-                Your signed-in dashboard session is used automatically.
+                Requests run against this server.
               </small>
             </span>
           </div>
@@ -372,24 +383,14 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
             )}
           </div>
 
-          <div className="docs-group-tabs" aria-label="Filter endpoint groups">
-            {(["All", ...GROUPS] as const).map((group) => (
-              <button
-                key={group}
-                className={activeGroup === group ? "active" : ""}
-                onClick={() => setActiveGroup(group)}
-              >
-                {group}
-                <span>
-                  {group === "All"
-                    ? ENDPOINTS.length
-                    : ENDPOINTS.filter(
-                        (endpoint) => endpoint.group === group,
-                      ).length}
-                </span>
-              </button>
-            ))}
-          </div>
+          <label className="docs-group-filter">
+            <span className="control-label">Endpoint group</span>
+            <select value={activeGroup} onChange={(event) => setActiveGroup(event.target.value as EndpointGroup | "All")}>
+              {(["All", ...GROUPS] as const).map((group) => (
+                <option key={group} value={group}>{group === "All" ? "All endpoints" : group} ({group === "All" ? ENDPOINTS.length : ENDPOINTS.filter((endpoint) => endpoint.group === group).length})</option>
+              ))}
+            </select>
+          </label>
 
           <div className="docs-endpoint-list">
             {GROUPS.map((group) => {
@@ -404,6 +405,8 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
                     <button
                       key={endpoint.id}
                       className={selected.id === endpoint.id ? "active" : ""}
+                      aria-current={selected.id === endpoint.id ? "true" : undefined}
+                      title={endpoint.method + " " + endpoint.path}
                       onClick={() => selectEndpoint(endpoint)}
                     >
                       <span className={methodClass(endpoint.method)}>
@@ -423,6 +426,7 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
               <div className="docs-empty-search">
                 <strong>No endpoint found</strong>
                 <small>Try a path, method or broader keyword.</small>
+                <button className="docs-copy-button" onClick={() => { setSearch(""); setActiveGroup("All"); }}>Clear filters</button>
               </div>
             )}
           </div>
@@ -441,8 +445,12 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
             <p>{selected.description}</p>
           </header>
 
+          <div className="docs-view-switch" aria-label="Endpoint view">
+            <button aria-pressed={view === "request"} onClick={() => setView("request")}><Icon name="terminal" /> Try a request</button>
+            <button aria-pressed={view === "reference"} onClick={() => setView("reference")}>Documentation</button>
+          </div>
           <div className="docs-reference-grid">
-            <section className="docs-reference-content">
+            <section className="docs-reference-content" hidden={view !== "reference"}>
               <div className="docs-section">
                 <div className="docs-section-heading">
                   <div>
@@ -533,17 +541,17 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
               </div>
             </section>
 
-            <aside className="docs-console">
+            <aside className="docs-console" hidden={view !== "request"}>
               <div className="docs-console-header">
                 <div>
                   <Icon name="terminal" />
                   <span>
-                    <strong>Try it</strong>
-                    <small>Live request</small>
+                    <strong>Request builder</strong>
+                    <small>Edit the example and send when ready</small>
                   </span>
                 </div>
                 <span className="docs-live-pill">
-                  <span className="status-dot" /> Connected
+                  <Icon name="lock" /> Dashboard session
                 </span>
               </div>
 
@@ -565,6 +573,8 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
                           {field.required && <b>Required</b>}
                         </span>
                         <input
+                          title={field.description}
+                          required={field.required}
                           value={pathValues[field.name] ?? ""}
                           onChange={(event) =>
                             setPathValues((current) => ({
@@ -594,6 +604,8 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
                           {field.required && <b>Required</b>}
                         </span>
                         <input
+                          title={field.description}
+                          required={field.required}
                           value={queryValues[field.name] ?? ""}
                           onChange={(event) =>
                             setQueryValues((current) => ({
@@ -616,7 +628,10 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
                 <div className="docs-console-section">
                   <div className="docs-console-label">
                     <span className="control-label">JSON body</span>
-                    <span>application/json</span>
+                    <div className="docs-editor-tools">
+                      <button className="docs-copy-button" onClick={() => setRequestBody(tryFormatJson(requestBody))}>Format JSON</button>
+                      <button className="docs-copy-button" onClick={() => setRequestBody(hydrateExample(selected.requestBody, defaultModel))}>Reset example</button>
+                    </div>
                   </div>
                   <textarea
                     className="docs-json-editor mono"
@@ -646,24 +661,10 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
                   </button>
                 )}
                 <small>
-                  Credentials are never added to the editor or response.
+                   {selected.destructive ? "This endpoint changes server state. You’ll confirm before sending." : "Sent to this server using your dashboard session."}
                 </small>
               </div>
 
-              <div className="docs-curl-block">
-                <div className="docs-console-label">
-                  <span className="control-label">cURL</span>
-                  <button
-                    onClick={() => void copy(curlSnippet(), "curl")}
-                  >
-                    <Icon name={copied === "curl" ? "check" : "copy"} />
-                    {copied === "curl" ? "Copied" : "Copy"}
-                  </button>
-                </div>
-                <pre>
-                  <code>{curlSnippet()}</code>
-                </pre>
-              </div>
 
               <div
                 className={
@@ -707,6 +708,22 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
                 </pre>
                 {result?.contentType && <small>{result.contentType}</small>}
               </div>
+              <details className="docs-curl-block">
+                <summary>Use in your terminal · cURL</summary>
+                <div className="docs-console-label">
+                  <span className="control-label">cURL</span>
+                  <button
+                    onClick={() => void copy(curlSnippet(), "curl")}
+                  >
+                    <Icon name={copied === "curl" ? "check" : "copy"} />
+                    {copied === "curl" ? "Copied" : "Copy"}
+                  </button>
+                </div>
+                <pre>
+                  <code>{curlSnippet()}</code>
+                </pre>
+              </details>
+
             </aside>
           </div>
         </article>
