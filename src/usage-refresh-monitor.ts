@@ -123,6 +123,7 @@ async function refreshOneAccount(
     isDeepStrictEqual(latestBeforeProbe.usage, initial.usage)
       ? valid
       : structuredClone(latestBeforeProbe);
+  const persistenceBaseline = source === valid ? initial : source;
   const refreshed = await coordinator.refresh(
     source,
     usageBaseUrl(source, options),
@@ -139,10 +140,15 @@ async function refreshOneAccount(
   const patch: Partial<Account> = {};
   if (usageChanged) patch.usage = refreshed.usage;
 
-  const tokenPatch = changedFieldsPatch(source, refreshed, latest, TOKEN_FIELDS);
+  const tokenPatch = changedFieldsPatch(
+    persistenceBaseline,
+    refreshed,
+    latest,
+    TOKEN_FIELDS,
+  );
   Object.assign(patch, tokenPatch);
 
-  const sourceState = source.state ?? {};
+  const sourceState = persistenceBaseline.state ?? {};
   const refreshedState = refreshed.state ?? {};
   const latestState = latest.state ?? {};
   const statePatch = changedFieldsPatch(
