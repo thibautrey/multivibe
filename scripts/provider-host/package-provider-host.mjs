@@ -95,15 +95,26 @@ async function runWindowsPowerShell(script, variables) {
   ], { env: environment });
 }
 
-function commandProgram(program) {
-  // Windows command shims such as npm are .cmd files. Node's spawn does not
-  // resolve those shims when shell is disabled, which is required here.
-  return process.platform === "win32" && program === "npm" ? "npm.cmd" : program;
+export function commandInvocation(program, args, runtime = {}) {
+  const platform = runtime.platform ?? process.platform;
+  if (platform !== "win32" || program !== "npm") return { program, args };
+
+  const npmExecPath = runtime.npmExecPath ?? process.env.npm_execpath;
+  const pathImplementation = platform === "win32" ? path.win32 : path;
+  if (!npmExecPath || !pathImplementation.isAbsolute(npmExecPath) ||
+    pathImplementation.basename(npmExecPath).toLowerCase() !== "npm-cli.js") {
+    throw new Error("npm_execpath must be an absolute path to npm-cli.js on Windows");
+  }
+  return {
+    program: runtime.execPath ?? process.execPath,
+    args: [npmExecPath, ...args],
+  };
 }
 
 async function command(program, args, options = {}) {
   return await new Promise((resolve, reject) => {
-    const child = spawn(commandProgram(program), args, {
+    const invocation = commandInvocation(program, args);
+    const child = spawn(invocation.program, invocation.args, {
       cwd: options.cwd ?? repositoryRoot,
       env: options.env ?? process.env,
       stdio: options.capture ? ["ignore", "pipe", "inherit"] : "inherit",
