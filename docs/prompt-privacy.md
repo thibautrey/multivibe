@@ -19,7 +19,7 @@ Request bodies and request headers are excluded from Core traces by default (`sr
 
 These defaults reduce collection. They do not prevent the running proxy, the selected inference runtime or an administrator of the hosting machine from accessing content in memory. A remote provider also receives the data needed to answer the request. Its retention and training terms must be evaluated separately.
 
-The host updater checks trusted Ed25519 signatures before accepting an update document (`host-updater/manifest.go:90`). This helps verify update authenticity. It is not remote hardware attestation of the inference runtime and does not prove that an operator cannot inspect model memory.
+The host updater checks trusted Ed25519 signatures before accepting an update document (`host/updater/manifest.go:90`). This helps verify update authenticity. It is not remote hardware attestation of the inference runtime and does not prove that an operator cannot inspect model memory.
 
 ## Where content and metadata can remain
 

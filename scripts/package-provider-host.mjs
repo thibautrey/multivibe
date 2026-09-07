@@ -652,16 +652,16 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
   await command(nodeDestination, ["--eval", betterSQLiteSmokeTest], { cwd: applicationDirectory });
   await ollamaRuntime(work, ollamaDestination, dependencies.ollama.artifacts[selectedTarget.key], selectedTarget, dependencies.ollama.version);
   await buildGo(path.join(repositoryRoot, "provider-agent"), agentDestination, "providerAgentVersion", options.version, selectedTarget);
-  await buildGo(path.join(repositoryRoot, "host-updater"), updaterDestination, "hostUpdaterVersion", options.version, selectedTarget);
+  await buildGo(path.join(repositoryRoot, "host", "updater"), updaterDestination, "hostUpdaterVersion", options.version, selectedTarget);
   await buildGo(
     path.join(repositoryRoot, "provider-agent"), benchmarkDestination, "runtimeBenchmarkVersion", options.version,
     selectedTarget, "./cmd/runtime-benchmark",
   );
-  await buildGo(path.join(repositoryRoot, "host-application"), hostDestination, "hostApplicationVersion", options.version, selectedTarget);
+  await buildGo(path.join(repositoryRoot, "host", "application"), hostDestination, "hostApplicationVersion", options.version, selectedTarget);
   if (edgeDestination) await buildRustEdge(edgeDestination);
   if (menuDestination) {
     await buildGo(
-      path.join(repositoryRoot, "host-menu"), menuDestination, "menuApplicationVersion", options.version, selectedTarget,
+      path.join(repositoryRoot, "host", "menu"), menuDestination, "menuApplicationVersion", options.version, selectedTarget,
       ".", { CGO_ENABLED: selectedTarget.goos === "linux" ? "1" : "0" },
     );
   }
