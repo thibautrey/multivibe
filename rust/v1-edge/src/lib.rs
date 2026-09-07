@@ -1433,7 +1433,7 @@ fn trim_slashes(value: &str) -> String {
 fn account_base_url(account: &Account, config: &EdgeConfig) -> String {
     match normalize_provider(account).as_str() {
         "ai-sdk" => format!("{}/internal/ai-sdk/{}", trim_slashes(&config.node_control_plane_url),
-            url::form_urlencoded::byte_serialize(account.id.as_bytes()).collect::<String>()),
+            account.id.bytes().map(|byte| if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_') { char::from(byte).to_string() } else { format!("%{byte:02X}") }).collect::<String>()),
         "openai-compatible" => account.base_url.clone().unwrap_or_default(),
         "opencode" => account
             .base_url
@@ -10859,6 +10859,7 @@ mod tests {
 
     #[tokio::test]
     async fn ai_sdk_routes_discovery_and_inference_through_authenticated_adapter() {
+        use axum::response::IntoResponse;
         let adapter = Router::new()
             .route("/internal/ai-sdk/sdk-account/v1/models", get(|headers: HeaderMap| async move {
                 assert_eq!(headers["authorization"], "Bearer adapter-secret");
