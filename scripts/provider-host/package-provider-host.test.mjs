@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { archiveBundle } from "./package-provider-host.mjs";
+import { archiveBundle, commandInvocation } from "./package-provider-host.mjs";
 
 const packager = fileURLToPath(new URL("./package-provider-host.mjs", import.meta.url));
 const verifier = fileURLToPath(new URL("./verify-provider-host.mjs", import.meta.url));
@@ -144,8 +144,46 @@ test("Windows packaging uses the ZIP64-capable .NET archive writer", async () =>
   assert.doesNotMatch(source, /Compress-Archive/u);
 });
 
-test("Windows packaging resolves the npm command shim without enabling a shell", async () => {
+test("Windows packaging launches npm-cli.js through Node without enabling a shell", async () => {
   const source = await readFile(packager, "utf8");
-  assert.match(source, /process\.platform === "win32" && program === "npm" \? "npm\.cmd" : program/u);
+  const invocation = commandInvocation("npm", ["run", "build"], {
+    platform: "win32",
+    execPath: "C:\\Program Files\\nodejs\\node.exe",
+    npmExecPath: "C:\\npm\\bin\\npm-cli.js",
+  });
+  assert.deepEqual(invocation, {
+    program: "C:\\Program Files\\nodejs\\node.exe",
+    args: ["C:\\npm\\bin\\npm-cli.js", "run", "build"],
+  });
   assert.match(source, /shell: false/u);
+});
+
+test("command invocation leaves non-Windows and non-npm commands unchanged", () => {
+  assert.deepEqual(commandInvocation("npm", ["test"], { platform: "linux" }), {
+    program: "npm",
+    args: ["test"],
+  });
+  assert.deepEqual(commandInvocation("git", ["status"], { platform: "win32" }), {
+    program: "git",
+    args: ["status"],
+  });
+});
+
+test("Windows npm invocation rejects an invalid npm executable path", () => {
+  assert.throws(
+    () => commandInvocation("npm", ["test"], {
+      platform: "win32",
+      execPath: "C:\\Program Files\\nodejs\\node.exe",
+      npmExecPath: "npm.cmd",
+    }),
+    /npm_execpath must be an absolute path to npm-cli\.js on Windows/u,
+  );
+  assert.throws(
+    () => commandInvocation("npm", ["test"], {
+      platform: "win32",
+      execPath: "C:\\Program Files\\nodejs\\node.exe",
+      npmExecPath: "C:\\npm\\bin\\npx-cli.js",
+    }),
+    /npm_execpath must be an absolute path to npm-cli\.js on Windows/u,
+  );
 });
