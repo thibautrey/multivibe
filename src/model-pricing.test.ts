@@ -9,6 +9,7 @@ const expected: Record<string, [number, number, number, number?]> = {
   "daybreak-blue-latest": [4, 0.4, 20, 5],
   "gpt-daybreak-blue-latest": [4, 0.4, 20, 5],
   "gpt-5.5": [5, 0.5, 30],
+  "gpt-5.7": [10, 1, 50, 12.5],
   "gpt-5.4": [2.5, 0.25, 15],
   "gpt-5.4-mini": [0.75, 0.075, 4.5],
   "gpt-5.3-codex": [1.75, 0.175, 14],
@@ -52,6 +53,19 @@ test("charges GPT-5.6 cache writes at 1.25x without double-counting input", () =
     300_000,
   );
   assert.equal(cost, 4.475);
+});
+
+test("charges GPT-5.7 cache writes at 1.25x without double-counting input", () => {
+  assert.equal(
+    estimateCostUsd("gpt-5.7", 1_000_000, 1_000_000, 200_000, 300_000),
+    58.95,
+  );
+  assert.deepEqual(getModelPricing("gpt-5.7-2026-08-01"), {
+    inputPer1M: 10,
+    cachedInputPer1M: 1,
+    cacheWriteInputPer1M: 12.5,
+    outputPer1M: 50,
+  });
 });
 
 test("prices cached input at the standard rate for the no-cache equivalent", () => {
