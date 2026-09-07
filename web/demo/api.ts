@@ -1,3 +1,4 @@
+import { sdkProviderCatalog } from "../../src/ai-sdk/catalog";
 import { buildTraceStats } from "../../src/traces";
 import { aggregateProjectUsage } from "../../src/project-usage";
 import { createDemoFixtures } from "./fixtures";
@@ -16,6 +17,7 @@ export function createDemoApi(now = Date.now()) {
     if (method !== "GET" && method !== "HEAD") return json({ error: DEMO_READ_ONLY }, 403);
     const reads: Record<string, unknown> = {
       "/admin/session": { authenticated: true },
+      "/admin/provider-catalog": sdkProviderCatalog(),
       "/admin/accounts": { accounts: fixtures.accounts },
       "/admin/provider-agent/local-worker": { localWorker: null },
       "/admin/cloud": { status: "disconnected", topupUrl: "https://app.multivibe.cloud/billing" },
