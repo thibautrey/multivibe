@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { archiveBundle, commandInvocation, validateOllamaWindowsFiles } from "./package-provider-host.mjs";
+import { argumentsFrom, archiveBundle, commandInvocation, validateOllamaWindowsFiles } from "./package-provider-host.mjs";
 
 const packager = fileURLToPath(new URL("./package-provider-host.mjs", import.meta.url));
 const verifier = fileURLToPath(new URL("./verify-provider-host.mjs", import.meta.url));
@@ -100,6 +100,14 @@ test("the packaging CLI remains active when invoked through a symlink", async ()
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("every provider Host package requires a public demand trust input", () => {
+  assert.throws(() => argumentsFrom(["--version", "0.3.0"]), /--provider-demand-trust-file is required/u);
+  const options = argumentsFrom([
+    "--version", "0.3.0", "--provider-demand-trust-file", "fixtures/provider-demand-trust.json",
+  ]);
+  assert.equal(options.providerDemandTrustFile, path.resolve("fixtures/provider-demand-trust.json"));
 });
 
 test("Linux archives use the native GTK menu binary and bundled icon", async () => {

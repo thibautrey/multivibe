@@ -80,6 +80,20 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm --prefix web ci --no-audit --no-fund
+      - name: Stage the public Cloud demand trust anchor
+        shell: bash
+        env:
+          PROVIDER_DEMAND_TRUSTED_KEYS_JSON: ${{ vars.PROVIDER_DEMAND_TRUSTED_KEYS_JSON }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${PROVIDER_DEMAND_TRUSTED_KEYS_JSON:-}" ]]; then
+            echo "::error::Missing required repository variable: PROVIDER_DEMAND_TRUSTED_KEYS_JSON"
+            exit 1
+          fi
+          trust_file="$RUNNER_TEMP/provider-demand-trust.json"
+          umask 077
+          printf '%s' "$PROVIDER_DEMAND_TRUSTED_KEYS_JSON" > "$trust_file"
+          printf 'PROVIDER_DEMAND_TRUST_FILE=%s\n' "$trust_file" >> "$GITHUB_ENV"
       - name: Run provider security tests with the race detector
         run: |
           go -C provider-agent test -race ./...
@@ -107,6 +121,7 @@ jobs:
           npm run package:provider-host --
           --version "${{ needs.validate-tag.outputs.version }}"
           --output release-linux
+          --provider-demand-trust-file "$PROVIDER_DEMAND_TRUST_FILE"
       - name: Verify the Linux archive without executing it
         shell: bash
         run: |
@@ -182,6 +197,20 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm --prefix web ci --no-audit --no-fund
+      - name: Stage the public Cloud demand trust anchor
+        shell: bash
+        env:
+          PROVIDER_DEMAND_TRUSTED_KEYS_JSON: ${{ vars.PROVIDER_DEMAND_TRUSTED_KEYS_JSON }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${PROVIDER_DEMAND_TRUSTED_KEYS_JSON:-}" ]]; then
+            echo "::error::Missing required repository variable: PROVIDER_DEMAND_TRUSTED_KEYS_JSON"
+            exit 1
+          fi
+          trust_file="$RUNNER_TEMP/provider-demand-trust.json"
+          umask 077
+          printf '%s' "$PROVIDER_DEMAND_TRUSTED_KEYS_JSON" > "$trust_file"
+          printf 'PROVIDER_DEMAND_TRUST_FILE=%s\n' "$trust_file" >> "$GITHUB_ENV"
       - name: Run provider tests with the race detector
         run: |
           go -C provider-agent test -race ./...
@@ -236,6 +265,7 @@ jobs:
           --output "release-macos-${{ matrix.architecture }}"
           --sign-identity "$SIGN_IDENTITY"
           --notary-profile multivibe-release
+          --provider-demand-trust-file "$PROVIDER_DEMAND_TRUST_FILE"
       - name: Remove ephemeral Apple credentials
         if: always()
         shell: bash
@@ -316,6 +346,22 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Root npm ci failed.' }
           npm --prefix web ci --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { throw 'Web npm ci failed.' }
+      - name: Stage the public Cloud demand trust anchor
+        shell: pwsh
+        env:
+          PROVIDER_DEMAND_TRUSTED_KEYS_JSON: ${{ vars.PROVIDER_DEMAND_TRUSTED_KEYS_JSON }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:PROVIDER_DEMAND_TRUSTED_KEYS_JSON)) {
+            throw 'Missing required repository variable: PROVIDER_DEMAND_TRUSTED_KEYS_JSON'
+          }
+          $trustFile = Join-Path $env:RUNNER_TEMP 'provider-demand-trust.json'
+          [System.IO.File]::WriteAllText(
+            $trustFile,
+            $env:PROVIDER_DEMAND_TRUSTED_KEYS_JSON,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          "PROVIDER_DEMAND_TRUST_FILE=$trustFile" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Compile Windows provider tests
         shell: pwsh
         run: |
@@ -332,7 +378,7 @@ jobs:
       - name: Build the Windows amd64 archive
         shell: pwsh
         run: |
-          npm run package:provider-host -- --version '${{ needs.validate-tag.outputs.version }}' --output release-windows
+          npm run package:provider-host -- --version '${{ needs.validate-tag.outputs.version }}' --output release-windows --provider-demand-trust-file $env:PROVIDER_DEMAND_TRUST_FILE
       - name: Verify the Windows archive without executing hardware checks
         shell: pwsh
         run: |

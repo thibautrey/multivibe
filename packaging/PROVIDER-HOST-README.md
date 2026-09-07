@@ -46,11 +46,13 @@ download is only a verified fallback. Model weights are not bundled and are
 downloaded only when the operator has enabled automatic downloads and the local
 capacity policy allows them.
 
-This archive deliberately contains no production Cloud demand key. Managed
-demand reconciliation remains unavailable unless the operator starts the host
-with `MULTIVIBE_PROVIDER_DEMAND_TRUSTED_KEYS` set to an explicitly trusted
-Ed25519 public-key map. The RFC interoperability key used by the source tests is
-not a production trust root and is never packaged as one.
+The archive contains the production Cloud demand **public** Ed25519 trust
+anchor. The corresponding private signing key remains only in the Cloud and is
+never packaged. The Host validates the public map and binds each key identifier
+to its exact SPKI bytes before enabling signed demand reconciliation. An
+ambient process environment cannot replace the packaged trust anchor. The RFC
+interoperability key used by source tests is not a production trust root and is
+never included in an official package.
 
 From a source checkout, inspect a release archive without executing it using:
 

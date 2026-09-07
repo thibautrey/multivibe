@@ -1016,7 +1016,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.messageText = "Add this Mac to MultiVibe Cloud?"
-        alert.informativeText = "MultiVibe Host will share its public device identity and selected local models. Your private key stays on this Mac."
+        alert.informativeText = "MultiVibe Host will register this Mac's public device identity. Cloud jobs use only MultiVibe's managed Ollama runtime and still require your saved capacity consent. Your private key and local runtime settings stay on this Mac."
         alert.addButton(withTitle: "Add this Mac")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else {
@@ -1058,7 +1058,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         alert.alertStyle = success ? .informational : .warning
         alert.messageText = success ? "This Mac is connected" : "This Mac could not be connected"
         alert.informativeText = success
-            ? "Its public identity was registered securely. MultiVibe Cloud will assign compatible models."
+            ? "Its public identity was registered securely. Cloud jobs use only MultiVibe's managed Ollama runtime and still require your saved capacity consent."
             : (invalidLink
                 ? "The MultiVibe connection link is invalid or incomplete. Start again from MultiVibe Cloud."
                 : (providerUnavailable

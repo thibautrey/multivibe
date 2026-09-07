@@ -450,7 +450,7 @@ static gboolean request_enrollment_idle(gpointer data) {
     gtk_message_dialog_format_secondary_text(
         GTK_MESSAGE_DIALOG(dialog),
         "%s",
-        "MultiVibe Host will share its public device identity and selected local models. Your private key stays on this Linux host."
+        "MultiVibe Host will register this host's public device identity. Cloud jobs use only MultiVibe's managed Ollama runtime and still require saved capacity consent. Your private key and local runtime settings stay on this host."
     );
     gtk_dialog_add_button(GTK_DIALOG(dialog), "Add this Linux host", GTK_RESPONSE_ACCEPT);
     gtk_dialog_add_button(GTK_DIALOG(dialog), "Cancel", GTK_RESPONSE_CANCEL);

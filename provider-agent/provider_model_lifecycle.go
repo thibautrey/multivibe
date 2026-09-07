@@ -68,6 +68,47 @@ type signedProviderModelInventory struct {
 	Signature       providerControlSignature      `json:"signature"`
 }
 
+func providerModelInventoryPayloadMap(payload providerModelInventoryPayload) map[string]any {
+	runtimes := make([]any, 0, len(payload.Runtimes))
+	for _, runtime := range payload.Runtimes {
+		models := make([]any, 0, len(runtime.Models))
+		for _, model := range runtime.Models {
+			var contentDigest any
+			if model.ContentDigest != nil {
+				contentDigest = *model.ContentDigest
+			}
+			models = append(models, map[string]any{
+				"reportedId": model.ReportedID, "modalities": stringsToAny(model.Modalities),
+				"contentDigest": contentDigest, "artifactVerified": model.ArtifactVerified,
+			})
+		}
+		runtimes = append(runtimes, map[string]any{"runtimeFamily": runtime.RuntimeFamily, "models": models})
+	}
+	diagnostics := make([]any, 0, len(payload.Diagnostics))
+	for _, diagnostic := range payload.Diagnostics {
+		diagnostics = append(diagnostics, map[string]any{
+			"runtimeFamily": diagnostic.RuntimeFamily, "status": diagnostic.Status, "code": diagnostic.Code,
+		})
+	}
+	return map[string]any{
+		"kind": payload.Kind, "protocolVersion": payload.ProtocolVersion,
+		"canonicalizationVersion": payload.CanonicalizationVersion, "providerId": payload.ProviderID,
+		"nodeId": payload.NodeID, "deviceKeyId": payload.DeviceKeyID, "credentialEpoch": payload.CredentialEpoch,
+		"generation": payload.Generation, "maxConcurrency": payload.MaxConcurrency,
+		"availableConcurrency": payload.AvailableConcurrency, "observedAt": payload.ObservedAt,
+		"issuedAt": payload.IssuedAt, "expiresAt": payload.ExpiresAt,
+		"runtimes": runtimes, "diagnostics": diagnostics,
+	}
+}
+
+func stringsToAny(values []string) []any {
+	result := make([]any, len(values))
+	for index, value := range values {
+		result[index] = value
+	}
+	return result
+}
+
 type providerModelAdmissionStatus struct {
 	RuntimeFamily    string `json:"runtimeFamily"`
 	ReportedModelID  string `json:"reportedModelId"`
@@ -150,10 +191,8 @@ type providerModelLifecycleStatus struct {
 type providerModelLifecycleService struct {
 	baseURL    *url.URL
 	cloud      *http.Client
-	runtime    *http.Client
 	identity   *deviceIdentity
 	enrollment *cloudEnrollmentStore
-	runtimes   *runtimeEndpointStore
 	capacity   *capacityPolicyStore
 	demand     *providerDemandService
 	controller *managedProviderController
@@ -169,7 +208,6 @@ func newProviderModelLifecycleService(
 	client *http.Client,
 	identity *deviceIdentity,
 	enrollment *cloudEnrollmentStore,
-	runtimes *runtimeEndpointStore,
 	capacity *capacityPolicyStore,
 	demand *providerDemandService,
 	controller *managedProviderController,
@@ -177,12 +215,9 @@ func newProviderModelLifecycleService(
 	cloud := *client
 	cloud.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	cloud.Timeout = 15 * time.Second
-	runtimeClient := *client
-	runtimeClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
-	runtimeClient.Timeout = 5 * time.Second
 	return &providerModelLifecycleService{
-		baseURL: baseURL, cloud: &cloud, runtime: &runtimeClient, identity: identity, enrollment: enrollment,
-		runtimes: runtimes, capacity: capacity, demand: demand, controller: controller,
+		baseURL: baseURL, cloud: &cloud, identity: identity, enrollment: enrollment,
+		capacity: capacity, demand: demand, controller: controller,
 		relay: &communityOutboundSessionStore{}, now: time.Now,
 		status: providerModelLifecycleStatus{SchemaVersion: "provider-model-lifecycle-status-v1", State: "waiting_for_enrollment"},
 	}
@@ -200,26 +235,14 @@ func (service *providerModelLifecycleService) updateStatus(update func(*provider
 	update(&service.status)
 }
 
-func (service *providerModelLifecycleService) detected(ctx context.Context) detectedModelsDocument {
-	return detectedModels(ctx, runtimeAdapterRegistry(), service.runtimes.configured(), service.runtime)
-}
-
 func (service *providerModelLifecycleService) inventoryRuntimes(
-	detected detectedModelsDocument,
 	policy *capacityPolicyStateDocument,
 ) []providerModelInventoryRuntime {
 	byRuntime := make(map[string]map[string]providerModelInventoryItem)
-	for _, runtime := range detected.Runtimes {
-		models := byRuntime[runtime.AdapterID]
-		if models == nil {
-			models = make(map[string]providerModelInventoryItem)
-			byRuntime[runtime.AdapterID] = models
-		}
-		for _, modelID := range runtime.Models {
-			models[modelID] = providerModelInventoryItem{ReportedID: modelID, Modalities: []string{"text"}}
-		}
-	}
-	if service.controller != nil && service.demand != nil && policy != nil {
+	// User-configured runtimes are local inference facilities, never Cloud
+	// worker inventory. Only the managed runtime may be advertised, and only
+	// after the operator's capacity policy explicitly authorizes Cloud work.
+	if service.controller != nil && service.demand != nil && managedControllerPolicyConsented(policy) {
 		if managed, err := service.controller.runtime.managedInventory(policy); err == nil {
 			models := byRuntime["ollama"]
 			if models == nil {
@@ -261,18 +284,14 @@ func (service *providerModelLifecycleService) inventoryRuntimes(
 
 func (service *providerModelLifecycleService) signInventory(
 	enrollment cloudEnrollmentView,
-	detected detectedModelsDocument,
 	policy *capacityPolicyStateDocument,
 ) (signedProviderModelInventory, error) {
-	observedAt, err := canonicalTimestamp(detected.ObservedAt)
-	if err != nil {
-		return signedProviderModelInventory{}, errors.New("provider model inventory observation is invalid")
-	}
-	diagnostics := make([]providerModelInventoryDiagnostic, 0, len(detected.Diagnostics))
-	for _, item := range detected.Diagnostics {
-		diagnostics = append(diagnostics, providerModelInventoryDiagnostic{RuntimeFamily: item.AdapterID, Status: item.Status, Code: item.Code})
-	}
 	now := service.now().UTC().Truncate(time.Millisecond)
+	runtimes := service.inventoryRuntimes(policy)
+	availableConcurrency := uint64(0)
+	if len(runtimes) > 0 {
+		availableConcurrency = 1
+	}
 	service.identity.mu.Lock()
 	defer service.identity.mu.Unlock()
 	if service.identity.sequence >= maxRelaySequence {
@@ -289,16 +308,16 @@ func (service *providerModelLifecycleService) signInventory(
 		Kind: "provider_model_inventory", ProtocolVersion: providerModelLifecycleProtocol,
 		CanonicalizationVersion: relayCanonicalization, ProviderID: enrollment.ProviderID, NodeID: enrollment.NodeID,
 		DeviceKeyID: enrollment.DeviceKeyID, CredentialEpoch: enrollment.CredentialEpoch,
-		Generation: service.identity.sequence, MaxConcurrency: enrollment.DeclaredMaxConcurrency,
-		AvailableConcurrency: enrollment.DeclaredMaxConcurrency,
-		ObservedAt:           observedAt.Format("2006-01-02T15:04:05.000Z"), IssuedAt: now.Format("2006-01-02T15:04:05.000Z"),
+		Generation: service.identity.sequence, MaxConcurrency: 1,
+		AvailableConcurrency: availableConcurrency,
+		ObservedAt:           now.Format("2006-01-02T15:04:05.000Z"), IssuedAt: now.Format("2006-01-02T15:04:05.000Z"),
 		ExpiresAt: now.Add(time.Minute).Format("2006-01-02T15:04:05.000Z"),
-		Runtimes:  service.inventoryRuntimes(detected, policy), Diagnostics: diagnostics,
+		Runtimes:  runtimes, Diagnostics: []providerModelInventoryDiagnostic{},
 	}
 	unsigned := map[string]any{
 		"envelopeVersion": providerModelInventoryEnvelopeVersion,
 		"kind":            payload.Kind,
-		"payload":         payload,
+		"payload":         providerModelInventoryPayloadMap(payload),
 		"signature": map[string]any{
 			"algorithm": relaySignatureAlgorithm,
 			"keyId":     enrollment.DeviceKeyID,
@@ -407,9 +426,8 @@ func (service *providerModelLifecycleService) run(ctx context.Context) {
 			}
 			continue
 		}
-		detected := service.detected(ctx)
 		policy := service.capacity.snapshot()
-		envelope, err := service.signInventory(*enrollment, detected, policy)
+		envelope, err := service.signInventory(*enrollment, policy)
 		now := service.now().UTC().Truncate(time.Millisecond)
 		service.updateStatus(func(status *providerModelLifecycleStatus) {
 			status.State = "reporting"

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { createGunzip, createInflateRaw } from "node:zlib";
@@ -14,6 +14,8 @@ const maximumArchiveBytes = 6 * 1024 * 1024 * 1024;
 const maximumExtractedBytes = 6 * 1024 * 1024 * 1024;
 const maximumArchiveEntries = 100_000;
 const maximumArchiveMetadataBytes = 8 * 1024 * 1024;
+const maximumProviderDemandTrustBytes = 64 * 1024;
+const maximumProviderDemandTrustKeys = 64;
 
 function archiveMetadataCeilingError(metadataBytes, entryCount) {
   return new Error(
@@ -688,6 +690,118 @@ function canonicalJSON(value) {
   return JSON.stringify(value);
 }
 
+function demandTrustJSONMap(raw) {
+  if (typeof raw !== "string" || Buffer.byteLength(raw) < 1 ||
+    Buffer.byteLength(raw) > maximumProviderDemandTrustBytes) {
+    throw new Error("provider demand trust is invalid");
+  }
+  let offset = 0;
+  const whitespace = () => {
+    while (offset < raw.length && /[\u0009\u000a\u000d\u0020]/u.test(raw[offset])) offset += 1;
+  };
+  const string = () => {
+    whitespace();
+    if (raw[offset] !== '"') throw new Error("provider demand trust is invalid");
+    const start = offset;
+    offset += 1;
+    while (offset < raw.length) {
+      const character = raw[offset];
+      if (character === '"') {
+        offset += 1;
+        try {
+          const value = JSON.parse(raw.slice(start, offset));
+          if (typeof value !== "string") throw new Error("provider demand trust is invalid");
+          return value;
+        } catch {
+          throw new Error("provider demand trust is invalid");
+        }
+      }
+      if (character === "\\") {
+        offset += 1;
+        if (offset >= raw.length || !/["\\/bfnrtu]/u.test(raw[offset])) {
+          throw new Error("provider demand trust is invalid");
+        }
+        if (raw[offset] === "u") {
+          if (!/^[0-9a-fA-F]{4}$/u.test(raw.slice(offset + 1, offset + 5))) {
+            throw new Error("provider demand trust is invalid");
+          }
+          offset += 4;
+        }
+      } else if (character.charCodeAt(0) < 0x20) {
+        throw new Error("provider demand trust is invalid");
+      }
+      offset += 1;
+    }
+    throw new Error("provider demand trust is invalid");
+  };
+
+  whitespace();
+  if (raw[offset] !== "{") throw new Error("provider demand trust is invalid");
+  offset += 1;
+  whitespace();
+  const entries = new Map();
+  if (raw[offset] !== "}") {
+    while (true) {
+      const key = string();
+      whitespace();
+      if (raw[offset] !== ":") throw new Error("provider demand trust is invalid");
+      offset += 1;
+      const value = string();
+      if (entries.has(key)) throw new Error("provider demand trust contains duplicate keys");
+      entries.set(key, value);
+      whitespace();
+      if (raw[offset] === "}") break;
+      if (raw[offset] !== ",") throw new Error("provider demand trust is invalid");
+      offset += 1;
+    }
+  }
+  if (raw[offset] !== "}") throw new Error("provider demand trust is invalid");
+  offset += 1;
+  whitespace();
+  if (offset !== raw.length || entries.size < 1 || entries.size > maximumProviderDemandTrustKeys) {
+    throw new Error("provider demand trust is invalid");
+  }
+  return entries;
+}
+
+export function normalizeProviderDemandTrust(raw) {
+  const entries = demandTrustJSONMap(raw);
+  const normalized = {};
+  for (const [declaredID, encodedSPKI] of [...entries].sort(([left], [right]) => left.localeCompare(right))) {
+    if (!/^ed25519:[A-Za-z0-9_-]{43}$/u.test(declaredID) || typeof encodedSPKI !== "string") {
+      throw new Error("provider demand trust is invalid");
+    }
+    const der = Buffer.from(encodedSPKI, "base64");
+    if (der.length < 1 || der.length > 256 || der.toString("base64") !== encodedSPKI) {
+      throw new Error("provider demand trust is invalid");
+    }
+    let publicKey;
+    try {
+      publicKey = createPublicKey({ key: der, format: "der", type: "spki" });
+    } catch {
+      throw new Error("provider demand trust is invalid");
+    }
+    const canonicalDER = publicKey.export({ format: "der", type: "spki" });
+    const computedID = `ed25519:${createHash("sha256").update(der).digest("base64url")}`;
+    if (publicKey.asymmetricKeyType !== "ed25519" || !Buffer.from(canonicalDER).equals(der) || computedID !== declaredID) {
+      throw new Error("provider demand trust is invalid");
+    }
+    normalized[declaredID] = encodedSPKI;
+  }
+  return `${canonicalJSON(normalized)}\n`;
+}
+
+async function validateProviderDemandTrustFile(file) {
+  const info = await lstat(file);
+  if (!info.isFile() || info.isSymbolicLink() || info.size < 1 || info.size > maximumProviderDemandTrustBytes) {
+    throw new Error("provider demand trust file is invalid");
+  }
+  const raw = await readFile(file, "utf8");
+  if (normalizeProviderDemandTrust(raw) !== raw) {
+    throw new Error("provider demand trust file is not canonical");
+  }
+}
+
 async function readBinaryHeader(file, bytes = 4096) {
   const handle = await open(file, "r");
   try {
@@ -1219,6 +1333,7 @@ async function validateTree(root, options, archiveInspection) {
     `${macPrefix}/Resources/provider/schemas/provider-runtime-benchmark-store.schema.json`,
     `${macPrefix}/Resources/provider/examples/runtime-profile-overrides.json`,
     `${macPrefix}/Resources/provider/examples/runtime-benchmark-spec.json`,
+    `${macPrefix}/Resources/provider/provider-demand-trust.json`,
     `${macPrefix}/Resources/provider/provider-host-dependencies.json`, `${macPrefix}/Resources/verify-provider-host.mjs`,
     `${macPrefix}/Info.plist`,
   );
@@ -1235,6 +1350,7 @@ async function validateTree(root, options, archiveInspection) {
     "resources/provider/schemas/provider-runtime-benchmark-store.schema.json",
     "resources/provider/examples/runtime-profile-overrides.json",
     "resources/provider/examples/runtime-benchmark-spec.json",
+    "resources/provider/provider-demand-trust.json",
     "resources/provider/provider-host-dependencies.json", "resources/provider/multivibe-host.ico", "verify-provider-host.mjs",
   );
   else required.push("install.sh", "uninstall.sh", "bin/node", "runtime/ollama/bin/ollama", "runtime/ollama/.multivibe-bundle.json",
@@ -1248,9 +1364,14 @@ async function validateTree(root, options, archiveInspection) {
     "resources/provider/schemas/provider-runtime-benchmark-store.schema.json",
     "resources/provider/examples/runtime-profile-overrides.json",
     "resources/provider/examples/runtime-benchmark-spec.json",
+    "resources/provider/provider-demand-trust.json",
     "resources/provider/provider-host-dependencies.json", "resources/provider/multivibe-host.png", "bin/multivibe-host-menu",
     "verify-provider-host.mjs");
   if (required.some((file) => !seen.has(file))) throw new Error("provider-host archive is missing a required file");
+  const demandTrustPath = manifest.platform === "darwin" ?
+    path.join(root, macPrefix, "Resources", "provider", "provider-demand-trust.json") :
+    path.join(root, "resources", "provider", "provider-demand-trust.json");
+  await validateProviderDemandTrustFile(demandTrustPath);
   if (manifest.platform === "darwin") {
     const icon = await readBinaryHeader(path.join(root, macPrefix, "Resources", "MultiVibe.icns"), 8);
     if (icon.length < 8 || icon.subarray(0, 4).toString("ascii") !== "icns" || icon.readUInt32BE(4) < 1024) {
@@ -1361,6 +1482,9 @@ async function validateMacDiskImage(diskImage, work, options) {
       throw new Error("provider-host disk image Applications shortcut is invalid");
     }
     const application = path.join(mount, "MultiVibe Host.app");
+    await validateProviderDemandTrustFile(path.join(
+      application, "Contents", "Resources", "provider", "provider-demand-trust.json",
+    ));
     const metadata = JSON.parse(await readFile(path.join(application, "Contents", "Resources", "provider-host-release.json"), "utf8"));
     if (!exactKeys(metadata, ["schemaVersion", "product", "version", "sourceCommit", "platform", "architecture",
       "sourceTreeDirty", "releaseReady", "macOSSignature"]) || metadata.schemaVersion !== 1 ||

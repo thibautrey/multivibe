@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -13,6 +17,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -32,7 +37,12 @@ type bundleLayout struct {
 	BundledOllama      string
 	ModelCatalog       string
 	DependencyManifest string
+	DemandTrust        string
 }
+
+const maximumBundledDemandTrustBytes = 64 * 1024
+
+var bundledDemandTrustKeyID = regexp.MustCompile(`^ed25519:[A-Za-z0-9_-]{43}$`)
 
 type localCredentials struct {
 	SchemaVersion string `json:"schema_version"`
@@ -99,6 +109,7 @@ func executableLayout(executable, goos string) (bundleLayout, error) {
 			BundledOllama:      filepath.Join(contents, "Resources", "ollama-runtime"),
 			ModelCatalog:       filepath.Join(contents, "Resources", "provider", "provider-model-catalog.json"),
 			DependencyManifest: filepath.Join(contents, "Resources", "provider", "provider-host-dependencies.json"),
+			DemandTrust:        filepath.Join(contents, "Resources", "provider", "provider-demand-trust.json"),
 		}, nil
 	}
 	if goos == "windows" {
@@ -117,6 +128,7 @@ func executableLayout(executable, goos string) (bundleLayout, error) {
 			BundledOllama:      filepath.Join(root, "runtime", "ollama"),
 			ModelCatalog:       filepath.Join(root, "resources", "provider", "provider-model-catalog.json"),
 			DependencyManifest: filepath.Join(root, "resources", "provider", "provider-host-dependencies.json"),
+			DemandTrust:        filepath.Join(root, "resources", "provider", "provider-demand-trust.json"),
 		}, nil
 	}
 	if goos != "linux" {
@@ -137,6 +149,7 @@ func executableLayout(executable, goos string) (bundleLayout, error) {
 		BundledOllama:      filepath.Join(root, "runtime", "ollama"),
 		ModelCatalog:       filepath.Join(root, "resources", "provider", "provider-model-catalog.json"),
 		DependencyManifest: filepath.Join(root, "resources", "provider", "provider-host-dependencies.json"),
+		DemandTrust:        filepath.Join(root, "resources", "provider", "provider-demand-trust.json"),
 	}, nil
 }
 
@@ -172,6 +185,7 @@ func validateLayout(layout bundleLayout) error {
 		{filepath.Join(layout.App, "package.json"), false},
 		{layout.ModelCatalog, false},
 		{layout.DependencyManifest, false},
+		{layout.DemandTrust, false},
 	} {
 		if err := requireRegular(candidate.path, candidate.executable); err != nil {
 			return err
@@ -190,7 +204,91 @@ func validateLayout(layout bundleLayout) error {
 	if err != nil || !ollama.IsDir() || ollama.Mode()&os.ModeSymlink != 0 {
 		return errors.New("the bundled Ollama runtime is unavailable")
 	}
+	if _, err := loadBundledDemandTrust(layout.DemandTrust); err != nil {
+		return err
+	}
 	return nil
+}
+
+func normalizeBundledDemandTrust(raw []byte) (string, error) {
+	if len(raw) < 1 || len(raw) > maximumBundledDemandTrustBytes {
+		return "", errors.New("the bundled demand trust is invalid")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		return "", errors.New("the bundled demand trust is invalid")
+	}
+	encoded := make(map[string]string)
+	for decoder.More() {
+		keyToken, keyErr := decoder.Token()
+		key, ok := keyToken.(string)
+		if keyErr != nil || !ok {
+			return "", errors.New("the bundled demand trust is invalid")
+		}
+		if _, duplicate := encoded[key]; duplicate {
+			return "", errors.New("the bundled demand trust is invalid")
+		}
+		var value string
+		if decoder.Decode(&value) != nil {
+			return "", errors.New("the bundled demand trust is invalid")
+		}
+		encoded[key] = value
+	}
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim('}') || len(encoded) < 1 || len(encoded) > 64 {
+		return "", errors.New("the bundled demand trust is invalid")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return "", errors.New("the bundled demand trust is invalid")
+	}
+	for declaredID, encodedSPKI := range encoded {
+		der, decodeErr := base64.StdEncoding.DecodeString(encodedSPKI)
+		if !bundledDemandTrustKeyID.MatchString(declaredID) || decodeErr != nil || len(der) < 1 || len(der) > 256 ||
+			base64.StdEncoding.EncodeToString(der) != encodedSPKI {
+			return "", errors.New("the bundled demand trust is invalid")
+		}
+		parsed, parseErr := x509.ParsePKIXPublicKey(der)
+		publicKey, ok := parsed.(ed25519.PublicKey)
+		digest := sha256.Sum256(der)
+		computedID := "ed25519:" + base64.RawURLEncoding.EncodeToString(digest[:])
+		if parseErr != nil || !ok || len(publicKey) != ed25519.PublicKeySize || computedID != declaredID {
+			return "", errors.New("the bundled demand trust is invalid")
+		}
+	}
+	normalized, err := json.Marshal(encoded)
+	if err != nil {
+		return "", errors.New("the bundled demand trust is invalid")
+	}
+	return string(normalized), nil
+}
+
+func loadBundledDemandTrust(path string) (string, error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return "", errors.New("the bundled demand trust path is invalid")
+	}
+	before, err := os.Lstat(path)
+	if err != nil || !before.Mode().IsRegular() || before.Mode()&os.ModeSymlink != 0 ||
+		before.Size() < 1 || before.Size() > maximumBundledDemandTrustBytes {
+		return "", errors.New("the bundled demand trust file is unavailable")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", errors.New("the bundled demand trust file is unavailable")
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(before, opened) {
+		return "", errors.New("the bundled demand trust file changed while opening")
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, maximumBundledDemandTrustBytes+1))
+	after, pathErr := os.Lstat(path)
+	if err != nil || pathErr != nil || len(raw) > maximumBundledDemandTrustBytes || !os.SameFile(before, after) ||
+		after.Size() != int64(len(raw)) {
+		return "", errors.New("the bundled demand trust file changed while reading")
+	}
+	return normalizeBundledDemandTrust(raw)
 }
 
 func doctor(output io.Writer) error {
@@ -453,7 +551,7 @@ func managedDirectory(dataDirectory string) (string, error) {
 	return configured, nil
 }
 
-func coreEnvironment(layout bundleLayout, dataDirectory, managedDirectory string, credentials localCredentials, network coreNetworkConfiguration) []string {
+func coreEnvironment(layout bundleLayout, dataDirectory, managedDirectory, demandTrust string, credentials localCredentials, network coreNetworkConfiguration) []string {
 	nodeHost, nodePort := network.BindAddress, network.Port
 	if runtime.GOOS == "darwin" {
 		nodeHost, nodePort = "127.0.0.1", "1456"
@@ -496,7 +594,9 @@ func coreEnvironment(layout bundleLayout, dataDirectory, managedDirectory string
 		"PROVIDER_AGENT_BUNDLED_OLLAMA_ROOT=" + layout.BundledOllama,
 		"PROVIDER_AGENT_DEPENDENCY_MANIFEST_PATH=" + layout.DependencyManifest,
 		"PROVIDER_AGENT_MANAGED_PLANNER_STATE_PATH=" + filepath.Join(dataDirectory, "provider-agent-managed-planner-state.json"),
+		"PROVIDER_AGENT_DEMAND_PLAN_PATH=" + filepath.Join(dataDirectory, "provider-agent-demand-plan.json"),
 		"PROVIDER_AGENT_MODEL_CATALOG_PATH=" + layout.ModelCatalog,
+		"PROVIDER_AGENT_DEMAND_TRUSTED_KEYS=" + demandTrust,
 		"PROVIDER_AGENT_CLOUD_API_URL=https://auth.multivibe.cloud",
 		"TRACE_INCLUDE_BODY=false",
 		"TRACE_INCLUDE_HEADERS=false",
@@ -535,9 +635,6 @@ func coreEnvironment(layout bundleLayout, dataDirectory, managedDirectory string
 			environment = append(environment, name+"="+value)
 		}
 	}
-	if trustedKeys := inheritedEnvironment("MULTIVIBE_PROVIDER_DEMAND_TRUSTED_KEYS"); trustedKeys != "" {
-		environment = append(environment, "PROVIDER_AGENT_DEMAND_TRUSTED_KEYS="+trustedKeys)
-	}
 	for _, pair := range []struct {
 		source      string
 		destination string
@@ -570,6 +667,10 @@ func run() error {
 		return err
 	}
 	if err := validateLayout(layout); err != nil {
+		return err
+	}
+	demandTrust, err := loadBundledDemandTrust(layout.DemandTrust)
+	if err != nil {
 		return err
 	}
 	probe := exec.Command(layout.Agent, "doctor")
@@ -613,7 +714,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	baseEnvironment := coreEnvironment(layout, data, managed, credentials, network)
+	baseEnvironment := coreEnvironment(layout, data, managed, demandTrust, credentials, network)
 	if runtime.GOOS == "linux" {
 		return syscall.Exec(layout.Node, arguments, baseEnvironment)
 	}

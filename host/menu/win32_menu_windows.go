@@ -680,7 +680,7 @@ func (menu *windowsMenu) enrollmentMessage() {
 		return
 	}
 	caption, _ := syscall.UTF16PtrFromString("MultiVibe Host")
-	message, _ := syscall.UTF16PtrFromString("Add this Windows host to MultiVibe Cloud?\r\n\r\nMultiVibe Host will share its public device identity and selected local models. Your private key stays on this Windows host.")
+	message, _ := syscall.UTF16PtrFromString("Add this Windows host to MultiVibe Cloud?\r\n\r\nMultiVibe Host will register this host's public device identity. Cloud jobs use only MultiVibe's managed Ollama runtime and still require saved capacity consent. Your private key and local runtime settings stay on this host.")
 	flags := uint32(mbYesNo | mbIconQuestion | mbDefButton2)
 	result, _, _ := messageBoxWindows.Call(uintptr(menu.hwnd), uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(caption)), uintptr(flags))
 	select {

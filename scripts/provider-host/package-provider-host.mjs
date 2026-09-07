@@ -24,6 +24,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { extractPreflightedTarArchive } from "./provider-host-tar-preflight.mjs";
 import { pruneProductionNativeDependencies } from "./provider-host-native-dependencies.mjs";
+import { normalizeProviderDemandTrust } from "./verify-provider-host.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const downloadHosts = new Set(["nodejs.org", "github.com", "release-assets.githubusercontent.com"]);
@@ -34,13 +35,13 @@ const maximumOllamaFileBytes = 4 * 1024 * 1024 * 1024;
 const maximumOllamaExtractedBytes = 12 * 1024 * 1024 * 1024;
 const betterSQLiteSmokeTest = "const Database=require('better-sqlite3');const database=new Database(':memory:');try{const row=database.prepare('SELECT 1 AS value').get();if(row?.value!==1)throw new Error('better-sqlite3 smoke test failed')}finally{database.close()}";
 
-function argumentsFrom(argv) {
+export function argumentsFrom(argv) {
   const options = { allowDirty: false, allowUnsigned: false };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--allow-dirty") options.allowDirty = true;
     else if (argument === "--allow-unsigned") options.allowUnsigned = true;
-    else if (["--version", "--output", "--sign-identity", "--notary-profile"].includes(argument)) {
+    else if (["--version", "--output", "--sign-identity", "--notary-profile", "--provider-demand-trust-file"].includes(argument)) {
       const value = argv[index + 1];
       if (!value) throw new Error(`${argument} requires a value`);
       options[{
@@ -48,6 +49,7 @@ function argumentsFrom(argv) {
         "--output": "output",
         "--sign-identity": "signIdentity",
         "--notary-profile": "notaryProfile",
+        "--provider-demand-trust-file": "providerDemandTrustFile",
       }[argument]] = value;
       index += 1;
     } else {
@@ -60,8 +62,35 @@ function argumentsFrom(argv) {
   if (options.notaryProfile && !options.signIdentity) {
     throw new Error("--notary-profile requires --sign-identity");
   }
+  if (!options.providerDemandTrustFile) {
+    throw new Error("--provider-demand-trust-file is required for every provider Host package");
+  }
+  options.providerDemandTrustFile = path.resolve(options.providerDemandTrustFile);
   options.output = path.resolve(options.output ?? path.join(repositoryRoot, "release"));
   return options;
+}
+
+async function loadProviderDemandTrust(filePath) {
+  const before = await lstat(filePath);
+  if (!before.isFile() || before.isSymbolicLink() || before.size < 1 || before.size > 64 * 1024) {
+    throw new Error("provider demand trust input must be a bounded regular file");
+  }
+  const handle = await open(filePath, "r");
+  try {
+    const opened = await handle.stat();
+    if (!opened.isFile() || before.dev !== opened.dev || before.ino !== opened.ino) {
+      throw new Error("provider demand trust input changed while opening");
+    }
+    const raw = await handle.readFile({ encoding: "utf8" });
+    const after = await lstat(filePath);
+    if (!after.isFile() || after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino ||
+      before.size !== after.size || raw.length < 1 || Buffer.byteLength(raw) !== opened.size) {
+      throw new Error("provider demand trust input changed while reading");
+    }
+    return normalizeProviderDemandTrust(raw);
+  } finally {
+    await handle.close();
+  }
 }
 
 function target() {
@@ -548,7 +577,7 @@ async function writeManifest(root, metadata) {
   await writeFile(path.join(root, "manifest.json"), `${JSON.stringify({ ...metadata, files: entries }, null, 2)}\n`, { mode: 0o444 });
 }
 
-async function assemble(options, selectedTarget, work, dependencies, sourceCommit, buildNumber, sourceTreeDirty) {
+async function assemble(options, selectedTarget, work, dependencies, sourceCommit, buildNumber, sourceTreeDirty, providerDemandTrust) {
   const baseName = `multivibe-host_${options.version}_${selectedTarget.key.replace("-", "_")}`;
   const root = path.join(work, baseName);
   await mkdir(root, { mode: 0o755 });
@@ -656,6 +685,7 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
 
   await productionApplication(applicationDirectory, selectedTarget);
   await mkdir(resourceDirectory, { recursive: true, mode: 0o755 });
+  await writeFile(path.join(resourceDirectory, "provider-demand-trust.json"), providerDemandTrust, { mode: 0o444 });
   await cp(path.join(repositoryRoot, "packaging", "provider-model-catalog.json"), path.join(resourceDirectory, "provider-model-catalog.json"));
   await cp(path.join(repositoryRoot, "packaging", "provider-runtime-profiles.json"), path.join(resourceDirectory, "provider-runtime-profiles.json"));
   await cp(path.join(repositoryRoot, "packaging", "provider-host-dependencies.json"), path.join(resourceDirectory, "provider-host-dependencies.json"));
@@ -818,6 +848,7 @@ export async function archiveBundle(bundle, options, selectedTarget) {
 async function main() {
   const options = argumentsFrom(process.argv.slice(2));
   const selectedTarget = target();
+  const providerDemandTrust = await loadProviderDemandTrust(options.providerDemandTrustFile);
   const dependencies = JSON.parse(await readFile(path.join(repositoryRoot, "packaging", "provider-host-dependencies.json"), "utf8"));
   if (dependencies.schemaVersion !== 1 || !/^\d+\.\d+\.\d+$/u.test(dependencies.node?.version ?? "") ||
     !/^\d+\.\d+\.\d+$/u.test(dependencies.ollama?.version ?? "")) {
@@ -843,7 +874,9 @@ async function main() {
   if (finalStatus && !options.allowDirty) throw new Error("the application build changed the release worktree");
   const work = await mkdtemp(path.join(tmpdir(), "multivibe-host-package-"));
   try {
-    const bundle = await assemble(options, selectedTarget, work, dependencies, sourceCommit, buildNumber, Boolean(finalStatus));
+    const bundle = await assemble(
+      options, selectedTarget, work, dependencies, sourceCommit, buildNumber, Boolean(finalStatus), providerDemandTrust,
+    );
     const archive = await archiveBundle(bundle, options, selectedTarget);
     await command(process.execPath, [path.join(repositoryRoot, "scripts", "provider-host", "verify-provider-host.mjs"), archive]);
     console.log(JSON.stringify({ archive, sha256: await sha256(archive), sourceCommit, target: selectedTarget.key }));
