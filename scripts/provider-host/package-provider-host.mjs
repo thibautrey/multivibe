@@ -232,7 +232,10 @@ async function copySource(source, destination) {
 }
 
 async function buildGo(moduleDirectory, output, versionVariable, version, selectedTarget, packagePath = ".", buildEnvironment = {}) {
-  await command("go", ["test", "./..."], { cwd: moduleDirectory });
+  // Match the release workflow: Unix permission fixtures cannot run on Windows.
+  await command("go", selectedTarget.goos === "windows"
+    ? ["test", "-run", "^$", "./..."]
+    : ["test", "./..."], { cwd: moduleDirectory });
   await command("go", [
     "build",
     "-trimpath",
