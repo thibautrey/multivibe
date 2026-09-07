@@ -132,6 +132,8 @@ var runtimeAdapters = func() []runtimeAdapter {
 			CatalogURL: "http://[::1]:8000/v1/models",
 		},
 	}
+	nvidiaPair := manualOpenAIAdapter("nvidia-pair", "NVIDIA Personal AI Router (PAIR)")
+	nvidiaPair.Authentication = "none"
 	return []runtimeAdapter{
 		ollama,
 		lmStudio,
@@ -160,6 +162,7 @@ var runtimeAdapters = func() []runtimeAdapter {
 		manualOpenAIAdapter("openllm", "OpenLLM"),
 		manualOpenAIAdapter("bentoml", "BentoML"),
 		mtplx,
+		nvidiaPair,
 		manualOpenAIAdapter("manual-openai-compatible", "Manual OpenAI-compatible server"),
 	}
 }()
@@ -169,7 +172,7 @@ func runtimeAdapterRegistry() adapterRegistryDocument {
 }
 
 func validateAdapterRegistry(registry adapterRegistryDocument) error {
-	if registry.SchemaVersion != adapterRegistrySchemaVersion || len(registry.Adapters) != 28 {
+	if registry.SchemaVersion != adapterRegistrySchemaVersion || len(registry.Adapters) != 29 {
 		return errors.New("provider runtime registry has an invalid schema or adapter count")
 	}
 	seen := make(map[string]struct{}, len(registry.Adapters))

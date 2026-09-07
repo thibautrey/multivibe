@@ -99,7 +99,8 @@ export type LocalRuntimeAdapterId =
   | "huggingface-tgi" | "transformers-serve" | "xinference" | "mlx-lm" | "omlx"
   | "mlc-llm" | "exo" | "jan" | "gpt4all" | "koboldcpp" | "text-generation-webui"
   | "aphrodite" | "tabbyapi" | "llama-box" | "mistral-rs" | "nvidia-nim"
-  | "tensorrt-llm" | "triton" | "openllm" | "bentoml" | "mtplx" | "manual-openai-compatible";
+  | "tensorrt-llm" | "triton" | "openllm" | "bentoml" | "mtplx" | "nvidia-pair"
+  | "manual-openai-compatible";
 
 export type LocalRuntimeMetadata = {
   source: "multivibe-local-discovery";
