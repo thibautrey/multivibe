@@ -14,6 +14,7 @@ import {
   runtimeIdentityForAdapter,
 } from "../../lib/runtimeCatalog";
 
+import { ProviderPicker, ProviderMark, SETUP_PROVIDERS } from "../ProviderPicker";
 import { Metric } from "../Metric";
 import { createPortal } from "react-dom";
 
@@ -472,6 +473,9 @@ export function AccountsTab(props: Props) {
     onSkipOnboarding,
   } = props;
   const [showAddAccount, setShowAddAccount] = useState(false);
+  const [providerStep, setProviderStep] = useState(0);
+  const [providerError, setProviderError] = useState("");
+  const providerModalRef = useRef<HTMLDivElement>(null);
   const [cloudBusy, setCloudBusy] = useState(false);
   const [cloudError, setCloudError] = useState("");
   const [quotaResetForecast, setQuotaResetForecast] =
@@ -1079,8 +1083,26 @@ export function AccountsTab(props: Props) {
     };
   }, [oauthDialog, pollDeviceOAuth, patch]);
 
+  const providerConnectionReady = isOAuthProvider(provider)
+    ? provider !== "openai" || Boolean(manualEmail.trim())
+    : (provider === "nvidia-pair" || provider === "opencode" || Boolean(manualAccessToken.trim())) &&
+      (!(provider === "openai-compatible" || provider === "nvidia-pair") || Boolean(manualBaseUrl.trim()));
+
+  useEffect(() => {
+    if (!showAddAccount || oauthDialog) return;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    providerModalRef.current?.focus();
+    return () => { if (previous?.isConnected) previous.focus(); };
+  }, [showAddAccount, Boolean(oauthDialog)]);
+
+  useEffect(() => {
+    if (showAddAccount && !oauthDialog) providerModalRef.current?.focus();
+  }, [providerStep]);
+
   const closeModal = () => {
     setShowAddAccount(false);
+    setProviderStep(0);
+    setProviderError("");
     setProvider("openai");
     setManualEmail("");
     setManualAccessToken("");
@@ -2762,47 +2784,53 @@ export function AccountsTab(props: Props) {
           document.body,
         )}
 
-      {showAddAccount && (
-        <div className="modal-backdrop" onClick={closeModal}>
-          <div className={`modal panel${onboardingProviderSetup ? " onboarding-provider-modal" : ""}`} onClick={(e) => e.stopPropagation()}>
+      {showAddAccount && !oauthDialog && (
+        <div className="modal-backdrop" onClick={() => { if (!isSubmitting) closeModal(); }}>
+          <div ref={providerModalRef} className={`modal panel provider-setup-modal${onboardingProviderSetup ? " onboarding-provider-modal" : ""}`} role="dialog" aria-modal="true" aria-labelledby="provider-setup-title" tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(event) => {
+            if (event.key === "Escape" && !isSubmitting) { event.stopPropagation(); closeModal(); }
+            if (event.key === "Tab") {
+              const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), summary, [href]')).filter((item) => item.getClientRects().length > 0);
+              const first = items[0], last = items[items.length - 1];
+              if (event.shiftKey && (document.activeElement === first || document.activeElement === event.currentTarget)) { event.preventDefault(); last?.focus(); }
+              else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+            }
+          }}>
             <div className="inline wrap row-between">
-              <h2>Add account</h2>
+              <span className="eyebrow">NEW CONNECTION</span>
               <div className="inline wrap">
                 {onboardingProviderSetup && (
-                  <button className="btn ghost" onClick={() => {
+                  <button className="btn ghost" disabled={isSubmitting} onClick={() => {
                     closeModal();
                     onSkipOnboarding?.();
                   }}>
                     Skip setup
                   </button>
                 )}
-                <button className="btn ghost" onClick={closeModal}>
+                <button className="btn ghost" disabled={isSubmitting} onClick={closeModal}>
                   {onboardingProviderSetup ? "Back" : "Close"}
                 </button>
               </div>
             </div>
-            <div className="grid modal-grid">
+            <ol className="provider-setup-steps" aria-label="Setup progress">
+              {["Choose provider", "Connect", "Review"].map((label, index) => <li key={label} className={index === providerStep ? "active" : index < providerStep ? "complete" : ""} aria-current={index === providerStep ? "step" : undefined}><span>{index < providerStep ? "✓" : index + 1}</span>{label}</li>)}
+            </ol>
+            <div className="provider-setup-heading">
+              {providerStep > 0 && <ProviderMark provider={provider} />}
+              <div><h2 id="provider-setup-title">{providerStep === 0 ? "Choose your provider" : providerStep === 1 ? `Connect ${SETUP_PROVIDERS.find((item) => item.id === provider)?.name}` : "Ready to connect?"}</h2>
+              <p className="muted">{providerStep === 0 ? "Bring your subscription, API key, or local endpoint." : providerStep === 1 ? "Enter your connection details to continue." : "Check your connection and customize routing if needed."}</p></div>
+            </div>
+            {providerStep === 0 && <ProviderPicker value={provider} onChange={(next) => {
+              if (next !== provider) {
+                setProvider(next);
+                setManualAccessToken(""); setManualRefreshToken(""); setManualBaseUrl("");
+                setManualOAuthMethod(next === "xai" ? "device" : "browser");
+                setProviderError("");
+              }
+            }} />}
+            {providerStep === 1 && <div className="grid modal-grid provider-setup-fields">
+
               <label>
-                Provider
-                <select
-                  value={provider}
-                  onChange={(e) => {
-                    const next = e.target.value as AccountProvider;
-                    setProvider(next);
-                    if (next === "xai") setManualOAuthMethod("device");
-                  }}
-                >
-                  <option value="openai">OpenAI</option>
-                  <option value="openai-compatible">OpenAI-compatible</option>
-                  <option value="nvidia-pair">NVIDIA Personal AI Router (PAIR)</option>
-                  <option value="opencode">OpenCode Zen / Go</option>
-                  <option value="mistral">Mistral</option>
-                  <option value="zai">z.ai</option>
-                  <option value="xai">Grok Build (subscription)</option>
-                </select>
-              </label>
-              <label>
-                Email (optional)
+                {provider === "openai" ? "Email" : "Email (optional)"}
                 <input
                   value={manualEmail}
                   onChange={(e) => setManualEmail(e.target.value)}
@@ -2838,6 +2866,51 @@ export function AccountsTab(props: Props) {
                   />
                 </label>
               )}
+              {provider === "nvidia-pair" ? (
+                <div className="muted">PAIR is probed without a token and is isolated as personal-cluster capacity.</div>
+              ) : isManualTokenProvider(provider) ? (
+                <>
+                  <label>
+                    API key
+                    <input
+                      type="password" autoComplete="off"
+                      value={manualAccessToken}
+                      onChange={(e) => setManualAccessToken(e.target.value)}
+                      placeholder={provider === "opencode" ? "Optional for device sign-in" : "Required"}
+                    />
+                  </label>
+                  {!onboardingProviderSetup && <label>
+                    Refresh token (optional)
+                    <input
+                      type="password" autoComplete="off"
+                      value={manualRefreshToken}
+                      onChange={(e) => setManualRefreshToken(e.target.value)}
+                      placeholder="Optional"
+                    />
+                  </label>}
+                </>
+              ) : (
+                <div className="muted">
+                  {provider === "xai"
+                    ? "Grok Build uses xAI device OAuth and the SuperGrok / X Premium+ subscription quota."
+                    : "OpenAI onboarding uses OAuth. Browser callback opens the login page and asks for the callback URL. Device code shows a one-time code and completes automatically after approval."}
+                </div>
+              )}
+              {provider === "opencode" && (
+                <div className="muted">
+                  Enter an API key, or leave it empty to sign in with your OpenCode Console account on the next step. Go quotas are detected automatically.
+                </div>
+              )}
+            </div>}
+            {providerStep === 2 && <>
+              <dl className="provider-setup-summary">
+                <div><dt>Provider</dt><dd>{SETUP_PROVIDERS.find((item) => item.id === provider)?.name}</dd></div>
+                <div><dt>Account</dt><dd>{manualEmail.trim() || "No email label"}</dd></div>
+                <div><dt>Connection</dt><dd>{isOAuthProvider(provider) ? manualOAuthMethod === "device" ? "Device sign-in" : "Browser sign-in" : provider === "opencode" && !manualAccessToken.trim() ? "OpenCode device sign-in" : provider === "nvidia-pair" ? "Token-free endpoint" : "API key provided"}</dd></div>
+                {(provider === "openai-compatible" || provider === "nvidia-pair") && <div><dt>Endpoint</dt><dd>{manualBaseUrl}</dd></div>}
+              </dl>
+              {isOAuthProvider(provider) && <p className="provider-setup-note">Next, approve the connection with your provider to finish setup.</p>}
+              {!onboardingProviderSetup && <details className="provider-setup-advanced"><summary>Advanced settings <span>Routing, priority & capacity</span></summary><div className="grid modal-grid">
               {!onboardingProviderSetup && <label>
                 Upstream mode (optional)
                 <select
@@ -2866,39 +2939,6 @@ export function AccountsTab(props: Props) {
                   <label>Metrics URL<input type="url" value={manualMetricsUrl} onChange={(e) => setManualMetricsUrl(e.target.value)} placeholder="Optional JSON metrics" /></label>
                 </>
               )}
-              {provider === "nvidia-pair" ? (
-                <div className="muted">PAIR is probed without a token and is isolated as personal-cluster capacity.</div>
-              ) : isManualTokenProvider(provider) ? (
-                <>
-                  <label>
-                    API key
-                    <input
-                      value={manualAccessToken}
-                      onChange={(e) => setManualAccessToken(e.target.value)}
-                      placeholder="Required"
-                    />
-                  </label>
-                  {!onboardingProviderSetup && <label>
-                    Refresh token (optional)
-                    <input
-                      value={manualRefreshToken}
-                      onChange={(e) => setManualRefreshToken(e.target.value)}
-                      placeholder="Optional"
-                    />
-                  </label>}
-                </>
-              ) : (
-                <div className="muted">
-                  {provider === "xai"
-                    ? "Grok Build uses xAI device OAuth and the SuperGrok / X Premium+ subscription quota."
-                    : "OpenAI onboarding uses OAuth. Browser callback opens the login page and asks for the callback URL. Device code shows a one-time code and completes automatically after approval."}
-                </div>
-              )}
-              {provider === "opencode" && (
-                <div className="muted">
-                  Enter an OpenCode API key, or use the device-login button below to connect an OpenCode Console account. Go quotas are detected automatically.
-                </div>
-              )}
               {!onboardingProviderSetup && <label>
                 Priority
                 <input
@@ -2915,9 +2955,16 @@ export function AccountsTab(props: Props) {
                 />
                 Enabled
               </label>}
-            </div>
-            <div className="inline wrap">
-              <button
+              </div></details>}
+            </>}
+            {providerError && <p className="provider-setup-error" role="alert">{providerError}</p>}
+            <div className="provider-setup-footer">
+              <button className="btn ghost" disabled={isSubmitting} onClick={() => { if (providerStep === 0) closeModal(); else { setProviderStep(providerStep - 1); setProviderError(""); } }}>{providerStep === 0 ? "Cancel" : "Back"}</button>
+              <span className="muted provider-setup-step-count">Step {providerStep + 1} of 3</span>
+              {providerStep < 2 && <button className="btn" disabled={providerStep === 1 && !providerConnectionReady} onClick={() => setProviderStep(providerStep + 1)}>Continue <span aria-hidden="true">→</span></button>}
+              {providerStep === 2 && <div className="inline wrap">
+
+              {!(provider === "opencode" && !manualAccessToken.trim()) && <button
                 className="btn"
                 disabled={
                   isSubmitting ||
@@ -2927,7 +2974,7 @@ export function AccountsTab(props: Props) {
                       ((provider === "openai-compatible" || provider === "nvidia-pair") &&
                         !manualBaseUrl.trim()))
                 }
-                onClick={() => void submitManualAccount()}
+                onClick={() => { setProviderError(""); void submitManualAccount().catch((error) => setProviderError(error instanceof Error ? error.message : String(error))); }}
               >
                 {isSubmitting
                   ? isOAuthProvider(provider)
@@ -2938,7 +2985,7 @@ export function AccountsTab(props: Props) {
                       ? "Start Grok device login"
                       : "Start OAuth"
                     : "Create account"}
-              </button>
+              </button>}
               {provider === "xai" && (
                 <button
                   className="btn ghost"
@@ -2948,11 +2995,7 @@ export function AccountsTab(props: Props) {
                     void importGrokAuth()
                       .then(() => closeModal())
                       .catch((error) => {
-                        window.alert(
-                          error instanceof Error
-                            ? error.message
-                            : String(error),
-                        );
+                        setProviderError(error instanceof Error ? error.message : String(error));
                       })
                       .finally(() => setIsSubmitting(false));
                   }}
@@ -2962,7 +3005,7 @@ export function AccountsTab(props: Props) {
               )}
               {provider === "opencode" && (
                 <button
-                  className="btn ghost"
+                  className={manualAccessToken.trim() ? "btn ghost" : "btn"}
                   disabled={isSubmitting}
                   onClick={() => {
                     setIsSubmitting(true);
@@ -2973,15 +3016,13 @@ export function AccountsTab(props: Props) {
                       mode: "create",
                       pendingPriority: Number(manualPriority) || 0,
                       pendingEnabled: manualEnabled,
-                    }).finally(() => setIsSubmitting(false));
+                    }).catch((error) => setProviderError(error instanceof Error ? error.message : String(error))).finally(() => setIsSubmitting(false));
                   }}
                 >
                   Connect OpenCode account
                 </button>
               )}
-              <button className="btn ghost" onClick={closeModal}>
-                Cancel
-              </button>
+              </div>}
             </div>
           </div>
         </div>
