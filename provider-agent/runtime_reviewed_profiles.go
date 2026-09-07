@@ -57,7 +57,7 @@ func (backend *ollamaRuntimeBackend) bindReviewedProfile(modelID string, policy 
 				Runtimes: []runtimeprofile.RuntimeCapability{{BackendID: backend.descriptor.ID, ContractVersion: runtimeBackendContractVersion,
 					Available: true, Formats: []string{profile.Model.Format}, Quantizations: []string{profile.Model.Quantization},
 					HardwareClasses: []string{profile.Hardware.Class}, MaximumContextTokens: backend.descriptor.Launch.Resources.MaximumContextTokens,
-					MaximumBatchSize: 4096, MaximumParallelism: 1, MaximumMemoryBytes: available, SupportsGPUOffload: true,
+					MaximumBatchSize: 4096, MaximumParallelism: 1, MaximumMemoryBytes: available, SupportsGPUOffload: host.Accelerator != "cpu",
 					RuntimeArtifactDigest: "sha256:" + strings.TrimPrefix(artifact, "sha256:")}},
 			})
 			if err != nil {

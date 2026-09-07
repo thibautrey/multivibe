@@ -197,7 +197,15 @@ func parseDarwinHardwareModel(output []byte) (string, error) {
 }
 
 func currentHostCapability() hostCapability {
+	mode := strings.TrimSpace(os.Getenv("MULTIVIBE_PROVIDER_ACCELERATOR"))
+	if runtime.GOOS == "linux" && (mode == "cpu" || (mode == "" && runtime.GOARCH == "arm64")) {
+		return detectLinuxCPUCapability(runtime.GOARCH, readCPUProbe)
+	}
 	capability := detectHostCapability(context.Background(), runtime.GOOS, runtime.GOARCH, fixedPlatformCommand)
+	if mode != "" && mode != "cuda" {
+		capability.Supported = false
+		capability.Reason = "unsupported provider accelerator selection"
+	}
 	if !capability.Supported || capability.Accelerator != "cuda" {
 		return capability
 	}

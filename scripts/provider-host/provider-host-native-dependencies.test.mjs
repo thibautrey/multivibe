@@ -72,8 +72,15 @@ test("production native prebuild pruning rejects changed or unsafe inventories",
   });
   await withFixture(async (root) => {
     await assert.rejects(
-      pruneProductionNativeDependencies(root, "linux-arm64"),
+      pruneProductionNativeDependencies(root, "linux-riscv64"),
       /target is unsupported/u,
     );
+  });
+});
+
+test("ARM64 packaging retains its native SQLite prebuild", async () => {
+  await withFixture(async (root, prebuilds) => {
+    await pruneProductionNativeDependencies(root, "linux-arm64");
+    assert.deepEqual(await readdir(prebuilds), ["linux-arm64.node"]);
   });
 });

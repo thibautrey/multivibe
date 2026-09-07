@@ -22,11 +22,17 @@ func TestReviewedProfilesBindHardwarePolicyAndNativeParameters(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, host := range []hostCapability{
+		{OS: "linux", Architecture: "arm64", Accelerator: "cpu", AcceleratorMemoryBytes: 4 << 30},
+		{OS: "linux", Architecture: "amd64", Accelerator: "cpu", AcceleratorMemoryBytes: 4 << 30},
 		{OS: "linux", Architecture: "amd64", Accelerator: "cuda", AcceleratorMemoryBytes: 8 << 30},
 		{OS: "windows", Architecture: "amd64", Accelerator: "cuda", AcceleratorMemoryBytes: 8 << 30},
 		{OS: "darwin", Architecture: "arm64", Accelerator: "metal", AcceleratorMemoryBytes: 4 << 30},
 	} {
-		t.Run(host.OS, func(t *testing.T) {
+		t.Run(host.OS+"-"+host.Architecture+"-"+host.Accelerator, func(t *testing.T) {
+			contextTokens, batch, offload := uint64(8192), uint64(128), uint64(24)
+			if host.Accelerator == "cpu" {
+				contextTokens, batch, offload = 2048, 32, 0
+			}
 			backend := &ollamaRuntimeBackend{catalog: catalog, descriptor: runtimeBackendDescriptor{ID: runtimeBackendOllamaID,
 				Launch: runtimeBackendLaunchAllowlist{Resources: runtimeBackendResourceBounds{MaximumContextTokens: 131072},
 					Provenance: runtimeBackendProvenance{ArtifactSHA256: map[string]string{host.OS + "-" + host.Architecture: manifest.Ollama.Artifacts[host.OS+"-"+host.Architecture].SHA256}}}}}
@@ -36,8 +42,11 @@ func TestReviewedProfilesBindHardwarePolicyAndNativeParameters(t *testing.T) {
 			percent := uint8(100)
 			policy := &capacityPolicyStateDocument{Policy: capacityPolicyDocument{GPUVRAMPercent: &percent}}
 			model := catalog.Models[0].CanonicalModelID
-			if err := backend.bindReviewedProfile(model, policy, 8192); err != nil {
+			if err := backend.bindReviewedProfile(model, policy, contextTokens); err != nil {
 				t.Fatal(err)
+			}
+			if host.Accelerator == "cpu" && backend.bindReviewedProfile(model, policy, 8192) == nil {
+				t.Fatal("CPU profile accepted oversized context")
 			}
 			profile := backend.loadedProfiles[model]
 			calls := 0
@@ -52,7 +61,7 @@ func TestReviewedProfilesBindHardwarePolicyAndNativeParameters(t *testing.T) {
 					Parameters map[string]uint64 `json:"parameters"`
 				}
 				if json.NewDecoder(r.Body).Decode(&body) != nil || body.Model != reviewedAlias(profile) || body.From != catalog.Models[0].OllamaModel ||
-					body.Parameters["num_ctx"] != 8192 || body.Parameters["num_batch"] != 128 || body.Parameters["num_gpu"] != 24 {
+					body.Parameters["num_ctx"] != contextTokens || body.Parameters["num_batch"] != batch || body.Parameters["num_gpu"] != offload {
 					t.Error("reviewed parameters were not applied")
 				}
 				_, _ = w.Write([]byte(`{"status":"success"}`))
@@ -67,12 +76,12 @@ func TestReviewedProfilesBindHardwarePolicyAndNativeParameters(t *testing.T) {
 				t.Fatal("native configuration missing")
 			}
 			percent = 1
-			if backend.bindReviewedProfile(model, policy, 8192) == nil {
+			if backend.bindReviewedProfile(model, policy, contextTokens) == nil {
 				t.Fatal("memory policy bypassed")
 			}
 			percent = 100
 			backend.descriptor.Launch.Provenance.ArtifactSHA256[host.OS+"-"+host.Architecture] = "bad"
-			if backend.bindReviewedProfile(model, policy, 8192) == nil {
+			if backend.bindReviewedProfile(model, policy, contextTokens) == nil {
 				t.Fatal("runtime digest bypassed")
 			}
 		})
