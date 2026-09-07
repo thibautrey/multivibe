@@ -43,8 +43,8 @@ production attestation checks are implemented for the modern GitHub-hosted CLI.
   signed installer release and WinGet validation against the real published EXE.
 - Docker Hub account/repository configuration, an actual publish and anonymous pull.
 - Publication of the Homebrew tap and upstream catalog/WinGet submissions.
-- Umbrel remains blocked by the upstream amd64+arm64 requirement and an unverified
-  NVIDIA integration; no compatible package is advertised.
+- Umbrel CPU/ARM64 implementation now has its own build workflow and package
+  generator; see `../umbrel/README.md` for current validation and hardware gates.
 
 No new channel was submitted, no container was deployed, and no repository was
 pushed during this implementation task.

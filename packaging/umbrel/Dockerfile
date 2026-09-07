@@ -19,6 +19,7 @@ RUN apt-get update \
       libstdc++6 \
       passwd \
       util-linux \
+      zstd \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd --gid 10001 multivibe \
  && useradd --uid 10001 --gid 10001 --home-dir /data --no-create-home --shell /usr/sbin/nologin multivibe \

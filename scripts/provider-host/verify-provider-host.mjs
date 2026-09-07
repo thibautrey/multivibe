@@ -699,7 +699,7 @@ async function readBinaryHeader(file, bytes = 4096) {
   }
 }
 
-function isELFArchitecture(header, architecture) {
+export function isELFArchitecture(header, architecture) {
   return header.length >= 20 && header[0] === 0x7f && header.subarray(1, 4).toString("ascii") === "ELF" &&
     header[4] === 2 && header[5] === 1 && header.readUInt16LE(18) === (architecture === "arm64" ? 0xb7 : architecture === "amd64" ? 0x3e : -1);
 }
