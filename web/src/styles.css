@@ -640,29 +640,21 @@ body,
 }
 
 .topbar {
-  min-height: 96px;
+  min-height: 52px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
-  padding: 11px 4px 8px;
+  gap: 12px 18px;
+  padding: 6px 4px 8px;
   border-bottom: 1px solid var(--line);
 }
 
-.topbar-title {
+.topbar-context {
   min-width: 0;
-}
-
-.topbar h1 {
-  margin: 2px 0 0;
-  font-size: clamp(1.8rem, 3vw, 2.35rem);
-  line-height: 1;
-  letter-spacing: -0.055em;
-}
-
-.topbar p {
-  margin-top: 6px;
-  font-size: 14px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 .topbar-actions,
@@ -4022,7 +4014,7 @@ body:has(> .modal-backdrop) {
   }
 
   .topbar {
-    min-height: 82px;
+    min-height: 52px;
   }
 
   .cards4,
@@ -4111,14 +4103,18 @@ body:has(> .modal-backdrop) {
 
 @media (max-width: 760px) {
   .topbar {
-    align-items: flex-start;
-    flex-direction: column;
-    padding: 9px 2px 13px;
+    min-height: 0;
+    align-items: center;
+    flex-wrap: wrap;
+    padding: 4px 2px 10px;
   }
 
   .topbar-actions {
-    width: 100%;
-    justify-content: flex-start;
+    margin-left: auto;
+  }
+
+  .topbar-context {
+    flex: 1 1 180px;
   }
 
   .workspace-content {
@@ -4324,10 +4320,6 @@ body:has(> .modal-backdrop) {
 
   .sidebar {
     border-radius: 13px;
-  }
-
-  .topbar h1 {
-    font-size: 1.75rem;
   }
 
   .topbar-button {
@@ -4868,11 +4860,7 @@ body:has(> .modal-backdrop) {
 }
 
 .topbar {
-  min-height: 72px;
-}
-
-.topbar-title h1 {
-  font-size: clamp(2rem, 3vw, 2.65rem);
+  min-height: 52px;
 }
 
 .panel {

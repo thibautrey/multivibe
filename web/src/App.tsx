@@ -1189,11 +1189,8 @@ export default function App() {
         )}
 
         <div className="workspace">
-          <header className="topbar">
-            <div className="topbar-title">
-              <h1>{activeTabItem.label}</h1>
-              <p className="muted">{activeTabItem.description}</p>
-            </div>
+          <header className="topbar" aria-label={`${activeTabItem.label} workspace controls`}>
+            <p className="topbar-context">{activeTabItem.description}</p>
             <div className="topbar-actions">
               <span className="badge badge-live topbar-status">
                 <span className="status-dot" />
