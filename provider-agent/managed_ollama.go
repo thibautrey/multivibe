@@ -385,6 +385,9 @@ func validateManagedOllamaCUDAVisibleDevices(goos, value string) error {
 	if goos != "linux" && goos != "windows" {
 		return errors.New("managed Ollama CUDA device pin is invalid")
 	}
+	if validNVIDIAUUID(value) {
+		return nil
+	}
 	if _, err := parseNVIDIACUDADevicePin(value); err != nil {
 		return errors.New("managed Ollama CUDA device pin is invalid")
 	}
@@ -1411,6 +1414,7 @@ func (manager *managedOllama) commandEnvironment(modelStoragePath string) []stri
 	if (manager.goos == "linux" || manager.goos == "windows") && manager.cudaVisibleDevices != "" {
 		environment = append(environment, "CUDA_VISIBLE_DEVICES="+manager.cudaVisibleDevices)
 	}
+	environment = append(environment, "OLLAMA_NUM_PARALLEL=1", "OLLAMA_MAX_LOADED_MODELS=1")
 	sort.Strings(environment)
 	return environment
 }

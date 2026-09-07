@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -43,14 +44,14 @@ func TestDetectHostCapabilityRequiresModernNVIDIAOnLinuxAMD64(t *testing.T) {
 	runner := func(_ context.Context, name string, arguments ...string) ([]byte, error) {
 		observedName = name
 		observedArguments = append([]string(nil), arguments...)
-		return []byte("NVIDIA GeForce RTX 3060 Ti, 8192, 8.6\nNVIDIA L4, 23034, 8.9\n"), nil
+		return []byte("NVIDIA GeForce RTX 3060 Ti, 8192, 8.6, GPU-00000000-0000-0000-0000-000000000001\nNVIDIA L4, 23034, 8.9, GPU-00000000-0000-0000-0000-000000000002\n"), nil
 	}
 	capability := detectHostCapability(context.Background(), "linux", "amd64", runner)
 	if !capability.Supported || capability.Profile != "linux-nvidia" || capability.Accelerator != "cuda" {
 		t.Fatalf("unexpected Linux NVIDIA capability: %#v", capability)
 	}
 	if observedName != "nvidia-smi" || !reflect.DeepEqual(observedArguments, []string{
-		"--query-gpu=name,memory.total,compute_cap", "--format=csv,noheader,nounits",
+		"--query-gpu=name,memory.total,compute_cap,uuid", "--format=csv,noheader,nounits",
 	}) {
 		t.Fatalf("unexpected NVIDIA probe: %q %#v", observedName, observedArguments)
 	}
@@ -61,7 +62,7 @@ func TestDetectHostCapabilityRequiresModernNVIDIAOnLinuxAMD64(t *testing.T) {
 
 func TestDetectHostCapabilityAcceptsACompatibleGPUAlongsideAnOlderGPU(t *testing.T) {
 	capability := detectHostCapability(context.Background(), "windows", "amd64", func(context.Context, string, ...string) ([]byte, error) {
-		return []byte("Tesla P100, 16280, 6.0\nNVIDIA GeForce RTX 4090, 24564, 8.9\n"), nil
+		return []byte("Tesla P100, 16280, 6.0, GPU-00000000-0000-0000-0000-000000000001\nNVIDIA GeForce RTX 4090, 24564, 8.9, GPU-00000000-0000-0000-0000-000000000002\n"), nil
 	})
 	if !capability.Supported || capability.Profile != "windows-nvidia" || len(capability.GPUs) != 2 {
 		t.Fatalf("compatible secondary GPU was rejected: %#v", capability)
@@ -86,7 +87,7 @@ func TestDetectHostCapabilityFailsClosed(t *testing.T) {
 	}{
 		{name: "unsupported OS", goos: "freebsd", goarch: "amd64", reason: "supported hosts"},
 		{name: "missing driver", goos: "linux", goarch: "amd64", err: errors.New("missing"), reason: "working NVIDIA driver"},
-		{name: "old GPU", goos: "linux", goarch: "amd64", output: "Tesla P100, 16280, 6.0\n", reason: "compute capability 7.0"},
+		{name: "old GPU", goos: "linux", goarch: "amd64", output: "Tesla P100, 16280, 6.0, GPU-00000000-0000-0000-0000-000000000001\n", reason: "compute capability 7.0"},
 		{name: "malformed", goos: "linux", goarch: "amd64", output: "NVIDIA GPU, unknown, 8.6\n", reason: "response is invalid"},
 		{name: "missing macOS memory", goos: "darwin", goarch: "arm64", err: errors.New("missing"), reason: "memory capacity is unavailable"},
 		{name: "invalid macOS memory", goos: "darwin", goarch: "amd64", output: "0\n", reason: "memory response is invalid"},
@@ -190,6 +191,30 @@ func TestSelectNVIDIACUDADeviceRequiresOneAvailableCanonicalPin(t *testing.T) {
 	onlyOldGPU.GPUs = []nvidiaGPUCapability{{Name: "GPU 0", MemoryMiB: 16384, ComputeCapability: 6.0}}
 	if _, err := selectNVIDIACUDADevice(onlyOldGPU, ""); err == nil {
 		t.Fatal("default CUDA device accepted an obsolete GPU")
+	}
+}
+
+func TestNVIDIAIdentityIsStableAndPrivate(t *testing.T) {
+	const uuid = "GPU-00000000-0000-0000-0000-000000000002"
+	gpus, err := parseNVIDIACapabilities([]byte("GPU A, 8192, 8.6, " + uuid + "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, err := selectNVIDIACUDADevice(hostCapability{Supported: true, Accelerator: "cuda", GPUs: gpus}, "0")
+	if err != nil || capability.GPUs[capability.CUDADevice].UUID != uuid {
+		t.Fatal("GPU identity lost")
+	}
+	if validateManagedOllamaCUDAVisibleDevices("linux", uuid) != nil || validateManagedOllamaCUDAVisibleDevices("windows", uuid) != nil {
+		t.Fatal("runtime rejected UUID")
+	}
+	raw, _ := json.Marshal(capability)
+	if strings.Contains(string(raw), uuid) {
+		t.Fatal("GPU identity leaked")
+	}
+	for _, input := range []string{"GPU A, 8192, 8.6, GPU-invalid\n", "GPU A, 8192, 8.6, " + uuid + "\nGPU B, 8192, 8.6, " + uuid + "\n"} {
+		if _, err := parseNVIDIACapabilities([]byte(input)); err == nil {
+			t.Fatal("invalid or duplicate identity accepted")
+		}
 	}
 }
 

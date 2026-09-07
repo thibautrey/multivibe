@@ -344,6 +344,12 @@ func (service *workerTestService) cloudManagedRuntime(ctx context.Context, model
 }
 
 func (service *workerTestService) infer(ctx context.Context, enrollment cloudEnrollmentView, claim workerTestClaim) (string, uint64, uint64, error) {
+	deadline, deadlineErr := canonicalTimestamp(claim.ExpiresAt)
+	if deadlineErr != nil || !deadline.Add(-10*time.Second).After(time.Now()) {
+		return "", 0, 0, errors.New("worker test claim has insufficient time remaining")
+	}
+	ctx, cancel := context.WithDeadline(ctx, deadline.Add(-10*time.Second))
+	defer cancel()
 	endpoint, err := service.runtimeEndpoint(ctx, enrollment.RuntimeFamily, claim.Model)
 	if err != nil {
 		return "", 0, 0, err

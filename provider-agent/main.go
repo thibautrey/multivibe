@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -778,8 +777,12 @@ func main() {
 		if ollamaListenAddress == "" {
 			ollamaListenAddress = managedOllamaDefaultListenAddress
 		}
-		if capability.Accelerator == "cuda" && cudaVisibleDevices == "" {
-			cudaVisibleDevices = strconv.FormatUint(uint64(capability.CUDADevice), 10)
+		if capability.Accelerator == "cuda" {
+			cudaVisibleDevices = capability.GPUs[capability.CUDADevice].UUID
+			if !validNVIDIAUUID(cudaVisibleDevices) {
+				logger.Error("provider_agent_platform_unsupported", "reason", "stable NVIDIA GPU identity is unavailable")
+				os.Exit(2)
+			}
 		}
 		managedRuntime, runtimeErr := newManagedOllama(managedOllamaConfig{
 			ManagedRoot: managedRoot, BundledRuntimeRoot: bundledOllamaRoot, ListenAddress: ollamaListenAddress,
@@ -792,6 +795,9 @@ func main() {
 		}
 		var backendErr error
 		managedBackend, backendErr = newOllamaRuntimeBackend(managedRuntime, modelCatalogPath, dependencyManifestPath)
+		if backendErr == nil {
+			backendErr = managedBackend.configureReviewedProfiles(filepath.Join(filepath.Dir(modelCatalogPath), "provider-runtime-profiles.json"), capability)
+		}
 		backendRegistry, registryErr := newRuntimeBackendRegistry(managedBackend)
 		sdkRegistry, sdkRegistryErr := newRuntimeBackendSDKRegistry(managedBackend, capacity, capability)
 		if backendErr != nil || registryErr != nil || sdkRegistryErr != nil ||
