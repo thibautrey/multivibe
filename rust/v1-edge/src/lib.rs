@@ -8,6 +8,7 @@
 
 mod confidential;
 mod idempotency;
+mod token_refresh;
 
 use async_stream::stream;
 use axum::{
@@ -32,14 +33,16 @@ use reqwest::redirect::Policy;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
     convert::Infallible,
-    io::{Cursor, Read},
+    io::{Cursor, Read, Write},
     path::PathBuf,
-    sync::{Arc, Mutex as StdMutex},
     sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
+    sync::{Arc, Mutex as StdMutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{Notify, Semaphore, broadcast};
@@ -51,6 +54,16 @@ use tokio::{
 use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
 
 const HOP_BY_HOP_HEADERS: &[&str] = &[
     "connection",
@@ -73,11 +86,13 @@ const PUBLIC_RESPONSE_HEADERS: &[&str] = &[
 
 #[derive(Clone, Debug)]
 pub struct EdgeConfig {
+    pub app_version: String,
     pub listen_host: String,
     pub listen_port: u16,
     pub node_control_plane_url: String,
     pub store_path: PathBuf,
     pub jobs_path: PathBuf,
+    pub legacy_jobs_db_path: Option<PathBuf>,
     pub trace_path: Option<PathBuf>,
     pub trace_include_body: bool,
     pub trace_include_headers: bool,
@@ -99,6 +114,13 @@ pub struct EdgeConfig {
     pub cloud_privacy_mode: String,
     pub confidential_inference_trust_policy: Option<String>,
     pub job_worker_concurrency: usize,
+    pub oauth_token_url: String,
+    pub oauth_client_id: String,
+    pub opencode_console_url: String,
+    pub opencode_oauth_client_id: String,
+    pub xai_oauth_issuer: String,
+    pub xai_oauth_client_id: String,
+    pub xai_client_version: String,
     pub chatgpt_base_url: String,
     pub mistral_base_url: String,
     pub mistral_upstream_path: String,
@@ -123,11 +145,13 @@ pub struct EdgeConfig {
 impl Default for EdgeConfig {
     fn default() -> Self {
         Self {
+            app_version: "0.2.0".to_owned(),
             listen_host: "0.0.0.0".to_owned(),
             listen_port: 1455,
             node_control_plane_url: "http://127.0.0.1:1456".to_owned(),
             store_path: PathBuf::from("/data/accounts.json"),
             jobs_path: PathBuf::from("/data/v1-edge-jobs.json"),
+            legacy_jobs_db_path: Some(PathBuf::from("/data/jobs.sqlite")),
             trace_path: None,
             trace_include_body: false,
             trace_include_headers: false,
@@ -149,6 +173,13 @@ impl Default for EdgeConfig {
             cloud_privacy_mode: "standard".to_owned(),
             confidential_inference_trust_policy: None,
             job_worker_concurrency: 16,
+            oauth_token_url: "https://auth.openai.com/oauth/token".to_owned(),
+            oauth_client_id: "app_EMoamEEZ73f0CkXaXp7hrann".to_owned(),
+            opencode_console_url: "https://opencode.ai/console".to_owned(),
+            opencode_oauth_client_id: "opencode-cli".to_owned(),
+            xai_oauth_issuer: "https://auth.x.ai".to_owned(),
+            xai_oauth_client_id: "b1a00492-073a-47ea-816f-4c329264a828".to_owned(),
+            xai_client_version: "0.2.114".to_owned(),
             chatgpt_base_url: "https://chatgpt.com".to_owned(),
             mistral_base_url: "https://api.mistral.ai".to_owned(),
             mistral_upstream_path: "/v1/responses".to_owned(),
@@ -192,9 +223,11 @@ impl EdgeConfig {
             .map(PathBuf::from)
             .unwrap_or(defaults.store_path.clone());
         let jobs_path = env("V1_EDGE_JOBS_PATH")
-            .or_else(|| env("JOBS_DB_PATH"))
             .map(PathBuf::from)
             .unwrap_or_else(|| store_path.with_file_name("v1-edge-jobs.json"));
+        let legacy_jobs_db_path = env("JOBS_DB_PATH")
+            .map(PathBuf::from)
+            .or(defaults.legacy_jobs_db_path.clone());
         let request_body_limit = env("REQUEST_BODY_LIMIT")
             .map(|v| parse_byte_limit(&v))
             .unwrap_or(defaults.request_body_limit);
@@ -219,12 +252,14 @@ impl EdgeConfig {
             .unwrap_or(defaults.upstream_timeout.as_millis() as u64);
         let realtime_url = env("REALTIME_WEBRTC_CALL_URL");
         Self {
+            app_version: env("APP_VERSION").unwrap_or(defaults.app_version),
             listen_host,
             listen_port,
             node_control_plane_url: env("NODE_CONTROL_PLANE_URL")
                 .unwrap_or(defaults.node_control_plane_url),
             store_path,
             jobs_path,
+            legacy_jobs_db_path,
             trace_path: env("TRACE_FILE_PATH").map(PathBuf::from),
             trace_include_body: env("TRACE_INCLUDE_BODY")
                 .is_some_and(|value| value.eq_ignore_ascii_case("true")),
@@ -296,6 +331,15 @@ impl EdgeConfig {
                 .and_then(|v| v.parse::<usize>().ok())
                 .unwrap_or(defaults.job_worker_concurrency)
                 .max(1),
+            oauth_token_url: env("OAUTH_TOKEN_URL").unwrap_or(defaults.oauth_token_url),
+            oauth_client_id: env("OAUTH_CLIENT_ID").unwrap_or(defaults.oauth_client_id),
+            opencode_console_url: env("OPENCODE_CONSOLE_URL")
+                .unwrap_or(defaults.opencode_console_url),
+            opencode_oauth_client_id: env("OPENCODE_OAUTH_CLIENT_ID")
+                .unwrap_or(defaults.opencode_oauth_client_id),
+            xai_oauth_issuer: env("XAI_OAUTH_ISSUER").unwrap_or(defaults.xai_oauth_issuer),
+            xai_oauth_client_id: env("XAI_OAUTH_CLIENT_ID").unwrap_or(defaults.xai_oauth_client_id),
+            xai_client_version: env("XAI_CLIENT_VERSION").unwrap_or(defaults.xai_client_version),
             chatgpt_base_url: env("CHATGPT_BASE_URL").unwrap_or(defaults.chatgpt_base_url),
             mistral_base_url: env("MISTRAL_BASE_URL").unwrap_or(defaults.mistral_base_url),
             mistral_upstream_path: env("MISTRAL_UPSTREAM_PATH")
@@ -416,10 +460,13 @@ pub struct Account {
     pub refresh_token: Option<String>,
     pub expires_at: Option<u64>,
     pub chatgpt_account_id: Option<String>,
+    pub opencode_console_url: Option<String>,
     pub opencode_api_key: Option<String>,
     #[serde(default)]
     pub opencode_headers: HashMap<String, String>,
     pub base_url: Option<String>,
+    pub oidc_issuer: Option<String>,
+    pub oidc_client_id: Option<String>,
     #[serde(default)]
     pub enabled: bool,
     pub priority: Option<i64>,
@@ -932,7 +979,10 @@ fn confidential_requested(config: &EdgeConfig, headers: &HeaderMap) -> Result<bo
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
     if config.cloud_privacy_mode == "confidential_verified" {
-        if requested.as_deref().is_some_and(|value| value != "confidential_verified") {
+        if requested
+            .as_deref()
+            .is_some_and(|value| value != "confidential_verified")
+        {
             return Err(privacy_error(
                 StatusCode::CONFLICT,
                 "privacy_policy_downgrade_rejected",
@@ -2570,11 +2620,104 @@ struct StreamingReply {
     requested_model: String,
     trace: Option<StreamingTrace>,
     capacity_lease: AdmissionLease,
+    activity_lease: ActivityLease,
 }
 
 enum ProxyResult {
     Buffered(BufferedReply),
     Streaming(StreamingReply),
+}
+
+#[derive(Clone, Copy)]
+enum ActivityKind {
+    Request,
+    WebsocketTurn,
+    Job,
+}
+
+#[derive(Default)]
+struct ActivityCounters {
+    requests: AtomicU64,
+    websocket_turns: AtomicU64,
+    jobs: AtomicU64,
+}
+
+#[derive(Clone, Default)]
+struct DrainController {
+    draining: Arc<AtomicBool>,
+    counters: Arc<ActivityCounters>,
+}
+
+impl DrainController {
+    fn admit(&self, kind: ActivityKind) -> Option<ActivityLease> {
+        if self.draining.load(AtomicOrdering::SeqCst) {
+            return None;
+        }
+        let counter = self.counter(kind);
+        counter.fetch_add(1, AtomicOrdering::SeqCst);
+        if self.draining.load(AtomicOrdering::SeqCst) {
+            counter.fetch_sub(1, AtomicOrdering::SeqCst);
+            return None;
+        }
+        Some(ActivityLease {
+            controller: self.clone(),
+            kind,
+        })
+    }
+
+    fn counter(&self, kind: ActivityKind) -> &AtomicU64 {
+        match kind {
+            ActivityKind::Request => &self.counters.requests,
+            ActivityKind::WebsocketTurn => &self.counters.websocket_turns,
+            ActivityKind::Job => &self.counters.jobs,
+        }
+    }
+
+    fn begin(&self) {
+        self.draining.store(true, AtomicOrdering::SeqCst);
+    }
+
+    fn resume(&self) {
+        self.draining.store(false, AtomicOrdering::SeqCst);
+    }
+
+    fn is_draining(&self) -> bool {
+        self.draining.load(AtomicOrdering::SeqCst)
+    }
+
+    fn snapshot(&self) -> (bool, u64, u64, u64) {
+        (
+            self.is_draining(),
+            self.counters.requests.load(AtomicOrdering::SeqCst),
+            self.counters.websocket_turns.load(AtomicOrdering::SeqCst),
+            self.counters.jobs.load(AtomicOrdering::SeqCst),
+        )
+    }
+}
+
+struct ActivityLease {
+    controller: DrainController,
+    kind: ActivityKind,
+}
+
+impl Drop for ActivityLease {
+    fn drop(&mut self) {
+        self.controller
+            .counter(self.kind)
+            .fetch_sub(1, AtomicOrdering::SeqCst);
+    }
+}
+
+fn draining_response() -> Response {
+    let mut response = error_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "MultiVibe Host is draining for a verified update",
+        "host_update_draining",
+    );
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("60"));
+    response
 }
 
 const MAX_ADMISSION_WAIT_MS: u64 = 24 * 60 * 60 * 1_000;
@@ -2611,10 +2754,7 @@ impl AdmissionController {
         self.version.fetch_add(1, AtomicOrdering::Relaxed);
     }
 
-    fn try_acquire(
-        self: &Arc<Self>,
-        accounts: &[Account],
-    ) -> Option<(usize, AdmissionLease)> {
+    fn try_acquire(self: &Arc<Self>, accounts: &[Account]) -> Option<(usize, AdmissionLease)> {
         let mut counters = self.counters();
         let index = accounts.iter().position(|account| {
             let active = counters
@@ -2646,10 +2786,7 @@ impl AdmissionController {
         let id = counters.next_waiter_id;
         counters.waiters.insert(
             id,
-            accounts
-                .iter()
-                .map(|account| account.id.clone())
-                .collect(),
+            accounts.iter().map(|account| account.id.clone()).collect(),
         );
         drop(counters);
         self.bump();
@@ -2671,11 +2808,7 @@ impl AdmissionController {
         })
     }
 
-    async fn wait_for_capacity(
-        self: &Arc<Self>,
-        accounts: &[Account],
-        max_wait: Duration,
-    ) -> bool {
+    async fn wait_for_capacity(self: &Arc<Self>, accounts: &[Account], max_wait: Duration) -> bool {
         if self.has_capacity(accounts) {
             return true;
         }
@@ -2856,8 +2989,8 @@ fn validate_routing_headers(
     store: &StoreFile,
     application: &str,
 ) -> Result<(), Response> {
-    if let Some(priority) = header_value(headers, "x-multivibe-priority")
-        .filter(|value| !value.trim().is_empty())
+    if let Some(priority) =
+        header_value(headers, "x-multivibe-priority").filter(|value| !value.trim().is_empty())
         && !matches!(
             priority.as_str(),
             "critical" | "interactive" | "standard" | "batch"
@@ -2869,8 +3002,8 @@ fn validate_routing_headers(
             "invalid_priority",
         ));
     }
-    if let Some(execution) = header_value(headers, "x-multivibe-execution")
-        .filter(|value| !value.trim().is_empty())
+    if let Some(execution) =
+        header_value(headers, "x-multivibe-execution").filter(|value| !value.trim().is_empty())
         && !matches!(execution.as_str(), "sync" | "auto" | "defer")
     {
         return Err(error_response(
@@ -2880,8 +3013,8 @@ fn validate_routing_headers(
         ));
     }
     admission_wait(headers)?;
-    if let Some(deadline) = header_value(headers, "x-multivibe-deadline")
-        .filter(|value| !value.trim().is_empty())
+    if let Some(deadline) =
+        header_value(headers, "x-multivibe-deadline").filter(|value| !value.trim().is_empty())
         && chrono::DateTime::parse_from_rfc3339(deadline.trim()).is_err()
     {
         return Err(error_response(
@@ -2890,8 +3023,8 @@ fn validate_routing_headers(
             "invalid_deadline",
         ));
     }
-    if let Some(privacy) = header_value(headers, "x-multivibe-privacy")
-        .filter(|value| !value.trim().is_empty())
+    if let Some(privacy) =
+        header_value(headers, "x-multivibe-privacy").filter(|value| !value.trim().is_empty())
         && !matches!(privacy.as_str(), "standard" | "confidential_verified")
     {
         return Err(error_response(
@@ -2909,8 +3042,8 @@ fn validate_routing_headers(
             "invalid_idempotency_key",
         ));
     }
-    if let Some(webhook) = header_value(headers, "x-multivibe-webhook")
-        .filter(|value| !value.trim().is_empty())
+    if let Some(webhook) =
+        header_value(headers, "x-multivibe-webhook").filter(|value| !value.trim().is_empty())
     {
         let webhook = webhook.trim();
         if webhook.len() > 100 {
@@ -4136,6 +4269,7 @@ pub struct EdgeState {
     pub config: Arc<EdgeConfig>,
     pub store: AccountStore,
     pub client: reqwest::Client,
+    webhook_client: reqwest::Client,
     blocked: Arc<Mutex<HashMap<String, u64>>>,
     selected: Arc<Mutex<HashMap<String, String>>>,
     confidential: Option<confidential::ConfidentialClient>,
@@ -4143,19 +4277,23 @@ pub struct EdgeState {
     model_catalog: Arc<Mutex<ModelCatalogCache>>,
     model_catalog_refresh: Arc<Mutex<()>>,
     session_affinity: Arc<Mutex<SessionAffinityCache>>,
+    token_refresh: token_refresh::TokenRefreshManager,
     pub jobs: Arc<JobManager>,
     trace: Arc<TraceSink>,
     capacity_version: Arc<AtomicU64>,
     admission: Arc<AdmissionController>,
+    drain: DrainController,
     job_runner_started: Arc<AtomicBool>,
 }
 
 impl EdgeState {
     pub async fn new(config: EdgeConfig) -> Result<Self, String> {
-        if !matches!(config.cloud_privacy_mode.as_str(), "standard" | "confidential_verified") {
+        if !matches!(
+            config.cloud_privacy_mode.as_str(),
+            "standard" | "confidential_verified"
+        ) {
             return Err(
-                "MULTIVIBE_CLOUD_PRIVACY_MODE must be standard or confidential_verified"
-                    .to_owned(),
+                "MULTIVIBE_CLOUD_PRIVACY_MODE must be standard or confidential_verified".to_owned(),
             );
         }
         let confidential = config
@@ -4174,6 +4312,10 @@ impl EdgeState {
             .redirect(Policy::limited(5))
             .build()
             .map_err(|error| format!("failed to create upstream HTTP client: {error}"))?;
+        let webhook_client = reqwest::Client::builder()
+            .redirect(Policy::none())
+            .build()
+            .map_err(|error| format!("failed to create webhook HTTP client: {error}"))?;
         let session_affinity = SessionAffinityCache::new(
             config.session_affinity_ttl,
             config.session_affinity_max_entries,
@@ -4188,13 +4330,20 @@ impl EdgeState {
         let capacity_version = Arc::new(AtomicU64::new(1));
         Ok(Self {
             store: AccountStore::new(config.store_path.clone()),
-            jobs: Arc::new(JobManager::new(config.jobs_path.clone()).await?),
+            jobs: Arc::new(
+                JobManager::new_with_legacy(
+                    config.jobs_path.clone(),
+                    config.legacy_jobs_db_path.clone(),
+                )
+                .await?,
+            ),
             trace: Arc::new(TraceSink {
                 path: config.trace_path.clone(),
                 lock: Mutex::new(()),
             }),
             config: Arc::new(config),
             client,
+            webhook_client,
             blocked: Arc::new(Mutex::new(HashMap::new())),
             selected: Arc::new(Mutex::new(HashMap::new())),
             confidential,
@@ -4202,7 +4351,9 @@ impl EdgeState {
             model_catalog: Arc::new(Mutex::new(ModelCatalogCache::default())),
             model_catalog_refresh: Arc::new(Mutex::new(())),
             session_affinity: Arc::new(Mutex::new(session_affinity)),
+            token_refresh: token_refresh::TokenRefreshManager::default(),
             admission: Arc::new(AdmissionController::new(capacity_version.clone())),
+            drain: DrainController::default(),
             capacity_version,
             job_runner_started: Arc::new(AtomicBool::new(false)),
         })
@@ -4216,8 +4367,14 @@ impl EdgeState {
         {
             return None;
         }
-        let state = self.clone();
-        Some(tokio::spawn(async move { job_dispatch_loop(state).await }))
+        let dispatcher = self.clone();
+        let webhooks = self.clone();
+        Some(tokio::spawn(async move {
+            tokio::join!(
+                job_dispatch_loop(dispatcher),
+                webhook_delivery_loop(webhooks)
+            );
+        }))
     }
 
     async fn mark_blocked(&self, account: &Account, model: &str, duration: Duration) {
@@ -4226,7 +4383,6 @@ impl EdgeState {
             now_ms() + duration.as_millis() as u64,
         );
     }
-
 }
 
 fn set_header(headers: &mut HeaderMap, name: &str, value: impl AsRef<str>) {
@@ -4385,8 +4541,7 @@ fn build_trace_context(
     trace_kind: &'static str,
 ) -> TraceContext {
     let confidential = state.config.cloud_privacy_mode == "confidential_verified"
-        || header_value(headers, "x-multivibe-privacy").as_deref()
-            == Some("confidential_verified")
+        || header_value(headers, "x-multivibe-privacy").as_deref() == Some("confidential_verified")
         || account.is_some_and(account_is_confidential);
     let requested_model = (!requested_model.trim().is_empty()).then(|| requested_model.to_owned());
     let resolved_model = (!resolved_model.trim().is_empty()
@@ -4623,14 +4778,8 @@ fn is_quota_error(status: StatusCode, body: &str) -> bool {
 
 fn should_retry_status(status: StatusCode, body: &str) -> bool {
     is_quota_error(status, body)
-        || matches!(
-            status,
-            StatusCode::UNAUTHORIZED
-                | StatusCode::FORBIDDEN
-                | StatusCode::BAD_GATEWAY
-                | StatusCode::SERVICE_UNAVAILABLE
-                | StatusCode::GATEWAY_TIMEOUT
-        )
+        || should_retry_same_account(status, body)
+        || matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
 }
 
 fn should_retry_same_account(status: StatusCode, body: &str) -> bool {
@@ -4667,9 +4816,7 @@ fn retry_after_delay(headers: &HeaderMap) -> Option<Duration> {
 
 fn upstream_retry_delay(headers: Option<&HeaderMap>, attempt: usize, base: Duration) -> Duration {
     let exponent = attempt.min(16) as u32;
-    let backoff = base
-        .checked_mul(1_u32 << exponent)
-        .unwrap_or(Duration::MAX);
+    let backoff = base.checked_mul(1_u32 << exponent).unwrap_or(Duration::MAX);
     headers
         .and_then(retry_after_delay)
         .map(|retry_after| retry_after.max(backoff))
@@ -4688,6 +4835,7 @@ enum UpstreamSendResult {
     HttpError(BufferedUpstreamError),
 }
 
+#[derive(Debug)]
 enum UpstreamSendError {
     Transport(String),
     Timeout,
@@ -4846,7 +4994,12 @@ async fn proxy_inference(
     headers: &HeaderMap,
     body: &Value,
     application: &str,
+    activity_kind: ActivityKind,
 ) -> Result<ProxyResult, Response> {
+    let activity_lease = state
+        .drain
+        .admit(activity_kind)
+        .ok_or_else(draining_response)?;
     let started_at = now_ms();
     let admission_started_at = Instant::now();
     let max_admission_wait = admission_wait(headers)?;
@@ -4874,8 +5027,7 @@ async fn proxy_inference(
         .map(String::as_str)
         .unwrap_or("unknown");
     let catalog = exposed_models(state, &store, false).await;
-    let routing_model =
-        image_aware_routing_model(&store, &catalog, body, &routing_model);
+    let routing_model = image_aware_routing_model(&store, &catalog, body, &routing_model);
     let routes = routes_for_model(&store, &routing_model, default_model, &catalog);
     let client_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let session_id = request_session_id(headers);
@@ -4885,222 +5037,452 @@ async fn proxy_inference(
     let mut last_error = "no eligible account configured".to_owned();
     let mut attempted = 0_usize;
     let mut had_account = false;
-    let mut capacity_exhausted = false;
+    let mut capacity_exhausted: bool;
 
     'admission: loop {
         capacity_exhausted = false;
         let mut saturated_accounts = Vec::new();
         for route in routes.clone() {
-        if attempted >= state.config.max_account_retry_attempts {
-            break;
-        }
-        let blocked = state.blocked.lock().await.clone();
-        let selected = state.selected.lock().await.clone();
-        let mut accounts = select_accounts(
-            &store.accounts,
-            &RouteCandidate {
-                requested_model: route.requested_model.clone(),
-                model: route.model.clone(),
-                provider: route.provider.clone(),
-                account_ids: route.account_ids.clone(),
-            },
-            &blocked,
-            &selected,
-        );
-        if require_confidential {
-            accounts.retain(account_is_confidential);
-        }
-        if accounts.is_empty() {
-            continue;
-        }
-        let provider = route.provider.as_deref().unwrap_or_default();
-        if state.config.session_affinity_enabled {
-            if let Some(session_id) = codex_session_id.as_deref() {
-                let sticky_account_id = {
-                    let mut affinity = state.session_affinity.lock().await;
-                    affinity.get(application, session_id, provider, now_ms())
-                };
-                if let Some(sticky_account_id) = sticky_account_id {
-                    if let Some(index) = accounts
-                        .iter()
-                        .position(|account| account.id == sticky_account_id)
-                    {
-                        let sticky_account = accounts.remove(index);
-                        accounts.insert(0, sticky_account);
-                    } else {
-                        // The account may have become blocked, exceeded quota,
-                        // or fallen outside an alias policy. Forget the stale
-                        // mapping so the normal selector can fail over.
-                        state.session_affinity.lock().await.forget(
-                            application,
-                            session_id,
-                            provider,
-                        );
-                    }
-                }
-            }
-        }
-        had_account = true;
-        let eligible_account_count = accounts.len();
-        while !accounts.is_empty() {
             if attempted >= state.config.max_account_retry_attempts {
                 break;
             }
-            let Some((account_index, capacity_lease)) = state.admission.acquire_any(&accounts)
-            else {
-                capacity_exhausted = true;
-                saturated_accounts.extend(accounts);
-                break;
-            };
-            let account = accounts.remove(account_index);
-            attempted += 1;
-            let provider = normalize_provider(&account);
-            let mut trace_context = build_trace_context(
-                state,
-                path,
-                headers,
-                body,
-                application,
-                &client_request_id,
-                &requested_model,
-                &route.model,
-                Some(&account),
-                client_stream,
-                started_at,
-                attempted,
-                attempted,
-                "upstream-attempt",
+            let blocked = state.blocked.lock().await.clone();
+            let selected = state.selected.lock().await.clone();
+            let mut accounts = select_accounts(
+                &store.accounts,
+                &RouteCandidate {
+                    requested_model: route.requested_model.clone(),
+                    model: route.model.clone(),
+                    provider: route.provider.clone(),
+                    account_ids: route.account_ids.clone(),
+                },
+                &blocked,
+                &selected,
             );
-            let mut client_context = build_trace_context(
-                state,
-                path,
-                headers,
-                body,
-                application,
-                &client_request_id,
-                &requested_model,
-                &route.model,
-                None,
-                client_stream,
-                started_at,
-                0,
-                attempted,
-                "client-request",
-            );
-            if account_is_confidential(&account) {
-                trace_context.request_body = None;
-                client_context.request_body = None;
+            if require_confidential {
+                accounts.retain(account_is_confidential);
             }
-            trace_context.account_selection = Some(json!({
-                "reason": "quota-headroom",
-                "provider": provider,
-                "candidateCount": eligible_account_count,
-                "eligibleCount": eligible_account_count,
-                "nearLimitCount": 0,
-                "rotated": attempted > 1,
-            }));
+            if accounts.is_empty() {
+                continue;
+            }
+            let provider = route.provider.as_deref().unwrap_or_default();
             if state.config.session_affinity_enabled {
                 if let Some(session_id) = codex_session_id.as_deref() {
-                    // Record the attempt before the upstream call. If this
-                    // account fails and the loop rotates, the next attempt
-                    // immediately replaces the mapping, matching Express.
-                    state.session_affinity.lock().await.remember(
-                        application,
-                        session_id,
-                        &provider,
-                        &account.id,
-                        now_ms(),
-                    );
-                }
-            }
-            let sends_chat = resolve_upstream_mode(
-                &account,
-                path.contains("chat/completions"),
-                path.ends_with("/responses/compact"),
-            );
-            let mut payload = prepared_payload(
-                body,
-                path,
-                &account,
-                &route,
-                prompt_cache_session_id.as_deref(),
-                client_stream,
-                claude_code,
-                &state.config,
-            );
-            if provider == "openai" && account.chatgpt_account_id.is_some() {
-                default_chatgpt_reasoning_effort(&mut payload, sends_chat);
-            }
-            let url = upstream_url(
-                &account,
-                &state.config,
-                sends_chat,
-                path.ends_with("/responses/compact"),
-            );
-            let serialized = match serde_json::to_vec(&payload) {
-                Ok(value) => value,
-                Err(error) => {
-                    return Err(error_response(
-                        StatusCode::BAD_REQUEST,
-                        error.to_string(),
-                        "invalid_request_error",
-                    ));
-                }
-            };
-            if account_is_confidential(&account) {
-                let confidential_started_at = now_ms();
-                let result = match state.confidential.as_ref() {
-                    Some(client) => {
-                        let upstream_path = if sends_chat {
-                            "/v1/chat/completions"
+                    let sticky_account_id = {
+                        let mut affinity = state.session_affinity.lock().await;
+                        affinity.get(application, session_id, provider, now_ms())
+                    };
+                    if let Some(sticky_account_id) = sticky_account_id {
+                        if let Some(index) = accounts
+                            .iter()
+                            .position(|account| account.id == sticky_account_id)
+                        {
+                            let sticky_account = accounts.remove(index);
+                            accounts.insert(0, sticky_account);
                         } else {
-                            "/v1/responses"
-                        };
-                        client
-                            .execute(
-                                account.base_url.as_deref().unwrap_or_default(),
-                                &account.access_token,
-                                &route.model,
-                                upstream_path,
-                                &serialized,
-                            )
-                            .await
+                            // The account may have become blocked, exceeded quota,
+                            // or fallen outside an alias policy. Forget the stale
+                            // mapping so the normal selector can fail over.
+                            state.session_affinity.lock().await.forget(
+                                application,
+                                session_id,
+                                provider,
+                            );
+                        }
                     }
-                    None => Err(confidential::ConfidentialError::not_sent(
-                        "confidential_client_unavailable",
-                        "Verified confidential computing is not configured. The message was not sent.",
-                    )),
+                }
+            }
+            had_account = true;
+            let eligible_account_count = accounts.len();
+            while !accounts.is_empty() {
+                if attempted >= state.config.max_account_retry_attempts {
+                    break;
+                }
+                let Some((account_index, capacity_lease)) = state.admission.acquire_any(&accounts)
+                else {
+                    capacity_exhausted = true;
+                    saturated_accounts.extend(accounts);
+                    break;
                 };
-                trace_context.latency_breakdown = Some(json!({
-                    "preparationMs": confidential_started_at.saturating_sub(started_at),
-                    "upstreamHeadersMs": now_ms().saturating_sub(confidential_started_at),
+                let mut account = accounts.remove(account_index);
+                attempted += 1;
+                let provider = normalize_provider(&account);
+                let mut trace_context = build_trace_context(
+                    state,
+                    path,
+                    headers,
+                    body,
+                    application,
+                    &client_request_id,
+                    &requested_model,
+                    &route.model,
+                    Some(&account),
+                    client_stream,
+                    started_at,
+                    attempted,
+                    attempted,
+                    "upstream-attempt",
+                );
+                let mut client_context = build_trace_context(
+                    state,
+                    path,
+                    headers,
+                    body,
+                    application,
+                    &client_request_id,
+                    &requested_model,
+                    &route.model,
+                    None,
+                    client_stream,
+                    started_at,
+                    0,
+                    attempted,
+                    "client-request",
+                );
+                if account_is_confidential(&account) {
+                    trace_context.request_body = None;
+                    client_context.request_body = None;
+                }
+                trace_context.account_selection = Some(json!({
+                    "reason": "quota-headroom",
+                    "provider": provider,
+                    "candidateCount": eligible_account_count,
+                    "eligibleCount": eligible_account_count,
+                    "nearLimitCount": 0,
+                    "rotated": attempted > 1,
                 }));
-                let confidential_reply = match result {
-                    Ok(reply) => reply,
+                if state.config.session_affinity_enabled {
+                    if let Some(session_id) = codex_session_id.as_deref() {
+                        // Record the attempt before the upstream call. If this
+                        // account fails and the loop rotates, the next attempt
+                        // immediately replaces the mapping, matching Express.
+                        state.session_affinity.lock().await.remember(
+                            application,
+                            session_id,
+                            &provider,
+                            &account.id,
+                            now_ms(),
+                        );
+                    }
+                }
+                if token_refresh::TokenRefreshManager::needs_refresh(&account, now_ms()) {
+                    match state
+                        .token_refresh
+                        .refresh(&state.client, &state.config, &state.store, &account, false)
+                        .await
+                    {
+                        Ok(refreshed) => account = refreshed,
+                        Err(error) => {
+                            last_status = StatusCode::SERVICE_UNAVAILABLE;
+                            last_error = error;
+                            state
+                                .trace
+                                .record(
+                                    &trace_context,
+                                    TraceOutcome {
+                                        status: last_status.as_u16(),
+                                        completed_at: now_ms(),
+                                        lifecycle_state: "completed",
+                                        usage: None,
+                                        error: Some(last_error.clone()),
+                                        upstream_error: Some(last_error.clone()),
+                                        upstream_content_type: None,
+                                        upstream_empty_body: Some(true),
+                                        ttft_ms: None,
+                                        response_stream_diagnostics: None,
+                                        assistant_empty_output: None,
+                                        assistant_finish_reason: None,
+                                        client_disconnected: Some(false),
+                                    },
+                                )
+                                .await;
+                            state
+                                .mark_blocked(&account, &route.model, Duration::from_secs(60))
+                                .await;
+                            continue;
+                        }
+                    }
+                }
+                let sends_chat = resolve_upstream_mode(
+                    &account,
+                    path.contains("chat/completions"),
+                    path.ends_with("/responses/compact"),
+                );
+                let mut payload = prepared_payload(
+                    body,
+                    path,
+                    &account,
+                    &route,
+                    prompt_cache_session_id.as_deref(),
+                    client_stream,
+                    claude_code,
+                    &state.config,
+                );
+                if provider == "openai" && account.chatgpt_account_id.is_some() {
+                    default_chatgpt_reasoning_effort(&mut payload, sends_chat);
+                }
+                let url = upstream_url(
+                    &account,
+                    &state.config,
+                    sends_chat,
+                    path.ends_with("/responses/compact"),
+                );
+                let serialized = match serde_json::to_vec(&payload) {
+                    Ok(value) => value,
                     Err(error) => {
-                        let status = if error.disposition == "not_sent" {
-                            StatusCode::SERVICE_UNAVAILABLE
+                        return Err(error_response(
+                            StatusCode::BAD_REQUEST,
+                            error.to_string(),
+                            "invalid_request_error",
+                        ));
+                    }
+                };
+                if account_is_confidential(&account) {
+                    let confidential_started_at = now_ms();
+                    let result = match state.confidential.as_ref() {
+                        Some(client) => {
+                            let upstream_path = if sends_chat {
+                                "/v1/chat/completions"
+                            } else {
+                                "/v1/responses"
+                            };
+                            client
+                                .execute(
+                                    account.base_url.as_deref().unwrap_or_default(),
+                                    &account.access_token,
+                                    &route.model,
+                                    upstream_path,
+                                    &serialized,
+                                )
+                                .await
+                        }
+                        None => Err(confidential::ConfidentialError::not_sent(
+                            "confidential_client_unavailable",
+                            "Verified confidential computing is not configured. The message was not sent.",
+                        )),
+                    };
+                    trace_context.latency_breakdown = Some(json!({
+                        "preparationMs": confidential_started_at.saturating_sub(started_at),
+                        "upstreamHeadersMs": now_ms().saturating_sub(confidential_started_at),
+                    }));
+                    let confidential_reply = match result {
+                        Ok(reply) => reply,
+                        Err(error) => {
+                            let status = if error.disposition == "not_sent" {
+                                StatusCode::SERVICE_UNAVAILABLE
+                            } else {
+                                StatusCode::BAD_GATEWAY
+                            };
+                            let completed_at = now_ms();
+                            state
+                                .trace
+                                .record(
+                                    &trace_context,
+                                    TraceOutcome {
+                                        status: status.as_u16(),
+                                        completed_at,
+                                        lifecycle_state: if error.disposition == "not_sent" {
+                                            "completed"
+                                        } else {
+                                            "interrupted"
+                                        },
+                                        usage: None,
+                                        error: Some(error.code.to_owned()),
+                                        upstream_error: Some(error.code.to_owned()),
+                                        upstream_content_type: None,
+                                        upstream_empty_body: Some(true),
+                                        ttft_ms: None,
+                                        response_stream_diagnostics: None,
+                                        assistant_empty_output: None,
+                                        assistant_finish_reason: None,
+                                        client_disconnected: Some(false),
+                                    },
+                                )
+                                .await;
+                            state
+                                .trace
+                                .record(
+                                    &client_context,
+                                    client_trace_outcome(
+                                        status.as_u16(),
+                                        completed_at,
+                                        Some(error.code.to_owned()),
+                                        Some(false),
+                                    ),
+                                )
+                                .await;
+                            return Err(confidential_error_response(&error));
+                        }
+                    };
+
+                    let content_type = confidential_reply
+                        .headers
+                        .iter()
+                        .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+                        .map(|(_, value)| value.clone())
+                        .unwrap_or_default();
+                    let upstream_empty_body = confidential_reply.body.is_empty();
+                    let clear_body = Bytes::from(confidential_reply.body);
+                    let reply = if confidential_reply.status.is_success() {
+                        state
+                            .selected
+                            .lock()
+                            .await
+                            .insert(provider.clone(), account.id.clone());
+                        render_buffered_success(
+                            path,
+                            &account,
+                            client_stream,
+                            &requested_model.clone().if_empty_then(default_model),
+                            &content_type,
+                            &clear_body,
+                            confidential_reply.headers,
+                        )
+                    } else {
+                        BufferedReply {
+                            status: confidential_reply.status,
+                            headers: confidential_reply.headers,
+                            body: clear_body,
+                        }
+                    };
+                    let outcome = if confidential_reply.status.is_success() {
+                        buffered_trace_outcome(&reply, &content_type, upstream_empty_body)
+                    } else {
+                        transport_trace_outcome(
+                            confidential_reply.status,
+                            "confidential upstream returned an authenticated error".to_owned(),
+                        )
+                    };
+                    let completed_at = outcome.completed_at;
+                    let client_status = outcome.status;
+                    let client_error = outcome.error.clone();
+                    state.trace.record(&trace_context, outcome).await;
+                    state
+                        .trace
+                        .record(
+                            &client_context,
+                            client_trace_outcome(
+                                client_status,
+                                completed_at,
+                                client_error,
+                                Some(false),
+                            ),
+                        )
+                        .await;
+                    return Ok(ProxyResult::Buffered(reply));
+                }
+                let upstream_started_at = now_ms();
+                let mut retried_after_token_refresh = false;
+                let response_result = loop {
+                    let request_headers = upstream_headers(
+                        &account,
+                        headers,
+                        &url,
+                        Some(&route.model),
+                        &state.config,
+                    );
+                    let result =
+                        send_upstream_with_retry(state, &url, &request_headers, &serialized).await;
+                    let unauthorized = matches!(
+                        &result,
+                        Ok(UpstreamSendResult::HttpError(error))
+                            if error.status == StatusCode::UNAUTHORIZED
+                    );
+                    if unauthorized
+                        && !retried_after_token_refresh
+                        && token_refresh::TokenRefreshManager::can_refresh(&account)
+                    {
+                        match state
+                            .token_refresh
+                            .refresh(&state.client, &state.config, &state.store, &account, true)
+                            .await
+                        {
+                            Ok(refreshed) if refreshed.access_token != account.access_token => {
+                                account = refreshed;
+                                retried_after_token_refresh = true;
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
+                    break result;
+                };
+                let response = match response_result {
+                    Ok(UpstreamSendResult::Success(response)) => response,
+                    Ok(UpstreamSendResult::HttpError(error)) => {
+                        trace_context.latency_breakdown = Some(json!({
+                            "preparationMs": upstream_started_at.saturating_sub(started_at),
+                            "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
+                        }));
+                        let BufferedUpstreamError {
+                            status,
+                            headers: response_headers,
+                            content_type,
+                            body: bytes,
+                        } = error;
+                        last_status = status;
+                        let text = String::from_utf8_lossy(&bytes).to_string();
+                        last_error = if text.is_empty() {
+                            format!("upstream returned HTTP {status}")
                         } else {
-                            StatusCode::BAD_GATEWAY
+                            text.chars().take(500).collect()
                         };
-                        let completed_at = now_ms();
+                        if should_retry_status(status, &text) {
+                            state
+                                .trace
+                                .record(
+                                    &trace_context,
+                                    TraceOutcome {
+                                        status: status.as_u16(),
+                                        completed_at: now_ms(),
+                                        lifecycle_state: "completed",
+                                        usage: None,
+                                        error: Some(last_error.clone()),
+                                        upstream_error: Some(last_error.clone()),
+                                        upstream_content_type: (!content_type.trim().is_empty())
+                                            .then(|| content_type.clone()),
+                                        upstream_empty_body: Some(bytes.is_empty()),
+                                        ttft_ms: None,
+                                        response_stream_diagnostics: None,
+                                        assistant_empty_output: None,
+                                        assistant_finish_reason: None,
+                                        client_disconnected: Some(false),
+                                    },
+                                )
+                                .await;
+                            state
+                                .mark_blocked(
+                                    &account,
+                                    &route.model,
+                                    if is_quota_error(status, &text) {
+                                        Duration::from_secs(60)
+                                    } else {
+                                        Duration::from_secs(5)
+                                    },
+                                )
+                                .await;
+                            continue;
+                        }
+                        let body = if path.ends_with("/messages") {
+                            serde_json::to_vec(&anthropic_error_value(status, &text))
+                                .unwrap_or_else(|_| b"{}".to_vec())
+                        } else {
+                            bytes.to_vec()
+                        };
                         state
                             .trace
                             .record(
                                 &trace_context,
                                 TraceOutcome {
                                     status: status.as_u16(),
-                                    completed_at,
-                                    lifecycle_state: if error.disposition == "not_sent" {
-                                        "completed"
-                                    } else {
-                                        "interrupted"
-                                    },
+                                    completed_at: now_ms(),
+                                    lifecycle_state: "completed",
                                     usage: None,
-                                    error: Some(error.code.to_owned()),
-                                    upstream_error: Some(error.code.to_owned()),
-                                    upstream_content_type: None,
-                                    upstream_empty_body: Some(true),
+                                    error: Some(last_error.clone()),
+                                    upstream_error: Some(last_error.clone()),
+                                    upstream_content_type: (!content_type.trim().is_empty())
+                                        .then(|| content_type.clone()),
+                                    upstream_empty_body: Some(body.is_empty()),
                                     ttft_ms: None,
                                     response_stream_diagnostics: None,
                                     assistant_empty_output: None,
@@ -5115,54 +5497,126 @@ async fn proxy_inference(
                                 &client_context,
                                 client_trace_outcome(
                                     status.as_u16(),
-                                    completed_at,
-                                    Some(error.code.to_owned()),
+                                    now_ms(),
+                                    Some(last_error.clone()),
                                     Some(false),
                                 ),
                             )
                             .await;
-                        return Err(confidential_error_response(&error));
+                        return Ok(ProxyResult::Buffered(BufferedReply {
+                            status,
+                            headers: response_headers,
+                            body: Bytes::from(body),
+                        }));
+                    }
+                    Err(error) => {
+                        trace_context.latency_breakdown = Some(json!({
+                            "preparationMs": upstream_started_at.saturating_sub(started_at),
+                            "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
+                        }));
+                        (last_status, last_error) = match error {
+                            UpstreamSendError::Transport(message) => {
+                                (StatusCode::BAD_GATEWAY, message)
+                            }
+                            UpstreamSendError::Timeout => (
+                                StatusCode::GATEWAY_TIMEOUT,
+                                "upstream request timed out".to_owned(),
+                            ),
+                        };
+                        state
+                            .trace
+                            .record(
+                                &trace_context,
+                                TraceOutcome {
+                                    status: last_status.as_u16(),
+                                    completed_at: now_ms(),
+                                    lifecycle_state: "completed",
+                                    usage: None,
+                                    error: Some(last_error.clone()),
+                                    upstream_error: Some(last_error.clone()),
+                                    upstream_content_type: None,
+                                    upstream_empty_body: Some(true),
+                                    ttft_ms: None,
+                                    response_stream_diagnostics: None,
+                                    assistant_empty_output: None,
+                                    assistant_finish_reason: None,
+                                    client_disconnected: Some(false),
+                                },
+                            )
+                            .await;
+                        state
+                            .mark_blocked(&account, &route.model, Duration::from_secs(5))
+                            .await;
+                        continue;
                     }
                 };
-
-                let content_type = confidential_reply
-                    .headers
-                    .iter()
-                    .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
-                    .map(|(_, value)| value.clone())
-                    .unwrap_or_default();
-                let upstream_empty_body = confidential_reply.body.is_empty();
-                let clear_body = Bytes::from(confidential_reply.body);
-                let reply = if confidential_reply.status.is_success() {
-                    state
-                        .selected
-                        .lock()
-                        .await
-                        .insert(provider.clone(), account.id.clone());
-                    render_buffered_success(
-                        path,
-                        &account,
-                        client_stream,
-                        &requested_model.clone().if_empty_then(default_model),
-                        &content_type,
-                        &clear_body,
-                        confidential_reply.headers,
-                    )
-                } else {
-                    BufferedReply {
-                        status: confidential_reply.status,
-                        headers: confidential_reply.headers,
-                        body: clear_body,
+                trace_context.latency_breakdown = Some(json!({
+                    "preparationMs": upstream_started_at.saturating_sub(started_at),
+                    "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
+                }));
+                let status = response.status();
+                let response_headers = copy_public_headers(response.headers());
+                let content_type = response
+                    .headers()
+                    .get(header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default()
+                    .to_owned();
+                debug_assert!(status.is_success());
+                state
+                    .selected
+                    .lock()
+                    .await
+                    .insert(provider.clone(), account.id.clone());
+                let transform = transform_for(path, &account, client_stream, &content_type);
+                let content_type_is_sse = content_type
+                    .to_ascii_lowercase()
+                    .contains("text/event-stream");
+                // Preserve a real upstream stream even when no protocol
+                // conversion is needed. ChatGPT and xAI have also returned SSE
+                // for an explicit stream request without a Content-Type header;
+                // their native edge path must not buffer those bytes into a
+                // synthetic one-event response.
+                let can_stream_without_content_type = client_stream
+                    && content_type.trim().is_empty()
+                    && matches!(provider.as_str(), "openai" | "xai");
+                if transform != StreamTransform::None
+                    || (client_stream && (content_type_is_sse || can_stream_without_content_type))
+                {
+                    let mut stream_headers = response_headers;
+                    if can_stream_without_content_type {
+                        stream_headers.retain(|(name, _)| name != "content-type");
+                        stream_headers
+                            .push(("content-type".to_owned(), "text/event-stream".to_owned()));
                     }
-                };
-                let outcome = if confidential_reply.status.is_success() {
-                    buffered_trace_outcome(&reply, &content_type, upstream_empty_body)
-                } else {
-                    transport_trace_outcome(
-                        confidential_reply.status,
-                        "confidential upstream returned an authenticated error".to_owned(),
-                    )
-                };
+                    let streaming_trace = StreamingTrace::new(
+                        state.trace.clone(),
+                        trace_context,
+                        client_context,
+                        (!content_type.trim().is_empty()).then(|| content_type.clone()),
+                    );
+                    return Ok(ProxyResult::Streaming(StreamingReply {
+                        status: response.status(),
+                        headers: stream_headers,
+                        upstream: response,
+                        transform,
+                        requested_model: requested_model.clone().if_empty_then(default_model),
+                        trace: Some(streaming_trace),
+                        capacity_lease,
+                        activity_lease,
+                    }));
+                }
+                let bytes = response.bytes().await.unwrap_or_default();
+                let reply = render_buffered_success(
+                    path,
+                    &account,
+                    client_stream,
+                    &requested_model.clone().if_empty_then(default_model),
+                    &content_type,
+                    &bytes,
+                    response_headers,
+                );
+                let outcome = buffered_trace_outcome(&reply, &content_type, bytes.is_empty());
                 let completed_at = outcome.completed_at;
                 let client_status = outcome.status;
                 let client_error = outcome.error.clone();
@@ -5181,261 +5635,9 @@ async fn proxy_inference(
                     .await;
                 return Ok(ProxyResult::Buffered(reply));
             }
-            let request = state
-                .client
-                .request(Method::POST, &url)
-                .headers(upstream_headers(
-                    &account,
-                    headers,
-                    &url,
-                    Some(&route.model),
-                    &state.config,
-                ))
-                .body(serialized);
-            let upstream_started_at = now_ms();
-            let response_result = timeout(state.config.upstream_timeout, request.send()).await;
-            let response = match response_result {
-                Ok(Ok(response)) => response,
-                Ok(Err(error)) => {
-                    trace_context.latency_breakdown = Some(json!({
-                        "preparationMs": upstream_started_at.saturating_sub(started_at),
-                        "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
-                    }));
-                    last_status = StatusCode::BAD_GATEWAY;
-                    last_error = error.to_string();
-                    state
-                        .trace
-                        .record(
-                            &trace_context,
-                            TraceOutcome {
-                                status: last_status.as_u16(),
-                                completed_at: now_ms(),
-                                lifecycle_state: "completed",
-                                usage: None,
-                                error: Some(last_error.clone()),
-                                upstream_error: Some(last_error.clone()),
-                                upstream_content_type: None,
-                                upstream_empty_body: Some(true),
-                                ttft_ms: None,
-                                response_stream_diagnostics: None,
-                                assistant_empty_output: None,
-                                assistant_finish_reason: None,
-                                client_disconnected: Some(false),
-                            },
-                        )
-                        .await;
-                    state
-                        .mark_blocked(&account, &route.model, Duration::from_secs(5))
-                        .await;
-                    continue;
-                }
-                Err(_) => {
-                    trace_context.latency_breakdown = Some(json!({
-                        "preparationMs": upstream_started_at.saturating_sub(started_at),
-                        "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
-                    }));
-                    last_status = StatusCode::GATEWAY_TIMEOUT;
-                    last_error = "upstream request timed out".to_owned();
-                    state
-                        .trace
-                        .record(
-                            &trace_context,
-                            TraceOutcome {
-                                status: last_status.as_u16(),
-                                completed_at: now_ms(),
-                                lifecycle_state: "completed",
-                                usage: None,
-                                error: Some(last_error.clone()),
-                                upstream_error: Some(last_error.clone()),
-                                upstream_content_type: None,
-                                upstream_empty_body: Some(true),
-                                ttft_ms: None,
-                                response_stream_diagnostics: None,
-                                assistant_empty_output: None,
-                                assistant_finish_reason: None,
-                                client_disconnected: Some(false),
-                            },
-                        )
-                        .await;
-                    state
-                        .mark_blocked(&account, &route.model, Duration::from_secs(5))
-                        .await;
-                    continue;
-                }
-            };
-            trace_context.latency_breakdown = Some(json!({
-                "preparationMs": upstream_started_at.saturating_sub(started_at),
-                "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
-            }));
-            let status = response.status();
-            last_status = status;
-            let response_headers = copy_public_headers(response.headers());
-            let content_type = response
-                .headers()
-                .get(header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or_default()
-                .to_owned();
-            if !status.is_success() {
-                let bytes = response.bytes().await.unwrap_or_default();
-                let text = String::from_utf8_lossy(&bytes).to_string();
-                last_error = if text.is_empty() {
-                    format!("upstream returned HTTP {status}")
-                } else {
-                    text.chars().take(500).collect()
-                };
-                if should_retry_status(status, &text) {
-                    state
-                        .trace
-                        .record(
-                            &trace_context,
-                            TraceOutcome {
-                                status: status.as_u16(),
-                                completed_at: now_ms(),
-                                lifecycle_state: "completed",
-                                usage: None,
-                                error: Some(last_error.clone()),
-                                upstream_error: Some(last_error.clone()),
-                                upstream_content_type: (!content_type.trim().is_empty())
-                                    .then(|| content_type.clone()),
-                                upstream_empty_body: Some(bytes.is_empty()),
-                                ttft_ms: None,
-                                response_stream_diagnostics: None,
-                                assistant_empty_output: None,
-                                assistant_finish_reason: None,
-                                client_disconnected: Some(false),
-                            },
-                        )
-                        .await;
-                    state
-                        .mark_blocked(
-                            &account,
-                            &route.model,
-                            if is_quota_error(status, &text) {
-                                Duration::from_secs(60)
-                            } else {
-                                Duration::from_secs(5)
-                            },
-                        )
-                        .await;
-                    continue;
-                }
-                let body = if path.ends_with("/messages") {
-                    serde_json::to_vec(&anthropic_error_value(status, &text))
-                        .unwrap_or_else(|_| b"{}".to_vec())
-                } else {
-                    bytes.to_vec()
-                };
-                state
-                    .trace
-                    .record(
-                        &trace_context,
-                        TraceOutcome {
-                            status: status.as_u16(),
-                            completed_at: now_ms(),
-                            lifecycle_state: "completed",
-                            usage: None,
-                            error: Some(last_error.clone()),
-                            upstream_error: Some(last_error.clone()),
-                            upstream_content_type: (!content_type.trim().is_empty())
-                                .then(|| content_type.clone()),
-                            upstream_empty_body: Some(body.is_empty()),
-                            ttft_ms: None,
-                            response_stream_diagnostics: None,
-                            assistant_empty_output: None,
-                            assistant_finish_reason: None,
-                            client_disconnected: Some(false),
-                        },
-                    )
-                    .await;
-                state
-                    .trace
-                    .record(
-                        &client_context,
-                        client_trace_outcome(
-                            status.as_u16(),
-                            now_ms(),
-                            Some(last_error.clone()),
-                            Some(false),
-                        ),
-                    )
-                    .await;
-                return Ok(ProxyResult::Buffered(BufferedReply {
-                    status,
-                    headers: response_headers,
-                    body: Bytes::from(body),
-                }));
-            }
-            state
-                .selected
-                .lock()
-                .await
-                .insert(provider.clone(), account.id.clone());
-            let transform = transform_for(path, &account, client_stream, &content_type);
-            let content_type_is_sse = content_type
-                .to_ascii_lowercase()
-                .contains("text/event-stream");
-            // Preserve a real upstream stream even when no protocol
-            // conversion is needed. ChatGPT and xAI have also returned SSE
-            // for an explicit stream request without a Content-Type header;
-            // their native edge path must not buffer those bytes into a
-            // synthetic one-event response.
-            let can_stream_without_content_type = client_stream
-                && content_type.trim().is_empty()
-                && matches!(provider.as_str(), "openai" | "xai");
-            if transform != StreamTransform::None
-                || (client_stream && (content_type_is_sse || can_stream_without_content_type))
-            {
-                let mut stream_headers = response_headers;
-                if can_stream_without_content_type {
-                    stream_headers.retain(|(name, _)| name != "content-type");
-                    stream_headers
-                        .push(("content-type".to_owned(), "text/event-stream".to_owned()));
-                }
-                let streaming_trace = StreamingTrace::new(
-                    state.trace.clone(),
-                    trace_context,
-                    client_context,
-                    (!content_type.trim().is_empty()).then(|| content_type.clone()),
-                );
-                return Ok(ProxyResult::Streaming(StreamingReply {
-                    status: response.status(),
-                    headers: stream_headers,
-                    upstream: response,
-                    transform,
-                    requested_model: requested_model.clone().if_empty_then(default_model),
-                    trace: Some(streaming_trace),
-                    capacity_lease,
-                }));
-            }
-            let bytes = response.bytes().await.unwrap_or_default();
-            let reply = render_buffered_success(
-                path,
-                &account,
-                client_stream,
-                &requested_model.clone().if_empty_then(default_model),
-                &content_type,
-                &bytes,
-                response_headers,
-            );
-            let outcome = buffered_trace_outcome(&reply, &content_type, bytes.is_empty());
-            let completed_at = outcome.completed_at;
-            let client_status = outcome.status;
-            let client_error = outcome.error.clone();
-            state.trace.record(&trace_context, outcome).await;
-            state
-                .trace
-                .record(
-                    &client_context,
-                    client_trace_outcome(client_status, completed_at, client_error, Some(false)),
-                )
-                .await;
-            return Ok(ProxyResult::Buffered(reply));
-        }
         }
         if capacity_exhausted && attempted < state.config.max_account_retry_attempts {
-            let remaining_wait =
-                max_admission_wait.saturating_sub(admission_started_at.elapsed());
+            let remaining_wait = max_admission_wait.saturating_sub(admission_started_at.elapsed());
             if state
                 .admission
                 .wait_for_capacity(&saturated_accounts, remaining_wait)
@@ -5455,11 +5657,7 @@ async fn proxy_inference(
     } else if had_account {
         (last_status, last_error, "upstream_error")
     } else {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            last_error,
-            "no_accounts",
-        )
+        (StatusCode::SERVICE_UNAVAILABLE, last_error, "no_accounts")
     };
     let trace_model = requested_model.clone().if_empty_then(default_model);
     let no_account_context = build_trace_context(
@@ -6090,10 +6288,12 @@ fn streaming_response(reply: StreamingReply) -> Response {
     let mut trace = reply.trace;
     let mut upstream = reply.upstream.bytes_stream();
     let capacity_lease = reply.capacity_lease;
+    let activity_lease = reply.activity_lease;
     let body = stream! {
         // The lease lives for exactly as long as the response body. Dropping
         // the client body cancels this generator and releases the account.
         let _capacity_lease = capacity_lease;
+        let _activity_lease = activity_lease;
         let mut stream_error: Option<String> = None;
         if transform == StreamTransform::None {
             while let Some(chunk) = upstream.next().await {
@@ -6155,6 +6355,8 @@ struct Job {
     model: Option<String>,
     #[serde(default)]
     idempotency_key: Option<String>,
+    #[serde(default)]
+    webhook_id: Option<String>,
     created_at: u64,
     updated_at: u64,
     not_before: u64,
@@ -6169,10 +6371,28 @@ struct Job {
     consumed_at: Option<u64>,
     #[serde(default)]
     completed_at: Option<u64>,
+    #[serde(default)]
+    purge_after: Option<u64>,
+    #[serde(default)]
+    webhook_delivery: Option<WebhookDelivery>,
+    #[serde(default)]
+    events: Vec<JobEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WebhookDelivery {
+    event_id: String,
+    attempts: u32,
+    next_attempt_at: u64,
+    expires_at: u64,
+    delivered_at: Option<u64>,
+    last_error: Option<String>,
 }
 
 const JOB_RETRY_BASE_MS: u64 = 1_000;
 const JOB_RETRY_MAX_MS: u64 = 60_000;
+const JOB_CAPACITY_WAIT_MIN_MS: u64 = 100;
+const JOB_CAPACITY_WAIT_MS: u64 = 1_000;
 
 fn default_job_max_attempts() -> u32 {
     3
@@ -6206,6 +6426,22 @@ fn valid_job_priority(priority: &str) -> bool {
     job_priority_weight(priority) > 0.0
 }
 
+fn next_batch_window_at(now: u64) -> u64 {
+    use chrono::{Datelike, TimeZone, Timelike};
+    let Some(utc) = chrono::DateTime::from_timestamp_millis(now as i64) else {
+        return now;
+    };
+    let paris = utc.with_timezone(&chrono_tz::Europe::Paris);
+    if paris.hour() >= 22 || paris.hour() < 7 {
+        return now;
+    }
+    chrono_tz::Europe::Paris
+        .with_ymd_and_hms(paris.year(), paris.month(), paris.day(), 22, 0, 0)
+        .single()
+        .map(|start| start.with_timezone(&chrono::Utc).timestamp_millis().max(0) as u64)
+        .unwrap_or_else(|| now.saturating_add(24 * 60 * 60 * 1_000))
+}
+
 impl WeightedFairScheduler {
     fn choose(
         &mut self,
@@ -6230,10 +6466,7 @@ impl WeightedFairScheduler {
         let mut selected_priority = priorities.first().copied()?;
         let mut selected_score = f64::NEG_INFINITY;
         for priority in priorities {
-            let score = self
-                .priority_scores
-                .entry(priority.to_owned())
-                .or_default();
+            let score = self.priority_scores.entry(priority.to_owned()).or_default();
             *score += job_priority_weight(priority);
             if *score > selected_score {
                 selected_score = *score;
@@ -6299,9 +6532,10 @@ enum JobCreateError {
     InvalidDeadline,
     ExpiredDeadline,
     IdempotencyConflict,
+    Persistence(String),
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct JobEvent {
     id: u64,
     #[serde(rename = "jobId")]
@@ -6309,6 +6543,8 @@ struct JobEvent {
     application: String,
     r#type: String,
     data: Value,
+    #[serde(default)]
+    at: u64,
 }
 
 struct JobState {
@@ -6325,8 +6561,194 @@ pub struct JobManager {
     events: broadcast::Sender<JobEvent>,
 }
 
+fn sqlite_json<T: serde::de::DeserializeOwned + Default>(raw: Option<String>) -> T {
+    raw.and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_default()
+}
+
+fn sqlite_response_headers(raw: Option<String>) -> Option<Vec<(String, String)>> {
+    let value = raw.and_then(|value| serde_json::from_str::<Value>(&value).ok())?;
+    Some(
+        value
+            .as_object()?
+            .iter()
+            .filter_map(|(name, value)| Some((name.clone(), value.as_str()?.to_owned())))
+            .collect(),
+    )
+}
+
+fn sqlite_u64(value: Option<i64>) -> Option<u64> {
+    value.and_then(|value| value.try_into().ok())
+}
+
+fn import_legacy_jobs_blocking(path: &std::path::Path) -> Result<Vec<Job>, String> {
+    use rusqlite::{Connection, OpenFlags, backup::Backup};
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let source = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| format!("cannot open legacy job store {}: {error}", path.display()))?;
+    let has_jobs = source
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'jobs'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    if !has_jobs {
+        return Ok(Vec::new());
+    }
+
+    let backup_path = path.with_extension("pre-rust-backup.sqlite");
+    if !backup_path.exists() {
+        let mut destination = Connection::open(&backup_path).map_err(|error| {
+            format!(
+                "cannot create legacy job backup {}: {error}",
+                backup_path.display()
+            )
+        })?;
+        let backup = Backup::new(&source, &mut destination)
+            .map_err(|error| format!("cannot initialize legacy job backup: {error}"))?;
+        backup
+            .run_to_completion(64, Duration::from_millis(10), None)
+            .map_err(|error| format!("cannot back up legacy job store: {error}"))?;
+        drop(backup);
+        #[cfg(unix)]
+        std::fs::set_permissions(&backup_path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("cannot protect legacy job backup: {error}"))?;
+    }
+
+    let mut deliveries = HashMap::new();
+    if let Ok(mut statement) = source.prepare(
+        "SELECT event_id, job_id, attempts, next_attempt_at, expires_at, delivered_at, last_error FROM webhook_deliveries",
+    ) {
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(1)?,
+                    WebhookDelivery {
+                        event_id: row.get(0)?,
+                        attempts: row.get::<_, i64>(2)?.max(0) as u32,
+                        next_attempt_at: row.get::<_, i64>(3)?.max(0) as u64,
+                        expires_at: row.get::<_, i64>(4)?.max(0) as u64,
+                        delivered_at: sqlite_u64(row.get(5)?),
+                        last_error: row.get(6)?,
+                    },
+                ))
+            })
+            .map_err(|error| format!("cannot read legacy webhook deliveries: {error}"))?;
+        for row in rows {
+            let (job_id, delivery) =
+                row.map_err(|error| format!("invalid legacy webhook delivery: {error}"))?;
+            deliveries.insert(job_id, delivery);
+        }
+    }
+
+    let mut statement = source
+        .prepare(
+            "SELECT id, application, route, request_headers_json, request_json, status, priority, model, idempotency_key, webhook_id, deadline_at, not_before, attempts, max_attempts, response_status, response_headers_json, result_json, error, created_at, updated_at, completed_at, consumed_at, purge_after FROM jobs",
+        )
+        .map_err(|error| format!("cannot prepare legacy job import: {error}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            let id = row.get::<_, String>(0)?;
+            Ok(Job {
+                webhook_delivery: deliveries.get(&id).cloned(),
+                events: Vec::new(),
+                id,
+                application: row.get(1)?,
+                route: row.get(2)?,
+                request_headers: sqlite_json(row.get(3)?),
+                request_body: row
+                    .get::<_, Option<String>>(4)?
+                    .and_then(|value| serde_json::from_str(&value).ok())
+                    .unwrap_or(Value::Null),
+                status: row.get(5)?,
+                priority: row.get(6)?,
+                model: row.get(7)?,
+                idempotency_key: row.get(8)?,
+                webhook_id: row.get(9)?,
+                deadline_at: sqlite_u64(row.get(10)?),
+                not_before: row.get::<_, i64>(11)?.max(0) as u64,
+                attempts: row.get::<_, i64>(12)?.max(0) as u32,
+                max_attempts: row.get::<_, i64>(13)?.max(1) as u32,
+                response_status: row
+                    .get::<_, Option<i64>>(14)?
+                    .and_then(|value| value.try_into().ok()),
+                response_headers: sqlite_response_headers(row.get(15)?),
+                result: row
+                    .get::<_, Option<String>>(16)?
+                    .and_then(|value| serde_json::from_str(&value).ok()),
+                error: row.get(17)?,
+                created_at: row.get::<_, i64>(18)?.max(0) as u64,
+                updated_at: row.get::<_, i64>(19)?.max(0) as u64,
+                completed_at: sqlite_u64(row.get(20)?),
+                consumed_at: sqlite_u64(row.get(21)?),
+                purge_after: sqlite_u64(row.get(22)?),
+            })
+        })
+        .map_err(|error| format!("cannot read legacy jobs: {error}"))?;
+    let mut jobs = rows
+        .map(|row| row.map_err(|error| format!("invalid legacy job: {error}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+
+    if let Ok(mut events_statement) = source.prepare(
+        "SELECT id, job_id, application, type, data_json, created_at FROM job_events ORDER BY id",
+    ) {
+        let rows = events_statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(1)?,
+                    JobEvent {
+                        id: row.get::<_, i64>(0)?.max(0) as u64,
+                        job_id: row.get(1)?,
+                        application: row.get(2)?,
+                        r#type: row.get(3)?,
+                        data: row
+                            .get::<_, Option<String>>(4)?
+                            .and_then(|value| serde_json::from_str(&value).ok())
+                            .unwrap_or_else(|| json!({})),
+                        at: row.get::<_, i64>(5)?.max(0) as u64,
+                    },
+                ))
+            })
+            .map_err(|error| format!("cannot read legacy job events: {error}"))?;
+        for row in rows {
+            let (job_id, event) =
+                row.map_err(|error| format!("invalid legacy job event: {error}"))?;
+            if let Some(job) = jobs.iter_mut().find(|job| job.id == job_id) {
+                job.events.push(event);
+            }
+        }
+    }
+
+    Ok(jobs)
+}
+
+async fn import_legacy_jobs(
+    path: Option<PathBuf>,
+    destination: &std::path::Path,
+) -> Result<Vec<Job>, String> {
+    let Some(path) = path.filter(|path| path.as_path() != destination) else {
+        return Ok(Vec::new());
+    };
+    tokio::task::spawn_blocking(move || import_legacy_jobs_blocking(&path))
+        .await
+        .map_err(|error| format!("legacy job import task failed: {error}"))?
+}
+
 impl JobManager {
+    #[cfg(test)]
     async fn new(path: PathBuf) -> Result<Self, String> {
+        Self::new_with_legacy(path, None).await
+    }
+
+    async fn new_with_legacy(
+        path: PathBuf,
+        legacy_jobs_db_path: Option<PathBuf>,
+    ) -> Result<Self, String> {
         let (events, _) = broadcast::channel(256);
         let mut jobs = match fs::read(&path).await {
             Ok(raw) => serde_json::from_slice::<Vec<Job>>(&raw)
@@ -6336,6 +6758,20 @@ impl JobManager {
                 return Err(format!("cannot read job store {}: {error}", path.display()));
             }
         };
+        let legacy_jobs = import_legacy_jobs(legacy_jobs_db_path, &path).await?;
+        let mut imported = false;
+        for legacy in legacy_jobs {
+            let duplicate = jobs.iter().any(|job| {
+                job.id == legacy.id
+                    || (legacy.idempotency_key.is_some()
+                        && job.application == legacy.application
+                        && job.idempotency_key == legacy.idempotency_key)
+            });
+            if !duplicate {
+                jobs.push(legacy);
+                imported = true;
+            }
+        }
         let now = now_ms();
         let mut recovered = false;
         for job in &mut jobs {
@@ -6361,54 +6797,149 @@ impl JobManager {
                 recovered = true;
             }
         }
+        let mut next_event_id = jobs
+            .iter()
+            .flat_map(|job| job.events.iter().map(|event| event.id))
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+            .max(1);
+        for job in &mut jobs {
+            if job.events.is_empty() {
+                job.events.push(JobEvent {
+                    id: next_event_id,
+                    job_id: job.id.clone(),
+                    application: job.application.clone(),
+                    r#type: "job.status".to_owned(),
+                    data: json!({"status": job.status}),
+                    at: job.updated_at,
+                });
+                next_event_id = next_event_id.saturating_add(1);
+                recovered = true;
+            }
+        }
         let manager = Self {
             path,
             state: Mutex::new(JobState {
                 jobs: jobs.into_iter().map(|job| (job.id.clone(), job)).collect(),
-                next_event_id: 1,
+                next_event_id,
             }),
             persist_lock: Mutex::new(()),
             scheduler: Mutex::new(WeightedFairScheduler::default()),
             changed: Notify::new(),
             events,
         };
-        if recovered {
-            manager.persist().await;
+        if recovered || imported {
+            manager.persist().await?;
         }
         Ok(manager)
     }
 
-    async fn persist(&self) {
+    async fn persist(&self) -> Result<(), String> {
         let _persist_guard = self.persist_lock.lock().await;
         let jobs = {
             let state = self.state.lock().await;
             state.jobs.values().cloned().collect::<Vec<_>>()
         };
-        let Ok(raw) = serde_json::to_vec_pretty(&jobs) else {
-            return;
-        };
-        if let Some(parent) = self.path.parent() {
-            let _ = fs::create_dir_all(parent).await;
-        }
+        let raw = serde_json::to_vec_pretty(&jobs)
+            .map_err(|error| format!("cannot serialize job store: {error}"))?;
+        let path = self.path.clone();
         let temporary = self
             .path
             .with_extension(format!("tmp-{}", Uuid::new_v4().simple()));
-        if fs::write(&temporary, raw).await.is_ok() {
-            let _ = fs::rename(temporary, &self.path).await;
+        tokio::task::spawn_blocking(move || {
+            if let Some(parent) = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+            {
+                std::fs::create_dir_all(parent).map_err(|error| {
+                    format!(
+                        "cannot create job store directory {}: {error}",
+                        parent.display()
+                    )
+                })?;
+            }
+            let mut options = std::fs::OpenOptions::new();
+            options.create_new(true).write(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            let result = (|| -> Result<(), String> {
+                let mut file = options.open(&temporary).map_err(|error| {
+                    format!(
+                        "cannot create temporary job store {}: {error}",
+                        temporary.display()
+                    )
+                })?;
+                file.write_all(&raw).map_err(|error| {
+                    format!("cannot write job store {}: {error}", temporary.display())
+                })?;
+                file.sync_all().map_err(|error| {
+                    format!("cannot sync job store {}: {error}", temporary.display())
+                })?;
+                drop(file);
+                std::fs::rename(&temporary, &path).map_err(|error| {
+                    format!(
+                        "cannot replace job store {} with {}: {error}",
+                        path.display(),
+                        temporary.display()
+                    )
+                })?;
+                #[cfg(unix)]
+                if let Some(parent) = path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                {
+                    std::fs::File::open(parent)
+                        .and_then(|directory| directory.sync_all())
+                        .map_err(|error| {
+                            format!(
+                                "cannot sync job store directory {}: {error}",
+                                parent.display()
+                            )
+                        })?;
+                }
+                Ok(())
+            })();
+            if result.is_err() {
+                let _ = std::fs::remove_file(&temporary);
+            }
+            result
+        })
+        .await
+        .map_err(|error| format!("job store persistence task failed: {error}"))?
+    }
+
+    async fn persist_or_log(&self, operation: &str) {
+        if let Err(error) = self.persist().await {
+            eprintln!("job store persistence failed after {operation}: {error}");
         }
     }
 
     async fn emit(&self, job: &Job, event_type: &str, data: Value) {
-        let mut state = self.state.lock().await;
-        let id = state.next_event_id;
-        state.next_event_id += 1;
-        let _ = self.events.send(JobEvent {
-            id,
-            job_id: job.id.clone(),
-            application: job.application.clone(),
-            r#type: event_type.to_owned(),
-            data,
-        });
+        let event = {
+            let mut state = self.state.lock().await;
+            let id = state.next_event_id;
+            state.next_event_id = state.next_event_id.saturating_add(1).max(1);
+            let event = JobEvent {
+                id,
+                job_id: job.id.clone(),
+                application: job.application.clone(),
+                r#type: event_type.to_owned(),
+                data,
+                at: now_ms(),
+            };
+            if let Some(stored) = state.jobs.get_mut(&job.id) {
+                stored.events.push(event.clone());
+                if stored.events.len() > 1_000 {
+                    stored.events.drain(..stored.events.len() - 1_000);
+                }
+            }
+            event
+        };
+        let _ = self.events.send(event);
+        if let Err(error) = self.persist().await {
+            eprintln!("job event persistence failed: {error}");
+        }
     }
 
     async fn create(
@@ -6420,15 +6951,13 @@ impl JobManager {
         max_attempts: u32,
     ) -> Result<JobCreateResult, JobCreateError> {
         let now = now_ms();
-        let priority = header_value(headers, "x-multivibe-priority")
-            .unwrap_or_else(|| "batch".to_owned());
+        let priority =
+            header_value(headers, "x-multivibe-priority").unwrap_or_else(|| "batch".to_owned());
         if !valid_job_priority(&priority) {
             return Err(JobCreateError::InvalidPriority);
         }
         let deadline_at = match header_value(headers, "x-multivibe-deadline") {
-            Some(value) => Some(
-                parse_rfc3339_ms(&value).ok_or(JobCreateError::InvalidDeadline)?,
-            ),
+            Some(value) => Some(parse_rfc3339_ms(&value).ok_or(JobCreateError::InvalidDeadline)?),
             None => None,
         };
         if deadline_at.is_some_and(|deadline| deadline <= now) {
@@ -6451,6 +6980,11 @@ impl JobManager {
                 created: false,
             });
         }
+        let not_before = if priority == "batch" {
+            next_batch_window_at(now)
+        } else {
+            now
+        };
         let job = Job {
             id: new_id("job"),
             application: application.to_owned(),
@@ -6466,9 +7000,12 @@ impl JobManager {
             priority,
             model: value_string(body.get("model")),
             idempotency_key,
+            webhook_id: header_value(headers, "x-multivibe-webhook")
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty()),
             created_at: now,
             updated_at: now,
-            not_before: now,
+            not_before,
             deadline_at,
             attempts: 0,
             max_attempts: max_attempts.max(1),
@@ -6478,10 +7015,16 @@ impl JobManager {
             error: None,
             consumed_at: None,
             completed_at: None,
+            purge_after: None,
+            webhook_delivery: None,
+            events: Vec::new(),
         };
         state.jobs.insert(job.id.clone(), job.clone());
         drop(state);
-        self.persist().await;
+        if let Err(error) = self.persist().await {
+            self.state.lock().await.jobs.remove(&job.id);
+            return Err(JobCreateError::Persistence(error));
+        }
         self.emit(&job, "job.queued", json!({"status": "queued"}))
             .await;
         self.changed.notify_one();
@@ -6511,6 +7054,31 @@ impl JobManager {
         jobs.sort_by(|left, right| right.created_at.cmp(&left.created_at));
         jobs.truncate(limit.clamp(1, 1000));
         jobs
+    }
+
+    async fn events_after(
+        &self,
+        application: &str,
+        id: &str,
+        after_id: u64,
+    ) -> Option<Vec<JobEvent>> {
+        let state = self.state.lock().await;
+        let job = state
+            .jobs
+            .get(id)
+            .filter(|job| job.application == application)?;
+        Some(
+            job.events
+                .iter()
+                .filter(|event| event.id > after_id)
+                .take(1_000)
+                .cloned()
+                .collect(),
+        )
+    }
+
+    fn subscribe_events(&self) -> broadcast::Receiver<JobEvent> {
+        self.events.subscribe()
     }
 
     async fn acquire_next(&self, application_weights: &HashMap<String, f64>) -> Option<Job> {
@@ -6573,7 +7141,7 @@ impl JobManager {
             (job, expired)
         };
         if job.is_some() || !expired.is_empty() {
-            self.persist().await;
+            self.persist_or_log("job acquisition").await;
         }
         for expired_job in expired {
             let event = if expired_job.status == "expired" {
@@ -6613,7 +7181,9 @@ impl JobManager {
             })
             .min();
         Duration::from_millis(
-            next.map(|at| at.saturating_sub(now)).unwrap_or(60_000).clamp(1, 60_000),
+            next.map(|at| at.saturating_sub(now))
+                .unwrap_or(60_000)
+                .clamp(1, 60_000),
         )
     }
 
@@ -6636,12 +7206,22 @@ impl JobManager {
                 job.response_headers = Some(reply.headers);
                 job.result = serde_json::from_slice(&reply.body).ok();
                 job.error = None;
+                if job.webhook_id.is_some() && job.webhook_delivery.is_none() {
+                    job.webhook_delivery = Some(WebhookDelivery {
+                        event_id: Uuid::new_v4().to_string(),
+                        attempts: 0,
+                        next_attempt_at: now,
+                        expires_at: now.saturating_add(24 * 60 * 60 * 1_000),
+                        delivered_at: None,
+                        last_error: None,
+                    });
+                }
             }
             job.updated_at = now;
             job.completed_at = Some(now);
             job.clone()
         };
-        self.persist().await;
+        self.persist_or_log("job success").await;
         let event = if job.status == "expired" {
             "job.expired"
         } else {
@@ -6680,7 +7260,7 @@ impl JobManager {
             job.error = Some(message.to_owned());
             job.clone()
         };
-        self.persist().await;
+        self.persist_or_log("job failure").await;
         let event = match job.status.as_str() {
             "retry" => "job.retry",
             "expired" => "job.expired",
@@ -6695,6 +7275,56 @@ impl JobManager {
                 "attempt": job.attempts,
                 "nextAttemptAt": (job.status == "retry").then_some(job.not_before),
             }),
+        )
+        .await;
+        self.changed.notify_one();
+    }
+
+    async fn release_for_drain(&self, id: &str) {
+        let changed = {
+            let mut state = self.state.lock().await;
+            let Some(job) = state.jobs.get_mut(id) else {
+                return;
+            };
+            if job.status != "running" {
+                return;
+            }
+            job.status = "queued".to_owned();
+            job.attempts = job.attempts.saturating_sub(1);
+            job.updated_at = now_ms();
+            job.error = None;
+            true
+        };
+        if changed {
+            self.persist_or_log("drain release").await;
+            self.changed.notify_one();
+        }
+    }
+
+    async fn reschedule_for_capacity(&self, id: &str, delay_ms: u64) {
+        let now = now_ms();
+        let delay = delay_ms.clamp(JOB_CAPACITY_WAIT_MIN_MS, JOB_RETRY_MAX_MS);
+        let job = {
+            let mut state = self.state.lock().await;
+            let Some(job) = state.jobs.get_mut(id) else {
+                return;
+            };
+            if job.status != "running" {
+                return;
+            }
+            job.status = "queued".to_owned();
+            job.attempts = job.attempts.saturating_sub(1);
+            job.not_before = now.saturating_add(delay);
+            job.updated_at = now;
+            job.completed_at = None;
+            job.error = None;
+            job.clone()
+        };
+        self.persist_or_log("capacity reschedule").await;
+        self.emit(
+            &job,
+            "job.capacity_wait",
+            json!({"nextAttemptAt": job.not_before}),
         )
         .await;
         self.changed.notify_one();
@@ -6718,7 +7348,7 @@ impl JobManager {
             job.completed_at = Some(now);
             job.clone()
         };
-        self.persist().await;
+        self.persist_or_log("job cancellation").await;
         self.emit(&job, "job.cancelled", json!({"status": "cancelled"}))
             .await;
         self.changed.notify_one();
@@ -6732,11 +7362,126 @@ impl JobManager {
             if job.application != application || job.status != "succeeded" {
                 return None;
             }
-            job.consumed_at = Some(now_ms());
+            let now = now_ms();
+            job.consumed_at = Some(now);
+            job.purge_after = Some(now.saturating_add(60 * 60 * 1_000));
             job.clone()
         };
-        self.persist().await;
+        self.persist_or_log("result consumption").await;
+        self.emit(&job, "job.consumed", json!({"status": job.status}))
+            .await;
         Some(job)
+    }
+
+    async fn pending_webhook_deliveries(&self, now: u64) -> Vec<(Job, WebhookDelivery)> {
+        self.state
+            .lock()
+            .await
+            .jobs
+            .values()
+            .filter_map(|job| {
+                let delivery = job.webhook_delivery.as_ref()?;
+                (job.status == "succeeded"
+                    && delivery.delivered_at.is_none()
+                    && delivery.next_attempt_at <= now
+                    && delivery.expires_at > now)
+                    .then(|| (job.clone(), delivery.clone()))
+            })
+            .take(100)
+            .collect()
+    }
+
+    async fn finish_webhook(
+        &self,
+        job_id: &str,
+        event_id: &str,
+        succeeded: bool,
+        error: Option<String>,
+    ) {
+        let now = now_ms();
+        let (job, event_type, event_data) = {
+            let mut state = self.state.lock().await;
+            let Some(job) = state.jobs.get_mut(job_id) else {
+                return;
+            };
+            let Some(delivery) = job.webhook_delivery.as_mut() else {
+                return;
+            };
+            if delivery.event_id != event_id || delivery.delivered_at.is_some() {
+                return;
+            }
+            delivery.attempts = delivery.attempts.saturating_add(1);
+            if succeeded {
+                delivery.delivered_at = Some(now);
+                delivery.last_error = None;
+                job.purge_after = Some(now.saturating_add(60 * 60 * 1_000));
+            } else {
+                let exponent = delivery.attempts.min(12);
+                let delay = 1_000_u64
+                    .saturating_mul(1_u64 << exponent)
+                    .min(60 * 60 * 1_000);
+                delivery.next_attempt_at = now.saturating_add(delay);
+                delivery.last_error = error
+                    .as_deref()
+                    .map(|message| message.chars().take(500).collect());
+            }
+            job.updated_at = now;
+            let attempts = delivery.attempts;
+            let last_error = delivery.last_error.clone();
+            (
+                job.clone(),
+                if succeeded {
+                    "webhook.delivered"
+                } else {
+                    "webhook.retry"
+                },
+                json!({
+                    "eventId": event_id,
+                    "attempts": attempts,
+                    "error": last_error,
+                }),
+            )
+        };
+        self.persist_or_log("webhook completion").await;
+        self.emit(&job, event_type, event_data).await;
+        self.changed.notify_one();
+    }
+
+    async fn purge_due(&self, now: u64) {
+        let mut changed = false;
+        {
+            let mut state = self.state.lock().await;
+            for job in state.jobs.values_mut() {
+                let event_count = job.events.len();
+                job.events.retain(|event| {
+                    event.at == 0 || event.at.saturating_add(30 * 24 * 60 * 60 * 1_000) > now
+                });
+                if job.events.len() != event_count {
+                    changed = true;
+                }
+                let retention_expired = job
+                    .purge_after
+                    .is_some_and(|purge_after| purge_after <= now)
+                    || job.created_at.saturating_add(30 * 24 * 60 * 60 * 1_000) <= now;
+                if retention_expired
+                    && (!job.request_body.is_null()
+                        || job.result.is_some()
+                        || !job.request_headers.is_empty()
+                        || job.response_headers.is_some())
+                {
+                    job.request_body = Value::Null;
+                    job.request_headers.clear();
+                    job.result = None;
+                    job.response_headers = None;
+                    job.status = "expired".to_owned();
+                    job.updated_at = now;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.persist_or_log("retention purge").await;
+        }
     }
 }
 
@@ -6748,6 +7493,14 @@ fn parse_rfc3339_ms(value: &str) -> Option<u64> {
         .ok()
 }
 
+fn format_rfc3339_ms(value: u64) -> String {
+    i64::try_from(value)
+        .ok()
+        .and_then(|millis| chrono::DateTime::<chrono::Utc>::from_timestamp_millis(millis))
+        .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        .unwrap_or_else(|| "1970-01-01T00:00:00.000Z".to_owned())
+}
+
 fn public_job(job: &Job) -> Value {
     let mut value = json!({
         "object": "multivibe.job",
@@ -6757,15 +7510,15 @@ fn public_job(job: &Job) -> Value {
         "model": job.model,
         "attempts": job.attempts,
         "max_attempts": job.max_attempts,
-        "created_at": job.created_at,
-        "updated_at": job.updated_at,
-        "not_before": job.not_before,
+        "created_at": format_rfc3339_ms(job.created_at),
+        "updated_at": format_rfc3339_ms(job.updated_at),
+        "not_before": format_rfc3339_ms(job.not_before),
         "result_url": format!("/v1/jobs/{}/result", job.id),
         "events_url": format!("/v1/jobs/{}/events", job.id),
         "error": job.error,
     });
     if let Some(deadline) = job.deadline_at {
-        value["deadline"] = Value::Number(deadline.into());
+        value["deadline"] = Value::String(format_rfc3339_ms(deadline));
     }
     value
 }
@@ -6780,10 +7533,7 @@ fn application_fairness_weights(store: &StoreFile) -> HashMap<String, f64> {
                 .filter(|weight| weight.is_finite())
                 .unwrap_or(1.0)
                 .clamp(0.1, 100.0);
-            (
-                policy.application.clone(),
-                weight,
-            )
+            (policy.application.clone(), weight)
         })
         .collect()
 }
@@ -6791,6 +7541,13 @@ fn application_fairness_weights(store: &StoreFile) -> HashMap<String, f64> {
 async fn job_dispatch_loop(state: EdgeState) {
     let slots = Arc::new(Semaphore::new(state.config.job_worker_concurrency.max(1)));
     loop {
+        if state.drain.is_draining() {
+            tokio::select! {
+                _ = state.jobs.changed.notified() => {}
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+            }
+            continue;
+        }
         if slots.available_permits() == 0 {
             state.jobs.changed.notified().await;
             continue;
@@ -6803,6 +7560,10 @@ async fn job_dispatch_loop(state: EdgeState) {
             .unwrap_or_default();
         let mut dispatched = false;
         while let Ok(permit) = slots.clone().try_acquire_owned() {
+            if state.drain.is_draining() {
+                drop(permit);
+                break;
+            }
             let Some(job) = state.jobs.acquire_next(&weights).await else {
                 drop(permit);
                 break;
@@ -6823,11 +7584,108 @@ async fn job_dispatch_loop(state: EdgeState) {
     }
 }
 
+async fn webhook_delivery_loop(state: EdgeState) {
+    let mut last_purge_at = 0_u64;
+    loop {
+        if state.drain.is_draining() {
+            tokio::select! {
+                _ = state.jobs.changed.notified() => {}
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+            }
+            continue;
+        }
+        let now = now_ms();
+        if now.saturating_sub(last_purge_at) >= 60_000 {
+            state.jobs.purge_due(now).await;
+            last_purge_at = now;
+        }
+        let deliveries = state.jobs.pending_webhook_deliveries(now).await;
+        for (job, delivery) in deliveries {
+            let Some(_activity_lease) = state.drain.admit(ActivityKind::Job) else {
+                break;
+            };
+            let webhook = state
+                .store
+                .snapshot()
+                .await
+                .ok()
+                .and_then(|store| {
+                    store
+                        .application_policies
+                        .into_iter()
+                        .find(|policy| policy.application == job.application)
+                })
+                .and_then(|policy| {
+                    policy.webhooks.into_iter().find(|webhook| {
+                        webhook.enabled && Some(webhook.id.as_str()) == job.webhook_id.as_deref()
+                    })
+                });
+            let Some(webhook) = webhook else {
+                state
+                    .jobs
+                    .finish_webhook(
+                        &job.id,
+                        &delivery.event_id,
+                        false,
+                        Some("webhook is not registered or enabled".to_owned()),
+                    )
+                    .await;
+                continue;
+            };
+            let payload = serde_json::to_vec(&json!({
+                "id": delivery.event_id,
+                "type": "job.completed",
+                "createdAt": chrono::Utc::now().to_rfc3339(),
+                "data": {"job": public_job(&job), "result": job.result},
+            }))
+            .unwrap_or_else(|_| b"{}".to_vec());
+            let mut signer = <HmacSha256 as Mac>::new_from_slice(webhook.secret.as_bytes())
+                .expect("HMAC accepts keys of every size");
+            signer.update(&payload);
+            let signature = format!("sha256={}", hex_bytes(&signer.finalize().into_bytes()));
+            let result = timeout(
+                Duration::from_secs(10),
+                state
+                    .webhook_client
+                    .post(&webhook.url)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-multivibe-event-id", &delivery.event_id)
+                    .header("x-multivibe-signature", signature)
+                    .body(payload)
+                    .send(),
+            )
+            .await;
+            let (succeeded, error) = match result {
+                Ok(Ok(response)) if response.status().is_success() => (true, None),
+                Ok(Ok(response)) => (
+                    false,
+                    Some(format!("webhook returned {}", response.status())),
+                ),
+                Ok(Err(error)) => (false, Some(error.to_string())),
+                Err(_) => (false, Some("webhook request timed out".to_owned())),
+            };
+            state
+                .jobs
+                .finish_webhook(&job.id, &delivery.event_id, succeeded, error)
+                .await;
+        }
+        tokio::select! {
+            _ = state.jobs.changed.notified() => {}
+            _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+        }
+    }
+}
+
 async fn run_claimed_job(
     state: EdgeState,
     running: Job,
     permit: tokio::sync::OwnedSemaphorePermit,
 ) {
+    if state.drain.is_draining() {
+        state.jobs.release_for_drain(&running.id).await;
+        drop(permit);
+        return;
+    }
     let headers = running
         .request_headers
         .iter()
@@ -6844,6 +7702,7 @@ async fn run_claimed_job(
         &headers,
         &running.request_body,
         &running.application,
+        ActivityKind::Job,
     );
     let result = if let Some(deadline) = running.deadline_at {
         match timeout(
@@ -6891,11 +7750,7 @@ async fn run_claimed_job(
         Ok(ProxyResult::Streaming(_)) => {
             state
                 .jobs
-                .fail(
-                    &running.id,
-                    "deferred jobs cannot return a stream",
-                    false,
-                )
+                .fail(&running.id, "deferred jobs cannot return a stream", false)
                 .await
         }
         Err(error) => {
@@ -6903,8 +7758,27 @@ async fn run_claimed_job(
             let bytes = to_bytes(error.into_body(), 1024 * 1024)
                 .await
                 .unwrap_or_default();
-            let message = serde_json::from_slice::<Value>(&bytes)
-                .ok()
+            let parsed = serde_json::from_slice::<Value>(&bytes).ok();
+            let error_code = parsed
+                .as_ref()
+                .and_then(|body| body.get("error"))
+                .and_then(|error| error.get("code"))
+                .and_then(Value::as_str);
+            if error_code == Some("host_update_draining") {
+                state.jobs.release_for_drain(&running.id).await;
+                drop(permit);
+                state.jobs.changed.notify_one();
+                return;
+            }
+            if error_code == Some("capacity_unavailable") {
+                state
+                    .jobs
+                    .reschedule_for_capacity(&running.id, JOB_CAPACITY_WAIT_MS)
+                    .await;
+                drop(permit);
+                return;
+            }
+            let message = parsed
                 .and_then(|body| {
                     value_string(body.get("error").and_then(|error| error.get("message")))
                 })
@@ -6930,10 +7804,9 @@ fn set_idempotency_status(headers: &mut Vec<(String, String)>, status: &str) {
 
 fn set_response_idempotency_status(response: &mut Response, status: &str) {
     if let Ok(value) = HeaderValue::from_str(status) {
-        response.headers_mut().insert(
-            HeaderName::from_static(idempotency::STATUS_HEADER),
-            value,
-        );
+        response
+            .headers_mut()
+            .insert(HeaderName::from_static(idempotency::STATUS_HEADER), value);
     }
 }
 
@@ -6947,12 +7820,7 @@ fn response_from_idempotency(response: idempotency::StoredResponse, status: &str
     response_from_buffer(reply)
 }
 
-fn idempotency_error(
-    path: &str,
-    status: StatusCode,
-    code: &str,
-    message: &str,
-) -> Response {
+fn idempotency_error(path: &str, status: StatusCode, code: &str, message: &str) -> Response {
     if idempotency::normalized_route(path) == Some("/messages") {
         json_response(
             status,
@@ -7084,7 +7952,11 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
     let request_idempotency = header_value(&headers, "x-multivibe-idempotency-key")
         .map(|key| key.trim().to_owned())
         .filter(|key| !key.is_empty());
-    if route.is_some() && request_idempotency.as_ref().is_some_and(|key| key.len() > 200) {
+    if route.is_some()
+        && request_idempotency
+            .as_ref()
+            .is_some_and(|key| key.len() > 200)
+    {
         return idempotency_error(
             &path,
             StatusCode::BAD_REQUEST,
@@ -7184,6 +8056,13 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
                     "This idempotency key was already used with a different deferred request payload.",
                 );
             }
+            Err(JobCreateError::Persistence(error)) => {
+                return error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    error,
+                    "job_store_unavailable",
+                );
+            }
         };
         let mut response = json_response(StatusCode::ACCEPTED, public_job(&created.job));
         if let Ok(location) = HeaderValue::from_str(&format!("/v1/jobs/{}", created.job.id)) {
@@ -7200,11 +8079,24 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
         }
         set_response_idempotency_status(
             &mut response,
-            if created.created { "created" } else { "replayed" },
+            if created.created {
+                "created"
+            } else {
+                "replayed"
+            },
         );
         return response;
     }
-    match proxy_inference(&state, &path, &headers, &body, &auth.application).await {
+    match proxy_inference(
+        &state,
+        &path,
+        &headers,
+        &body,
+        &auth.application,
+        ActivityKind::Request,
+    )
+    .await
+    {
         Ok(ProxyResult::Buffered(mut reply)) => {
             add_decision_headers(
                 &mut reply,
@@ -7749,7 +8641,9 @@ async fn exposed_models(state: &EdgeState, store: &StoreFile, force: bool) -> Ve
         .map(|account| account.id.clone())
         .collect::<HashSet<_>>();
     let mut cache = state.model_catalog.lock().await;
-    cache.accounts.retain(|account_id, _| active_ids.contains(account_id));
+    cache
+        .accounts
+        .retain(|account_id, _| active_ids.contains(account_id));
     let mut failed = 0_u32;
     for (account, discovery) in active_accounts.iter().zip(discovered) {
         let source_signature = account_model_source_signature(account, &state.config);
@@ -7789,11 +8683,8 @@ async fn exposed_models(state: &EdgeState, store: &StoreFile, force: bool) -> Ve
     } else {
         cache.consecutive_failures = cache.consecutive_failures.saturating_add(1);
         cache.next_refresh_at = now.saturating_add(
-            model_catalog_retry_delay(
-                state.config.models_cache_ttl,
-                cache.consecutive_failures,
-            )
-            .as_millis() as u64,
+            model_catalog_retry_delay(state.config.models_cache_ttl, cache.consecutive_failures)
+                .as_millis() as u64,
         );
     }
     cache.models = models.clone();
@@ -7958,12 +8849,65 @@ async fn get_model_handler(
             .is_some_and(|value| value == id)
     });
     match model {
-        Some(model) => json_response(StatusCode::OK, model),
+        Some(model) => json_response(StatusCode::OK, openai_model_shape(&model)),
         None => json_response(
             StatusCode::NOT_FOUND,
             json!({"error": {"message": format!("The model '{id}' does not exist"), "type": "invalid_request_error"}}),
         ),
     }
+}
+
+async fn ollama_tags_handler(State(state): State<EdgeState>, req: Request<Body>) -> Response {
+    let headers = req.headers().clone();
+    let store = match state.store.snapshot().await {
+        Ok(store) => store,
+        Err(error) => {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, error, "store_unavailable");
+        }
+    };
+    if let Err(response) = authorize(&headers, req.uri().path(), &store, &state.config) {
+        return response;
+    }
+    let models = exposed_models(&state, &store, false)
+        .await
+        .into_iter()
+        .filter_map(|model| {
+            let id = model.get("id")?.as_str()?.to_owned();
+            let provider = model
+                .get("metadata")
+                .and_then(|metadata| metadata.get("provider"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            Some(json!({
+                "name": id,
+                "model": id,
+                "modified_at": "1970-01-01T00:00:00.000Z",
+                "size": 0,
+                "digest": id,
+                "details": {
+                    "family": provider,
+                    "parameter_size": "unknown",
+                    "quantization_level": "unknown",
+                },
+            }))
+        })
+        .collect::<Vec<_>>();
+    json_response(StatusCode::OK, json!({"models": models}))
+}
+
+async fn version_handler(State(state): State<EdgeState>, req: Request<Body>) -> Response {
+    let headers = req.headers().clone();
+    let store = match state.store.snapshot().await {
+        Ok(store) => store,
+        Err(error) => {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, error, "store_unavailable");
+        }
+    };
+    if let Err(response) = authorize(&headers, req.uri().path(), &store, &state.config) {
+        return response;
+    }
+    json_response(StatusCode::OK, json!({"version": state.config.app_version}))
 }
 
 async fn props_handler(State(state): State<EdgeState>, req: Request<Body>) -> Response {
@@ -8066,7 +9010,11 @@ async fn capacity_handler(
     )
 }
 
-async fn capacity_events_handler(State(state): State<EdgeState>, req: Request<Body>) -> Response {
+async fn capacity_events_handler(
+    State(state): State<EdgeState>,
+    Query(query): Query<HashMap<String, String>>,
+    req: Request<Body>,
+) -> Response {
     let headers = req.headers().clone();
     let store = match state.store.snapshot().await {
         Ok(store) => store,
@@ -8077,9 +9025,40 @@ async fn capacity_events_handler(State(state): State<EdgeState>, req: Request<Bo
     if let Err(response) = authorize(&headers, req.uri().path(), &store, &state.config) {
         return response;
     }
+    let after = header_value(&headers, "last-event-id")
+        .or_else(|| query.get("after").cloned())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(0);
     let body = stream! {
-        yield Ok::<Bytes, Infallible>(Bytes::from(format!("id: {}\nevent: capacity.changed\ndata: {}\n\n", state.capacity_version.load(AtomicOrdering::Relaxed), json!({"version": state.capacity_version.load(AtomicOrdering::Relaxed)}))));
-        yield Ok::<Bytes, Infallible>(Bytes::from(": heartbeat\n\n"));
+        let mut last_version = after;
+        let current = state.capacity_version.load(AtomicOrdering::Relaxed);
+        if current != last_version {
+            last_version = current;
+            yield Ok::<Bytes, Infallible>(Bytes::from(format!(
+                "id: {current}\nevent: capacity.changed\ndata: {}\n\n",
+                json!({"version": current}),
+            )));
+        }
+        let mut changes = tokio::time::interval(Duration::from_millis(250));
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
+        changes.tick().await;
+        heartbeat.tick().await;
+        loop {
+            tokio::select! {
+                _ = changes.tick() => {
+                    let current = state.capacity_version.load(AtomicOrdering::Relaxed);
+                    if current == last_version { continue; }
+                    last_version = current;
+                    yield Ok::<Bytes, Infallible>(Bytes::from(format!(
+                        "id: {current}\nevent: capacity.changed\ndata: {}\n\n",
+                        json!({"version": current}),
+                    )));
+                }
+                _ = heartbeat.tick() => {
+                    yield Ok::<Bytes, Infallible>(Bytes::from(": heartbeat\n\n"));
+                }
+            }
+        }
     };
     Response::builder()
         .status(StatusCode::OK)
@@ -8192,6 +9171,7 @@ async fn get_job_result_handler(
 async fn get_job_events_handler(
     State(state): State<EdgeState>,
     Path(id): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
     req: Request<Body>,
 ) -> Response {
     let headers = req.headers().clone();
@@ -8205,12 +9185,69 @@ async fn get_job_events_handler(
         Ok(auth) => auth,
         Err(response) => return response,
     };
-    let Some(job) = state.jobs.get_for(&auth.application, &id).await else {
+    let after = header_value(&headers, "last-event-id")
+        .or_else(|| query.get("after").cloned())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    // Subscribe before reading history so an event emitted concurrently is
+    // either in the replay or queued by broadcast. The id filter removes the
+    // possible overlap.
+    let mut receiver = state.jobs.subscribe_events();
+    let Some(initial) = state.jobs.events_after(&auth.application, &id, after).await else {
         return json_response(StatusCode::NOT_FOUND, json!({"error": "not found"}));
     };
+    let jobs = state.jobs.clone();
+    let application = auth.application;
     let body = stream! {
-        yield Ok::<Bytes, Infallible>(Bytes::from(format!("id: 1\nevent: job.status\ndata: {}\n\n", json!(public_job(&job)))));
-        yield Ok::<Bytes, Infallible>(Bytes::from(": heartbeat\n\n"));
+        let mut last_id = after;
+        for event in initial {
+            if event.id <= last_id { continue; }
+            last_id = event.id;
+            yield Ok::<Bytes, Infallible>(Bytes::from(format!(
+                "id: {}\nevent: {}\ndata: {}\n\n",
+                event.id,
+                event.r#type,
+                event.data,
+            )));
+        }
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
+        heartbeat.tick().await;
+        loop {
+            tokio::select! {
+                received = receiver.recv() => match received {
+                    Ok(event) => {
+                        if event.job_id != id || event.application != application || event.id <= last_id {
+                            continue;
+                        }
+                        last_id = event.id;
+                        yield Ok::<Bytes, Infallible>(Bytes::from(format!(
+                            "id: {}\nevent: {}\ndata: {}\n\n",
+                            event.id,
+                            event.r#type,
+                            event.data,
+                        )));
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        if let Some(replay) = jobs.events_after(&application, &id, last_id).await {
+                            for event in replay {
+                                if event.id <= last_id { continue; }
+                                last_id = event.id;
+                                yield Ok::<Bytes, Infallible>(Bytes::from(format!(
+                                    "id: {}\nevent: {}\ndata: {}\n\n",
+                                    event.id,
+                                    event.r#type,
+                                    event.data,
+                                )));
+                            }
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                },
+                _ = heartbeat.tick() => {
+                    yield Ok::<Bytes, Infallible>(Bytes::from(": heartbeat\n\n"));
+                }
+            }
+        }
     };
     Response::builder()
         .status(StatusCode::OK)
@@ -8297,6 +9334,10 @@ async fn realtime_call_handler(State(state): State<EdgeState>, req: Request<Body
         Ok(auth) => auth,
         Err(response) => return response,
     };
+    let _activity_lease = match state.drain.admit(ActivityKind::Request) {
+        Some(lease) => lease,
+        None => return draining_response(),
+    };
     let content_type = header_value(&headers, "content-type")
         .unwrap_or_default()
         .to_ascii_lowercase();
@@ -8344,7 +9385,7 @@ async fn realtime_call_handler(State(state): State<EdgeState>, req: Request<Body
     let mut last_error = "no eligible realtime account configured".to_owned();
     let mut provider_attempts = 0_usize;
 
-    for account in accounts {
+    'accounts: for mut account in accounts {
         provider_attempts += 1;
         let selection =
             realtime_account_selection(trace_provider, candidate_count, provider_attempts > 1);
@@ -8367,6 +9408,33 @@ async fn realtime_call_handler(State(state): State<EdgeState>, req: Request<Body
         trace_context.request_body = state.config.trace_include_body.then(|| trace_body.clone());
         trace_context.account_selection = Some(selection.clone());
 
+        if token_refresh::TokenRefreshManager::needs_refresh(&account, now_ms()) {
+            match state
+                .token_refresh
+                .refresh(&state.client, &state.config, &state.store, &account, false)
+                .await
+            {
+                Ok(refreshed) => account = refreshed,
+                Err(error) => {
+                    last_error = error;
+                    state
+                        .trace
+                        .record(
+                            &trace_context,
+                            transport_trace_outcome(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                last_error.clone(),
+                            ),
+                        )
+                        .await;
+                    state
+                        .mark_blocked(&account, "realtime", Duration::from_secs(60))
+                        .await;
+                    continue;
+                }
+            }
+        }
+
         let url = match realtime_url(&account, &state.config) {
             Ok(url) => url,
             Err(error) => {
@@ -8385,56 +9453,81 @@ async fn realtime_call_handler(State(state): State<EdgeState>, req: Request<Body
                 continue;
             }
         };
-        let mut upstream_headers = upstream_headers(&account, &headers, &url, None, &state.config);
-        set_header(&mut upstream_headers, "content-type", &content_type);
-        set_header(
-            &mut upstream_headers,
-            "accept",
-            "application/sdp, application/json",
-        );
         let upstream_started_at = now_ms();
-        let response = match timeout(
-            state.config.upstream_timeout,
-            state
-                .client
-                .post(&url)
-                .headers(upstream_headers)
-                .body(body.clone())
-                .send(),
-        )
-        .await
-        {
-            Ok(Ok(response)) => response,
-            Ok(Err(error)) => {
-                last_error = error.to_string();
-                trace_context.latency_breakdown = Some(json!({
-                    "preparationMs": upstream_started_at.saturating_sub(started_at),
-                    "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
-                }));
+        let mut retried_after_token_refresh = false;
+        let response = loop {
+            let mut upstream_headers =
+                upstream_headers(&account, &headers, &url, None, &state.config);
+            set_header(&mut upstream_headers, "content-type", &content_type);
+            set_header(
+                &mut upstream_headers,
+                "accept",
+                "application/sdp, application/json",
+            );
+            let response = match timeout(
+                state.config.upstream_timeout,
                 state
-                    .trace
-                    .record(
-                        &trace_context,
-                        transport_trace_outcome(StatusCode::BAD_GATEWAY, last_error.clone()),
-                    )
-                    .await;
-                continue;
+                    .client
+                    .post(&url)
+                    .headers(upstream_headers)
+                    .body(body.clone())
+                    .send(),
+            )
+            .await
+            {
+                Ok(Ok(response)) => response,
+                Ok(Err(error)) => {
+                    last_error = error.to_string();
+                    trace_context.latency_breakdown = Some(json!({
+                        "preparationMs": upstream_started_at.saturating_sub(started_at),
+                        "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
+                    }));
+                    state
+                        .trace
+                        .record(
+                            &trace_context,
+                            transport_trace_outcome(StatusCode::BAD_GATEWAY, last_error.clone()),
+                        )
+                        .await;
+                    continue 'accounts;
+                }
+                Err(_) => {
+                    last_error = "realtime upstream request timed out".to_owned();
+                    trace_context.latency_breakdown = Some(json!({
+                        "preparationMs": upstream_started_at.saturating_sub(started_at),
+                        "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
+                    }));
+                    state
+                        .trace
+                        .record(
+                            &trace_context,
+                            transport_trace_outcome(
+                                StatusCode::GATEWAY_TIMEOUT,
+                                last_error.clone(),
+                            ),
+                        )
+                        .await;
+                    continue 'accounts;
+                }
+            };
+            if response.status() == StatusCode::UNAUTHORIZED
+                && !retried_after_token_refresh
+                && token_refresh::TokenRefreshManager::can_refresh(&account)
+            {
+                match state
+                    .token_refresh
+                    .refresh(&state.client, &state.config, &state.store, &account, true)
+                    .await
+                {
+                    Ok(refreshed) if refreshed.access_token != account.access_token => {
+                        account = refreshed;
+                        retried_after_token_refresh = true;
+                        continue;
+                    }
+                    _ => {}
+                }
             }
-            Err(_) => {
-                last_error = "realtime upstream request timed out".to_owned();
-                trace_context.latency_breakdown = Some(json!({
-                    "preparationMs": upstream_started_at.saturating_sub(started_at),
-                    "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
-                }));
-                state
-                    .trace
-                    .record(
-                        &trace_context,
-                        transport_trace_outcome(StatusCode::GATEWAY_TIMEOUT, last_error.clone()),
-                    )
-                    .await;
-                continue;
-            }
+            break response;
         };
         let status = response.status();
         let response_headers = copy_public_headers(response.headers());
@@ -8564,6 +9657,10 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
         Ok(auth) => auth,
         Err(response) => return response,
     };
+    let _activity_lease = match state.drain.admit(ActivityKind::Request) {
+        Some(lease) => lease,
+        None => return draining_response(),
+    };
     let route = RouteCandidate {
         requested_model: "realtime-voices".to_owned(),
         model: "realtime-voices".to_owned(),
@@ -8579,7 +9676,7 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     let selection = realtime_account_selection(trace_provider, candidate_count, false);
-    let Some(account) = accounts.into_iter().next() else {
+    let Some(mut account) = accounts.into_iter().next() else {
         let mut client_context = build_trace_context(
             &state,
             &path,
@@ -8633,6 +9730,28 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
     );
     trace_context.request_body = None;
     trace_context.account_selection = Some(selection.clone());
+    if token_refresh::TokenRefreshManager::needs_refresh(&account, now_ms()) {
+        match state
+            .token_refresh
+            .refresh(&state.client, &state.config, &state.store, &account, false)
+            .await
+        {
+            Ok(refreshed) => account = refreshed,
+            Err(error) => {
+                state
+                    .trace
+                    .record(
+                        &trace_context,
+                        transport_trace_outcome(StatusCode::SERVICE_UNAVAILABLE, error.clone()),
+                    )
+                    .await;
+                return json_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"error": {"message": error, "type": "service_unavailable", "code": "voice_account_unavailable"}}),
+                );
+            }
+        }
+    }
     let mut url = format!(
         "{}/backend-api/settings/voices",
         trim_slashes(&state.config.chatgpt_base_url)
@@ -8646,119 +9765,140 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
         url.push_str("voice_mode=advanced");
     }
     let upstream_started_at = now_ms();
-    let response = match timeout(
-        state.config.upstream_timeout,
-        state
-            .client
-            .get(&url)
-            .headers(upstream_headers(
-                &account,
-                &headers,
-                &url,
-                None,
-                &state.config,
-            ))
-            .send(),
-    )
-    .await
-    {
-        Ok(Ok(response)) => response,
-        Ok(Err(error)) => {
-            let message = error.to_string();
-            trace_context.latency_breakdown = Some(json!({
-                "preparationMs": upstream_started_at.saturating_sub(started_at),
-                "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
-            }));
+    let mut retried_after_token_refresh = false;
+    let response = loop {
+        let response = match timeout(
+            state.config.upstream_timeout,
             state
-                .trace
-                .record(
-                    &trace_context,
-                    transport_trace_outcome(StatusCode::BAD_GATEWAY, message.clone()),
-                )
-                .await;
-            let mut client_context = build_trace_context(
-                &state,
-                &path,
-                &headers,
-                &Value::Null,
-                &auth.application,
-                &client_request_id,
-                "realtime-voices",
-                "realtime-voices",
-                None,
-                false,
-                started_at,
-                0,
-                1,
-                "client-request",
-            );
-            client_context.request_body = None;
-            client_context.account_selection = Some(selection.clone());
-            state
-                .trace
-                .record(
-                    &client_context,
-                    client_trace_outcome(
-                        StatusCode::BAD_GATEWAY.as_u16(),
-                        now_ms(),
-                        Some(message.clone()),
-                        Some(false),
-                    ),
-                )
-                .await;
-            return json_response(
-                StatusCode::BAD_GATEWAY,
-                json!({"error": {"message": message, "type": "upstream_error", "code": "voice_discovery_upstream_error"}}),
-            );
+                .client
+                .get(&url)
+                .headers(upstream_headers(
+                    &account,
+                    &headers,
+                    &url,
+                    None,
+                    &state.config,
+                ))
+                .send(),
+        )
+        .await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                let message = error.to_string();
+                trace_context.latency_breakdown = Some(json!({
+                    "preparationMs": upstream_started_at.saturating_sub(started_at),
+                    "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
+                }));
+                state
+                    .trace
+                    .record(
+                        &trace_context,
+                        transport_trace_outcome(StatusCode::BAD_GATEWAY, message.clone()),
+                    )
+                    .await;
+                let mut client_context = build_trace_context(
+                    &state,
+                    &path,
+                    &headers,
+                    &Value::Null,
+                    &auth.application,
+                    &client_request_id,
+                    "realtime-voices",
+                    "realtime-voices",
+                    None,
+                    false,
+                    started_at,
+                    0,
+                    1,
+                    "client-request",
+                );
+                client_context.request_body = None;
+                client_context.account_selection = Some(selection.clone());
+                state
+                    .trace
+                    .record(
+                        &client_context,
+                        client_trace_outcome(
+                            StatusCode::BAD_GATEWAY.as_u16(),
+                            now_ms(),
+                            Some(message.clone()),
+                            Some(false),
+                        ),
+                    )
+                    .await;
+                return json_response(
+                    StatusCode::BAD_GATEWAY,
+                    json!({"error": {"message": message, "type": "upstream_error", "code": "voice_discovery_upstream_error"}}),
+                );
+            }
+            Err(_) => {
+                let message = "voice discovery upstream request timed out".to_owned();
+                trace_context.latency_breakdown = Some(json!({
+                    "preparationMs": upstream_started_at.saturating_sub(started_at),
+                    "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
+                }));
+                state
+                    .trace
+                    .record(
+                        &trace_context,
+                        transport_trace_outcome(StatusCode::GATEWAY_TIMEOUT, message.clone()),
+                    )
+                    .await;
+                let mut client_context = build_trace_context(
+                    &state,
+                    &path,
+                    &headers,
+                    &Value::Null,
+                    &auth.application,
+                    &client_request_id,
+                    "realtime-voices",
+                    "realtime-voices",
+                    None,
+                    false,
+                    started_at,
+                    0,
+                    1,
+                    "client-request",
+                );
+                client_context.request_body = None;
+                client_context.account_selection = Some(selection.clone());
+                state
+                    .trace
+                    .record(
+                        &client_context,
+                        client_trace_outcome(
+                            StatusCode::GATEWAY_TIMEOUT.as_u16(),
+                            now_ms(),
+                            Some(message.clone()),
+                            Some(false),
+                        ),
+                    )
+                    .await;
+                return json_response(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    json!({"error": {"message": message, "type": "upstream_error", "code": "voice_discovery_upstream_error"}}),
+                );
+            }
+        };
+        if response.status() == StatusCode::UNAUTHORIZED
+            && !retried_after_token_refresh
+            && token_refresh::TokenRefreshManager::can_refresh(&account)
+        {
+            match state
+                .token_refresh
+                .refresh(&state.client, &state.config, &state.store, &account, true)
+                .await
+            {
+                Ok(refreshed) if refreshed.access_token != account.access_token => {
+                    account = refreshed;
+                    retried_after_token_refresh = true;
+                    continue;
+                }
+                _ => {}
+            }
         }
-        Err(_) => {
-            let message = "voice discovery upstream request timed out".to_owned();
-            trace_context.latency_breakdown = Some(json!({
-                "preparationMs": upstream_started_at.saturating_sub(started_at),
-                "upstreamHeadersMs": now_ms().saturating_sub(upstream_started_at),
-            }));
-            state
-                .trace
-                .record(
-                    &trace_context,
-                    transport_trace_outcome(StatusCode::GATEWAY_TIMEOUT, message.clone()),
-                )
-                .await;
-            let mut client_context = build_trace_context(
-                &state,
-                &path,
-                &headers,
-                &Value::Null,
-                &auth.application,
-                &client_request_id,
-                "realtime-voices",
-                "realtime-voices",
-                None,
-                false,
-                started_at,
-                0,
-                1,
-                "client-request",
-            );
-            client_context.request_body = None;
-            client_context.account_selection = Some(selection.clone());
-            state
-                .trace
-                .record(
-                    &client_context,
-                    client_trace_outcome(
-                        StatusCode::GATEWAY_TIMEOUT.as_u16(),
-                        now_ms(),
-                        Some(message.clone()),
-                        Some(false),
-                    ),
-                )
-                .await;
-            return json_response(
-                StatusCode::GATEWAY_TIMEOUT,
-                json!({"error": {"message": message, "type": "upstream_error", "code": "voice_discovery_upstream_error"}}),
-            );
-        }
+        break response;
     };
     let status = response.status();
     let response_headers = copy_public_headers(response.headers());
@@ -8835,6 +9975,9 @@ async fn websocket_handler(
                 .unwrap_or_else(|_| Response::new(Body::empty()));
         }
     };
+    if state.drain.is_draining() {
+        return draining_response();
+    }
     ws.on_upgrade(move |socket| handle_websocket(socket, state, headers, auth.application, path))
 }
 
@@ -8863,6 +10006,18 @@ async fn handle_websocket(
                     if !ws_send_json(&mut socket, json!({"type": "error", "status": 400, "error": {"type": "invalid_request_error", "message": "expected a JSON text frame with type='response.create'"}})).await { break; }
                     continue;
                 }
+                if state.drain.is_draining() {
+                    if !ws_send_json(&mut socket, json!({
+                        "type": "error",
+                        "status": StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+                        "error": {
+                            "type": "service_unavailable",
+                            "code": "host_update_draining",
+                            "message": "MultiVibe Host is draining for a verified update",
+                        }
+                    })).await { break; }
+                    continue;
+                }
                 if frame.get("generate").and_then(Value::as_bool) == Some(false) {
                     let id = new_id("resp");
                     let model = value_string(frame.get("model")).unwrap_or_else(|| "unknown".to_owned());
@@ -8881,6 +10036,7 @@ async fn handle_websocket(
                     &headers,
                     &frame,
                     &application,
+                    ActivityKind::WebsocketTurn,
                 )
                 .await
                 {
@@ -8903,6 +10059,7 @@ async fn handle_websocket(
                         let mut trace = reply.trace;
                         let mut upstream = reply.upstream.bytes_stream();
                         let _capacity_lease = reply.capacity_lease;
+                        let _activity_lease = reply.activity_lease;
                         let mut buffer = String::new();
                         while let Some(Ok(chunk)) = upstream.next().await {
                             if let Some(trace) = trace.as_mut() {
@@ -8926,8 +10083,25 @@ async fn handle_websocket(
                             trace.finish(status, None, Some(false)).await;
                         }
                     }
-                    Err(_) => {
-                        if !ws_send_json(&mut socket, json!({"type": "error", "status": 502, "error": {"type": "upstream_error", "message": "upstream request failed"}})).await { return; }
+                    Err(error) => {
+                        let status = error.status();
+                        let bytes = to_bytes(error.into_body(), 1024 * 1024)
+                            .await
+                            .unwrap_or_default();
+                        let parsed = serde_json::from_slice::<Value>(&bytes).ok();
+                        let error = parsed
+                            .as_ref()
+                            .and_then(|body| body.get("error"))
+                            .cloned()
+                            .unwrap_or_else(|| json!({
+                                "type": "upstream_error",
+                                "message": "upstream request failed",
+                            }));
+                        if !ws_send_json(&mut socket, json!({
+                            "type": "error",
+                            "status": status.as_u16(),
+                            "error": error,
+                        })).await { return; }
                     }
                 }
             }
@@ -9029,25 +10203,81 @@ async fn fallback_handler(State(state): State<EdgeState>, req: Request<Body>) ->
         .unwrap_or_else(|_| Response::new(Body::empty()))
 }
 
+fn internal_control_authorized(headers: &HeaderMap, config: &EdgeConfig) -> bool {
+    config
+        .internal_job_token
+        .as_deref()
+        .is_some_and(|expected| {
+            header_value(headers, "x-multivibe-internal-token")
+                .is_some_and(|actual| constant_time_equal(&actual, expected))
+        })
+}
+
+fn drain_status_response(state: &EdgeState) -> Response {
+    let (draining, active_requests, active_websocket_turns, active_jobs) = state.drain.snapshot();
+    json_response(
+        StatusCode::OK,
+        json!({
+            "draining": draining,
+            "ready": draining
+                && active_requests == 0
+                && active_websocket_turns == 0
+                && active_jobs == 0,
+            "active_requests": active_requests,
+            "active_websocket_turns": active_websocket_turns,
+            "active_jobs": active_jobs,
+        }),
+    )
+}
+
+async fn drain_status_handler(State(state): State<EdgeState>, headers: HeaderMap) -> Response {
+    if !internal_control_authorized(&headers, &state.config) {
+        return json_response(StatusCode::UNAUTHORIZED, json!({"error": "unauthorized"}));
+    }
+    drain_status_response(&state)
+}
+
+async fn drain_begin_handler(State(state): State<EdgeState>, headers: HeaderMap) -> Response {
+    if !internal_control_authorized(&headers, &state.config) {
+        return json_response(StatusCode::UNAUTHORIZED, json!({"error": "unauthorized"}));
+    }
+    state.drain.begin();
+    state.jobs.changed.notify_waiters();
+    drain_status_response(&state)
+}
+
+async fn drain_resume_handler(State(state): State<EdgeState>, headers: HeaderMap) -> Response {
+    if !internal_control_authorized(&headers, &state.config) {
+        return json_response(StatusCode::UNAUTHORIZED, json!({"error": "unauthorized"}));
+    }
+    state.drain.resume();
+    state.jobs.changed.notify_waiters();
+    drain_status_response(&state)
+}
+
 pub fn build_router(state: EdgeState) -> Router {
     Router::new()
         // Every inference route, both the canonical `/v1` surface and its
         // historical root aliases, terminates in this native edge. Node
         // remains a control-plane peer for the dashboard and OAuth, never an
         // HTTP hop for the public API.
-        .route(
-            "/models",
-            get(list_models_handler).post(method_not_allowed),
-        )
+        .route("/models", get(list_models_handler).post(method_not_allowed))
         .route(
             "/models/{id}",
             get(get_model_handler).post(method_not_allowed),
         )
-        .route("/props", get(props_handler))
         .route(
-            "/responses",
-            get(websocket_handler).post(inference_handler),
+            "/api/v1/models",
+            get(list_models_handler).post(method_not_allowed),
         )
+        .route(
+            "/api/v1/models/{id}",
+            get(get_model_handler).post(method_not_allowed),
+        )
+        .route("/api/tags", get(ollama_tags_handler))
+        .route("/version", get(version_handler))
+        .route("/props", get(props_handler))
+        .route("/responses", get(websocket_handler).post(inference_handler))
         .route("/responses/compact", post(inference_handler))
         .route("/chat/completions", post(inference_handler))
         .route("/messages", post(inference_handler))
@@ -9082,6 +10312,9 @@ pub fn build_router(state: EdgeState) -> Router {
         )
         .route("/v1/jobs/{id}/result", get(get_job_result_handler))
         .route("/v1/jobs/{id}/events", get(get_job_events_handler))
+        .route("/internal/v1-edge/drain/status", get(drain_status_handler))
+        .route("/internal/v1-edge/drain/begin", post(drain_begin_handler))
+        .route("/internal/v1-edge/drain/resume", post(drain_resume_handler))
         .fallback(fallback_handler)
         .with_state(state)
 }
@@ -9287,7 +10520,10 @@ mod tests {
             image_aware_routing_model(&store, &catalog, &image, "gpt-text"),
             "vision-alias"
         );
-        assert_eq!(alias_default(&store, "vision-alias", "priority").as_deref(), Some("interactive"));
+        assert_eq!(
+            alias_default(&store, "vision-alias", "priority").as_deref(),
+            Some("interactive")
+        );
 
         store.settings.image_request_model_override = Some("missing-model".to_owned());
         assert_eq!(
@@ -9328,6 +10564,249 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upstream_sender_retries_transient_errors_but_not_quota() {
+        let transient_attempts = Arc::new(AtomicUsize::new(0));
+        let quota_attempts = Arc::new(AtomicUsize::new(0));
+        let transient_counter = transient_attempts.clone();
+        let quota_counter = quota_attempts.clone();
+        let upstream = Router::new()
+            .route(
+                "/transient",
+                post(move || {
+                    let counter = transient_counter.clone();
+                    async move {
+                        if counter.fetch_add(1, AtomicOrdering::Relaxed) == 0 {
+                            json_response(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                json!({"error": "temporarily unavailable"}),
+                            )
+                        } else {
+                            json_response(StatusCode::OK, json!({"id": "retry-success"}))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/quota",
+                post(move || {
+                    let counter = quota_counter.clone();
+                    async move {
+                        counter.fetch_add(1, AtomicOrdering::Relaxed);
+                        json_response(
+                            StatusCode::TOO_MANY_REQUESTS,
+                            json!({"error": "rate limit"}),
+                        )
+                    }
+                }),
+            );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+
+        let store_path = temporary_path("upstream-retry-store");
+        let jobs_path = temporary_path("upstream-retry-jobs");
+        fs::write(&store_path, b"{}".as_slice()).await.unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.max_upstream_retries = 3;
+        config.upstream_retry_base_delay = Duration::from_millis(1);
+        let state = EdgeState::new(config).await.unwrap();
+
+        let retry_result = send_upstream_with_retry(
+            &state,
+            &format!("{upstream_url}/transient"),
+            &HeaderMap::new(),
+            b"{}",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(retry_result, UpstreamSendResult::Success(_)));
+        assert_eq!(transient_attempts.load(AtomicOrdering::Relaxed), 2);
+
+        let quota_result = send_upstream_with_retry(
+            &state,
+            &format!("{upstream_url}/quota"),
+            &HeaderMap::new(),
+            b"{}",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(quota_result, UpstreamSendResult::HttpError(_)));
+        assert_eq!(quota_attempts.load(AtomicOrdering::Relaxed), 1);
+
+        upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn native_token_refresh_is_single_flight_and_persisted_through_control_plane() {
+        let store_path = temporary_path("token-refresh-accounts");
+        let jobs_path = temporary_path("token-refresh-jobs");
+        let mut expired = account("refresh-account");
+        expired.access_token = "expired-access".to_owned();
+        expired.refresh_token = Some("rotating-refresh".to_owned());
+        expired.expires_at = Some(1);
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![expired.clone()])).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let oauth_calls = Arc::new(AtomicUsize::new(0));
+        let persistence_calls = Arc::new(AtomicUsize::new(0));
+        let oauth_counter = oauth_calls.clone();
+        let persistence_counter = persistence_calls.clone();
+        let persisted_store_path = store_path.clone();
+        let control_plane = Router::new()
+            .route(
+                "/oauth/token",
+                post(move || {
+                    let counter = oauth_counter.clone();
+                    async move {
+                        counter.fetch_add(1, AtomicOrdering::SeqCst);
+                        Json(json!({
+                            "access_token": "fresh-access",
+                            "refresh_token": "fresh-refresh",
+                            "expires_in": 3600
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/internal/v1-edge/accounts/{id}/token",
+                post(move |Path(id): Path<String>, Json(payload): Json<Value>| {
+                    let counter = persistence_counter.clone();
+                    let path = persisted_store_path.clone();
+                    async move {
+                        counter.fetch_add(1, AtomicOrdering::SeqCst);
+                        let mut store: StoreFile =
+                            serde_json::from_slice(&fs::read(&path).await.unwrap()).unwrap();
+                        let account = store
+                            .accounts
+                            .iter_mut()
+                            .find(|account| account.id == id)
+                            .unwrap();
+                        assert_eq!(payload["expectedAccessToken"], account.access_token);
+                        account.access_token = payload["accessToken"].as_str().unwrap().to_owned();
+                        account.refresh_token = value_string(payload.get("refreshToken"));
+                        account.expires_at = payload.get("expiresAt").and_then(Value::as_u64);
+                        fs::write(&path, serde_json::to_vec(&store).unwrap())
+                            .await
+                            .unwrap();
+                        Json(json!({"ok": true}))
+                    }
+                }),
+            );
+        let (control_plane_url, control_plane_task) = start_server(control_plane).await;
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.legacy_jobs_db_path = None;
+        config.node_control_plane_url = control_plane_url.clone();
+        config.oauth_token_url = format!("{control_plane_url}/oauth/token");
+        config.internal_job_token = Some("refresh-internal".to_owned());
+        let state = EdgeState::new(config).await.unwrap();
+        let selected = state.store.snapshot().await.unwrap().accounts.remove(0);
+
+        let first = state.token_refresh.refresh(
+            &state.client,
+            &state.config,
+            &state.store,
+            &selected,
+            false,
+        );
+        let second = state.token_refresh.refresh(
+            &state.client,
+            &state.config,
+            &state.store,
+            &selected,
+            false,
+        );
+        let (first, second) = tokio::join!(first, second);
+        assert_eq!(first.unwrap().access_token, "fresh-access");
+        assert_eq!(second.unwrap().access_token, "fresh-access");
+        assert_eq!(oauth_calls.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(persistence_calls.load(AtomicOrdering::SeqCst), 1);
+
+        control_plane_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn native_drain_rejects_new_inference_and_reports_active_work() {
+        let controller = DrainController::default();
+        let request = controller.admit(ActivityKind::Request).unwrap();
+        let websocket = controller.admit(ActivityKind::WebsocketTurn).unwrap();
+        controller.begin();
+        assert!(controller.admit(ActivityKind::Job).is_none());
+        assert_eq!(controller.snapshot(), (true, 1, 1, 0));
+        drop(request);
+        drop(websocket);
+        assert_eq!(controller.snapshot(), (true, 0, 0, 0));
+
+        let store_path = temporary_path("drain-accounts");
+        let jobs_path = temporary_path("drain-jobs");
+        fs::write(&store_path, b"{}".as_slice()).await.unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.legacy_jobs_db_path = None;
+        config.internal_job_token = Some("drain-internal".to_owned());
+        config.configured_api_keys = vec![("drain-app".to_owned(), "drain-key".to_owned())];
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let client = reqwest::Client::new();
+
+        assert_eq!(
+            client
+                .get(format!("{edge_url}/internal/v1-edge/drain/status"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let status: Value = client
+            .post(format!("{edge_url}/internal/v1-edge/drain/begin"))
+            .header("x-multivibe-internal-token", "drain-internal")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(status["ready"], true);
+        let rejected: Value = client
+            .post(format!("{edge_url}/v1/responses"))
+            .header(header::AUTHORIZATION, "Bearer drain-key")
+            .json(&json!({"model": "gpt-drain", "input": "hello"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(rejected["error"]["code"], "host_update_draining");
+
+        let resumed: Value = client
+            .post(format!("{edge_url}/internal/v1-edge/drain/resume"))
+            .header("x-multivibe-internal-token", "drain-internal")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(resumed["draining"], false);
+
+        edge_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
     async fn admission_leases_are_atomic_and_reflected_in_capacity() {
         let version = Arc::new(AtomicU64::new(1));
         let admission = Arc::new(AdmissionController::new(version.clone()));
@@ -9344,9 +10823,7 @@ mod tests {
             let target = target.clone();
             tasks.push(tokio::spawn(async move {
                 barrier.wait().await;
-                admission
-                    .acquire_any(&[target])
-                    .map(|(_, lease)| lease)
+                admission.acquire_any(&[target]).map(|(_, lease)| lease)
             }));
         }
         barrier.wait().await;
@@ -9373,9 +10850,7 @@ mod tests {
             max_concurrent: Some(1),
             ..Default::default()
         });
-        let (_, first_lease) = admission
-            .acquire_any(&[target.clone()])
-            .unwrap();
+        let (_, first_lease) = admission.acquire_any(&[target.clone()]).unwrap();
 
         let waiting_admission = admission.clone();
         let waiting_target = target.clone();
@@ -9411,9 +10886,7 @@ mod tests {
         drop(second_lease);
         assert_eq!(admission.snapshot(&[target.clone()]), (1, 0));
 
-        let (_, held_lease) = admission
-            .acquire_any(&[target.clone()])
-            .unwrap();
+        let (_, held_lease) = admission.acquire_any(&[target.clone()]).unwrap();
         let timed_out = admission
             .wait_for_capacity(&[target.clone()], Duration::from_millis(10))
             .await;
@@ -9769,11 +11242,13 @@ mod tests {
     async fn jobs_are_persisted_and_results_are_application_scoped() {
         let path = temporary_path("jobs");
         let manager = JobManager::new(path.clone()).await.unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-multivibe-priority", HeaderValue::from_static("standard"));
         let job = manager
             .create(
                 "batch-app",
                 "/v1/responses",
-                &HeaderMap::new(),
+                &headers,
                 &json!({"model": "gpt-5.3-codex", "input": "hello"}),
                 3,
             )
@@ -9796,12 +11271,248 @@ mod tests {
         assert!(manager.get_for("other-app", &job.id).await.is_none());
         let stored = manager.get_for("batch-app", &job.id).await.unwrap();
         assert_eq!(stored.status, "succeeded");
-        assert_eq!(stored.result.unwrap()["ok"], true);
+        assert_eq!(stored.result.as_ref().unwrap()["ok"], true);
         assert!(manager.consume_result("batch-app", &job.id).await.is_some());
+        let events = manager.events_after("batch-app", &job.id, 0).await.unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.r#type.as_str())
+                .collect::<Vec<_>>(),
+            vec!["job.queued", "job.started", "job.succeeded", "job.consumed"]
+        );
+        assert!(events.windows(2).all(|pair| pair[0].id < pair[1].id));
+        let last_event_id = events.last().unwrap().id;
 
         let reloaded = JobManager::new(path.clone()).await.unwrap();
         assert_eq!(reloaded.list_for("batch-app", 10).await.len(), 1);
+        let replay = reloaded
+            .events_after("batch-app", &job.id, 0)
+            .await
+            .unwrap();
+        assert_eq!(replay.len(), 4);
+        assert!(
+            reloaded
+                .events_after("batch-app", &job.id, last_event_id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         let _ = fs::remove_file(path).await;
+    }
+
+    #[test]
+    fn batch_jobs_wait_for_the_paris_night_window() {
+        let daytime = parse_rfc3339_ms("2026-09-07T12:00:00Z").unwrap();
+        assert_eq!(
+            next_batch_window_at(daytime),
+            parse_rfc3339_ms("2026-09-07T20:00:00Z").unwrap()
+        );
+        let nighttime = parse_rfc3339_ms("2026-09-07T21:00:00Z").unwrap();
+        assert_eq!(next_batch_window_at(nighttime), nighttime);
+    }
+
+    #[tokio::test]
+    async fn public_jobs_use_iso8601_timestamps() {
+        let path = temporary_path("public-job-timestamps");
+        let manager = JobManager::new(path.clone()).await.unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-multivibe-priority", HeaderValue::from_static("standard"));
+        headers.insert(
+            "x-multivibe-deadline",
+            HeaderValue::from_static("2099-01-02T03:04:05.678Z"),
+        );
+        let job = manager
+            .create(
+                "timestamp-app",
+                "/v1/responses",
+                &headers,
+                &json!({"model": "gpt-job", "input": "hello"}),
+                3,
+            )
+            .await
+            .unwrap()
+            .job;
+        let public = public_job(&job);
+
+        for (field, expected) in [
+            ("created_at", job.created_at),
+            ("updated_at", job.updated_at),
+            ("not_before", job.not_before),
+        ] {
+            let timestamp = public[field].as_str().expect("public timestamp is text");
+            assert!(timestamp.ends_with('Z'));
+            assert_eq!(parse_rfc3339_ms(timestamp), Some(expected));
+        }
+        assert_eq!(public["deadline"], "2099-01-02T03:04:05.678Z");
+
+        let _ = fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn legacy_sqlite_jobs_are_backed_up_and_imported_once() {
+        let sqlite_path = temporary_path("legacy-jobs.sqlite");
+        let json_path = temporary_path("migrated-jobs.json");
+        {
+            let connection = rusqlite::Connection::open(&sqlite_path).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE jobs (
+                        id TEXT PRIMARY KEY, application TEXT NOT NULL, route TEXT NOT NULL,
+                        request_headers_json TEXT, request_json TEXT, status TEXT NOT NULL,
+                        priority TEXT NOT NULL, model TEXT, idempotency_key TEXT, webhook_id TEXT,
+                        deadline_at INTEGER, not_before INTEGER NOT NULL, attempts INTEGER NOT NULL,
+                        max_attempts INTEGER NOT NULL, response_status INTEGER,
+                        response_headers_json TEXT, result_json TEXT, error TEXT,
+                        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                        completed_at INTEGER, consumed_at INTEGER, purge_after INTEGER
+                    );
+                    CREATE TABLE webhook_deliveries (
+                        event_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, attempts INTEGER NOT NULL,
+                        next_attempt_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+                        delivered_at INTEGER, last_error TEXT
+                    );",
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO jobs VALUES (?1, ?2, ?3, '{}', ?4, 'queued', 'standard', ?5, ?6, NULL, NULL, ?7, 0, 3, NULL, NULL, NULL, NULL, ?7, ?7, NULL, NULL, NULL)",
+                    rusqlite::params![
+                        "legacy-job",
+                        "legacy-app",
+                        "/v1/responses",
+                        r#"{"model":"gpt-legacy","input":"hello"}"#,
+                        "gpt-legacy",
+                        "legacy-key",
+                        now_ms() as i64,
+                    ],
+                )
+                .unwrap();
+        }
+
+        let manager = JobManager::new_with_legacy(json_path.clone(), Some(sqlite_path.clone()))
+            .await
+            .unwrap();
+        let imported = manager.get_for("legacy-app", "legacy-job").await.unwrap();
+        assert_eq!(imported.request_body["model"], "gpt-legacy");
+        assert!(json_path.exists());
+        let backup_path = sqlite_path.with_extension("pre-rust-backup.sqlite");
+        assert!(backup_path.exists());
+
+        let reloaded = JobManager::new_with_legacy(json_path.clone(), Some(sqlite_path.clone()))
+            .await
+            .unwrap();
+        assert_eq!(reloaded.list_for("legacy-app", 10).await.len(), 1);
+
+        let _ = fs::remove_file(sqlite_path).await;
+        let _ = fs::remove_file(backup_path).await;
+        let _ = fs::remove_file(json_path).await;
+    }
+
+    #[tokio::test]
+    async fn completed_jobs_deliver_signed_webhooks() {
+        let received = Arc::new(Mutex::new(None::<(Vec<u8>, String, String)>));
+        let received_request = received.clone();
+        let webhook = Router::new().route(
+            "/job",
+            post(move |headers: HeaderMap, body: Bytes| {
+                let received = received_request.clone();
+                async move {
+                    *received.lock().await = Some((
+                        body.to_vec(),
+                        header_value(&headers, "x-multivibe-signature").unwrap_or_default(),
+                        header_value(&headers, "x-multivibe-event-id").unwrap_or_default(),
+                    ));
+                    StatusCode::NO_CONTENT
+                }
+            }),
+        );
+        let (webhook_url, webhook_task) = start_server(webhook).await;
+        let store_path = temporary_path("webhook-accounts");
+        let jobs_path = temporary_path("webhook-jobs");
+        let mut store = StoreFile::default();
+        store.application_policies.push(ApplicationPolicy {
+            application: "webhook-app".to_owned(),
+            fairness_weight: Some(1.0),
+            webhooks: vec![ApplicationWebhook {
+                id: "result-hook".to_owned(),
+                url: format!("{webhook_url}/job"),
+                secret: "webhook-secret".to_owned(),
+                enabled: true,
+            }],
+        });
+        fs::write(&store_path, serde_json::to_vec(&store).unwrap())
+            .await
+            .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.legacy_jobs_db_path = None;
+        let state = EdgeState::new(config).await.unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-multivibe-priority", HeaderValue::from_static("standard"));
+        headers.insert(
+            "x-multivibe-webhook",
+            HeaderValue::from_static("result-hook"),
+        );
+        let job = state
+            .jobs
+            .create(
+                "webhook-app",
+                "/v1/responses",
+                &headers,
+                &json!({"model": "gpt-webhook", "input": "hello"}),
+                3,
+            )
+            .await
+            .unwrap()
+            .job;
+        let running = state.jobs.acquire_next(&HashMap::new()).await.unwrap();
+        assert_eq!(running.id, job.id);
+        state
+            .jobs
+            .succeed(
+                &job.id,
+                BufferedReply {
+                    status: StatusCode::OK,
+                    headers: Vec::new(),
+                    body: Bytes::from_static(br#"{"ok":true}"#),
+                },
+            )
+            .await;
+        let runner = state.start_job_runner().unwrap();
+        timeout(Duration::from_secs(2), async {
+            loop {
+                if received.lock().await.is_some() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let (body, signature, event_id) = received.lock().await.clone().unwrap();
+        let mut signer = <HmacSha256 as Mac>::new_from_slice(b"webhook-secret").unwrap();
+        signer.update(&body);
+        assert_eq!(
+            signature,
+            format!("sha256={}", hex_bytes(&signer.finalize().into_bytes()))
+        );
+        assert!(!event_id.is_empty());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap()["type"],
+            "job.completed"
+        );
+
+        runner.abort();
+        webhook_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
     }
 
     #[tokio::test]
@@ -9813,10 +11524,7 @@ mod tests {
             "x-multivibe-idempotency-key",
             HeaderValue::from_static("job-key"),
         );
-        headers.insert(
-            "x-multivibe-priority",
-            HeaderValue::from_static("critical"),
-        );
+        headers.insert("x-multivibe-priority", HeaderValue::from_static("critical"));
         let body = json!({"model": "gpt-job", "input": "same"});
         let created = manager
             .create("app-a", "/v1/responses", &headers, &body, 3)
@@ -9852,9 +11560,7 @@ mod tests {
         let running = manager.acquire_next(&HashMap::new()).await.unwrap();
         assert_eq!(running.id, created.job.id);
         assert_eq!(running.attempts, 2);
-        manager
-            .fail(&running.id, "temporary outage", true)
-            .await;
+        manager.fail(&running.id, "temporary outage", true).await;
         let retry = manager.get_for("app-a", &running.id).await.unwrap();
         assert_eq!(retry.status, "retry");
         assert!(retry.not_before > retry.updated_at);
@@ -9882,10 +11588,7 @@ mod tests {
         assert_ne!(other_application.job.id, created.job.id);
 
         let mut invalid_deadline = HeaderMap::new();
-        invalid_deadline.insert(
-            "x-multivibe-deadline",
-            HeaderValue::from_static("tomorrow"),
-        );
+        invalid_deadline.insert("x-multivibe-deadline", HeaderValue::from_static("tomorrow"));
         assert!(matches!(
             manager
                 .create("app-a", "/v1/responses", &invalid_deadline, &body, 3)
@@ -9909,6 +11612,95 @@ mod tests {
         );
 
         let _ = fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn capacity_unavailable_requeues_without_consuming_an_attempt() {
+        let store_path = temporary_path("capacity-wait-accounts");
+        let jobs_path = temporary_path("capacity-wait-jobs");
+        let mut saturated = account("saturated-account");
+        saturated.capacity_profile = Some(CapacityProfile {
+            max_concurrent: Some(1),
+            ..Default::default()
+        });
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![saturated.clone()])).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.legacy_jobs_db_path = None;
+        let state = EdgeState::new(config).await.unwrap();
+        let (_, _held_capacity) = state
+            .admission
+            .acquire_any(std::slice::from_ref(&saturated))
+            .unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-multivibe-priority", HeaderValue::from_static("standard"));
+        headers.insert("x-multivibe-max-wait-ms", HeaderValue::from_static("0"));
+        let job = state
+            .jobs
+            .create(
+                "capacity-app",
+                "/v1/responses",
+                &headers,
+                &json!({"model": "gpt-job", "input": "hello"}),
+                1,
+            )
+            .await
+            .unwrap()
+            .job;
+        let running = state.jobs.acquire_next(&HashMap::new()).await.unwrap();
+        assert_eq!(running.attempts, 1);
+        let mut events = state.jobs.events.subscribe();
+        let permit = Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap();
+
+        run_claimed_job(state.clone(), running, permit).await;
+
+        let queued = state.jobs.get_for("capacity-app", &job.id).await.unwrap();
+        assert_eq!(queued.status, "queued");
+        assert_eq!(queued.attempts, 0);
+        assert_eq!(
+            queued.not_before.saturating_sub(queued.updated_at),
+            JOB_CAPACITY_WAIT_MS
+        );
+        assert!(queued.error.is_none());
+        assert!(state.jobs.acquire_next(&HashMap::new()).await.is_none());
+        let event = timeout(Duration::from_secs(1), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.job_id, job.id);
+        assert_eq!(event.r#type, "job.capacity_wait");
+        assert_eq!(event.data["nextAttemptAt"], queued.not_before);
+
+        {
+            let mut jobs = state.jobs.state.lock().await;
+            jobs.jobs.get_mut(&job.id).unwrap().not_before = now_ms();
+        }
+        let retried = state.jobs.acquire_next(&HashMap::new()).await.unwrap();
+        assert_eq!(retried.attempts, 1);
+        state
+            .jobs
+            .reschedule_for_capacity(&retried.id, u64::MAX)
+            .await;
+        let bounded = state
+            .jobs
+            .get_for("capacity-app", &retried.id)
+            .await
+            .unwrap();
+        assert_eq!(bounded.attempts, 0);
+        assert_eq!(
+            bounded.not_before.saturating_sub(bounded.updated_at),
+            JOB_RETRY_MAX_MS
+        );
+
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
     }
 
     #[tokio::test]
@@ -9966,10 +11758,7 @@ mod tests {
         config.upstream_timeout = Duration::from_secs(5);
         let state = EdgeState::new(config).await.unwrap();
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-multivibe-priority",
-            HeaderValue::from_static("standard"),
-        );
+        headers.insert("x-multivibe-priority", HeaderValue::from_static("standard"));
         for index in 0..6 {
             state
                 .jobs
@@ -9996,7 +11785,10 @@ mod tests {
             }
         })
         .await;
-        assert!(completed.is_ok(), "jobs did not complete before the timeout");
+        assert!(
+            completed.is_ok(),
+            "jobs did not complete before the timeout"
+        );
         assert_eq!(maximum.load(AtomicOrdering::SeqCst), 2);
 
         runner.abort();
@@ -10221,10 +12013,9 @@ mod tests {
                             StatusCode::OK,
                             json!({"models": [{"slug": "gpt-cached"}]}),
                         ),
-                        1 => json_response(
-                            StatusCode::OK,
-                            json!({"models": [{"slug": "gpt-new"}]}),
-                        ),
+                        1 => {
+                            json_response(StatusCode::OK, json!({"models": [{"slug": "gpt-new"}]}))
+                        }
                         2 => json_response(
                             StatusCode::SERVICE_UNAVAILABLE,
                             json!({"error": "temporary failure"}),
@@ -10265,13 +12056,25 @@ mod tests {
         };
 
         let first: Value = get_catalog("").await.unwrap().json().await.unwrap();
-        assert!(first["data"].as_array().unwrap().iter().any(|model| model["id"] == "gpt-cached"));
+        assert!(
+            first["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|model| model["id"] == "gpt-cached")
+        );
         assert_eq!(first["catalog"]["stale"], false);
         assert_eq!(discovery_requests.load(AtomicOrdering::Relaxed), 1);
 
         discovery_mode.store(1, AtomicOrdering::Relaxed);
         let cached: Value = get_catalog("").await.unwrap().json().await.unwrap();
-        assert!(cached["data"].as_array().unwrap().iter().any(|model| model["id"] == "gpt-cached"));
+        assert!(
+            cached["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|model| model["id"] == "gpt-cached")
+        );
         assert_eq!(discovery_requests.load(AtomicOrdering::Relaxed), 1);
 
         let refreshed: Value = get_catalog("?refresh=true")
@@ -10280,7 +12083,13 @@ mod tests {
             .json()
             .await
             .unwrap();
-        assert!(refreshed["data"].as_array().unwrap().iter().any(|model| model["id"] == "gpt-new"));
+        assert!(
+            refreshed["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|model| model["id"] == "gpt-new")
+        );
         assert_eq!(discovery_requests.load(AtomicOrdering::Relaxed), 2);
 
         discovery_mode.store(2, AtomicOrdering::Relaxed);
@@ -10290,12 +12099,20 @@ mod tests {
             .json()
             .await
             .unwrap();
-        assert!(stale["data"].as_array().unwrap().iter().any(|model| model["id"] == "gpt-new"));
+        assert!(
+            stale["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|model| model["id"] == "gpt-new")
+        );
         assert_eq!(stale["catalog"]["stale"], true);
-        assert!(stale["catalog"]["accounts"][0]["lastError"]
-            .as_str()
-            .unwrap()
-            .contains("HTTP 503"));
+        assert!(
+            stale["catalog"]["accounts"][0]["lastError"]
+                .as_str()
+                .unwrap()
+                .contains("HTTP 503")
+        );
 
         discovery_mode.store(3, AtomicOrdering::Relaxed);
         let recovered: Value = get_catalog("?refresh=true")
@@ -10304,7 +12121,13 @@ mod tests {
             .json()
             .await
             .unwrap();
-        assert!(recovered["data"].as_array().unwrap().iter().any(|model| model["id"] == "gpt-recovered"));
+        assert!(
+            recovered["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|model| model["id"] == "gpt-recovered")
+        );
         assert_eq!(recovered["catalog"]["stale"], false);
         assert!(recovered["catalog"]["accounts"][0]["lastError"].is_null());
 
@@ -10525,6 +12348,128 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_realtime_retries_once_after_a_401_token_refresh() {
+        let store_path = temporary_path("native-realtime-refresh");
+        let jobs_path = temporary_path("native-realtime-refresh-jobs");
+        let mut stale = account("realtime-refresh-account");
+        stale.access_token = "stale-access".to_owned();
+        stale.refresh_token = Some("refresh-token".to_owned());
+        stale.expires_at = Some(now_ms().saturating_add(60 * 60 * 1_000));
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![stale])).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let upstream_calls = Arc::new(AtomicUsize::new(0));
+        let oauth_calls = Arc::new(AtomicUsize::new(0));
+        let persistence_calls = Arc::new(AtomicUsize::new(0));
+        let upstream_counter = upstream_calls.clone();
+        let oauth_counter = oauth_calls.clone();
+        let persistence_counter = persistence_calls.clone();
+        let persisted_store_path = store_path.clone();
+        let services = Router::new()
+            .route(
+                "/backend-api/realtime/calls",
+                post(move |headers: HeaderMap| {
+                    let counter = upstream_counter.clone();
+                    async move {
+                        counter.fetch_add(1, AtomicOrdering::SeqCst);
+                        if header_value(&headers, "authorization").as_deref()
+                            == Some("Bearer fresh-access")
+                        {
+                            Response::builder()
+                                .status(StatusCode::CREATED)
+                                .header(header::CONTENT_TYPE, "application/sdp")
+                                .body(Body::from("v=0\\r\\na=refreshed\\r\\n"))
+                                .unwrap()
+                        } else {
+                            error_response(
+                                StatusCode::UNAUTHORIZED,
+                                "expired token",
+                                "unauthorized",
+                            )
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/oauth/token",
+                post(move || {
+                    let counter = oauth_counter.clone();
+                    async move {
+                        counter.fetch_add(1, AtomicOrdering::SeqCst);
+                        Json(json!({
+                            "access_token": "fresh-access",
+                            "refresh_token": "next-refresh-token",
+                            "expires_in": 3600
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/internal/v1-edge/accounts/{id}/token",
+                post(move |Path(id): Path<String>, Json(payload): Json<Value>| {
+                    let counter = persistence_counter.clone();
+                    let path = persisted_store_path.clone();
+                    async move {
+                        counter.fetch_add(1, AtomicOrdering::SeqCst);
+                        let mut store: StoreFile =
+                            serde_json::from_slice(&fs::read(&path).await.unwrap()).unwrap();
+                        let account = store
+                            .accounts
+                            .iter_mut()
+                            .find(|account| account.id == id)
+                            .unwrap();
+                        assert_eq!(payload["expectedAccessToken"], account.access_token);
+                        account.access_token = payload["accessToken"].as_str().unwrap().to_owned();
+                        account.refresh_token = value_string(payload.get("refreshToken"));
+                        account.expires_at = payload.get("expiresAt").and_then(Value::as_u64);
+                        fs::write(&path, serde_json::to_vec(&store).unwrap())
+                            .await
+                            .unwrap();
+                        Json(json!({"ok": true}))
+                    }
+                }),
+            );
+        let (services_url, services_task) = start_server(services).await;
+
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.legacy_jobs_db_path = None;
+        config.chatgpt_base_url = services_url.clone();
+        config.node_control_plane_url = services_url.clone();
+        config.oauth_token_url = format!("{services_url}/oauth/token");
+        config.internal_job_token = Some("refresh-internal".to_owned());
+        config.configured_api_keys = vec![("realtime-app".to_owned(), "realtime-key".to_owned())];
+        config.upstream_timeout = Duration::from_secs(5);
+
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let response = reqwest::Client::new()
+            .post(format!("{edge_url}/v1/realtime/calls"))
+            .header("authorization", "Bearer realtime-key")
+            .header(header::CONTENT_TYPE, "application/sdp")
+            .body("v=0\\r\\n")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(response.text().await.unwrap(), "v=0\\r\\na=refreshed\\r\\n");
+        assert_eq!(upstream_calls.load(AtomicOrdering::SeqCst), 2);
+        assert_eq!(oauth_calls.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(persistence_calls.load(AtomicOrdering::SeqCst), 1);
+
+        edge_task.abort();
+        services_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
     async fn native_websocket_responses_are_authenticated_and_served_by_rust() {
         let store_path = temporary_path("native-websocket");
         let jobs_path = temporary_path("native-websocket-jobs");
@@ -10540,6 +12485,7 @@ mod tests {
         config.configured_api_keys = vec![("websocket-app".to_owned(), "websocket-key".to_owned())];
 
         let state = EdgeState::new(config).await.unwrap();
+        let drain = state.drain.clone();
         let (edge_url, edge_task) = start_server(build_router(state)).await;
         let mut request = format!("{}/v1/responses", edge_url.replace("http://", "ws://"))
             .into_client_request()
@@ -10573,6 +12519,24 @@ mod tests {
         assert_eq!(created["type"], "response.created");
         assert_eq!(completed["type"], "response.completed");
         assert_eq!(completed["response"]["status"], "completed");
+
+        drain.begin();
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                r#"{"type":"response.create","model":"gpt-5.3-codex","generate":false}"#.into(),
+            ))
+            .await
+            .unwrap();
+        let rejected = socket.next().await.unwrap().unwrap();
+        let rejected = match rejected {
+            tokio_tungstenite::tungstenite::Message::Text(value) => {
+                serde_json::from_str::<Value>(&value).unwrap()
+            }
+            other => panic!("expected drain error text frame, got {other:?}"),
+        };
+        assert_eq!(rejected["type"], "error");
+        assert_eq!(rejected["status"], 503);
+        assert_eq!(rejected["error"]["code"], "host_update_draining");
         socket.close(None).await.unwrap();
 
         edge_task.abort();
@@ -10669,6 +12633,7 @@ mod tests {
         config.chatgpt_base_url = upstream_url;
         config.node_control_plane_url = control_plane_url;
         config.configured_api_keys = vec![("root-app".to_owned(), "root-key".to_owned())];
+        config.app_version = "9.8.7-test".to_owned();
         config.models_cache_ttl = Duration::from_secs(60);
         config.upstream_timeout = Duration::from_secs(5);
 
@@ -10688,14 +12653,50 @@ mod tests {
 
         let response = authorized_get("/models").send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.json::<Value>().await.unwrap()["data"][0]["id"],
-            "gpt-root"
+        assert!(
+            response.json::<Value>().await.unwrap()["data"]
+                .as_array()
+                .is_some_and(|models| models.iter().any(|model| model["id"] == "gpt-root"))
         );
 
         let response = authorized_get("/models/gpt-root").send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.json::<Value>().await.unwrap()["id"], "gpt-root");
+
+        let response = authorized_get("/api/v1/models").send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response.json::<Value>().await.unwrap()["data"]
+                .as_array()
+                .is_some_and(|models| models.iter().any(|model| model["id"] == "gpt-root"))
+        );
+
+        let response = authorized_get("/api/v1/models/gpt-root")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let model = response.json::<Value>().await.unwrap();
+        assert_eq!(model["id"], "gpt-root");
+        assert!(model.get("codexModelInfo").is_none());
+
+        let response = authorized_get("/api/tags").send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let tags = response.json::<Value>().await.unwrap();
+        let tag = tags["models"]
+            .as_array()
+            .and_then(|models| models.iter().find(|model| model["name"] == "gpt-root"))
+            .expect("Ollama compatibility response should contain the exposed model");
+        assert_eq!(tag["model"], "gpt-root");
+        assert_eq!(tag["modified_at"], "1970-01-01T00:00:00.000Z");
+        assert_eq!(tag["details"]["family"], "openai");
+
+        let response = authorized_get("/version").send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.json::<Value>().await.unwrap()["version"],
+            "9.8.7-test"
+        );
 
         let response = authorized_get("/props").send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -10801,6 +12802,13 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(response.json::<Value>().await.unwrap()["type"], "error");
+
+        let response = client
+            .get(format!("{edge_url}/api/tags"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(control_plane_requests.load(AtomicOrdering::Relaxed), 0);
 
         edge_task.abort();

@@ -110,6 +110,7 @@ import {
 import { startEmbeddedProviderAgent } from "./provider-agent-supervisor.js";
 import { createInferenceIdempotencyMiddleware } from "./inference-idempotency.js";
 import { createRequestTracingMiddleware } from "./request-tracing.js";
+import { createInternalV1EdgeRouter } from "./internal-v1-edge-routes.js";
 import {
   buildHostMenuBarAccountsSummary,
   buildHostMenuBarGitHubStarPrompt,
@@ -273,7 +274,16 @@ const providerAgent = startEmbeddedProviderAgent({
   } : {}),
 });
 const hostUpdateController = MULTIVIBE_HOST_APPLICATION
-  ? new HostUpdateController(MULTIVIBE_HOST_UPDATER_BINARY, providerAgent)
+  ? new HostUpdateController(
+      MULTIVIBE_HOST_UPDATER_BINARY,
+      providerAgent,
+      MULTIVIBE_CONTROL_PLANE && V1_EDGE_INTERNAL_JOB_TOKEN
+        ? {
+            baseUrl: V1_EDGE_BASE_URL,
+            internalToken: V1_EDGE_INTERNAL_JOB_TOKEN,
+          }
+        : undefined,
+    )
   : undefined;
 const confidentialTrustPolicy = parseConfidentialTrustPolicy(
   MULTIVIBE_CONFIDENTIAL_INFERENCE_TRUST_POLICY,
@@ -486,6 +496,13 @@ function adminGuard(
   if (!token || !safeEqual(token, ADMIN_TOKEN))
     return res.status(401).json({ error: "unauthorized" });
   next();
+}
+
+if (MULTIVIBE_CONTROL_PLANE) {
+  app.use(
+    "/internal/v1-edge",
+    createInternalV1EdgeRouter({ store, internalToken: INTERNAL_JOB_TOKEN }),
+  );
 }
 
 function projectRegistrationGuard(
