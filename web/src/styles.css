@@ -5094,3 +5094,12 @@ body:has(> .modal-backdrop) {
   font-size: 12px;
 }
 .demo-notice strong { color: var(--text); }
+
+.provider-capacity-panel > .provider-capacity-advanced {
+  margin: 16px 0;
+}
+
+.provider-capacity-advanced > .provider-capacity-grid {
+  padding: 16px;
+  margin: 0;
+}
