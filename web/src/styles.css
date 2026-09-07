@@ -2636,6 +2636,10 @@ details summary {
   font-size: 13px;
 }
 
+body:has(> .modal-backdrop) {
+  overflow: hidden;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
