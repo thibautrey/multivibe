@@ -632,7 +632,8 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       const capability = await options.providerAgent.getCapability();
       const eligible = capability.supported &&
         ((capability.profile === "apple-silicon" && capability.accelerator === "metal") ||
-         (capability.profile === "linux-nvidia" && capability.accelerator === "cuda"));
+         ((capability.profile === "linux-nvidia" || capability.profile === "windows-nvidia")
+           && capability.accelerator === "cuda"));
       if (!eligible) return res.json({ localWorker: null });
 
       const selectedGPU = capability.accelerator === "cuda"

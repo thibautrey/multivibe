@@ -133,6 +133,37 @@ test("Host projects a supported local worker as an unconfigured non-removable pr
   });
 });
 
+test("Host projects a supported Windows NVIDIA worker", async () => {
+  const control = providerAgentControl({
+    getCapability: async () => ({
+      schema_version: "multivibe-host-capability-v1",
+      agent_version: "test",
+      supported: true,
+      profile: "windows-nvidia",
+      os: "windows",
+      architecture: "amd64",
+      accelerator: "cuda",
+      accelerator_memory_bytes: 24 * 1024 ** 3,
+      cuda_device: 1,
+      gpus: [
+        { name: "Tesla P100", memory_mib: 16280, compute_capability: 6 },
+        { name: "NVIDIA GeForce RTX 4090", memory_mib: 24576, compute_capability: 8.9 },
+      ],
+    }),
+    getManifest: async () => ({
+      protocol_version: "provider-agent-v1",
+      state: "detected",
+      selected_models: [],
+    }),
+  });
+  await withAdminServer(control, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/admin/provider-agent/local-worker`);
+    const payload = await response.json() as { localWorker: Record<string, any> };
+    assert.equal(payload.localWorker.capability.hardware, "NVIDIA GeForce RTX 4090");
+    assert.equal(payload.localWorker.capability.profile, "windows-nvidia");
+  }, { hostApplication: true });
+});
+
 test("local worker projection is absent outside Host and for unsupported hosting hardware", async () => {
   let capabilityCalls = 0;
   const control = providerAgentControl({

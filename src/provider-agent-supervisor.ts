@@ -24,7 +24,7 @@ export type ProviderHostCapability = {
   schema_version: "multivibe-host-capability-v1";
   agent_version: string;
   supported: boolean;
-  profile?: "apple-silicon" | "intel-mac" | "linux-nvidia";
+  profile?: "apple-silicon" | "intel-mac" | "linux-nvidia" | "windows-nvidia";
   os: string;
   architecture: string;
   accelerator?: "metal" | "cuda";

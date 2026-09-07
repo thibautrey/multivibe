@@ -30,6 +30,7 @@ const catalog = {
   cohorts: [
     { profile: "linux-nvidia", accelerator: "cuda", chip: "NVIDIA GeForce RTX 4090", memory_bucket_gib: 16, estimated_monthly_usd: "170", sample_count: 7 },
     { profile: "linux-nvidia", accelerator: "cuda", chip: "NVIDIA GeForce RTX 4090", memory_bucket_gib: 24, estimated_monthly_usd: "214.75", sample_count: 8 },
+    { profile: "windows-nvidia", accelerator: "cuda", chip: "NVIDIA GeForce RTX 4090", memory_bucket_gib: 24, estimated_monthly_usd: "203.50", sample_count: 6 },
   ],
   fallback: { basis: "fleet_median", estimated_monthly_usd: "91.5", sample_count: 48 },
   disclaimer: "Advisory cohort estimate only; it is not earned, payable, or guaranteed.",
@@ -53,6 +54,12 @@ test("local matching selects the closest same-chip cohort without uploading hard
   const requested = new URL(urls[0]!);
   assert.equal(requested.search, "");
   assert.doesNotMatch(requested.search, /4090|chip/u);
+});
+
+test("Windows NVIDIA matching remains separate from Linux cohorts", () => {
+  const estimate = estimateProviderWorkerEarnings({ ...capability, profile: "windows-nvidia", os: "windows" }, catalog);
+  assert.equal(estimate.amount, "203.50");
+  assert.equal(estimate.basis, "same_chip");
 });
 
 test("local matching uses the fleet fallback and rejects undersized cohorts", () => {

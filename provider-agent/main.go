@@ -777,8 +777,8 @@ func main() {
 		if ollamaListenAddress == "" {
 			ollamaListenAddress = managedOllamaDefaultListenAddress
 		}
-		if capability.OS == "linux" && cudaVisibleDevices == "" {
-			cudaVisibleDevices = "0"
+		if capability.Accelerator == "cuda" && cudaVisibleDevices == "" {
+			cudaVisibleDevices = strconv.FormatUint(uint64(capability.CUDADevice), 10)
 		}
 		managedRuntime, runtimeErr := newManagedOllama(managedOllamaConfig{
 			ManagedRoot: managedRoot, BundledRuntimeRoot: bundledOllamaRoot, ListenAddress: ollamaListenAddress,

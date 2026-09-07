@@ -64,7 +64,7 @@ export type LocalWorkerProvider = {
   routing_eligible: false;
   compensation_eligible: false;
   capability: {
-    profile: "apple-silicon" | "linux-nvidia";
+    profile: "apple-silicon" | "linux-nvidia" | "windows-nvidia";
     accelerator: "metal" | "cuda";
     hardware: string;
     accelerator_memory_bytes: number;
