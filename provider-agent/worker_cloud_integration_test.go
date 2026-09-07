@@ -85,8 +85,8 @@ func TestWorkerCloudIntegrationEnrollmentDiscoveryAndInference(t *testing.T) {
 				case "/provider/v1/enrollment-challenges":
 					record("enroll")
 					var begin cloudEnrollmentChallengeRequest
-					if json.NewDecoder(r.Body).Decode(&begin) != nil || begin.Manifest.RuntimeFamily != "manual-openai-compatible" || !reflect.DeepEqual(begin.Manifest.SelectedModels, []cloudEnrollmentModel{{ReportedID: model, Modalities: []string{"text"}}}) {
-						t.Error("selected model was not published in enrollment manifest")
+					if json.NewDecoder(r.Body).Decode(&begin) != nil || begin.Manifest.RuntimeFamily != providerCloudManagedRuntime || len(begin.Manifest.SelectedModels) != 0 {
+						t.Error("enrollment manifest was not Cloud-managed and model-agnostic")
 					}
 					if r.Header.Get("authorization") != "Bearer "+grant {
 						t.Error("missing enrollment grant")
@@ -157,7 +157,7 @@ func TestWorkerCloudIntegrationEnrollmentDiscoveryAndInference(t *testing.T) {
 				t.Fatal(err)
 			}
 			enrollment := newCloudEnrollmentService(cloudURL, cloud.Client(), identity, store)
-			if _, err := enrollment.enroll(ctx, cloudEnrollmentInput{EnrollmentToken: grant, CoreVersion: "0.2.0", RuntimeFamily: "manual-openai-compatible", SelectedModels: []cloudEnrollmentModel{{ReportedID: model, Modalities: []string{"text"}}}, DeclaredMaxConcurrency: 1}); err != nil {
+			if _, err := enrollment.enroll(ctx, cloudEnrollmentInput{EnrollmentToken: grant, CoreVersion: "0.2.0", RuntimeFamily: providerCloudManagedRuntime, SelectedModels: []cloudEnrollmentModel{}, DeclaredMaxConcurrency: 1}); err != nil {
 				t.Fatal(err)
 			}
 			// Reopen from disk so the inference phase cannot rely on transient state.
@@ -165,11 +165,8 @@ func TestWorkerCloudIntegrationEnrollmentDiscoveryAndInference(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			runtimes := newMemoryRuntimeEndpointStore()
-			if _, conflict, err := runtimes.replace(1, []runtimeEndpoint{{AdapterID: "manual-openai-compatible", Endpoint: runtime.URL}}, runtimeAdapterRegistry()); err != nil || conflict {
-				t.Fatalf("runtime setup: %v, conflict=%v", err, conflict)
-			}
-			service := newWorkerTestService(cloudURL, cloud.Client(), identity, restored, runtimes)
+			managed := &runtimeEndpoint{AdapterID: managedWorkerAdapterID, Endpoint: runtime.URL}
+			service := newWorkerTestService(cloudURL, cloud.Client(), identity, restored, managed)
 			done := make(chan struct{})
 			go func() { defer close(done); service.run(ctx) }()
 			var result map[string]any
