@@ -54,3 +54,15 @@ This checkout has not published an image or submitted an Umbrel listing.
 
 Upstream requirements checked 2026-09-07:
 https://github.com/getumbrel/umbrel-apps/blob/master/.claude/skills/umbrel-package-app/SKILL.md
+
+Validated locally on 2026-09-07:
+
+- Worktree: 27 archive/native dependency/package tests passed; `git diff --check`
+  and `actionlint` passed.
+- Main: all provider Go tests passed with the race detector; Host application
+  tests passed; 45 packaging/distribution tests and 14 supervisor tests passed.
+- Main: API TypeScript build and catalog digest validation passed; Linux ARM64
+  provider and Host Go binaries cross-compiled and were identified as AArch64 ELF.
+- Main: the real amd64 CPU `doctor` reported `supported: true` and bounded memory.
+- The supervisor test's initial `spawn go ENOENT` was resolved by adding the
+  existing pinned Go toolchain directory to that test command's PATH.
