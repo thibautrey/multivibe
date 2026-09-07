@@ -2606,6 +2606,7 @@ enum StreamTransform {
     ResponseToAnthropic,
 }
 
+#[derive(Clone)]
 struct BufferedReply {
     status: StatusCode,
     headers: Vec<(String, String)>,
@@ -2620,7 +2621,7 @@ struct StreamingReply {
     requested_model: String,
     trace: Option<StreamingTrace>,
     capacity_lease: AdmissionLease,
-    activity_lease: ActivityLease,
+    activity_lease: Option<ActivityLease>,
 }
 
 enum ProxyResult {
@@ -4994,12 +4995,12 @@ async fn proxy_inference(
     headers: &HeaderMap,
     body: &Value,
     application: &str,
-    activity_kind: ActivityKind,
+    activity_kind: Option<ActivityKind>,
 ) -> Result<ProxyResult, Response> {
-    let activity_lease = state
-        .drain
-        .admit(activity_kind)
-        .ok_or_else(draining_response)?;
+    let activity_lease = match activity_kind {
+        Some(kind) => Some(state.drain.admit(kind).ok_or_else(draining_response)?),
+        None => None,
+    };
     let started_at = now_ms();
     let admission_started_at = Instant::now();
     let max_admission_wait = admission_wait(headers)?;
@@ -6406,7 +6407,7 @@ struct SchedulingCandidate {
     created_at: u64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct WeightedFairScheduler {
     priority_scores: HashMap<String, f64>,
     application_scores: HashMap<String, f64>,
@@ -6440,6 +6441,16 @@ fn next_batch_window_at(now: u64) -> u64 {
         .single()
         .map(|start| start.with_timezone(&chrono::Utc).timestamp_millis().max(0) as u64)
         .unwrap_or_else(|| now.saturating_add(24 * 60 * 60 * 1_000))
+}
+
+fn eligible_job_not_before(priority: &str, requested_at: u64, now: u64) -> u64 {
+    if priority != "batch" {
+        return requested_at;
+    }
+    if requested_at <= now && next_batch_window_at(now) == now {
+        return requested_at;
+    }
+    next_batch_window_at(requested_at.max(now))
 }
 
 impl WeightedFairScheduler {
@@ -6535,6 +6546,13 @@ enum JobCreateError {
     Persistence(String),
 }
 
+#[derive(Debug)]
+enum JobCancelError {
+    NotFound,
+    Conflict,
+    Persistence(String),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct JobEvent {
     id: u64,
@@ -6547,18 +6565,52 @@ struct JobEvent {
     at: u64,
 }
 
+#[derive(Clone)]
 struct JobState {
     jobs: HashMap<String, Job>,
     next_event_id: u64,
 }
 
+#[derive(Debug)]
+enum JobPersistenceError {
+    NotCommitted(String),
+    CommitUncertain(String),
+}
+
+enum JobStateTransition<R> {
+    Unchanged(R),
+    Changed(R),
+}
+
+impl JobPersistenceError {
+    fn message(&self) -> &str {
+        match self {
+            Self::NotCommitted(message) | Self::CommitUncertain(message) => message,
+        }
+    }
+
+    fn is_uncertain(&self) -> bool {
+        matches!(self, Self::CommitUncertain(_))
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct CommitTestGate {
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
 pub struct JobManager {
     path: PathBuf,
-    state: Mutex<JobState>,
-    persist_lock: Mutex<()>,
-    scheduler: Mutex<WeightedFairScheduler>,
-    changed: Notify,
+    state: Arc<Mutex<JobState>>,
+    persist_lock: Arc<Mutex<()>>,
+    scheduler: Arc<Mutex<WeightedFairScheduler>>,
+    changed: Arc<Notify>,
     events: broadcast::Sender<JobEvent>,
+    persistence_uncertain: Arc<AtomicBool>,
+    #[cfg(test)]
+    commit_test_gate: Arc<Mutex<Option<CommitTestGate>>>,
 }
 
 fn sqlite_json<T: serde::de::DeserializeOwned + Default>(raw: Option<String>) -> T {
@@ -6749,6 +6801,14 @@ impl JobManager {
         path: PathBuf,
         legacy_jobs_db_path: Option<PathBuf>,
     ) -> Result<Self, String> {
+        Self::new_with_legacy_at(path, legacy_jobs_db_path, now_ms()).await
+    }
+
+    async fn new_with_legacy_at(
+        path: PathBuf,
+        legacy_jobs_db_path: Option<PathBuf>,
+        now: u64,
+    ) -> Result<Self, String> {
         let (events, _) = broadcast::channel(256);
         let mut jobs = match fs::read(&path).await {
             Ok(raw) => serde_json::from_slice::<Vec<Job>>(&raw)
@@ -6772,7 +6832,6 @@ impl JobManager {
                 imported = true;
             }
         }
-        let now = now_ms();
         let mut recovered = false;
         for job in &mut jobs {
             if matches!(job.status.as_str(), "queued" | "retry" | "running")
@@ -6795,6 +6854,14 @@ impl JobManager {
                 }
                 job.updated_at = now;
                 recovered = true;
+            }
+            if matches!(job.status.as_str(), "queued" | "retry") {
+                let eligible = eligible_job_not_before(&job.priority, job.not_before, now);
+                if eligible != job.not_before {
+                    job.not_before = eligible;
+                    job.updated_at = now;
+                    recovered = true;
+                }
             }
         }
         let mut next_event_id = jobs
@@ -6820,14 +6887,17 @@ impl JobManager {
         }
         let manager = Self {
             path,
-            state: Mutex::new(JobState {
+            state: Arc::new(Mutex::new(JobState {
                 jobs: jobs.into_iter().map(|job| (job.id.clone(), job)).collect(),
                 next_event_id,
-            }),
-            persist_lock: Mutex::new(()),
-            scheduler: Mutex::new(WeightedFairScheduler::default()),
-            changed: Notify::new(),
+            })),
+            persist_lock: Arc::new(Mutex::new(())),
+            scheduler: Arc::new(Mutex::new(WeightedFairScheduler::default())),
+            changed: Arc::new(Notify::new()),
             events,
+            persistence_uncertain: Arc::new(AtomicBool::new(false)),
+            #[cfg(test)]
+            commit_test_gate: Arc::new(Mutex::new(None)),
         };
         if recovered || imported {
             manager.persist().await?;
@@ -6836,53 +6906,75 @@ impl JobManager {
     }
 
     async fn persist(&self) -> Result<(), String> {
-        let _persist_guard = self.persist_lock.lock().await;
-        let jobs = {
-            let state = self.state.lock().await;
-            state.jobs.values().cloned().collect::<Vec<_>>()
-        };
-        let raw = serde_json::to_vec_pretty(&jobs)
-            .map_err(|error| format!("cannot serialize job store: {error}"))?;
-        let path = self.path.clone();
-        let temporary = self
-            .path
-            .with_extension(format!("tmp-{}", Uuid::new_v4().simple()));
+        let persist_guard = self.persist_lock.clone().lock_owned().await;
+        if self.persistence_uncertain.load(AtomicOrdering::SeqCst) {
+            return Err(
+                "job store persistence is in an uncertain state; restart required".to_owned(),
+            );
+        }
+        let state_guard = self.state.clone().lock_owned().await;
+        let proposed = state_guard.clone();
+        self.finish_commit(
+            persist_guard,
+            state_guard,
+            proposed,
+            None,
+            "job store flush",
+        )
+        .await
+    }
+
+    fn serialize_snapshot(state: &JobState) -> Result<Vec<u8>, JobPersistenceError> {
+        let jobs = state.jobs.values().cloned().collect::<Vec<_>>();
+        serde_json::to_vec_pretty(&jobs).map_err(|error| {
+            JobPersistenceError::NotCommitted(format!("cannot serialize job store: {error}"))
+        })
+    }
+
+    async fn write_snapshot(path: PathBuf, raw: Vec<u8>) -> Result<(), JobPersistenceError> {
+        let temporary = path.with_extension(format!("tmp-{}", Uuid::new_v4().simple()));
         tokio::task::spawn_blocking(move || {
             if let Some(parent) = path
                 .parent()
                 .filter(|parent| !parent.as_os_str().is_empty())
             {
                 std::fs::create_dir_all(parent).map_err(|error| {
-                    format!(
+                    JobPersistenceError::NotCommitted(format!(
                         "cannot create job store directory {}: {error}",
                         parent.display()
-                    )
+                    ))
                 })?;
             }
             let mut options = std::fs::OpenOptions::new();
             options.create_new(true).write(true);
             #[cfg(unix)]
             options.mode(0o600);
-            let result = (|| -> Result<(), String> {
+            let result = (|| -> Result<(), JobPersistenceError> {
                 let mut file = options.open(&temporary).map_err(|error| {
-                    format!(
+                    JobPersistenceError::NotCommitted(format!(
                         "cannot create temporary job store {}: {error}",
                         temporary.display()
-                    )
+                    ))
                 })?;
                 file.write_all(&raw).map_err(|error| {
-                    format!("cannot write job store {}: {error}", temporary.display())
+                    JobPersistenceError::NotCommitted(format!(
+                        "cannot write job store {}: {error}",
+                        temporary.display()
+                    ))
                 })?;
                 file.sync_all().map_err(|error| {
-                    format!("cannot sync job store {}: {error}", temporary.display())
+                    JobPersistenceError::NotCommitted(format!(
+                        "cannot sync job store {}: {error}",
+                        temporary.display()
+                    ))
                 })?;
                 drop(file);
                 std::fs::rename(&temporary, &path).map_err(|error| {
-                    format!(
+                    JobPersistenceError::NotCommitted(format!(
                         "cannot replace job store {} with {}: {error}",
                         path.display(),
                         temporary.display()
-                    )
+                    ))
                 })?;
                 #[cfg(unix)]
                 if let Some(parent) = path
@@ -6892,54 +6984,181 @@ impl JobManager {
                     std::fs::File::open(parent)
                         .and_then(|directory| directory.sync_all())
                         .map_err(|error| {
-                            format!(
+                            JobPersistenceError::CommitUncertain(format!(
                                 "cannot sync job store directory {}: {error}",
                                 parent.display()
-                            )
+                            ))
                         })?;
                 }
                 Ok(())
             })();
-            if result.is_err() {
+            if matches!(result, Err(JobPersistenceError::NotCommitted(_))) {
                 let _ = std::fs::remove_file(&temporary);
             }
             result
         })
         .await
-        .map_err(|error| format!("job store persistence task failed: {error}"))?
+        .map_err(|error| {
+            JobPersistenceError::CommitUncertain(format!(
+                "job store persistence task failed: {error}"
+            ))
+        })?
     }
 
-    async fn persist_or_log(&self, operation: &str) {
-        if let Err(error) = self.persist().await {
-            eprintln!("job store persistence failed after {operation}: {error}");
-        }
-    }
-
-    async fn emit(&self, job: &Job, event_type: &str, data: Value) {
-        let event = {
-            let mut state = self.state.lock().await;
-            let id = state.next_event_id;
-            state.next_event_id = state.next_event_id.saturating_add(1).max(1);
-            let event = JobEvent {
-                id,
-                job_id: job.id.clone(),
-                application: job.application.clone(),
-                r#type: event_type.to_owned(),
-                data,
-                at: now_ms(),
-            };
-            if let Some(stored) = state.jobs.get_mut(&job.id) {
-                stored.events.push(event.clone());
-                if stored.events.len() > 1_000 {
-                    stored.events.drain(..stored.events.len() - 1_000);
-                }
+    async fn finish_commit(
+        &self,
+        persist_guard: tokio::sync::OwnedMutexGuard<()>,
+        mut state_guard: tokio::sync::OwnedMutexGuard<JobState>,
+        proposed: JobState,
+        scheduler_commit: Option<(
+            tokio::sync::OwnedMutexGuard<WeightedFairScheduler>,
+            WeightedFairScheduler,
+        )>,
+        operation: &str,
+    ) -> Result<(), String> {
+        let first_new_event_id = state_guard.next_event_id;
+        let mut events_to_publish = proposed
+            .jobs
+            .values()
+            .flat_map(|job| job.events.iter())
+            .filter(|event| event.id >= first_new_event_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        events_to_publish.sort_by_key(|event| event.id);
+        let raw = Self::serialize_snapshot(&proposed).map_err(|error| {
+            format!(
+                "job store persistence failed during {operation}: {}",
+                error.message()
+            )
+        })?;
+        let path = self.path.clone();
+        let persistence_uncertain = self.persistence_uncertain.clone();
+        let event_sender = self.events.clone();
+        let changed = self.changed.clone();
+        #[cfg(test)]
+        let commit_test_gate = self.commit_test_gate.lock().await.clone();
+        let operation = operation.to_owned();
+        let join_operation = operation.clone();
+        let commit = tokio::spawn(async move {
+            let _persist_guard = persist_guard;
+            let mut scheduler_commit = scheduler_commit;
+            #[cfg(test)]
+            if let Some(gate) = commit_test_gate {
+                gate.started.notify_one();
+                gate.release.notified().await;
             }
-            event
-        };
-        let _ = self.events.send(event);
-        if let Err(error) = self.persist().await {
-            eprintln!("job event persistence failed: {error}");
+            match Self::write_snapshot(path, raw).await {
+                Ok(()) => {
+                    *state_guard = proposed;
+                    if let Some((scheduler, proposed_scheduler)) = scheduler_commit.as_mut() {
+                        **scheduler = proposed_scheduler.clone();
+                    }
+                    for event in events_to_publish {
+                        let _ = event_sender.send(event);
+                    }
+                    changed.notify_waiters();
+                    changed.notify_one();
+                    Ok(())
+                }
+                Err(error) if error.is_uncertain() => {
+                    // rename already succeeded or the writer outcome is unknown.
+                    // Publish the proposed snapshot so reads match the visible file,
+                    // then freeze mutations until startup reconciles durable state.
+                    *state_guard = proposed;
+                    persistence_uncertain.store(true, AtomicOrdering::SeqCst);
+                    for event in events_to_publish {
+                        let _ = event_sender.send(event);
+                    }
+                    changed.notify_waiters();
+                    changed.notify_one();
+                    Err(format!(
+                        "job store persistence became uncertain during {operation}: {}; restart required",
+                        error.message()
+                    ))
+                }
+                Err(error) => Err(format!(
+                    "job store persistence failed during {operation}: {}",
+                    error.message()
+                )),
+            }
+        });
+        commit.await.map_err(|error| {
+            self.persistence_uncertain
+                .store(true, AtomicOrdering::SeqCst);
+            format!(
+                "job store commit task failed during {join_operation}: {error}; restart required"
+            )
+        })?
+    }
+
+    async fn commit_transition<R, F>(&self, operation: &str, mutation: F) -> Result<R, String>
+    where
+        F: FnOnce(&mut JobState) -> JobStateTransition<R>,
+    {
+        let persist_guard = self.persist_lock.clone().lock_owned().await;
+        if self.persistence_uncertain.load(AtomicOrdering::SeqCst) {
+            return Err(
+                "job store persistence is in an uncertain state; restart required".to_owned(),
+            );
         }
+        let state_guard = self.state.clone().lock_owned().await;
+        let mut proposed = state_guard.clone();
+        let result = match mutation(&mut proposed) {
+            JobStateTransition::Unchanged(result) => return Ok(result),
+            JobStateTransition::Changed(result) => result,
+        };
+        self.finish_commit(persist_guard, state_guard, proposed, None, operation)
+            .await?;
+        Ok(result)
+    }
+
+    async fn commit_fallible_transition<R, E, F>(
+        &self,
+        operation: &str,
+        mutation: F,
+    ) -> Result<Result<R, E>, String>
+    where
+        F: FnOnce(&mut JobState) -> Result<JobStateTransition<R>, E>,
+    {
+        let persist_guard = self.persist_lock.clone().lock_owned().await;
+        if self.persistence_uncertain.load(AtomicOrdering::SeqCst) {
+            return Err(
+                "job store persistence is in an uncertain state; restart required".to_owned(),
+            );
+        }
+        let state_guard = self.state.clone().lock_owned().await;
+        let mut proposed = state_guard.clone();
+        let result = match mutation(&mut proposed) {
+            Err(error) => return Ok(Err(error)),
+            Ok(JobStateTransition::Unchanged(result)) => return Ok(Ok(result)),
+            Ok(JobStateTransition::Changed(result)) => result,
+        };
+        self.finish_commit(persist_guard, state_guard, proposed, None, operation)
+            .await?;
+        Ok(Ok(result))
+    }
+
+    fn append_event(state: &mut JobState, job: &Job, event_type: &str, data: Value) -> JobEvent {
+        let event = JobEvent {
+            id: state.next_event_id,
+            job_id: job.id.clone(),
+            application: job.application.clone(),
+            r#type: event_type.to_owned(),
+            data,
+            at: now_ms(),
+        };
+        state.next_event_id = state.next_event_id.saturating_add(1).max(1);
+        if let Some(stored) = state.jobs.get_mut(&job.id) {
+            stored.events.push(event.clone());
+            if stored.events.len() > 1_000 {
+                stored.events.drain(..stored.events.len() - 1_000);
+            }
+        }
+        event
+    }
+
+    fn persistence_requires_restart(&self) -> bool {
+        self.persistence_uncertain.load(AtomicOrdering::SeqCst)
     }
 
     async fn create(
@@ -6966,25 +7185,7 @@ impl JobManager {
         let idempotency_key = header_value(headers, "x-multivibe-idempotency-key")
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty());
-        let mut state = self.state.lock().await;
-        if let Some(key) = idempotency_key.as_deref()
-            && let Some(existing) = state.jobs.values().find(|job| {
-                job.application == application && job.idempotency_key.as_deref() == Some(key)
-            })
-        {
-            if existing.route != route || existing.request_body != *body {
-                return Err(JobCreateError::IdempotencyConflict);
-            }
-            return Ok(JobCreateResult {
-                job: existing.clone(),
-                created: false,
-            });
-        }
-        let not_before = if priority == "batch" {
-            next_batch_window_at(now)
-        } else {
-            now
-        };
+        let not_before = eligible_job_not_before(&priority, now, now);
         let job = Job {
             id: new_id("job"),
             application: application.to_owned(),
@@ -6999,7 +7200,7 @@ impl JobManager {
             status: "queued".to_owned(),
             priority,
             model: value_string(body.get("model")),
-            idempotency_key,
+            idempotency_key: idempotency_key.clone(),
             webhook_id: header_value(headers, "x-multivibe-webhook")
                 .map(|value| value.trim().to_owned())
                 .filter(|value| !value.is_empty()),
@@ -7019,16 +7220,32 @@ impl JobManager {
             webhook_delivery: None,
             events: Vec::new(),
         };
-        state.jobs.insert(job.id.clone(), job.clone());
-        drop(state);
-        if let Err(error) = self.persist().await {
-            self.state.lock().await.jobs.remove(&job.id);
-            return Err(JobCreateError::Persistence(error));
-        }
-        self.emit(&job, "job.queued", json!({"status": "queued"}))
-            .await;
-        self.changed.notify_one();
-        Ok(JobCreateResult { job, created: true })
+        let committed = self
+            .commit_fallible_transition("job creation", |state| {
+                if let Some(key) = idempotency_key.as_deref()
+                    && let Some(existing) = state.jobs.values().find(|candidate| {
+                        candidate.application == application
+                            && candidate.idempotency_key.as_deref() == Some(key)
+                    })
+                {
+                    if existing.route != route || existing.request_body != *body {
+                        return Err(JobCreateError::IdempotencyConflict);
+                    }
+                    return Ok(JobStateTransition::Unchanged(JobCreateResult {
+                        job: existing.clone(),
+                        created: false,
+                    }));
+                }
+                state.jobs.insert(job.id.clone(), job.clone());
+                Self::append_event(state, &job, "job.queued", json!({"status": "queued"}));
+                Ok(JobStateTransition::Changed(JobCreateResult {
+                    job: job.clone(),
+                    created: true,
+                }))
+            })
+            .await
+            .map_err(JobCreateError::Persistence)??;
+        Ok(committed)
     }
 
     async fn get_for(&self, application: &str, id: &str) -> Option<Job> {
@@ -7081,88 +7298,125 @@ impl JobManager {
         self.events.subscribe()
     }
 
-    async fn acquire_next(&self, application_weights: &HashMap<String, f64>) -> Option<Job> {
-        let now = now_ms();
-        let (job, expired) = {
-            let mut state = self.state.lock().await;
-            let mut expired = Vec::new();
-            for job in state.jobs.values_mut() {
-                if matches!(job.status.as_str(), "queued" | "retry")
-                    && job.deadline_at.is_some_and(|deadline| deadline <= now)
-                {
-                    job.status = "expired".to_owned();
+    async fn acquire_next(
+        &self,
+        application_weights: &HashMap<String, f64>,
+    ) -> Result<Option<Job>, String> {
+        self.acquire_next_at(application_weights, now_ms()).await
+    }
+
+    async fn acquire_next_at(
+        &self,
+        application_weights: &HashMap<String, f64>,
+        now: u64,
+    ) -> Result<Option<Job>, String> {
+        let persist_guard = self.persist_lock.clone().lock_owned().await;
+        if self.persistence_uncertain.load(AtomicOrdering::SeqCst) {
+            return Err(
+                "job store persistence is in an uncertain state; restart required".to_owned(),
+            );
+        }
+        let state_guard = self.state.clone().lock_owned().await;
+        let mut proposed = state_guard.clone();
+        let mut terminal = Vec::new();
+        let mut changed = false;
+        for job in proposed.jobs.values_mut() {
+            if matches!(job.status.as_str(), "queued" | "retry") && job.priority == "batch" {
+                let eligible = eligible_job_not_before(&job.priority, job.not_before, now);
+                if eligible != job.not_before {
+                    job.not_before = eligible;
                     job.updated_at = now;
-                    job.completed_at = Some(now);
-                    job.error = Some("job deadline expired".to_owned());
-                    expired.push(job.clone());
-                } else if matches!(job.status.as_str(), "queued" | "retry")
-                    && job.attempts >= job.max_attempts
-                {
-                    job.status = "failed".to_owned();
-                    job.updated_at = now;
-                    job.completed_at = Some(now);
-                    job.error = Some("maximum attempts reached".to_owned());
-                    expired.push(job.clone());
+                    changed = true;
                 }
             }
-            let mut candidates = state
-                .jobs
-                .values()
-                .filter(|job| {
-                    matches!(job.status.as_str(), "queued" | "retry")
-                        && job.not_before <= now
-                        && job.attempts < job.max_attempts
-                        && job.deadline_at.is_none_or(|deadline| deadline > now)
-                })
-                .map(|job| SchedulingCandidate {
-                    id: job.id.clone(),
-                    application: job.application.clone(),
-                    priority: job.priority.clone(),
-                    created_at: job.created_at,
-                })
-                .collect::<Vec<_>>();
-            candidates.sort_by(|left, right| {
-                left.created_at
-                    .cmp(&right.created_at)
-                    .then_with(|| left.id.cmp(&right.id))
-            });
-            let selected = self
-                .scheduler
-                .lock()
-                .await
-                .choose(&candidates, application_weights);
-            let job = selected.and_then(|id| state.jobs.get_mut(&id)).map(|job| {
+            if matches!(job.status.as_str(), "queued" | "retry")
+                && job.deadline_at.is_some_and(|deadline| deadline <= now)
+            {
+                job.status = "expired".to_owned();
+                job.updated_at = now;
+                job.completed_at = Some(now);
+                job.error = Some("job deadline expired".to_owned());
+                terminal.push(job.clone());
+                changed = true;
+            } else if matches!(job.status.as_str(), "queued" | "retry")
+                && job.attempts >= job.max_attempts
+            {
+                job.status = "failed".to_owned();
+                job.updated_at = now;
+                job.completed_at = Some(now);
+                job.error = Some("maximum attempts reached".to_owned());
+                terminal.push(job.clone());
+                changed = true;
+            }
+        }
+        let mut candidates = proposed
+            .jobs
+            .values()
+            .filter(|job| {
+                matches!(job.status.as_str(), "queued" | "retry")
+                    && job.not_before <= now
+                    && job.attempts < job.max_attempts
+                    && job.deadline_at.is_none_or(|deadline| deadline > now)
+                    && (job.priority != "batch" || next_batch_window_at(now) == now)
+            })
+            .map(|job| SchedulingCandidate {
+                id: job.id.clone(),
+                application: job.application.clone(),
+                priority: job.priority.clone(),
+                created_at: job.created_at,
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        let scheduler_guard = self.scheduler.clone().lock_owned().await;
+        let mut proposed_scheduler = scheduler_guard.clone();
+        let selected = proposed_scheduler.choose(&candidates, application_weights);
+        let job = selected
+            .and_then(|id| proposed.jobs.get_mut(&id))
+            .map(|job| {
                 job.status = "running".to_owned();
                 job.attempts += 1;
                 job.updated_at = now;
                 job.error = None;
+                changed = true;
                 job.clone()
             });
-            (job, expired)
-        };
-        if job.is_some() || !expired.is_empty() {
-            self.persist_or_log("job acquisition").await;
-        }
-        for expired_job in expired {
-            let event = if expired_job.status == "expired" {
+        for terminal_job in terminal {
+            let event_type = if terminal_job.status == "expired" {
                 "job.expired"
             } else {
                 "job.failed"
             };
-            self.emit(&expired_job, event, json!({"error": expired_job.error}))
-                .await;
+            Self::append_event(
+                &mut proposed,
+                &terminal_job,
+                event_type,
+                json!({"error": terminal_job.error}),
+            );
         }
-        if let Some(job) = job {
-            self.emit(
-                &job,
+        if let Some(running) = job.as_ref() {
+            Self::append_event(
+                &mut proposed,
+                running,
                 "job.started",
-                json!({"status": "running", "attempt": job.attempts}),
-            )
-            .await;
-            Some(job)
-        } else {
-            None
+                json!({"status": "running", "attempt": running.attempts}),
+            );
         }
+        if !changed {
+            return Ok(None);
+        }
+        self.finish_commit(
+            persist_guard,
+            state_guard,
+            proposed,
+            Some((scheduler_guard, proposed_scheduler)),
+            "job acquisition",
+        )
+        .await?;
+        Ok(job)
     }
 
     async fn next_wakeup(&self) -> Duration {
@@ -7187,190 +7441,216 @@ impl JobManager {
         )
     }
 
-    async fn succeed(&self, id: &str, reply: BufferedReply) {
+    async fn succeed(&self, id: &str, reply: BufferedReply) -> Result<(), String> {
         let now = now_ms();
-        let job = {
-            let mut state = self.state.lock().await;
-            let Some(job) = state.jobs.get_mut(id) else {
-                return;
-            };
-            if job.status != "running" {
-                return;
-            }
-            if job.deadline_at.is_some_and(|deadline| deadline <= now) {
-                job.status = "expired".to_owned();
-                job.error = Some("job deadline expired while running".to_owned());
-            } else {
-                job.status = "succeeded".to_owned();
-                job.response_status = Some(reply.status.as_u16());
-                job.response_headers = Some(reply.headers);
-                job.result = serde_json::from_slice(&reply.body).ok();
-                job.error = None;
-                if job.webhook_id.is_some() && job.webhook_delivery.is_none() {
-                    job.webhook_delivery = Some(WebhookDelivery {
-                        event_id: Uuid::new_v4().to_string(),
-                        attempts: 0,
-                        next_attempt_at: now,
-                        expires_at: now.saturating_add(24 * 60 * 60 * 1_000),
-                        delivered_at: None,
-                        last_error: None,
-                    });
+        let _event = self
+            .commit_transition("job success", |state| {
+                let Some(job) = state.jobs.get_mut(id) else {
+                    return JobStateTransition::Unchanged(None);
+                };
+                if job.status != "running" {
+                    return JobStateTransition::Unchanged(None);
                 }
-            }
-            job.updated_at = now;
-            job.completed_at = Some(now);
-            job.clone()
-        };
-        self.persist_or_log("job success").await;
-        let event = if job.status == "expired" {
-            "job.expired"
-        } else {
-            "job.succeeded"
-        };
-        self.emit(&job, event, json!({"status": job.status})).await;
-        self.changed.notify_one();
-    }
-
-    async fn fail(&self, id: &str, message: &str, transient: bool) {
-        let now = now_ms();
-        let job = {
-            let mut state = self.state.lock().await;
-            let Some(job) = state.jobs.get_mut(id) else {
-                return;
-            };
-            if job.status != "running" {
-                return;
-            }
-            if job.deadline_at.is_some_and(|deadline| deadline <= now) {
-                job.status = "expired".to_owned();
+                if job.deadline_at.is_some_and(|deadline| deadline <= now) {
+                    job.status = "expired".to_owned();
+                    job.error = Some("job deadline expired while running".to_owned());
+                } else {
+                    job.status = "succeeded".to_owned();
+                    job.response_status = Some(reply.status.as_u16());
+                    job.response_headers = Some(reply.headers);
+                    job.result = serde_json::from_slice(&reply.body).ok();
+                    job.error = None;
+                    if job.webhook_id.is_some() && job.webhook_delivery.is_none() {
+                        job.webhook_delivery = Some(WebhookDelivery {
+                            event_id: Uuid::new_v4().to_string(),
+                            attempts: 0,
+                            next_attempt_at: now,
+                            expires_at: now.saturating_add(24 * 60 * 60 * 1_000),
+                            delivered_at: None,
+                            last_error: None,
+                        });
+                    }
+                }
+                job.updated_at = now;
                 job.completed_at = Some(now);
-            } else if transient && job.attempts < job.max_attempts {
-                let exponent = job.attempts.saturating_sub(1).min(16);
-                let delay = JOB_RETRY_BASE_MS
-                    .saturating_mul(1_u64 << exponent)
-                    .min(JOB_RETRY_MAX_MS);
-                job.status = "retry".to_owned();
-                job.not_before = now.saturating_add(delay);
-                job.completed_at = None;
-            } else {
-                job.status = "failed".to_owned();
-                job.completed_at = Some(now);
-            }
-            job.updated_at = now;
-            job.error = Some(message.to_owned());
-            job.clone()
-        };
-        self.persist_or_log("job failure").await;
-        let event = match job.status.as_str() {
-            "retry" => "job.retry",
-            "expired" => "job.expired",
-            _ => "job.failed",
-        };
-        self.emit(
-            &job,
-            event,
-            json!({
-                "status": job.status,
-                "error": message,
-                "attempt": job.attempts,
-                "nextAttemptAt": (job.status == "retry").then_some(job.not_before),
-            }),
-        )
-        .await;
-        self.changed.notify_one();
-    }
-
-    async fn release_for_drain(&self, id: &str) {
-        let changed = {
-            let mut state = self.state.lock().await;
-            let Some(job) = state.jobs.get_mut(id) else {
-                return;
-            };
-            if job.status != "running" {
-                return;
-            }
-            job.status = "queued".to_owned();
-            job.attempts = job.attempts.saturating_sub(1);
-            job.updated_at = now_ms();
-            job.error = None;
-            true
-        };
-        if changed {
-            self.persist_or_log("drain release").await;
-            self.changed.notify_one();
-        }
-    }
-
-    async fn reschedule_for_capacity(&self, id: &str, delay_ms: u64) {
-        let now = now_ms();
-        let delay = delay_ms.clamp(JOB_CAPACITY_WAIT_MIN_MS, JOB_RETRY_MAX_MS);
-        let job = {
-            let mut state = self.state.lock().await;
-            let Some(job) = state.jobs.get_mut(id) else {
-                return;
-            };
-            if job.status != "running" {
-                return;
-            }
-            job.status = "queued".to_owned();
-            job.attempts = job.attempts.saturating_sub(1);
-            job.not_before = now.saturating_add(delay);
-            job.updated_at = now;
-            job.completed_at = None;
-            job.error = None;
-            job.clone()
-        };
-        self.persist_or_log("capacity reschedule").await;
-        self.emit(
-            &job,
-            "job.capacity_wait",
-            json!({"nextAttemptAt": job.not_before}),
-        )
-        .await;
-        self.changed.notify_one();
-    }
-
-    async fn cancel(&self, application: &str, id: &str) -> Result<(), StatusCode> {
-        let job = {
-            let mut state = self.state.lock().await;
-            let Some(job) = state.jobs.get_mut(id) else {
-                return Err(StatusCode::NOT_FOUND);
-            };
-            if job.application != application {
-                return Err(StatusCode::NOT_FOUND);
-            }
-            if !matches!(job.status.as_str(), "queued" | "retry" | "running") {
-                return Err(StatusCode::CONFLICT);
-            }
-            job.status = "cancelled".to_owned();
-            let now = now_ms();
-            job.updated_at = now;
-            job.completed_at = Some(now);
-            job.clone()
-        };
-        self.persist_or_log("job cancellation").await;
-        self.emit(&job, "job.cancelled", json!({"status": "cancelled"}))
-            .await;
-        self.changed.notify_one();
+                let job = job.clone();
+                let event_type = if job.status == "expired" {
+                    "job.expired"
+                } else {
+                    "job.succeeded"
+                };
+                JobStateTransition::Changed(Some(Self::append_event(
+                    state,
+                    &job,
+                    event_type,
+                    json!({"status": job.status}),
+                )))
+            })
+            .await?;
         Ok(())
     }
 
-    async fn consume_result(&self, application: &str, id: &str) -> Option<Job> {
-        let job = {
-            let mut state = self.state.lock().await;
-            let job = state.jobs.get_mut(id)?;
-            if job.application != application || job.status != "succeeded" {
-                return None;
+    async fn fail(&self, id: &str, message: &str, transient: bool) -> Result<(), String> {
+        self.fail_at(id, message, transient, now_ms()).await
+    }
+
+    async fn fail_at(
+        &self,
+        id: &str,
+        message: &str,
+        transient: bool,
+        now: u64,
+    ) -> Result<(), String> {
+        let _event = self
+            .commit_transition("job failure", |state| {
+                let Some(job) = state.jobs.get_mut(id) else {
+                    return JobStateTransition::Unchanged(None);
+                };
+                if job.status != "running" {
+                    return JobStateTransition::Unchanged(None);
+                }
+                if job.deadline_at.is_some_and(|deadline| deadline <= now) {
+                    job.status = "expired".to_owned();
+                    job.completed_at = Some(now);
+                } else if transient && job.attempts < job.max_attempts {
+                    let exponent = job.attempts.saturating_sub(1).min(16);
+                    let delay = JOB_RETRY_BASE_MS
+                        .saturating_mul(1_u64 << exponent)
+                        .min(JOB_RETRY_MAX_MS);
+                    job.status = "retry".to_owned();
+                    job.not_before =
+                        eligible_job_not_before(&job.priority, now.saturating_add(delay), now);
+                    job.completed_at = None;
+                } else {
+                    job.status = "failed".to_owned();
+                    job.completed_at = Some(now);
+                }
+                job.updated_at = now;
+                job.error = Some(message.to_owned());
+                let job = job.clone();
+                let event_type = match job.status.as_str() {
+                    "retry" => "job.retry",
+                    "expired" => "job.expired",
+                    _ => "job.failed",
+                };
+                JobStateTransition::Changed(Some(Self::append_event(
+                    state,
+                    &job,
+                    event_type,
+                    json!({
+                        "status": job.status,
+                        "error": message,
+                        "attempt": job.attempts,
+                        "nextAttemptAt": (job.status == "retry").then_some(job.not_before),
+                    }),
+                )))
+            })
+            .await?;
+        Ok(())
+    }
+
+    async fn release_for_drain(&self, id: &str) -> Result<(), String> {
+        let now = now_ms();
+        self.commit_transition("drain release", |state| {
+            let Some(job) = state.jobs.get_mut(id) else {
+                return JobStateTransition::Unchanged(false);
+            };
+            if job.status != "running" {
+                return JobStateTransition::Unchanged(false);
             }
-            let now = now_ms();
-            job.consumed_at = Some(now);
-            job.purge_after = Some(now.saturating_add(60 * 60 * 1_000));
-            job.clone()
-        };
-        self.persist_or_log("result consumption").await;
-        self.emit(&job, "job.consumed", json!({"status": job.status}))
-            .await;
-        Some(job)
+            job.status = "queued".to_owned();
+            job.attempts = job.attempts.saturating_sub(1);
+            job.not_before = eligible_job_not_before(&job.priority, now, now);
+            job.updated_at = now;
+            job.error = None;
+            JobStateTransition::Changed(true)
+        })
+        .await?;
+        Ok(())
+    }
+
+    async fn reschedule_for_capacity(&self, id: &str, delay_ms: u64) -> Result<(), String> {
+        let now = now_ms();
+        let delay = delay_ms.clamp(JOB_CAPACITY_WAIT_MIN_MS, JOB_RETRY_MAX_MS);
+        let _event = self
+            .commit_transition("capacity reschedule", |state| {
+                let Some(job) = state.jobs.get_mut(id) else {
+                    return JobStateTransition::Unchanged(None);
+                };
+                if job.status != "running" {
+                    return JobStateTransition::Unchanged(None);
+                }
+                job.status = "queued".to_owned();
+                job.attempts = job.attempts.saturating_sub(1);
+                job.not_before =
+                    eligible_job_not_before(&job.priority, now.saturating_add(delay), now);
+                job.updated_at = now;
+                job.completed_at = None;
+                job.error = None;
+                let job = job.clone();
+                JobStateTransition::Changed(Some(Self::append_event(
+                    state,
+                    &job,
+                    "job.capacity_wait",
+                    json!({"nextAttemptAt": job.not_before}),
+                )))
+            })
+            .await?;
+        Ok(())
+    }
+
+    async fn cancel(&self, application: &str, id: &str) -> Result<(), JobCancelError> {
+        let _committed = self
+            .commit_fallible_transition("job cancellation", |state| {
+                let Some(job) = state.jobs.get_mut(id) else {
+                    return Err(JobCancelError::NotFound);
+                };
+                if job.application != application {
+                    return Err(JobCancelError::NotFound);
+                }
+                if !matches!(job.status.as_str(), "queued" | "retry" | "running") {
+                    return Err(JobCancelError::Conflict);
+                }
+                job.status = "cancelled".to_owned();
+                let now = now_ms();
+                job.updated_at = now;
+                job.completed_at = Some(now);
+                let job = job.clone();
+                let event = Self::append_event(
+                    state,
+                    &job,
+                    "job.cancelled",
+                    json!({"status": "cancelled"}),
+                );
+                Ok(JobStateTransition::Changed(event))
+            })
+            .await
+            .map_err(JobCancelError::Persistence)??;
+        Ok(())
+    }
+
+    async fn consume_result(&self, application: &str, id: &str) -> Result<Option<Job>, String> {
+        let committed = self
+            .commit_transition("result consumption", |state| {
+                let Some(job) = state.jobs.get_mut(id) else {
+                    return JobStateTransition::Unchanged(None);
+                };
+                if job.application != application || job.status != "succeeded" {
+                    return JobStateTransition::Unchanged(None);
+                }
+                let now = now_ms();
+                job.consumed_at = Some(now);
+                job.purge_after = Some(now.saturating_add(60 * 60 * 1_000));
+                let job = job.clone();
+                Self::append_event(state, &job, "job.consumed", json!({"status": job.status}));
+                JobStateTransition::Changed(Some(job))
+            })
+            .await?;
+        if let Some(job) = committed {
+            Ok(Some(job))
+        } else {
+            Ok(None)
+        }
     }
 
     async fn pending_webhook_deliveries(&self, now: u64) -> Vec<(Job, WebhookDelivery)> {
@@ -7397,60 +7677,61 @@ impl JobManager {
         event_id: &str,
         succeeded: bool,
         error: Option<String>,
-    ) {
+    ) -> Result<(), String> {
         let now = now_ms();
-        let (job, event_type, event_data) = {
-            let mut state = self.state.lock().await;
-            let Some(job) = state.jobs.get_mut(job_id) else {
-                return;
-            };
-            let Some(delivery) = job.webhook_delivery.as_mut() else {
-                return;
-            };
-            if delivery.event_id != event_id || delivery.delivered_at.is_some() {
-                return;
-            }
-            delivery.attempts = delivery.attempts.saturating_add(1);
-            if succeeded {
-                delivery.delivered_at = Some(now);
-                delivery.last_error = None;
-                job.purge_after = Some(now.saturating_add(60 * 60 * 1_000));
-            } else {
-                let exponent = delivery.attempts.min(12);
-                let delay = 1_000_u64
-                    .saturating_mul(1_u64 << exponent)
-                    .min(60 * 60 * 1_000);
-                delivery.next_attempt_at = now.saturating_add(delay);
-                delivery.last_error = error
-                    .as_deref()
-                    .map(|message| message.chars().take(500).collect());
-            }
-            job.updated_at = now;
-            let attempts = delivery.attempts;
-            let last_error = delivery.last_error.clone();
-            (
-                job.clone(),
+        let _event = self
+            .commit_transition("webhook completion", |state| {
+                let Some(job) = state.jobs.get_mut(job_id) else {
+                    return JobStateTransition::Unchanged(None);
+                };
+                let Some(delivery) = job.webhook_delivery.as_mut() else {
+                    return JobStateTransition::Unchanged(None);
+                };
+                if delivery.event_id != event_id || delivery.delivered_at.is_some() {
+                    return JobStateTransition::Unchanged(None);
+                }
+                delivery.attempts = delivery.attempts.saturating_add(1);
                 if succeeded {
+                    delivery.delivered_at = Some(now);
+                    delivery.last_error = None;
+                    job.purge_after = Some(now.saturating_add(60 * 60 * 1_000));
+                } else {
+                    let exponent = delivery.attempts.min(12);
+                    let delay = 1_000_u64
+                        .saturating_mul(1_u64 << exponent)
+                        .min(60 * 60 * 1_000);
+                    delivery.next_attempt_at = now.saturating_add(delay);
+                    delivery.last_error = error
+                        .as_deref()
+                        .map(|message| message.chars().take(500).collect());
+                }
+                job.updated_at = now;
+                let attempts = delivery.attempts;
+                let last_error = delivery.last_error.clone();
+                let job = job.clone();
+                let event_type = if succeeded {
                     "webhook.delivered"
                 } else {
                     "webhook.retry"
-                },
-                json!({
+                };
+                JobStateTransition::Changed(Some(Self::append_event(
+                    state,
+                    &job,
+                    event_type,
+                    json!({
                     "eventId": event_id,
                     "attempts": attempts,
                     "error": last_error,
-                }),
-            )
-        };
-        self.persist_or_log("webhook completion").await;
-        self.emit(&job, event_type, event_data).await;
-        self.changed.notify_one();
+                    }),
+                )))
+            })
+            .await?;
+        Ok(())
     }
 
-    async fn purge_due(&self, now: u64) {
-        let mut changed = false;
-        {
-            let mut state = self.state.lock().await;
+    async fn purge_due(&self, now: u64) -> Result<(), String> {
+        self.commit_transition("retention purge", |state| {
+            let mut changed = false;
             for job in state.jobs.values_mut() {
                 let event_count = job.events.len();
                 job.events.retain(|event| {
@@ -7478,10 +7759,14 @@ impl JobManager {
                     changed = true;
                 }
             }
-        }
-        if changed {
-            self.persist_or_log("retention purge").await;
-        }
+            if changed {
+                JobStateTransition::Changed(true)
+            } else {
+                JobStateTransition::Unchanged(false)
+            }
+        })
+        .await?;
+        Ok(())
     }
 }
 
@@ -7560,17 +7845,30 @@ async fn job_dispatch_loop(state: EdgeState) {
             .unwrap_or_default();
         let mut dispatched = false;
         while let Ok(permit) = slots.clone().try_acquire_owned() {
-            if state.drain.is_draining() {
-                drop(permit);
-                break;
-            }
-            let Some(job) = state.jobs.acquire_next(&weights).await else {
+            let Some(job_activity) = state.drain.admit(ActivityKind::Job) else {
                 drop(permit);
                 break;
             };
+            let job = match state.jobs.acquire_next(&weights).await {
+                Ok(Some(job)) => job,
+                Ok(None) => {
+                    drop(job_activity);
+                    drop(permit);
+                    break;
+                }
+                Err(error) => {
+                    eprintln!("job acquisition paused: {error}");
+                    drop(job_activity);
+                    drop(permit);
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    break;
+                }
+            };
             dispatched = true;
             let job_state = state.clone();
-            tokio::spawn(async move { run_claimed_job(job_state, job, permit).await });
+            tokio::spawn(
+                async move { run_claimed_job(job_state, job, permit, job_activity).await },
+            );
         }
         if dispatched {
             tokio::task::yield_now().await;
@@ -7596,8 +7894,10 @@ async fn webhook_delivery_loop(state: EdgeState) {
         }
         let now = now_ms();
         if now.saturating_sub(last_purge_at) >= 60_000 {
-            state.jobs.purge_due(now).await;
-            last_purge_at = now;
+            match state.jobs.purge_due(now).await {
+                Ok(()) => last_purge_at = now,
+                Err(error) => eprintln!("job retention purge paused: {error}"),
+            }
         }
         let deliveries = state.jobs.pending_webhook_deliveries(now).await;
         for (job, delivery) in deliveries {
@@ -7621,7 +7921,7 @@ async fn webhook_delivery_loop(state: EdgeState) {
                     })
                 });
             let Some(webhook) = webhook else {
-                state
+                while let Err(error) = state
                     .jobs
                     .finish_webhook(
                         &job.id,
@@ -7629,7 +7929,14 @@ async fn webhook_delivery_loop(state: EdgeState) {
                         false,
                         Some("webhook is not registered or enabled".to_owned()),
                     )
-                    .await;
+                    .await
+                {
+                    eprintln!("webhook state persistence paused: {error}");
+                    if state.jobs.persistence_requires_restart() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
                 continue;
             };
             let payload = serde_json::to_vec(&json!({
@@ -7664,10 +7971,17 @@ async fn webhook_delivery_loop(state: EdgeState) {
                 Ok(Err(error)) => (false, Some(error.to_string())),
                 Err(_) => (false, Some("webhook request timed out".to_owned())),
             };
-            state
+            while let Err(persist_error) = state
                 .jobs
-                .finish_webhook(&job.id, &delivery.event_id, succeeded, error)
-                .await;
+                .finish_webhook(&job.id, &delivery.event_id, succeeded, error.clone())
+                .await
+            {
+                eprintln!("webhook completion persistence paused: {persist_error}");
+                if state.jobs.persistence_requires_restart() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
         }
         tokio::select! {
             _ = state.jobs.changed.notified() => {}
@@ -7680,9 +7994,16 @@ async fn run_claimed_job(
     state: EdgeState,
     running: Job,
     permit: tokio::sync::OwnedSemaphorePermit,
+    _job_activity: ActivityLease,
 ) {
     if state.drain.is_draining() {
-        state.jobs.release_for_drain(&running.id).await;
+        while let Err(error) = state.jobs.release_for_drain(&running.id).await {
+            eprintln!("job drain release paused: {error}");
+            if state.jobs.persistence_requires_restart() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
         drop(permit);
         return;
     }
@@ -7702,7 +8023,7 @@ async fn run_claimed_job(
         &headers,
         &running.request_body,
         &running.application,
-        ActivityKind::Job,
+        None,
     );
     let result = if let Some(deadline) = running.deadline_at {
         match timeout(
@@ -7713,10 +8034,17 @@ async fn run_claimed_job(
         {
             Ok(result) => result,
             Err(_) => {
-                state
+                while let Err(error) = state
                     .jobs
                     .fail(&running.id, "job deadline expired while running", false)
-                    .await;
+                    .await
+                {
+                    eprintln!("job deadline persistence paused: {error}");
+                    if state.jobs.persistence_requires_restart() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
                 drop(permit);
                 state.jobs.changed.notify_one();
                 return;
@@ -7727,7 +8055,13 @@ async fn run_claimed_job(
     };
     match result {
         Ok(ProxyResult::Buffered(reply)) if reply.status.is_success() => {
-            state.jobs.succeed(&running.id, reply).await
+            while let Err(error) = state.jobs.succeed(&running.id, reply.clone()).await {
+                eprintln!("job success persistence paused: {error}");
+                if state.jobs.persistence_requires_restart() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
         }
         Ok(ProxyResult::Buffered(reply)) => {
             let status = reply.status;
@@ -7738,20 +8072,34 @@ async fn run_claimed_job(
                         .or_else(|| value_string(body.get("error")))
                 })
                 .unwrap_or_else(|| format!("deferred upstream returned {status}"));
-            state
+            while let Err(error) = state
                 .jobs
                 .fail(
                     &running.id,
                     &message,
                     status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
                 )
-                .await;
+                .await
+            {
+                eprintln!("job failure persistence paused: {error}");
+                if state.jobs.persistence_requires_restart() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
         }
         Ok(ProxyResult::Streaming(_)) => {
-            state
+            while let Err(error) = state
                 .jobs
                 .fail(&running.id, "deferred jobs cannot return a stream", false)
                 .await
+            {
+                eprintln!("job stream failure persistence paused: {error}");
+                if state.jobs.persistence_requires_restart() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
         }
         Err(error) => {
             let status = error.status();
@@ -7765,16 +8113,29 @@ async fn run_claimed_job(
                 .and_then(|error| error.get("code"))
                 .and_then(Value::as_str);
             if error_code == Some("host_update_draining") {
-                state.jobs.release_for_drain(&running.id).await;
+                while let Err(error) = state.jobs.release_for_drain(&running.id).await {
+                    eprintln!("job drain release paused: {error}");
+                    if state.jobs.persistence_requires_restart() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
                 drop(permit);
                 state.jobs.changed.notify_one();
                 return;
             }
             if error_code == Some("capacity_unavailable") {
-                state
+                while let Err(error) = state
                     .jobs
                     .reschedule_for_capacity(&running.id, JOB_CAPACITY_WAIT_MS)
-                    .await;
+                    .await
+                {
+                    eprintln!("job capacity persistence paused: {error}");
+                    if state.jobs.persistence_requires_restart() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
                 drop(permit);
                 return;
             }
@@ -7783,7 +8144,7 @@ async fn run_claimed_job(
                     value_string(body.get("error").and_then(|error| error.get("message")))
                 })
                 .unwrap_or_else(|| format!("deferred inference failed with {status}"));
-            state
+            while let Err(error) = state
                 .jobs
                 .fail(
                     &running.id,
@@ -7791,6 +8152,13 @@ async fn run_claimed_job(
                     status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
                 )
                 .await
+            {
+                eprintln!("job failure persistence paused: {error}");
+                if state.jobs.persistence_requires_restart() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
         }
     }
     drop(permit);
@@ -8093,7 +8461,7 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
         &headers,
         &body,
         &auth.application,
-        ActivityKind::Request,
+        Some(ActivityKind::Request),
     )
     .await
     {
@@ -9148,11 +9516,21 @@ async fn get_job_result_handler(
             json!({"error": "result is not ready", "job": public_job(&job)}),
         );
     }
-    let Some(consumed) = state.jobs.consume_result(&auth.application, &id).await else {
-        return json_response(
-            StatusCode::CONFLICT,
-            json!({"error": "result is not ready"}),
-        );
+    let consumed = match state.jobs.consume_result(&auth.application, &id).await {
+        Ok(Some(job)) => job,
+        Ok(None) => {
+            return json_response(
+                StatusCode::CONFLICT,
+                json!({"error": "result is not ready"}),
+            );
+        }
+        Err(error) => {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                error,
+                "job_store_unavailable",
+            );
+        }
     };
     let mut reply = BufferedReply {
         status: StatusCode::OK,
@@ -9278,13 +9656,17 @@ async fn delete_job_handler(
             .status(StatusCode::NO_CONTENT)
             .body(Body::empty())
             .unwrap_or_else(|_| Response::new(Body::empty())),
-        Err(status) => json_response(
-            status,
-            if status == StatusCode::NOT_FOUND {
-                json!({"error": "not found"})
-            } else {
-                json!({"error": "job can no longer be cancelled"})
-            },
+        Err(JobCancelError::NotFound) => {
+            json_response(StatusCode::NOT_FOUND, json!({"error": "not found"}))
+        }
+        Err(JobCancelError::Conflict) => json_response(
+            StatusCode::CONFLICT,
+            json!({"error": "job can no longer be cancelled"}),
+        ),
+        Err(JobCancelError::Persistence(error)) => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            error,
+            "job_store_unavailable",
         ),
     }
 }
@@ -10036,7 +10418,7 @@ async fn handle_websocket(
                     &headers,
                     &frame,
                     &application,
-                    ActivityKind::WebsocketTurn,
+                    Some(ActivityKind::WebsocketTurn),
                 )
                 .await
                 {
@@ -10807,6 +11189,160 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_drain_tracks_a_job_until_its_result_is_durable() {
+        let upstream_responded = Arc::new(AtomicBool::new(false));
+        let response_flag = upstream_responded.clone();
+        let upstream = Router::new()
+            .route(
+                "/backend-api/codex/models",
+                get(|| async { Json(json!({"models": [{"slug": "gpt-job"}]})) }),
+            )
+            .route(
+                "/backend-api/codex/responses",
+                post(move || {
+                    let responded = response_flag.clone();
+                    async move {
+                        responded.store(true, AtomicOrdering::SeqCst);
+                        Json(json!({
+                            "id": "resp-durable",
+                            "object": "response",
+                            "model": "gpt-job",
+                            "status": "completed",
+                            "output": [],
+                            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+                        }))
+                    }
+                }),
+            );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+        let store_path = temporary_path("drain-durable-accounts");
+        let jobs_path = temporary_path("drain-durable-jobs");
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![account("drain-job-account")])).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.legacy_jobs_db_path = None;
+        config.chatgpt_base_url = upstream_url;
+        let state = EdgeState::new(config).await.unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-multivibe-priority", HeaderValue::from_static("standard"));
+        let job = state
+            .jobs
+            .create(
+                "drain-app",
+                "/v1/responses",
+                &headers,
+                &json!({"model": "gpt-job", "input": "hello"}),
+                3,
+            )
+            .await
+            .unwrap()
+            .job;
+        let running = state
+            .jobs
+            .acquire_next(&HashMap::new())
+            .await
+            .unwrap()
+            .unwrap();
+        let persistence_guard = state.jobs.persist_lock.lock().await;
+        let activity = state.drain.admit(ActivityKind::Job).unwrap();
+        let permit = Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap();
+        let job_state = state.clone();
+        let worker = tokio::spawn(async move {
+            run_claimed_job(job_state, running, permit, activity).await;
+        });
+        timeout(Duration::from_secs(2), async {
+            while !upstream_responded.load(AtomicOrdering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        tokio::task::yield_now().await;
+        assert!(!worker.is_finished());
+
+        state.drain.begin();
+        assert_eq!(state.drain.snapshot(), (true, 0, 0, 1));
+        drop(persistence_guard);
+        timeout(Duration::from_secs(2), worker)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.drain.snapshot(), (true, 0, 0, 0));
+        let reloaded = JobManager::new(jobs_path.clone()).await.unwrap();
+        let persisted = reloaded.get_for("drain-app", &job.id).await.unwrap();
+        assert_eq!(persisted.status, "succeeded");
+        assert_eq!(persisted.result.as_ref().unwrap()["id"], "resp-durable");
+
+        upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn native_runner_closes_the_claim_and_drain_race_durably() {
+        let store_path = temporary_path("drain-claim-accounts");
+        let jobs_path = temporary_path("drain-claim-jobs");
+        fs::write(&store_path, b"{}").await.unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.legacy_jobs_db_path = None;
+        let state = EdgeState::new(config).await.unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-multivibe-priority", HeaderValue::from_static("standard"));
+        let job = state
+            .jobs
+            .create(
+                "drain-app",
+                "/v1/responses",
+                &headers,
+                &json!({"model": "gpt-job", "input": "hello"}),
+                3,
+            )
+            .await
+            .unwrap()
+            .job;
+        let persistence_guard = state.jobs.persist_lock.lock().await;
+        let runner = state.start_job_runner().unwrap();
+        timeout(Duration::from_secs(2), async {
+            while state.drain.snapshot().3 != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        state.drain.begin();
+        assert_eq!(state.drain.snapshot(), (true, 0, 0, 1));
+        drop(persistence_guard);
+        timeout(Duration::from_secs(2), async {
+            while state.drain.snapshot().3 != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let persisted = JobManager::new(jobs_path.clone())
+            .await
+            .unwrap()
+            .get_for("drain-app", &job.id)
+            .await
+            .unwrap();
+        assert_eq!(persisted.status, "queued");
+        assert_eq!(persisted.attempts, 0);
+
+        runner.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
     async fn admission_leases_are_atomic_and_reflected_in_capacity() {
         let version = Arc::new(AtomicU64::new(1));
         let admission = Arc::new(AdmissionController::new(version.clone()));
@@ -11256,7 +11792,11 @@ mod tests {
             .unwrap()
             .job;
         assert_eq!(job.status, "queued");
-        let running = manager.acquire_next(&HashMap::new()).await.unwrap();
+        let running = manager
+            .acquire_next(&HashMap::new())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(running.status, "running");
         manager
             .succeed(
@@ -11267,12 +11807,19 @@ mod tests {
                     body: Bytes::from_static(br#"{"ok":true}"#),
                 },
             )
-            .await;
+            .await
+            .unwrap();
         assert!(manager.get_for("other-app", &job.id).await.is_none());
         let stored = manager.get_for("batch-app", &job.id).await.unwrap();
         assert_eq!(stored.status, "succeeded");
         assert_eq!(stored.result.as_ref().unwrap()["ok"], true);
-        assert!(manager.consume_result("batch-app", &job.id).await.is_some());
+        assert!(
+            manager
+                .consume_result("batch-app", &job.id)
+                .await
+                .unwrap()
+                .is_some()
+        );
         let events = manager.events_after("batch-app", &job.id, 0).await.unwrap();
         assert_eq!(
             events
@@ -11308,13 +11855,386 @@ mod tests {
 
     #[test]
     fn batch_jobs_wait_for_the_paris_night_window() {
-        let daytime = parse_rfc3339_ms("2026-09-07T12:00:00Z").unwrap();
+        for (timestamp, eligible) in [
+            ("2026-07-01T04:59:59Z", "2026-07-01T04:59:59Z"),
+            ("2026-07-01T05:00:00Z", "2026-07-01T20:00:00Z"),
+            ("2026-07-01T19:59:59Z", "2026-07-01T20:00:00Z"),
+            ("2026-07-01T20:00:00Z", "2026-07-01T20:00:00Z"),
+            ("2026-01-01T05:59:59Z", "2026-01-01T05:59:59Z"),
+            ("2026-01-01T06:00:00Z", "2026-01-01T21:00:00Z"),
+            ("2026-01-01T20:59:59Z", "2026-01-01T21:00:00Z"),
+            ("2026-01-01T21:00:00Z", "2026-01-01T21:00:00Z"),
+        ] {
+            let timestamp = parse_rfc3339_ms(timestamp).unwrap();
+            assert_eq!(
+                next_batch_window_at(timestamp),
+                parse_rfc3339_ms(eligible).unwrap()
+            );
+        }
+        let just_before_close = parse_rfc3339_ms("2026-07-01T04:59:59Z").unwrap();
+        let retry_after_close = parse_rfc3339_ms("2026-07-01T05:00:00Z").unwrap();
         assert_eq!(
-            next_batch_window_at(daytime),
-            parse_rfc3339_ms("2026-09-07T20:00:00Z").unwrap()
+            eligible_job_not_before("batch", retry_after_close, just_before_close),
+            parse_rfc3339_ms("2026-07-01T20:00:00Z").unwrap()
         );
-        let nighttime = parse_rfc3339_ms("2026-09-07T21:00:00Z").unwrap();
-        assert_eq!(next_batch_window_at(nighttime), nighttime);
+    }
+
+    #[tokio::test]
+    async fn batch_eligibility_is_rechecked_before_every_acquisition() {
+        let path = temporary_path("batch-window-recheck");
+        let manager = JobManager::new(path.clone()).await.unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-multivibe-priority", HeaderValue::from_static("standard"));
+        let job = manager
+            .create(
+                "batch-app",
+                "/v1/responses",
+                &headers,
+                &json!({"model": "gpt-job", "input": "hello"}),
+                3,
+            )
+            .await
+            .unwrap()
+            .job;
+        let daytime = parse_rfc3339_ms("2026-09-07T12:00:00Z").unwrap();
+        let window_start = parse_rfc3339_ms("2026-09-07T20:00:00Z").unwrap();
+        {
+            let mut state = manager.state.lock().await;
+            let stored = state.jobs.get_mut(&job.id).unwrap();
+            stored.priority = "batch".to_owned();
+            stored.not_before = daytime.saturating_sub(1);
+        }
+
+        assert!(
+            manager
+                .acquire_next_at(&HashMap::new(), daytime)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let queued = manager.get_for("batch-app", &job.id).await.unwrap();
+        assert_eq!(queued.status, "queued");
+        assert_eq!(queued.not_before, window_start);
+        let reloaded = JobManager::new_with_legacy_at(path.clone(), None, daytime)
+            .await
+            .unwrap();
+        assert_eq!(
+            reloaded
+                .get_for("batch-app", &job.id)
+                .await
+                .unwrap()
+                .not_before,
+            window_start
+        );
+        assert_eq!(
+            manager
+                .acquire_next_at(&HashMap::new(), window_start)
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            job.id
+        );
+
+        let _ = fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn batch_retries_and_restart_recovery_return_to_the_next_window() {
+        let retry_path = temporary_path("batch-retry-window");
+        let retry_manager = JobManager::new(retry_path.clone()).await.unwrap();
+        let retry_job = retry_manager
+            .create(
+                "batch-app",
+                "/v1/responses",
+                &HeaderMap::new(),
+                &json!({"model": "gpt-job", "input": "retry"}),
+                3,
+            )
+            .await
+            .unwrap()
+            .job;
+        let just_before_close = parse_rfc3339_ms("2026-07-01T04:59:59Z").unwrap();
+        let next_window = parse_rfc3339_ms("2026-07-01T20:00:00Z").unwrap();
+        {
+            let mut state = retry_manager.state.lock().await;
+            let stored = state.jobs.get_mut(&retry_job.id).unwrap();
+            stored.status = "running".to_owned();
+            stored.priority = "batch".to_owned();
+            stored.attempts = 1;
+        }
+        retry_manager.persist().await.unwrap();
+        retry_manager
+            .fail_at(&retry_job.id, "temporary", true, just_before_close)
+            .await
+            .unwrap();
+        let retry = retry_manager
+            .get_for("batch-app", &retry_job.id)
+            .await
+            .unwrap();
+        assert_eq!(retry.status, "retry");
+        assert_eq!(retry.not_before, next_window);
+        let _ = fs::remove_file(retry_path).await;
+
+        let recovery_path = temporary_path("batch-recovery-window");
+        let recovery_manager = JobManager::new(recovery_path.clone()).await.unwrap();
+        let recovery_job = recovery_manager
+            .create(
+                "batch-app",
+                "/v1/responses",
+                &HeaderMap::new(),
+                &json!({"model": "gpt-job", "input": "recover"}),
+                3,
+            )
+            .await
+            .unwrap()
+            .job;
+        let daytime = parse_rfc3339_ms("2026-09-07T12:00:00Z").unwrap();
+        let recovery_window = parse_rfc3339_ms("2026-09-07T20:00:00Z").unwrap();
+        {
+            let mut state = recovery_manager.state.lock().await;
+            let stored = state.jobs.get_mut(&recovery_job.id).unwrap();
+            stored.status = "running".to_owned();
+            stored.priority = "batch".to_owned();
+            stored.not_before = daytime.saturating_sub(1);
+            stored.attempts = 1;
+        }
+        recovery_manager.persist().await.unwrap();
+        drop(recovery_manager);
+        let recovered = JobManager::new_with_legacy_at(recovery_path.clone(), None, daytime)
+            .await
+            .unwrap()
+            .get_for("batch-app", &recovery_job.id)
+            .await
+            .unwrap();
+        assert_eq!(recovered.status, "queued");
+        assert_eq!(recovered.not_before, recovery_window);
+        assert_eq!(recovered.attempts, 1);
+        let _ = fs::remove_file(recovery_path).await;
+    }
+
+    #[tokio::test]
+    async fn failed_job_persistence_never_publishes_a_transition() {
+        let rejected_path = temporary_path("job-create-persistence-failure");
+        let rejected_manager = JobManager::new(rejected_path.clone()).await.unwrap();
+        let mut rejected_events = rejected_manager.subscribe_events();
+        fs::create_dir(&rejected_path).await.unwrap();
+        assert!(matches!(
+            rejected_manager
+                .create(
+                    "durable-app",
+                    "/v1/responses",
+                    &HeaderMap::new(),
+                    &json!({"model": "gpt-job", "input": "rejected"}),
+                    3,
+                )
+                .await,
+            Err(JobCreateError::Persistence(_))
+        ));
+        assert!(
+            rejected_manager
+                .list_for("durable-app", 10)
+                .await
+                .is_empty()
+        );
+        assert!(rejected_events.try_recv().is_err());
+        fs::remove_dir(rejected_path).await.unwrap();
+
+        let path = temporary_path("job-persistence-failure");
+        let manager = JobManager::new(path.clone()).await.unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-multivibe-priority", HeaderValue::from_static("standard"));
+        let job = manager
+            .create(
+                "durable-app",
+                "/v1/responses",
+                &headers,
+                &json!({"model": "gpt-job", "input": "hello"}),
+                3,
+            )
+            .await
+            .unwrap()
+            .job;
+
+        fs::remove_file(&path).await.unwrap();
+        fs::create_dir(&path).await.unwrap();
+        assert!(manager.acquire_next(&HashMap::new()).await.is_err());
+        let queued = manager.get_for("durable-app", &job.id).await.unwrap();
+        assert_eq!(queued.status, "queued");
+        assert_eq!(queued.attempts, 0);
+        assert_eq!(queued.events.len(), 1);
+
+        fs::remove_dir(&path).await.unwrap();
+        manager.persist().await.unwrap();
+        let running = manager
+            .acquire_next(&HashMap::new())
+            .await
+            .unwrap()
+            .unwrap();
+        fs::remove_file(&path).await.unwrap();
+        fs::create_dir(&path).await.unwrap();
+        assert!(
+            manager
+                .succeed(
+                    &running.id,
+                    BufferedReply {
+                        status: StatusCode::OK,
+                        headers: Vec::new(),
+                        body: Bytes::from_static(br#"{"ok":true}"#),
+                    },
+                )
+                .await
+                .is_err()
+        );
+        let still_running = manager.get_for("durable-app", &job.id).await.unwrap();
+        assert_eq!(still_running.status, "running");
+        assert!(still_running.result.is_none());
+        assert_eq!(still_running.events.len(), 2);
+
+        fs::remove_dir(path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn no_op_job_transitions_do_not_require_storage() {
+        let path = temporary_path("job-no-op-without-storage");
+        let manager = JobManager::new(path.clone()).await.unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-multivibe-priority", HeaderValue::from_static("standard"));
+        headers.insert(
+            "x-multivibe-idempotency-key",
+            HeaderValue::from_static("same-request"),
+        );
+        let body = json!({"model": "gpt-job", "input": "hello"});
+        let created = manager
+            .create("durable-app", "/v1/responses", &headers, &body, 3)
+            .await
+            .unwrap();
+
+        fs::remove_file(&path).await.unwrap();
+        fs::create_dir(&path).await.unwrap();
+
+        let replay = manager
+            .create("durable-app", "/v1/responses", &headers, &body, 3)
+            .await
+            .unwrap();
+        assert!(!replay.created);
+        assert_eq!(replay.job.id, created.job.id);
+        assert!(matches!(
+            manager
+                .create(
+                    "durable-app",
+                    "/v1/responses",
+                    &headers,
+                    &json!({"model": "gpt-job", "input": "different"}),
+                    3,
+                )
+                .await,
+            Err(JobCreateError::IdempotencyConflict)
+        ));
+        manager
+            .succeed(
+                &created.job.id,
+                BufferedReply {
+                    status: StatusCode::OK,
+                    headers: Vec::new(),
+                    body: Bytes::from_static(br#"{"ok":true}"#),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            manager
+                .consume_result("durable-app", &created.job.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        manager.purge_due(now_ms()).await.unwrap();
+        assert!(matches!(
+            manager.cancel("durable-app", "missing-job").await,
+            Err(JobCancelError::NotFound)
+        ));
+
+        fs::remove_dir(path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_transition_cannot_leave_a_stale_writer() {
+        let path = temporary_path("cancel-safe-job-commit");
+        let manager = Arc::new(JobManager::new(path.clone()).await.unwrap());
+        let mut headers = HeaderMap::new();
+        headers.insert("x-multivibe-priority", HeaderValue::from_static("standard"));
+        let job = manager
+            .create(
+                "durable-app",
+                "/v1/responses",
+                &headers,
+                &json!({"model": "gpt-job", "input": "hello"}),
+                3,
+            )
+            .await
+            .unwrap()
+            .job;
+        manager
+            .acquire_next(&HashMap::new())
+            .await
+            .unwrap()
+            .unwrap();
+        let _ = timeout(Duration::from_millis(1), manager.changed.notified()).await;
+        let gate = CommitTestGate {
+            started: Arc::new(Notify::new()),
+            release: Arc::new(Notify::new()),
+        };
+        *manager.commit_test_gate.lock().await = Some(gate.clone());
+        let first_manager = manager.clone();
+        let first_job_id = job.id.clone();
+        let first =
+            tokio::spawn(async move { first_manager.fail(&first_job_id, "retry", true).await });
+        timeout(Duration::from_secs(2), gate.started.notified())
+            .await
+            .unwrap();
+        *manager.commit_test_gate.lock().await = None;
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+
+        let follower_manager = manager.clone();
+        let follower =
+            tokio::spawn(
+                async move { follower_manager.cancel("durable-app", "missing-job").await },
+            );
+        let mut first_notified = Box::pin(manager.changed.notified());
+        first_notified.as_mut().enable();
+        let mut second_notified = Box::pin(manager.changed.notified());
+        second_notified.as_mut().enable();
+        gate.release.notify_one();
+        timeout(Duration::from_secs(2), async {
+            tokio::join!(first_notified, second_notified);
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            follower.await.unwrap(),
+            Err(JobCancelError::NotFound)
+        ));
+        manager.cancel("durable-app", &job.id).await.unwrap();
+
+        let persisted = JobManager::new(path.clone())
+            .await
+            .unwrap()
+            .get_for("durable-app", &job.id)
+            .await
+            .unwrap();
+        assert_eq!(persisted.status, "cancelled");
+        assert_eq!(
+            persisted
+                .events
+                .iter()
+                .map(|event| event.r#type.as_str())
+                .collect::<Vec<_>>(),
+            vec!["job.queued", "job.started", "job.retry", "job.cancelled"]
+        );
+
+        let _ = fs::remove_file(path).await;
     }
 
     #[tokio::test]
@@ -11472,7 +12392,12 @@ mod tests {
             .await
             .unwrap()
             .job;
-        let running = state.jobs.acquire_next(&HashMap::new()).await.unwrap();
+        let running = state
+            .jobs
+            .acquire_next(&HashMap::new())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(running.id, job.id);
         state
             .jobs
@@ -11484,7 +12409,8 @@ mod tests {
                     body: Bytes::from_static(br#"{"ok":true}"#),
                 },
             )
-            .await;
+            .await
+            .unwrap();
         let runner = state.start_job_runner().unwrap();
         timeout(Duration::from_secs(2), async {
             loop {
@@ -11550,17 +12476,28 @@ mod tests {
             Err(JobCreateError::IdempotencyConflict)
         ));
 
-        let running = manager.acquire_next(&HashMap::new()).await.unwrap();
+        let running = manager
+            .acquire_next(&HashMap::new())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(running.attempts, 1);
         drop(manager);
 
         let manager = JobManager::new(path.clone()).await.unwrap();
         let recovered = manager.get_for("app-a", &created.job.id).await.unwrap();
         assert_eq!(recovered.status, "queued");
-        let running = manager.acquire_next(&HashMap::new()).await.unwrap();
+        let running = manager
+            .acquire_next(&HashMap::new())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(running.id, created.job.id);
         assert_eq!(running.attempts, 2);
-        manager.fail(&running.id, "temporary outage", true).await;
+        manager
+            .fail(&running.id, "temporary outage", true)
+            .await
+            .unwrap();
         let retry = manager.get_for("app-a", &running.id).await.unwrap();
         assert_eq!(retry.status, "retry");
         assert!(retry.not_before > retry.updated_at);
@@ -11568,10 +12505,15 @@ mod tests {
             let mut state = manager.state.lock().await;
             state.jobs.get_mut(&running.id).unwrap().not_before = now_ms();
         }
-        let final_attempt = manager.acquire_next(&HashMap::new()).await.unwrap();
+        let final_attempt = manager
+            .acquire_next(&HashMap::new())
+            .await
+            .unwrap()
+            .unwrap();
         manager
             .fail(&final_attempt.id, "permanent failure", false)
-            .await;
+            .await
+            .unwrap();
         assert_eq!(
             manager
                 .get_for("app-a", &final_attempt.id)
@@ -11654,12 +12596,18 @@ mod tests {
             .await
             .unwrap()
             .job;
-        let running = state.jobs.acquire_next(&HashMap::new()).await.unwrap();
+        let running = state
+            .jobs
+            .acquire_next(&HashMap::new())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(running.attempts, 1);
         let mut events = state.jobs.events.subscribe();
         let permit = Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap();
 
-        run_claimed_job(state.clone(), running, permit).await;
+        let activity = state.drain.admit(ActivityKind::Job).unwrap();
+        run_claimed_job(state.clone(), running, permit, activity).await;
 
         let queued = state.jobs.get_for("capacity-app", &job.id).await.unwrap();
         assert_eq!(queued.status, "queued");
@@ -11669,7 +12617,14 @@ mod tests {
             JOB_CAPACITY_WAIT_MS
         );
         assert!(queued.error.is_none());
-        assert!(state.jobs.acquire_next(&HashMap::new()).await.is_none());
+        assert!(
+            state
+                .jobs
+                .acquire_next(&HashMap::new())
+                .await
+                .unwrap()
+                .is_none()
+        );
         let event = timeout(Duration::from_secs(1), events.recv())
             .await
             .unwrap()
@@ -11682,12 +12637,18 @@ mod tests {
             let mut jobs = state.jobs.state.lock().await;
             jobs.jobs.get_mut(&job.id).unwrap().not_before = now_ms();
         }
-        let retried = state.jobs.acquire_next(&HashMap::new()).await.unwrap();
+        let retried = state
+            .jobs
+            .acquire_next(&HashMap::new())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(retried.attempts, 1);
         state
             .jobs
             .reschedule_for_capacity(&retried.id, u64::MAX)
-            .await;
+            .await
+            .unwrap();
         let bounded = state
             .jobs
             .get_for("capacity-app", &retried.id)
