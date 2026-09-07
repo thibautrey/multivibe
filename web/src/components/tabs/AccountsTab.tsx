@@ -1,3 +1,4 @@
+import { findAvailableCount } from "../../lib/resetCredits";
 import ModalPortal from "../ModalPortal";
 import type { Account, ProviderId, StoreSettings, TraceStats } from "../../types";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -476,6 +477,31 @@ export function AccountsTab(props: Props) {
     onProviderSetupClosed,
     onSkipOnboarding,
   } = props;
+  const [resetCredits, setResetCredits] = useState<Record<string, number | undefined>>({});
+  const [resetCreditRefresh, setResetCreditRefresh] = useState(0);
+  const resetCreditAccounts = JSON.stringify(
+    accounts.filter(isOpenAiAccount).map((account) => [account.id, account.usage?.fetchedAt]),
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const entries = JSON.parse(resetCreditAccounts) as [string, number | null][];
+    for (const [id] of entries) {
+      void api(`/admin/accounts/${encodeURIComponent(id)}/rate-limit-reset-credit`, {
+        signal: controller.signal,
+      }).then((result) => {
+        if (!controller.signal.aborted) {
+          setResetCredits((current) => ({ ...current, [id]: findAvailableCount(result?.credit) }));
+        }
+      }).catch(() => {
+        if (!controller.signal.aborted) {
+          setResetCredits((current) => ({ ...current, [id]: undefined }));
+        }
+      });
+    }
+    return () => controller.abort();
+  }, [resetCreditAccounts, resetCreditRefresh]);
+
   const [showAddAccount, setShowAddAccount] = useState(false);
   const [providerStep, setProviderStep] = useState(0);
   const [providerError, setProviderError] = useState("");
@@ -2094,9 +2120,12 @@ export function AccountsTab(props: Props) {
                       <div className="reset-quota-actions">
                         <button
                           className="btn secondary reset-quota-btn"
-                          onClick={() => void consumeRateLimitResetCredit(a.id)}
+                          onClick={async () => {
+                            await consumeRateLimitResetCredit(a.id);
+                            setResetCreditRefresh((current) => current + 1);
+                          }}
                         >
-                          Reset quota now
+                          Reset quota now (available: {resetCredits[a.id] ?? "—"})
                         </button>
                         {a.state?.scheduledWeeklyReset ? (
                           <>
