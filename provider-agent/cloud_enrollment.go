@@ -48,8 +48,12 @@ var (
 		families[providerCloudManagedRuntime] = true
 		return families
 	}()
-	errInvalidCloudEnrollment = errors.New("provider Cloud enrollment request is invalid")
-	errCloudAlreadyEnrolled   = errors.New("provider device is already enrolled")
+	errInvalidCloudEnrollment     = errors.New("provider Cloud enrollment request is invalid")
+	errCloudAlreadyEnrolled       = errors.New("provider device is already enrolled")
+	errCloudEnrollmentExpired     = errors.New("provider Cloud enrollment grant has expired")
+	errCloudEnrollmentConflict    = errors.New("provider Cloud enrollment conflicts with existing state")
+	errCloudEnrollmentRejected    = errors.New("provider Cloud enrollment was rejected")
+	errCloudEnrollmentUnavailable = errors.New("provider Cloud enrollment service is unavailable")
 )
 
 type cloudEnrollmentModel struct {
@@ -357,6 +361,19 @@ func enrollmentIdempotencyKey(label, token string, body []byte) string {
 	return label + "-" + hex.EncodeToString(digest.Sum(nil))
 }
 
+func cloudEnrollmentResponseError(status int) error {
+	switch {
+	case status == http.StatusUnauthorized || status == http.StatusGone:
+		return errCloudEnrollmentExpired
+	case status == http.StatusConflict:
+		return errCloudEnrollmentConflict
+	case status == http.StatusRequestTimeout || status == http.StatusTooEarly || status == http.StatusTooManyRequests || status >= 500:
+		return errCloudEnrollmentUnavailable
+	default:
+		return errCloudEnrollmentRejected
+	}
+}
+
 func (service *cloudEnrollmentService) postJSON(ctx context.Context, path, bearer, idempotency string, body any, expectedStatus int, output any) error {
 	encoded, err := json.Marshal(body)
 	if err != nil || len(encoded) > maxCloudEnrollmentBodyBytes {
@@ -373,26 +390,29 @@ func (service *cloudEnrollmentService) postJSON(ctx context.Context, path, beare
 	}
 	response, err := service.client.Do(request)
 	if err != nil {
-		return errors.New("provider Cloud enrollment request failed")
+		return errCloudEnrollmentUnavailable
 	}
 	defer response.Body.Close()
 	if response.StatusCode != expectedStatus {
-		return errors.New("provider Cloud enrollment was rejected")
+		return cloudEnrollmentResponseError(response.StatusCode)
 	}
 	if declared := response.Header.Get("content-length"); declared != "" {
 		declaredBytes, err := strconv.ParseInt(declared, 10, 64)
 		if err != nil || declaredBytes < 0 || declaredBytes > maxCloudEnrollmentBodyBytes {
-			return errors.New("provider Cloud enrollment response is invalid")
+			return errCloudEnrollmentRejected
 		}
 	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, maxCloudEnrollmentBodyBytes+1))
-	if err != nil || len(raw) > maxCloudEnrollmentBodyBytes {
-		return errors.New("provider Cloud enrollment response is invalid")
+	if err != nil {
+		return errCloudEnrollmentUnavailable
+	}
+	if len(raw) > maxCloudEnrollmentBodyBytes {
+		return errCloudEnrollmentRejected
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(output); err != nil || ensureJSONEOF(decoder) != nil {
-		return errors.New("provider Cloud enrollment response is invalid")
+		return errCloudEnrollmentRejected
 	}
 	return nil
 }
@@ -421,7 +441,7 @@ func (service *cloudEnrollmentService) enroll(ctx context.Context, input cloudEn
 	}
 	now := service.now().UTC()
 	if err := validateChallenge(challenge, keyID, now); err != nil {
-		return cloudEnrollmentView{}, err
+		return cloudEnrollmentView{}, errCloudEnrollmentRejected
 	}
 	proof, err := service.identity.signEnrollmentProof(challenge)
 	if err != nil {
@@ -448,7 +468,7 @@ func (service *cloudEnrollmentService) enroll(ctx context.Context, input cloudEn
 		node.State != "submitted" || node.CredentialEpoch < 1 || node.CredentialEpoch > maxRelaySequence ||
 		node.ManifestDigest != challenge.ManifestDigest || node.RoutingEligible == nil || *node.RoutingEligible ||
 		node.CompensationEligible == nil || *node.CompensationEligible {
-		return cloudEnrollmentView{}, errors.New("provider Cloud enrollment node response is invalid")
+		return cloudEnrollmentView{}, errCloudEnrollmentRejected
 	}
 	view := cloudEnrollmentView{
 		SchemaVersion: providerEnrollmentStateV1, Revision: 1, State: "submitted",

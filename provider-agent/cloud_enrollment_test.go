@@ -24,6 +24,12 @@ const (
 	testNodeID       = "40000000-0000-4000-8000-000000000004"
 )
 
+type cloudEnrollmentRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function cloudEnrollmentRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
+}
+
 func enrollmentRequestBody(token string) string {
 	encoded, _ := json.Marshal(cloudEnrollmentInput{
 		EnrollmentToken: token, CoreVersion: "0.2.0", RuntimeFamily: providerCloudManagedRuntime,
@@ -244,6 +250,90 @@ func TestCloudEnrollmentRejectsMalformedModelsAndUntrustedOriginsBeforeNetwork(t
 	if _, err := service.enroll(context.Background(), input); !errors.Is(err, errInvalidCloudEnrollment) {
 		t.Fatalf("local model enrollment did not fail before network: %v", err)
 	}
+}
+
+func TestCloudEnrollmentPreservesActionableFailureClassesAcrossTheLocalBoundary(t *testing.T) {
+	token := "mve_" + strings.Repeat("a", 43)
+	core, _ := url.Parse("http://127.0.0.1:1455")
+	controlToken := strings.Repeat("c", 32)
+
+	requestStatus := func(test *testing.T, client *http.Client, enrollment *cloudEnrollmentService) int {
+		test.Helper()
+		if enrollment == nil {
+			identity, err := newMemoryDeviceIdentity()
+			if err != nil {
+				test.Fatal(err)
+			}
+			handler := providerHandlerWithServices(core, newMemorySelectionStore([]string{}), newMemoryRuntimeEndpointStore(), identity, nil, client, controlToken)
+			request := httptest.NewRequest(http.MethodPost, "/v1/cloud-shadow/enroll", strings.NewReader(enrollmentRequestBody(token)))
+			request.Header.Set("authorization", "Bearer "+controlToken)
+			request.Header.Set("content-type", "application/json")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			return response.Code
+		}
+		handler := providerHandlerWithServices(core, newMemorySelectionStore([]string{}), newMemoryRuntimeEndpointStore(), enrollment.identity, enrollment, client, controlToken)
+		request := httptest.NewRequest(http.MethodPost, "/v1/cloud-shadow/enroll", strings.NewReader(enrollmentRequestBody(token)))
+		request.Header.Set("authorization", "Bearer "+controlToken)
+		request.Header.Set("content-type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response.Code
+	}
+
+	for _, testCase := range []struct {
+		name        string
+		cloudStatus int
+		wantStatus  int
+	}{
+		{name: "expired grant", cloudStatus: http.StatusUnauthorized, wantStatus: http.StatusGone},
+		{name: "expired challenge", cloudStatus: http.StatusGone, wantStatus: http.StatusGone},
+		{name: "conflict", cloudStatus: http.StatusConflict, wantStatus: http.StatusConflict},
+		{name: "Cloud rejection", cloudStatus: http.StatusForbidden, wantStatus: http.StatusUnprocessableEntity},
+		{name: "invalid Cloud success", cloudStatus: http.StatusCreated, wantStatus: http.StatusUnprocessableEntity},
+		{name: "Cloud throttling", cloudStatus: http.StatusTooManyRequests, wantStatus: http.StatusBadGateway},
+		{name: "Cloud outage", cloudStatus: http.StatusServiceUnavailable, wantStatus: http.StatusBadGateway},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			cloud := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+				response.WriteHeader(testCase.cloudStatus)
+			}))
+			defer cloud.Close()
+			baseURL, err := cloudAPIURL(cloud.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity, err := newMemoryDeviceIdentity()
+			if err != nil {
+				t.Fatal(err)
+			}
+			enrollment := newCloudEnrollmentService(baseURL, cloud.Client(), identity, newMemoryCloudEnrollmentStore())
+			if got := requestStatus(t, cloud.Client(), enrollment); got != testCase.wantStatus {
+				t.Fatalf("unexpected local status for Cloud %d: got %d want %d", testCase.cloudStatus, got, testCase.wantStatus)
+			}
+		})
+	}
+
+	t.Run("Cloud transport outage", func(t *testing.T) {
+		baseURL, _ := cloudAPIURL("http://127.0.0.1:65534")
+		client := &http.Client{Transport: cloudEnrollmentRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("simulated Cloud transport outage")
+		})}
+		identity, err := newMemoryDeviceIdentity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		enrollment := newCloudEnrollmentService(baseURL, client, identity, newMemoryCloudEnrollmentStore())
+		if got := requestStatus(t, client, enrollment); got != http.StatusBadGateway {
+			t.Fatalf("Cloud transport outage became %d instead of 502", got)
+		}
+	})
+
+	t.Run("local enrollment service unavailable", func(t *testing.T) {
+		if got := requestStatus(t, http.DefaultClient, nil); got != http.StatusServiceUnavailable {
+			t.Fatalf("local unavailability became %d instead of 503", got)
+		}
+	})
 }
 
 func TestCloudEnrollmentStateRejectsLoosePermissionsAndUnknownFields(t *testing.T) {
