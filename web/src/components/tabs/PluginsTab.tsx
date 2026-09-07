@@ -3,7 +3,7 @@ import type { MarketplaceModule, ModuleView } from "../../types";
 import { api } from "../../lib/api";
 import "./PluginsTab.css";
 
-const GUIDE_URL = "https://github.com/thibautrey/multicodex-proxy/blob/main/docs/plugins.md";
+const GUIDE_URL = "https://github.com/thibautrey/multivibe/wiki/plugins";
 type View = "marketplace" | "installed";
 
 export function PluginsTab({ modules, marketplace, reload }: { modules: ModuleView[]; marketplace: MarketplaceModule[]; reload: () => Promise<void> }) {

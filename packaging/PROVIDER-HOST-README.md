@@ -13,7 +13,7 @@ The CLI is separate from the provider HTTP service, accepts no prompt text and
 requires an explicit `--run` plus both reviewed catalogs against a numeric
 loopback Ollama endpoint. It rejects runtime-version or model digest/size
 substitution before generation. See
-`provider-agent/RUNTIME_BENCHMARKS.md` in the source tree for the complete
+[runtime benchmark documentation](https://github.com/thibautrey/multivibe/wiki/Runtime-benchmarks) for the complete
 measurement and safety contract.
 
 The included installer verifies every extracted file's path, mode, size and
