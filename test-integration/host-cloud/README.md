@@ -199,3 +199,6 @@ Alignment is not a successful Host connection or permission to enable inference.
 
 See [the USD 2 live-test readiness check](live-two-dollar-readiness.md) for the
 subsequent authorized spending attempt and the missing auditable funding mechanism.
+
+The subsequent [non-monetary shadow investigation](shadow-admission-readiness.md)
+records why the existing bootstrap cannot target the current project/key.
