@@ -58,7 +58,7 @@ The source repository and template are maintained together:
 - Repository: https://github.com/thibautrey/multivibe
 - Template directory: https://github.com/thibautrey/multivibe/tree/main/packaging/unraid
 - Template: https://raw.githubusercontent.com/thibautrey/multivibe/main/packaging/unraid/multivibe-host.xml
-- Repository profile: `ca_profile.xml` in this directory
+- Repository profile: [`ca_profile.xml`](../../ca_profile.xml) at the repository root
 - Image: `ghcr.io/thibautrey/multivibe-host:latest` (Linux amd64, NVIDIA)
 - Support: https://github.com/thibautrey/multivibe/issues
 
@@ -73,11 +73,16 @@ Before requesting inclusion:
    that restart and container recreation preserve identity and model storage.
    Also check a non-default host port and its matching Public URL, WebUI access,
    update detection, and removal without deleting appdata.
-4. Consult the current [Community Applications support topic](https://forums.unraid.net/topic/38582-plug-in-community-applications/)
-   and request repository inclusion through the maintainers' current submission
-   process. Supply the repository and template-directory links explicitly;
-   this is a nested template directory in a source repository. Confirm whether
-   maintainers need a dedicated template repository or an Unraid support topic.
+4. Open the official [Community Applications submission portal](https://ca.unraid.net/submit/new)
+   and sign in with an Unraid account. Enter the public repository URL, run
+   **Validate** and **Scan**, resolve reported issues, review the listing, and
+   submit. The former Asana form now redirects authors to this portal; do not
+   send a forum PM as the normal submission route. Keep `ca_profile.xml` at the
+   repository root, as required by the
+   [official starter repository](https://github.com/unraid/unraid-community-apps-starter).
+   Check the current [CA policies](https://forums.unraid.net/topic/87144-ca-application-policies/),
+   including the repository-owner two-factor authentication requirement, before
+   making any attestations. Never claim unverified hardware testing or 2FA status.
 5. After acceptance and indexing, verify a fresh Apps search finds `multivibe-host`,
    displays its icon and requirements, and installs the expected image. Remove
    the private template file when verifying public discovery so it cannot mask
@@ -87,7 +92,7 @@ Suggested submission text (fill in the actual test evidence before sending):
 
 > Please review MultiVibe Host for inclusion in Community Applications.
 > Repository: https://github.com/thibautrey/multivibe
-> Templates and profile: packaging/unraid on main.
+> Template: packaging/unraid/multivibe-host.xml on main; profile: ca_profile.xml at the repository root.
 > Public image: ghcr.io/thibautrey/multivibe-host:latest.
 > This is a beta Linux amd64 NVIDIA application requiring the Nvidia Driver
 > plugin and compute capability 7.0+. It runs local AI models, with opt-in provider
