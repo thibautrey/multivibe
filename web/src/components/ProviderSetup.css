@@ -55,3 +55,10 @@
   .provider-setup-fields { padding: 14px; }
   .provider-setup-advanced summary span { display: block; margin: 6px 0 0; }
 }
+/* Keep navigation visible while provider cards or advanced settings scroll. */
+.modal.provider-setup-modal { outline: none; }
+.provider-setup-modal > * { flex-shrink: 0; }
+.provider-setup-footer { position: sticky; bottom: -28px; margin-bottom: -28px; padding-bottom: 28px; background: var(--panel-strong); z-index: 1; }
+@media (max-width: 600px) {
+  .provider-setup-footer { bottom: -18px; margin-bottom: -18px; padding-bottom: 18px; }
+}
