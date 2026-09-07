@@ -103,11 +103,29 @@ async function refreshOneAccount(
   options: UsageRefreshMonitorOptions,
   coordinator: UsageRefreshCoordinator,
 ): Promise<"refreshed" | "failed" | "skipped"> {
-  const source = structuredClone(account);
-  const valid = await ensureValidToken(source, options.oauthConfig);
+  const initial = structuredClone(account);
+  const valid = await ensureValidToken(initial, options.oauthConfig);
+  // Token validation can yield while a request-triggered refresh completes.
+  // Re-read the store before starting another upstream probe so that the
+  // shared coordinator also coalesces this otherwise easy-to-miss race.
+  const latestBeforeProbe = options.store
+    .getCachedAccounts()
+    .find((candidate) => candidate.id === account.id);
+  if (
+    !latestBeforeProbe ||
+    latestBeforeProbe.state?.scheduledWeeklyReset ||
+    !isUsageRefreshNeeded(latestBeforeProbe)
+  ) {
+    return "skipped";
+  }
+  const source =
+    latestBeforeProbe.accessToken === initial.accessToken &&
+    isDeepStrictEqual(latestBeforeProbe.usage, initial.usage)
+      ? valid
+      : structuredClone(latestBeforeProbe);
   const refreshed = await coordinator.refresh(
-    valid,
-    usageBaseUrl(valid, options),
+    source,
+    usageBaseUrl(source, options),
   );
   const latest = options.store
     .getCachedAccounts()
@@ -147,7 +165,9 @@ async function refreshWithConcurrency(
 ): Promise<UsageRefreshCycleResult> {
   const maxConcurrent = Math.max(
     1,
-    Math.floor(options.maxConcurrentRefreshes ?? DEFAULT_MAX_CONCURRENT_REFRESHES),
+    Number.isFinite(options.maxConcurrentRefreshes)
+      ? Math.floor(options.maxConcurrentRefreshes as number)
+      : DEFAULT_MAX_CONCURRENT_REFRESHES,
   );
   const result: UsageRefreshCycleResult = {
     checked: accounts.length,
@@ -188,10 +208,12 @@ export function createUsageRefreshMonitor(
   options: UsageRefreshMonitorOptions,
 ): UsageRefreshMonitor {
   const coordinator = options.coordinator ?? new UsageRefreshCoordinator();
-  const intervalMs = Math.max(
-    1_000,
-    Math.floor(options.intervalMs ?? USAGE_REFRESH_INTERVAL_MS),
-  );
+  const intervalMs =
+    options.intervalMs !== undefined &&
+    Number.isFinite(options.intervalMs) &&
+    options.intervalMs > 0
+      ? Math.max(1, Math.floor(options.intervalMs))
+      : USAGE_REFRESH_INTERVAL_MS;
   let timer: NodeJS.Timeout | undefined;
   let cyclePromise: Promise<UsageRefreshCycleResult> | undefined;
 
