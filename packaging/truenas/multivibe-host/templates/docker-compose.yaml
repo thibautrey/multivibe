@@ -10,6 +10,7 @@
 {% do c1.set_init(true) %}
 {% do c1.set_read_only(true) %}
 {% do c1.set_grace_period(45) %}
+{% do c1.healthcheck.use_built_in() %}
 {% do c1.add_caps(["CHOWN", "FOWNER", "SETGID", "SETUID"]) %}
 {% do c1.add_storage("/data", {"type": "host_path", "host_path_config": {"path": values.storage.data_path}}) %}
 {% do c1.add_storage("/models", {"type": "host_path", "host_path_config": {"path": values.storage.models_path}}) %}
@@ -20,7 +21,5 @@
 {% do c1.environment.add_env("NVIDIA_DRIVER_CAPABILITIES", "compute,utility") %}
 {% do tpl.portals.add(values.network.web_port) %}
 {% set rendered = tpl.render() %}
-{# Keep the published image healthcheck: it uses bundled Node, not curl/wget. #}
-{% do rendered.services[c1.name()].pop("healthcheck", none) %}
 {% do rendered.services[c1.name()].update({"platform": "linux/amd64", "tmpfs": ["/tmp:rw,nosuid,nodev,noexec,mode=1777,size=512m"]}) %}
 {{ rendered | tojson }}
