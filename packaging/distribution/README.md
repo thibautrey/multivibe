@@ -12,8 +12,11 @@ Skopeo with digest preservation. It rejects conflicting version tags and updates
 Create the public `multivibe-host` repository in the publisher's Docker Hub
 namespace, then configure the GitHub `dockerhub` environment:
 
-- Variable `DOCKERHUB_NAMESPACE`.
-- Secrets `DOCKERHUB_USERNAME` and a repository-scoped `DOCKERHUB_TOKEN`.
+- Variables `DOCKERHUB_NAMESPACE` and `DOCKERHUB_USERNAME`.
+- Secret `DOCKERHUB_TOKEN`, scoped to the destination repository.
+
+The publishing script requires a modern GitHub CLI with `gh attestation verify`,
+Skopeo, jq and Node. The GitHub-hosted workflow supplies these tools.
 
 Run **Publish Host image to Docker Hub** with the existing stable release tag.
 This does not claim Docker Official Image status. Configure the public Docker
