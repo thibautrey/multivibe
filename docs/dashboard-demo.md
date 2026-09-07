@@ -42,7 +42,7 @@ is not a native Host installation.
 ## Capture the current UI
 
 1. Start the demo from the commit being documented.
-2. Use a 1440 × 1000 desktop browser viewport and select the light theme in the sidebar.
+2. Use the normal desktop browser viewport and select the light theme in the sidebar.
 3. Keep the **Demo data** badge and fictional-data notice visible.
 4. Capture the viewport after fonts and charts finish rendering. Do not reuse screenshots
    from older releases or capture an authenticated production instance.
