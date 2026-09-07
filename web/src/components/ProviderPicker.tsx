@@ -1,6 +1,7 @@
 import { memo, useState } from "react";
 import type { ProviderId } from "../types";
 import "./ProviderSetup.css";
+import { PROVIDER_ACCESS, matchesAccessFilter, type AccessFilter } from "../lib/providerAccess";
 
 export type SetupProvider = ProviderId | "nvidia-pair";
 export const SETUP_PROVIDERS: { id: SetupProvider; name: string; description: string; method: string; icon?: string }[] = [
@@ -32,31 +33,46 @@ export const ProviderPicker = memo(function ProviderPicker({ value, sdkProvider,
   onChange: (provider: SetupProvider, sdkProvider?: string) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [accessFilter, setAccessFilter] = useState<AccessFilter | null>(null);
   const providers = [
     ...SETUP_PROVIDERS,
     ...cloudProviders.map((item) => ({ id: "ai-sdk" as const, sdkProvider: item.id, name: item.name,
       description: `Connect ${item.name} with your API key.`, method: "API key" })),
   ];
   const normalized = query.trim().toLocaleLowerCase();
-  const matches = providers.filter((item) => `${item.name} ${item.description} ${item.method}`.toLocaleLowerCase().includes(normalized));
+  const matches = providers.filter((item) =>
+    matchesAccessFilter("sdkProvider" in item ? item.sdkProvider : item.id, accessFilter) &&
+    `${item.name} ${item.description} ${item.method}`.toLocaleLowerCase().includes(normalized));
   return <div className="provider-setup-picker">
     <label className="provider-setup-search">Search providers
       <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name or connection type…" />
     </label>
-    <p className="muted provider-setup-results" role="status">{matches.length} providers{normalized ? " found" : " available"}</p>
+    <div className="provider-access-filters" role="group" aria-label="Filter providers by pricing">
+      {(["Paid", "Free", "Freemium"] as const).map((filter) => <button key={filter} type="button"
+        className={`provider-access-badge${accessFilter === filter ? " selected" : ""}`}
+        aria-pressed={accessFilter === filter}
+        onClick={() => setAccessFilter((current) => current === filter ? null : filter)}>{filter}</button>)}
+      {accessFilter && <button type="button" className="provider-access-clear" onClick={() => setAccessFilter(null)}>Clear filter</button>}
+    </div>
+    <p className="muted provider-access-help">{accessFilter === "Free" ? "Free models or allowances, including freemium providers. Limits and eligibility apply; trials excluded."
+      : accessFilter === "Paid" ? "Providers with paid access, including freemium providers."
+      : accessFilter === "Freemium" ? "Providers offering both free models or allowances and paid access. Limits and eligibility apply."
+      : "Free includes limited free tiers. Freemium offers both free and paid access. Endpoint costs depend on your server."}</p>
+    <p className="muted provider-setup-results" role="status">{matches.length} provider{matches.length === 1 ? "" : "s"}{normalized || accessFilter ? " found" : " available"}</p>
     {error && <p className="provider-setup-error" role="alert">{error}</p>}
     {!cloudProviders.length && !error && <p className="muted" role="status">Loading cloud providers…</p>}
     <div className="provider-setup-cards" role="group" aria-label="Choose a provider">
       {matches.map((item) => {
         const cloudId = "sdkProvider" in item ? item.sdkProvider : undefined;
+        const access = PROVIDER_ACCESS[cloudId ?? item.id];
         const selected = value === item.id && (item.id !== "ai-sdk" || sdkProvider === cloudId);
         return <button key={cloudId ?? item.id} type="button" className={`provider-setup-card${selected ? " selected" : ""}`} aria-pressed={selected} onClick={() => onChange(item.id, cloudId)}>
           <ProviderMark provider={item.id} sdkProvider={cloudId} />
-          <span className="provider-setup-card-copy"><strong>{item.name}</strong><span>{item.description}</span><small>{item.method}</small></span>
+          <span className="provider-setup-card-copy"><strong>{item.name}</strong><span>{item.description}</span><small>{item.method}</small><span className="provider-access-label" title={access?.note}>{access ? access.free ? access.paid ? "Freemium" : "Free" : "Paid" : "Depends on endpoint"}</span></span>
           <span className="provider-setup-check" aria-hidden="true">{selected ? "✓" : ""}</span>
         </button>;
       })}
     </div>
-    {!matches.length && <p className="provider-setup-empty">No providers match “{query}”. Try another name or connection type.</p>}
+    {!matches.length && <p className="provider-setup-empty">No providers match{query.trim() ? ` “${query}”` : ""}{accessFilter ? ` with the ${accessFilter} filter` : ""}. Try another search or clear the filter.</p>}
   </div>;
 });
