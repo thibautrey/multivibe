@@ -238,6 +238,10 @@ export const LOCAL_RUNTIME_ADAPTERS: readonly LocalRuntimeAdapter[] = [
       },
     ],
   },
+  {
+    ...registeredAdapter("nvidia-pair", "NVIDIA Personal AI Router (PAIR)"),
+    authentication: "none",
+  },
   registeredAdapter("manual-openai-compatible", "Manual OpenAI-compatible server"),
 ];
 

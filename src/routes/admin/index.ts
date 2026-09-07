@@ -1105,7 +1105,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     const revision = Number(req.body?.revision);
     const endpoints = req.body?.endpoints;
     if (!Number.isSafeInteger(revision) || revision < 1 || !Array.isArray(endpoints)
-      || endpoints.length > 28 || endpoints.some((value) => !isValidProviderRuntimeEndpointInput(value))
+      || endpoints.length > 29 || endpoints.some((value) => !isValidProviderRuntimeEndpointInput(value))
       || new Set(endpoints.map((value) => value.adapter_id)).size !== endpoints.length) {
       return res.status(400).json({ error: "invalid_provider_runtime_endpoints" });
     }
