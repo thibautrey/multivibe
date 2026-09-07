@@ -215,7 +215,11 @@ const jobStore = new JobStore(
 const smartRouting = new SmartRoutingCoordinator(store, jobStore, capacityTracker);
 const oauthStore = new OAuthStateStore(OAUTH_STATE_PATH);
 const codexProjectRegistry = new CodexProjectRegistry(CODEX_PROJECTS_PATH);
-const moduleManager = new ModuleManager(MODULES_PATH, BUNDLED_SECURITY_MODULE_PATH);
+const moduleManager = new ModuleManager(
+  MODULES_PATH,
+  BUNDLED_SECURITY_MODULE_PATH,
+  !MULTIVIBE_CONTROL_PLANE,
+);
 const traceManager = createTraceManager({
   filePath: TRACE_FILE_PATH,
   historyFilePath: TRACE_STATS_HISTORY_PATH,

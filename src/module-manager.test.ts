@@ -87,6 +87,47 @@ test("loads the persisted marketplace and exposes manifest categories", async ()
   }
 });
 
+test("keeps the bundled inference module disabled in the native control-plane profile", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-native-modules-"));
+  const bundledRoot = path.join(root, "bundled-security");
+  await fs.mkdir(path.join(bundledRoot, "dist"), { recursive: true });
+  await fs.writeFile(path.join(bundledRoot, "package.json"), JSON.stringify({ type: "module" }));
+  await fs.writeFile(path.join(bundledRoot, "multivibe.module.json"), JSON.stringify({
+    id: "com.multivibe.security",
+    name: "Security",
+    version: "1.0.0",
+    apiVersion: 1,
+    description: "Test bundled inference module",
+    entrypoint: "dist/index.js",
+    hooks: ["request.beforeUpstream"],
+    repository: "https://github.com/example/security.git",
+    defaultSettings: { semanticMode: "auto" },
+  }));
+  await fs.writeFile(path.join(bundledRoot, "dist", "index.js"), "export default {};\n");
+
+  try {
+    const firstStart = new ModuleManager(root, bundledRoot, false);
+    await firstStart.initialize();
+    assert.equal(firstStart.list()[0].enabled, false);
+    assert.equal(firstStart.list()[0].loaded, false);
+
+    const lockPath = path.join(root, "modules-lock.json");
+    const persisted = JSON.parse(await fs.readFile(lockPath, "utf8"));
+    persisted[0].enabled = true;
+    await fs.writeFile(lockPath, JSON.stringify(persisted));
+
+    const upgradedStart = new ModuleManager(root, bundledRoot, false);
+    await upgradedStart.initialize();
+    assert.equal(upgradedStart.list()[0].enabled, false);
+    assert.equal(upgradedStart.list()[0].loaded, false);
+    assert.deepEqual(upgradedStart.list()[0].settings, { semanticMode: "auto" });
+    const migrated = JSON.parse(await fs.readFile(lockPath, "utf8"));
+    assert.equal(migrated[0].enabled, false);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("validates marketplace metadata from manifests", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-manifest-"));
   await fs.mkdir(path.join(root, "dist"));
