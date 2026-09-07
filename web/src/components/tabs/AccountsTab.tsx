@@ -17,6 +17,7 @@ import {
 
 import { ProviderPicker, ProviderMark, SETUP_PROVIDERS } from "../ProviderPicker";
 import { Metric } from "../Metric";
+import { WidgetGrid } from "../WidgetGrid";
 import { createPortal } from "react-dom";
 
 const CODEX_QUOTA_RESET_FORECAST_URL = "https://www.willcodexquotareset.com/";
@@ -1648,30 +1649,30 @@ export function AccountsTab(props: Props) {
     <>
       {hasAnyProvider && (
         <>
-      <section className="grid cards4">
-        <Metric
+      <WidgetGrid storageKey="providers" label="Provider metrics">
+        <Metric widgetId="providers"
           title="Providers"
           value={`${accounts.length + (localWorker ? 1 : 0)}`}
           detail={localWorker ? "Configured accounts and local Host worker" : "Total configured providers"}
         />
-        <Metric
+        <Metric widgetId="enabled"
           title="Enabled"
           value={`${enabledCount}`}
           detail="Available for routing"
           tone="success"
         />
-        <Metric
+        <Metric widgetId="blocked" required
           title="Blocked"
           value={`${blockedCount}`}
           detail="Need manual review or quota reset"
           tone={blockedCount > 0 ? "warning" : "default"}
         />
-        <Metric
+        <Metric widgetId="top-model"
           title="Top model"
           value={traceStats.models[0]?.model ?? "-"}
           detail="Highest volume in the selected range"
         />
-      </section>
+      </WidgetGrid>
         </>
       )}
 

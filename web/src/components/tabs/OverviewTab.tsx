@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { Metric } from "../Metric";
+import { WidgetGrid } from "../WidgetGrid";
 import { ProgressStat } from "../ProgressStat";
 import { HostHarnessCards } from "../../host/HostHarnessCarousel";
 import { usd } from "../../lib/ui";
@@ -69,17 +70,17 @@ export function OverviewTab({
 
   return (
     <>
-      <section className="overview-summary grid cards4" aria-label="System summary">
-        <Metric
+      <WidgetGrid storageKey="home" label="System summary">
+        <Metric widgetId="system" required
           title="System"
           value={isReady ? "Ready" : "Setup"}
           detail={isReady ? "Providers and models are available" : "Connect a provider to get started"}
           tone={isReady ? "success" : "warning"}
         />
-        <Metric title="Providers" value={`${stats.enabled}/${stats.total}`} detail="Enabled accounts" tone={stats.enabled > 0 ? "success" : "default"} />
-        <Metric title="Requests" value={`${traceStats.totals.requests}`} detail="In the selected period" />
-        <Metric title="Cost" value={usd(traceStats.totals.costUsd)} detail="Estimated provider cost" />
-      </section>
+        <Metric widgetId="providers" title="Providers" value={`${stats.enabled}/${stats.total}`} detail="Enabled accounts" tone={stats.enabled > 0 ? "success" : "default"} />
+        <Metric widgetId="requests" title="Requests" value={`${traceStats.totals.requests}`} detail="In the selected period" />
+        <Metric widgetId="cost" title="Cost" value={usd(traceStats.totals.costUsd)} detail="Estimated provider cost" />
+      </WidgetGrid>
 
       {isEverythingRunning && hostApplication ? (
         <div className="overview-running-layout">
