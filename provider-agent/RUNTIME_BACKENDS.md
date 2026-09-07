@@ -117,3 +117,16 @@ registration, grant, profile, provenance and contract-test boundaries.
 See `runtimebackend/CONTRIBUTING.md`, `RUNTIME_PROFILES.md` and
 `RUNTIME_BENCHMARKS.md` for the contribution, selection and measurement
 contracts.
+
+## Community worker bindings
+
+The outbound worker consumes runtime-neutral, digest-pinned model bindings.
+Its constructor requires the runtime authorized by the caller's verified plan;
+all bindings must name that runtime. Selection rejects unknown and ambiguous
+registrations. Both execution modes use the selected implementation.
+
+The current signed demand protocol still authorizes Ollama only. PAIR discovery
+is not a managed backend registration: enabling it for community traffic also
+requires reviewed runtime/model provenance, lifecycle and execution attestation,
+and an extended signed demand contract shared with Cloud. Neither a local
+endpoint nor a successful `/v1/models` probe supplies these guarantees.
