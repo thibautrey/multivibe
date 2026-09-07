@@ -59,10 +59,10 @@ async function createHarness() {
 async function persistToken(
   url: string,
   body: unknown,
-  token: string | undefined = INTERNAL_TOKEN,
+  token: string | null = INTERNAL_TOKEN,
 ): Promise<Response> {
   const headers: Record<string, string> = { "content-type": "application/json" };
-  if (token !== undefined) headers["x-multivibe-internal-token"] = token;
+  if (token !== null) headers["x-multivibe-internal-token"] = token;
   return fetch(`${url}/internal/v1-edge/accounts/openai-account/token`, {
     method: "POST",
     headers,
@@ -82,7 +82,7 @@ test("the v1 edge token endpoint requires the internal token", async (t) => {
     accessToken: "must-not-be-written",
     needsTokenRefresh: false,
   };
-  assert.equal((await persistToken(harness.url, body, undefined)).status, 401);
+  assert.equal((await persistToken(harness.url, body, null)).status, 401);
   assert.equal((await persistToken(harness.url, body, "wrong-token")).status, 401);
   assert.equal(
     harness.store.getCachedAccounts()[0]?.accessToken,
