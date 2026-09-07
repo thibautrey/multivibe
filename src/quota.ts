@@ -10,7 +10,7 @@ import {
   EMPTY_RESPONSE_WINDOW_MS,
   MODEL_NOT_FOUND_BLOCK_DURATION_MS,
 } from "./config.js";
-import { openCodeUsageUrl } from "./opencode.js";
+import { openCodeUsageUrl, openCodeInferenceToken, openCodeAccountHeaders } from "./opencode.js";
 
 export const USAGE_CACHE_TTL_MS = Number(process.env.USAGE_CACHE_TTL_MS ?? 300_000);
 const USAGE_TIMEOUT_MS = Number(process.env.USAGE_TIMEOUT_MS ?? 10_000);
@@ -180,21 +180,27 @@ export function parseOpenCodeUsage(data: any): UsageSnapshot {
       windowSeconds,
     };
   };
+  const primary = toWindow(usage?.rolling, FIVE_HOUR_WINDOW_SECONDS);
+  const secondary = toWindow(usage?.weekly, WEEKLY_WINDOW_SECONDS);
+  const monthly = toWindow(usage?.monthly);
+  if (!primary && !secondary && !monthly) {
+    throw new Error("OpenCode usage response contains no recognized quota windows");
+  }
   return {
-    primary: toWindow(usage?.rolling, FIVE_HOUR_WINDOW_SECONDS),
-    secondary: toWindow(usage?.weekly, WEEKLY_WINDOW_SECONDS),
-    monthly: toWindow(usage?.monthly),
+    primary,
+    secondary,
+    monthly,
     quotaStatus: "available",
     fetchedAt: Date.now(),
   };
 }
 
-function markOpenCodeQuotaUnsupported(account: Account): Account {
+function markOpenCodeQuotaUnsupported(account: Account, quotaMessage: string): Account {
   const isProbeAvailabilityError = (message?: string) =>
     /^OpenCode usage probe failed (403|404)\b/.test(message ?? "");
   account.usage = {
-    ...account.usage,
     quotaStatus: "unsupported",
+    quotaMessage,
     fetchedAt: Date.now(),
   };
   account.state = {
@@ -619,20 +625,31 @@ export async function refreshUsageIfNeeded(account: Account, chatgptBaseUrl: str
     };
 
     if (provider === "opencode") {
-      const res = await fetch(openCodeUsageUrl(chatgptBaseUrl), {
-        headers,
+      const usageUrl = openCodeUsageUrl(chatgptBaseUrl);
+      if (!usageUrl) {
+        return markOpenCodeQuotaUnsupported(account,
+          "OpenCode Console does not expose Go quota windows through its inference API. Connect a Go API key with the Zen / Go endpoint to monitor 5h, weekly and monthly quotas.");
+      }
+      const res = await fetch(usageUrl, {
+        headers: {
+          ...openCodeAccountHeaders(account),
+          ...headers,
+          authorization: bearerToken(openCodeInferenceToken(account)),
+        },
         signal: controller.signal,
       });
-      // OpenCode exposes this endpoint only for eligible Go subscriptions.
-      // Zen, balance-backed, and some OAuth accounts return 403/404 even
-      // though inference remains fully usable.
-      if (res.status === 403 || res.status === 404) {
-        return markOpenCodeQuotaUnsupported(account);
+      const json = await res.json().catch(() => undefined);
+      // Only the explicit Go entitlement response proves quotas unavailable.
+      // Workspace errors, WAF denials and missing routes must remain visible.
+      if (res.status === 403 && json?.error?.type === "EntitlementError" &&
+          json?.error?.message === "OpenCode Go subscription required.") {
+        return markOpenCodeQuotaUnsupported(account, "This API key has no OpenCode Go subscription.");
       }
       if (!res.ok) throw new Error(`OpenCode usage probe failed ${res.status}`);
-      const json = await res.json();
       account.usage = parseOpenCodeUsage(json);
-      account.state = { ...account.state, lastError: undefined };
+      if (/^OpenCode usage (probe failed|response)/.test(account.state?.lastError ?? "")) {
+        account.state = { ...account.state, lastError: undefined };
+      }
       return account;
     }
 
@@ -657,6 +674,14 @@ export async function refreshUsageIfNeeded(account: Account, chatgptBaseUrl: str
     account.state = { ...account.state, lastError: undefined };
     return account;
   } catch (err: any) {
+    if (provider === "opencode") {
+      account.usage = {
+        ...account.usage,
+        quotaStatus: "error",
+        quotaMessage: err?.message ?? String(err),
+        fetchedAt: Date.now(),
+      };
+    }
     rememberError(account, err?.message ?? String(err));
     return account;
   } finally {
@@ -671,7 +696,7 @@ function exhaustedQuotaResetAt(
   account: Account,
   now = Date.now(),
 ): number | undefined {
-  const resetAts = [account.usage?.primary, account.usage?.secondary].flatMap(
+  const resetAts = [account.usage?.primary, account.usage?.secondary, account.usage?.monthly].flatMap(
     (window) => {
       if (
         !window ||

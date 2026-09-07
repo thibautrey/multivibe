@@ -42,7 +42,8 @@ export type UsageSnapshot = {
   primary?: UsageWindow; // normalized ~5h window
   secondary?: UsageWindow; // normalized weekly window
   monthly?: UsageWindow; // normalized monthly window when exposed by a provider
-  quotaStatus?: "available" | "unsupported";
+  quotaStatus?: "available" | "unsupported" | "error";
+  quotaMessage?: string;
   fetchedAt: number;
 };
 
