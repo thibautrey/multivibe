@@ -53,3 +53,31 @@ no new admission to clean up or expire. Any future attempt must preserve stable
 idempotency and no retries, and must not infer provider readiness from replica
 readiness alone. Source inspection used Cloud checkout `85c5549`; no claim is
 made that all of its runbook statements describe the current deployment.
+
+## Follow-up: global route approval census
+
+The subsequent request explicitly made an already approved and currently
+broker-routable route a prerequisite to implementing or applying admission.
+The production aggregate was expanded beyond the current project:
+
+- `managed_model_routes`: zero rows in total;
+- active `approved_synthetic` managed routes: zero;
+- `provider_route_versions` with active state, approved rights and approved
+  contract: zero.
+
+These are necessary approval predicates, not a complete provider eligibility
+check. Because there are no candidates satisfying even these predicates,
+there is no eligible route whose broker routability can be established for
+this task. A ready broker or an advertised model would not substitute for
+route approval. No model request, admission, route insertion or self-approval
+was attempted. No admission cleanup is necessary.
+
+The exact remaining external decision is approval by the route owner of a
+specific route for the bounded non-monetary synthetic test, followed by proof
+that the broker can route it. Only then does the user's conditional instruction
+authorize implementing and applying the one-unit, concurrency-one,
+short-lived admission for the existing project/key. The single non-streaming
+Responses request remains unissued; its limit is eight output tokens with
+stable idempotency and no retry.
+
+See [sanitized global census](route-approval-proof-2026-09-07.json).

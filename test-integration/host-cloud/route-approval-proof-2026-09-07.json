@@ -1,0 +1,13 @@
+{
+  "recordedAt": "2026-09-07T20:52:17.464066+00:00",
+  "source": "Read-only production PostgreSQL aggregate through existing API workload",
+  "shadowRoutesTotal": 0,
+  "activeApprovedShadowRoutes": 0,
+  "activeProviderRoutesWithApprovedRightsAndContract": 0,
+  "queryReadOnly": true,
+  "statementTimeoutMs": 5000,
+  "brokerRoutabilityEstablished": false,
+  "admissionCreated": false,
+  "inferenceRequestsSent": 0,
+  "productionMutationPerformed": false
+}
