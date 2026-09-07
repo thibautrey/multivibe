@@ -1092,10 +1092,15 @@ fn account_ids_for_model(model: &str, catalog: &[Value]) -> Vec<String> {
 
 fn is_local_runtime(account: &Account) -> bool {
     let runtime = account.local_runtime.as_ref();
+    let discovered = account.location.as_deref() == Some("local")
+        && runtime.and_then(|value| value.source.as_deref()) == Some("multivibe-local-discovery");
+    let pair = account.id == "local-runtime-nvidia-pair"
+        && account.location.as_deref() == Some("personal-cluster")
+        && runtime.and_then(|value| value.source.as_deref()) == Some("multivibe-local-configuration")
+        && runtime.and_then(|value| value.adapter.as_deref()) == Some("nvidia-pair");
     account.provider.as_deref() == Some("openai-compatible")
-        && account.location.as_deref() == Some("local")
+        && (discovered || pair)
         && account.access_token.is_empty()
-        && runtime.and_then(|value| value.source.as_deref()) == Some("multivibe-local-discovery")
         && runtime.and_then(|value| value.authentication.as_deref()) == Some("none")
         && !runtime
             .map(|value| value.confirmed_model_ids.is_empty())

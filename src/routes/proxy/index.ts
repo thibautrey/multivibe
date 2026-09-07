@@ -2694,7 +2694,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
           if (!res.headersSent) {
             res.setHeader(
               "X-MultiVibe-Decision",
-              selected.location === "local" ? "local" : "cloud",
+              selected.location ?? "cloud",
             );
             res.setHeader(
               "X-MultiVibe-Resolved-Model",
@@ -2815,8 +2815,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
         const requestBody = TRACE_INCLUDE_BODY && !confidentialExecution
           ? req.body
           : undefined;
-        const executionLocation =
-          selected.location === "local" ? ("local" as const) : ("cloud" as const);
+        const executionLocation = selected.location ?? ("cloud" as const);
         const latencyBreakdown = {
           preparationMs: 0,
           upstreamHeadersMs: 0,

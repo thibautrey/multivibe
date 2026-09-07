@@ -4,8 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
-  LOCAL_RUNTIME_ADAPTERS,
   authorizationForAccountRequest,
+  configureNvidiaPairRuntime,
+  LOCAL_RUNTIME_ADAPTERS,
   discoverAndPersistLocalRuntimes,
   discoverLocalRuntimes,
   isDiscoveredLocalRuntimeAccount,
@@ -448,4 +449,50 @@ test("NVIDIA PAIR is a distinct tokenless adapter without an ambiguous automatic
     displayName: "NVIDIA Personal AI Router (PAIR)",
     attempts: 0,
   }]);
+});
+
+test("explicit NVIDIA PAIR configuration creates a bounded personal-cluster account and wins over Ollama", async (t) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-pair-"));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const store = new AccountStore(path.join(dataDir, "accounts.json"));
+  await store.init();
+  await store.addOrUpdate(discoveredAccount("http://127.0.0.1:11434"));
+
+  const requested: string[] = [];
+  const pair = await configureNvidiaPairRuntime(store, "http://127.0.0.1:11434", {
+    fetchFn: async (input, init) => {
+      requested.push(String(input));
+      assert.equal(init?.redirect, "manual");
+      assert.equal(new Headers(init?.headers).get("authorization"), null);
+      return modelsResponse(["pair/model"]);
+    },
+  });
+
+  assert.deepEqual(requested, ["http://127.0.0.1:11434/v1/models"]);
+  assert.equal(pair.location, "personal-cluster");
+  assert.equal(pair.localRuntime?.source, "multivibe-local-configuration");
+  assert.deepEqual(pair.localRuntime?.confirmedModelIds, ["pair/model"]);
+  assert.equal(authorizationForAccountRequest(pair, "http://127.0.0.1:11434/v1/chat/completions"), undefined);
+  assert.throws(
+    () => authorizationForAccountRequest(pair, "http://127.0.0.1:11434/admin"),
+    /outside the configured PAIR boundary/,
+  );
+  assert.deepEqual((await store.listAccounts()).map((account) => account.id), ["local-runtime-nvidia-pair"]);
+
+  const report = await discoverAndPersistLocalRuntimes(store, {
+    adapters: [ollama],
+    fetchFn: async () => modelsResponse(["pair/model"]),
+  });
+  assert.equal(report.accounts.length, 0);
+  assert.deepEqual((await store.listAccounts()).map((account) => account.id), ["local-runtime-nvidia-pair"]);
+});
+
+test("explicit NVIDIA PAIR rejects non-loopback and unbounded endpoints", async (t) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-pair-invalid-"));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const store = new AccountStore(path.join(dataDir, "accounts.json"));
+  await store.init();
+  for (const endpoint of ["https://127.0.0.1:11434", "http://localhost:11434", "http://127.0.0.1", "http://127.0.0.1:11434/path"]) {
+    await assert.rejects(configureNvidiaPairRuntime(store, endpoint), /loopback HTTP origin/);
+  }
 });

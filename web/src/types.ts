@@ -15,7 +15,7 @@ export type LocalRuntimeAdapterId =
   | "manual-openai-compatible";
 
 export type LocalRuntimeMetadata = {
-  source: "multivibe-local-discovery";
+  source: "multivibe-local-discovery" | "multivibe-local-configuration";
   adapter: LocalRuntimeAdapterId;
   endpoint: string;
   confirmedModelIds: string[];
@@ -42,7 +42,7 @@ export type Account = {
   oidcClientId?: string;
   baseUrl?: string;
   priority?: number;
-  location?: "local" | "cloud";
+  location?: "local" | "personal-cluster" | "cloud";
   localRuntime?: LocalRuntimeMetadata;
   capacityProfile?: {
     maxConcurrent?: number;
@@ -338,7 +338,7 @@ export type RoutingCandidate = {
   model: string;
   provider?: "openai" | "openai-compatible" | "opencode" | "mistral" | "zai" | "xai";
   accountIds?: string[];
-  location?: "local" | "cloud";
+  location?: "local" | "personal-cluster" | "cloud";
   quality?: number;
   inputCostPerMillionUsd?: number;
   outputCostPerMillionUsd?: number;
@@ -367,7 +367,7 @@ export type RoutingRule = {
     timeWindows?: Array<{ days?: number[]; start: string; end: string; timezone?: string }>;
   };
   constraints?: {
-    allowedLocations?: Array<"local" | "cloud">;
+    allowedLocations?: Array<"local" | "personal-cluster" | "cloud">;
     maxPredictedWaitMs?: number;
     minContextWindow?: number;
     minQuality?: number;
