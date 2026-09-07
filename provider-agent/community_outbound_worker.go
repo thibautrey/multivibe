@@ -177,7 +177,7 @@ type communityOutboundWorker struct {
 	enrollment *cloudEnrollmentStore
 	policy     *capacityPolicyStore
 	backend    communityOutboundExecutionBackend
-	catalog    providerModelCatalog
+	catalog    []communityModelBinding
 	trusted    trustedProviderDemandKeys
 	replay     *communityOutboundReplayStore
 	now        func() time.Time
@@ -188,9 +188,31 @@ type communityOutboundWorker struct {
 // managed lifecycle contract. A discovered OpenAI-compatible endpoint does not
 // qualify: a backend must be compiled, identify the signed demand runtime, and
 // provide the reviewed canonical-model mapping and bounded execution methods.
+type communityModelBinding struct {
+	CanonicalModelID string
+	UpstreamModel    string
+	ContentDigest    string
+	RuntimeID        string
+}
+
+func validateCommunityBindings(runtimeID string, bindings []communityModelBinding) error {
+	if runtimeID == "" || len(bindings) == 0 || len(bindings) > maximumProviderDemandItems {
+		return errors.New("invalid community bindings")
+	}
+	seen := make(map[string]bool)
+	for _, binding := range bindings {
+		if binding.RuntimeID != runtimeID || !providerDemandModelID.MatchString(binding.CanonicalModelID) ||
+			!communityInferenceIdentifier.MatchString(binding.UpstreamModel) || !providerDemandContentDigest.MatchString(binding.ContentDigest) || seen[binding.CanonicalModelID] {
+			return errors.New("invalid community binding")
+		}
+		seen[binding.CanonicalModelID] = true
+	}
+	return nil
+}
+
 type communityOutboundExecutionBackend interface {
 	CommunityRuntimeID() string
-	CommunityCatalog() providerModelCatalog
+	CommunityCatalog() []communityModelBinding
 	Execute(context.Context, runtimeExecuteRequest) (runtimeExecuteResult, error)
 	ExecuteStream(context.Context, runtimeExecuteRequest, func(runtimeExecuteChunk) error) (runtimeExecutionSummary, error)
 }
@@ -258,15 +280,16 @@ func newCommunityOutboundWorker(
 	enrollment *cloudEnrollmentStore,
 	policy *capacityPolicyStore,
 	backend communityOutboundExecutionBackend,
+	authorizedRuntime string,
 	trusted trustedProviderDemandKeys,
 	replay *communityOutboundReplayStore,
 ) (*communityOutboundWorker, error) {
 	if baseURL == nil || sessions == nil || enrollment == nil || policy == nil || backend == nil || replay == nil || len(trusted) < 1 ||
-		backend.CommunityRuntimeID() != providerDemandRuntime {
+		client == nil || backend.CommunityRuntimeID() != authorizedRuntime {
 		return nil, errors.New("community outbound worker configuration is incomplete")
 	}
 	catalog := backend.CommunityCatalog()
-	if validateProviderModelCatalog(&catalog) != nil {
+	if validateCommunityBindings(authorizedRuntime, catalog) != nil {
 		return nil, errors.New("community outbound worker backend catalog is invalid")
 	}
 	cloud := *client
@@ -278,7 +301,7 @@ func newCommunityOutboundWorker(
 	}
 	return &communityOutboundWorker{
 		baseURL: baseURL, cloud: &cloud, sessions: sessions, enrollment: enrollment, policy: policy,
-		backend: backend, catalog: cloneRuntimeBackendCatalog(catalog), trusted: keys, replay: replay, now: time.Now,
+		backend: backend, catalog: append([]communityModelBinding{}, catalog...), trusted: keys, replay: replay, now: time.Now,
 		stats: newCommunityOutboundWorkerStats(),
 	}, nil
 }
@@ -337,8 +360,8 @@ func (worker *communityOutboundWorker) catalogModel(model, upstream string) (str
 	if strings.HasPrefix(model, "multivibe/") || !strings.Contains(model, "/") || !validSelectedModelID(model) {
 		return "", false
 	}
-	for _, entry := range worker.catalog.Models {
-		if (entry.CanonicalModelID == "hf:"+model || entry.CanonicalModelID == "openrouter:"+model) && entry.OllamaModel == upstream {
+	for _, entry := range worker.catalog {
+		if (entry.CanonicalModelID == "hf:"+model || entry.CanonicalModelID == "openrouter:"+model) && entry.UpstreamModel == upstream {
 			return entry.CanonicalModelID, true
 		}
 	}

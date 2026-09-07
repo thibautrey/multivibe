@@ -866,7 +866,7 @@ func main() {
 				os.Exit(2)
 			}
 			outboundWorker, err = newCommunityOutboundWorker(
-				cloudURL, client, modelLifecycle.relay, enrollmentStore, capacity, outboundBackend, trustedDemandKeys, replay,
+				cloudURL, client, modelLifecycle.relay, enrollmentStore, capacity, outboundBackend, providerDemandRuntime, trustedDemandKeys, replay,
 			)
 			if err != nil {
 				logger.Error("provider_agent_configuration_invalid", "error", err.Error())

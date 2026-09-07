@@ -711,8 +711,13 @@ func (backend *ollamaRuntimeBackend) CommunityRuntimeID() string {
 	return providerDemandRuntime
 }
 
-func (backend *ollamaRuntimeBackend) CommunityCatalog() providerModelCatalog {
-	return cloneRuntimeBackendCatalog(backend.catalog)
+func (backend *ollamaRuntimeBackend) CommunityCatalog() []communityModelBinding {
+	bindings := make([]communityModelBinding, 0, len(backend.catalog.Models))
+	for _, entry := range backend.catalog.Models {
+		bindings = append(bindings, communityModelBinding{CanonicalModelID: entry.CanonicalModelID,
+			UpstreamModel: entry.OllamaModel, ContentDigest: entry.ContentDigest, RuntimeID: backend.CommunityRuntimeID()})
+	}
+	return bindings
 }
 
 // pinnedManagedControllerRuntime consumes immutable values captured by the
