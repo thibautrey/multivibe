@@ -35,6 +35,50 @@ test("a mutation arriving during a flush is included before the flush resolves",
   await fs.rm(directory, { recursive: true, force: true });
 });
 
+test("token CAS rejects stale writers and preserves unrelated account fields", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-store-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, "accounts.json");
+  const store = new AccountStore(filePath);
+  await store.init();
+  await store.addOrUpdate({
+    id: "account",
+    provider: "openai",
+    accessToken: "access-before",
+    refreshToken: "refresh-before",
+    enabled: true,
+    priority: 5,
+    state: { lastError: "keep-me", needsTokenRefresh: true },
+  });
+
+  const revision = store.getRevision();
+  assert.deepEqual(
+    store.patchAccountTokenIfCurrent("account", "stale-access", {
+      accessToken: "must-not-be-written",
+      refreshToken: "must-not-be-written",
+    }),
+    { status: "conflict" },
+  );
+  assert.equal(store.getRevision(), revision);
+
+  const result = store.patchAccountTokenIfCurrent("account", "access-before", {
+    accessToken: "access-after",
+    refreshToken: "refresh-after",
+    expiresAt: 9_999,
+    state: { needsTokenRefresh: false },
+  });
+  assert.equal(result.status, "updated");
+  await store.flushIfDirty();
+
+  const persisted = JSON.parse(await fs.readFile(filePath, "utf8"));
+  assert.equal(persisted.accounts[0].accessToken, "access-after");
+  assert.equal(persisted.accounts[0].refreshToken, "refresh-after");
+  assert.equal(persisted.accounts[0].priority, 5);
+  assert.equal(persisted.accounts[0].enabled, true);
+  assert.equal(persisted.accounts[0].state.lastError, "keep-me");
+  assert.equal(persisted.accounts[0].state.needsTokenRefresh, false);
+});
+
 test("dashboard API keys are persisted and can be revoked", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-store-"));
   const filePath = path.join(directory, "accounts.json");

@@ -600,12 +600,13 @@ Job endpoints are application-isolated:
 
 - `GET /v1/jobs` and `GET /v1/jobs/:id`
 - `GET /v1/jobs/:id/result`
-- `GET /v1/jobs/:id/events` with `Last-Event-ID`
+- `GET /v1/jobs/:id/events` with `Last-Event-ID` replay
 - `DELETE /v1/jobs/:id`
 
-Successful responses may include `X-MultiVibe-Decision`,
-`X-MultiVibe-Resolved-Model`, `X-MultiVibe-Estimated-Wait-Ms`, and
-`X-MultiVibe-Capacity-Version`.
+Inference responses may include `X-MultiVibe-Decision`,
+`X-MultiVibe-Priority`, `X-MultiVibe-Resolved-Model`, and
+`X-MultiVibe-Idempotency-Status`. Deferred submissions also return a
+`Location` header.
 
 For retention, retries, event types, HMAC signatures, polling, and
 application-side idempotency, read the
@@ -703,20 +704,22 @@ Mount `/data` to preserve state:
 | `/data/provider-agent-device-identity.json` | Mode-`0600` Ed25519 device identity and relay-shadow sequence |
 | `/data/provider-agent-cloud-enrollment.json` | Mode-`0600` submitted Cloud shadow node view; never the enrollment grant |
 | `/data/codex-projects.json` | Codex session/project registry |
-| `/data/jobs.sqlite` | Durable jobs, leases, results, and events |
+| `/data/v1-edge-jobs.json` | Native Rust jobs, results, retries, and webhook delivery state |
+| `/data/jobs.sqlite` | Legacy/control-plane jobs and pre-Rust migration source |
 
 The Compose deployment mounts `./data:/data`. Recent trace retention defaults
 to 1,000 entries. Persistent state is not encrypted at rest: `accounts.json`
 can contain provider access/refresh tokens, proxy keys, and webhook secrets;
-`oauth-state.json` can contain temporary OAuth verifiers; traces and the jobs
-database can contain request and response payloads. Files created by MultiVibe
+`oauth-state.json` can contain temporary OAuth verifiers; traces and the native
+job file or legacy database can contain request and response payloads. Files created by MultiVibe
 use restrictive permissions, but the volume and its backups should still be
 encrypted, access-controlled, and excluded from public shares.
 
 Job content delivered by webhook or consumed by a client receives a one-hour
 grace period; unretrieved content is purged after 30 days. For a consistent
 backup, stop the service cleanly, copy the entire `data/` directory (including
-any SQLite `-wal` and `-shm` files), then start it again. Restore the complete
+`v1-edge-jobs.json`, the `*.pre-rust-backup.sqlite` migration copy, and any
+SQLite `-wal` or `-shm` files), then start it again. Restore the complete
 directory only while the service is stopped.
 ### Embedded provider-agent preview
 
