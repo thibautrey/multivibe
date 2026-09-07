@@ -1,0 +1,58 @@
+{
+  "name": "multivibe-host",
+  "services": {
+    "multivibe-host": {
+      "image": "ghcr.io/thibautrey/multivibe-host:0.2.32@sha256:0303adec50a10644f932723c70a4085c3d3a0e45dc3721589544988706a4fca3",
+      "platform": "linux/amd64",
+      "init": true,
+      "restart": "unless-stopped",
+      "read_only": true,
+      "tmpfs": [
+        "/tmp:rw,nosuid,nodev,noexec,mode=1777,size=512m"
+      ],
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "cap_drop": [
+        "ALL"
+      ],
+      "cap_add": [
+        "CHOWN",
+        "FOWNER",
+        "SETGID",
+        "SETUID"
+      ],
+      "stop_grace_period": "45s",
+      "environment": {
+        "MULTIVIBE_HOST_PUBLIC_URL": "${MULTIVIBE_HOST_PUBLIC_URL:?Set the exact browser-facing origin}",
+        "MULTIVIBE_HOST_MANAGED_DIR": "/models/runtime",
+        "MULTIVIBE_PROVIDER_CUDA_VISIBLE_DEVICES": "0",
+        "NVIDIA_DRIVER_CAPABILITIES": "compute,utility"
+      },
+      "ports": [
+        "${MULTIVIBE_HOST_PORT:-1455}:1455"
+      ],
+      "volumes": [
+        "${MULTIVIBE_DATA_DIR:?Select a dedicated appdata directory}:/data",
+        "${MULTIVIBE_MODELS_DIR:?Select a dedicated models directory}:/models"
+      ],
+      "deploy": {
+        "resources": {
+          "reservations": {
+            "devices": [
+              {
+                "driver": "nvidia",
+                "device_ids": [
+                  "${NVIDIA_GPU_UUID:?Select an NVIDIA GPU UUID}"
+                ],
+                "capabilities": [
+                  "gpu"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,171 @@
+{
+  "groups": [
+    {
+      "name": "Host Configuration",
+      "description": "Host Configuration"
+    },
+    {
+      "name": "Network Configuration",
+      "description": "Network Configuration"
+    },
+    {
+      "name": "Storage Configuration",
+      "description": "Storage Configuration"
+    },
+    {
+      "name": "Resources Configuration",
+      "description": "Resources Configuration"
+    }
+  ],
+  "questions": [
+    {
+      "variable": "multivibe",
+      "label": "",
+      "group": "Host Configuration",
+      "schema": {
+        "type": "dict",
+        "attrs": [
+          {
+            "variable": "public_url",
+            "label": "Exact browser-facing origin (HTTP or HTTPS, no path)",
+            "schema": {
+              "type": "string",
+              "required": true,
+              "default": ""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variable": "network",
+      "label": "",
+      "group": "Network Configuration",
+      "schema": {
+        "type": "dict",
+        "attrs": [
+          {
+            "variable": "web_port",
+            "label": "Web UI Port",
+            "schema": {
+              "type": "dict",
+              "attrs": [
+                {
+                  "variable": "bind_mode",
+                  "label": "Port Binding",
+                  "schema": {
+                    "type": "string",
+                    "default": "published",
+                    "hidden": true
+                  }
+                },
+                {
+                  "variable": "port_number",
+                  "label": "Port Number",
+                  "schema": {
+                    "type": "int",
+                    "default": 1455,
+                    "min": 1,
+                    "max": 65535,
+                    "required": true
+                  }
+                },
+                {
+                  "variable": "host_ips",
+                  "label": "Host IPs",
+                  "schema": {
+                    "type": "list",
+                    "default": [],
+                    "items": [
+                      {
+                        "variable": "host_ip",
+                        "label": "Host IP",
+                        "schema": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variable": "storage",
+      "label": "",
+      "group": "Storage Configuration",
+      "schema": {
+        "type": "dict",
+        "attrs": [
+          {
+            "variable": "data_path",
+            "label": "Dedicated application dataset (startup assigns UID/GID 10001)",
+            "schema": {
+              "type": "hostpath",
+              "required": true
+            }
+          },
+          {
+            "variable": "models_path",
+            "label": "Dedicated models dataset (startup assigns UID/GID 10001)",
+            "schema": {
+              "type": "hostpath",
+              "required": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variable": "resources",
+      "label": "",
+      "group": "Resources Configuration",
+      "schema": {
+        "type": "dict",
+        "attrs": [
+          {
+            "variable": "limits",
+            "label": "Limits",
+            "schema": {
+              "type": "dict",
+              "attrs": [
+                {
+                  "variable": "cpus",
+                  "label": "CPUs",
+                  "schema": {
+                    "type": "int",
+                    "default": 4,
+                    "required": true
+                  }
+                },
+                {
+                  "variable": "memory",
+                  "label": "Memory in MB",
+                  "schema": {
+                    "type": "int",
+                    "default": 8192,
+                    "required": true
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "variable": "gpus",
+            "label": "Select an NVIDIA GPU (required)",
+            "schema": {
+              "type": "dict",
+              "$ref": [
+                "definitions/gpu_configuration"
+              ],
+              "attrs": []
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

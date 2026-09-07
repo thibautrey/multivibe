@@ -1,0 +1,27 @@
+{% set tpl = ix_lib.base.render.Render(values) %}
+{% if not tpl.funcs.has_nvidia_gpu() %}
+  {% do tpl.funcs.fail("MultiVibe Host requires a selected NVIDIA GPU with compute capability 7.0+.") %}
+{% endif %}
+{% if values.storage.data_path == values.storage.models_path %}
+  {% do tpl.funcs.fail("Application data and model storage must use different dedicated datasets.") %}
+{% endif %}
+{% set c1 = tpl.add_container(values.consts.host_container_name, "image") %}
+{% do c1.set_user(0, 0) %}
+{% do c1.set_init(true) %}
+{% do c1.set_read_only(true) %}
+{% do c1.set_grace_period(45) %}
+{% do c1.add_caps(["CHOWN", "FOWNER", "SETGID", "SETUID"]) %}
+{% do c1.add_security_opt("no-new-privileges", true) %}
+{% do c1.add_storage("/data", {"type": "host_path", "host_path_config": {"path": values.storage.data_path}}) %}
+{% do c1.add_storage("/models", {"type": "host_path", "host_path_config": {"path": values.storage.models_path}}) %}
+{% do c1.add_port(values.network.web_port, {"container_port": 1455}) %}
+{% do c1.environment.add_env("MULTIVIBE_HOST_PUBLIC_URL", values.multivibe.public_url) %}
+{% do c1.environment.add_env("MULTIVIBE_HOST_MANAGED_DIR", "/models/runtime") %}
+{% do c1.environment.add_env("MULTIVIBE_PROVIDER_CUDA_VISIBLE_DEVICES", "0") %}
+{% do c1.environment.add_env("NVIDIA_DRIVER_CAPABILITIES", "compute,utility") %}
+{% do tpl.portals.add(values.network.web_port) %}
+{% set rendered = tpl.render() %}
+{# Keep the published image healthcheck: it uses bundled Node, not curl/wget. #}
+{% do rendered.services[c1.name()].pop("healthcheck", none) %}
+{% do rendered.services[c1.name()].update({"platform": "linux/amd64", "tmpfs": ["/tmp:rw,nosuid,nodev,noexec,mode=1777,size=512m"]}) %}
+{{ rendered | tojson }}

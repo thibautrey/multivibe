@@ -338,6 +338,27 @@ jobs:
         run: |
           $archive = "release-windows/multivibe-host_${{ needs.validate-tag.outputs.version }}_windows_amd64.zip"
           npm run verify:provider-host -- $archive
+      - name: Install the pinned Windows installer compiler
+        if: vars.WINDOWS_INSTALLER_ENABLED == 'true' && !contains(needs.validate-tag.outputs.version, '-')
+        shell: pwsh
+        run: ./scripts/distribution/install-inno.ps1
+      - name: Build and Authenticode-sign the Windows installer
+        if: vars.WINDOWS_INSTALLER_ENABLED == 'true' && !contains(needs.validate-tag.outputs.version, '-')
+        shell: pwsh
+        env:
+          WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.WINDOWS_CODESIGN_PFX_BASE64 }}
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '${{ needs.validate-tag.outputs.version }}'
+          if ($version -match '-') { throw 'Windows store installers require a stable release.' }
+          ./scripts/distribution/build-windows-installer.ps1 -Archive "release-windows/multivibe-host_${version}_windows_amd64.zip" -Version $version -Output release-windows -Compiler "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe"
+          ./scripts/distribution/sign-windows-installer.ps1 -Installer "release-windows/multivibe-host_${version}_windows_amd64_setup.exe"
+      - name: Attest the Windows installer
+        if: vars.WINDOWS_INSTALLER_ENABLED == 'true' && !contains(needs.validate-tag.outputs.version, '-')
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: release-windows/multivibe-host_${{ needs.validate-tag.outputs.version }}_windows_amd64_setup.exe
       - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
       - name: Generate the Windows CycloneDX SBOM
         shell: pwsh
@@ -391,6 +412,7 @@ jobs:
       - name: Import the GPG release key and sign the artifacts
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY_BASE64 }}
           GPG_FINGERPRINT: ${{ secrets.GPG_SIGNING_FINGERPRINT }}
           GPG_PASSPHRASE: ${{ secrets.GPG_SIGNING_PASSPHRASE }}
@@ -586,3 +608,19 @@ jobs:
             --title "MultiVibe Host ${{ needs.validate-tag.outputs.version }}" \
             --notes "$container_notes" \
             --generate-notes
+      - name: Generate versioned distribution packages
+        if: ${{ !contains(needs.validate-tag.outputs.version, '-') }}
+        run: |
+          node scripts/distribution/generate.mjs container-release/container-release.json release/SHA256SUMS distribution-packages
+          cp -R packaging/truenas/multivibe-host/templates distribution-packages/truenas/multivibe-host/
+          cp packaging/truenas/multivibe-host/questions.yaml packaging/truenas/multivibe-host/app_migrations.yaml distribution-packages/truenas/multivibe-host/
+          if [ -f "release/multivibe-host_${{ needs.validate-tag.outputs.version }}_windows_amd64_setup.exe" ]; then
+            node scripts/distribution/winget.mjs '${{ needs.validate-tag.outputs.version }}' 'release/multivibe-host_${{ needs.validate-tag.outputs.version }}_windows_amd64_setup.exe' distribution-packages/winget
+          fi
+      - name: Upload catalog submission files
+        if: ${{ !contains(needs.validate-tag.outputs.version, '-') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: distribution-packages
+          path: distribution-packages/
+          if-no-files-found: error

@@ -1,0 +1,68 @@
+{
+  "name": "multivibe-host",
+  "services": {
+    "multivibe-host": {
+      "image": "ghcr.io/thibautrey/multivibe-host:0.2.32@sha256:0303adec50a10644f932723c70a4085c3d3a0e45dc3721589544988706a4fca3",
+      "platform": "linux/amd64",
+      "init": true,
+      "restart": "unless-stopped",
+      "read_only": true,
+      "tmpfs": [
+        "/tmp:rw,nosuid,nodev,noexec,mode=1777,size=512m"
+      ],
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "cap_drop": [
+        "ALL"
+      ],
+      "cap_add": [
+        "CHOWN",
+        "FOWNER",
+        "SETGID",
+        "SETUID"
+      ],
+      "stop_grace_period": "45s",
+      "environment": {
+        "MULTIVIBE_HOST_PUBLIC_URL": "",
+        "MULTIVIBE_HOST_MANAGED_DIR": "/models/runtime",
+        "MULTIVIBE_PROVIDER_CUDA_VISIBLE_DEVICES": "0",
+        "NVIDIA_DRIVER_CAPABILITIES": "compute,utility",
+        "NVIDIA_VISIBLE_DEVICES": "all"
+      },
+      "ports": [
+        "1455:1455"
+      ],
+      "volumes": [
+        "/DATA/AppData/multivibe-host/data:/data",
+        "/DATA/AppData/multivibe-host/models:/models"
+      ],
+      "runtime": "nvidia"
+    }
+  },
+  "x-casaos": {
+    "id": "cloud.multivibe.host",
+    "architectures": [
+      "amd64"
+    ],
+    "main": "multivibe-host",
+    "category": "AI",
+    "developer": "MultiVibe",
+    "author": "MultiVibe",
+    "title": {
+      "en_US": "MultiVibe Host"
+    },
+    "tagline": {
+      "en_US": "Run local AI models on your NVIDIA GPU"
+    },
+    "description": {
+      "en_US": "Beta. Requires x86_64 and an NVIDIA GPU with compute capability 7.0+. In app settings, set MULTIVIBE_HOST_PUBLIC_URL to the exact browser origin (for example http://192.168.1.10:1455) before starting. Set NVIDIA_VISIBLE_DEVICES to a GPU UUID to select one GPU. Configure local capacity with /models/weights. Model downloads and provider sharing are opt-in. Application state and models survive container replacement."
+    },
+    "icon": "https://raw.githubusercontent.com/thibautrey/multivibe/main/assets/brand/favicon/favicon-256x256.png",
+    "scheme": "http",
+    "index": "/",
+    "port_map": "1455",
+    "version": "0.2.32",
+    "website": "https://github.com/thibautrey/multivibe"
+  }
+}

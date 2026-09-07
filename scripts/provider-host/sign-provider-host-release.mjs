@@ -172,7 +172,17 @@ async function main() {
     }
   }
   const checksumRecords = [];
-  const signedArtifacts = [...releaseArchives, ...sboms].sort();
+  // Optional setup EXE is built from the verified Windows ZIP and Authenticode
+  // checked by the Windows job. Include it in the same signed checksum ledger.
+  const installers = directoryEntries.filter((entry) => entry.isFile() && entry.name.endsWith("_setup.exe")).map((entry) => entry.name);
+  const expectedInstaller = `multivibe-host_${reports[0].version}_windows_amd64_setup.exe`;
+  if (installers.length > 1 || installers.some((name) => name !== expectedInstaller)) throw new Error("unexpected Windows setup artifact");
+  for (const name of installers) {
+    await command("gh", ["attestation", "verify", path.join(directory, name),
+      "--repo", "thibautrey/multivibe", "--source-digest", reports[0].sourceCommit,
+      "--signer-workflow", "thibautrey/multivibe/.github/workflows/provider-host-release.yml"]);
+  }
+  const signedArtifacts = [...releaseArchives, ...sboms, ...installers].sort();
   for (const name of signedArtifacts) {
     const file = path.join(directory, name);
     const info = await stat(file);

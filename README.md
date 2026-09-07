@@ -174,6 +174,8 @@ docker pull ghcr.io/thibautrey/multivibe-host:latest
 
 For reproducible deployments, use the versioned tag or immutable digest shown
 in the matching [latest GitHub release](https://github.com/thibautrey/multivibe/releases/latest).
+Additional Docker Hub, Homebrew, NAS and Windows distribution packages are documented in the [distribution guide](packaging/distribution/README.md). These channels require publication and platform validation before being advertised as available.
+
 For Unraid, see the [installation and Community Applications submission guide](packaging/unraid/README.md). The template is available for manual installation; a public store listing still requires Community Applications acceptance.
 
 Docker Compose and Unraid setup are documented in

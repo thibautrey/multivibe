@@ -1,0 +1,11 @@
+{
+  "images": {
+    "image": {
+      "repository": "ghcr.io/thibautrey/multivibe-host",
+      "tag": "0.2.32@sha256:0303adec50a10644f932723c70a4085c3d3a0e45dc3721589544988706a4fca3"
+    }
+  },
+  "consts": {
+    "host_container_name": "multivibe-host"
+  }
+}
