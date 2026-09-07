@@ -8818,7 +8818,7 @@ fn catalog_signature(store: &StoreFile, config: &EdgeConfig) -> String {
                 "access_token": secret_signature(Some(&account.access_token)),
                 "opencode_api_key": secret_signature(account.opencode_api_key.as_deref()),
                 "opencode_headers": account.opencode_headers,
-        "opencode_org_id": account.opencode_org_id,
+                "opencode_org_id": account.opencode_org_id,
                 "local_runtime": account.local_runtime,
             })
         })
@@ -10764,10 +10764,16 @@ mod tests {
             "accessToken": "old-session", "opencodeApiKey": "{env:OPENCODE_CONSOLE_TOKEN}",
             "opencodeOrgId": "org_selected",
             "opencodeHeaders": {"x-opencode-org-id": "org_selected", "Authorization": "Bearer stale"}
-        })).unwrap();
+        }))
+        .unwrap();
         account.access_token = "refreshed-session".to_owned();
-        let inference = upstream_headers(&account, &HeaderMap::new(),
-            "https://opencode.ai/inference/openai/v1/responses", None, &EdgeConfig::default());
+        let inference = upstream_headers(
+            &account,
+            &HeaderMap::new(),
+            "https://opencode.ai/inference/openai/v1/responses",
+            None,
+            &EdgeConfig::default(),
+        );
         let discovery = model_discovery_headers(&account);
         for headers in [&inference, &discovery] {
             assert_eq!(headers["authorization"], "Bearer refreshed-session");
@@ -10775,7 +10781,10 @@ mod tests {
             assert_eq!(headers["x-opencode-org-id"], "org_selected");
         }
         account.opencode_api_key = Some("inference-key".to_owned());
-        assert_eq!(model_discovery_headers(&account)["authorization"], "Bearer inference-key");
+        assert_eq!(
+            model_discovery_headers(&account)["authorization"],
+            "Bearer inference-key"
+        );
         account.opencode_api_key = Some("{env:UNRELATED_SECRET}".to_owned());
         assert!(!account_usable(&account, "test", &HashMap::new()));
         assert!(!model_discovery_headers(&account).contains_key("authorization"));

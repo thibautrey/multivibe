@@ -55,3 +55,17 @@ Sources:
 - [Current Console application](https://opencode.ai/console), inspected bundle
   `/console/assets/index-DqlR4WdX.js`: workspace header `x-org-id`, config schema,
   billing and usage routes. This bundle is deployment-specific and can change.
+
+Validation on local `main`:
+
+- Worktree: `git diff --check` passed; dependency-backed checks were deferred
+  until integration, per the repository workflow.
+- `npm run build`: web production build and API TypeScript build passed.
+- Targeted Node tests: 88 passed across OpenCode, quotas and cooldowns, account
+  refresh, runtime authorization, model discovery, proxy headers, and admin
+  credential redaction.
+- Native edge: `cargo test --locked -p multivibe-v1-edge opencode` passed in
+  `rust:1.88-bookworm`, with `main` mounted read-only and a separate build cache.
+  The direct host command was unavailable (`cargo: command not found`).
+- The remote instance remained on build `d143d38fb8c5cf9f0f072332bcbc89e9308a5112`.
+  Local validation does not constitute deployment or a live OAuth inference test.
