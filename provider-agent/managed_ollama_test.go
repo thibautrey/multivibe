@@ -180,7 +180,7 @@ func writeManagedOllamaTestDependencies(t *testing.T, directory, darwinSHA strin
 					"url": "https://github.com/ollama/ollama/releases/download/v0.33.2/ollama-linux-amd64.tar.zst", "sha256": strings.Repeat("1", 64), "archive": "tar-zstd",
 				},
 				"windows-amd64": map[string]any{
-					"url": "https://github.com/ollama/ollama/releases/download/v0.33.2/ollama-windows-amd64.zip", "sha256": "2439cbea65310b1aadf7d8fc41d7faf5d033f920d42e00a476c58bf9bff695e0", "archive": "zip",
+					"url": "https://github.com/ollama/ollama/releases/download/v0.33.2/ollama-windows-amd64.zip", "sha256": "2439cbea65310b1aadf7d8fc41d7faf5d033f920d42e00a476c58bf9bff6950e", "archive": "zip",
 				},
 			},
 		},
