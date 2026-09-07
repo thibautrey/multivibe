@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { once } from 'node:events';
 import test from 'node:test';
 import express from 'express';
+import http from 'node:http';
 import { AccountStore, OAuthStateStore } from '../src/store.ts';
 import { MultivibeCloudService } from '../src/multivibe-cloud.ts';
 import { createProxyRouter } from '../src/routes/proxy/index.ts';
@@ -36,12 +37,14 @@ test('Core connects to Cloud, discovers its catalog and invokes its models over 
   });
   let authorize;
   let rejectGrant = false;
+  let exchanges = 0;
   let projectCreates = 0;
   let keyCreates = 0;
   const dependencies = testDependencies({
     config: testConfig({ dashboardSessionHashPepper: pepper, oidcTokenHttpEnabled: true }), commerce,
     oidcSigning: { jwks: () => ({ keys: [] }) },
     authorizationTokens: { async exchange(input) {
+      exchanges++;
       if (rejectGrant) return { status: 'invalid_grant' };
       assert.equal(input.clientId, 'multivibe-core');
       assert.equal(input.authorizationCode, 'integration-authorization-code');
@@ -70,17 +73,28 @@ test('Core connects to Cloud, discovers its catalog and invokes its models over 
       return { secret: testToken, apiKey: { expiresAt: input.expiresAt.toISOString() }, replay: false };
     } },
   });
+  dependencies.core.handler = async () => Response.json({ id: 'resp_test', object: 'response', status: 'completed',
+    output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Bonjour du Cloud' }] }],
+    usage: { input_tokens: 2, output_tokens: 4, total_tokens: 6 } });
   const remote = await startTestServer(dependencies);
   t.after(remote.close);
   const cloud = new MultivibeCloudService(store, oauthStore, {
     authBaseUrl: remote.baseUrl, apiBaseUrl: remote.baseUrl, inferenceBaseUrl: remote.baseUrl,
     redirectUri: 'http://127.0.0.1:1455/admin/cloud/oauth/callback', topupUrl: `${remote.baseUrl}/billing`,
     // Cloud routes identity by Host, as its production reverse proxy does.
-    fetchImpl: (url, init) => {
-      const headers = new Headers(init?.headers);
-      if (new URL(url).pathname === '/oauth/token') headers.set('host', 'auth.multivibe.cloud');
-      return fetch(url, { ...init, headers, signal: AbortSignal.timeout(5000) });
-    },
+    fetchImpl: (url, init) => new Promise((resolve, reject) => {
+      const headers = Object.fromEntries(new Headers(init?.headers));
+      if (new URL(url).pathname === '/oauth/token') headers.host = 'auth.multivibe.cloud';
+      const req = http.request(url, { method: init?.method, headers, signal: AbortSignal.timeout(5000) }, res => {
+        const chunks = [];
+        res.on('data', chunk => chunks.push(chunk));
+        res.on('error', reject);
+        res.on('end', () => resolve(new Response(Buffer.concat(chunks), { status: res.statusCode,
+          headers: { 'content-type': res.headers['content-type'] ?? 'application/json' } })));
+      });
+      req.on('error', reject);
+      req.end(init?.body?.toString());
+    }),
   });
   const app = express();
   app.use(express.json());
@@ -104,6 +118,7 @@ test('Core connects to Cloud, discovers its catalog and invokes its models over 
     assert.deepEqual(await store.listAccounts(), []);
     assert.equal((await store.getSettings()).multivibeCloud, undefined);
     assert.equal(projectCreates, 0);
+    assert.equal(exchanges, 1);
     rejectGrant = false;
   });
   await t.test('PKCE exchange provisions and persists the Cloud project and inference key', async () => {
@@ -145,4 +160,30 @@ test('Core connects to Cloud, discovers its catalog and invokes its models over 
     assert.equal(sent.model, 'core-model');
     assert.equal(sent.input, 'Bonjour');
   });
+  await t.test('streamed Responses preserve text and completion across both HTTP servers', async () => {
+    const frames = [
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"café"}\n\n',
+      'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_stream","status":"completed","usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}\n\n',
+    ].join('');
+    dependencies.core.handler = async () => new Response(frames, { headers: { 'content-type': 'text/event-stream' } });
+    const response = await request('/v1/responses', { method: 'POST',
+      headers: { 'content-type': 'application/json', 'idempotency-key': 'core-cloud-integration-stream' },
+      body: JSON.stringify({ model: 'public-model', input: 'Bonjour', stream: true }) });
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type'), /text\/event-stream/);
+    const body = await response.text();
+    assert.ok(body.includes('"delta":"café"'), body);
+    assert.ok(body.includes('"type":"response.completed"'), body);
+    assert.equal(JSON.parse(dependencies.core.invocations.at(-1).body).stream, true);
+  });
+  await t.test('unsupported Cloud fields return an error without reaching the model', async () => {
+    const before = dependencies.core.invocations.length;
+    const response = await request('/v1/responses', { method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'public-model', input: 'Bonjour', store: true, stream: false }) });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error.code, 'unsupported_inference_field');
+    assert.equal(dependencies.core.invocations.length, before);
+  });
+
 });

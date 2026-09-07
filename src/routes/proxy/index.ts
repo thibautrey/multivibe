@@ -2742,6 +2742,11 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
           : isChatCompletions
             ? chatCompletionsToResponsesPayload(req.body, promptCacheSessionId)
             : normalizeResponsesPayload(req.body, promptCacheSessionId);
+        // Cloud validates its own Responses contract. Codex parity defaults
+        // (store, include, text, forced streaming) are not Cloud API fields.
+        if (selected.multivibeCloud && !shouldSendChatCompletions && !isChatCompletions) {
+          payloadToUpstream = { ...(req.body ?? {}) };
+        }
         if (
           shouldSendChatCompletions &&
           (candidate.provider === "openai-compatible" ||
