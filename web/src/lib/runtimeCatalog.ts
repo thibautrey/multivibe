@@ -131,8 +131,12 @@ export function runtimeIdentityForProvider(provider?: string): RuntimeIdentity {
 }
 
 export function runtimeIdentityForAccount(
-  account: Pick<Account, "provider" | "localRuntime">,
+  account: Pick<Account, "provider" | "localRuntime" | "sdkProvider">,
 ): RuntimeIdentity {
+  if (account.provider === "ai-sdk") {
+    const names: Record<string, string> = { anthropic: "Anthropic", google: "Google Gemini", openrouter: "OpenRouter", deepseek: "DeepSeek", groq: "Groq", togetherai: "Together AI", cerebras: "Cerebras", perplexity: "Perplexity" };
+    return fallbackIdentity(account.sdkProvider ?? "ai-sdk", names[account.sdkProvider ?? ""] ?? "Cloud provider");
+  }
   if (account.localRuntime?.adapter) {
     return runtimeIdentityForAdapter(account.localRuntime.adapter);
   }

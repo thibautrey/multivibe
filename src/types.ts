@@ -1,4 +1,5 @@
 export type ProviderId =
+  | "ai-sdk"
   | "openai"
   | "openai-compatible"
   | "opencode"
@@ -114,6 +115,8 @@ export type LocalRuntimeMetadata = {
 export type Account = {
   id: string;
   provider?: ProviderId;
+  sdkProvider?: string;
+  sdkModels?: string[];
   upstreamMode?: UpstreamMode;
   compatibilityMode?: CompatibilityMode;
   email?: string;

@@ -8,6 +8,7 @@ export const SETUP_PROVIDERS: { id: SetupProvider; name: string; description: st
   { id: "opencode", name: "OpenCode Zen / Go", description: "Connect with an API key or your Console account.", method: "API key or sign-in", icon: "opencode" },
   { id: "mistral", name: "Mistral", description: "Access Mistral models with your API key.", method: "API key", icon: "mistral" },
   { id: "zai", name: "z.ai", description: "Bring your z.ai API key to access GLM models.", method: "API key", icon: "zai" },
+  { id: "ai-sdk", name: "More cloud providers", description: "Anthropic, Google Gemini, OpenRouter, DeepSeek and more.", method: "API key" },
   { id: "nvidia-pair", name: "NVIDIA PAIR", description: "Connect your Personal AI Router endpoint.", method: "Local endpoint", icon: "nvidia" },
   { id: "openai-compatible", name: "OpenAI-compatible", description: "Connect a local server or another hosted API.", method: "Custom endpoint" },
 ];
