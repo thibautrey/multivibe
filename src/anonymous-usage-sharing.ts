@@ -264,6 +264,7 @@ export function createAnonymousUsageSharingWorker(options: AnonymousUsageSharing
       headers: {
         accept: "application/json", "content-type": "application/json",
         "x-telemetry-ticket": proof.ticketId, "x-telemetry-proof": proof.nonce,
+        "x-telemetry-challenge": proof.challenge, "x-telemetry-expires": proof.expiresAt,
       },
       body: JSON.stringify(state.pending),
     });
