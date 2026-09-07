@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const root = path.resolve(process.env.MULTIVIBE_LAB_DIR ?? path.join(os.homedir(), '.local/share/multivibe-host-cloud-lab'));
 if (root === repo || root.startsWith(repo + '/')) throw new Error('Keep lab state outside the repository');
 const bundle = path.join(root, 'bundle');
@@ -34,7 +34,7 @@ if (command === 'install') {
   fs.cpSync(security, path.join(bundle, 'app/modules/security'), { recursive: true, filter: src => !src.endsWith('/.git') });
   fs.copyFileSync(process.execPath, path.join(bundle, 'bin/node'));
   for (const file of ['provider-model-catalog.json', 'provider-host-dependencies.json']) fs.copyFileSync(path.join(repo, 'packaging', file), path.join(bundle, 'resources/provider', file));
-  const goImage = 'golang:1.24';
+  const goImage = 'golang@sha256:d2d2bc1c84f7e60d7d2438a3836ae7d0c847f4888464e7ec9ba3a1339a1ee804';
   for (const [source, binary] of [['host/application', 'multivibe-host'], ['host/updater', 'multivibe-host-updater'], ['provider-agent', 'multivibe-provider-agent']]) {
     run('docker', ['run', '--rm', '--user', `${process.getuid()}:${process.getgid()}`, '-e', 'GOCACHE=/tmp/go-cache',
       '-v', `${repo}:/source:ro`, '-v', `${bundle}/bin:/output`, '-w', `/source/${source}`, goImage,
@@ -51,7 +51,7 @@ if (command === 'install') {
   const log = fs.openSync(path.join(root, 'host.log'), 'a', 0o600);
   const child = spawn(path.join(bundle, 'bin/multivibe-host'), ['run'], { cwd: bundle, env: environment, detached: true, stdio: ['ignore', log, log] });
   await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
-  write('process.json', { pid: child.pid, origin });
+  write('process.json', { pid: child.pid, origin, processStart: fs.readFileSync(`/proc/${child.pid}/stat`, 'utf8').split(' ')[21] });
   child.unref(); fs.closeSync(log);
   let ready = false;
   for (let attempt = 0; attempt < 30; attempt++) {
@@ -60,9 +60,66 @@ if (command === 'install') {
   }
   if (!ready) throw new Error(`Host did not become ready; inspect ${root}/host.log locally`);
   console.log(`Host ready: ${origin}`);
+} else if (command === 'stop') {
+  const state = JSON.parse(fs.readFileSync(path.join(root, 'process.json')));
+  let stat;
+  try { stat = fs.readFileSync(`/proc/${state.pid}/stat`, 'utf8'); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (stat) {
+    if (!state.processStart || stat.split(' ')[21] !== state.processStart
+      || fs.readlinkSync(`/proc/${state.pid}/exe`) !== path.join(bundle, 'bin/node')) {
+      throw new Error('PID identity mismatch; refusing to stop an unrelated process');
+    }
+    process.kill(state.pid, 'SIGTERM');
+    for (let attempt = 0; attempt < 30; attempt++) {
+      try { if (fs.readFileSync(`/proc/${state.pid}/stat`, 'utf8').split(' ')[2] === 'Z') break; }
+      catch (error) { if (error.code === 'ENOENT') break; throw error; }
+      if (attempt === 29) throw new Error('Host has not stopped yet');
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+  fs.unlinkSync(path.join(root, 'process.json'));
+  console.log('Lab Host stopped; account and test data retained.');
+} else if (command === 'verify') {
+  const credentials = JSON.parse(fs.readFileSync(path.join(data, 'host-credentials.json')));
+  const get = route => fetch(`${origin}${route}`, { headers: { 'x-admin-token': credentials.admin_token }, signal: AbortSignal.timeout(8000) });
+  const health = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(3000) });
+  const anonymous = await fetch(`${origin}/admin/cloud`, { signal: AbortSignal.timeout(3000) });
+  const status = await get('/admin/cloud');
+  const cloud = await status.json();
+  const accounts = JSON.parse(fs.readFileSync(path.join(data, 'accounts.json'))).accounts;
+  const account = accounts.find(a => a.multivibeCloud === true && a.enabled);
+  const report = { checkedAt: new Date().toISOString(), origin, health: health.status,
+    anonymousAdminDenied: anonymous.status === 401, authenticatedCloudStatus: status.status,
+    cloudConnection: cloud.status, persistedCloudAccount: Boolean(account), modelsRetrieved: false };
+  if (cloud.status === 'connected' && account) {
+    const response = await fetch(`${origin}/v1/models`, { headers: { authorization: `Bearer ${credentials.proxy_api_key}` }, signal: AbortSignal.timeout(8000) });
+    const catalog = await response.json();
+    const upstream = await fetch(`${account.baseUrl.replace(/\/$/, '')}/v1/models`, {
+      headers: { authorization: `Bearer ${account.accessToken}` }, signal: AbortSignal.timeout(8000) });
+    const cloudCatalog = await upstream.json();
+    const cloudModels = new Set((cloudCatalog.data ?? []).map(model => model.id));
+    report.modelsRetrieved = response.ok && upstream.ok && cloudModels.size > 0
+      && Array.isArray(catalog.data) && catalog.data.some(model => cloudModels.has(model.id));
+  }
+  write('verification.json', report);
+  console.log(JSON.stringify(report, null, 2));
+  if (health.status !== 200 || !report.anonymousAdminDenied || status.status !== 200) process.exitCode = 1;
+  if (process.argv.includes('--require-connected') && (!report.persistedCloudAccount || cloud.status !== 'connected' || !report.modelsRetrieved)) process.exitCode = 1;
+} else if (command === 'open') {
+  // Human-run convenience: short-lived single-use link, never a persistent admin token.
+  const credentials = JSON.parse(fs.readFileSync(path.join(data, 'host-credentials.json')));
+  const response = await fetch(`${origin}/admin/desktop-session`, { method: 'POST',
+    headers: { 'x-admin-token': credentials.admin_token }, signal: AbortSignal.timeout(3000) });
+  if (!response.ok) throw new Error(`Desktop session returned ${response.status}`);
+  const session = await response.json();
+  if (typeof session.path !== 'string' || !session.path.startsWith('/desktop/session?code=')) throw new Error('Invalid desktop link');
+  const opener = spawn('xdg-open', [origin + session.path], { stdio: 'ignore', detached: true });
+  opener.unref();
+  console.log('Opened a single-use dashboard session in the VM browser.');
 } else if (command === 'status') {
   const response = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(3000) });
   console.log(JSON.stringify({ origin, healthStatus: response.status, installation: JSON.parse(fs.readFileSync(path.join(root, 'installation.json'))) }, null, 2));
 } else {
-  throw new Error('Usage: node test-integration/host-cloud/lab.mjs install|start|status');
+  throw new Error('Usage: node test-integration/host-cloud/lab.mjs install|start|stop|status|verify [--require-connected]|open');
 }
