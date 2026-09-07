@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { randomUUID } from "node:crypto";
 import { createAnonymousUsageSharingWorker, type AnonymousUsageEnvelope } from "./anonymous-usage-sharing.js";
 import { createTraceManager } from "./traces.js";
 import type { StoreSettings } from "./types.js";
@@ -39,6 +40,11 @@ test("daily sharing filters after activation, bounds output, and retries the ide
     random: () => 0,
     fetchFn: (async (input, init) => {
       const url = String(input);
+      if (url.endsWith("/admission")) {
+        return Response.json({ ticketId: randomUUID(), challenge: "ab".repeat(32),
+          eventId: JSON.parse(String(init?.body)).eventId, difficulty: 18,
+          expiresAt: new Date(now.getTime() + 600_000).toISOString() });
+      }
       if (url.endsWith("/model-allowlist")) {
         allowlistCalls += 1;
         allowlistLoaded = true;
@@ -48,6 +54,8 @@ test("daily sharing filters after activation, bounds output, and retries the ide
         );
       }
       posted.push(JSON.parse(String(init?.body)) as AnonymousUsageEnvelope);
+      assert.ok(new Headers(init?.headers).get("x-telemetry-ticket"));
+      assert.ok(new Headers(init?.headers).get("x-telemetry-proof"));
       return posted.length === 1 ? Response.json({ error: "temporary" }, { status: 503 }) : Response.json({ accepted: true }, { status: 202 });
     }) as typeof fetch,
   });
