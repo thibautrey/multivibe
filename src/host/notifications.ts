@@ -1,10 +1,10 @@
-import type { Account } from "./types.js";
-import { normalizeProvider } from "./quota.js";
+import type { Account } from "../types.js";
+import { normalizeProvider } from "../quota.js";
 import {
   CODEX_QUOTA_RESET_FORECAST_URL,
   type CodexQuotaResetForecast,
-} from "./quota-reset-forecast.js";
-import type { MultivibeCloudStatus } from "./multivibe-cloud.js";
+} from "../quota-reset-forecast.js";
+import type { MultivibeCloudStatus } from "../multivibe-cloud.js";
 
 export const WEEKLY_QUOTA_WARNING_REMAINING_PERCENT = 10;
 export const FORECAST_WARNING_SCORE = 90;

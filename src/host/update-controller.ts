@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import type express from "express";
 import { access } from "node:fs/promises";
 import path from "node:path";
-import type { ProviderAgentControl } from "./provider-agent-supervisor.js";
+import type { ProviderAgentControl } from "../provider-agent-supervisor.js";
 
 const MAXIMUM_UPDATER_OUTPUT_BYTES = 256 * 1024;
 

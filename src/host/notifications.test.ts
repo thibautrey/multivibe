@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildHostNotifications, outputTokenMilestone, workerEarningsMilestone } from "./host-notifications.js";
-import type { Account } from "./types.js";
+import { buildHostNotifications, outputTokenMilestone, workerEarningsMilestone } from "./notifications.js";
+import type { Account } from "../types.js";
 
 function openAi(overrides: Partial<Account> = {}): Account {
   return {

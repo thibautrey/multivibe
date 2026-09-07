@@ -6,6 +6,7 @@ target
 native/*.node
 .env
 web/*.tsbuildinfo
+web/public/assets/brand/
 data/*
 
 # CCE (code-context-engine)

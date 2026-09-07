@@ -4,7 +4,7 @@ import {
   completeHostOnboarding,
   hasCompletedHostOnboarding,
   shouldShowHostOnboarding,
-} from "../src/host-onboarding";
+} from "../../src/host/onboarding";
 
 test("host onboarding is incomplete until it is explicitly completed", () => {
   const values = new Map<string, string>();

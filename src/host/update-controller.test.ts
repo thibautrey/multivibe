@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { EventEmitter } from "node:events";
-import { HostUpdateController } from "./host-update-controller.js";
+import { HostUpdateController } from "./update-controller.js";
 
 test("Host update drain waits for HTTP, websocket, job and provider operations", async () => {
   let providerOperation = "install";

@@ -82,7 +82,7 @@ jobs:
           go -C host/updater test -race ./...
           go -C host/menu test -race ./...
       - name: Test provider archive and container hardening
-        run: node --test scripts/package-provider-host.test.mjs scripts/provider-host-container.test.mjs scripts/provider-host-native-dependencies.test.mjs scripts/provider-host-update-feed.test.mjs scripts/provider-host-update-packaging.test.mjs scripts/runtime-benchmark-evidence.test.mjs scripts/verify-provider-host-archive-fixtures.test.mjs
+        run: node --test scripts/provider-host/package-provider-host.test.mjs scripts/provider-host/provider-host-container.test.mjs scripts/provider-host/provider-host-native-dependencies.test.mjs scripts/provider-host/provider-host-update-feed.test.mjs scripts/provider-host/provider-host-update-packaging.test.mjs scripts/runtime-benchmark-evidence.test.mjs scripts/provider-host/verify-provider-host-archive-fixtures.test.mjs
       - name: Install the pinned Go vulnerability scanner
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
       - name: Scan the provider agent for reachable Go vulnerabilities
@@ -183,7 +183,7 @@ jobs:
           go -C host/application test -race ./...
           go -C host/updater test -race ./...
       - name: Test provider archive and container hardening
-        run: node --test scripts/package-provider-host.test.mjs scripts/provider-host-container.test.mjs scripts/provider-host-native-dependencies.test.mjs scripts/provider-host-update-feed.test.mjs scripts/provider-host-update-packaging.test.mjs scripts/runtime-benchmark-evidence.test.mjs scripts/verify-provider-host-archive-fixtures.test.mjs
+        run: node --test scripts/provider-host/package-provider-host.test.mjs scripts/provider-host/provider-host-container.test.mjs scripts/provider-host/provider-host-native-dependencies.test.mjs scripts/provider-host/provider-host-update-feed.test.mjs scripts/provider-host/provider-host-update-packaging.test.mjs scripts/runtime-benchmark-evidence.test.mjs scripts/provider-host/verify-provider-host-archive-fixtures.test.mjs
       - name: Import ephemeral Apple release credentials
         shell: bash
         env:
@@ -320,7 +320,7 @@ jobs:
           }
       - name: Test provider archive and container hardening
         shell: pwsh
-        run: node --test scripts/package-provider-host.test.mjs scripts/provider-host-container.test.mjs scripts/provider-host-native-dependencies.test.mjs scripts/provider-host-update-feed.test.mjs scripts/provider-host-update-packaging.test.mjs scripts/runtime-benchmark-evidence.test.mjs scripts/verify-provider-host-archive-fixtures.test.mjs
+        run: node --test scripts/provider-host/package-provider-host.test.mjs scripts/provider-host/provider-host-container.test.mjs scripts/provider-host/provider-host-native-dependencies.test.mjs scripts/provider-host/provider-host-update-feed.test.mjs scripts/provider-host/provider-host-update-packaging.test.mjs scripts/runtime-benchmark-evidence.test.mjs scripts/provider-host/verify-provider-host-archive-fixtures.test.mjs
       - name: Build the Windows amd64 archive
         shell: pwsh
         run: |
@@ -498,7 +498,7 @@ jobs:
             echo "::error::Published container tags do not resolve to one valid release digest."
             exit 1
           fi
-          node scripts/provider-host-container-release.mjs build \
+          node scripts/provider-host/provider-host-container-release.mjs build \
             "$image" "$version" "$digest" "$GITHUB_SHA" container-release
           printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
       - name: Attest the published container image
@@ -553,7 +553,7 @@ jobs:
             echo "::error::Missing required update-feed signing credential."
             exit 1
           fi
-          node scripts/provider-host-container-release.mjs verify \
+          node scripts/provider-host/provider-host-container-release.mjs verify \
             container-release/container-release.json "$version" "$GITHUB_SHA"
           if [[ "$version" == *-* ]]; then
             channel=beta
@@ -562,7 +562,7 @@ jobs:
             channel=stable
             release_kind=()
           fi
-          node scripts/build-provider-host-update-feed.mjs \
+          node scripts/provider-host/build-provider-host-update-feed.mjs \
             --version "$version" \
             --commit "$GITHUB_SHA" \
             --channel "$channel" \

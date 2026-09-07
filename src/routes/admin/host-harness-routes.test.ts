@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import test from "node:test";
 import express from "express";
 import { createAdminRouter, type AdminRoutesOptions } from "./index.js";
-import type { HostHarnessView } from "../../host-harness-integrations.js";
+import type { HostHarnessView } from "../../host/harness-integrations.js";
 
 const disconnectedHarness = (): HostHarnessView => ({
   id: "example",

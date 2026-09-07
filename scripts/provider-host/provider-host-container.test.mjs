@@ -9,7 +9,7 @@ import {
   validateContainerReleaseMetadata,
 } from "./provider-host-container-release.mjs";
 
-const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const read = (relative) => readFile(path.join(repositoryRoot, relative), "utf8");
 
 test("repository text checkouts preserve signed bytes across platforms", async () => {
@@ -37,7 +37,7 @@ test("the Host runtime image preserves the verified bundle layout and drops priv
 });
 
 test("the Compose deployment exposes only Core and keeps state and models separate", async () => {
-  const compose = await read("docker-compose.host.yml");
+  const compose = await read("packaging/container/docker-compose.host.yml");
   assert.match(compose, /image: \$\{MULTIVIBE_HOST_IMAGE:-ghcr\.io\/thibautrey\/multivibe-host:latest\}/u);
   assert.doesNotMatch(compose, /^\s+build:/mu);
   assert.match(compose, /MULTIVIBE_HOST_BIND: 0\.0\.0\.0/u);
@@ -55,8 +55,8 @@ test("the Compose deployment exposes only Core and keeps state and models separa
 
 test("the Unraid template is beta, GPU-bounded and does not request credentials", async () => {
   const [profile, template] = await Promise.all([
-    read("ca_profile.xml"),
-    read("templates/multivibe-host.xml"),
+    read("packaging/unraid/ca_profile.xml"),
+    read("packaging/unraid/multivibe-host.xml"),
   ]);
   assert.match(profile, /^<CommunityApplications>[\s\S]*<Profile>/u);
   assert.match(template, /^<Container version="2">/u);
@@ -87,7 +87,7 @@ test("the root README offers truthful latest-release paths for every Host format
 test("the release workflow publishes a tested image from the verified Linux archive", async () => {
   const [workflow, packager] = await Promise.all([
     read(".github/workflows/provider-host-release.yml"),
-    read("scripts/package-provider-host.mjs"),
+    read("scripts/provider-host/package-provider-host.mjs"),
   ]);
   assert.match(packager, /"docker-compose\.host\.yml"\), path\.join\(root, "docker-compose\.host\.yml"\)/u);
   assert.match(workflow, /publish-container:/u);

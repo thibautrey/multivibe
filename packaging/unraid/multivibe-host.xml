@@ -12,7 +12,7 @@
   <Overview>Run the security-bounded MultiVibe provider Host on your own supported NVIDIA GPU. Credentials and device identity are generated inside persistent appdata; the provider agent and managed Ollama stay loopback-only inside the container. Sharing and automatic downloads remain disabled until you explicitly configure the local capacity policy.</Overview>
   <Support>https://github.com/thibautrey/multivibe/issues</Support>
   <Project>https://github.com/thibautrey/multivibe</Project>
-  <TemplateURL>https://raw.githubusercontent.com/thibautrey/multivibe/main/templates/multivibe-host.xml</TemplateURL>
+  <TemplateURL>https://raw.githubusercontent.com/thibautrey/multivibe/main/packaging/unraid/multivibe-host.xml</TemplateURL>
   <ReadMe>https://raw.githubusercontent.com/thibautrey/multivibe/main/README.md</ReadMe>
   <Category>Tools:System</Category>
   <ExtraSearchTerms>AI LLM Ollama provider GPU NVIDIA inference</ExtraSearchTerms>

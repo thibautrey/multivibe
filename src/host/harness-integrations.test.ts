@@ -8,7 +8,7 @@ import {
   HOST_HARNESS_DEFINITIONS,
   HostHarnessIntegrationManager,
   type HostHarnessDefinition,
-} from "./host-harness-integrations.js";
+} from "./harness-integrations.js";
 
 const requestedNames = [
   "Claude Code", "OpenAI Codex", "OpenCode", "OpenClaw", "Hermes Agent", "Pi", "Goose",

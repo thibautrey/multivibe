@@ -9,7 +9,7 @@ import { createTraceManager } from "./traces.js";
 import { createAdminRouter } from "./routes/admin/index.js";
 import { createProxyRouter } from "./routes/proxy/index.js";
 import { createRealtimeRouter } from "./realtime-proxy.js";
-import { HostHarnessIntegrationManager } from "./host-harness-integrations.js";
+import { HostHarnessIntegrationManager } from "./host/harness-integrations.js";
 import { installResponsesWebsocketProxy } from "./websocket-responses.js";
 import { oauthConfig } from "./oauth-config.js";
 import {
@@ -113,13 +113,13 @@ import { createRequestTracingMiddleware } from "./request-tracing.js";
 import {
   buildHostMenuBarAccountsSummary,
   buildHostMenuBarGitHubStarPrompt,
-} from "./host-menu-bar.js";
+} from "./host/menu-bar.js";
 import {
   buildHostNotifications,
   selectWeeklyAutoResetAccount,
-} from "./host-notifications.js";
+} from "./host/notifications.js";
 import { CodexQuotaResetForecastCache } from "./quota-reset-forecast.js";
-import { HostUpdateController } from "./host-update-controller.js";
+import { HostUpdateController } from "./host/update-controller.js";
 import { MultivibeCloudService } from "./multivibe-cloud.js";
 import {
   ConfidentialInferenceClient,

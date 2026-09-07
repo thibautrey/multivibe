@@ -13,7 +13,7 @@ import { extractPreflightedTarArchive, preflightTarArchive } from "./provider-ho
 import { validateProviderModelCatalogAssessments } from "./verify-provider-host.mjs";
 
 const verifier = fileURLToPath(new URL("./verify-provider-host.mjs", import.meta.url));
-const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
+const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const extractedCeiling = 6 * 1024 * 1024 * 1024;
 
 async function inTemporaryDirectory(callback) {
@@ -264,7 +264,7 @@ function completeLinuxBundleTar(mutateFiles = () => {}, mutateEntries = () => {}
     ["bin/node", { data: elf, mode: 0o755 }],
     ["resources/provider/provider-host-dependencies.json", { data: dependencyData, mode: 0o644 }],
     ["resources/provider/multivibe-host.png", {
-      data: readFileSync(path.join(repositoryRoot, "web", "public", "assets", "brand", "favicon-32x32.png")),
+      data: readFileSync(path.join(repositoryRoot, "assets", "brand", "favicon", "favicon-32x32.png")),
       mode: 0o644,
     }],
     ["resources/provider/provider-model-catalog.json", { data: catalogData, mode: 0o644 }],
@@ -369,7 +369,7 @@ function completeWindowsBundleZip(mutateFiles = () => {}) {
     ["bin/node.exe", { data: pe, mode: 0o644 }],
     ["resources/provider/provider-host-dependencies.json", { data: dependencyData, mode: 0o644 }],
     ["resources/provider/multivibe-host.ico", {
-      data: readFileSync(path.join(repositoryRoot, "web", "public", "assets", "brand", "favicon.ico")),
+      data: readFileSync(path.join(repositoryRoot, "assets", "brand", "favicon", "favicon.ico")),
       mode: 0o644,
     }],
     ["resources/provider/provider-model-catalog.json", { data: catalogData, mode: 0o644 }],

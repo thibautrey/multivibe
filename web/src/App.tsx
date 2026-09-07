@@ -1,5 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import "./styles.css";
+import "./host/styles.css";
 import { estimateCostUsd } from "./model-pricing";
 import { ApiError, api } from "./lib/api";
 import {
@@ -34,14 +35,14 @@ import { AliasesTab } from "./components/tabs/AliasesTab";
 import { ApiKeysTab } from "./components/tabs/ApiKeysTab";
 import { PluginsTab } from "./components/tabs/PluginsTab";
 import { UpdatesTab } from "./components/tabs/UpdatesTab";
-import { HostOnboarding } from "./components/HostOnboarding";
+import { HostOnboarding } from "./host/HostOnboarding";
 import {
   initialThemeMode,
   ThemeSwitcher,
   type ThemeMode,
 } from "./components/ui/ThemeSwitcher";
 import { dismissGitHubPromotion, GITHUB_NEW_ISSUE_URL, GITHUB_REPOSITORY_URL, readGitHubPromotionState } from "./github-promotion";
-import { completeHostOnboarding, hasCompletedHostOnboarding, shouldShowHostOnboarding } from "./host-onboarding";
+import { completeHostOnboarding, hasCompletedHostOnboarding, shouldShowHostOnboarding } from "./host/onboarding";
 
 const TAB_ITEMS: Array<{ id: Tab; label: string; description: string; group: "Operate" | "Build" | "Advanced" }> = [
   { id: "overview", label: "Home", description: "System status and next steps", group: "Operate" },

@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 import { extractPreflightedTarArchive } from "./provider-host-tar-preflight.mjs";
 import { pruneProductionNativeDependencies } from "./provider-host-native-dependencies.mjs";
 
-const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const downloadHosts = new Set(["nodejs.org", "github.com", "release-assets.githubusercontent.com"]);
 const maximumCommandOutputBytes = 64 * 1024 * 1024;
 const maximumNodeFileBytes = 512 * 1024 * 1024;
@@ -473,7 +473,7 @@ async function signMacApplication(application, identity) {
 }
 
 async function createMacApplicationIcon(work, destination) {
-  const source = path.join(repositoryRoot, "web", "public", "assets", "brand", "favicon-1024.png");
+  const source = path.join(repositoryRoot, "assets", "brand", "favicon", "favicon-1024.png");
   const sourceInfo = await lstat(source);
   if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink() || sourceInfo.size < 1024) {
     throw new Error("the official MultiVibe application icon is unavailable");
@@ -528,7 +528,7 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
   await cp(path.join(repositoryRoot, "LICENSE"), path.join(root, "LICENSE"));
   await cp(path.join(repositoryRoot, "NOTICE"), path.join(root, "NOTICE"));
   await cp(path.join(repositoryRoot, "packaging", "PROVIDER-HOST-README.md"), path.join(root, "README.md"));
-  await cp(path.join(repositoryRoot, "docker-compose.host.yml"), path.join(root, "docker-compose.host.yml"));
+  await cp(path.join(repositoryRoot, "packaging", "container", "docker-compose.host.yml"), path.join(root, "docker-compose.host.yml"));
   const installerPlatform = selectedTarget.goos === "darwin" ? "macos" : selectedTarget.goos === "linux" ? "linux" : "windows";
   if (selectedTarget.goos === "windows") {
     for (const script of ["install.ps1", "uninstall.ps1"]) {
@@ -597,7 +597,7 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
       .replaceAll("__MULTIVIBE_BUILD__", buildNumber);
     await writeFile(path.join(contents, "Info.plist"), info);
     await cp(
-      path.join(repositoryRoot, "web", "public", "assets", "brand", "favicon-32x32.png"),
+      path.join(repositoryRoot, "assets", "brand", "favicon", "favicon-32x32.png"),
       path.join(contents, "Resources", "MultiVibeMenuBarIcon.png"),
     );
     await cp(
@@ -636,16 +636,16 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
   await cp(path.join(repositoryRoot, "packaging", "examples"), path.join(resourceDirectory, "examples"), { recursive: true });
   if (selectedTarget.goos === "linux") {
     await cp(
-      path.join(repositoryRoot, "web", "public", "assets", "brand", "favicon-32x32.png"),
+      path.join(repositoryRoot, "assets", "brand", "favicon", "favicon-32x32.png"),
       path.join(resourceDirectory, "multivibe-host.png"),
     );
   } else if (selectedTarget.goos === "windows") {
     await cp(
-      path.join(repositoryRoot, "web", "public", "assets", "brand", "favicon.ico"),
+      path.join(repositoryRoot, "assets", "brand", "favicon", "favicon.ico"),
       path.join(resourceDirectory, "multivibe-host.ico"),
     );
   }
-  await cp(path.join(repositoryRoot, "scripts", "verify-provider-host.mjs"), verifierDestination);
+  await cp(path.join(repositoryRoot, "scripts", "provider-host", "verify-provider-host.mjs"), verifierDestination);
   await chmod(verifierDestination, 0o444);
   const nodeLicense = await nodeRuntime(work, nodeDestination, dependencies.node.artifacts[selectedTarget.key]);
   await cp(nodeLicense, path.join(root, "THIRD_PARTY", "node-LICENSE"));
@@ -714,7 +714,7 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
     node: dependencies.node,
     managedRuntime: dependencies.ollama,
   });
-  await command(process.execPath, [path.join(repositoryRoot, "scripts", "verify-provider-host.mjs"), "--directory", root]);
+  await command(process.execPath, [path.join(repositoryRoot, "scripts", "provider-host", "verify-provider-host.mjs"), "--directory", root]);
   return { root, baseName };
 }
 
@@ -814,7 +814,7 @@ async function main() {
   try {
     const bundle = await assemble(options, selectedTarget, work, dependencies, sourceCommit, buildNumber, Boolean(finalStatus));
     const archive = await archiveBundle(bundle, options, selectedTarget);
-    await command(process.execPath, [path.join(repositoryRoot, "scripts", "verify-provider-host.mjs"), archive]);
+    await command(process.execPath, [path.join(repositoryRoot, "scripts", "provider-host", "verify-provider-host.mjs"), archive]);
     console.log(JSON.stringify({ archive, sha256: await sha256(archive), sourceCommit, target: selectedTarget.key }));
   } finally {
     await rm(work, { recursive: true, force: true });
