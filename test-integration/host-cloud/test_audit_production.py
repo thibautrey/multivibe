@@ -28,10 +28,27 @@ class RuntimeAuditTests(unittest.TestCase):
         self.assertNotIn('private', str(error.exception))
 
     def test_database_probes_are_read_only_and_do_not_select_key_digest(self):
-        for code in [audit.database_code('nonce'), audit.key_state_code()]:
+        for code in [audit.database_code('nonce'), audit.key_state_code(), audit.population_code()]:
             self.assertIn('default_transaction_read_only=on', code)
             self.assertIn('statement_timeout=5000', code)
             self.assertNotIn('key_digest', code)
+
+    def test_drift_gate_rejects_agreement_without_full_ready_coverage(self):
+        healthy = dict(allWorkloadsObserved=True, allExpectedReplicasObserved=True,
+                       allPepperValuesAligned=True, apiIdentitySameDatabase=True,
+                       pods=[{'ready': True}])
+        self.assertTrue(audit.drift_gate(healthy))
+        for field in ['allWorkloadsObserved', 'allExpectedReplicasObserved',
+                      'allPepperValuesAligned', 'apiIdentitySameDatabase']:
+            self.assertFalse(audit.drift_gate({**healthy, field: False}))
+        self.assertFalse(audit.drift_gate({**healthy, 'pods': []}))
+        self.assertFalse(audit.drift_gate({**healthy, 'pods': [{'ready': False}]}))
+
+    def test_population_counts_all_keys_instead_of_assuming_latest_five_is_exhaustive(self):
+        code = audit.population_code()
+        self.assertIn('count(*)', code)
+        self.assertNotIn('LIMIT', code)
+        self.assertIn('keys_without_creation_event', code)
 
 
 if __name__ == '__main__':
