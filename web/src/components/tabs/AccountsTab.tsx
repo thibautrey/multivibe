@@ -253,19 +253,19 @@ type ProviderCapacityStatus =
 
 const BYTES_PER_GIB = 1024 ** 3;
 
-function emptyProviderCapacityPolicyDraft(): ProviderCapacityPolicyDraft {
+function defaultProviderCapacityPolicyDraft(): ProviderCapacityPolicyDraft {
   return {
     paused: true,
     automaticDownloads: false,
     allowCloudWorkloads: false,
-    gpuUtilizationPercent: "",
-    gpuVramPercent: "",
-    maxDiskGiB: "",
-    modelStoragePath: "",
-    maxDownloadGiBPerDay: "",
-    minimumModelResidencySeconds: "",
-    maxModelChangesPerDay: "",
-    reserveFreeDiskGiB: "",
+    gpuUtilizationPercent: "80",
+    gpuVramPercent: "75",
+    maxDiskGiB: "30",
+    modelStoragePath: "/var/lib/multivibe/models",
+    maxDownloadGiBPerDay: "20",
+    minimumModelResidencySeconds: "21600",
+    maxModelChangesPerDay: "4",
+    reserveFreeDiskGiB: "5",
   };
 }
 
@@ -592,7 +592,7 @@ export function AccountsTab(props: Props) {
   const [providerCapacityPolicy, setProviderCapacityPolicy] =
     useState<ProviderCapacityPolicyState | null>(null);
   const [providerCapacityDraft, setProviderCapacityDraft] =
-    useState<ProviderCapacityPolicyDraft>(emptyProviderCapacityPolicyDraft);
+    useState<ProviderCapacityPolicyDraft>(defaultProviderCapacityPolicyDraft);
   const [providerCapacityStatus, setProviderCapacityStatus] =
     useState<ProviderCapacityStatus>("idle");
   const [providerCapacityMessage, setProviderCapacityMessage] = useState("");
@@ -705,7 +705,7 @@ export function AccountsTab(props: Props) {
     setProviderRuntimeDrafts([]);
     setProviderRuntimeMessage("");
     setProviderCapacityPolicy(null);
-    setProviderCapacityDraft(emptyProviderCapacityPolicyDraft());
+    setProviderCapacityDraft(defaultProviderCapacityPolicyDraft());
     setProviderCapacityStatus("loading");
     setProviderCapacityMessage("");
 
@@ -751,10 +751,10 @@ export function AccountsTab(props: Props) {
       if (cancelled) return;
       if (error instanceof ApiError && error.status === 404) {
         setProviderCapacityPolicy(null);
-        setProviderCapacityDraft(emptyProviderCapacityPolicyDraft());
+        setProviderCapacityDraft(defaultProviderCapacityPolicyDraft());
         setProviderCapacityStatus("ready");
         setProviderCapacityMessage(
-          "No limits saved yet. Fill them in and save.",
+          "Defaults are ready. Save them or customize Advanced settings.",
         );
         return;
       }
@@ -2276,7 +2276,7 @@ export function AccountsTab(props: Props) {
                   <span className="eyebrow">Your limits</span>
                   <h3 id="provider-capacity-title">Choose what to share</h3>
                   <p>
-                    Sharing is paused by default. Set limits before turning it on.
+                    Start with the default limits or customize them in Advanced settings.
                   </p>
                 </div>
                 {(providerCapacityStatus === "ready" || providerCapacityStatus === "saving") && (
@@ -2303,22 +2303,6 @@ export function AccountsTab(props: Props) {
 
               {(providerCapacityStatus === "ready" || providerCapacityStatus === "saving") && (
                 <>
-                  <div className={providerCapacityDraft.paused
-                    ? "provider-capacity-priority provider-capacity-paused"
-                    : "provider-capacity-priority"}
-                  >
-                    <strong>
-                      {providerCapacityDraft.paused
-                        ? "Sharing is paused"
-                        : "Sharing is on"}
-                    </strong>
-                    <span>
-                      {providerCapacityDraft.paused
-                        ? "Your GPU is not shared."
-                        : "Your saved limits still apply."}
-                    </span>
-                  </div>
-
                   <div className="provider-capacity-grid">
                     <label>
                       Sharing
@@ -2336,6 +2320,34 @@ export function AccountsTab(props: Props) {
                       <small>Pause stops sharing.</small>
                     </label>
 
+                  </div>
+
+                  <label className="provider-capacity-consent">
+                    <input
+                      type="checkbox"
+                      checked={providerCapacityDraft.allowCloudWorkloads}
+                      disabled={providerCapacityStatus === "saving"}
+                      onChange={(event) => updateProviderCapacityDraft(
+                        "allowCloudWorkloads",
+                        event.target.checked,
+                      )}
+                    />
+                    <span>
+                      <strong>Allow MultiVibe Cloud jobs</strong>
+                      <small>
+                        Off by default. You can pause sharing anytime.
+                      </small>
+                    </span>
+                  </label>
+
+                  <details className="make-money-preview-advanced provider-capacity-advanced">
+                    <summary>
+                      <span className="make-money-preview-advanced-copy">
+                        <strong>Advanced settings</strong>
+                        <span>Compute, memory, storage and downloads</span>
+                      </span>
+                    </summary>
+                    <div className="provider-capacity-grid">
                     <label>
                       Compute allocation (%)
                       <input
@@ -2498,29 +2510,14 @@ export function AccountsTab(props: Props) {
                         </small>
                       </span>
                     </label>
-                  </div>
+                    </div>
+                  </details>
 
-                  <label className="provider-capacity-consent">
-                    <input
-                      type="checkbox"
-                      checked={providerCapacityDraft.allowCloudWorkloads}
-                      disabled={providerCapacityStatus === "saving"}
-                      onChange={(event) => updateProviderCapacityDraft(
-                        "allowCloudWorkloads",
-                        event.target.checked,
-                      )}
-                    />
-                    <span>
-                      <strong>Allow MultiVibe Cloud jobs</strong>
-                      <small>
-                        Off by default. You can pause sharing anytime.
-                      </small>
-                    </span>
-                  </label>
+
 
                   {!providerCapacityInput && (
                     <p className="provider-capacity-validation">
-                      Complete every limit and use an absolute model folder.
+                      Check Advanced settings: complete every limit and use an absolute model folder.
                     </p>
                   )}
 
