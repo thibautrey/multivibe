@@ -60,9 +60,12 @@
 MultiVibe exposes the same inference routes under `/v1` and at the root for
 clients that expect either style. In the shipped Compose profile, the public
 `:1455` socket is served directly by the native Rust edge; Node.js remains on
-loopback `127.0.0.1:1456` for the dashboard, OAuth, static assets, and
-control-plane routes. Compatibility endpoints for Ollama- and LiteLLM-style
-discovery are also available.
+loopback `127.0.0.1:1456` for the dashboard UI, OAuth, static assets, and the
+dashboard resource routes that have not yet migrated. Rust owns dashboard
+session authentication, the outer admin access guard, health, the read-only API
+key and application-policy inventories, and all public inference routes.
+Compatibility endpoints for Ollama- and LiteLLM-style discovery are also
+available.
 
 </details>
 
