@@ -1099,7 +1099,8 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
             button.image = NSImage(systemSymbolName: "waveform.path", accessibilityDescription: "MultiVibe")
         }
         button.imagePosition = .imageLeading
-        button.contentTintColor = MenuBarPalette.primary
+        // Let the status bar choose its foreground for the current background and selection.
+        button.contentTintColor = nil
         button.target = self
         button.action = #selector(togglePopover)
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
