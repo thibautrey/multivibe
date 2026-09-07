@@ -67,6 +67,37 @@ func TestRuntimeEndpointStorePersistsSecretWithExactModeAndReturnsOnlyProof(t *t
 	}
 }
 
+func TestRuntimeEndpointStoreMigratesLegacyAutomaticCandidate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "provider-runtime-endpoints.json")
+	legacy := `{"schema_version":"provider-runtime-endpoints-v1","revision":2,"endpoints":[{"adapter_id":"omlx","endpoint":"http://127.0.0.1:8000"}]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := openRuntimeEndpointStore(path, runtimeAdapterRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := store.snapshot()
+	if view.Revision != 3 || len(view.Endpoints) != 0 {
+		t.Fatalf("legacy automatic endpoint was not migrated: %#v", view)
+	}
+	restarted, err := openRuntimeEndpointStore(path, runtimeAdapterRegistry())
+	if err != nil || restarted.snapshot().Revision != 3 || len(restarted.snapshot().Endpoints) != 0 {
+		t.Fatalf("migration was not durable and idempotent: %#v err=%v", restarted, err)
+	}
+}
+
+func TestRuntimeEndpointStoreDoesNotMigrateUnrecognizedAutomaticEndpoint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "provider-runtime-endpoints.json")
+	legacy := `{"schema_version":"provider-runtime-endpoints-v1","revision":2,"endpoints":[{"adapter_id":"omlx","endpoint":"http://127.0.0.1:8999"}]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openRuntimeEndpointStore(path, runtimeAdapterRegistry()); err == nil {
+		t.Fatal("unrecognized automatic endpoint must still fail closed")
+	}
+}
+
 func TestRuntimeEndpointValidationRejectsEveryNonLoopbackOrAmbiguousTarget(t *testing.T) {
 	for _, endpoint := range []string{
 		"https://127.0.0.1:8000", "http://localhost:8000", "http://0.0.0.0:8000",
