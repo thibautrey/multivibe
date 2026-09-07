@@ -15,7 +15,8 @@ profile. For server-side aliases, see the smart alias section in the main
 - A deferred request returns `202 Accepted` with a `multivibe.job` object.
 - Batch jobs submitted outside the execution window become eligible at 22:00
   `Europe/Paris`; the window lasts until 07:00 and follows daylight-saving
-  changes.
+  changes. Eligibility is checked again before every attempt, including after
+  a retry or restart.
 - Jobs survive MultiVibe restarts and are isolated by application API key.
 - Scheduling is weighted across priorities (`critical`, `interactive`,
   `standard`, `batch`) and then across applications of the selected
@@ -248,7 +249,11 @@ remain eligible for up to 24 hours.
 Native jobs are stored in the JSON file selected by
 `V1_EDGE_JOBS_PATH` (normally `/data/v1-edge-jobs.json`). Each persistence
 cycle writes a temporary file with mode `0600` on Unix and renames it over
-the destination. Job event history is stored in the same file.
+the destination. Job state and its event are published together only after
+that write is durable. Workers pause on storage failures, and the drain keeps
+such work active until the final transition has been saved. An uncertain
+commit after replacement of the file blocks further mutations until restart.
+Job event history is stored in the same file.
 
 On startup:
 
