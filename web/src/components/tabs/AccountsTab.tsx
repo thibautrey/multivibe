@@ -2590,7 +2590,9 @@ export function AccountsTab(props: Props) {
                         if (!adapterId) return;
                         setProviderRuntimeDrafts((current) => [...current, {
                           adapterId,
-                          endpoint: "http://127.0.0.1:8000",
+                          endpoint: adapterId === "nvidia-pair"
+                            ? "http://127.0.0.1:11434"
+                            : "http://127.0.0.1:8000",
                           bearerToken: "",
                           existingAuthentication: "none",
                           clearBearer: false,
@@ -2602,6 +2604,12 @@ export function AccountsTab(props: Props) {
                       Add local endpoint
                     </button>
                   </div>
+
+                  {providerRuntimeAdapterToAdd === "nvidia-pair" && (
+                    <p className="muted">
+                      Copy the loopback API endpoint shown by PAIR. Its default ports overlap with Ollama and LM Studio, so MultiVibe cannot identify it safely by port alone.
+                    </p>
+                  )}
 
                   {providerRuntimeMessage && (
                     <p className="provider-selection-message" role="status">{providerRuntimeMessage}</p>
