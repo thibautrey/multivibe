@@ -176,6 +176,8 @@ function validateSettings(schema: Record<string, any> | undefined, settings: Rec
 export class ModuleManager {
   private locks: ModuleLock[] = [];
   private marketplace: MarketplaceModule[] = [];
+  private builtins = new Map<string, { manifest: ModuleManifest; implementation: MultivibeModule }>();
+  private manifests = new Map<string, ModuleManifest>();
   private loaded = new Map<string, LoadedModule>();
 
   constructor(
@@ -183,6 +185,10 @@ export class ModuleManager {
     private bundledRoot?: string,
     private bundledEnabled = true,
   ) {}
+
+  registerBuiltin(manifest: ModuleManifest, implementation: MultivibeModule): void {
+    this.builtins.set(manifest.id, { manifest, implementation });
+  }
 
   private get lockPath() { return path.join(this.root, LOCK_FILE); }
   private get marketplacePath() { return path.join(this.root, MARKETPLACE_FILE); }
@@ -235,6 +241,19 @@ export class ModuleManager {
         console.warn(`[modules] bundled security module unavailable: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+    for (const { manifest } of this.builtins.values()) {
+      this.manifests.set(manifest.id, manifest);
+      if (!this.locks.some((lock) => lock.id === manifest.id)) {
+        this.locks.push({ id: manifest.id, origin: manifest.repository, commit: "builtin", enabled: false,
+          settings: structuredClone(manifest.defaultSettings ?? {}), source: "bundled" });
+        await this.saveLocks();
+      }
+    }
+    for (const lock of this.locks) {
+      if (!this.manifests.has(lock.id)) {
+        try { this.manifests.set(lock.id, await readModuleManifest(this.moduleRoot(lock))); } catch { /* Report through load when enabled. */ }
+      }
+    }
     for (const lock of this.locks.filter((entry) => entry.enabled && !entry.restartRequired)) {
       await this.load(lock);
     }
@@ -247,6 +266,11 @@ export class ModuleManager {
 
   private async load(lock: ModuleLock): Promise<void> {
     try {
+      const builtin = this.builtins.get(lock.id);
+      if (builtin) {
+        this.loaded.set(lock.id, { lock, ...builtin, healthy: true });
+        return;
+      }
       const root = this.moduleRoot(lock);
       await validateTree(root);
       const manifest = await readModuleManifest(root);
@@ -312,7 +336,7 @@ export class ModuleManager {
       const loaded = this.loaded.get(lock.id);
       return {
         ...structuredClone(lock),
-        manifest: loaded?.manifest?.name ? structuredClone(loaded.manifest) : undefined,
+        manifest: loaded?.manifest?.name ? structuredClone(loaded.manifest) : structuredClone(this.manifests.get(lock.id)),
         loaded: Boolean(loaded?.healthy),
         healthy: loaded?.healthy ?? !lock.enabled,
         error: loaded?.error,
@@ -354,6 +378,7 @@ export class ModuleManager {
   async update(id: string): Promise<ModuleView> {
     const lock = this.locks.find((entry) => entry.id === id);
     if (!lock) throw new Error("Module not found");
+    if (this.builtins.has(id)) throw new Error("This bundled plugin updates with MultiVibe");
     const origin = normalizePublicGitHubUrl(lock.origin);
     const staging = path.join(this.root, `.staging-${randomUUID()}`);
     try {
@@ -389,7 +414,7 @@ export class ModuleManager {
     const lock = this.locks.find((entry) => entry.id === id);
     if (!lock) throw new Error("Module not found");
     if (!settings || typeof settings !== "object" || Array.isArray(settings)) throw new Error("Settings must be an object");
-    const manifest = this.loaded.get(id)?.manifest ?? await readModuleManifest(this.moduleRoot(lock));
+    const manifest = this.builtins.get(id)?.manifest ?? this.loaded.get(id)?.manifest ?? await readModuleManifest(this.moduleRoot(lock));
     validateSettings(manifest.settingsSchema, settings);
     lock.settings = structuredClone(settings);
     const loaded = this.loaded.get(id);
@@ -419,10 +444,11 @@ export class ModuleManager {
       try {
         const timeoutMs = Math.max(10, Math.min(60_000, entry.manifest.timeoutMs ?? 5_000));
         let timeout: ReturnType<typeof setTimeout> | undefined;
+        const hookController = new AbortController();
         const result = await Promise.race([
-          handler(structuredClone(current) as Readonly<T>, { ...context, settings: Object.freeze(structuredClone(entry.lock.settings)), log: { info: (message) => console.info(prefix, message), warn: (message) => console.warn(prefix, message), error: (message) => console.error(prefix, message) } }) as Promise<ModuleHookResult<T>> | ModuleHookResult<T>,
+          handler(structuredClone(current) as Readonly<T>, { ...context, signal: AbortSignal.any([context.signal, hookController.signal]), settings: Object.freeze(structuredClone(entry.lock.settings)), log: { info: (message) => console.info(prefix, message), warn: (message) => console.warn(prefix, message), error: (message) => console.error(prefix, message) } }) as Promise<ModuleHookResult<T>> | ModuleHookResult<T>,
           new Promise<never>((_, reject) => {
-            timeout = setTimeout(() => reject(new Error(`hook timed out after ${timeoutMs}ms`)), timeoutMs);
+            timeout = setTimeout(() => { hookController.abort(); reject(new Error(`hook timed out after ${timeoutMs}ms`)); }, timeoutMs);
             timeout.unref?.();
           }),
         ]).finally(() => {
