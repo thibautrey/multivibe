@@ -105,6 +105,10 @@ function GitHubIcon() {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8a9.4 9.4 0 0 0-3 18.3c.5.1.6-.2.6-.4v-1.8c-2.7.6-3.3-1.1-3.3-1.1-.4-1.1-1.1-1.4-1.1-1.4-.9-.6.1-.6.1-.6 1 0 1.5 1 1.5 1 .9 1.5 2.3 1.1 2.9.8.1-.6.4-1.1.7-1.3-2.2-.2-4.5-1.1-4.5-4.7 0-1 .4-1.9 1-2.5-.1-.3-.4-1.3.1-2.5 0 0 .8-.3 2.6 1a9 9 0 0 1 4.7 0c1.8-1.2 2.6-1 2.6-1 .5 1.2.2 2.2.1 2.5.6.6 1 1.5 1 2.5 0 3.6-2.3 4.5-4.5 4.7.4.3.7.9.7 1.8v2.6c0 .3.2.6.7.4A9.4 9.4 0 0 0 12 2.8Z" /></svg>;
 }
 
+function LockIcon() {
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>;
+}
+
 function activeModelBlockCount(account: Account) {
   return Object.values(account.state?.modelBlocks ?? {}).filter(
     (block) => block.until > Date.now(),
@@ -525,22 +529,6 @@ export default function App() {
   useEffect(() => {
     traceRangeRef.current = traceRange;
   }, [traceRange]);
-
-  const refreshData = async () => {
-    try {
-      setError("");
-      await loadBase({ forceModels: true });
-      setAuthenticated(true);
-      discoverLocalRuntimesInBackground();
-      if (tab === "tracing") {
-        await loadTracing(tracePageRef.current, traceRangeRef.current);
-      } else {
-        await loadTraceStats(traceRangeRef.current);
-      }
-    } catch (e: any) {
-      handleError(e);
-    }
-  };
 
   const login = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1087,8 +1075,11 @@ export default function App() {
               </span>
             </div>
             <ThemeSwitcher value={themeMode} onChange={setThemeMode} />
+            <button className="sidebar-footer-action sidebar-lock-button" type="button" onClick={() => void logout()}>
+              <LockIcon /><span>Lock dashboard</span>
+            </button>
             {githubPromotionDismissed && (
-              <a className="github-repository-link" href={GITHUB_REPOSITORY_URL} target="_blank" rel="noreferrer">
+              <a className="sidebar-footer-action github-repository-link" href={GITHUB_REPOSITORY_URL} target="_blank" rel="noreferrer">
                 <GitHubIcon /><span>View on GitHub</span>
               </a>
             )}
@@ -1167,8 +1158,11 @@ export default function App() {
                 </span>
               </div>
               <ThemeSwitcher value={themeMode} onChange={setThemeMode} />
+              <button className="sidebar-footer-action sidebar-lock-button" type="button" onClick={() => void logout()}>
+                <LockIcon /><span>Lock dashboard</span>
+              </button>
               {githubPromotionDismissed && (
-                <a className="github-repository-link" href={GITHUB_REPOSITORY_URL} target="_blank" rel="noreferrer">
+                <a className="sidebar-footer-action github-repository-link" href={GITHUB_REPOSITORY_URL} target="_blank" rel="noreferrer">
                   <GitHubIcon /><span>View on GitHub</span>
                 </a>
               )}
@@ -1213,43 +1207,6 @@ export default function App() {
         )}
 
         <div className="workspace">
-          <header className="topbar" aria-label={`${activeTabItem.label} workspace controls`}>
-            <p className="topbar-context">{activeTabItem.description}</p>
-            <div className="topbar-actions">
-              <span className="badge badge-live topbar-status">
-                <span className="status-dot" />
-                {demo ? "Demo data" : sanitized ? "Sanitized" : "Live"}
-              </span>
-              {tab === "tracing" && (
-                <div className="trace-range-controls topbar-trace-controls">
-                  <label className="trace-range-field">
-                    <span>Time range</span>
-                    <select
-                      value={traceRange}
-                      onChange={(e) => {
-                        setTraceRange(e.target.value as TraceRangePreset);
-                      }}
-                      aria-label="Trace time range"
-                    >
-                      <option value="24h">Last 24h</option>
-                      <option value="7d">Last 7d</option>
-                      <option value="30d">Last 30d</option>
-                      <option value="all">All time</option>
-                    </select>
-                  </label>
-                  <button className="btn secondary" onClick={() => void exportTracesZip()} disabled={traceExportInProgress}>
-                    {traceExportInProgress ? "Exporting..." : "Export all (.zip)"}
-                  </button>
-                </div>
-              )}
-              <button className="btn ghost icon-button" onClick={() => void refreshData()} title="Refresh data" aria-label="Refresh data">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7h-5V2"/><path d="M20 7a9 9 0 1 0 2 7"/></svg>
-              </button>
-              <button className="btn ghost icon-button" onClick={() => void logout()} title="Lock dashboard" aria-label="Lock dashboard">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
-              </button>
-            </div>
-          </header>
 
           {demo && <div className="demo-notice" role="note"><strong>Demo instance</strong><span>Fictional data · Read-only · No providers connected</span></div>}
 
@@ -1356,6 +1313,9 @@ export default function App() {
             tracePagination={tracePagination}
             gotoTracePage={gotoTracePage}
             traceRange={traceRange}
+            setTraceRange={setTraceRange}
+            exportTracesZip={exportTracesZip}
+            traceExportInProgress={traceExportInProgress}
             traces={traces}
             projectUsageStats={projectUsageStats}
             expandedTraceId={expandedTraceId}
