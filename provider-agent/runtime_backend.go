@@ -693,6 +693,7 @@ func selectRuntimeBackends(backends []runtimeBackend, profile runtimeWorkloadPro
 }
 
 type ollamaRuntimeBackend struct {
+	engines                *managedInferenceEngines
 	runtime                managedControllerRuntime
 	pinnedRuntime          pinnedManagedControllerRuntime
 	catalogPath            string
@@ -707,6 +708,7 @@ type ollamaRuntimeBackend struct {
 	reviewedProfiles       *runtimeprofile.Catalog
 	localCapability        hostCapability
 	loadedProfiles         map[string]runtimeprofile.Profile
+	reviewedAliases        map[string]bool
 	executions             map[string]context.CancelFunc
 	metrics                runtimeBackendMetrics
 }
@@ -965,7 +967,23 @@ func (backend *ollamaRuntimeBackend) openExecution(ctx context.Context, request 
 		complete(err)
 		return nil, nil, err
 	}
-	if backend.reviewedProfiles != nil {
+	endpoint, key := backend.endpoint, ""
+	native := false
+	if backend.engines != nil {
+		if err := backend.engines.prepare(executionContext, backend.engines.policies.snapshot(), request.ModelID); err != nil {
+			complete(err)
+			return nil, nil, err
+		}
+		if origin, token, nativeModel := backend.engines.target(); origin != "" {
+			endpoint, key, model, native = origin, token, nativeModel, true
+			body, err = managedEngineExecutionBody(request.Input, model, stream)
+			if err != nil {
+				complete(err)
+				return nil, nil, err
+			}
+		}
+	}
+	if backend.reviewedProfiles != nil && !native {
 		model, err = backend.prepareReviewedAlias(executionContext, request.ModelID, model)
 		if err == nil {
 			body, err = reviewedOllamaExecutionBody(request.Input, model, stream)
@@ -975,13 +993,16 @@ func (backend *ollamaRuntimeBackend) openExecution(ctx context.Context, request 
 			return nil, nil, err
 		}
 	}
-	httpRequest, err := http.NewRequestWithContext(executionContext, http.MethodPost, backend.endpoint+"/v1/chat/completions", bytes.NewReader(body))
+	httpRequest, err := http.NewRequestWithContext(executionContext, http.MethodPost, endpoint+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		complete(errRuntimeBackendInvalid)
 		return nil, nil, errRuntimeBackendInvalid
 	}
 	httpRequest.Header.Set("accept", map[bool]string{true: "text/event-stream", false: "application/json"}[stream])
 	httpRequest.Header.Set("content-type", "application/json")
+	if key != "" {
+		httpRequest.Header.Set("Authorization", "Bearer "+key)
+	}
 	response, requestErr := backend.client.Do(httpRequest)
 	if requestErr != nil {
 		normalized := normalizeOllamaExecutionError(executionContext, 0, nil, requestErr)
@@ -1082,7 +1103,7 @@ func (backend *ollamaRuntimeBackend) Cancel(_ context.Context, executionID strin
 }
 
 func (backend *ollamaRuntimeBackend) Health(_ context.Context, policy *capacityPolicyStateDocument) (runtimeBackendHealth, error) {
-	status := backend.runtime.status(policy)
+	status := backend.status(policy)
 	return runtimeBackendHealth{State: status.State, Installed: status.RuntimeInstalled, Running: status.Running}, nil
 }
 
@@ -1096,7 +1117,7 @@ func (backend *ollamaRuntimeBackend) Metrics(_ context.Context, policy *capacity
 	if err != nil {
 		return runtimeBackendMetrics{}, err
 	}
-	status := backend.runtime.status(policy)
+	status := backend.status(policy)
 	backend.mu.Lock()
 	metrics := backend.metrics
 	backend.mu.Unlock()
@@ -1110,6 +1131,14 @@ func (backend *ollamaRuntimeBackend) Metrics(_ context.Context, policy *capacity
 }
 
 func (backend *ollamaRuntimeBackend) Cleanup(ctx context.Context, request runtimeCleanupRequest) error {
+	if backend.engines != nil && len(request.ModelIDs) > 0 {
+		if err := backend.engines.stop(ctx); err != nil {
+			return err
+		}
+		if _, err := backend.runtime.start(ctx, request.Policy); err != nil {
+			return err
+		}
+	}
 	if len(request.ModelIDs) > managedOllamaMaximumModels {
 		return errRuntimeBackendInvalid
 	}
@@ -1141,6 +1170,11 @@ func (backend *ollamaRuntimeBackend) Stop(ctx context.Context) error {
 		cancel()
 	}
 	backend.mu.Unlock()
+	if backend.engines != nil {
+		if err := backend.engines.stop(ctx); err != nil {
+			return err
+		}
+	}
 	return backend.runtime.stop(ctx)
 }
 
@@ -1160,11 +1194,20 @@ func (backend *ollamaRuntimeBackend) start(ctx context.Context, policy *capacity
 func (backend *ollamaRuntimeBackend) stop(ctx context.Context) error { return backend.Stop(ctx) }
 
 func (backend *ollamaRuntimeBackend) enforcePolicy(ctx context.Context, policy *capacityPolicyStateDocument) error {
+	if backend.engines != nil {
+		if err := backend.engines.enforcePolicy(ctx, policy); err != nil {
+			return err
+		}
+	}
 	return backend.runtime.enforcePolicy(ctx, policy)
 }
 
 func (backend *ollamaRuntimeBackend) status(policy *capacityPolicyStateDocument) managedOllamaStatus {
-	return backend.runtime.status(policy)
+	status := backend.runtime.status(policy)
+	if backend.engines != nil {
+		return backend.engines.augmentStatus(status)
+	}
+	return status
 }
 
 func (backend *ollamaRuntimeBackend) pullModelResult(ctx context.Context, policy *capacityPolicyStateDocument, catalogPath string, download plannedModelDownload) (managedOllamaModelRecord, bool, error) {
@@ -1192,6 +1235,14 @@ func (backend *ollamaRuntimeBackend) authorizeModelActivation(policy *capacityPo
 }
 
 func (backend *ollamaRuntimeBackend) deactivateModel(ctx context.Context, policy *capacityPolicyStateDocument, catalogPath, modelID string) error {
+	if backend.engines != nil {
+		if err := backend.engines.stop(ctx); err != nil {
+			return err
+		}
+		if _, err := backend.runtime.start(ctx, policy); err != nil {
+			return err
+		}
+	}
 	if catalogPath != backend.catalogPath {
 		return errRuntimeBackendInvalid
 	}

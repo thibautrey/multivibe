@@ -254,26 +254,37 @@ func (service *workerTestService) inferPrepared(ctx context.Context, model strin
 		"model": model, "messages": []map[string]string{{"role": "user", "content": workerTestPrompt}},
 		"stream": false, "temperature": 0, "max_tokens": 32,
 	})
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.Endpoint+"/v1/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return "", 0, 0, errors.New("worker test runtime request is invalid")
-	}
-	request.Header.Set("accept", "application/json")
-	request.Header.Set("content-type", "application/json")
-	if endpoint.BearerToken != "" {
-		request.Header.Set("authorization", "Bearer "+endpoint.BearerToken)
-	}
-	response, err := service.runtime.Do(request)
-	if err != nil {
-		return "", 0, 0, errors.New("worker test runtime request failed")
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return "", 0, 0, errors.New("worker test runtime rejected the request")
-	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, workerTestMaxOutputBytes+1))
-	if err != nil || len(raw) > workerTestMaxOutputBytes {
-		return "", 0, 0, errors.New("worker test runtime response is invalid")
+	var raw []byte
+	if backend, ok := service.controllerRuntime().(interface {
+		Execute(context.Context, runtimeExecuteRequest) (runtimeExecuteResult, error)
+	}); ok {
+		result, err := backend.Execute(ctx, runtimeExecuteRequest{ExecutionID: "worker-qualification", ModelID: workerTestCanonicalModel, Input: body, MaximumOutput: workerTestMaxOutputBytes})
+		if err != nil {
+			return "", 0, 0, err
+		}
+		raw = result.Output
+	} else {
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.Endpoint+"/v1/chat/completions", bytes.NewReader(body))
+		if err != nil {
+			return "", 0, 0, errors.New("worker test runtime request is invalid")
+		}
+		request.Header.Set("accept", "application/json")
+		request.Header.Set("content-type", "application/json")
+		if endpoint.BearerToken != "" {
+			request.Header.Set("authorization", "Bearer "+endpoint.BearerToken)
+		}
+		response, err := service.runtime.Do(request)
+		if err != nil {
+			return "", 0, 0, errors.New("worker test runtime request failed")
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			return "", 0, 0, errors.New("worker test runtime rejected the request")
+		}
+		raw, err = io.ReadAll(io.LimitReader(response.Body, workerTestMaxOutputBytes+1))
+		if err != nil || len(raw) > workerTestMaxOutputBytes {
+			return "", 0, 0, errors.New("worker test runtime response is invalid")
+		}
 	}
 	var result struct {
 		Choices []struct {
@@ -361,4 +372,15 @@ func waitWorkerTest(ctx context.Context, duration time.Duration) bool {
 	case <-timer.C:
 		return true
 	}
+}
+
+func (service *workerTestService) controllerRuntime() managedControllerRuntime {
+	if service.controller == nil {
+		return nil
+	}
+	controller, ok := service.controller.(*managedProviderController)
+	if !ok {
+		return nil
+	}
+	return controller.runtime
 }

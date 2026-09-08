@@ -1,0 +1,276 @@
+{
+  "schema_version": "provider-runtime-profile-catalog-v3",
+  "format": "multivibe-runtime-profile-catalog",
+  "catalog_digest": "sha256:2955f222519d15c81f3658e63b773c6371c773763f538c018e3baac555204394",
+  "license": "Apache-2.0",
+  "provenance": {
+    "source_url": "https://github.com/thibautrey/multivibe/blob/main/packaging/provider-model-catalog.json",
+    "source_digest": "sha256:00e159947c55f937b28a7dcb5ae566a76e40776a73eb27b9da112143dc10dd97"
+  },
+  "profiles": [
+    {
+      "schema_version": "provider-runtime-profile-v3",
+      "id": "qwen2.5-0.5b-q4km-cuda8-llama-cpp",
+      "profile_digest": "sha256:1989b7e1206a15b0fea9e6511ca132ab8b150e1787bd4dda7910c5091ffff519",
+      "priority": 90,
+      "model": {
+        "id": "hf:qwen/qwen2.5-0.5b-instruct",
+        "content_digest": "sha256:a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+        "format": "gguf",
+        "quantization": "q4_k_m",
+        "artifact_bytes": 397821319,
+        "license": "Apache-2.0",
+        "hosted_inference_allowed": true,
+        "license_assessment_digest": "sha256:820d427dba05fb3ef3694ea46c991e1317dbc6de9dcededfaf7937023ebd77c8"
+      },
+      "hardware": {
+        "class": "nvidia-cuda-8gb",
+        "os": "linux",
+        "architecture": "amd64",
+        "accelerator_kind": "cuda",
+        "minimum_accelerator_memory_bytes": 8589934592,
+        "unified_memory": false
+      },
+      "runtime": {
+        "backend_id": "llama-cpp-managed",
+        "contract_version": "provider-runtime-backend-v1",
+        "adapter_version": "llama-cpp-adapter-v1",
+        "runtime_artifact_digest": "sha256:7eeb43e78b760b93f26d4d1bce0a0a91ead5ed1f137dbd68999e4203f96356a5"
+      },
+      "tuning": {
+        "context_tokens": 8192,
+        "batch_size": 128,
+        "parallelism": 1,
+        "gpu_offload_layers": 24,
+        "estimated_memory_bytes": 1207959552,
+        "reserve_memory_bytes": 1073741824
+      },
+      "provenance": {
+        "recommendation_source_url": "https://github.com/ggml-org/llama.cpp",
+        "recommendation_digest": "sha256:00e159947c55f937b28a7dcb5ae566a76e40776a73eb27b9da112143dc10dd97",
+        "method": "reviewed-static",
+        "license": "Apache-2.0"
+      }
+    },
+    {
+      "schema_version": "provider-runtime-profile-v3",
+      "id": "qwen2.5-0.5b-q4km-cuda8-llama-cpp-apple-silicon",
+      "profile_digest": "sha256:023e7cfc5a922583b2002213d8416302d59f9afb409eda1f799caca5ad3c67b2",
+      "priority": 90,
+      "model": {
+        "id": "hf:qwen/qwen2.5-0.5b-instruct",
+        "content_digest": "sha256:a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+        "format": "gguf",
+        "quantization": "q4_k_m",
+        "artifact_bytes": 397821319,
+        "license": "Apache-2.0",
+        "hosted_inference_allowed": true,
+        "license_assessment_digest": "sha256:820d427dba05fb3ef3694ea46c991e1317dbc6de9dcededfaf7937023ebd77c8"
+      },
+      "hardware": {
+        "class": "apple-silicon-8gb",
+        "os": "darwin",
+        "architecture": "arm64",
+        "accelerator_kind": "metal",
+        "minimum_accelerator_memory_bytes": 4294967296,
+        "unified_memory": true
+      },
+      "runtime": {
+        "backend_id": "llama-cpp-managed",
+        "contract_version": "provider-runtime-backend-v1",
+        "adapter_version": "llama-cpp-adapter-v1",
+        "runtime_artifact_digest": "sha256:027683efa8e45b56111a2595b525e6517bf58bd6d27d6c1685ab557bfd064b12"
+      },
+      "tuning": {
+        "context_tokens": 8192,
+        "batch_size": 128,
+        "parallelism": 1,
+        "gpu_offload_layers": 24,
+        "estimated_memory_bytes": 1207959552,
+        "reserve_memory_bytes": 1073741824
+      },
+      "provenance": {
+        "recommendation_source_url": "https://github.com/ggml-org/llama.cpp",
+        "recommendation_digest": "sha256:00e159947c55f937b28a7dcb5ae566a76e40776a73eb27b9da112143dc10dd97",
+        "method": "reviewed-static",
+        "license": "Apache-2.0"
+      }
+    },
+    {
+      "schema_version": "provider-runtime-profile-v3",
+      "id": "qwen2.5-0.5b-q4km-cuda8-llama-cpp-windows",
+      "profile_digest": "sha256:943cf1356175eab62af458a7023bdf6efc7c4648126114baafb192bfd6411390",
+      "priority": 90,
+      "model": {
+        "id": "hf:qwen/qwen2.5-0.5b-instruct",
+        "content_digest": "sha256:a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+        "format": "gguf",
+        "quantization": "q4_k_m",
+        "artifact_bytes": 397821319,
+        "license": "Apache-2.0",
+        "hosted_inference_allowed": true,
+        "license_assessment_digest": "sha256:820d427dba05fb3ef3694ea46c991e1317dbc6de9dcededfaf7937023ebd77c8"
+      },
+      "hardware": {
+        "class": "nvidia-cuda-8gb",
+        "os": "windows",
+        "architecture": "amd64",
+        "accelerator_kind": "cuda",
+        "minimum_accelerator_memory_bytes": 8589934592,
+        "unified_memory": false
+      },
+      "runtime": {
+        "backend_id": "llama-cpp-managed",
+        "contract_version": "provider-runtime-backend-v1",
+        "adapter_version": "llama-cpp-adapter-v1",
+        "runtime_artifact_digest": "sha256:8dcefa3736a411443b2895ff8be53973bc41d196b290c73b6c01491e4f863df1"
+      },
+      "tuning": {
+        "context_tokens": 8192,
+        "batch_size": 128,
+        "parallelism": 1,
+        "gpu_offload_layers": 24,
+        "estimated_memory_bytes": 1207959552,
+        "reserve_memory_bytes": 1073741824
+      },
+      "provenance": {
+        "recommendation_source_url": "https://github.com/ggml-org/llama.cpp",
+        "recommendation_digest": "sha256:00e159947c55f937b28a7dcb5ae566a76e40776a73eb27b9da112143dc10dd97",
+        "method": "reviewed-static",
+        "license": "Apache-2.0"
+      }
+    },
+    {
+      "schema_version": "provider-runtime-profile-v3",
+      "id": "qwen2.5-0.5b-q4km-linux-amd64-cpu-llama-cpp",
+      "profile_digest": "sha256:ca2ebd7948238e7349a24850752cb76eb7173eecea01d78ac04cb259caea04ab",
+      "priority": 90,
+      "model": {
+        "id": "hf:qwen/qwen2.5-0.5b-instruct",
+        "content_digest": "sha256:a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+        "format": "gguf",
+        "quantization": "q4_k_m",
+        "artifact_bytes": 397821319,
+        "license": "Apache-2.0",
+        "hosted_inference_allowed": true,
+        "license_assessment_digest": "sha256:820d427dba05fb3ef3694ea46c991e1317dbc6de9dcededfaf7937023ebd77c8"
+      },
+      "hardware": {
+        "class": "linux-cpu-4gb",
+        "os": "linux",
+        "architecture": "amd64",
+        "accelerator_kind": "cpu",
+        "minimum_accelerator_memory_bytes": 2147483648,
+        "unified_memory": true
+      },
+      "runtime": {
+        "backend_id": "llama-cpp-managed",
+        "contract_version": "provider-runtime-backend-v1",
+        "adapter_version": "llama-cpp-adapter-v1",
+        "runtime_artifact_digest": "sha256:9f3e057eb9ef677fc742c074ff4a44bbd200962bd6ac1342a6492d801303f17d"
+      },
+      "tuning": {
+        "context_tokens": 2048,
+        "batch_size": 32,
+        "parallelism": 1,
+        "gpu_offload_layers": 0,
+        "estimated_memory_bytes": 1073741824,
+        "reserve_memory_bytes": 536870912
+      },
+      "provenance": {
+        "recommendation_source_url": "https://github.com/ggml-org/llama.cpp",
+        "recommendation_digest": "sha256:00e159947c55f937b28a7dcb5ae566a76e40776a73eb27b9da112143dc10dd97",
+        "method": "reviewed-static",
+        "license": "Apache-2.0"
+      }
+    },
+    {
+      "schema_version": "provider-runtime-profile-v3",
+      "id": "qwen2.5-0.5b-q4km-linux-amd64-cpu-llamafile",
+      "profile_digest": "sha256:d3553c8879947bc221e7e14252685b88c25bc46c26a4bd387031f0ab30b6a6f6",
+      "priority": 80,
+      "model": {
+        "id": "hf:qwen/qwen2.5-0.5b-instruct",
+        "content_digest": "sha256:a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+        "format": "gguf",
+        "quantization": "q4_k_m",
+        "artifact_bytes": 397821319,
+        "license": "Apache-2.0",
+        "hosted_inference_allowed": true,
+        "license_assessment_digest": "sha256:820d427dba05fb3ef3694ea46c991e1317dbc6de9dcededfaf7937023ebd77c8"
+      },
+      "hardware": {
+        "class": "linux-cpu-4gb",
+        "os": "linux",
+        "architecture": "amd64",
+        "accelerator_kind": "cpu",
+        "minimum_accelerator_memory_bytes": 2147483648,
+        "unified_memory": true
+      },
+      "runtime": {
+        "backend_id": "llamafile-managed",
+        "contract_version": "provider-runtime-backend-v1",
+        "adapter_version": "llamafile-adapter-v1",
+        "runtime_artifact_digest": "sha256:417bcc3348cd5162c2751812fc0ea2f6e79e89e7be6f17e8401ed95de2ed4246"
+      },
+      "tuning": {
+        "context_tokens": 2048,
+        "batch_size": 32,
+        "parallelism": 1,
+        "gpu_offload_layers": 0,
+        "estimated_memory_bytes": 1073741824,
+        "reserve_memory_bytes": 536870912
+      },
+      "provenance": {
+        "recommendation_source_url": "https://github.com/mozilla-ai/llamafile",
+        "recommendation_digest": "sha256:00e159947c55f937b28a7dcb5ae566a76e40776a73eb27b9da112143dc10dd97",
+        "method": "reviewed-static",
+        "license": "Apache-2.0"
+      }
+    },
+    {
+      "schema_version": "provider-runtime-profile-v3",
+      "id": "qwen2.5-0.5b-q4km-linux-arm64-cpu-llama-cpp",
+      "profile_digest": "sha256:8e45250225b82d3fc833e10fc1700b8a025d872855ab575c79614c6533f27bbc",
+      "priority": 90,
+      "model": {
+        "id": "hf:qwen/qwen2.5-0.5b-instruct",
+        "content_digest": "sha256:a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+        "format": "gguf",
+        "quantization": "q4_k_m",
+        "artifact_bytes": 397821319,
+        "license": "Apache-2.0",
+        "hosted_inference_allowed": true,
+        "license_assessment_digest": "sha256:820d427dba05fb3ef3694ea46c991e1317dbc6de9dcededfaf7937023ebd77c8"
+      },
+      "hardware": {
+        "class": "linux-cpu-4gb",
+        "os": "linux",
+        "architecture": "arm64",
+        "accelerator_kind": "cpu",
+        "minimum_accelerator_memory_bytes": 2147483648,
+        "unified_memory": true
+      },
+      "runtime": {
+        "backend_id": "llama-cpp-managed",
+        "contract_version": "provider-runtime-backend-v1",
+        "adapter_version": "llama-cpp-adapter-v1",
+        "runtime_artifact_digest": "sha256:1e5f497d80aedba65481457a8fc86c5c0fc659d30bf696623e3ccd526cb4edf8"
+      },
+      "tuning": {
+        "context_tokens": 2048,
+        "batch_size": 32,
+        "parallelism": 1,
+        "gpu_offload_layers": 0,
+        "estimated_memory_bytes": 1073741824,
+        "reserve_memory_bytes": 536870912
+      },
+      "provenance": {
+        "recommendation_source_url": "https://github.com/ggml-org/llama.cpp",
+        "recommendation_digest": "sha256:00e159947c55f937b28a7dcb5ae566a76e40776a73eb27b9da112143dc10dd97",
+        "method": "reviewed-static",
+        "license": "Apache-2.0"
+      }
+    }
+  ]
+}

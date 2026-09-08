@@ -116,6 +116,9 @@ type managedOllamaModelState struct {
 }
 
 type managedOllamaStatus struct {
+	ExecutionRuntime  string   `json:"execution_runtime,omitempty"`
+	ExecutionVersion  string   `json:"execution_version,omitempty"`
+	FallbackReason    string   `json:"fallback_reason,omitempty"`
 	SchemaVersion     string   `json:"schema_version"`
 	State             string   `json:"state"`
 	Version           string   `json:"version"`
