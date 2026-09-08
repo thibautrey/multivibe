@@ -33,7 +33,7 @@
 
 
 <p align="center">
-  <a href="https://github.com/thibautrey/multivibe/wiki/Dashboard"><img src="./assets/screenshots/home.jpg" alt="Current MultiVibe Home dashboard with fictional demo data" width="1100" /></a>
+  <a href="https://github.com/thibautrey/multivibe/wiki/Dashboard"><img src="./assets/screenshots/home.png" alt="Current MultiVibe Home dashboard with fictional demo data" width="1100" /></a>
   <br />
   <sub>Current dashboard · Fictional data from the local demo instance</sub>
 </p>
