@@ -412,6 +412,7 @@ pub struct UsageSnapshot {
     pub primary: Option<UsageWindow>,
     pub secondary: Option<UsageWindow>,
     pub monthly: Option<UsageWindow>,
+    pub credits: Option<UsageWindow>,
     pub fetched_at: Option<u64>,
 }
 
@@ -1206,6 +1207,12 @@ fn account_headroom(account: &Account) -> Option<f64> {
                 .as_ref()
                 .and_then(|usage| usage.monthly.as_ref()),
         ),
+        remaining_percent(
+            account
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.credits.as_ref()),
+        ),
     ]
     .into_iter()
     .flatten()
@@ -1238,6 +1245,9 @@ fn select_accounts(
         .cloned()
         .collect::<Vec<_>>();
     let provider = route.provider.clone().unwrap_or_default();
+    if candidates.iter().any(|account| account_headroom(account) != Some(0.0)) {
+        candidates.retain(|account| account_headroom(account) != Some(0.0));
+    }
     let effective_pool = {
         let filtered = candidates
             .iter()
@@ -1275,6 +1285,16 @@ fn select_accounts(
                 .as_ref()
                 .and_then(|usage| usage.secondary.as_ref()),
         );
+        if left_usage.is_none() && right_usage.is_none() {
+            match (account_headroom(left), account_headroom(right)) {
+                (None, Some(_)) => return Ordering::Greater,
+                (Some(_), None) => return Ordering::Less,
+                (Some(left), Some(right)) if left != right => {
+                    return right.partial_cmp(&left).unwrap_or(Ordering::Equal);
+                }
+                _ => {}
+            }
+        }
         match (left_usage, right_usage) {
             (None, Some(_)) => Ordering::Greater,
             (Some(_), None) => Ordering::Less,
@@ -1299,8 +1319,20 @@ fn select_accounts(
             .iter()
             .position(|account| &account.id == previous)
         {
-            let rotation = (index + 1) % candidates.len();
-            candidates.rotate_left(rotation);
+            // Credit-only accounts rotate only within the best headroom tier.
+            let credit_only = candidates.iter().all(|account| {
+                account.usage.as_ref().and_then(|usage| usage.secondary.as_ref()).is_none()
+            });
+            let count = if credit_only {
+                let best = account_headroom(&candidates[0]);
+                candidates.iter().take_while(|account| account_headroom(account) == best).count()
+            } else {
+                candidates.len()
+            };
+            if index < count {
+                let rotation = (index + 1) % count;
+                candidates[..count].rotate_left(rotation);
+            }
         }
     }
     candidates
@@ -11036,6 +11068,36 @@ mod tests {
             source.as_slice()
         );
         assert!(decompress_zstd(&compressed, source.len() - 1).is_err());
+    }
+
+    #[test]
+    fn account_selection_respects_subscription_credits() {
+        let mut high = account("high");
+        high.usage = Some(serde_json::from_value(json!({
+            "credits": { "usedPercent": 10 },
+            "tools": { "usedPercent": 100 }
+        })).unwrap());
+        let mut low = account("low");
+        low.usage = Some(serde_json::from_value(json!({
+            "credits": { "usedPercent": 90 }
+        })).unwrap());
+        let mut exhausted = account("exhausted");
+        exhausted.usage = Some(serde_json::from_value(json!({
+            "monthly": { "usedPercent": 100 }
+        })).unwrap());
+        let route = RouteCandidate {
+            requested_model: "test".to_owned(),
+            model: "test".to_owned(),
+            provider: Some("openai".to_owned()),
+            account_ids: Vec::new(),
+        };
+        assert_eq!(account_headroom(&high), Some(90.0));
+        let ordered = select_accounts(
+            &[high, low, exhausted], &route, &HashMap::new(),
+            &HashMap::from([("openai".to_owned(), "high".to_owned())]),
+        );
+        assert_eq!(ordered.first().map(|value| value.id.as_str()), Some("high"));
+        assert_eq!(ordered.len(), 2);
     }
 
     #[test]
