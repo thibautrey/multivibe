@@ -486,9 +486,9 @@ func (app *menuApplication) submitPendingEnrollment() {
 	app.pendingEnrollmentToken = ""
 	app.pendingEnrollmentAccept = false
 	if connected {
-		showMessage("This Linux host is connected", "Its public identity was registered securely. Cloud jobs use only MultiVibe's managed Ollama runtime and still require saved capacity consent.", false)
+		showMessage("This worker is connected", "Its public identity was registered securely. Cloud jobs use only MultiVibe's managed Ollama runtime and still require saved capacity consent.", false)
 	} else {
-		showMessage("This Linux host could not be connected", "MultiVibe Cloud rejected the connection. Start again from MultiVibe Cloud with a new connection link.", true)
+		showMessage("This worker could not be connected", "MultiVibe Cloud rejected the connection. Start again from MultiVibe Cloud with a new connection link.", true)
 	}
 }
 
