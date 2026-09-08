@@ -32,8 +32,31 @@ export type ModuleManifest = {
   defaultSettings?: Record<string, unknown>;
 };
 
+export type ModuleConversation = {
+  phase: "start" | "continuation";
+  mode: "one-off" | "multi-turn" | "unknown";
+  hasTools: boolean;
+  stateful: boolean;
+  sessionId?: string;
+  messageCount: number;
+};
+
+export type ModuleModel = {
+  id: string;
+  metadata: { supports_tools: boolean; context_window: number | null; [key: string]: unknown };
+};
+
+export type ModuleServices = {
+  listModels(): Promise<ModuleModel[]>;
+  /** Runs a bounded non-streaming completion with routing recursion suppressed. */
+  complete(input: { model: string; messages: { role: "system" | "user"; content: string }[]; max_tokens: number }, signal: AbortSignal): Promise<string>;
+};
+
 export type ModuleContext = {
   requestId: string;
+  conversation?: ModuleConversation;
+  internal?: boolean;
+  services?: ModuleServices;
   sessionId?: string;
   application?: string;
   route: string;

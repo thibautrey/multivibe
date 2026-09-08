@@ -1,3 +1,4 @@
+import { MULTIVIBE_CONTROL_PLANE } from "../../config.js";
 import { createAuthRateLimiter } from "../../auth-rate-limit.js";
 import { trimTrailingSlashes } from "../../string-utils.js";
 import { sdkProviderCatalog } from "../../ai-sdk/catalog.js";
@@ -655,9 +656,13 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
   });
 
+  router.get("/modules/models", async (_req, res) => {
+    res.json({ models: await discoverModels(store, openaiBaseUrl, mistralBaseUrl, zaiBaseUrl) });
+  });
+
   router.get("/modules", (_req, res) => {
     if (!moduleManager) return res.status(503).json({ error: "Module manager is unavailable" });
-    return res.json({ modules: moduleManager.list(), marketplace: moduleManager.marketplaceList() });
+    return res.json({ inferencePluginsSupported: !MULTIVIBE_CONTROL_PLANE, modules: moduleManager.list(), marketplace: moduleManager.marketplaceList() });
   });
 
   router.get("/provider-agent/local-worker", async (_req, res) => {
@@ -757,6 +762,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     if (!moduleManager) return res.status(503).json({ error: "Module manager is unavailable" });
     try {
       let result;
+      if (req.body?.enabled && MULTIVIBE_CONTROL_PLANE) throw new Error("JavaScript inference plugins require the JavaScript inference profile; native Rust inference does not run these hooks");
       if ("enabled" in (req.body ?? {})) result = await moduleManager.setEnabled(req.params.id, Boolean(req.body.enabled));
       if ("settings" in (req.body ?? {})) result = await moduleManager.setSettings(req.params.id, req.body.settings);
       return res.json({ module: result ?? moduleManager.list().find((entry) => entry.id === req.params.id) });
