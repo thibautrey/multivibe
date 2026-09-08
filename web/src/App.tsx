@@ -782,6 +782,11 @@ export default function App() {
     await loadBase();
   };
 
+  const disconnectMultivibeCloud = async () => {
+    await api("/admin/cloud/disconnect", { method: "POST" });
+    await loadBase();
+  };
+
   const connectMultivibeCloud = async () => {
     const result = await api("/admin/cloud/connect", {
       method: "POST",
@@ -1263,6 +1268,7 @@ export default function App() {
             importGrokAuth={importGrokAuth}
             patchSettings={patchSettings}
             onConnectCloud={connectMultivibeCloud}
+            onDisconnectCloud={disconnectMultivibeCloud}
             startOAuth={startOAuth}
             pollDeviceOAuth={pollDeviceOAuth}
             completeOAuth={completeOAuth}

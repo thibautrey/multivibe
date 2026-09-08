@@ -299,6 +299,13 @@ export class MultivibeCloudService {
     await this.oauthStore.update(flowId, { status: "success", completedAt: Date.now(), accountId: ACCOUNT_ID });
   }
 
+  async disconnect(): Promise<void> {
+    await this.store.patchSettings({ multivibeCloud: undefined });
+    const account = existingCloudAccount(await this.store.listAccounts());
+    if (account) await this.store.deleteAccount(account.id);
+    await this.store.flushIfDirty();
+  }
+
   async getStatus(): Promise<MultivibeCloudStatus> {
     const settings = await this.store.getSettings();
     let connection = currentCloudConnection(settings);

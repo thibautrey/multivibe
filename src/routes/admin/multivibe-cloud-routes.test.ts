@@ -8,7 +8,7 @@ import type { MultivibeCloudService } from "../../multivibe-cloud.js";
 const flowId = "00000000-0000-4000-8000-000000000001";
 type CloudRoutesStub = Pick<
   MultivibeCloudService,
-  "getStatus" | "startConnection" | "completeConnection" | "failConnection"
+  "getStatus" | "startConnection" | "completeConnection" | "failConnection" | "disconnect"
 >;
 
 function options(multivibeCloud: Partial<CloudRoutesStub>): AdminRoutesOptions {
@@ -91,5 +91,22 @@ test("Cloud callback rejects malformed state and accepts only the expected query
     assert.equal(valid.status, 303);
     assert.equal(valid.headers.get("location"), "/?tab=accounts&cloud=connected");
     assert.deepEqual(completed, [`${flowId}:valid-code`]);
+  });
+});
+
+test("Cloud disconnect invokes the service and reports failures", async () => {
+  let calls = 0;
+  await withServer({
+    async disconnect() {
+      calls += 1;
+      if (calls === 2) throw new Error("storage unavailable");
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/admin/cloud/disconnect`, { method: "POST" });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true });
+    const failure = await fetch(`${baseUrl}/admin/cloud/disconnect`, { method: "POST" });
+    assert.equal(failure.status, 503);
+    assert.equal(calls, 2);
   });
 });

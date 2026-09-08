@@ -5151,3 +5151,26 @@ body:has(> .modal-backdrop) {
   .ttft-comparison-axis > div:first-child { display: none; }
   .ttft-context-picker { flex-wrap: wrap; }
 }
+
+
+.cloud-disconnect-link {
+  justify-self: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.cloud-disconnect-link:hover {
+  color: var(--text);
+}
+
+.cloud-disconnect-link:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}

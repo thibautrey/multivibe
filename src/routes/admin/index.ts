@@ -1489,6 +1489,17 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     return res.json(await options.multivibeCloud.getStatus());
   });
 
+  router.post("/cloud/disconnect", async (_req, res) => {
+    res.setHeader("cache-control", "no-store");
+    if (!options.multivibeCloud) return res.status(503).json({ error: "MultiVibe Cloud is unavailable" });
+    try {
+      await options.multivibeCloud.disconnect();
+      return res.json({ ok: true });
+    } catch {
+      return res.status(503).json({ error: "MultiVibe Cloud disconnection failed" });
+    }
+  });
+
   router.post("/cloud/connect", async (req, res) => {
     res.setHeader("cache-control", "no-store");
     if (!options.multivibeCloud) return res.status(503).json({ error: "MultiVibe Cloud is unavailable" });
