@@ -166,3 +166,29 @@ test("built-in plugins expose settings while disabled and persist configuration 
     await assert.rejects(restarted.update(automaticRouterManifest.id), /updates with MultiVibe/);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
+
+test("installed sandbox hooks receive a private capability and disabling closes execution without losing data", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-isolation-"));
+  const moduleRoot = path.join(root, "checkouts", "test.private");
+  await fs.mkdir(moduleRoot, {recursive:true});
+  await fs.writeFile(path.join(moduleRoot,"index.js"), `export default {async "request.received"(value,context){
+    const count = (await context.storage.get('count') ?? 0) + 1;
+    await context.storage.set('count',count);
+    await context.storage.recordEvent({id:'event-'+count,type:'counter',metrics:{calls:1}});
+    return {action:'replace',value:{count,process:typeof process}};
+  }};`);
+  await fs.writeFile(path.join(moduleRoot,"multivibe.module.json"),JSON.stringify({id:"test.private",name:"Private",version:"1",apiVersion:1,description:"test",entrypoint:"index.js",hooks:["request.received"],repository:"https://github.com/example/private"}));
+  await fs.writeFile(path.join(root,"modules-lock.json"),JSON.stringify([{id:"test.private",origin:"https://github.com/example/private",commit:"abc",enabled:true,settings:{},source:"external"}]));
+  const manager = new ModuleManager(root);
+  try {
+    await manager.initialize();
+    assert.equal(manager.list()[0].execution,"wasm-sandbox");
+    const context = {requestId:"r",route:"/responses",transport:"http" as const,signal:new AbortController().signal};
+    assert.deepEqual((await manager.runHook("request.received",{},context)).value,{count:1,process:"undefined"});
+    await manager.setEnabled("test.private",false);
+    assert.deepEqual((await manager.runHook("request.received",{},context)).value,{});
+    await manager.setEnabled("test.private",true);
+    assert.deepEqual((await manager.runHook("request.received",{},context)).value,{count:2,process:"undefined"});
+    assert.equal(manager.analytics("test.private").types.counter.count,2);
+  } finally { manager.close(); await fs.rm(root,{recursive:true,force:true}); }
+});
