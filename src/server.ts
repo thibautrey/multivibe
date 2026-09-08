@@ -1,3 +1,5 @@
+import { estimateCostUsd } from "./model-pricing.js";
+import type { ModuleServices } from "./module-sdk.js";
 import { automaticRouterManifest, createAutomaticRouter } from "./automatic-router.js";
 import { createAuthRateLimiter } from "./auth-rate-limit.js";
 import { createSdkAdapterRouter } from "./ai-sdk/routes.js";
@@ -224,6 +226,18 @@ const moduleManager = new ModuleManager(
 );
 moduleManager.registerBuiltin(automaticRouterManifest, createAutomaticRouter());
 const traceManager = createTraceManager({
+  onCompleted: async (trace) => {
+    if (!trace.clientRequestId) return;
+    // Never expose trace bodies, credentials, account details, or headers to analytics hooks.
+    const value = { traceId: trace.id, traceKind: trace.traceKind, model: trace.resolvedModel ?? trace.model,
+      status: trace.status, usageStatus: trace.usageStatus, costUsd: trace.costUsd,
+      tokensInput: trace.tokensInput, tokensOutput: trace.tokensOutput,
+      tokensInputCached: trace.tokensInputCached, tokensInputCacheWrite: trace.tokensInputCacheWrite,
+      latencyMs: trace.latencyMs, pricingVersion: trace.pricingVersion };
+    await moduleManager.runHook("request.completed", value, { requestId: trace.clientRequestId,
+      application: trace.application, route: trace.route, model: value.model,
+      transport: trace.stream ? "sse" : "http", signal: AbortSignal.timeout(5000) });
+  },
   filePath: TRACE_FILE_PATH,
   historyFilePath: TRACE_STATS_HISTORY_PATH,
   retentionMax: TRACE_RETENTION_MAX,
@@ -408,9 +422,8 @@ const proxyRouter = createProxyRouter({
   smartRoutingCoordinator: smartRouting,
   usageRefreshCoordinator,
   moduleManager,
-  moduleServices: (application) => ({
-    listModels: () => discoverModels(store, CHATGPT_BASE_URL, MISTRAL_BASE_URL, ZAI_BASE_URL),
-    complete: async (input, signal) => {
+  moduleServices: (application) => {
+    const completeWithUsage: NonNullable<ModuleServices["completeWithUsage"]> = async (input, signal) => {
       if (MULTIVIBE_CONTROL_PLANE) throw new Error("JavaScript inference plugins require the JavaScript inference profile");
       const models = await discoverModels(store, CHATGPT_BASE_URL, MISTRAL_BASE_URL, ZAI_BASE_URL);
       if (!models.some((model) => model.id === input.model)) throw new Error("Classifier model is not configured");
@@ -424,9 +437,21 @@ const proxyRouter = createProxyRouter({
       const result = await response.json() as any;
       const content = result?.choices?.[0]?.message?.content;
       if (typeof content !== "string") throw new Error("Classifier did not return text");
-      return content;
-    },
-  }),
+      const model = typeof result.model === "string" ? result.model : input.model;
+      const usage = result.usage;
+      const tokensInput = usage?.prompt_tokens ?? usage?.input_tokens;
+      const tokensOutput = usage?.completion_tokens ?? usage?.output_tokens;
+      const costUsd = typeof tokensInput === "number" && typeof tokensOutput === "number"
+        ? estimateCostUsd(model, tokensInput, tokensOutput, usage?.prompt_tokens_details?.cached_tokens ?? usage?.input_tokens_details?.cached_tokens ?? 0)
+        : undefined;
+      return { text: content, model, costUsd };
+    };
+    return {
+      listModels: () => discoverModels(store, CHATGPT_BASE_URL, MISTRAL_BASE_URL, ZAI_BASE_URL),
+      completeWithUsage,
+      complete: async (input, signal) => (await completeWithUsage(input, signal)).text,
+    };
+  },
   ...(confidentialInference ? { confidentialInference } : {}),
 });
 
@@ -958,6 +983,7 @@ async function shutdown(signal: NodeJS.Signals) {
         codexProjectRegistry.flushPendingWrites(),
         traceManager.flushPendingWrites(),
       ]);
+      moduleManager.close();
       jobStore.close();
       if (error) throw error;
       process.exitCode = 0;
