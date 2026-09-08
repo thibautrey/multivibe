@@ -192,3 +192,17 @@ test("installed sandbox hooks receive a private capability and disabling closes 
     assert.equal(manager.analytics("test.private").types.counter.count,2);
   } finally { manager.close(); await fs.rm(root,{recursive:true,force:true}); }
 });
+
+test("completion observers cannot rewrite telemetry seen by another plugin", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "module-observers-"));
+  const manager = new ModuleManager(root);
+  const seen: unknown[] = [];
+  const manifest = {name:"Observer",version:"1",apiVersion:1 as const,description:"test",entrypoint:"index.js",repository:"https://github.com/example/observer",hooks:["request.completed" as const]};
+  manager.registerBuiltin({...manifest,id:"test.first",priority:1},{"request.completed":()=>({action:"replace",value:{costUsd:999}})});
+  manager.registerBuiltin({...manifest,id:"test.second",priority:2},{"request.completed":(value)=>{seen.push(value);return {action:"continue"};}});
+  try {
+    await manager.initialize();await manager.setEnabled("test.first",true);await manager.setEnabled("test.second",true);
+    await manager.runHook("request.completed",{costUsd:0.1},{requestId:"r",route:"/responses",transport:"http",signal:new AbortController().signal});
+    assert.deepEqual(seen,[{costUsd:0.1}]);
+  } finally {manager.close();await fs.rm(root,{recursive:true,force:true});}
+});
