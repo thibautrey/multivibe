@@ -1,5 +1,8 @@
 # Automatic model router and plugin settings API
 
+For the complete SDK, hook coverage, admin endpoints, and migration requirements,
+see the [Plugin API reference](plugins-api.md).
+
 The bundled **Automatic model router** is installed disabled. Open Plugins →
 Installed → Automatic model router → Settings. Choose a cheap classifier and
 an economy, balanced, and advanced model from the configured instance catalog.
