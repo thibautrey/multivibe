@@ -311,6 +311,12 @@ func (engines *managedInferenceEngines) launch(ctx context.Context, policy *capa
 		arguments = append([]string{executable, "--server"}, arguments...)
 		executable = "/bin/sh"
 	}
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+	if err = engines.currentPolicy(policy, false); err != nil {
+		return err
+	}
 	if _, err = engines.manager.lockAuthorizedPolicy(policy, false); err != nil {
 		return err
 	}
@@ -551,4 +557,23 @@ func managedEngineExecutionBody(input []byte, model string, stream bool) ([]byte
 		}
 	}
 	return body, nil
+}
+
+func (engines *managedInferenceEngines) prepareOllama(ctx context.Context, policy *capacityPolicyStateDocument) error {
+	select {
+	case engines.gate <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-engines.gate }()
+	if err := engines.currentPolicy(policy, false); err != nil {
+		return err
+	}
+	if err := engines.stopProcess(ctx); err != nil {
+		return err
+	}
+	if _, err := engines.manager.start(ctx, policy); err != nil {
+		return err
+	}
+	return engines.currentPolicy(policy, false)
 }

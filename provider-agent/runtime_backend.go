@@ -190,6 +190,9 @@ type runtimeLoadRequest struct {
 }
 
 type runtimeExecuteRequest struct {
+	// The public Ollama SDK descriptor pins that exact executable. Its callers
+	// must not be silently switched to a native engine by host auto-selection.
+	OllamaOnly    bool
 	ExecutionID   string
 	ModelID       string
 	Input         []byte
@@ -969,7 +972,13 @@ func (backend *ollamaRuntimeBackend) openExecution(ctx context.Context, request 
 	}
 	endpoint, key := backend.endpoint, ""
 	native := false
-	if backend.engines != nil {
+	if backend.engines != nil && request.OllamaOnly {
+		if err := backend.engines.prepareOllama(executionContext, backend.engines.policies.snapshot()); err != nil {
+			complete(err)
+			return nil, nil, err
+		}
+	}
+	if backend.engines != nil && !request.OllamaOnly {
 		if err := backend.engines.prepare(executionContext, backend.engines.policies.snapshot(), request.ModelID); err != nil {
 			complete(err)
 			return nil, nil, err
@@ -1608,7 +1617,7 @@ func (bridge *ollamaRuntimeBackendSDKBridge) Execute(ctx context.Context, reques
 	defer complete()
 	result, err := bridge.backend.Execute(ctx, runtimeExecuteRequest{
 		ExecutionID: request.ExecutionID, ModelID: request.ModelID,
-		Input: append([]byte{}, request.Input...), MaximumOutput: request.MaximumOutputBytes,
+		Input: append([]byte{}, request.Input...), MaximumOutput: request.MaximumOutputBytes, OllamaOnly: true,
 	})
 	if err != nil {
 		return runtimebackendapi.ExecutionResult{}, runtimeBackendSDKError(err)
@@ -1627,7 +1636,7 @@ func (bridge *ollamaRuntimeBackendSDKBridge) ExecuteStream(ctx context.Context, 
 	defer complete()
 	summary, err := bridge.backend.ExecuteStream(ctx, runtimeExecuteRequest{
 		ExecutionID: request.ExecutionID, ModelID: request.ModelID,
-		Input: append([]byte{}, request.Input...), MaximumOutput: request.MaximumOutputBytes,
+		Input: append([]byte{}, request.Input...), MaximumOutput: request.MaximumOutputBytes, OllamaOnly: true,
 	}, func(chunk runtimeExecuteChunk) error {
 		return emit(runtimebackendapi.ExecutionChunk{
 			Event:  runtimebackendapi.ExecutionEventOutput,

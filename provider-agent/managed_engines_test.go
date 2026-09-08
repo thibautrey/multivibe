@@ -289,8 +289,11 @@ func TestManagedEngineDispatchAndNoPostDispatchFallback(t *testing.T) {
 	}))
 	defer server.Close()
 	engines.mu.Lock()
-	engines.process = newManagedOllamaTestProcess(true)
-	engines.done = make(chan error)
+	process := newManagedOllamaTestProcess(true)
+	done := make(chan error, 1)
+	engines.process = process
+	engines.done = done
+	go func() { done <- process.Wait(); close(done) }()
 	engines.ready = true
 	engines.modelID = workerTestCanonicalModel
 	profile, err := engines.profile(engines.releases[0], workerTestCanonicalModel, policy)
@@ -316,6 +319,37 @@ func TestManagedEngineDispatchAndNoPostDispatchFallback(t *testing.T) {
 	}
 	if commands := engines.manager.commands.(*managedOllamaTestCommands); commands.starts != 0 {
 		t.Fatal("Ollama fallback started after dispatch")
+	}
+	// An explicitly pinned SDK request must stop the native engine and use
+	// Ollama, even though automatic Host requests selected llamafile.
+	ollamaCalls := 0
+	ollamaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/create":
+			io.WriteString(w, `{"status":"success"}`)
+		case "/v1/chat/completions":
+			ollamaCalls++
+			io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+		default:
+			t.Errorf("unexpected Ollama path: %s", r.URL.Path)
+		}
+	}))
+	defer ollamaServer.Close()
+	engines.backend.endpoint = ollamaServer.URL
+	installManagedOllamaTestRuntime(t, engines.manager, strings.Repeat("a", 64))
+	engines.manager.commands.(*managedOllamaTestCommands).start = func(string, []string, []string, string, io.Writer, io.Writer) (managedOllamaProcess, error) {
+		return newManagedOllamaTestProcess(true), nil
+	}
+	engines.manager.httpClient = &http.Client{Transport: managedOllamaRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{}`)), Header: http.Header{}}, nil
+	})}
+	defer engines.manager.stop(context.Background())
+	request.OllamaOnly = true
+	if _, err := engines.backend.Execute(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if ollamaCalls != 1 || calls.Load() != 2 {
+		t.Fatal("explicit Ollama request was routed to native engine")
 	}
 }
 
