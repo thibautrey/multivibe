@@ -76,7 +76,7 @@ available.
 | [Download the Host](#download-multivibe-host) | [Providers and onboarding](https://github.com/thibautrey/multivibe/wiki/Providers-and-onboarding#-providers-and-onboarding) | [Tracing and projects](https://github.com/thibautrey/multivibe/wiki/Tracing-and-projects#-tracing-and-project-attribution) |
 | [Gateway quick start](https://github.com/thibautrey/multivibe/wiki/Quick-start#-quick-start) | [API reference and examples](https://github.com/thibautrey/multivibe/wiki/API-reference#-api-surface) | [Storage and local models](https://github.com/thibautrey/multivibe/wiki/Persistence-and-local-models#-persistence) |
 | [Dashboard tour](https://github.com/thibautrey/multivibe/wiki/Dashboard) | [Routing and aliases](https://github.com/thibautrey/multivibe/wiki/Routing-and-aliases#-routing-strategy) | [Configuration](https://github.com/thibautrey/multivibe/wiki/Configuration) |
-| [Installation guide](./packaging/PROVIDER-HOST-README.md) | [Plugins](https://github.com/thibautrey/multivibe/wiki/Plugins-overview#-plugins) | [Development](https://github.com/thibautrey/multivibe/wiki/Local-development) · [More docs](https://github.com/thibautrey/multivibe/wiki/Home) |
+| [Installation guide](./packaging/PROVIDER-HOST-README.md) | [Plugin API and migration](./docs/plugins-api.md) | [Development](https://github.com/thibautrey/multivibe/wiki/Local-development) · [More docs](https://github.com/thibautrey/multivibe/wiki/Home) |
 
 ---
 
@@ -220,6 +220,7 @@ The **[GitHub wiki](https://github.com/thibautrey/multivibe/wiki/Home)** contain
 - [Dashboard](https://github.com/thibautrey/multivibe/wiki/Dashboard)
 - [Providers and onboarding](https://github.com/thibautrey/multivibe/wiki/Providers-and-onboarding)
 - [API reference](https://github.com/thibautrey/multivibe/wiki/API-reference)
+- [Plugin API reference and migration guide](./docs/plugins-api.md) — sandbox, settings, model services, private SQLite storage, completion telemetry, and virtual routing
 - [Routing and aliases](https://github.com/thibautrey/multivibe/wiki/Routing-and-aliases)
 - [Configuration](https://github.com/thibautrey/multivibe/wiki/Configuration)
 - [Local development](https://github.com/thibautrey/multivibe/wiki/Local-development)

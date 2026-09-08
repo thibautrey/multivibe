@@ -1,5 +1,8 @@
 # Plugin sandbox, SQLite storage, and analytics
 
+For the complete SDK, hook coverage, admin endpoints, and migration requirements,
+see the [Plugin API reference](plugins-api.md).
+
 Installed JavaScript plugins now execute in a dedicated QuickJS WebAssembly
 runtime per plugin. The host does not `import()` installed code into Node.js.
 Only shipped host built-ins (currently the automatic router) execute as trusted
