@@ -5129,3 +5129,44 @@ body:has(> .modal-backdrop) {
 @media (prefers-reduced-motion: reduce) {
   .metric-skeleton { animation: none; }
 }
+
+/* TTFT comparisons share the selected bucket, model order, and latency scale. */
+.ttft-chart-toolbar, .ttft-view-switch, .ttft-comparison-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.ttft-chart-toolbar { justify-content: space-between; font-size: 12px; }
+.ttft-view-switch { gap: 4px; }
+.ttft-view-switch .active { background: var(--primary-soft); color: var(--primary); border-color: var(--primary); }
+.ttft-comparison { min-width: 0; }
+.ttft-comparison-legend { gap: 18px; margin-bottom: 14px; color: var(--muted); font-size: 12px; }
+.ttft-comparison-legend span { display: inline-flex; align-items: center; gap: 7px; }
+.ttft-key-p50 { width: 9px; height: 9px; border-radius: 50%; background: var(--chart-1); }
+.ttft-key-p95 { width: 3px; height: 12px; background: var(--chart-4); }
+.ttft-comparison-row, .ttft-comparison-axis { display: grid; grid-template-columns: minmax(180px, 26%) minmax(0, 1fr); gap: 20px; }
+.ttft-comparison-row { align-items: center; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.ttft-comparison-model { min-width: 0; overflow-wrap: anywhere; }
+.ttft-comparison-model strong { display: block; color: var(--text); font-size: 13px; }
+.ttft-comparison-model small { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; color: var(--muted); font-size: 11px; }
+.ttft-comparison-model img { width: 13px; height: 13px; }
+.ttft-low-confidence { color: var(--warning); }
+.ttft-comparison-measure { min-width: 0; }
+.ttft-comparison-measure svg { display: block; width: 100%; height: 48px; overflow: visible; }
+.ttft-comparison-values { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ttft-comparison-values strong { color: var(--text); font-weight: 500; }
+.ttft-comparison-axis { margin-top: 12px; }
+.ttft-comparison-ticks { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.ttft-axis-title { text-align: center; color: var(--muted); font-size: 12px; margin-top: 8px; }
+.ttft-line-scroll { overflow-x: auto; max-width: 100%; }
+.ttft-chart-tooltip { padding: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; color: var(--text); }
+.ttft-chart-tooltip p { margin: 8px 0 0; font-size: 12px; }
+.ttft-line-note { font-size: 12px; }
+.ttft-line-models { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; }
+.ttft-line-models .ttft-comparison-values { margin-top: 4px; justify-content: flex-start; }
+@media (max-width: 700px) {
+  .ttft-comparison-row, .ttft-comparison-axis { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .ttft-comparison-axis > div:first-child { display: none; }
+  .ttft-context-picker { flex-wrap: wrap; }
+}
