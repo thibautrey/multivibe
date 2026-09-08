@@ -24,6 +24,7 @@ export type LocalRuntimeMetadata = {
 };
 
 export type Account = {
+  multivibeCloud?: boolean;
   id: string;
   provider?: ProviderId;
   sdkProvider?: string;
