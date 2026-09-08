@@ -4,6 +4,7 @@ function isCloudModelSelector(model: unknown): model is string {
 }
 
 import { AUTOMATIC_ROUTER_MODEL } from "../../automatic-router-model.js";
+import { validateChatToolContract } from "../../responses/tool-contract.js";
 import { createVirtualModelMiddleware, withVirtualModels } from "../../module-virtual-models.js";
 import type { ModuleServices } from "../../module-sdk.js";
 import { inspectModuleConversation } from "../../module-conversation.js";
@@ -2771,6 +2772,12 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
           isResponsesCompactPath,
         );
         const shouldSendChatCompletions = upstreamMode === "chat/completions";
+        if (shouldSendChatCompletions) {
+          const toolError = validateChatToolContract(req.body);
+          if (toolError) return res.status(400).json({ error: {
+            type: "invalid_request_error", code: "unsupported_tool_contract", message: toolError,
+          } });
+        }
         let payloadToUpstream = shouldSendChatCompletions
           ? isChatCompletionsPath
             ? { ...(req.body ?? {}) }
