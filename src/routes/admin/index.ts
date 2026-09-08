@@ -656,6 +656,12 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
   });
 
+  router.get("/modules/:id/analytics", (req, res) => {
+    if (!moduleManager) return res.status(503).json({ error: "Module manager is unavailable" });
+    try { return res.json(moduleManager.analytics(req.params.id)); }
+    catch (error) { return res.status(404).json({ error: error instanceof Error ? error.message : String(error) }); }
+  });
+
   router.get("/modules/models", async (_req, res) => {
     res.json({ models: await discoverModels(store, openaiBaseUrl, mistralBaseUrl, zaiBaseUrl) });
   });

@@ -402,6 +402,7 @@ export type ModuleView = {
   healthy: boolean;
   error?: string;
   removable: boolean;
+  execution?: "wasm-sandbox" | "host-builtin";
   settings: Record<string, unknown>;
   manifest?: {
     name: string;
