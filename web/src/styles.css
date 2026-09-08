@@ -882,47 +882,19 @@ small {
   line-height: 1.35;
 }
 
-.quota-reset-forecast-card {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 24px;
-  background: var(--panel);
-}
-
-.quota-reset-forecast-copy {
-  min-width: 0;
-}
-
-.quota-reset-forecast-copy h2 {
-  margin: 5px 0 4px;
-  font-size: 1.2rem;
-}
-
-.quota-reset-forecast-copy p {
-  font-size: 13px;
-}
-
-.quota-reset-forecast-score {
-  display: grid;
-  min-width: 120px;
-  gap: 5px;
-  text-align: right;
-}
-
-.quota-reset-forecast-score strong {
+.metric-action {
+  align-self: flex-start;
+  max-width: 100%;
   color: var(--text);
-  font-size: clamp(1.8rem, 3vw, 2.45rem);
-  line-height: 1;
-  letter-spacing: -0.055em;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  text-underline-offset: 3px;
 }
 
-.quota-reset-forecast-score small {
-  white-space: nowrap;
-}
-
-.quota-reset-forecast-link {
-  white-space: nowrap;
+.metric-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 
 .section-header,
@@ -4150,15 +4122,6 @@ body:has(> .modal-backdrop) {
 
   .metric {
     min-height: 108px;
-  }
-
-  .quota-reset-forecast-card {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .quota-reset-forecast-link {
-    grid-column: 1 / -1;
-    justify-self: start;
   }
 
   .section-header,
