@@ -33,15 +33,16 @@ type managedEngineArtifact struct {
 	Archive string `json:"archive"`
 }
 type managedEngineRelease struct {
-	ID          string                  `json:"id"`
-	Version     string                  `json:"version"`
-	Platform    string                  `json:"platform"`
-	Accelerator string                  `json:"accelerator"`
-	Backend     string                  `json:"backend"`
-	Executable  string                  `json:"executable"`
-	Artifacts   []managedEngineArtifact `json:"artifacts"`
-	License     string                  `json:"license"`
-	SourceURL   string                  `json:"source_url"`
+	diagnosticLayout bool                    // Separate upgrade copy; never changes inference installation identity.
+	ID               string                  `json:"id"`
+	Version          string                  `json:"version"`
+	Platform         string                  `json:"platform"`
+	Accelerator      string                  `json:"accelerator"`
+	Backend          string                  `json:"backend"`
+	Executable       string                  `json:"executable"`
+	Artifacts        []managedEngineArtifact `json:"artifacts"`
+	License          string                  `json:"license"`
+	SourceURL        string                  `json:"source_url"`
 }
 
 func managedEngineReleases(host hostCapability) ([]managedEngineRelease, error) {
@@ -110,7 +111,7 @@ func managedEngineHTTPClient() *http.Client {
 func managedEnginePin(release managedEngineRelease) string {
 	raw, _ := json.Marshal(release)
 	// Version the installation layout separately from upstream artifact identities.
-	if release.ID == "llama-cpp" {
+	if release.diagnosticLayout {
 		raw = append(raw, []byte("/diagnostic-executable-v1")...)
 	}
 	sum := sha256.Sum256(raw)

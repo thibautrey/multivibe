@@ -79,34 +79,8 @@ func (engines *managedInferenceEngines) compatibility(ctx context.Context, conte
 	if release.ID == "" {
 		return report
 	}
-	root := filepath.Join(engines.manager.root, "engines", release.ID+"-"+managedEnginePin(release))
-	executable, err := verifyManagedEngineInstallation(root, release)
+	executable, tool, err := engines.compatibilityTool(ctx, policy, release)
 	if err != nil {
-		// A POST may install the pinned diagnostic tool under existing download
-		// consent. It never downloads a model or starts an inference process.
-		if _, statErr := os.Lstat(root); !errors.Is(statErr, os.ErrNotExist) {
-			return report
-		}
-		if err = engines.currentPolicy(policy, true); err != nil {
-			return report
-		}
-		installCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
-		executable, err = engines.install(installCtx, policy, release)
-		cancel()
-		if err != nil {
-			return report
-		}
-	}
-	tool := filepath.Join(filepath.Dir(executable), "llama-fit-params")
-	if engines.manager.goos == "windows" {
-		tool += ".exe"
-	}
-	info, err := os.Lstat(tool)
-	if err != nil || !info.Mode().IsRegular() {
-		return report
-	}
-	// The companion executable and libraries were attested above.
-	if engines.manager.goos != "windows" && info.Mode().Perm()&0100 == 0 {
 		return report
 	}
 	environment := engines.manager.commandEnvironment(policy.Policy.ModelStoragePath)
@@ -165,6 +139,40 @@ func (engines *managedInferenceEngines) compatibility(ctx context.Context, conte
 		result.State, result.Reason = classifyRuntimeMemory(memory, engines.backend.localCapability, device, budget, hostBudget)
 	}
 	return report
+}
+
+// Reuse current installations, including pre-diagnostic layouts. Upgrade an old
+// layout into a separately attested copy so disabled downloads never invalidate
+// an existing inference installation.
+func (engines *managedInferenceEngines) compatibilityTool(ctx context.Context, policy *capacityPolicyStateDocument, release managedEngineRelease) (string, string, error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		root := filepath.Join(engines.manager.root, "engines", release.ID+"-"+managedEnginePin(release))
+		executable, err := verifyManagedEngineInstallation(root, release)
+		if err != nil {
+			if _, statErr := os.Lstat(root); !errors.Is(statErr, os.ErrNotExist) {
+				return "", "", err
+			}
+			if err = engines.currentPolicy(policy, true); err != nil {
+				return "", "", err
+			}
+			installCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+			executable, err = engines.install(installCtx, policy, release)
+			cancel()
+			if err != nil {
+				return "", "", err
+			}
+		}
+		tool := filepath.Join(filepath.Dir(executable), "llama-fit-params")
+		if engines.manager.goos == "windows" {
+			tool += ".exe"
+		}
+		info, err := os.Lstat(tool)
+		if err == nil && info.Mode().IsRegular() && (engines.manager.goos == "windows" || info.Mode().Perm()&0100 != 0) {
+			return executable, tool, nil
+		}
+		release.diagnosticLayout = true
+	}
+	return "", "", errRuntimeBackendIncompatible
 }
 
 func compatibilityReason(report modelCompatibilityReport, reason string) modelCompatibilityReport {

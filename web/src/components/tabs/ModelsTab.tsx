@@ -57,9 +57,10 @@ export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure
       .finally(() => { if (active) setEstimating(false); });
     return () => { active = false; controller.abort(); };
   }, [contextTokens, estimateRequest]);
+  const currentCompatibility = compatibility?.context_tokens === contextTokens ? compatibility : undefined;
   const catalog = useMemo(() => aggregateModels(models, accounts, cloud, providers), [models, accounts, cloud, providers]);
   const providerOptions = useMemo(() => [...new Set(catalog.flatMap(model => model.routes.filter(route => source === 'all' || route.source === source).map(route => route.label)))].sort((a, b) => a.localeCompare(b)), [catalog, source]);
-  const filtered = useMemo(() => filterCatalog(catalog, { query, source, provider, readyOnly, sort }).filter(model => hardware === 'all' || (compatibilityFor(model, compatibility)?.state ?? 'unknown') === hardware), [catalog, query, source, provider, readyOnly, sort, hardware, compatibility]);
+  const filtered = useMemo(() => filterCatalog(catalog, { query, source, provider, readyOnly, sort }).filter(model => hardware === 'all' || (compatibilityFor(model, currentCompatibility)?.state ?? 'unknown') === hardware), [catalog, query, source, provider, readyOnly, sort, hardware, currentCompatibility]);
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const currentPage = Math.min(page, pages - 1);
   const activeFilters = Boolean(query || source !== 'all' || provider !== 'all' || readyOnly || hardware !== 'all');
@@ -84,7 +85,7 @@ export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure
         <fieldset><legend>Availability</legend><label className="models-ready"><input type="checkbox" checked={readyOnly} onChange={event => { setReadyOnly(event.target.checked); setPage(0); }} /> Ready to use</label><p className="muted">Models with a connected, available account.</p></fieldset>
         <fieldset><legend>Fit on this machine</legend>
           <label className="models-provider">Context (tokens)<select value={contextTokens} onChange={event => { setContextTokens(Number(event.target.value)); setPage(0); }}>{[512, 2048, 4096, 8192, 16384, 32768, 65536, 131072].map(size => <option key={size} value={size}>{size.toLocaleString('en-US')}</option>)}</select></label>
-          <label className="models-provider">Memory estimate<select value={hardware} onChange={event => { setHardware(event.target.value); setPage(0); }}><option value="all">All models</option>{Object.entries(compatibilityLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          <label className="models-provider">Memory estimate<select value={hardware} onChange={event => { setHardware(event.target.value); if (event.target.value !== 'all' && !estimateRequest) setEstimateRequest(1); setPage(0); }}><option value="all">All models</option>{Object.entries(compatibilityLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <button className="btn ghost" disabled={estimating} onClick={() => setEstimateRequest(value => value + 1)}>{estimating ? 'Estimating…' : compatibility ? 'Refresh estimates' : 'Check memory fit'}</button>
           <p className="muted">Uses runtime estimates for downloaded managed variants. No model inference. The diagnostic runtime may be installed using your Host download permission.</p>
           <p className="muted">Memory only: does not confirm model quality at this context or current free memory. Other variants remain unknown.</p>
@@ -100,7 +101,7 @@ export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure
         <div className="models-result-bar"><span role="status"><strong>{filtered.length.toLocaleString('en-US')}</strong> models{loading ? ' · Updating catalogs…' : filtered.length ? ` · Showing ${currentPage * PAGE_SIZE + 1}–${Math.min((currentPage + 1) * PAGE_SIZE, filtered.length)}` : ''}</span>{activeFilters && <button className="models-text-button" onClick={reset}>Clear filters</button>}</div>
         <div className="models-list-head" aria-hidden="true"><span>Model / provider</span><span>Availability</span><span /></div>
         <ul className="models-list">{filtered.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE).map(model => {
-          const estimate = compatibilityFor(model, compatibility);
+          const estimate = compatibilityFor(model, currentCompatibility);
           const ready = model.routes.find(route => route.ready);
           const preferred = ready ?? model.routes.find(route => route.accountId) ?? model.routes.find(route => route.source === 'cloud') ?? model.routes[0];
           return <li key={model.id}><div className="models-row"><div className="models-identity"><span className={`models-mark${model.logo ? ' has-logo' : ''}`} aria-hidden="true">{model.logo ? <img src={`/assets/catalog-icons/models/${model.logo}`} alt="" loading="lazy" decoding="async" /> : model.name.replace(/^(hf|openrouter):/, '').slice(0, 2).toUpperCase()}</span><div className="models-copy"><strong>{model.name}</strong><code>{model.id}</code><span className="muted">{[...new Set(model.routes.map(route => route.label))].join(' · ')}</span>{estimateRequest > 0 && <span className="models-fit" title={compatibilityDetail(estimate)}>{estimating ? 'Estimating memory…' : compatibilityLabels[estimate?.state ?? 'unknown']}{estimate?.runtime && ` · ${estimate.variant} · ${contextTokens.toLocaleString('en-US')} tokens`}</span>}</div></div><span className={`models-status${ready ? ' is-ready' : ''}`}><i />{ready ? 'Ready to use' : 'Setup needed'}</span><button className={`btn ${ready ? '' : 'ghost'}`} disabled={connecting} aria-label={`${actionLabel(preferred)}: ${model.name}`} onClick={() => useRoute(preferred)}>{actionLabel(preferred)}<span aria-hidden="true"> →</span></button></div>

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -138,5 +141,83 @@ func TestCompatibilityRealRuntime(t *testing.T) {
 		if engines.process != nil {
 			t.Fatal("estimation started an inference server")
 		}
+	}
+}
+
+func TestCompatibilityDiagnosticUpgradePreservesInferenceInstallation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix executable permission migration")
+	}
+	engines, policy := testManagedEngines(t)
+	archive := engineTar(t, []*tar.Header{
+		{Name: "llama-server", Mode: 0700, Size: 1, Typeflag: tar.TypeReg},
+		{Name: "llama-fit-params", Mode: 0700, Size: 1, Typeflag: tar.TypeReg},
+	})
+	raw, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := testEngineRelease(raw)
+	release.ID = "llama-cpp"
+	release.Executable = "llama-server"
+	release.Artifacts[0].Archive = "tar.gz"
+	downloads := 0
+	engines.downloadClient = &http.Client{Transport: managedOllamaRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		downloads++
+		return &http.Response{StatusCode: 200, ContentLength: int64(len(raw)), Body: io.NopCloser(bytes.NewReader(raw)), Header: http.Header{}}, nil
+	})}
+	server, err := engines.install(context.Background(), policy, release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Dir(server)
+	tool := filepath.Join(root, "llama-fit-params")
+	// Reproduce the valid attested pre-upgrade installation, whose companion
+	// binaries were not executable. The server itself remains usable.
+	if err = os.Chmod(tool, 0600); err != nil {
+		t.Fatal(err)
+	}
+	tree, err := managedOllamaRuntimeTreeSHA256(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ := json.Marshal(struct{ Pin, Tree string }{managedEnginePin(release), tree})
+	if err = atomicWrite0600(filepath.Join(root, ".multivibe-runtime.json"), record); err != nil {
+		t.Fatal(err)
+	}
+	changed := *cloneCapacityPolicyState(*policy)
+	changed.AutomaticDownloads = explicitBool(false)
+	policy, _, err = engines.policies.replace(policy.Revision, changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = engines.compatibilityTool(context.Background(), policy, release); err == nil || downloads != 1 {
+		t.Fatal("upgrade bypassed download permission")
+	}
+	if _, err = verifyManagedEngineInstallation(root, release); err != nil {
+		t.Fatal("old inference installation invalidated", err)
+	}
+	changed = *cloneCapacityPolicyState(*policy)
+	changed.AutomaticDownloads = explicitBool(true)
+	policy, _, err = engines.policies.replace(policy.Revision, changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, upgraded, err := engines.compatibilityTool(context.Background(), policy, release)
+	if err != nil || upgraded == tool || downloads != 2 {
+		t.Fatalf("upgrade failed: %s %v downloads=%d", upgraded, err, downloads)
+	}
+	if _, err = verifyManagedEngineInstallation(root, release); err != nil {
+		t.Fatal("old installation was mutated", err)
+	}
+	changed = *cloneCapacityPolicyState(*policy)
+	changed.Paused = explicitBool(true)
+	changed.AutomaticDownloads = explicitBool(false)
+	policy, _, err = engines.policies.replace(policy.Revision, changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = engines.compatibilityTool(context.Background(), policy, release); err != nil || downloads != 2 {
+		t.Fatal("installed diagnostic cannot be used offline while paused", err)
 	}
 }
