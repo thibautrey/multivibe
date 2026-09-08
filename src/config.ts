@@ -15,8 +15,7 @@ function finiteAtLeast(
 export const PORT = Number(process.env.PORT ?? 1455);
 export const HOST = process.env.HOST?.trim() || undefined;
 /** When enabled, Node owns only the control plane and Rust owns `/v1`. */
-export const MULTIVIBE_CONTROL_PLANE =
-  (process.env.MULTIVIBE_CONTROL_PLANE ?? "false") === "true";
+export const MULTIVIBE_CONTROL_PLANE = true;
 export const CONTROL_PLANE_PORT = Number(
   process.env.CONTROL_PLANE_PORT ?? 1456,
 );

@@ -12191,6 +12191,76 @@ mod tests {
         assert_eq!(converted["messages"][1]["content"], "result");
     }
 
+    #[tokio::test]
+    async fn native_chat_tool_round_trip_and_unsupported_rejection() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let upstream = Router::new()
+            .route("/v1/models", get(|| async { Json(json!({"data": [{"id": "glm-test"}]})) }))
+            .route("/v1/chat/completions", post(move |Json(body): Json<Value>| {
+                let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, AtomicOrdering::SeqCst);
+                    assert_eq!(body["tools"][0]["type"], "function");
+                    assert_eq!(body["tools"][0]["function"]["name"], "lookup");
+                    assert!(body["tools"][0].get("name").is_none());
+                    let returned = body["messages"].as_array().unwrap().iter().any(|m| m["role"] == "tool");
+                    let message = if returned {
+                        let messages = body["messages"].as_array().unwrap();
+                        assert!(messages.iter().any(|m| m["tool_call_id"] == "call_lookup" && m["content"] == "42"));
+                        json!({"role": "assistant", "content": "The result is 42."})
+                    } else {
+                        json!({"role": "assistant", "content": null, "tool_calls": [{"id": "call_lookup", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}]})
+                    };
+                    Json(json!({"id": "chat_test", "object": "chat.completion", "model": "glm-test", "created": 1,
+                        "choices": [{"index": 0, "message": message, "finish_reason": if returned { "stop" } else { "tool_calls" }}],
+                        "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10}}))
+                }
+            }));
+        let (url, upstream_task) = start_server(upstream).await;
+        let store_path = temporary_path("tool-roundtrip-store");
+        let jobs_path = temporary_path("tool-roundtrip-jobs");
+        let mut provider = account("strict-chat");
+        provider.provider = Some("openai-compatible".to_owned());
+        provider.base_url = Some(url);
+        provider.upstream_mode = Some("chat/completions".to_owned());
+        fs::write(&store_path, serde_json::to_vec(&store_with_accounts(vec![provider])).unwrap()).await.unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.legacy_jobs_db_path = None;
+        config.configured_api_keys = vec![("test".to_owned(), "test-key".to_owned())];
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let client = reqwest::Client::new();
+        let mut input = json!([{"role": "user", "content": "Look up the result"}]);
+        for turn in 0..2 {
+            let response = client.post(format!("{edge_url}/v1/responses")).bearer_auth("test-key")
+                .json(&json!({"model": "glm-test", "stream": false, "input": input,
+                    "tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object", "properties": {}}}]}))
+                .send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let result: Value = response.json().await.unwrap();
+            if turn == 0 {
+                let call = result["output"].as_array().unwrap().iter().find(|v| v["type"] == "function_call").unwrap();
+                assert_eq!(call["call_id"], "call_lookup");
+                input.as_array_mut().unwrap().push(call.clone());
+                input.as_array_mut().unwrap().push(json!({"type": "function_call_output", "call_id": "call_lookup", "output": "42"}));
+            } else {
+                assert!(result.to_string().contains("The result is 42."));
+            }
+        }
+        let rejected = client.post(format!("{edge_url}/v1/responses")).bearer_auth("test-key")
+            .json(&json!({"model": "glm-test", "input": "test", "tools": [{"type": "custom", "name": "exec"}]}))
+            .send().await.unwrap();
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 2);
+        edge_task.abort();
+        upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
     #[test]
     fn claude_code_requests_route_to_luna_and_drop_unsupported_metadata() {
         let mut headers = HeaderMap::new();
