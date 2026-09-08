@@ -39,9 +39,9 @@ function modelOwner(id: string) {
 
 export function modelLogo(id: string, author?: string) {
   const owner = modelOwner(id);
-  if (Object.hasOwn(MODEL_OWNER_ICONS, owner)) return MODEL_OWNER_ICONS[owner];
+  if (Object.prototype.hasOwnProperty.call(MODEL_OWNER_ICONS, owner)) return MODEL_OWNER_ICONS[owner];
   const explicitAuthor = author?.trim().toLowerCase() ?? '';
-  return Object.hasOwn(MODEL_OWNER_ICONS, explicitAuthor) ? MODEL_OWNER_ICONS[explicitAuthor] : undefined;
+  return Object.prototype.hasOwnProperty.call(MODEL_OWNER_ICONS, explicitAuthor) ? MODEL_OWNER_ICONS[explicitAuthor] : undefined;
 }
 
 export function aggregateModels(models: ExposedModel[], accounts: Account[], cloud: CloudModel[], providers: CloudProvider[], now = Date.now()): CatalogEntry[] {
