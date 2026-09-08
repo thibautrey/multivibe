@@ -29,10 +29,11 @@ test('Core connects to Cloud, discovers its catalog and invokes its models over 
   await store.init();
   await oauthStore.init();
   const pepper = 'integration-dashboard-pepper-at-least-32-characters';
-  const scopes = ['projects:read', 'projects:write', 'billing:read', 'provider:read'];
+  const scopes = ['projects:read', 'projects:write', 'billing:read', 'core:credential:create', 'provider:read'];
   const commerce = new MemoryCommerceRepository({
     sessionDigest: serviceKeyDigest(testDashboardToken, pepper),
     context: { accountId: testContext.organizationId, organizationId: testContext.organizationId,
+      clientId: 'multivibe-core',
       scopes, authTime: new Date().toISOString(), expiresAt: new Date(Date.now() + 3600000).toISOString() },
   });
   let authorize;
@@ -124,6 +125,7 @@ test('Core connects to Cloud, discovers its catalog and invokes its models over 
   await t.test('PKCE exchange provisions and persists the Cloud project and inference key', async () => {
     const flow = await cloud.startConnection();
     authorize = new URL(flow.authorizeUrl);
+    assert.match(authorize.searchParams.get('scope') ?? '', /(?:^| )core:credential:create(?: |$)/);
     await cloud.completeConnection(flow.flowId, 'integration-authorization-code');
     assert.equal((await oauthStore.get(flow.flowId)).status, 'success');
     const reopened = new AccountStore(path.join(dir, 'accounts.json'));
