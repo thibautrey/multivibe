@@ -1,4 +1,4 @@
-export type CloudCatalogModel = { id: string; name: string; aliases: string[]; availability: string; network: boolean };
+export type CloudCatalogModel = { id: string; name: string; author?: string; aliases: string[]; availability: string; network: boolean };
 
 // Public discovery is deliberately separate from the authenticated inference catalog.
 export async function readCloudModelCatalog(origin: string, fetchImpl: typeof fetch = fetch): Promise<CloudCatalogModel[]> {
@@ -17,6 +17,7 @@ export async function readCloudModelCatalog(origin: string, fetchImpl: typeof fe
     for (const entry of body.data) {
       if (typeof entry?.id !== 'string' || !entry.id || entry.id.length > 512 || models.has(entry.id)) throw new Error('Invalid Cloud model');
       models.set(entry.id, { id: entry.id, name: typeof entry.displayName === 'string' ? entry.displayName : entry.id,
+        ...(typeof entry.author === 'string' && entry.author.trim() && entry.author.trim().length <= 256 ? { author: entry.author.trim() } : {}),
         aliases: Array.isArray(entry.aliases) ? entry.aliases.filter((id: unknown): id is string => typeof id === 'string' && id.length <= 512) : [],
         availability: typeof entry.availability === 'string' ? entry.availability : 'unknown', network: Boolean(entry.multivibeNetwork) });
     }
