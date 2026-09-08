@@ -140,12 +140,14 @@ private struct HostUpdateStatus: Decodable {
     let availableVersion: String?
     let downloaded: Bool
     let installRequested: Bool
+    let lastError: String?
 
     enum CodingKeys: String, CodingKey {
         case status
         case availableVersion = "available_version"
         case downloaded
         case installRequested = "install_requested"
+        case lastError = "last_error"
     }
 }
 
@@ -790,7 +792,10 @@ private final class HostPopoverController: NSViewController {
         let container = card()
         let title: String
         let detail: String
-        if let version = update?.availableVersion {
+        if update?.status == "failed" {
+            title = "Update failed"
+            detail = update?.lastError ?? "Check for updates to retry."
+        } else if let version = update?.availableVersion {
             title = "Version \(version) available"
             detail = update?.downloaded == true ? "Ready to install." : "Download and install the latest version."
         } else if update?.status == "current" {
