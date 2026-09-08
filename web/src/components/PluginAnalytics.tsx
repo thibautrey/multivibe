@@ -33,7 +33,7 @@ export function PluginAnalytics({ pluginId }: { pluginId: string }) {
           <div><dt>Estimated net difference (known costs)</dt><dd>{usage?.metrics.comparable ? money((usage.metrics.grossSavingsUsd ?? 0) - (classifier?.metrics.costUsd ?? 0) - (usage.metrics.failedAttemptCostUsd ?? 0)) : "Not available"}</dd></div>
           <div><dt>Classifier calls without pricing</dt><dd>{classifier?.metrics.unknown ?? 0}</dd></div>
         </dl>
-        <p className="muted">Estimates compare the same measured tokens and cache usage at the requested and actual model rates. They are not invoice savings. Missing usage/prices and unmeasured failed calls are excluded; classifier overhead and failed-attempt costs are deducted only when known. Negative differences indicate higher cost.</p>
+        <p className="muted">Estimates compare the same measured tokens and cache usage at the baseline and actual model rates. For multivibe/autorouter, the baseline is the configured advanced model. They are not invoice savings. Missing usage/prices and unmeasured failed calls are excluded; classifier overhead and failed-attempt costs are deducted only when known. Negative differences indicate higher cost.</p>
       </> : <ul>{Object.entries(summary.types).map(([type, entry]) => <li key={type}>{type}: {entry.count} events</li>)}</ul>}
       <p className="muted">Rolling window of up to {summary.retention.toLocaleString()} events, not a lifetime total.</p>
     </>}

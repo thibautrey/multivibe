@@ -1,3 +1,5 @@
+import { AUTOMATIC_ROUTER_MODEL } from "../../automatic-router-model.js";
+import { createVirtualModelMiddleware } from "../../module-virtual-models.js";
 import assert from "node:assert/strict";
 import http from "node:http";
 import test from "node:test";
@@ -50,7 +52,8 @@ test("request hooks receive conversation evidence and route the selected model u
   const traceManager: any = { recordTrace: () => undefined, beginTrace: async () => "t", completeTrace: async () => undefined };
   const plugin = createAutomaticRouter();
   let classifierCalls = 0;
-  const moduleManager: any = { runHook: async (hook: string, value: any, context: any) => {
+  let enabled = true;
+  const moduleManager: any = { list: () => [{id: "multivibe.automatic-router", enabled, loaded: true, healthy: true, settings: {economyModel:"cheap",balancedModel:"cheap",advancedModel:"cheap"}}], runHook: async (hook: string, value: any, context: any) => {
     if (hook !== "request.received") return { value };
     assert.equal(context.sessionId, "agent-session");
     assert.equal(context.conversation.mode, "multi-turn");
@@ -60,7 +63,14 @@ test("request hooks receive conversation evidence and route the selected model u
     });
     return { value: result.action === "replace" ? result.value : value };
   } };
-  const app = express(); app.use(express.json()); app.use("/v1", createProxyRouter({
+  const services = () => ({
+    listModels: async () => ["test-model", "cheap"].map((id) => ({ id, metadata: { supports_tools: true, context_window: 100_000 } })),
+    complete: async () => { classifierCalls++; return '{"difficulty":"easy"}'; },
+  });
+  const app = express(); app.use(express.json());
+  app.use("/v1", createVirtualModelMiddleware(moduleManager, services));
+  app.use("/v1", (req,res,next) => { if(req.method === "POST") assert.equal(req.body.model,"cheap","virtual model must resolve before admission"); next(); });
+  app.use("/v1", createProxyRouter({
     store, traceManager, moduleManager, moduleServices: () => ({
       listModels: async () => ["test-model", "cheap"].map((id) => ({ id, metadata: { supports_tools: true, context_window: 100_000 } })),
       complete: async () => { classifierCalls++; return '{"difficulty":"easy"}'; },
@@ -77,11 +87,22 @@ test("request hooks receive conversation evidence and route the selected model u
         const req = http.request({ host: "127.0.0.1", port, path: "/v1/chat/completions", method: "POST", headers: {
           "content-type": "application/json", "session_id": "agent-session", "x-multivibe-conversation-mode": "multi-turn",
         } }, (res) => { let text = ""; res.on("data", (chunk) => text += chunk); res.on("end", () => resolve({ status: res.statusCode!, text })); });
-        req.on("error", reject); req.end(JSON.stringify({ model: "test-model", messages }));
+        req.on("error", reject); req.end(JSON.stringify({ model: AUTOMATIC_ROUTER_MODEL, messages }));
       });
       assert.equal(result.status, 200, result.text);
       assert.match(result.text, /answer/);
     }
+    const get = (url: string) => new Promise<{status:number; body:any}>((resolve,reject) => {
+      http.get({host:"127.0.0.1",port,path:url}, res => {let text="";res.on("data",chunk=>text+=chunk);res.on("end",()=>resolve({status:res.statusCode!,body:JSON.parse(text)}));}).on("error",reject);
+    });
+    const catalog = await get("/v1/models");
+    assert.ok(catalog.body.data.some((model:any)=>model.id===AUTOMATIC_ROUTER_MODEL));
+    assert.ok(catalog.body.models.some((model:any)=>model.slug===AUTOMATIC_ROUTER_MODEL));
+    assert.equal((await get("/v1/models/multivibe%2Fautorouter")).body.id,AUTOMATIC_ROUTER_MODEL);
+    assert.equal((await get("/v1/models/multivibe/autorouter")).body.id,AUTOMATIC_ROUTER_MODEL);
+    enabled=false;
+    assert.ok(!(await get("/v1/models")).body.data.some((model:any)=>model.id===AUTOMATIC_ROUTER_MODEL));
+    assert.equal((await get("/v1/models/multivibe%2Fautorouter")).status,404);
     assert.deepEqual(sentModels, ["cheap", "cheap"]);
     assert.equal(classifierCalls, 1);
   } finally {

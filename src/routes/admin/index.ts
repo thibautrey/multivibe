@@ -1,3 +1,4 @@
+import { withVirtualModels } from "../../module-virtual-models.js";
 import { MULTIVIBE_CONTROL_PLANE } from "../../config.js";
 import { createAuthRateLimiter } from "../../auth-rate-limit.js";
 import { trimTrailingSlashes } from "../../string-utils.js";
@@ -663,7 +664,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
   });
 
   router.get("/modules/models", async (_req, res) => {
-    res.json({ models: await discoverModels(store, openaiBaseUrl, mistralBaseUrl, zaiBaseUrl) });
+    res.json({ models: withVirtualModels(await discoverModels(store, openaiBaseUrl, mistralBaseUrl, zaiBaseUrl), MULTIVIBE_CONTROL_PLANE ? undefined : moduleManager) });
   });
 
   router.get("/modules", (_req, res) => {
