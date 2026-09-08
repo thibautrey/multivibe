@@ -470,6 +470,7 @@ export class ModuleManager {
           }),
         ]).finally(() => {
           if (timeout) clearTimeout(timeout);
+          hookController.abort();
         });
         if (result?.action === "replace") current = result.value;
         if (result?.action === "respond") return { value: current, response: result.response };
