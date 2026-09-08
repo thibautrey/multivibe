@@ -297,6 +297,7 @@ export type ExposedModel = {
     alias_targets?: string[];
     catalog_source?: string;
     catalog_fetched_at?: string;
+    model_author?: string;
     sdk_provider?: string;
     pricing?: Record<string, number>;
     input_modalities?: string[];
@@ -563,6 +564,18 @@ function modelObject(
   upstream?: Record<string, unknown>,
 ): ExposedModel {
   const upstreamObject = upstream ?? {};
+  const modelAuthor = [
+    upstreamObject.author,
+    upstreamObject.owned_by,
+    upstreamObject.publisher,
+    upstreamObject.organization,
+  ].find(
+    (value): value is string =>
+      typeof value === "string" &&
+      value.trim().length > 0 &&
+      value.trim().length <= 256 &&
+      !/[\u0000-\u001f\u007f]/.test(value),
+  )?.trim();
   const contextWindow = firstKnownNumber(upstreamObject, [
     "context_window",
     "contextWindow",
@@ -605,6 +618,7 @@ function modelObject(
       supports_reasoning: supportsReasoning,
       supports_tools: supportsTools,
       supported_tool_types: supportedToolTypes,
+      ...(modelAuthor ? { model_author: modelAuthor } : {}),
       ...(provider === "ai-sdk" ? {
         catalog_source: String(upstreamObject.catalog_source ?? ""),
         catalog_fetched_at: String(upstreamObject.catalog_fetched_at ?? ""),

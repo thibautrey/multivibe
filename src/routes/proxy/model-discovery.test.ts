@@ -289,6 +289,10 @@ test("discovers models from an explicitly classified tokenless local runtime", a
     models.some((model) => model.id === "lmstudio-discovered-only"),
     true,
   );
+  assert.equal(
+    models.find((model) => model.id === "lmstudio-discovered-only")?.metadata.model_author,
+    "local",
+  );
   assert.equal(requests, 1);
 });
 

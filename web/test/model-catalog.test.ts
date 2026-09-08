@@ -41,6 +41,22 @@ test('model logos use canonical authors, known aliases, and provider metadata wi
   assert.equal(modelLogo('__proto__/model'), undefined);
 });
 
+test('provider ownership and unnamespaced local model families resolve catalog logos', () => {
+  assert.equal(modelLogo('gpt-5.2-codex', 'openai'), 'openai.svg');
+  assert.equal(modelLogo('Kokoro-82M-bf16', 'omlx'), 'hexgrad.png');
+  assert.equal(modelLogo('Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16', 'omlx'), 'qwen.png');
+  assert.equal(modelLogo('Qwen3.8-27B-4bit', 'omlx'), 'qwen.png');
+  assert.equal(modelLogo('whisper-large-v3-turbo-asr-4bit', 'omlx'), 'openai.svg');
+  assert.equal(modelLogo('community/qwen-fine-tune'), undefined);
+});
+
+test('configured provider catalog ownership is used for unnamespaced model IDs', () => {
+  const [model] = aggregateModels([{ id: 'gpt-5-codex', owned_by: 'openai', metadata: { provider: 'openai', account_ids: ['openai'] } }],
+    [{ id: 'openai', provider: 'openai', enabled: true }], [], []);
+  assert.equal(model.author, 'openai');
+  assert.equal(model.logo, 'openai.svg');
+});
+
 test('Cloud author metadata supplies the model logo without substituting its execution provider', () => {
   const [model] = aggregateModels([], [], [{ id: 'managed-model', name: 'Managed model', author: 'OpenAI', aliases: [], availability: 'available', network: true }], []);
   assert.equal(model.author, 'OpenAI');

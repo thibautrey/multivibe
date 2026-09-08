@@ -317,6 +317,7 @@ export type ExposedModel = {
   owned_by?: string;
   metadata?: {
     account_ids?: string[];
+    model_author?: string;
     sdk_provider?: string;
     provider?: ProviderId;
     provider_candidates?: Array<

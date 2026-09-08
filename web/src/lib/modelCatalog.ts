@@ -29,6 +29,36 @@ const MODEL_OWNER_ICONS: Record<string, string> = {
   'zai-org': 'zai-org.svg',
 };
 
+const MODEL_OWNER_ALIASES: Record<string, string> = {
+  'google deepmind': 'google', 'meta ai': 'meta', mistral: 'mistralai', 'mistral ai': 'mistralai',
+  xai: 'x-ai', 'x.ai': 'x-ai', zai: 'zai-org', 'z.ai': 'zai-org',
+};
+
+const LOCAL_MODEL_FAMILIES: Array<[RegExp, string]> = [
+  [/^(?:gpt-|chatgpt-|o[134](?:-|$)|codex(?:-|$)|whisper(?:-|$)|text-embedding-|dall-e(?:-|$)|sora(?:-|$))/, 'openai'],
+  [/^claude(?:-|$)/, 'anthropic'],
+  [/^(?:gemini|gemma)(?:-|\.|$)/, 'google'],
+  [/^qwen(?:-|\.|\d|$)/, 'qwen'],
+  [/^deepseek(?:-|$)/, 'deepseek-ai'],
+  [/^(?:llama|code-llama)(?:-|\.|\d|$)/, 'meta-llama'],
+  [/^(?:mistral|mixtral|codestral|ministral|pixtral)(?:-|\.|\d|$)/, 'mistralai'],
+  [/^grok(?:-|\.|\d|$)/, 'x-ai'],
+  [/^(?:glm|chatglm|codegeex)(?:-|\.|\d|$)/, 'zai-org'],
+  [/^(?:command-r|aya)(?:-|\.|$)/, 'cohere'],
+  [/^(?:phi|wizardlm)(?:-|\.|\d|$)/, 'microsoft'],
+  [/^kokoro(?:-|\.|\d|$)/, 'hexgrad'],
+  [/^(?:flux|flux\.1)(?:-|\.|$)/, 'black-forest-labs'],
+  [/^(?:kimi|moonshot)(?:-|\.|\d|$)/, 'moonshotai'],
+  [/^(?:nemotron|nvidia)(?:-|\.|\d|$)/, 'nvidia'],
+  [/^granite(?:-|\.|\d|$)/, 'ibm-granite'],
+];
+
+function knownOwner(value?: string) {
+  const normalized = value?.trim().toLowerCase() ?? '';
+  const owner = MODEL_OWNER_ALIASES[normalized] ?? normalized;
+  return Object.prototype.hasOwnProperty.call(MODEL_OWNER_ICONS, owner) ? owner : undefined;
+}
+
 function modelOwner(id: string) {
   const normalized = id.toLowerCase().replace(/^(?:hf|openrouter):/, '');
   const parts = normalized.split('/');
@@ -37,11 +67,16 @@ function modelOwner(id: string) {
   return parts.length > 1 ? parts[0] : normalized.split(':')[0];
 }
 
-export function modelLogo(id: string, author?: string) {
-  const owner = modelOwner(id);
-  if (Object.prototype.hasOwnProperty.call(MODEL_OWNER_ICONS, owner)) return MODEL_OWNER_ICONS[owner];
-  const explicitAuthor = author?.trim().toLowerCase() ?? '';
-  return Object.prototype.hasOwnProperty.call(MODEL_OWNER_ICONS, explicitAuthor) ? MODEL_OWNER_ICONS[explicitAuthor] : undefined;
+export function modelLogo(id: string, ...authorHints: Array<string | undefined>) {
+  const owner = knownOwner(modelOwner(id)) ?? authorHints.map(knownOwner).find(Boolean);
+  if (owner) return MODEL_OWNER_ICONS[owner];
+
+  // A namespaced ID names its publisher. Do not replace an unknown publisher
+  // with the logo of a model family mentioned in its fine-tune name.
+  const normalized = id.toLowerCase().replace(/^(?:hf|openrouter):/, '');
+  if (normalized.includes('/')) return undefined;
+  const familyOwner = LOCAL_MODEL_FAMILIES.find(([pattern]) => pattern.test(normalized))?.[1];
+  return familyOwner ? MODEL_OWNER_ICONS[familyOwner] : undefined;
 }
 
 export function aggregateModels(models: ExposedModel[], accounts: Account[], cloud: CloudModel[], providers: CloudProvider[], now = Date.now()): CatalogEntry[] {
@@ -73,6 +108,7 @@ export function aggregateModels(models: ExposedModel[], accounts: Account[], clo
     && !(Number(account.state?.authBlockedUntil) > now) && !(Number(account.state?.modelBlocks?.[modelId]?.until) > now);
   for (const model of models) {
     const candidates = model.metadata?.provider_candidates ?? (model.metadata?.provider ? [model.metadata.provider] : []);
+    const authorHints = [model.metadata?.model_author, model.owned_by, ...candidates];
     const matching = accounts.filter(account => model.metadata?.account_ids?.length
       ? model.metadata.account_ids.includes(account.id)
       : candidates.includes(account.provider ?? 'openai') && (account.provider !== 'ai-sdk' || account.sdkProvider === model.metadata?.sdk_provider)
@@ -80,9 +116,11 @@ export function aggregateModels(models: ExposedModel[], accounts: Account[], clo
     for (const account of matching) {
       const source = account.id === 'multivibe-cloud' ? 'cloud' : account.localRuntime || account.location === 'local' ? 'local' : 'provider';
       add(model.id, model.id, { source, label: source === 'cloud' ? 'MultiVibe Cloud' : account.localRuntime?.adapter ?? account.sdkProvider ?? account.provider ?? 'OpenAI',
-        modelId: model.id, ready: healthy(account, model.id), accountId: account.id, provider: account.provider ?? 'openai', sdkProvider: account.sdkProvider });
+        modelId: model.id, ready: healthy(account, model.id), accountId: account.id, provider: account.provider ?? 'openai', sdkProvider: account.sdkProvider },
+        authorHints.find(hint => knownOwner(hint)));
     }
-    if (!matching.length) add(model.id, model.id, { source: 'provider', label: model.metadata?.is_alias ? 'Routing alias' : candidates.join(' · ') || 'Provider', modelId: model.id, ready: false, provider: candidates[0] });
+    if (!matching.length) add(model.id, model.id, { source: 'provider', label: model.metadata?.is_alias ? 'Routing alias' : candidates.join(' · ') || 'Provider', modelId: model.id, ready: false, provider: candidates[0] },
+      authorHints.find(hint => knownOwner(hint)));
   }
   for (const account of accounts.filter(account => account.localRuntime)) {
     for (const id of account.localRuntime!.confirmedModelIds) add(id, id, { source: 'local', label: account.localRuntime!.adapter, modelId: id, ready: healthy(account, id), accountId: account.id });
