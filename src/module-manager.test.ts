@@ -142,3 +142,27 @@ test("validates marketplace metadata from manifests", async () => {
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test("built-in plugins expose settings while disabled and persist configuration across restarts", async () => {
+  const { automaticRouterManifest, createAutomaticRouter } = await import("./automatic-router.js");
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-builtin-"));
+  try {
+    const manager = new ModuleManager(root);
+    manager.registerBuiltin(automaticRouterManifest, createAutomaticRouter());
+    await manager.initialize();
+    assert.equal(manager.list()[0].enabled, false);
+    assert.ok(manager.list()[0].manifest?.settingsSchema);
+    await manager.setSettings(automaticRouterManifest.id, { classifierModel: "test", sessionTtlMinutes: 5 });
+    await assert.rejects(manager.setSettings(automaticRouterManifest.id, { sessionTtlMinutes: 0 }), /out of range/);
+    await manager.setEnabled(automaticRouterManifest.id, true);
+    assert.equal(manager.list()[0].loaded, true);
+    const restarted = new ModuleManager(root);
+    restarted.registerBuiltin(automaticRouterManifest, createAutomaticRouter());
+    await restarted.initialize();
+    assert.equal(restarted.list()[0].settings.classifierModel, "test");
+    assert.equal(restarted.list()[0].loaded, true);
+    await restarted.setEnabled(automaticRouterManifest.id, false);
+    assert.ok(restarted.list()[0].manifest?.settingsSchema);
+    await assert.rejects(restarted.update(automaticRouterManifest.id), /updates with MultiVibe/);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
