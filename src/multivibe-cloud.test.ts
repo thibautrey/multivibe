@@ -263,6 +263,50 @@ test("Cloud status rotates an expired OAuth session and keeps the local API key"
   assert.equal(calls[0]?.endsWith("/oauth/token POST"), true);
 });
 
+test("Cloud status offers reconnection when project provisioning requires fresh authentication", async () => {
+  const stores = fakeStores({
+    settings: { multivibeCloud: { accessToken: "stale-cloud-access" } },
+  });
+  const calls: string[] = [];
+  const cloud = service(stores, async (input, init) => {
+    const url = String(input);
+    calls.push(`${new URL(url).pathname} ${init?.method ?? "GET"}`);
+    if (url.includes("/client/v1/projects?limit=50")) {
+      return response({ data: [{ id: projectId, name: "Default", slug: "default" }] });
+    }
+    if (url.endsWith("/client/v1/projects") && init?.method === "POST") {
+      return response({
+        error: {
+          code: "fresh_authentication_required",
+          message: "Fresh authentication is required",
+        },
+      }, 403);
+    }
+    throw new Error(`unexpected Cloud call: ${url}`);
+  });
+
+  assert.deepEqual(await cloud.getStatus(), {
+    status: "disconnected",
+    topupUrl: "https://app.example.test/billing",
+  });
+  assert.deepEqual(calls, ["/client/v1/projects GET", "/client/v1/projects POST"]);
+  assert.equal(stores.accounts.length, 0);
+});
+
+test("Cloud status keeps unrelated authorization failures unavailable", async () => {
+  const stores = fakeStores({
+    settings: { multivibeCloud: { accessToken: "cloud-access", projectId } },
+  });
+  const cloud = service(stores, async (input) => {
+    if (String(input).includes(`/client/v1/projects/${projectId}/api-keys`)) {
+      return response({ error: { code: "project_access_denied" } }, 403);
+    }
+    throw new Error(`unexpected Cloud call: ${String(input)}`);
+  });
+
+  assert.equal((await cloud.getStatus()).status, "unavailable");
+});
+
 test("Cloud status does not turn shadow money into user notifications", async () => {
   const stores = fakeStores({
     settings: { multivibeCloud: { accessToken: "cloud-access", projectId } },

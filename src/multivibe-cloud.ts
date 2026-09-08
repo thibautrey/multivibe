@@ -22,7 +22,7 @@ const CORE_CALLBACK_PATH = "/admin/cloud/oauth/callback";
 type CloudConnection = NonNullable<StoreSettings["multivibeCloud"]>;
 
 class CloudHttpError extends Error {
-  constructor(readonly status: number) {
+  constructor(readonly status: number, readonly code?: string) {
     super("MultiVibe Cloud request failed");
     this.name = "CloudHttpError";
   }
@@ -329,7 +329,8 @@ export class MultivibeCloudService {
         ...(workerEarnings ? { workerEarnings } : {}),
       };
     } catch (error) {
-      if (error instanceof CloudHttpError && (error.status === 400 || error.status === 401)) {
+      if (error instanceof CloudHttpError && (error.status === 400 || error.status === 401
+        || (error.status === 403 && error.code === "fresh_authentication_required"))) {
         return { status: "disconnected", topupUrl: this.topupUrl };
       }
       return { status: "unavailable", topupUrl: this.topupUrl };
@@ -459,7 +460,10 @@ export class MultivibeCloudService {
       ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
     });
     const data = await this.readJson(response);
-    if (!response.ok) throw new CloudHttpError(response.status);
+    const error = recordValue(data.error);
+    if (!response.ok) {
+      throw new CloudHttpError(response.status, stringValue(error?.code) ?? stringValue(data.code));
+    }
     return data;
   }
 
