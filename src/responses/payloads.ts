@@ -345,22 +345,44 @@ export function responsesToChatCompletionsPayload(body: any) {
   };
 
   if (Array.isArray(payload.tools)) {
-    out.tools = payload.tools.map((tool: any) => {
-      if (tool?.type === "function") {
-        return {
-          type: "function",
-          function: {
-            name: tool.name,
-            description: tool.description,
-            parameters: tool.parameters,
-            strict: tool.strict,
-          },
-        };
-      }
-      return tool;
+    // Responses also carries built-in tools (web_search_preview,
+    // computer_use_preview, ...). A Chat Completions-compatible local runtime
+    // such as OMLX only accepts function tools, and rejects those other tool
+    // types during request validation. Never forward an unknown tool envelope.
+    out.tools = payload.tools.flatMap((tool: any) => {
+      if (tool?.type !== "function") return [];
+      const source = tool.function ?? tool;
+      if (typeof source?.name !== "string" || !source.name.trim()) return [];
+      return [{
+        type: "function",
+        function: {
+          name: source.name,
+          description: source.description,
+          parameters: source.parameters,
+          ...(typeof source.strict === "boolean" ? { strict: source.strict } : {}),
+        },
+      }];
     });
+    if (out.tools.length === 0) delete out.tools;
   }
-  if (typeof payload.tool_choice !== "undefined") out.tool_choice = payload.tool_choice;
+  if (typeof payload.tool_choice !== "undefined") {
+    if (
+      payload.tool_choice &&
+      typeof payload.tool_choice === "object" &&
+      payload.tool_choice.type === "function"
+    ) {
+      const name =
+        payload.tool_choice.name ?? payload.tool_choice.function?.name;
+      if (typeof name === "string" && name.trim()) {
+        out.tool_choice = { type: "function", function: { name } };
+      }
+    } else if (["auto", "none", "required"].includes(payload.tool_choice)) {
+      out.tool_choice = payload.tool_choice;
+    }
+  }
+  if (!out.tools && (out.tool_choice === "auto" || out.tool_choice === "required")) {
+    delete out.tool_choice;
+  }
   if (typeof payload.temperature !== "undefined") out.temperature = payload.temperature;
   const outputLimit =
     payload.max_tokens ?? payload.max_completion_tokens ?? payload.max_output_tokens;
