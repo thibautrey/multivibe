@@ -50,10 +50,11 @@ type HarnessInspection = {
 export type HarnessConfiguration = {
   relativePath: string;
   revision?: number;
+  driftScope?: "file" | "managed";
   render: (current: string | null, context: HarnessContext) => string;
   prepare?: (context: HarnessContext) => Promise<Partial<HarnessContext>>;
   isConfigured: (current: string, baseUrl: string) => boolean;
-  inspect?: (current: string, baseUrl: string) => HarnessInspection;
+  inspect?: (current: string, baseUrl: string, expectedApiKey?: string) => HarnessInspection;
 };
 
 export type HostHarnessDefinition = {
@@ -307,10 +308,12 @@ function matchTomlTableHeader(line: string): string | undefined {
   return match?.[1].trim();
 }
 
-function parseCodexToml(current: string, expectedBaseUrl: string): CodexTomlInspection {
+function parseCodexToml(current: string, expectedBaseUrl: string, expectedApiKey?: string): CodexTomlInspection {
   let table = "";
   let rootProvider: string | undefined;
   let providerBaseUrl: string | undefined;
+  let providerBearerToken: string | undefined;
+  let providerWireApi: string | undefined;
   const profileProviders: Record<string, string> = {};
   const errors: string[] = [];
   const seen = new Set<string>();
@@ -345,6 +348,14 @@ function parseCodexToml(current: string, expectedBaseUrl: string): CodexTomlInsp
       if (seen.has("provider.multivibe.base_url")) errors.push("duplicate model_providers.multivibe.base_url");
       seen.add("provider.multivibe.base_url");
       providerBaseUrl = value;
+    } else if (table === "model_providers.multivibe" && key === "experimental_bearer_token") {
+      if (seen.has("provider.multivibe.experimental_bearer_token")) errors.push("duplicate model_providers.multivibe.experimental_bearer_token");
+      seen.add("provider.multivibe.experimental_bearer_token");
+      providerBearerToken = value;
+    } else if (table === "model_providers.multivibe" && key === "wire_api") {
+      if (seen.has("provider.multivibe.wire_api")) errors.push("duplicate model_providers.multivibe.wire_api");
+      seen.add("provider.multivibe.wire_api");
+      providerWireApi = value;
     }
   }
 
@@ -355,7 +366,10 @@ function parseCodexToml(current: string, expectedBaseUrl: string): CodexTomlInsp
     ? `Codex profiles override MultiVibe: ${profileOverrides.join(", ")}`
     : undefined;
   return {
-    configured: rootProvider === "multivibe" && providerBaseUrl === expectedBaseUrl,
+    configured: rootProvider === "multivibe" &&
+      providerBaseUrl === expectedBaseUrl &&
+      (expectedApiKey ? providerBearerToken === expectedApiKey : Boolean(providerBearerToken)) &&
+      providerWireApi === "responses",
     repairable: errors.length === 0,
     configurationIssue: errors.length > 0 ? errors.join("; ") : configurationIssue,
     effectiveProvider: rootProvider,
@@ -364,8 +378,8 @@ function parseCodexToml(current: string, expectedBaseUrl: string): CodexTomlInsp
   };
 }
 
-function inspectCodexToml(current: string, baseUrl: string): HarnessInspection {
-  const parsed = parseCodexToml(current, `${baseUrl}/v1`);
+function inspectCodexToml(current: string, baseUrl: string, expectedApiKey?: string): HarnessInspection {
+  const parsed = parseCodexToml(current, `${baseUrl}/v1`, expectedApiKey);
   return {
     ...parsed,
     configured: parsed.configured,
@@ -426,6 +440,7 @@ function renderCodexToml(current: string | null, context: HarnessContext): strin
 
 const codexConfiguration: HarnessConfiguration = {
   relativePath: ".codex/config.toml",
+  driftScope: "managed",
   render: renderCodexToml,
   isConfigured: (current, baseUrl) => inspectCodexToml(current, baseUrl).configured,
   inspect: inspectCodexToml,
@@ -660,6 +675,7 @@ export type HostHarnessManagerOptions = {
   homeDirectory: string;
   statePath: string;
   baseUrl: string;
+  apiKeyForId?: (id: string) => string | undefined;
   definitions?: readonly HostHarnessDefinition[];
   executableDirectories?: string[];
 };
@@ -668,6 +684,7 @@ export class HostHarnessIntegrationManager {
   private readonly homeDirectory: string;
   private readonly statePath: string;
   private readonly baseUrl: string;
+  private readonly apiKeyForId: (id: string) => string | undefined;
   private readonly definitions: readonly HostHarnessDefinition[];
   private readonly executableDirectories: string[];
   private operation = Promise.resolve();
@@ -679,6 +696,7 @@ export class HostHarnessIntegrationManager {
     this.homeDirectory = path.resolve(options.homeDirectory);
     this.statePath = path.resolve(options.statePath);
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
+    this.apiKeyForId = options.apiKeyForId ?? (() => undefined);
     this.definitions = options.definitions ?? HOST_HARNESS_DEFINITIONS;
     this.executableDirectories = options.executableDirectories ?? DEFAULT_EXECUTABLE_DIRECTORIES;
     const parsed = new URL(this.baseUrl);
@@ -850,13 +868,19 @@ export class HostHarnessIntegrationManager {
     let configurationIssue: string | undefined;
     let effectiveProvider: string | undefined;
     let effectiveBaseUrl: string | undefined;
+    let configurationFileChanged = Boolean(installation);
+    let configurationRevisionChanged = false;
     if (definition.configuration) {
       try {
         const configPath = await this.safeConfigPath(definition.configuration.relativePath);
         const current = await readBounded(configPath);
         if (current) {
           const inspection = definition.configuration.inspect
-            ? definition.configuration.inspect(current.content, this.baseUrl)
+            ? definition.configuration.inspect(
+                current.content,
+                this.baseUrl,
+                installation ? this.apiKeyForId(installation.apiKeyId) : undefined,
+              )
             : {
                 configured: definition.configuration.isConfigured(current.content, this.baseUrl),
                 repairable: true,
@@ -867,16 +891,26 @@ export class HostHarnessIntegrationManager {
           effectiveProvider = inspection.effectiveProvider;
           effectiveBaseUrl = inspection.effectiveBaseUrl;
         }
+        configurationFileChanged = Boolean(
+          installation && (!current || sha256(current.content) !== installation.installedSha256),
+        );
+        configurationRevisionChanged = Boolean(
+          installation &&
+            definition.configuration.revision !== undefined &&
+            installation.configurationRevision !== definition.configuration.revision,
+        );
         drifted = Boolean(
           installation &&
             (!current ||
-              sha256(current.content) !== installation.installedSha256 ||
-              (definition.configuration.revision !== undefined &&
-                installation.configurationRevision !== definition.configuration.revision)),
+              configurationRevisionChanged ||
+              (definition.configuration.driftScope === "managed"
+                ? !configured
+                : configurationFileChanged)),
         );
       } catch (error: any) {
         configurationError = error?.message ?? "The harness configuration cannot be edited safely.";
         drifted = Boolean(installation);
+        configurationFileChanged = Boolean(installation);
       }
     }
     return {
@@ -890,7 +924,7 @@ export class HostHarnessIntegrationManager {
       drifted,
       canInstall: detected && Boolean(definition.configuration) && !configured && !installation && !configurationError,
       repairable: Boolean(installation && repairable && !configurationError),
-      canUninstall: Boolean(installation) && !drifted,
+      canUninstall: Boolean(installation) && !configurationFileChanged && !configurationRevisionChanged && !configurationError,
       ...(definition.configuration ? { configPath: `~/${definition.configuration.relativePath}` } : {}),
       ...(configurationIssue ? { configurationIssue } : {}),
       ...(effectiveProvider ? { effectiveProvider } : {}),
