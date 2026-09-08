@@ -484,6 +484,7 @@ pub struct Account {
     pub location: Option<String>,
     pub capacity_profile: Option<CapacityProfile>,
     pub privacy_mode: Option<String>,
+    pub multivibe_cloud: Option<bool>,
     pub usage: Option<UsageSnapshot>,
     pub state: Option<AccountState>,
     pub local_runtime: Option<LocalRuntime>,
@@ -1239,6 +1240,7 @@ fn select_accounts(
         .iter()
         .filter(|account| {
             normalize_provider(account) == route.provider.as_deref().unwrap_or("")
+                && (!is_cloud_model_selector(&route.requested_model) || account.multivibe_cloud == Some(true))
                 && (route.account_ids.is_empty() || route.account_ids.contains(&account.id))
                 && account_usable(account, &route.model, blocked)
         })
@@ -1346,6 +1348,10 @@ struct RouteCandidate {
     account_ids: Vec<String>,
 }
 
+fn is_cloud_model_selector(model: &str) -> bool {
+    model.starts_with("multivibe/")
+}
+
 fn routes_for_model(
     store: &StoreFile,
     model: &str,
@@ -1357,6 +1363,13 @@ fn routes_for_model(
     } else {
         model
     };
+    if is_cloud_model_selector(requested) {
+        return vec![RouteCandidate {
+            requested_model: requested.to_owned(), model: requested.to_owned(),
+            provider: Some("openai-compatible".to_owned()),
+            account_ids: vec![],
+        }];
+    }
     if let Some(alias) = store
         .model_aliases
         .iter()
@@ -1433,7 +1446,7 @@ fn image_aware_routing_model(
     body: &Value,
     requested_model: &str,
 ) -> String {
-    if !payload_has_image(body) {
+    if is_cloud_model_selector(requested_model) || !payload_has_image(body) {
         return requested_model.to_owned();
     }
     let Some(override_model) = store

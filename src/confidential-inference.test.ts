@@ -37,6 +37,7 @@ const measurements: ConfidentialMeasurements = {
 };
 
 type FixtureOptions = {
+  clock?: () => number;
   mutatePayload?: (payload: ConfidentialAttestationPayload) => ConfidentialAttestationPayload;
   mutateAfterSigning?: (payload: ConfidentialAttestationPayload) => ConfidentialAttestationPayload;
   untrustedSigner?: boolean;
@@ -166,7 +167,7 @@ function fixture(options: FixtureOptions = {}) {
   };
 
   return {
-    client: new ConfidentialInferenceClient(policy, fetchImpl, () => NOW),
+    client: new ConfidentialInferenceClient(policy, fetchImpl, options.clock ?? (() => NOW)),
     stats: () => ({ executeCalls, conventionalCalls, relayBody }),
   };
 }
@@ -280,4 +281,26 @@ test("treats an authenticated-response failure as execution uncertain", async ()
   );
   assert.equal(run.stats().executeCalls, 1);
   assert.equal(run.stats().conventionalCalls, 0);
+});
+
+test("prepared attestation sends no prompt and can execute only once", async () => {
+  const value = fixture();
+  const session = await value.client.prepare({ baseUrl: "https://cloud.example", accessToken: "test-access",
+    model: MODEL, path: "/v1/responses" });
+  assert.equal(value.stats().executeCalls, 0);
+  const response = await session.execute(JSON.stringify({ model: MODEL, input: "private canary message" }));
+  assert.equal(response.status, 200);
+  await assert.rejects(session.execute("private canary message"), /already used/);
+  assert.equal(value.stats().executeCalls, 1);
+});
+
+
+test("prepared sessions refuse evidence that expires while waiting for dispatch", async () => {
+  let at = NOW;
+  const value = fixture({ clock: () => at });
+  const session = await value.client.prepare({ baseUrl: "https://cloud.example", accessToken: "test-access",
+    model: MODEL, path: "/v1/responses" });
+  at += 61_000;
+  await assert.rejects(session.execute("private canary message"), /stale|expired/);
+  assert.equal(value.stats().executeCalls, 0);
 });
