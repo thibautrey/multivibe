@@ -161,7 +161,7 @@ async function refreshOneAccount(
 
   if (!Object.keys(patch).length) return "skipped";
   await options.store.patchAccount(account.id, patch);
-  return usageChanged ? "refreshed" : "failed";
+  return usageChanged && refreshed.usage?.quotaStatus !== "error" ? "refreshed" : "failed";
 }
 
 async function refreshWithConcurrency(

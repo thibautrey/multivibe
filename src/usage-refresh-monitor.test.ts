@@ -195,3 +195,16 @@ test("persists credentials renewed before a background usage probe", async (t) =
   assert.equal(accounts[0].refreshToken, "renewed-refresh-token");
   assert.ok((accounts[0].expiresAt ?? 0) > Date.now());
 });
+
+test("persists failed quota snapshots but counts them as failed rather than refreshed", async () => {
+  const accounts = [account({ usage: { fetchedAt: 0, primary: { usedPercent: 50 } } })];
+  const coordinator = new UsageRefreshCoordinator(async (value) => {
+    value.usage = { ...value.usage, fetchedAt: Date.now(), quotaStatus: "error", quotaMessage: "probe failed" };
+    return value;
+  });
+  const monitor = createUsageRefreshMonitor(monitorOptions(storeFor(accounts), coordinator));
+  assert.deepEqual(await monitor.refreshNow(), { checked: 1, refreshed: 0, failed: 1, skipped: 0 });
+  assert.equal(accounts[0].usage?.quotaStatus, "error");
+  assert.equal(accounts[0].usage?.primary?.usedPercent, 50);
+  monitor.stop();
+});
