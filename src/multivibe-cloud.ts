@@ -12,6 +12,7 @@ const SCOPES = [
   "billing:read",
   "projects:read",
   "projects:write",
+  "core:credential:create",
   "provider:read",
 ].join(" ");
 const FLOW_LIFETIME_MS = 10 * 60_000;
@@ -438,15 +439,15 @@ export class MultivibeCloudService {
 
   private async createApiKey(accessToken: string, projectId: string): Promise<{ secret: string; expiresAt: number }> {
     const expiresAt = Date.now() + API_KEY_LIFETIME_MS;
-    const created = await this.requestJson(`/client/v1/projects/${encodeURIComponent(projectId)}/api-keys`, accessToken, {
-      method: "POST",
-      body: {
-        name: "MultiVibe Core",
-        scopes: ["models:read", "responses:write"],
-        expires_at: new Date(expiresAt).toISOString(),
+    const created = await this.requestJson(
+      `/client/v1/projects/${encodeURIComponent(projectId)}/integrations/multivibe-core/credential`,
+      accessToken,
+      {
+        method: "POST",
+        body: {},
+        idempotencyKey: `multivibe-core-key-${randomUUID()}`,
       },
-      idempotencyKey: `multivibe-core-key-${randomUUID()}`,
-    });
+    );
     const secret = stringValue((created as Record<string, unknown>).secret);
     if (!secret) throw new Error("MultiVibe Cloud API key response is missing its secret");
     const apiKey = (created as Record<string, unknown>).apiKey;
