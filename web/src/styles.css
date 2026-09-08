@@ -5147,3 +5147,89 @@ body:has(> .modal-backdrop) {
 .cloud-provider-balance strong {
   font-size: 1.25rem;
 }
+
+/* Keep worker setup focused on one decision; details stay optional. */
+.worker-setup-modal {
+  width: min(580px, 100%);
+}
+
+.worker-setup-modal .provider-capacity-panel {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.worker-setup-modal .make-money-preview-status {
+  padding: 9px 12px;
+  font-size: 12px;
+}
+
+.worker-sharing-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 4px 0 16px;
+  cursor: pointer;
+}
+
+.worker-sharing-control > span {
+  display: grid;
+  gap: 4px;
+}
+
+.worker-sharing-control strong {
+  font-size: 16px;
+}
+
+.worker-sharing-control small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.worker-sharing-control input {
+  appearance: none;
+  position: relative;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 26px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--muted);
+  border-radius: 999px;
+  background: var(--surface-muted);
+  cursor: pointer;
+}
+
+.worker-sharing-control input::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.worker-sharing-control input:checked {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.worker-sharing-control input:checked::before {
+  left: 21px;
+  background: white;
+}
+
+.worker-sharing-control input:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 4px;
+}
+
+.worker-sharing-control input:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
