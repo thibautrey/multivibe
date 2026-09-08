@@ -2,8 +2,8 @@ import React, { useRef, useState } from "react";
 import { normalizeWidgets, moveWidget, type WidgetLayout, type WidgetDefinition } from "../lib/widgetLayout";
 import "./WidgetGrid.css";
 
-type WidgetProps = { widgetId: string; title: string; required?: boolean };
-type Props = { storageKey: string; label: string; children: React.ReactElement<WidgetProps>[] };
+type WidgetProps = { widgetId: string; title: string; required?: boolean; action?: { href: string; label: string } };
+type Props = { storageKey: string; label: string; children: React.ReactNode };
 
 export function WidgetGrid({ storageKey, label, children }: Props) {
   const widgets = React.Children.toArray(children) as React.ReactElement<WidgetProps>[];
@@ -79,7 +79,7 @@ export function WidgetGrid({ storageKey, label, children }: Props) {
         <div className="widget-gallery-grid">{layout.map((item) => {
           const widget = widgets.find((entry) => entry.props.widgetId === item.id)!;
           return <button type="button" key={item.id} className={`widget-gallery-item ${item.visible ? "widget-gallery-added" : ""}`} disabled={item.visible} onClick={() => update(item.id, { visible: true })} aria-label={`Add ${widget.props.title}`}>
-            <div className="widget-gallery-preview" aria-hidden="true">{widget}</div>
+            <div className="widget-gallery-preview" aria-hidden="true">{React.cloneElement(widget, { action: undefined })}</div>
             <span className="widget-gallery-caption"><strong>{widget.props.title}</strong><span>{widget.props.required ? "Required" : item.visible ? "✓ Added" : "+ Add widget"}</span></span>
           </button>;
         })}</div>
