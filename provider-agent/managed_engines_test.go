@@ -464,3 +464,16 @@ func TestManagedEngineCancellationStopsPendingDownload(t *testing.T) {
 		t.Fatal("cancelled preparation started a runtime")
 	}
 }
+
+func TestManagedEngineInvalidCleanupDoesNotChangeRuntime(t *testing.T) {
+	engines, policy := testManagedEngines(t)
+	if err := engines.backend.Cleanup(context.Background(), runtimeCleanupRequest{Policy: policy, ModelIDs: []string{"not-a-model"}}); err == nil {
+		t.Fatal("invalid cleanup accepted")
+	}
+	if err := engines.backend.deactivateModel(context.Background(), policy, "/untrusted/catalog", workerTestCanonicalModel); err == nil {
+		t.Fatal("untrusted catalog accepted")
+	}
+	if engines.manager.commands.(*managedOllamaTestCommands).starts != 0 {
+		t.Fatal("invalid cleanup started a runtime")
+	}
+}
