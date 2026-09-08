@@ -62,7 +62,9 @@ artifact binding. That binding, signed request validation, model licensing and
 Cloud consent remain enforced. The actual inference process is exposed through
 `execution_runtime`, `execution_version`, and optional `fallback_reason` on the
 managed status response. The legacy `version` field continues to describe the
-Ollama artifact manager for older clients.
+Ollama artifact manager for older clients. Public SDK requests explicitly bound
+to the Ollama backend continue to execute on Ollama; automatic engine selection
+applies to the managed Host worker, not to a caller's pinned SDK backend.
 
 ## Release maintenance and validation
 
