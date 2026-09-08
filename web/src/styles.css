@@ -5159,7 +5159,7 @@ body:has(> .modal-backdrop) {
 .ttft-comparison-axis { margin-top: 12px; }
 .ttft-comparison-ticks { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .ttft-axis-title { text-align: center; color: var(--muted); font-size: 12px; margin-top: 8px; }
-.ttft-line-scroll { overflow-x: auto; max-width: 100%; }
+.ttft-line-scroll { overflow-x: auto; max-width: 100%; padding-bottom: 8px; }
 .ttft-chart-tooltip { padding: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; color: var(--text); }
 .ttft-chart-tooltip p { margin: 8px 0 0; font-size: 12px; }
 .ttft-line-note { font-size: 12px; }
