@@ -1,3 +1,4 @@
+import { PluginAnalytics } from "./PluginAnalytics";
 import { useState } from "react";
 import type { ModuleView } from "../types";
 import { api } from "../lib/api";
@@ -13,6 +14,7 @@ export function PluginSettings({ plugin, onSaved, onClose }: { plugin: ModuleVie
   return <section className="panel plugin-settings" aria-label={`${plugin.manifest?.name ?? plugin.id} settings`}>
     <h3>{plugin.manifest?.name ?? plugin.id} settings</h3>
     {plugin.id === "multivibe.automatic-router" && <p className="muted">Requires JavaScript inference. Choose a classifier and three difficulty tiers before enabling. Multi-turn routing requires a stable session ID; continuations retain their first selection to help reuse cached input. Classifier calls add cost and latency.</p>}
+    <PluginAnalytics pluginId={plugin.id} />
     <form onSubmit={async (event) => {
       event.preventDefault(); setSaving(true); setError("");
       try { await api(`/admin/modules/${encodeURIComponent(plugin.id)}`, { method: "PATCH", body: JSON.stringify({ settings }) }); await onSaved(); onClose(); }

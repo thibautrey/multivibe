@@ -3,3 +3,7 @@
 .plugin-settings form { display: grid; gap: 16px; max-width: 720px; }
 .plugin-settings .control-field { display: grid; gap: 6px; }
 .plugin-settings select, .plugin-settings input, .plugin-settings textarea { max-width: 100%; }
+.plugin-analytics { margin: 20px 0; padding: 16px; border: 1px solid var(--border, #dce3df); border-radius: 12px; }
+.plugin-analytics-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+.plugin-analytics-metrics dt { font-size: 12px; }
+.plugin-analytics-metrics dd { margin: 4px 0 0; font-size: 20px; font-weight: 600; }
