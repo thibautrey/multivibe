@@ -428,7 +428,7 @@ private final class HostPopoverController: NSViewController {
         updateBusy: Bool,
         startAtLogin: Bool
     ) {
-        loadViewIfNeeded()
+        _ = view
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
         headerTitle.stringValue = "MultiVibe"
         headerStatus.stringValue = status
@@ -872,7 +872,7 @@ private final class NotificationPopup: NSViewController {
     }
 
     func reset() {
-        loadViewIfNeeded()
+        _ = view
         guard let configuration else { return }
         messageLabel.stringValue = configuration.message
         actionButton.title = configuration.actionTitle
@@ -880,7 +880,7 @@ private final class NotificationPopup: NSViewController {
     }
 
     func showConfirmation() {
-        loadViewIfNeeded()
+        _ = view
         guard let configuration,
               let confirmationMessage = configuration.confirmationMessage,
               let confirmationTitle = configuration.confirmationTitle else { return }
@@ -890,7 +890,7 @@ private final class NotificationPopup: NSViewController {
     }
 
     func showStatus(message: String, actionTitle: String, actionEnabled: Bool) {
-        loadViewIfNeeded()
+        _ = view
         messageLabel.stringValue = message
         actionButton.title = actionTitle
         actionButton.isEnabled = actionEnabled

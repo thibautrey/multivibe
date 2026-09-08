@@ -34,6 +34,7 @@ const maximumNodeExtractedBytes = 1024 * 1024 * 1024;
 const maximumOllamaFileBytes = 4 * 1024 * 1024 * 1024;
 const maximumOllamaExtractedBytes = 12 * 1024 * 1024 * 1024;
 const betterSQLiteSmokeTest = "const Database=require('better-sqlite3');const database=new Database(':memory:');try{const row=database.prepare('SELECT 1 AS value').get();if(row?.value!==1)throw new Error('better-sqlite3 smoke test failed')}finally{database.close()}";
+const macOSMinimumVersion = "13.0";
 
 export function argumentsFrom(argv) {
   const options = { allowDirty: false, allowUnsigned: false };
@@ -650,7 +651,8 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
     }
     const info = (await readFile(path.join(repositoryRoot, "packaging", "macos", "Info.plist"), "utf8"))
       .replaceAll("__MULTIVIBE_VERSION__", options.version)
-      .replaceAll("__MULTIVIBE_BUILD__", buildNumber);
+      .replaceAll("__MULTIVIBE_BUILD__", buildNumber)
+      .replaceAll("__MULTIVIBE_MACOS_MINIMUM_VERSION__", macOSMinimumVersion);
     await writeFile(path.join(contents, "Info.plist"), info);
     await cp(
       path.join(repositoryRoot, "assets", "brand", "favicon", "favicon-32x32.png"),
@@ -726,7 +728,7 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
     const swiftArchitecture = selectedTarget.goarch === "arm64" ? "arm64" : "x86_64";
     await command("xcrun", [
       "swiftc", "-parse-as-library", "-O", "-whole-module-optimization",
-      "-target", `${swiftArchitecture}-apple-macos14.0`,
+      "-target", `${swiftArchitecture}-apple-macos${macOSMinimumVersion}`,
       "-framework", "AppKit",
       path.join(repositoryRoot, "packaging", "macos", "MultiVibeMenuBar.swift"),
       "-o", menuBarDestination,
