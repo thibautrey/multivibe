@@ -1974,31 +1974,72 @@ fn responses_to_chat_completions(body: &Value, client_stream: bool) -> Value {
     output.insert("messages".to_owned(), Value::Array(messages));
     output.insert("stream".to_owned(), Value::Bool(client_stream));
     if let Some(tools) = object.get("tools").and_then(Value::as_array) {
+        // Responses also carries built-in tools which are not valid Chat
+        // Completions tools. Local OpenAI-compatible runtimes such as OMLX
+        // accept function tools only, so normalize the envelope and drop
+        // every other tool before forwarding the request.
+        let normalized_tools: Vec<Value> = tools
+            .iter()
+            .filter_map(|tool| {
+                if tool.get("type").and_then(Value::as_str) != Some("function") {
+                    return None;
+                }
+                let source = tool.get("function").unwrap_or(tool);
+                let name = source.get("name").and_then(Value::as_str)?;
+                if name.trim().is_empty() {
+                    return None;
+                }
+                let mut function = Map::new();
+                function.insert("name".to_owned(), Value::String(name.to_owned()));
+                for key in ["description", "parameters"] {
+                    if let Some(value) = source.get(key) {
+                        function.insert(key.to_owned(), value.clone());
+                    }
+                }
+                if source.get("strict").and_then(Value::as_bool).is_some() {
+                    function.insert("strict".to_owned(), source["strict"].clone());
+                }
+                Some(json!({"type": "function", "function": function}))
+            })
+            .collect();
+
         output.insert(
             "tools".to_owned(),
-            Value::Array(
-                tools
-                    .iter()
-                    .map(|tool| {
-                        if tool.get("type").and_then(Value::as_str) == Some("function") {
-                            json!({"type": "function", "function": {
-                                "name": tool.get("name"),
-                                "description": tool.get("description"),
-                                "parameters": tool.get("parameters"),
-                                "strict": tool.get("strict"),
-                            }})
-                        } else {
-                            tool.clone()
-                        }
-                    })
-                    .collect(),
-            ),
+            Value::Array(normalized_tools),
         );
     }
-    for key in ["tool_choice", "temperature"] {
-        if let Some(value) = object.get(key) {
-            output.insert(key.to_owned(), value.clone());
+    if let Some(choice) = object.get("tool_choice") {
+        let normalized_choice = choice
+            .as_str()
+            .filter(|value| matches!(*value, "auto" | "none" | "required"))
+            .map(|value| Value::String(value.to_owned()))
+            .or_else(|| {
+                let choice_object = choice.as_object()?;
+                if choice_object.get("type").and_then(Value::as_str) != Some("function") {
+                    return None;
+                }
+                let name = choice_object
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .or_else(|| choice_object.get("function")?.get("name").and_then(Value::as_str))?;
+                Some(json!({"type": "function", "function": {"name": name}}))
+            });
+        if let Some(value) = normalized_choice {
+            output.insert("tool_choice".to_owned(), value);
         }
+    }
+    let no_tools = output
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_none_or(|tools| tools.is_empty());
+    if no_tools {
+        output.remove("tools");
+        if matches!(output.get("tool_choice").and_then(Value::as_str), Some("auto" | "required")) {
+            output.remove("tool_choice");
+        }
+    }
+    if let Some(value) = object.get("temperature") {
+        output.insert("temperature".to_owned(), value.clone());
     }
     if let Some(value) = object
         .get("max_tokens")
@@ -12071,6 +12112,32 @@ mod tests {
         );
         assert!(!anthropic["model"].as_str().unwrap().contains("claude"));
         assert_eq!(anthropic["instructions"], "You are helpful");
+    }
+
+    #[test]
+    fn responses_to_chat_drops_builtin_tools_and_normalizes_function_tools() {
+        let converted = responses_to_chat_completions(
+            &json!({
+                "model": "Qwen3.8-27B-4bit",
+                "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+                "tools": [
+                    {"type": "web_search_preview"},
+                    {"type": "function", "name": "lookup", "description": "Look something up", "parameters": {"type": "object"}},
+                    {"type": "computer_use_preview"}
+                ],
+                "tool_choice": {"type": "function", "name": "lookup"}
+            }),
+            false,
+        );
+
+        assert_eq!(
+            converted["tools"],
+            json!([{"type": "function", "function": {"name": "lookup", "description": "Look something up", "parameters": {"type": "object"}}}])
+        );
+        assert_eq!(
+            converted["tool_choice"],
+            json!({"type": "function", "function": {"name": "lookup"}})
+        );
     }
 
     #[test]
