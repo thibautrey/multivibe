@@ -120,6 +120,7 @@ func TestCredentialsRejectTrailingJSON(t *testing.T) {
 
 func TestCoreEnvironmentIsAllowlistedAndPinsAllState(t *testing.T) {
 	t.Setenv("UNRELATED_SECRET", "must-not-leak")
+	t.Setenv("MODELS_CLIENT_VERSION", "0.144.1")
 	t.Setenv("MULTIVIBE_PROVIDER_DEMAND_TRUSTED_KEYS", `{"ambient":"must-not-override-the-bundle"}`)
 	t.Setenv("MULTIVIBE_PROVIDER_OLLAMA_LISTEN", "127.0.0.1:18081")
 	t.Setenv("MULTIVIBE_PROVIDER_CUDA_VISIBLE_DEVICES", "0")
@@ -158,6 +159,7 @@ func TestCoreEnvironmentIsAllowlistedAndPinsAllState(t *testing.T) {
 		"MULTIVIBE_HOST_APPLICATION=true",
 		"MULTIVIBE_HOST_UPDATER_BINARY=/opt/multivibe/bin/updater",
 		"APP_VERSION=dev",
+		"MODELS_CLIENT_VERSION=1.0.0",
 		"PROVIDER_AGENT_CAPACITY_POLICY_PATH=/var/lib/multivibe/provider-agent-capacity-policy.json",
 		"PROVIDER_AGENT_MANAGED_ROOT=/srv/multivibe-managed",
 		"PROVIDER_AGENT_BUNDLED_OLLAMA_ROOT=/opt/multivibe/runtime/ollama",
@@ -175,7 +177,7 @@ func TestCoreEnvironmentIsAllowlistedAndPinsAllState(t *testing.T) {
 		}
 	}
 	if strings.Contains(joined, "UNRELATED_SECRET") || strings.Contains(joined, "must-not-leak") ||
-		strings.Contains(joined, "must-not-override-the-bundle") {
+		strings.Contains(joined, "must-not-override-the-bundle") || strings.Contains(joined, "MODELS_CLIENT_VERSION=0.144.1") {
 		t.Fatalf("parent environment leaked: %s", joined)
 	}
 }

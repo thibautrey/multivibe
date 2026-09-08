@@ -280,6 +280,36 @@ function filterVisibleTraces<T extends { route?: string }>(traces: T[]): T[] {
   return traces.filter((trace) => !isHiddenTraceRoute(trace.route));
 }
 
+function writeProviderCloudEnrollmentError(
+  res: express.Response,
+  error: unknown,
+  invalidError: "invalid_provider_cloud_enrollment" | "invalid_provider_cloud_handoff",
+): boolean {
+  if (!(error instanceof ProviderAgentControlRequestError)) return false;
+  switch (error.status) {
+    case 400:
+      res.status(400).json({ error: invalidError });
+      return true;
+    case 409:
+      res.status(409).json({ error: "provider_cloud_enrollment_conflict" });
+      return true;
+    case 410:
+      res.status(410).json({ error: "provider_cloud_enrollment_expired" });
+      return true;
+    case 422:
+      res.status(422).json({ error: "provider_cloud_enrollment_rejected" });
+      return true;
+    case 502:
+      res.status(502).json({ error: "provider_cloud_unavailable" });
+      return true;
+    case 503:
+      res.status(503).json({ error: "provider_agent_unavailable" });
+      return true;
+    default:
+      return false;
+  }
+}
+
 function isOpenAiEnabledAccount(account: Account | undefined): account is Account {
   return Boolean(account && (account.provider ?? "openai") === "openai" && account.enabled);
 }
@@ -1069,12 +1099,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       res.setHeader("cache-control", "no-store");
       res.status(201).json(enrollment);
     } catch (error) {
-      if (error instanceof ProviderAgentControlRequestError && error.status === 400) {
-        return res.status(400).json({ error: "invalid_provider_cloud_enrollment" });
-      }
-      if (error instanceof ProviderAgentControlRequestError && error.status === 409) {
-        return res.status(409).json({ error: "provider_cloud_enrollment_conflict" });
-      }
+      if (writeProviderCloudEnrollmentError(res, error, "invalid_provider_cloud_enrollment")) return;
       res.status(503).json({ error: "provider_agent_unavailable" });
     }
   });
@@ -1096,12 +1121,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       res.setHeader("cache-control", "no-store");
       res.status(201).json(enrollment);
     } catch (error) {
-      if (error instanceof ProviderAgentControlRequestError && error.status === 409) {
-        return res.status(409).json({ error: "provider_cloud_enrollment_conflict" });
-      }
-      if (error instanceof ProviderAgentControlRequestError && error.status === 400) {
-        return res.status(400).json({ error: "invalid_provider_cloud_handoff" });
-      }
+      if (writeProviderCloudEnrollmentError(res, error, "invalid_provider_cloud_handoff")) return;
       if (error instanceof Error && !error.message.includes("provider agent")) {
         return res.status(409).json({ error: "provider_cloud_handoff_not_ready", message: error.message });
       }

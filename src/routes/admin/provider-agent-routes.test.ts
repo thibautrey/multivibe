@@ -720,3 +720,43 @@ test("the macOS handoff does not probe or require a local model", async () => {
     assert.equal(enrollCalls, 1);
   }, { appVersion: "0.2.0" });
 });
+
+test("the macOS handoff preserves actionable enrollment failures and reserves 503 for the local agent", async () => {
+  const grant = `mve_${"a".repeat(43)}`;
+  for (const testCase of [
+    { agentStatus: 400, responseStatus: 400, error: "invalid_provider_cloud_handoff" },
+    { agentStatus: 409, responseStatus: 409, error: "provider_cloud_enrollment_conflict" },
+    { agentStatus: 410, responseStatus: 410, error: "provider_cloud_enrollment_expired" },
+    { agentStatus: 422, responseStatus: 422, error: "provider_cloud_enrollment_rejected" },
+    { agentStatus: 502, responseStatus: 502, error: "provider_cloud_unavailable" },
+    { agentStatus: 503, responseStatus: 503, error: "provider_agent_unavailable" },
+  ]) {
+    const control = providerAgentControl({
+      enrollCloud: async () => { throw new ProviderAgentControlRequestError(testCase.agentStatus); },
+    });
+    await withAdminServer(control, async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/admin/provider-agent/cloud-shadow/enroll-handoff`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enrollment_token: grant }),
+      });
+      const body = await response.json() as { error: string };
+      assert.equal(response.status, testCase.responseStatus);
+      assert.equal(body.error, testCase.error);
+      assert.doesNotMatch(JSON.stringify(body), /mve_|enrollment_token/u);
+    }, { appVersion: "0.2.0" });
+  }
+
+  const unavailable = providerAgentControl({
+    enrollCloud: async () => { throw new Error("provider agent is unavailable"); },
+  });
+  await withAdminServer(unavailable, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/admin/provider-agent/cloud-shadow/enroll-handoff`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enrollment_token: grant }),
+    });
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { error: "provider_agent_unavailable" });
+  }, { appVersion: "0.2.0" });
+});

@@ -153,6 +153,19 @@ private struct CloudEnrollmentResult: Decodable {
     let state: String
 }
 
+private struct CloudEnrollmentError: Decodable {
+    let error: String
+}
+
+private enum CloudEnrollmentFailure {
+    case invalidLink
+    case localAgentUnavailable
+    case expiredGrant
+    case conflict
+    case cloudRejected
+    case cloudUnavailable
+}
+
 private final class QuotaBarView: NSView {
     var remainingPercent: Double? {
         didSet { needsDisplay = true }
@@ -982,7 +995,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
 
     func application(_ application: NSApplication, open urls: [URL]) {
         guard urls.count == 1, let token = enrollmentToken(from: urls[0]) else {
-            if didFinishLaunching { showEnrollmentAlert(success: false, invalidLink: true) }
+            if didFinishLaunching { showEnrollmentAlert(success: false, failure: .invalidLink) }
             return
         }
         guard pendingEnrollmentToken == nil, !enrollmentInProgress else { return }
@@ -1037,33 +1050,59 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         enrollmentInProgress = true
         request.httpBody = try? JSONSerialization.data(withJSONObject: ["enrollment_token": token])
         request.setValue("application/json", forHTTPHeaderField: "content-type")
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, requestError in
             guard let self else { return }
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             let connected = (200...299).contains(status)
                 && data.flatMap { try? JSONDecoder().decode(CloudEnrollmentResult.self, from: $0) }?.state == "submitted"
-            let providerUnavailable = status == 503
+            let errorCode = data.flatMap { try? JSONDecoder().decode(CloudEnrollmentError.self, from: $0) }?.error
+            let failure: CloudEnrollmentFailure? = if connected {
+                nil
+            } else if requestError != nil || status == 0 || status == 503 || errorCode == "provider_agent_unavailable" {
+                .localAgentUnavailable
+            } else if status == 400 || errorCode == "invalid_provider_cloud_handoff" {
+                .invalidLink
+            } else if status == 409 || errorCode == "provider_cloud_enrollment_conflict" {
+                .conflict
+            } else if status == 410 || errorCode == "provider_cloud_enrollment_expired" {
+                .expiredGrant
+            } else if status == 502 || errorCode == "provider_cloud_unavailable" {
+                .cloudUnavailable
+            } else {
+                .cloudRejected
+            }
             DispatchQueue.main.async {
                 self.pendingEnrollmentToken = nil
                 self.enrollmentInProgress = false
-                self.showEnrollmentAlert(success: connected, invalidLink: false, providerUnavailable: providerUnavailable)
+                self.showEnrollmentAlert(success: connected, failure: failure)
                 self.refreshNow()
             }
         }.resume()
     }
 
-    private func showEnrollmentAlert(success: Bool, invalidLink: Bool, providerUnavailable: Bool = false) {
+    private func showEnrollmentAlert(success: Bool, failure: CloudEnrollmentFailure? = nil) {
         NSApplication.shared.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.alertStyle = success ? .informational : .warning
         alert.messageText = success ? "This Mac is connected" : "This Mac could not be connected"
-        alert.informativeText = success
-            ? "Its public identity was registered securely. Cloud jobs use only MultiVibe's managed Ollama runtime and still require your saved capacity consent."
-            : (invalidLink
-                ? "The MultiVibe connection link is invalid or incomplete. Start again from MultiVibe Cloud."
-                : (providerUnavailable
-                    ? "The local worker service is unavailable. Restart MultiVibe Host, then try again from MultiVibe Cloud."
-                    : "MultiVibe Cloud rejected the connection. Start again from MultiVibe Cloud with a new connection link."))
+        if success {
+            alert.informativeText = "Its public identity was registered securely. Cloud jobs use only MultiVibe's managed Ollama runtime and still require your saved capacity consent."
+        } else {
+            switch failure {
+            case .invalidLink:
+                alert.informativeText = "The MultiVibe connection link is invalid or incomplete. Start again from MultiVibe Cloud."
+            case .localAgentUnavailable:
+                alert.informativeText = "The local worker service is unavailable. Restart MultiVibe Host, then try again from MultiVibe Cloud."
+            case .expiredGrant:
+                alert.informativeText = "The MultiVibe connection link has expired. Start again from MultiVibe Cloud to create a new link."
+            case .conflict:
+                alert.informativeText = "This Mac already has a different Cloud enrollment. Refresh MultiVibe Cloud and use the existing connection."
+            case .cloudUnavailable:
+                alert.informativeText = "MultiVibe Cloud is temporarily unavailable. Keep MultiVibe Host open and try again shortly."
+            case .cloudRejected, .none:
+                alert.informativeText = "MultiVibe Cloud rejected the connection. Start again from MultiVibe Cloud with a new connection link."
+            }
+        }
         alert.addButton(withTitle: "OK")
         alert.runModal()
     }
