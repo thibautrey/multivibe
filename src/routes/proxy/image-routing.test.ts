@@ -433,7 +433,12 @@ test("model validation fails open when provider discovery is incomplete", () => 
 
 test("Cloud selectors survive local aliases and image overrides unchanged", () => {
   for (const model of ["multivibe/model", "multivibe/secured_preferred/model", "multivibe/secured_guaranteed/model", "multivibe/green_guaranteed/model"]) {
-    const candidates = buildImageAwareRoutingCandidates({ model }, [], [], "ordinary-model", undefined, true);
+    const candidates = buildImageAwareRoutingCandidates({ model }, discoveredModels, [{ id: model, enabled: true, schemaVersion: 2, rules: [{ id: "override", candidates: [{ model: "text-model" }] }] }], "vision-model", undefined, true);
     assert.deepEqual(candidates, [{ requestedModel: model, resolvedModel: model, provider: "openai-compatible" }]);
   }
+});
+
+
+test("Cloud resolves policy selectors even when absent from Core's cached catalog", () => {
+  assert.equal(isModelAllowedByKeys("multivibe/secured_guaranteed/model", new Set(["other-model"]), true), true);
 });

@@ -1294,7 +1294,7 @@ export function isModelAllowedByKeys(
   validModelKeys: ReadonlySet<string>,
   catalogComplete = true,
 ): boolean {
-  if (!model) return true; // No model specified, let it pass
+  if (!model || isCloudModelSelector(model)) return true; // Cloud resolves its own selectors.
   // Discovery depends on every configured provider being reachable. A partial
   // catalog must fail open or a transient provider error can make valid models
   // disappear until the cache expires or the proxy restarts.
@@ -2605,7 +2605,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
       const providerAccounts = filterProviderAccountsByModelAvailability(
         providerScopedAccounts,
         (account) =>
-          accountSupportsModel(
+          isCloudModelSelector(requestModel) || accountSupportsModel(
             account.id,
             candidate.provider,
             candidate.resolvedModel,
@@ -3130,6 +3130,13 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
             );
           };
           let upstream = await fetchWithTracing();
+          if (isCloudModelSelector(requestModel)) {
+            // Preserve gateway policy evidence through protocol conversion too.
+            for (const name of ["x-multivibe-compute", "x-multivibe-model-policy"]) {
+              const value = upstream.headers.get(name);
+              if (value) res.setHeader(name, value);
+            }
+          }
           if (upstream.status === 400 && !confidentialExecution) {
             const errorText = await upstream.text();
             const correction = applyUnsupportedValueCorrection(
