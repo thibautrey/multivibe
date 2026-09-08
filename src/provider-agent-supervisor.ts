@@ -204,6 +204,9 @@ export type ProviderManagedOllamaView = {
     running: boolean;
     paused: boolean;
     installed_model_ids: string[];
+    execution_runtime?: "ollama" | "llama-cpp" | "llamafile";
+    execution_version?: string;
+    fallback_reason?: string;
   };
 };
 

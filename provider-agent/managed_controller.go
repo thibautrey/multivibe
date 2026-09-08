@@ -490,6 +490,9 @@ func (controller *managedProviderController) runWorkerTest(
 	if err := checkPolicy(); err != nil {
 		return "", 0, 0, err
 	}
+	if err := controller.prepareInference(operationContext, policy, record.CanonicalModelID); err != nil {
+		return "", 0, 0, err
+	}
 	output, inputTokens, outputTokens, err := infer(operationContext, record.OllamaModel)
 	if err != nil {
 		return "", 0, 0, controller.operationError(operationContext, err)
@@ -590,6 +593,13 @@ func (controller *managedProviderController) reconcile(ctx context.Context, fenc
 			if err := controller.runtime.deactivateModel(operationContext, policy, controller.catalogPath, active.ModelID); err != nil {
 				return controller.status(), controller.operationError(operationContext, err)
 			}
+		}
+	}
+	// Finish native preparation after unloading obsolete models, so cleanup
+	// cannot stop the newly selected engine.
+	for _, modelID := range target.Plan.SelectedModelIDs {
+		if err := controller.prepareInference(operationContext, policy, modelID); err != nil {
+			return controller.status(), controller.operationError(operationContext, err)
 		}
 	}
 	if len(target.Plan.SelectedModelIDs) == 0 {
@@ -783,4 +793,11 @@ func decodeManagedControllerFence(body io.Reader, needsPlan bool) (managedContro
 		return managedControllerFence{}, errManagedControllerFence
 	}
 	return fence, nil
+}
+
+func (controller *managedProviderController) prepareInference(ctx context.Context, policy *capacityPolicyStateDocument, modelID string) error {
+	if backend, ok := controller.runtime.(*ollamaRuntimeBackend); ok && backend.engines != nil {
+		return backend.engines.prepare(ctx, policy, modelID)
+	}
+	return nil
 }

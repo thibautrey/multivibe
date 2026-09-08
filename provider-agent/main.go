@@ -794,6 +794,11 @@ func main() {
 			logger.Error("provider_agent_configuration_invalid", "error", "managed runtime backend registry is invalid")
 			os.Exit(2)
 		}
+		managedBackend.engines, err = newManagedInferenceEngines(managedBackend, managedRuntime, capacity)
+		if err != nil {
+			logger.Error("provider_agent_configuration_invalid", "error", "managed inference engine catalog is invalid")
+			os.Exit(2)
+		}
 		controllerStatePath := filepath.Join(managedRoot, "state", "controller.json")
 		controller, err = newManagedProviderController(
 			managedBackend, capacity, plans, plannerState, modelCatalogPath, dependencyManifestPath, controllerStatePath,

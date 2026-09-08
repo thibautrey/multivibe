@@ -91,6 +91,14 @@ func (backend *ollamaRuntimeBackend) prepareReviewedAlias(ctx context.Context, m
 		"model": alias, "from": source, "stream": false,
 		"parameters": map[string]any{"num_ctx": profile.Tuning.ContextTokens, "num_batch": profile.Tuning.BatchSize, "num_gpu": profile.Tuning.GPUOffloadLayers},
 	})
+	if err == nil {
+		backend.mu.Lock()
+		if backend.reviewedAliases == nil {
+			backend.reviewedAliases = make(map[string]bool)
+		}
+		backend.reviewedAliases[modelID] = true
+		backend.mu.Unlock()
+	}
 	return alias, err
 }
 
@@ -133,6 +141,9 @@ func (backend *ollamaRuntimeBackend) unloadReviewedAlias(ctx context.Context, mo
 	}
 	backend.mu.Lock()
 	profile, ok := backend.loadedProfiles[modelID]
+	if backend.engines != nil && !backend.reviewedAliases[modelID] {
+		ok = false
+	}
 	backend.mu.Unlock()
 	if !ok {
 		return nil

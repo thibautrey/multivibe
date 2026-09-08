@@ -141,22 +141,22 @@ A release build must verify the contribution manifest and profile catalog from
 a clean checkout. Drift requires review and explicit pin updates; startup must
 never rewrite them automatically.
 
-## Ollama today, other runtimes tomorrow
+## Managed engines and future backends
 
-Ollama is the first functional reference adapter. Its API makes the local
-lifecycle convenient, but does not expose identical fine-grained control of
-kernels, memory placement, batching, offload, and metrics on every platform.
-MultiVibe therefore does not claim that Ollama is optimal for all hardware or
-that it is the final architecture.
+The production worker now automatically installs llama.cpp and llamafile for
+reviewed GGUF profiles. See [Automatically managed inference engines](../../docs/managed-inference-engines.md)
+for supported platforms, installation pins, lifecycle, fallback and validation.
+These engines are compiled integrations behind the existing managed worker,
+which retains Ollama's pinned model-artifact catalog and fallback. They are not
+community plugins dynamically registered through the example adapter.
 
-Future contributions remain peer backends behind the same contract:
+The existing public SDK remains the contribution path for independent backend
+implementations. MLX-LM, vLLM and TensorRT-LLM still need managed dependencies and
+model-format-specific catalogs before their external connectors can become
+fully managed backends. Neither a connector entry nor an available GPU implies
+that a corresponding managed backend is installed or authorized.
 
-- `llama.cpp` for GGUF, CPU/CUDA/Metal, and fine-grained offload control;
-- `vLLM` for throughput, continuous batching, and Linux/GPU deployments;
-- `TensorRT-LLM` for highly optimized NVIDIA paths and their build constraints;
-- `MLX` for Apple Silicon and unified memory.
-
-Selection applies model × hardware × runtime constraints first, then a local
-benchmark whose digests match the catalog, and finally a conservative fallback.
-A local override may only reduce reviewed values or require a compatible
-backend. No opaque auto-tuning silently rewrites a profile.
+Runtime choice depends on model, hardware and workload. The initial native
+engine order uses conservative reviewed profiles; it does not claim a measured
+speedup. Future benchmark-based selection must retain exact catalog, profile
+and runtime digest matching and the existing local consent boundaries.

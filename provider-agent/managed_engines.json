@@ -1,0 +1,137 @@
+{
+  "schema_version": "managed-inference-engines-v1",
+  "engines": [
+    {
+      "id": "llamafile",
+      "version": "0.10.5",
+      "platform": "linux-amd64",
+      "accelerator": "cpu",
+      "backend": "cpu",
+      "executable": "llamafile",
+      "artifacts": [
+        {
+          "url": "https://github.com/mozilla-ai/llamafile/releases/download/0.10.5/llamafile-0.10.5",
+          "sha256": "417bcc3348cd5162c2751812fc0ea2f6e79e89e7be6f17e8401ed95de2ed4246",
+          "size": 350768862,
+          "archive": "file"
+        }
+      ],
+      "license": "Apache-2.0",
+      "source_url": "https://github.com/mozilla-ai/llamafile"
+    },
+    {
+      "id": "llama-cpp",
+      "version": "b10865",
+      "platform": "darwin-arm64",
+      "accelerator": "metal",
+      "backend": "metal",
+      "executable": "llama-b10865/llama-server",
+      "artifacts": [
+        {
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10865/llama-b10865-bin-macos-arm64.tar.gz",
+          "sha256": "027683efa8e45b56111a2595b525e6517bf58bd6d27d6c1685ab557bfd064b12",
+          "size": 11141558,
+          "archive": "tar.gz"
+        }
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/ggml-org/llama.cpp"
+    },
+    {
+      "id": "llama-cpp",
+      "version": "b10865",
+      "platform": "darwin-amd64",
+      "accelerator": "metal",
+      "backend": "metal",
+      "executable": "llama-b10865/llama-server",
+      "artifacts": [
+        {
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10865/llama-b10865-bin-macos-x64.tar.gz",
+          "sha256": "81cc14afcb6b005fd09cf3c50f79e4a5e93e100cb284aed6b89b5cc3dbe4335d",
+          "size": 11196792,
+          "archive": "tar.gz"
+        }
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/ggml-org/llama.cpp"
+    },
+    {
+      "id": "llama-cpp",
+      "version": "b10865",
+      "platform": "linux-amd64",
+      "accelerator": "cpu",
+      "backend": "cpu",
+      "executable": "llama-b10865/llama-server",
+      "artifacts": [
+        {
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10865/llama-b10865-bin-ubuntu-x64.tar.gz",
+          "sha256": "9f3e057eb9ef677fc742c074ff4a44bbd200962bd6ac1342a6492d801303f17d",
+          "size": 16816530,
+          "archive": "tar.gz"
+        }
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/ggml-org/llama.cpp"
+    },
+    {
+      "id": "llama-cpp",
+      "version": "b10865",
+      "platform": "linux-arm64",
+      "accelerator": "cpu",
+      "backend": "cpu",
+      "executable": "llama-b10865/llama-server",
+      "artifacts": [
+        {
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10865/llama-b10865-bin-ubuntu-arm64.tar.gz",
+          "sha256": "1e5f497d80aedba65481457a8fc86c5c0fc659d30bf696623e3ccd526cb4edf8",
+          "size": 13454459,
+          "archive": "tar.gz"
+        }
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/ggml-org/llama.cpp"
+    },
+    {
+      "id": "llama-cpp",
+      "version": "b10865",
+      "platform": "linux-amd64",
+      "accelerator": "cuda",
+      "backend": "vulkan",
+      "executable": "llama-b10865/llama-server",
+      "artifacts": [
+        {
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10865/llama-b10865-bin-ubuntu-vulkan-x64.tar.gz",
+          "sha256": "7eeb43e78b760b93f26d4d1bce0a0a91ead5ed1f137dbd68999e4203f96356a5",
+          "size": 34421387,
+          "archive": "tar.gz"
+        }
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/ggml-org/llama.cpp"
+    },
+    {
+      "id": "llama-cpp",
+      "version": "b10865",
+      "platform": "windows-amd64",
+      "accelerator": "cuda",
+      "backend": "cuda",
+      "executable": "llama-server.exe",
+      "artifacts": [
+        {
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10865/llama-b10865-bin-win-cuda-12.4-x64.zip",
+          "sha256": "8dcefa3736a411443b2895ff8be53973bc41d196b290c73b6c01491e4f863df1",
+          "size": 254078511,
+          "archive": "zip"
+        },
+        {
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10865/cudart-llama-bin-win-cuda-12.4-x64.zip",
+          "sha256": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6",
+          "size": 391443627,
+          "archive": "zip"
+        }
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/ggml-org/llama.cpp"
+    }
+  ]
+}
