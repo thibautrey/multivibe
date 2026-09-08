@@ -7,10 +7,11 @@ test('reads every public catalog page without credentials and strips upstream pr
     calls.push(url);
     assert.equal(new Headers(options.headers).has('authorization'), false);
     assert.equal(options.redirect, 'error');
-    return Response.json(calls.length === 1 ? { data: [{ id: 'a', displayName: 'A', aliases: ['alias-a'], multivibeNetwork: null }], nextCursor: 'next' } : { data: [{ id: 'b' }] });
+    return Response.json(calls.length === 1 ? { data: [{ id: 'a', displayName: 'A', author: 'Author A', aliases: ['alias-a'], multivibeNetwork: null }], nextCursor: 'next' } : { data: [{ id: 'b' }] });
   }) as typeof fetch;
   const models = await readCloudModelCatalog('https://example.com', fetcher);
   assert.deepEqual(models.map(model => model.id), ['a', 'b']);
+  assert.equal(models[0]?.author, 'Author A');
   assert.equal(calls[1].searchParams.get('cursor'), 'next');
   assert.equal(models[0].network, false);
 });
