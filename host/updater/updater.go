@@ -203,6 +203,8 @@ func (update *updater) check(ctx context.Context, state *updaterState, force boo
 	previousPath := state.DownloadedPath
 	previousSHA256 := state.DownloadedSHA256
 	previousTarget := state.Target
+	previousDownloadRequested := state.DownloadRequested
+	previousInstallRequested := state.InstallRequested
 	state.AvailableVersion = ""
 	state.AvailableCritical = false
 	state.RolloutEligible = false
@@ -230,6 +232,10 @@ func (update *updater) check(ctx context.Context, state *updaterState, force boo
 			state.DownloadRequested = false
 			state.InstallRequested = false
 			state.Status = "available"
+			if previousVersion == document.Version && previousTarget != nil && sameArchiveTarget(*previousTarget, target) {
+				state.DownloadRequested = previousDownloadRequested
+				state.InstallRequested = previousInstallRequested
+			}
 		}
 	} else {
 		state.DownloadRequested = false
