@@ -89,3 +89,44 @@ func TestMissingCachedDownloadIsNotPreserved(t *testing.T) {
 		t.Fatal("missing cached download was accepted")
 	}
 }
+
+func TestInstalledVersionClearsObsoleteQueuedUpdate(t *testing.T) {
+	for _, version := range []string{"0.2.32", "0.2.47"} {
+		state, _ := defaultState("0.2.31")
+		state.AvailableVersion = version
+		state.Target = &updateTarget{Kind: "archive"}
+		state.InstallRequested = true
+		state.DownloadRequested = true
+		state.RolloutEligible = true
+		state.DownloadedPath = "/obsolete"
+		state.FeedETag = "old-feed"
+		state.NextCheckAt = time.Now().Add(time.Hour).Format(time.RFC3339Nano)
+		reconcileCurrentVersion(&state, "0.2.47")
+		if state.AvailableVersion != "" || state.InstallRequested || state.DownloadRequested || state.Target != nil || state.DownloadedPath != "" || state.FeedETag != "" || state.NextCheckAt != "" || state.Status != "current" {
+			t.Fatalf("obsolete update survived: %#v", state)
+		}
+	}
+}
+
+func TestObsoleteUpdateCannotBeRequestedDownloadedOrApplied(t *testing.T) {
+	for _, version := range []string{"0.2.32", "0.2.47", "invalid"} {
+		state, _ := defaultState("0.2.47")
+		state.AvailableVersion = version
+		state.Target = &updateTarget{Kind: "archive"}
+		state.RolloutEligible = true
+		update := updater{store: testStore(t)}
+		if requestOperation(&update, &state, true) == nil {
+			t.Fatal("obsolete request accepted")
+		}
+		if update.download(context.Background(), &state) == nil {
+			t.Fatal("obsolete download accepted")
+		}
+		if verifyDownloadedArchive(state) == nil {
+			t.Fatal("obsolete install accepted")
+		}
+		restoreCachedStatus(&state)
+		if state.AvailableVersion != "" {
+			t.Fatal("cached obsolete update restored")
+		}
+	}
+}

@@ -65,9 +65,15 @@ verify_signed_application() {
 
 AUTOMATIC_UPDATE=false
 SOURCE_APPLICATION_OVERRIDE=""
+DESTINATION_APPLICATION_OVERRIDE=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --automatic-update) AUTOMATIC_UPDATE=true ;;
+    --destination-application)
+      shift
+      [ "$#" -gt 0 ] || fail "--destination-application requires a value"
+      DESTINATION_APPLICATION_OVERRIDE=$1
+      ;;
     --source-application)
       shift
       [ "$#" -gt 0 ] || fail "--source-application requires a value"
@@ -118,6 +124,12 @@ else
 fi
 
 APPLICATIONS_DIRECTORY="$HOME/Applications"
+if [ -n "$DESTINATION_APPLICATION_OVERRIDE" ]; then
+  case "$DESTINATION_APPLICATION_OVERRIDE" in
+    "/Applications/MultiVibe Host.app"|"$HOME/Applications/MultiVibe Host.app") APPLICATIONS_DIRECTORY=$(dirname "$DESTINATION_APPLICATION_OVERRIDE") ;;
+    *) fail "the update destination must be an installed Applications bundle" ;;
+  esac
+fi
 DESTINATION_APPLICATION="$APPLICATIONS_DIRECTORY/MultiVibe Host.app"
 LAUNCH_AGENTS_DIRECTORY="$HOME/Library/LaunchAgents"
 LAUNCH_AGENT="$LAUNCH_AGENTS_DIRECTORY/$LABEL.plist"

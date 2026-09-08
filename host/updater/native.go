@@ -22,6 +22,9 @@ import (
 )
 
 func verifyDownloadedArchive(state updaterState) error {
+	if !newerUpdate(state) {
+		return errors.New("the update must be newer than the installed version")
+	}
 	if state.DownloadedPath == "" || state.Target == nil || state.DownloadedSHA256 != state.Target.SHA256 {
 		return errors.New("no verified downloaded update is available")
 	}
@@ -278,7 +281,7 @@ func (update *updater) applyNative(ctx context.Context, state *updaterState) err
 		}()
 		application := filepath.Join(mountPoint, "MultiVibe Host.app")
 		installer := filepath.Join(application, "Contents", "Resources", "update", "install.sh")
-		installErr = commandWithLog(ctx, update.store.log, installer, "--automatic-update", "--source-application", application)
+		installErr = commandWithLog(ctx, update.store.log, installer, "--automatic-update", "--source-application", application, "--destination-application", installedMacApplication())
 	} else if runtime.GOOS == "windows" {
 		staging, err := os.MkdirTemp(update.store.cache, ".extract-*")
 		if err != nil {
@@ -320,7 +323,7 @@ func (update *updater) applyNative(ctx context.Context, state *updaterState) err
 		return err
 	}
 	if runtime.GOOS == "darwin" {
-		_ = exec.Command("/usr/bin/open", filepath.Join(os.Getenv("HOME"), "Applications", "MultiVibe Host.app")).Start()
+		_ = exec.Command("/usr/bin/open", installedMacApplication()).Start()
 	}
 	return nil
 }
