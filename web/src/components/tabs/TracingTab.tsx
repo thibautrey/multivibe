@@ -37,6 +37,9 @@ type Props = {
   tracePagination: TracePagination;
   gotoTracePage: (page: number) => Promise<void>;
   traceRange: TraceRangePreset;
+  setTraceRange: (range: TraceRangePreset) => void;
+  exportTracesZip: () => Promise<void>;
+  traceExportInProgress: boolean;
   traces: Trace[];
   projectUsageStats: ProjectUsageStats;
   expandedTraceId: string | null;
@@ -218,6 +221,9 @@ function TracingTabContent(props: Props) {
     tracePagination,
     gotoTracePage,
     traceRange,
+    setTraceRange,
+    exportTracesZip,
+    traceExportInProgress,
     traces,
     projectUsageStats,
     expandedTraceId,
@@ -325,6 +331,26 @@ function TracingTabContent(props: Props) {
   return (
     <>
       <section className="panel trace-workspace-header">
+        <div className="trace-workspace-controls">
+          <div className="trace-range-controls">
+            <label className="trace-range-field">
+              <span>Time range</span>
+              <select
+                value={traceRange}
+                onChange={(event) => setTraceRange(event.target.value as TraceRangePreset)}
+                aria-label="Trace time range"
+              >
+                <option value="24h">Last 24h</option>
+                <option value="7d">Last 7d</option>
+                <option value="30d">Last 30d</option>
+                <option value="all">All time</option>
+              </select>
+            </label>
+            <button className="btn secondary" onClick={() => void exportTracesZip()} disabled={traceExportInProgress}>
+              {traceExportInProgress ? "Exporting..." : "Export all (.zip)"}
+            </button>
+          </div>
+        </div>
         <nav className="trace-view-tabs" role="tablist" aria-label="Tracing views">
           {viewOptions.map((view) => (
             <button
