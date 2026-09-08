@@ -1,5 +1,4 @@
-import React, { useMemo, useState } from "react";
-import type { CSSProperties } from "react";
+import React, { useState } from "react";
 import {
   Bar,
   BarChart,
@@ -24,6 +23,7 @@ import {
   runtimeIdentityForProvider,
 } from "../../lib/runtimeCatalog";
 import { Metric } from "../Metric";
+import { TtftComparisonChart } from "../TtftComparisonChart";
 import { WidgetGrid } from "../WidgetGrid";
 import type { Account, ProjectUsageStats, StoreSettings, Trace, TracePagination, TraceRangePreset, TraceStats } from "../../types";
 
@@ -52,13 +52,6 @@ const TTFT_BUCKET_ORDER = ["lt1k", "1k-8k", "8k-32k", "32k-64k", "64k-128k", "12
 
 type TtftBucket = (typeof TTFT_BUCKET_ORDER)[number];
 
-type TtftModelGroup = {
-  key: string;
-  provider: string;
-  model: string;
-  rows: TraceStats["ttftByProviderModel"];
-};
-
 const TTFT_CONTEXT_LABELS: Record<TtftBucket, string> = {
   lt1k: "<1K",
   "1k-8k": "1K–8K",
@@ -82,19 +75,9 @@ export function TtftLatencyBoard({ traceStats }: { traceStats: TraceStats }) {
     : TTFT_BUCKET_ORDER.find((bucket) => groups.some((group) => group.inputTokenBucket === bucket)) ?? "1k-8k";
   const [selectedBucket, setSelectedBucket] = useState<TtftBucket>(activeBucket);
   const selectedGroups = groups.filter((group) => group.inputTokenBucket === selectedBucket);
-  const providerGroups = useMemo(() => {
-    const map = new Map<string, TtftModelGroup>();
-    for (const row of selectedGroups) {
-      const key = `${row.provider}:${row.model}`;
-      const existing = map.get(key);
-      if (existing) existing.rows.push(row);
-      else map.set(key, { key, provider: row.provider, model: row.model, rows: [row] });
-    }
-    return Array.from(map.values()).map((group) => ({
-      ...group,
-      rows: [...group.rows].sort((left, right) => (left.rank ?? 99) - (right.rank ?? 99)),
-    }));
-  }, [selectedGroups]);
+  const [chartView, setChartView] = useState<"range" | "line">("range");
+  const chartRows = [...selectedGroups].sort((a, b) =>
+    a.ttftP50Ms - b.ttftP50Ms || a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model));
   const scaleMax = Math.max(2_000, ...selectedGroups.map((group) => group.ttftP95Ms));
   const totalSamples = selectedGroups.reduce((sum, group) => sum + group.samples, 0);
   const fastest = selectedGroups.reduce((fastest, group) => Math.min(fastest, group.ttftP50Ms), Number.POSITIVE_INFINITY);
@@ -149,81 +132,32 @@ export function TtftLatencyBoard({ traceStats }: { traceStats: TraceStats }) {
       </div>
 
       <div className="ttft-kpis" aria-label="Selected context summary">
-        <div><small>Models</small><strong>{providerGroups.length}</strong></div>
+        <div><small>Models</small><strong>{new Set(selectedGroups.map((row) => `${row.provider}:${row.model}`)).size}</strong></div>
         <div><small>Requests</small><strong>{totalSamples.toLocaleString()}</strong></div>
         <div><small>Fastest p50</small><strong>{Number.isFinite(fastest) ? formatTtftDuration(fastest) : "—"}</strong></div>
         <div><small>Scale</small><strong>0–{formatTtftDuration(scaleMax)}</strong></div>
         <div><small>Low confidence</small><strong>{lowSamples}</strong></div>
       </div>
 
-      {selectedGroups.length ? (
-        <div className="ttft-groups">
-          {providerGroups.map((modelGroup) => {
-            const representative = modelGroup.rows[0];
-            const runtimeIdentity = runtimeIdentityForProvider(modelGroup.provider);
-            const groupSamples = modelGroup.rows.reduce((sum, row) => sum + row.samples, 0);
-            const groupP50 = modelGroup.rows.reduce((sum, row) => sum + row.ttftP50Ms * row.samples, 0) / Math.max(1, groupSamples);
-            const providerClass = modelGroup.provider === "mistral"
-              ? "provider-mistral"
-              : modelGroup.provider === "opencode"
-                ? "provider-opencode"
-                : modelGroup.provider === "zai"
-                  ? "provider-zai"
-                  : modelGroup.provider === "xai"
-                    ? "provider-xai"
-                    : "provider-openai";
-            return (
-              <section key={modelGroup.key} className={`ttft-provider-group ${providerClass}`} aria-label={`${runtimeIdentity.label} — ${modelGroup.model}`}>
-                <header className="ttft-provider-head">
-                  <span className="ttft-provider-name">
-                    <img src={runtimeIdentity.iconUrl} alt="" loading="lazy" />
-                    {runtimeIdentity.label}
-                  </span>
-                  <span className="ttft-provider-meta mono">{modelGroup.model}</span>
-                </header>
-                {modelGroup.rows.map((row) => {
-                  const left = Math.min(100, Math.max(0, (row.ttftP50Ms / scaleMax) * 100));
-                  const width = Math.max(1.5, Math.min(100 - left, ((row.ttftP95Ms - row.ttftP50Ms) / scaleMax) * 100));
-                  const barStyle = { "--range-left": `${left}%`, "--range-width": `${width}%` } as CSSProperties;
-                  return (
-                    <div key={`${row.provider}:${row.model}:${row.inputTokenBucket}`} className="ttft-row">
-                      <div className="ttft-row-label">
-                        <strong className="mono">{modelGroup.model}</strong>
-                        <small>{row.samples.toLocaleString()} samples · {row.cachedInputRatio === undefined ? "cache n/a" : `${Math.round(row.cachedInputRatio * 100)}% cached`}</small>
-                      </div>
-                      <div className="ttft-measure">
-                        <div className="ttft-track" style={barStyle}>
-                          <span className="ttft-range" />
-                          <span className="ttft-p50" />
-                        </div>
-                        <div className="ttft-values">
-                          <strong>{formatTtftDuration(row.ttftP50Ms)}</strong>
-                          <small>p95 {formatTtftDuration(row.ttftP95Ms)} · median {row.medianInputTokens === undefined ? "—" : formatTokenCount(row.medianInputTokens)}</small>
-                        </div>
-                      </div>
-                      <span className={`ttft-confidence ${row.confidence === "low" ? "low" : "sufficient"}`} title={row.rank ? `Rank ${row.rank}` : "Below ranking threshold"}>
-                        {row.confidence === "low" ? "Low n" : `#${row.rank ?? "—"}`}
-                      </span>
-                    </div>
-                  );
-                })}
-                <footer className="ttft-provider-footer">
-                  <span>{representative.rank ? `Rank ${representative.rank}` : "Unranked (<10 samples)"}</span>
-                  <span>{groupSamples.toLocaleString()} samples · weighted p50 {formatTtftDuration(groupP50)}</span>
-                </footer>
-              </section>
-            );
-          })}
+      <div className="ttft-chart-toolbar">
+        <span className="muted">{chartView === "range" ? "Range chart" : "Line chart"} · Models ordered by p50</span>
+        <div className="ttft-view-switch" role="group" aria-label="TTFT chart view">
+          <button type="button" className={`btn ghost icon-button${chartView === "range" ? " active" : ""}`}
+            aria-label="Range chart" title="Range chart" aria-pressed={chartView === "range"} onClick={() => setChartView("range")}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M8 12h12M3 18h12M4 3v6M8 9v6M3 15v6M14 3v6M20 9v6M15 15v6" /></svg>
+          </button>
+          <button type="button" className={`btn ghost icon-button${chartView === "line" ? " active" : ""}`}
+            aria-label="Line chart" title="Line chart" aria-pressed={chartView === "line"} onClick={() => setChartView("line")}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18M6 15l4-6 5 3 6-7" /></svg>
+          </button>
         </div>
+      </div>
+      {chartRows.length ? (
+        <TtftComparisonChart rows={chartRows} scaleMax={scaleMax} view={chartView} />
       ) : (
         <div className="ttft-empty">No measured TTFT in {TTFT_CONTEXT_LABELS[selectedBucket]} in this range yet.</div>
       )}
 
-      <div className="ttft-legend" aria-hidden="true">
-        <span className="ttft-legend-range" /> <span>p50 → p95</span>
-        <span className="ttft-legend-dot" /> <span>Low sample confidence</span>
-        <span className="ttft-scale">0</span><span>{formatTtftDuration(scaleMax / 4)}</span><span>{formatTtftDuration(scaleMax / 2)}</span><span>{formatTtftDuration((scaleMax * 3) / 4)}</span><span>{formatTtftDuration(scaleMax)}</span>
-      </div>
     </section>
   );
 }
