@@ -55,8 +55,11 @@ export function createAutomaticRouter(): MultivibeModule {
       if (body.response_format || body.reasoning || body.reasoning_effort || body.audio || body.modalities ||
         (body.tools ?? []).some((tool: any) => tool?.type !== "function")) return { action: "continue" };
       const items = body.messages ?? body.input;
-      if (typeof items !== "string" && (!Array.isArray(items) || items.some((item: any) => typeof item?.content !== "string"))) return { action: "continue" };
-      const prompt = JSON.stringify({ instructions: body.instructions, input: items });
+      const textContent = (content: unknown) => typeof content === "string" ||
+        (Array.isArray(content) && content.every((part: any) =>
+          (part?.type === "text" || part?.type === "input_text") && typeof part.text === "string"));
+      if (typeof items !== "string" && (!Array.isArray(items) || items.some((item: any) => !textContent(item?.content)))) return { action: "continue" };
+      const prompt = JSON.stringify({ instructions: body.instructions, input: items, tools: body.tools });
       // Refuse to classify a truncated task or redirect beyond a target's known context.
       if (prompt.length > 24_000 || targets.some((id) => {
         const window = available.get(String(id))!.metadata.context_window;
@@ -74,6 +77,7 @@ export function createAutomaticRouter(): MultivibeModule {
       };
       let decision = key ? pending.get(key + fingerprint) : undefined;
       if (!decision) {
+        if (pending.size >= 1000) return { action: "continue" };
         decision = classify();
         if (key) pending.set(key + fingerprint, decision);
       }

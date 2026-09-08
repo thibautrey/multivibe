@@ -82,3 +82,29 @@ test("conversation evidence handles Responses tool outputs and explicit intent",
   assert.equal(inspectModuleConversation({ input: "hello" }, {}).mode, "unknown");
   assert.equal(inspectModuleConversation(body, { "x-multivibe-conversation-mode": "one-off" }, "s").mode, "one-off");
 });
+
+test("routes text Responses with function tools, rejects image inputs and incapable targets", async () => {
+  const s = setup();
+  const request = { model: "original", input: [{ role: "user", content: [{ type: "input_text", text: "Fix the parser" }] }], tools: [{ type: "function", name: "read_file" }] };
+  s.context.route = "/responses";
+  s.context.conversation = inspectModuleConversation(request, {}, "agent-session");
+  assert.equal((await s.hook(request, s.context)).action, "replace");
+  s.context.conversation = inspectModuleConversation(request, {}, "another-session");
+  s.context.services!.listModels = async () => ["classifier", "cheap", "mid", "big"].map((id) => ({ id, metadata: { supports_tools: false, context_window: 100_000 } }));
+  assert.equal((await s.hook(request, s.context)).action, "continue");
+  const image = setup();
+  assert.equal((await image.hook({ ...body, messages: [{ role: "user", content: [{ type: "image_url", image_url: {} }] }] }, image.context)).action, "continue");
+  assert.equal(image.calls(), 0);
+});
+
+test("aborted classification cannot create an affinity entry", async () => {
+  const s = setup();
+  const controller = new AbortController();
+  s.context.signal = controller.signal;
+  s.context.conversation = inspectModuleConversation(body, {}, "cancelled");
+  s.context.services!.complete = async () => { controller.abort(); return '{"difficulty":"easy"}'; };
+  assert.equal((await s.hook(body, s.context)).action, "continue");
+  s.context.signal = new AbortController().signal;
+  s.context.conversation = { ...s.context.conversation, phase: "continuation" };
+  assert.equal((await s.hook(body, s.context)).action, "continue");
+});
