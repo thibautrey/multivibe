@@ -207,6 +207,7 @@ const hostHarnessIntegrations = MULTIVIBE_HOST_APPLICATION
   ? new HostHarnessIntegrationManager({
       homeDirectory: HOST_HARNESS_HOME_DIRECTORY,
       statePath: HOST_HARNESS_INTEGRATIONS_STATE_PATH,
+      apiKeyForId: (id) => store.getCachedProxyApiKeys().find((entry) => entry.id === id)?.key,
       baseUrl: MULTIVIBE_CONTROL_PLANE
         ? V1_EDGE_BASE_URL
         : `http://127.0.0.1:${nodePort}`,

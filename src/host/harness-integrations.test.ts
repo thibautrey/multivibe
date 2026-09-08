@@ -381,7 +381,7 @@ test("Codex repair preserves a table inserted inside the legacy managed block", 
   assert.equal((await manager.get("openai-codex")).configured, true);
 });
 
-test("Codex repair reconciles MultiVibe drift without removing unrelated changes", async (t) => {
+test("Codex ignores unrelated configuration changes when evaluating connection health", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-reconcile-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const home = path.join(root, "home");
@@ -401,7 +401,37 @@ test("Codex repair reconciles MultiVibe drift without removing unrelated changes
   const credential = { apiKeyId: "key-reconcile", apiKey: "mv_reconcile", application: "harness-openai-codex" };
   await manager.install("openai-codex", credential);
   await fs.appendFile(configPath, "\n[plugins.\"sites@openai-bundled\"]\nenabled = true\n");
+  const connected = await manager.get("openai-codex");
+  assert.equal(connected.configured, true);
+  assert.equal(connected.drifted, false);
+  assert.equal(connected.canUninstall, false);
+  assert.match(await fs.readFile(configPath, "utf8"), /\[plugins\.\"sites@openai-bundled\"\]/);
+});
+
+test("Codex repairs managed configuration drift without removing unrelated changes", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-managed-drift-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const home = path.join(root, "home");
+  const bin = path.join(home, "bin");
+  await fs.mkdir(path.join(home, ".codex"), { recursive: true });
+  await fs.mkdir(bin, { recursive: true });
+  await fs.writeFile(path.join(bin, "codex"), "binary", { mode: 0o755 });
+  const configPath = path.join(home, ".codex", "config.toml");
+  await fs.writeFile(configPath, "model = \"gpt-5.6-luna\"\n");
+  const manager = new HostHarnessIntegrationManager({
+    homeDirectory: home,
+    statePath: path.join(home, ".multivibe", "harnesses.json"),
+    baseUrl: "http://127.0.0.1:1455",
+    definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
+    executableDirectories: [bin],
+  });
+  const credential = { apiKeyId: "key-managed-drift", apiKey: "mv_managed_drift", application: "harness-openai-codex" };
+  await manager.install("openai-codex", credential);
+  const changed = (await fs.readFile(configPath, "utf8"))
+    .replace('base_url = "http://127.0.0.1:1455/v1"', 'base_url = "http://127.0.0.1:9999/v1"');
+  await fs.writeFile(configPath, `${changed}\n[plugins.\"sites@openai-bundled\"]\nenabled = true\n`);
   const drifted = await manager.get("openai-codex");
+  assert.equal(drifted.configured, false);
   assert.equal(drifted.drifted, true);
   assert.equal(drifted.repairable, true);
   assert.equal(drifted.canUninstall, false);
@@ -411,6 +441,37 @@ test("Codex repair reconciles MultiVibe drift without removing unrelated changes
   assert.equal(repaired.drifted, false);
   assert.equal(repaired.canUninstall, true);
   assert.match(await fs.readFile(configPath, "utf8"), /\[plugins\.\"sites@openai-bundled\"\]/);
+});
+
+test("Codex detects a changed managed credential when the installed key is available", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-credential-drift-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const home = path.join(root, "home");
+  const bin = path.join(home, "bin");
+  await fs.mkdir(path.join(home, ".codex"), { recursive: true });
+  await fs.mkdir(bin, { recursive: true });
+  await fs.writeFile(path.join(bin, "codex"), "binary", { mode: 0o755 });
+  const configPath = path.join(home, ".codex", "config.toml");
+  await fs.writeFile(configPath, "model = \"gpt-5.6-luna\"\n");
+  const manager = new HostHarnessIntegrationManager({
+    homeDirectory: home,
+    statePath: path.join(home, ".multivibe", "harnesses.json"),
+    baseUrl: "http://127.0.0.1:1455",
+    apiKeyForId: (id) => id === "key-credential-drift" ? "mv_expected" : undefined,
+    definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
+    executableDirectories: [bin],
+  });
+  const credential = { apiKeyId: "key-credential-drift", apiKey: "mv_expected", application: "harness-openai-codex" };
+  await manager.install("openai-codex", credential);
+  const changed = (await fs.readFile(configPath, "utf8"))
+    .replace('experimental_bearer_token = "mv_expected"', 'experimental_bearer_token = "mv_replaced"');
+  await fs.writeFile(configPath, changed);
+
+  const drifted = await manager.get("openai-codex");
+  assert.equal(drifted.configured, false);
+  assert.equal(drifted.drifted, true);
+  assert.equal(drifted.repairable, true);
+  assert.equal(drifted.canUninstall, false);
 });
 
 test("Codex accepts brackets inside quoted TOML table keys", async (t) => {
@@ -435,12 +496,10 @@ test("Codex accepts brackets inside quoted TOML table keys", async (t) => {
   await fs.appendFile(configPath, '\n[hooks.state."browser@openai-bundled:plugin.json#hooks[0]:stop:0:0"]\nenabled = true\n');
 
   const drifted = await manager.get("openai-codex");
-  assert.equal(drifted.drifted, true);
+  assert.equal(drifted.drifted, false);
   assert.equal(drifted.repairable, true);
+  assert.equal(drifted.canUninstall, false);
 
-  const repaired = await manager.repair("openai-codex", credential);
-  assert.equal(repaired.configured, true);
-  assert.equal(repaired.drifted, false);
   assert.match(await fs.readFile(configPath, "utf8"), /hooks\[0\]:stop:0:0/);
 });
 
