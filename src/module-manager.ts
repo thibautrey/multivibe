@@ -270,6 +270,7 @@ export class ModuleManager {
 
   private async load(lock: ModuleLock): Promise<void> {
     try {
+      this.storage.registerOwner(lock.id, this.builtins.has(lock.id) ? "multivibe-builtin" : normalizePublicGitHubUrl(lock.origin));
       const builtin = this.builtins.get(lock.id);
       if (builtin) {
         this.loaded.set(lock.id, { lock, ...builtin, healthy: true });
@@ -440,6 +441,8 @@ export class ModuleManager {
 
   analytics(id: string) {
     if (!this.locks.some((lock) => lock.id === id)) throw new Error("Module not found");
+    const lock = this.locks.find((entry) => entry.id === id)!;
+    this.storage.registerOwner(id, this.builtins.has(id) ? "multivibe-builtin" : normalizePublicGitHubUrl(lock.origin));
     return this.storage.summary(id);
   }
 
