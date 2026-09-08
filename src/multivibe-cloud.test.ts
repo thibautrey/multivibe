@@ -23,6 +23,11 @@ function fakeStores(initial: {
       return settings;
     },
     async listAccounts() { return [...accounts]; },
+    async deleteAccount(id: string) {
+      const before = accounts.length;
+      accounts = accounts.filter((account) => account.id !== id);
+      return accounts.length !== before;
+    },
     async upsertAccount(account: Account) {
       const index = accounts.findIndex((candidate) => candidate.id === account.id);
       if (index === -1) accounts.push(account);
@@ -334,4 +339,22 @@ test("Cloud status does not turn shadow money into user notifications", async ()
   const status = await cloud.getStatus();
   assert.equal(status.autoTopup, undefined);
   assert.equal(status.workerEarnings, undefined);
+});
+
+test("Cloud disconnect clears credentials and managed account, preserving other accounts", async () => {
+  const other = { id: "other-provider" } as Account;
+  const stores = fakeStores({
+    settings: { multivibeCloud: { accessToken: "cloud-access", refreshToken: "cloud-refresh", projectId } },
+    accounts: [
+      { id: "multivibe-cloud", multivibeCloud: true, accessToken: "cloud-key" } as Account,
+      other,
+    ],
+  });
+  const cloud = service(stores, async () => { throw new Error("Unexpected network call"); });
+  await cloud.disconnect();
+  assert.equal(stores.settings.multivibeCloud, undefined);
+  assert.deepEqual(stores.accounts, [other]);
+  assert.equal((await cloud.getStatus()).status, "disconnected");
+  await cloud.disconnect();
+  assert.deepEqual(stores.accounts, [other]);
 });

@@ -43,6 +43,7 @@ type Props = {
   importGrokAuth: () => Promise<any>;
   patchSettings: (body: Partial<StoreSettings>) => Promise<void>;
   onConnectCloud: () => Promise<void>;
+  onDisconnectCloud: () => Promise<void>;
   startOAuth: (
     email: string,
     accountId?: string,
@@ -480,6 +481,7 @@ export function AccountsTab(props: Props) {
     importGrokAuth,
     patchSettings,
     onConnectCloud,
+    onDisconnectCloud,
     startOAuth,
     pollDeviceOAuth,
     completeOAuth,
@@ -533,6 +535,17 @@ export function AccountsTab(props: Props) {
       await onConnectCloud();
     } catch (error: any) {
       setCloudError(error?.message ?? "Could not connect to MultiVibe Cloud.");
+    } finally {
+      setCloudBusy(false);
+    }
+  };
+  const disconnectCloud = async () => {
+    setCloudBusy(true);
+    setCloudError("");
+    try {
+      await onDisconnectCloud();
+    } catch (error: any) {
+      setCloudError(error?.message ?? "Could not disconnect from MultiVibe Cloud.");
     } finally {
       setCloudBusy(false);
     }
@@ -1853,9 +1866,14 @@ export function AccountsTab(props: Props) {
           </div>
           <div className="local-worker-provider-actions">
             {multivibeCloud.status === "connected" ? (
-              <a className="btn" href={multivibeCloud.topupUrl} target="_blank" rel="noreferrer">
-                Manage plan & add credits
-              </a>
+              <>
+                <a className="btn" href={multivibeCloud.topupUrl} target="_blank" rel="noreferrer">
+                  Manage plan & add credits
+                </a>
+                <button className="cloud-disconnect-link" type="button" onClick={() => void disconnectCloud()} disabled={cloudBusy}>
+                  {cloudBusy ? "Disconnecting…" : "Disconnect"}
+                </button>
+              </>
             ) : (
               <button className="btn" onClick={() => void connectCloud()} disabled={cloudBusy || multivibeCloud.status === "unavailable"}>
                 {cloudBusy ? "Connecting…" : "Connect"}
