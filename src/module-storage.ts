@@ -27,18 +27,15 @@ export class ModuleStorageManager {
   private databases = new Map<string, Database.Database>();
   constructor(private root: string) {}
   registerOwner(id: string, origin: string): void {
-    const previous = this.owners.get(id);
-    if (previous !== undefined && previous !== origin) {
-      this.databases.get(id)?.close(); this.databases.delete(id);
-    }
     this.owners.set(id, origin);
   }
-  private database(id: string): Database.Database {
+  private database(id: string, owner = this.owners.get(id) ?? "local"): Database.Database {
     if (!/^[a-z0-9][a-z0-9.-]{2,127}$/.test(id)) throw new Error("Invalid plugin id");
-    const existing = this.databases.get(id);
+    const identity = JSON.stringify([id, owner]);
+    const existing = this.databases.get(identity);
     if (existing) return existing;
     directory(this.root);
-    const root = path.join(this.root, createHash("sha256").update(JSON.stringify([id, this.owners.get(id) ?? "local"])).digest("hex"));
+    const root = path.join(this.root, createHash("sha256").update(identity).digest("hex"));
     directory(root);
     const filename = path.join(root, "state.sqlite");
     const fd = fs.openSync(filename, fs.constants.O_CREAT | fs.constants.O_RDWR | fs.constants.O_NOFOLLOW, 0o600);
@@ -51,11 +48,12 @@ export class ModuleStorageManager {
       CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
         type TEXT NOT NULL, at INTEGER NOT NULL, data TEXT NOT NULL, metrics TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS events_type_at ON events(type, at);`);
-    this.databases.set(id, db);
+    this.databases.set(identity, db);
     return db;
   }
   forPlugin(id: string): ModuleStorage {
-    const db = () => this.database(id);
+    const owner = this.owners.get(id) ?? "local";
+    const db = () => this.database(id, owner);
     const prune = () => db().prepare("DELETE FROM kv WHERE expires <= ?").run(Date.now());
     return Object.freeze({
       get: async (name: string) => {
