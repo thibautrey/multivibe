@@ -59,10 +59,10 @@ test("charges GPT-5.6 cache writes at 1.25x without double-counting input", () =
   assert.equal(cost, 4.475);
 });
 
-test("charges GPT-6 Astra cache writes at 1.25x without double-counting input", () => {
+test("charges GPT-6 Astra long-context cache writes at 1.25x without double-counting input", () => {
   assert.equal(
     estimateCostUsd("gpt-6-astra", 1_000_000, 1_000_000, 200_000, 300_000),
-    58.95,
+    92.9,
   );
   assert.deepEqual(getModelPricing("gpt-6-astra-2026-08-01"), {
     inputPer1M: 10,
