@@ -16,6 +16,7 @@ import {
   runtimeIdentityForAccount,
   runtimeIdentityForAdapter,
 } from "../../lib/runtimeCatalog";
+import { tracksSubscriptionQuota } from "../../lib/accountQuota";
 
 import { ProviderPicker, ProviderMark, SETUP_PROVIDERS, type SetupProvider } from "../ProviderPicker";
 import { Metric } from "../Metric";
@@ -1647,11 +1648,12 @@ export function AccountsTab(props: Props) {
     (account) => activeModelBlocks(account).length > 0,
   ).length;
   const enabledCount = accounts.filter((account) => account.enabled).length;
-  const usageCheckedCount = accounts.filter((account) => Boolean(account.usage)).length;
-  const usageUnsupportedCount = accounts.filter(
+  const quotaTrackedAccounts = accounts.filter(tracksSubscriptionQuota);
+  const usageCheckedCount = quotaTrackedAccounts.filter((account) => Boolean(account.usage)).length;
+  const usageUnsupportedCount = quotaTrackedAccounts.filter(
     (account) => account.usage?.quotaStatus === "unsupported",
   ).length;
-  const usageRefreshPendingCount = accounts.filter(
+  const usageRefreshPendingCount = quotaTrackedAccounts.filter(
     (account) =>
       account.usage?.quotaStatus !== "unsupported" &&
       typeof account.usage?.fetchedAt === "number" &&
@@ -1799,7 +1801,11 @@ export function AccountsTab(props: Props) {
               <span className="badge">{xaiCount} Grok Build</span>
             )}
             {localWorker && <span className="badge">1 MultiVibe Worker</span>}
-            {accounts.length > 0 && <span className="badge">{usageCheckedCount}/{accounts.length} usage checked</span>}
+            {quotaTrackedAccounts.length > 0 && (
+              <span className="badge">
+                {usageCheckedCount}/{quotaTrackedAccounts.length} usage checked
+              </span>
+            )}
             {usageUnsupportedCount > 0 && (
               <span className="badge">
                 {usageUnsupportedCount} usage not exposed
@@ -1938,9 +1944,11 @@ export function AccountsTab(props: Props) {
                     <span className={`provider-card-location badge${a.location === "local" ? " badge-live" : ""}`}>
                       {a.location ?? "cloud"}
                     </span>
-                    {!isCloud && <span className="provider-card-usage mono muted">
-                      {usageSummaryLabel(a, usageCacheTtlMs)}
-                    </span>}
+                    {!isCloud && tracksSubscriptionQuota(a) && (
+                      <span className="provider-card-usage mono muted">
+                        {usageSummaryLabel(a, usageCacheTtlMs)}
+                      </span>
+                    )}
                   </div>
                   <div className="account-actions-cell">
                       <button
@@ -2023,15 +2031,17 @@ export function AccountsTab(props: Props) {
                             >
                               Unblock
                             </button>
-                            {!isCloud && <button
-                              className="account-action-item"
-                              onClick={() => {
-                                setOpenMenu(null);
-                                void refreshUsage(a.id);
-                              }}
-                            >
-                              Refresh usage
-                            </button>}
+                            {!isCloud && tracksSubscriptionQuota(a) && (
+                              <button
+                                className="account-action-item"
+                                onClick={() => {
+                                  setOpenMenu(null);
+                                  void refreshUsage(a.id);
+                                }}
+                              >
+                                Refresh usage
+                              </button>
+                            )}
                             {((isOpenAiAccount(a) && a.enabled) ||
                               settings.defaultPassthroughAccountId === a.id) && (
                               <button
@@ -2198,40 +2208,44 @@ export function AccountsTab(props: Props) {
                       </div>
                     )}
                   </div>
-                  <div className="provider-quota-grid" aria-label="Quota usage">
-                    {shouldDisplayOptionalQuotaWindow(a, "primary") && (
-                      <div className="provider-quota-item">
-                        <span className="provider-quota-label">5h quota</span>
-                        {renderUsageCell(a.usage?.primary?.usedPercent, a.usage?.primary?.resetAt, a.usage?.quotaStatus === "unsupported", a.usage?.quotaStatus === "error")}
+                  {tracksSubscriptionQuota(a) && (
+                    <>
+                      <div className="provider-quota-grid" aria-label="Quota usage">
+                        {shouldDisplayOptionalQuotaWindow(a, "primary") && (
+                          <div className="provider-quota-item">
+                            <span className="provider-quota-label">5h quota</span>
+                            {renderUsageCell(a.usage?.primary?.usedPercent, a.usage?.primary?.resetAt, a.usage?.quotaStatus === "unsupported", a.usage?.quotaStatus === "error")}
+                          </div>
+                        )}
+                        {shouldDisplayOptionalQuotaWindow(a, "secondary") && (
+                          <div className="provider-quota-item">
+                            <span className="provider-quota-label">Weekly quota</span>
+                            {renderUsageCell(a.usage?.secondary?.usedPercent, a.usage?.secondary?.resetAt, a.usage?.quotaStatus === "unsupported", a.usage?.quotaStatus === "error")}
+                          </div>
+                        )}
+                        {shouldDisplayOptionalQuotaWindow(a, "monthly") && (
+                          <div className="provider-quota-item">
+                            <span className="provider-quota-label">Monthly quota</span>
+                            {renderUsageCell(a.usage?.monthly?.usedPercent, a.usage?.monthly?.resetAt, a.usage?.quotaStatus === "unsupported", a.usage?.quotaStatus === "error")}
+                          </div>
+                        )}
+                        {a.usage?.credits && (
+                          <div className="provider-quota-item">
+                            <span className="provider-quota-label">Subscription credits</span>
+                            {renderUsageCell(a.usage.credits.usedPercent, a.usage.credits.resetAt, false, a.usage.quotaStatus === "error")}
+                          </div>
+                        )}
+                        {a.usage?.tools && (
+                          <div className="provider-quota-item">
+                            <span className="provider-quota-label">MCP tools quota</span>
+                            {renderUsageCell(a.usage.tools.usedPercent, a.usage.tools.resetAt, false, a.usage.quotaStatus === "error")}
+                          </div>
+                        )}
                       </div>
-                    )}
-                    {shouldDisplayOptionalQuotaWindow(a, "secondary") && (
-                      <div className="provider-quota-item">
-                        <span className="provider-quota-label">Weekly quota</span>
-                        {renderUsageCell(a.usage?.secondary?.usedPercent, a.usage?.secondary?.resetAt, a.usage?.quotaStatus === "unsupported", a.usage?.quotaStatus === "error")}
-                      </div>
-                    )}
-                    {shouldDisplayOptionalQuotaWindow(a, "monthly") && (
-                      <div className="provider-quota-item">
-                        <span className="provider-quota-label">Monthly quota</span>
-                        {renderUsageCell(a.usage?.monthly?.usedPercent, a.usage?.monthly?.resetAt, a.usage?.quotaStatus === "unsupported", a.usage?.quotaStatus === "error")}
-                      </div>
-                    )}
-                    {a.usage?.credits && (
-                      <div className="provider-quota-item">
-                        <span className="provider-quota-label">Subscription credits</span>
-                        {renderUsageCell(a.usage.credits.usedPercent, a.usage.credits.resetAt, false, a.usage.quotaStatus === "error")}
-                      </div>
-                    )}
-                    {a.usage?.tools && (
-                      <div className="provider-quota-item">
-                        <span className="provider-quota-label">MCP tools quota</span>
-                        {renderUsageCell(a.usage.tools.usedPercent, a.usage.tools.resetAt, false, a.usage.quotaStatus === "error")}
-                      </div>
-                    )}
-                  </div>
-                  {a.usage?.quotaMessage && (
-                    <p className="muted">{a.usage.quotaMessage}</p>
+                      {a.usage?.quotaMessage && (
+                        <p className="muted">{a.usage.quotaMessage}</p>
+                      )}
+                    </>
                   )}
                 </div>}
                 {modelBlocks.length > 0 && (

@@ -196,6 +196,13 @@ test("discovery persists one deterministic account per runtime and replay does n
       };
 
       await discoverAndPersistLocalRuntimes(store, options);
+      await store.patchAccount(`local-runtime-${testCase.adapter.id}`, {
+        usage: {
+          fetchedAt: Date.now(),
+          quotaStatus: "unsupported",
+          primary: { usedPercent: 100 },
+        },
+      });
       await discoverAndPersistLocalRuntimes(store, options);
 
       const accounts = await store.listAccounts();
@@ -209,6 +216,7 @@ test("discovery persists one deterministic account per runtime and replay does n
       assert.equal(account?.location, "local");
       assert.equal(account?.localRuntime?.adapter, testCase.adapter.id);
       assert.equal(account?.localRuntime?.authentication, "none");
+      assert.equal(account?.usage, undefined);
     });
   }
 });

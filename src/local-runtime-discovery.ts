@@ -515,6 +515,7 @@ export async function configureNvidiaPairRuntime(
     id: "local-runtime-nvidia-pair", provider: "openai-compatible", upstreamMode: "chat/completions",
     email: current?.email ?? "NVIDIA Personal AI Router (PAIR)", accessToken: "", baseUrl: endpoint,
     enabled: current?.enabled ?? true, priority: current?.priority ?? 0, location: "personal-cluster",
+    usage: undefined,
     localRuntime: { source: "multivibe-local-configuration", adapter: "nvidia-pair", endpoint, confirmedModelIds, authentication: "none" },
   };
   await store.addOrUpdate(account);
@@ -746,6 +747,7 @@ export async function discoverAndPersistLocalRuntimes(
       enabled: existing?.enabled ?? true,
       priority: existing?.priority ?? 0,
       location: "local",
+      usage: undefined,
       localRuntime: localRuntimeMetadata(result),
     };
     await store.addOrUpdate(account);

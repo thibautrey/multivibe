@@ -38,13 +38,22 @@ export function normalizeProvider(account?: Pick<Account, "provider">): Provider
   return "openai";
 }
 
+export function tracksSubscriptionQuota(
+  account: Pick<Account, "localRuntime" | "multivibeCloud">,
+): boolean {
+  // Discovered/configured runtimes execute locally and have no provider
+  // subscription allowance to query. Request token telemetry is independent
+  // of this quota snapshot and remains available through tracing.
+  return account.localRuntime === undefined && account.multivibeCloud !== true;
+}
+
 function safePct(v?: number): number {
   if (typeof v !== "number" || Number.isNaN(v)) return 0;
   return Math.max(0, Math.min(100, v));
 }
 
 function hasFiveHourQuota(account: Account): boolean {
-  return Boolean(account.usage?.primary);
+  return tracksSubscriptionQuota(account) && Boolean(account.usage?.primary);
 }
 
 function fiveHourQuotaIsNearLimit(account: Account): boolean {
@@ -56,6 +65,7 @@ function fiveHourQuotaIsNearLimit(account: Account): boolean {
 }
 
 function weeklyUsage(account: Account): number | undefined {
+  if (!tracksSubscriptionQuota(account)) return undefined;
   const value = account.usage?.secondary?.usedPercent;
   return typeof value === "number" && Number.isFinite(value)
     ? safePct(value)
@@ -84,6 +94,7 @@ export type AccountSelectionOptions = {
 };
 
 export function accountHeadroom(account: Account): number | undefined {
+  if (!tracksSubscriptionQuota(account)) return undefined;
   const windows = [
     remainingPercent(account.usage?.primary?.usedPercent),
     remainingPercent(account.usage?.secondary?.usedPercent),
@@ -94,6 +105,13 @@ export function accountHeadroom(account: Account): number | undefined {
 }
 
 function accountSelectionMetrics(account: Account) {
+  if (!tracksSubscriptionQuota(account)) {
+    return {
+      selectedHeadroomPercent: undefined,
+      selectedWeeklyRemainingPercent: undefined,
+      selectedFiveHourRemainingPercent: undefined,
+    };
+  }
   const selectedWeeklyRemainingPercent = remainingPercent(
     account.usage?.secondary?.usedPercent,
   );
@@ -640,6 +658,7 @@ export function isUsageRefreshNeeded(
   account: Account,
   now = Date.now(),
 ): boolean {
+  if (!tracksSubscriptionQuota(account)) return false;
   // Failed probes retain stale windows. Their old reset dates must not create
   // an unbounded retry on every request; explicit refresh still bypasses this.
   if (account.usage?.quotaStatus === "error") {
@@ -662,6 +681,12 @@ export function isUsageRefreshNeeded(
 }
 
 export async function refreshUsageIfNeeded(account: Account, chatgptBaseUrl: string, force = false): Promise<Account> {
+  if (!tracksSubscriptionQuota(account)) {
+    // Clear quota placeholders left by older releases without probing a local
+    // inference endpoint for a subscription concept it cannot expose.
+    account.usage = undefined;
+    return account;
+  }
   if (!force && !isUsageRefreshNeeded(account)) return account;
   const provider = normalizeProvider(account);
   if (provider === "ai-sdk") {
@@ -784,6 +809,7 @@ function exhaustedQuotaResetAt(
   account: Account,
   now = Date.now(),
 ): number | undefined {
+  if (!tracksSubscriptionQuota(account)) return undefined;
   const resetAts = [account.usage?.primary, account.usage?.secondary, account.usage?.monthly, account.usage?.credits].flatMap(
     (window) => {
       if (
@@ -831,7 +857,9 @@ export function markQuotaHit(
       ? quotaResetAt + QUOTA_RESET_GRACE_MS
       : isRateLimit
         ? now + RATE_LIMIT_BLOCK_MS
-        : (nextResetAt(account.usage) ?? now + BLOCK_FALLBACK_MS);
+        : (tracksSubscriptionQuota(account)
+            ? nextResetAt(account.usage)
+            : undefined) ?? now + BLOCK_FALLBACK_MS;
 
   setModelBlock(account, model, until, message);
   rememberError(account, message);

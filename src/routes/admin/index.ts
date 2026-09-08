@@ -21,6 +21,7 @@ import {
   isUsageRefreshNeeded,
   normalizeProvider,
   refreshUsageIfNeeded,
+  tracksSubscriptionQuota,
   USAGE_CACHE_TTL_MS,
 } from "../../quota.js";
 import type { UsageRefreshCoordinator } from "../../usage-refresh.js";
@@ -802,7 +803,9 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     const refreshed = await Promise.all(
       (await store.listAccounts()).map(async (account) => {
         const tokenRefreshNeeded = isTokenRefreshNeeded(account);
-        const usageRefreshNeeded = force || isUsageRefreshNeeded(account);
+        const usageRefreshNeeded =
+          tracksSubscriptionQuota(account) &&
+          (force || isUsageRefreshNeeded(account));
         if (!tokenRefreshNeeded && !usageRefreshNeeded) {
           return { account, modified: false };
         }
@@ -810,13 +813,13 @@ export function createAdminRouter(options: AdminRoutesOptions) {
           ? await ensureValidToken(account, oauthConfig)
           : account;
         let refreshedAccount = valid;
-        if (options.usageRefreshCoordinator) {
+        if (usageRefreshNeeded && options.usageRefreshCoordinator) {
           refreshedAccount = await options.usageRefreshCoordinator.refresh(
             valid,
             usageBaseUrlForAccount(valid),
             force,
           );
-        } else {
+        } else if (usageRefreshNeeded) {
           refreshedAccount = await refreshUsageIfNeeded(
             valid,
             usageBaseUrlForAccount(valid),
