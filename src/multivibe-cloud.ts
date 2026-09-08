@@ -30,6 +30,7 @@ class CloudHttpError extends Error {
 
 export type MultivibeCloudStatus = {
   status: "disconnected" | "connected" | "unavailable";
+  quota?: { status: "available" | "no_plan" | "unavailable"; name?: string; remainingPercent?: number; usedPercent?: number; resetsAt?: string };
   balanceUsd?: string;
   subscription?: string;
   apiKeyExpiresAt?: string;
@@ -315,6 +316,14 @@ export class MultivibeCloudService {
       const subscription = subscriptionResult.status === "fulfilled"
         ? subscriptionResult.value as Record<string, unknown> : undefined;
       const subscriptionName = subscriptionLabel(subscription?.data);
+      const rawQuota = subscription?.quota as Record<string, unknown> | undefined;
+      const quota: MultivibeCloudStatus["quota"] = rawQuota?.status === "available"
+        && typeof rawQuota.remainingPercent === "number" && Number.isFinite(rawQuota.remainingPercent)
+        && rawQuota.remainingPercent >= 0 && rawQuota.remainingPercent <= 100
+        && typeof rawQuota.resetsAt === "string" && Number.isFinite(Date.parse(rawQuota.resetsAt))
+        ? { status: "available", name: String(rawQuota.name ?? "Cloud"), remainingPercent: rawQuota.remainingPercent,
+            usedPercent: 100 - rawQuota.remainingPercent, resetsAt: rawQuota.resetsAt }
+        : { status: rawQuota?.status === "no_plan" ? "no_plan" : "unavailable" };
       const autoTopup = autoTopupResult.status === "fulfilled"
         ? autoTopupValue(autoTopupResult.value) : undefined;
       const workerEarnings = earningsResult.status === "fulfilled"
@@ -322,6 +331,7 @@ export class MultivibeCloudService {
       return {
         status: "connected",
         balanceUsd: balance,
+        quota,
         ...(subscriptionName ? { subscription: subscriptionName } : {}),
         ...(account.expiresAt ? { apiKeyExpiresAt: new Date(account.expiresAt).toISOString() } : {}),
         topupUrl: this.topupUrl,
