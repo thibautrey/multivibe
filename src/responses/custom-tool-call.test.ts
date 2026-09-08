@@ -55,3 +55,36 @@ test("custom tool call output can cross a chat-completions fallback", () => {
     { role: "tool", tool_call_id: "call_exec_1", content: "file.txt" },
   ]);
 });
+
+test("Responses tools are normalized to function-only Chat Completions tools", () => {
+  const payload = responsesToChatCompletionsPayload({
+    model: "Qwen3.8-27B-4bit",
+    input: [{ role: "user", content: [{ type: "input_text", text: "hi" }] }],
+    tools: [
+      { type: "web_search_preview" },
+      {
+        type: "function",
+        name: "lookup",
+        description: "Look something up",
+        parameters: { type: "object", properties: {} },
+      },
+      { type: "computer_use_preview" },
+    ],
+    tool_choice: { type: "function", name: "lookup" },
+  });
+
+  assert.deepEqual(payload.tools, [
+    {
+      type: "function",
+      function: {
+        name: "lookup",
+        description: "Look something up",
+        parameters: { type: "object", properties: {} },
+      },
+    },
+  ]);
+  assert.deepEqual(payload.tool_choice, {
+    type: "function",
+    function: { name: "lookup" },
+  });
+});
