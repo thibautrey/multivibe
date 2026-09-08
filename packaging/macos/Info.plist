@@ -36,7 +36,7 @@
     </dict>
   </array>
   <key>LSMinimumSystemVersion</key>
-  <string>14.0</string>
+  <string>__MULTIVIBE_MACOS_MINIMUM_VERSION__</string>
   <key>LSUIElement</key>
   <true/>
   <key>LSMultipleInstancesProhibited</key>

@@ -21,11 +21,15 @@ test("the macOS status item uses a transparent high-resolution template image", 
 });
 
 test("native packages include the updater and platform schedulers", async () => {
-  const [packager, linux, macos, windows, verifier, uninstall] = await Promise.all([
-    read("scripts/provider-host/package-provider-host.mjs"), read("packaging/linux/install.sh"),
-    read("packaging/macos/install.sh"), read("packaging/windows/install.ps1"),
+  const [packager, macosInfo, linux, macos, windows, verifier, uninstall] = await Promise.all([
+    read("scripts/provider-host/package-provider-host.mjs"), read("packaging/macos/Info.plist"),
+    read("packaging/linux/install.sh"), read("packaging/macos/install.sh"), read("packaging/windows/install.ps1"),
     read("scripts/provider-host/verify-provider-host.mjs"), read("packaging/linux/uninstall.sh"),
   ]);
+  assert.match(packager, /const macOSMinimumVersion = "13\.0"/u);
+  assert.match(packager, /apple-macos\$\{macOSMinimumVersion\}/u);
+  assert.match(macosInfo, /<key>LSMinimumSystemVersion<\/key>\s*<string>__MULTIVIBE_MACOS_MINIMUM_VERSION__<\/string>/u);
+  assert.match(verifier, /minimumSystemVersion !== "13\.0"/u);
   assert.match(packager, /buildGo\(path\.join\(repositoryRoot, "host", "updater"\)/u);
   assert.match(packager, /buildRustEdge\(edgeDestination\)/u);
   assert.match(packager, /path\.join\(contents, "Helpers", "multivibe-v1-edge"\)/u);

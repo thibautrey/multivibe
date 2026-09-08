@@ -1,0 +1,38 @@
+{
+  "evidenceSource": "Primary task report supplied in delegation; key request not replayed by documentation task",
+  "checkedAt": "2026-09-07T20:32:08Z",
+  "productionChange": {
+    "field": "service-key-hash-pepper",
+    "targetSecret": "multivibe-cloud-api-runtime",
+    "source": "identity runtime",
+    "uidAndResourceVersionTests": true,
+    "automaticRollbackReported": true,
+    "restartScope": "API only"
+  },
+  "apiRevision": "50",
+  "apiReadyReplicas": 2,
+  "apiExpectedReplicas": 2,
+  "readyPods": 6,
+  "pepperGroupCount": 1,
+  "apiIdentitySameDatabase": true,
+  "totalKeys": 2,
+  "activeKeys": 2,
+  "associatedEntitlementRowsPresent": false,
+  "associatedBalanceRowsPresent": false,
+  "leaseAbsenceIndependentlyVerified": false,
+  "driftGatePassed": true,
+  "userKeyCatalogRequest": {
+    "method": "GET",
+    "path": "/v1/models",
+    "status": 401,
+    "source": "Primary task fresh request"
+  },
+  "apiFlags": {
+    "MANAGED_LIVE_INFERENCE_ENABLED": false,
+    "MONETARY_EFFECTS_ENABLED": false,
+    "MARKETPLACE_ROUTING_ENABLED": false
+  },
+  "hostAuthenticatedCatalogVerified": false,
+  "cloudEnrollmentPersistenceVerified": false,
+  "realInferenceAttempted": false
+}

@@ -17,12 +17,12 @@ private enum MenuBarPalette {
         }
     }
 
-    static let background = adaptive(light: color(0xf3f6f5), dark: color(0x0a1210))
-    static let panel = adaptive(light: color(0xffffff), dark: color(0x111b18))
+    static let background = NSColor.windowBackgroundColor
+    static let panel = NSColor.controlBackgroundColor
     static let surfaceMuted = adaptive(light: color(0xf6f8f7), dark: color(0x182521))
     static let line = adaptive(light: color(0xe0e7e4), dark: color(0x273733))
-    static let text = adaptive(light: color(0x14231f), dark: color(0xedf5f2))
-    static let muted = adaptive(light: color(0x6b7d77), dark: color(0x91a59f))
+    static let text = NSColor.labelColor
+    static let muted = NSColor.secondaryLabelColor
     static let mutedStrong = adaptive(light: color(0x435650), dark: color(0xc2d1cc))
     static let primary = adaptive(light: color(0x147d72), dark: color(0x55c7b8))
     static let warning = adaptive(light: color(0xad681e), dark: color(0xf3b35f))
@@ -171,7 +171,7 @@ private final class QuotaBarView: NSView {
         didSet { needsDisplay = true }
     }
 
-    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 7) }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 4) }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
@@ -180,14 +180,14 @@ private final class QuotaBarView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        let track = NSBezierPath(roundedRect: bounds, xRadius: 3.5, yRadius: 3.5)
+        let track = NSBezierPath(roundedRect: bounds, xRadius: 2, yRadius: 2)
         MenuBarPalette.line.setFill()
         track.fill()
         guard let remainingPercent else { return }
         let safeValue = max(0, min(100, remainingPercent))
         let fillRect = NSRect(x: 0, y: 0, width: bounds.width * safeValue / 100, height: bounds.height)
         guard fillRect.width > 0 else { return }
-        let fill = NSBezierPath(roundedRect: fillRect, xRadius: 3.5, yRadius: 3.5)
+        let fill = NSBezierPath(roundedRect: fillRect, xRadius: 2, yRadius: 2)
         let color: NSColor = safeValue <= 10 ? MenuBarPalette.danger : safeValue <= 30 ? MenuBarPalette.warning : MenuBarPalette.primary
         color.setFill()
         fill.fill()
@@ -271,8 +271,11 @@ private final class HostPopoverController: NSViewController {
     private let headerStatus = NSTextField(labelWithString: "Starting…")
     private let headerVersion = NSTextField(labelWithString: "")
     private let contentStack = NSStackView()
+    private let settingsStack = NSStackView()
+    private let settingsButton = NSButton(title: "Settings", target: nil, action: nil)
+    private var settingsExpanded = false
     private let primaryButton = NSButton(title: "Open Dashboard", target: nil, action: nil)
-    private let startAtLoginButton = NSButton(checkboxWithTitle: "Start MultiVibe Host when I log in", target: nil, action: nil)
+    private let startAtLoginButton = NSButton(checkboxWithTitle: "Launch at login", target: nil, action: nil)
 
     override func loadView() {
         let background = AdaptiveLayerView(backgroundColor: MenuBarPalette.background)
@@ -336,11 +339,15 @@ private final class HostPopoverController: NSViewController {
 
         headerTitle.font = .systemFont(ofSize: 17, weight: .semibold)
         headerTitle.textColor = MenuBarPalette.text
-        headerStatus.font = .systemFont(ofSize: 11, weight: .semibold)
+        headerStatus.font = .systemFont(ofSize: 11, weight: .regular)
         headerStatus.textColor = MenuBarPalette.success
         headerVersion.font = .systemFont(ofSize: 10, weight: .regular)
         headerVersion.textColor = MenuBarPalette.muted
-        let labels = NSStackView(views: [headerTitle, headerStatus, headerVersion])
+        let identity = NSStackView(views: [headerTitle, headerVersion])
+        identity.orientation = .horizontal
+        identity.alignment = .firstBaseline
+        identity.spacing = 8
+        let labels = NSStackView(views: [identity, headerStatus])
         labels.orientation = .vertical
         labels.alignment = .leading
         labels.spacing = 2
@@ -441,12 +448,12 @@ private final class HostPopoverController: NSViewController {
         updateBusy: Bool,
         startAtLogin: Bool
     ) {
-        loadViewIfNeeded()
+        _ = view
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
         headerTitle.stringValue = "MultiVibe"
         headerStatus.stringValue = status
         headerStatus.textColor = operational ? MenuBarPalette.success : MenuBarPalette.mutedStrong
-        headerVersion.stringValue = "Host  ·  v\(version)"
+        headerVersion.stringValue = "v\(version)"
         primaryButton.title = operational ? "Open Dashboard" : "Start Host"
 
         for child in contentStack.arrangedSubviews {
@@ -454,39 +461,70 @@ private final class HostPopoverController: NSViewController {
             child.removeFromSuperview()
         }
 
-        contentStack.addArrangedSubview(sectionLabel("OPENAI CAPACITY"))
+        contentStack.addArrangedSubview(sectionLabel("OpenAI · remaining capacity"))
         contentStack.addArrangedSubview(summaryCard(summary?.quota))
-        contentStack.addArrangedSubview(sectionLabel("ACCOUNTS"))
+        contentStack.addArrangedSubview(sectionLabel("Accounts"))
         if let accounts = summary?.accounts, !accounts.isEmpty {
-            for account in accounts { contentStack.addArrangedSubview(accountCard(account)) }
+            contentStack.addArrangedSubview(accountsCard(accounts))
         } else {
             contentStack.addArrangedSubview(emptyAccountsCard(operational: operational))
         }
         if workerNeedsSetup {
-            contentStack.addArrangedSubview(sectionLabel("WORKER"))
+            contentStack.addArrangedSubview(sectionLabel("Worker"))
             contentStack.addArrangedSubview(workerSetupCard())
         } else {
-            contentStack.addArrangedSubview(sectionLabel("EARNINGS"))
+            contentStack.addArrangedSubview(sectionLabel("Earnings"))
             contentStack.addArrangedSubview(earningsCard(summary?.earnings))
         }
-        contentStack.addArrangedSubview(sectionLabel("HOST UPDATES"))
-        contentStack.addArrangedSubview(updateCard(updateStatus, busy: updateBusy))
+        // An available update stays visible even while settings are collapsed.
+        if updateStatus?.availableVersion != nil {
+            contentStack.addArrangedSubview(updateCard(updateStatus, busy: updateBusy))
+        }
+        for child in settingsStack.arrangedSubviews {
+            settingsStack.removeArrangedSubview(child)
+            child.removeFromSuperview()
+        }
+        settingsStack.orientation = .vertical
+        settingsStack.alignment = .leading
+        settingsStack.spacing = 12
+        if updateStatus?.availableVersion == nil {
+            settingsStack.addArrangedSubview(updateCard(updateStatus, busy: updateBusy))
+        }
+        styleButton(settingsButton, kind: .quiet)
+        settingsButton.target = self
+        settingsButton.action = #selector(didToggleSettings)
+        settingsButton.imagePosition = .imageLeading
+        updateSettingsDisclosure()
+        contentStack.addArrangedSubview(settingsButton)
+        contentStack.addArrangedSubview(settingsStack)
         startAtLoginButton.state = startAtLogin ? .on : .off
         startAtLoginButton.target = self
         startAtLoginButton.action = #selector(didChangeStartAtLogin)
-        contentStack.addArrangedSubview(startAtLoginButton)
+        settingsStack.addArrangedSubview(startAtLoginButton)
+    }
+
+    @objc private func didToggleSettings() {
+        settingsExpanded.toggle()
+        updateSettingsDisclosure()
+    }
+
+    private func updateSettingsDisclosure() {
+        settingsStack.isHidden = !settingsExpanded
+        settingsButton.image = NSImage(
+            systemSymbolName: settingsExpanded ? "chevron.down" : "chevron.right",
+            accessibilityDescription: nil
+        )
+        settingsButton.setAccessibilityLabel(settingsExpanded ? "Collapse settings" : "Expand settings")
     }
 
     private func sectionLabel(_ text: String) -> NSTextField {
-        let field = label(text, size: 10, weight: .semibold, color: MenuBarPalette.primary)
-        field.font = .monospacedSystemFont(ofSize: 10, weight: .semibold)
-        return field
+        label(text, size: 11, weight: .medium, color: MenuBarPalette.muted)
     }
 
     private func card() -> NSView {
         let view = AdaptiveLayerView(backgroundColor: MenuBarPalette.panel, borderColor: MenuBarPalette.line)
-        view.layer?.cornerRadius = 15
-        view.layer?.borderWidth = 1
+        view.layer?.cornerRadius = 10
+        view.layer?.borderWidth = 0
         view.layer?.masksToBounds = true
         view.translatesAutoresizingMaskIntoConstraints = false
         view.widthAnchor.constraint(equalToConstant: 384).isActive = true
@@ -495,12 +533,12 @@ private final class HostPopoverController: NSViewController {
 
     private func summaryCard(_ quota: MenuBarQuota?) -> NSView {
         let container = card()
-        let weekly = quotaCell(title: "Weekly quota", value: quota?.weeklyRemainingPercent, detail: accountCount(quota?.weeklyAccountCount ?? 0))
+        let weekly = quotaCell(title: "Weekly", value: quota?.weeklyRemainingPercent, detail: accountCount(quota?.weeklyAccountCount ?? 0))
         var quotaCells: [NSView] = []
         if quota?.fiveHourAccountCount ?? 0 > 0 {
             quotaCells.append(
                 quotaCell(
-                    title: "5h quota",
+                    title: "5 hours",
                     value: quota?.fiveHourRemainingPercent,
                     detail: accountCount(quota?.fiveHourAccountCount ?? 0),
                 ),
@@ -540,8 +578,37 @@ private final class HostPopoverController: NSViewController {
         return stack
     }
 
-    private func accountCard(_ account: MenuBarAccount) -> NSView {
+    private func accountsCard(_ accounts: [MenuBarAccount]) -> NSView {
         let container = card()
+        let rows = NSStackView()
+        rows.orientation = .vertical
+        rows.alignment = .leading
+        rows.spacing = 0
+        rows.translatesAutoresizingMaskIntoConstraints = false
+        for (index, account) in accounts.enumerated() {
+            if index > 0 {
+                let divider = makeDivider()
+                rows.addArrangedSubview(divider)
+                divider.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true
+                divider.heightAnchor.constraint(equalToConstant: 1).isActive = true
+            }
+            let row = accountCard(account)
+            rows.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true
+        }
+        container.addSubview(rows)
+        NSLayoutConstraint.activate([
+            rows.topAnchor.constraint(equalTo: container.topAnchor),
+            rows.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            rows.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            rows.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ])
+        return container
+    }
+
+    private func accountCard(_ account: MenuBarAccount) -> NSView {
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
         let name = label(account.displayName, size: 13, weight: .semibold, color: MenuBarPalette.text)
         name.lineBreakMode = .byTruncatingMiddle
         name.maximumNumberOfLines = 1
@@ -553,9 +620,9 @@ private final class HostPopoverController: NSViewController {
 
         let unsupported = account.usageStatus == "unsupported"
         let quotaWindows: [(title: String, window: QuotaWindow?)] = [
-            ("5h quota", account.fiveHour),
-            ("Weekly quota", account.weekly),
-            ("Monthly quota", account.monthly),
+            ("5 hours", account.fiveHour),
+            ("Weekly", account.weekly),
+            ("Monthly", account.monthly),
         ]
         let updatedText = usageDetail(account)
         let visibleQuotaWindows: [NSView] = unsupported
@@ -599,8 +666,8 @@ private final class HostPopoverController: NSViewController {
 
     private func compactQuota(title: String, window: QuotaWindow) -> NSView {
         let titleLabel = label(title, size: 10, weight: .semibold, color: MenuBarPalette.muted)
-        let value = label(percent(window.remainingPercent), size: 18, weight: .semibold, color: MenuBarPalette.text)
-        value.font = .monospacedDigitSystemFont(ofSize: 18, weight: .semibold)
+        let value = label(percent(window.remainingPercent), size: 14, weight: .medium, color: MenuBarPalette.text)
+        value.font = .monospacedDigitSystemFont(ofSize: 14, weight: .medium)
         let reset = label(resetText(window.resetAt), size: 10, color: MenuBarPalette.muted)
         reset.lineBreakMode = .byTruncatingTail
         let bar = QuotaBarView()
@@ -608,7 +675,12 @@ private final class HostPopoverController: NSViewController {
         bar.translatesAutoresizingMaskIntoConstraints = false
         bar.setAccessibilityLabel(title)
         bar.setAccessibilityValue(percent(window.remainingPercent))
-        let stack = NSStackView(views: [titleLabel, value, bar, reset])
+        let heading = NSStackView(views: [titleLabel, NSView(), value])
+        heading.orientation = .horizontal
+        heading.alignment = .firstBaseline
+        heading.spacing = 4
+        let stack = NSStackView(views: [heading, bar, reset])
+        heading.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 4
@@ -720,13 +792,13 @@ private final class HostPopoverController: NSViewController {
         let detail: String
         if let version = update?.availableVersion {
             title = "Version \(version) available"
-            detail = update?.downloaded == true ? "Ready to install." : "Ready for secure background download."
+            detail = update?.downloaded == true ? "Ready to install." : "Download and install the latest version."
         } else if update?.status == "current" {
             title = "MultiVibe Host is up to date"
-            detail = "The signed release feed is checked periodically."
+            detail = "Automatic checks are enabled."
         } else {
             title = "Updates"
-            detail = "Check for a signed MultiVibe Host release."
+            detail = "Keep MultiVibe up to date."
         }
 
         let titleLabel = label(title, size: 13, weight: .semibold, color: MenuBarPalette.text)
@@ -885,7 +957,7 @@ private final class NotificationPopup: NSViewController {
     }
 
     func reset() {
-        loadViewIfNeeded()
+        _ = view
         guard let configuration else { return }
         messageLabel.stringValue = configuration.message
         actionButton.title = configuration.actionTitle
@@ -893,7 +965,7 @@ private final class NotificationPopup: NSViewController {
     }
 
     func showConfirmation() {
-        loadViewIfNeeded()
+        _ = view
         guard let configuration,
               let confirmationMessage = configuration.confirmationMessage,
               let confirmationTitle = configuration.confirmationTitle else { return }
@@ -903,7 +975,7 @@ private final class NotificationPopup: NSViewController {
     }
 
     func showStatus(message: String, actionTitle: String, actionEnabled: Bool) {
-        loadViewIfNeeded()
+        _ = view
         messageLabel.stringValue = message
         actionButton.title = actionTitle
         actionButton.isEnabled = actionEnabled

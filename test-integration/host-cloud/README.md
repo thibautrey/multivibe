@@ -107,3 +107,98 @@ It performs no inference or purchase and prints no credentials or model output.
 The mailbox helper and the live journey require network access and external service
 availability. Never publish `test-identity.json`, `verification-links.json`, Host
 account files, browser sessions, or raw logs as test artifacts.
+
+## Reuse a previously provisioned Cloud project key
+
+`existing-access.mjs` supports an **existing** project API key without creating a
+Cloud account, exchanging OAuth codes, granting credits or issuing another key.
+It uses only the public Cloud catalog/inference routes and the local Host admin
+API. OAuth connection remains a separate, unverified stage; the dashboard may
+still say disconnected when only a project key has been configured.
+
+Use an empty lab. First identify a secret that is explicitly a Cloud test project
+key through the secret manager metadata. Never substitute `MULTIVIBE_API_KEY` or
+`API_KEY` from a generic internal gateway. The helper only reads the explicit
+`MULTIVIBE_CLOUD_TEST_API_KEY` environment variable and sends it to the fixed
+`https://api.multivibe.cloud` origin, refusing redirects.
+
+For example, if an operator has already provisioned an OpenBao entry with that
+exact field name, invoke the following with its **actual metadata-verified path**:
+
+```sh
+openbao-kv exec <existing-cloud-test-secret-path> -- \
+  node test-integration/host-cloud/existing-access.mjs configure
+node test-integration/host-cloud/existing-access.mjs verify --restart
+```
+
+If the field has another name, map it to `MULTIVIBE_CLOUD_TEST_API_KEY` only inside
+the same secret-consuming child process. Never print the value or put it in shell
+arguments, source, `.env`, or an evidence report. Host persists the existing key
+in its ordinary private account store so restart verification is possible.
+
+Configure validates the authenticated remote catalog before any local account
+write. It refuses a nonempty lab and never overwrites an existing account. It
+initially stores a disabled account, then enables it with Core's Cloud payload
+marker. A failed second step leaves the account disabled; use a fresh lab after
+investigating that partial configuration. The marker selects the wire contract;
+it does not represent OAuth or provider-worker enrollment.
+
+Verify requires the same model to be present in the authenticated Cloud and Core
+catalogs. With `--restart`, it checks the persisted account and re-fetches both
+catalogs after a real Host stop/start. Only that run reports persistence verified.
+
+A separate, explicit inference command requires a model selected from that
+catalog and an existing funded project with a suitable budget:
+
+```sh
+MULTIVIBE_CLOUD_TEST_MODEL='<reviewed-low-cost-model-id>' \
+  node test-integration/host-cloud/existing-access.mjs infer
+```
+
+It requests one short Responses generation through Host, with a 16-output-token
+limit and an idempotency key. No automatic model selection, retries, purchases,
+subscription changes or credit grants are performed by the helper. The token
+limit is **not a USD price cap**; Cloud's existing project budget and model prices
+remain authoritative. The result must contain completed assistant text. Prompt,
+answer, tokens, upstream error bodies and restart logs are not printed.
+
+Each successful/failed operation after local-state loading writes a sanitized
+`existing-access-verification.json`. Exit status is nonzero on failure; a previous
+report is not proof that a later preflight succeeded. The helper's four defensive
+unit tests are separate from, and do not constitute, real Cloud validation:
+
+```sh
+node --test test-integration/host-cloud/existing-access.test.mjs
+```
+
+See [existing credential investigation](existing-credential-investigation.md) for
+the actual outcome of the metadata inspection and official dev/E2E review.
+
+## Diagnose a production 401 without handling the raw key
+
+Use `python3 test-integration/host-cloud/audit-production.py --require-aligned`
+with the existing Kubernetes context. This read-only command compares runtime
+peppers across API/identity/billing replicas, checks API/identity database identity,
+and lists only the five most recent public key prefixes with expiry/revocation,
+creation-event and entitlement-presence evidence. It never prints secret values or
+comparison hashes and makes no production mutation or inference request.
+
+See [the measured 401 diagnosis and repair boundaries](production-401-diagnosis.md).
+
+The audit also counts the entire service-key population separately from the
+latest-five query. These sequential observations are not an atomic snapshot.
+The alignment gate rejects missing workloads, unexpected replica counts and
+unready pods, as well as unequal peppers or databases. This detects drift; it
+does not prevent independent Secret updates. See [readiness evidence](pepper-sync-readiness.md).
+
+Post-sync: the primary task's 2026-09-07 20:32:08Z audit passed after the bounded
+API pepper update and API-only rollout to revision 50. Its fresh user-key catalog
+request still returned 401 under the shadow verifier. See the
+[post-sync result and proof boundaries](production-401-diagnosis.md).
+Alignment is not a successful Host connection or permission to enable inference.
+
+See [the USD 2 live-test readiness check](live-two-dollar-readiness.md) for the
+subsequent authorized spending attempt and the missing auditable funding mechanism.
+
+The subsequent [non-monetary shadow investigation](shadow-admission-readiness.md)
+records why the existing bootstrap cannot target the current project/key.
