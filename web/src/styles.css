@@ -5103,3 +5103,29 @@ body:has(> .modal-backdrop) {
   padding: 16px;
   margin: 0;
 }
+
+.metric-skeleton {
+  display: block;
+  border-radius: 6px;
+  background: var(--muted);
+  opacity: 0.16;
+  animation: metric-skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+.metric-skeleton-value {
+  width: 65%;
+  height: 1em;
+}
+
+.metric-skeleton-detail {
+  width: 85%;
+  height: 1.35em;
+}
+
+@keyframes metric-skeleton-pulse {
+  50% { opacity: 0.3; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .metric-skeleton { animation: none; }
+}
