@@ -15,40 +15,14 @@
 }
 
 .docs-hero {
-  position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(330px, 0.8fr);
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 420px);
   align-items: center;
-  gap: 28px;
-  overflow: hidden;
-  padding: 30px;
-  border: 1px solid color-mix(in srgb, var(--primary) 19%, var(--line));
-  border-radius: 20px;
-  background:
-    radial-gradient(
-      680px 360px at -5% -35%,
-      color-mix(in srgb, var(--primary) 17%, transparent),
-      transparent 70%
-    ),
-    radial-gradient(
-      400px 260px at 96% 110%,
-      color-mix(in srgb, var(--accent) 13%, transparent),
-      transparent 76%
-    ),
-    var(--panel);
-  box-shadow: var(--shadow-sm);
-}
-
-.docs-hero::after {
-  position: absolute;
-  top: -58px;
-  right: 27%;
-  width: 170px;
-  height: 170px;
-  border: 1px solid color-mix(in srgb, var(--primary) 14%, transparent);
-  border-radius: 50%;
-  content: "";
-  pointer-events: none;
+  gap: 16px;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
 }
 
 .docs-hero-copy {
@@ -75,18 +49,17 @@
 }
 
 .docs-hero h2 {
-  max-width: 690px;
-  font-size: clamp(2rem, 4vw, 3.25rem);
-  line-height: 1.02;
-  letter-spacing: -0.065em;
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.2;
+  letter-spacing: -0.03em;
 }
 
 .docs-hero-copy > p {
-  max-width: 680px;
-  margin-top: 15px;
+  margin: 4px 0 0;
   color: var(--muted-strong);
-  font-size: 15px;
-  line-height: 1.65;
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 .docs-hero-badges {
@@ -121,31 +94,18 @@
 }
 
 .docs-base-url-card {
-  position: relative;
-  z-index: 1;
   display: grid;
-  gap: 14px;
+  gap: 6px;
   min-width: 0;
-  padding: 17px;
-  border: 1px solid color-mix(in srgb, var(--primary) 17%, var(--line));
-  border-radius: 15px;
-  background: color-mix(in srgb, var(--surface) 94%, transparent);
-  box-shadow: var(--shadow-sm);
-  backdrop-filter: blur(8px);
-}
-
-.docs-base-url-card > div:first-child {
-  display: grid;
-  gap: 4px;
 }
 
 .docs-copy-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 34px;
+  grid-template-columns: auto minmax(0, 1fr) 34px;
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 7px 7px 7px 11px;
+  padding: 3px 3px 3px 10px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface-muted);
@@ -193,22 +153,12 @@
 .docs-session-note {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding-top: 2px;
-}
-
-.docs-session-note > span:last-child {
-  display: grid;
-  gap: 1px;
-}
-
-.docs-session-note strong {
-  font-size: 12px;
-}
-
-.docs-session-note small {
+  gap: 6px;
+  color: var(--muted-strong);
   font-size: 11px;
+  line-height: 1.4;
 }
+
 
 .docs-shell {
   display: grid;
@@ -1019,14 +969,10 @@
   }
 
   .docs-hero {
-    gap: 22px;
-    padding: 21px 17px;
-    border-radius: 15px;
+    gap: 10px;
+    padding: 12px;
   }
 
-  .docs-hero h2 {
-    font-size: 2rem;
-  }
 
   .docs-hero-copy > p {
     font-size: 13px;
@@ -1037,9 +983,6 @@
     flex-direction: column;
   }
 
-  .docs-base-url-card {
-    padding: 13px;
-  }
 
   .docs-catalog {
     padding: 10px;
@@ -1112,9 +1055,6 @@
 
 /* Keep the request flow focused, with reference material one click away. */
 .docs-page [hidden] { display: none; }
-.docs-hero { padding: 22px; gap: 24px; }
-.docs-hero h2 { font-size: clamp(1.5rem, 2.5vw, 2rem); letter-spacing: -0.04em; }
-.docs-hero-copy > p { font-size: 13px; margin-top: 10px; }
 .docs-kicker { margin-bottom: 10px; }
 .docs-group-filter { display: grid; gap: 6px; }
 .docs-group-filter select { width: 100%; min-width: 0; }
@@ -1135,7 +1075,7 @@
 .docs-response-header { flex-wrap: wrap; }
 @media (max-width: 980px) { .docs-endpoint-list { max-height: 220px; } }
 @media (max-width: 620px) {
-  .docs-hero { padding: 16px; grid-template-columns: minmax(0, 1fr); }
+  .docs-hero { grid-template-columns: minmax(0, 1fr); }
   .docs-view-switch { padding: 12px; }
   .docs-view-switch button { flex: 1; justify-content: center; font-size: 12px; padding: 10px 6px; }
   .docs-console-label { flex-wrap: wrap; }
