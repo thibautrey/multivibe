@@ -34,7 +34,7 @@ export function OverviewTab({
 
   const nextStepCard = (
     <section className="panel overview-next-step">
-      <div>
+      <div className="overview-next-step-copy">
         <span className="eyebrow">Next step</span>
         <h2>{!stats.total ? "Connect your first provider" : !models.length ? "Choose models to expose" : !hasTraffic ? "Send your first request" : "Everything is running"}</h2>
         <p className="muted">
