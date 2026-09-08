@@ -5,12 +5,25 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+type workerTestManagedRuntimeStub struct {
+	called bool
+}
+
+func (runtime *workerTestManagedRuntimeStub) runWorkerTest(ctx context.Context, modelID string, infer workerTestInference) (string, uint64, uint64, error) {
+	runtime.called = true
+	if modelID != workerTestCanonicalModel || infer == nil {
+		return "", 0, 0, errors.New("unexpected worker test model")
+	}
+	return infer(ctx, workerTestOllamaModel)
+}
 
 func verifyWorkerTestSession(t *testing.T, envelope signedWorkerTestSession, publicKey ed25519.PublicKey) {
 	t.Helper()
@@ -42,14 +55,9 @@ func TestWorkerTestUsesCloudManagedModelFromLoopbackRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
-	model := "Qwen3.8-27B-4bit"
+	model := workerTestOllamaModel
 	runtimeCalled := false
 	runtimeServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.Method == http.MethodGet && request.URL.Path == "/v1/models" {
-			response.Header().Set("content-type", "application/json")
-			_, _ = response.Write([]byte(`{"data":[{"id":"Qwen3.8-27B-4bit"}]}`))
-			return
-		}
 		if request.Method != http.MethodPost || request.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("unexpected runtime request: %s %s", request.Method, request.URL.Path)
 		}
@@ -89,7 +97,7 @@ func TestWorkerTestUsesCloudManagedModelFromLoopbackRuntime(t *testing.T) {
 				t.Fatal("worker session bearer is missing")
 			}
 			_ = json.NewEncoder(response).Encode(workerTestPollResponse{Job: &workerTestClaim{
-				JobID: testEnrollmentID, NodeID: testNodeID, Model: providerCloudAssignedModel,
+				JobID: testEnrollmentID, NodeID: testNodeID, Model: workerTestCanonicalModel,
 				Prompt: "Reply with exactly MULTIVIBE_WORKER_OK.", ExpiresAt: now.Add(5 * time.Minute).Format("2006-01-02T15:04:05.000Z"), TestOnly: true,
 			}})
 		case "/provider/v1/worker-test-jobs/" + testEnrollmentID + "/complete":
@@ -126,7 +134,8 @@ func TestWorkerTestUsesCloudManagedModelFromLoopbackRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	managed := &runtimeEndpoint{AdapterID: managedWorkerAdapterID, Endpoint: runtimeServer.URL}
-	service := newWorkerTestService(cloudURL, http.DefaultClient, identity, store, managed)
+	controller := &workerTestManagedRuntimeStub{}
+	service := newWorkerTestService(cloudURL, http.DefaultClient, identity, store, managed, controller)
 	service.now = func() time.Time { return now }
 	session, err := service.openSession(context.Background(), *store.snapshot())
 	if err != nil {
@@ -136,8 +145,8 @@ func TestWorkerTestUsesCloudManagedModelFromLoopbackRuntime(t *testing.T) {
 	if err != nil || claim == nil {
 		t.Fatalf("worker test claim failed: %#v %v", claim, err)
 	}
-	if claim.Model != model {
-		t.Fatalf("Cloud-managed claim was not resolved to the live runtime model: %q", claim.Model)
+	if claim.Model != workerTestCanonicalModel {
+		t.Fatalf("Cloud-managed claim did not retain the reviewed canonical model: %q", claim.Model)
 	}
 	output, inputTokens, outputTokens, inferenceErr := service.infer(context.Background(), *claim)
 	if inferenceErr != nil {
@@ -146,7 +155,7 @@ func TestWorkerTestUsesCloudManagedModelFromLoopbackRuntime(t *testing.T) {
 	if err := service.complete(context.Background(), session.SessionToken, *claim, output, inputTokens, outputTokens, nil); err != nil {
 		t.Fatal(err)
 	}
-	if !runtimeCalled || !completed {
+	if !controller.called || !runtimeCalled || !completed {
 		t.Fatal("Cloud to local runtime corridor did not complete")
 	}
 }
@@ -156,10 +165,6 @@ func TestWorkerTestRequiresTheExactSyntheticResponse(t *testing.T) {
 		t.Run(output, func(t *testing.T) {
 			runtimeServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 				response.Header().Set("content-type", "application/json")
-				if request.Method == http.MethodGet && request.URL.Path == "/v1/models" {
-					_, _ = response.Write([]byte(`{"data":[{"id":"registered/model"}]}`))
-					return
-				}
 				_ = json.NewEncoder(response).Encode(map[string]any{
 					"choices": []any{map[string]any{"message": map[string]any{"content": output}}},
 					"usage":   map[string]any{"prompt_tokens": 9, "completion_tokens": 6},
@@ -167,8 +172,8 @@ func TestWorkerTestRequiresTheExactSyntheticResponse(t *testing.T) {
 			}))
 			defer runtimeServer.Close()
 			managed := &runtimeEndpoint{AdapterID: managedWorkerAdapterID, Endpoint: runtimeServer.URL}
-			service := newWorkerTestService(nil, http.DefaultClient, nil, nil, managed)
-			claim := workerTestClaim{Model: "registered/model", Prompt: "Reply with exactly MULTIVIBE_WORKER_OK.", TestOnly: true, ExpiresAt: time.Now().UTC().Add(time.Minute).Format("2006-01-02T15:04:05.000Z")}
+			service := newWorkerTestService(nil, http.DefaultClient, nil, nil, managed, &workerTestManagedRuntimeStub{})
+			claim := workerTestClaim{Model: workerTestCanonicalModel, Prompt: "Reply with exactly MULTIVIBE_WORKER_OK.", TestOnly: true, ExpiresAt: time.Now().UTC().Add(time.Minute).Format("2006-01-02T15:04:05.000Z")}
 			if _, _, _, err := service.infer(context.Background(), claim); err == nil {
 				t.Fatal("non-exact synthetic response was accepted")
 			}
@@ -190,9 +195,10 @@ func TestCloudManagedWorkerNeverFallsBackToLocalRuntime(t *testing.T) {
 	}}, runtimeAdapterRegistry()); err != nil || conflict {
 		t.Fatalf("local runtime setup failed: conflict=%v err=%v", conflict, err)
 	}
-	service := newWorkerTestService(nil, http.DefaultClient, nil, nil, nil)
-	if _, _, err := service.cloudManagedRuntime(context.Background(), providerCloudAssignedModel); err == nil {
-		t.Fatal("Cloud-managed execution accepted a local runtime without a managed backend")
+	service := newWorkerTestService(nil, http.DefaultClient, nil, nil, nil, nil)
+	claim := workerTestClaim{Model: workerTestCanonicalModel, Prompt: workerTestPrompt, TestOnly: true, ExpiresAt: time.Now().UTC().Add(time.Minute).Format("2006-01-02T15:04:05.000Z")}
+	if _, _, _, err := service.infer(context.Background(), claim); err == nil {
+		t.Fatal("Cloud-managed execution accepted a local runtime without a managed controller")
 	}
 	if runtimeCalled {
 		t.Fatal("Cloud-managed execution probed a local-only runtime")
@@ -233,12 +239,16 @@ func TestWorkerTestRejectsUnregisteredModelBeforeRuntimeCall(t *testing.T) {
 	}
 	cloudURL, _ := cloudAPIURL(server.URL)
 	managed := &runtimeEndpoint{AdapterID: managedWorkerAdapterID, Endpoint: runtimeServer.URL}
-	service := newWorkerTestService(cloudURL, http.DefaultClient, nil, store, managed)
+	controller := &workerTestManagedRuntimeStub{}
+	service := newWorkerTestService(cloudURL, http.DefaultClient, nil, store, managed, controller)
 	service.now = func() time.Time { return now }
 	if _, err := service.poll(context.Background(), "mwt_"+strings.Repeat("a", 43)); err == nil {
 		t.Fatal("an unregistered model must be rejected")
 	}
 	if runtimeCalled {
 		t.Fatal("an unregistered model reached the local inference endpoint")
+	}
+	if controller.called {
+		t.Fatal("an unregistered model reached managed runtime preparation")
 	}
 }

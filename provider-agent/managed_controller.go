@@ -24,6 +24,7 @@ var (
 	errManagedControllerPlanExpired = errors.New("managed controller signed plan expired")
 	errManagedControllerConsent     = errors.New("managed controller is not authorized by local consent")
 	errManagedControllerSuperseded  = errors.New("managed controller operation was superseded")
+	errManagedControllerWorkerTest  = errors.New("managed controller worker test is invalid")
 )
 
 type managedControllerRuntime interface {
@@ -405,10 +406,104 @@ func (controller *managedProviderController) start(ctx context.Context, expected
 
 func (controller *managedProviderController) stop(ctx context.Context) (managedControllerView, error) {
 	controller.cancelCurrent()
+	controller.operationMu.Lock()
+	defer controller.operationMu.Unlock()
 	if err := controller.runtime.stop(ctx); err != nil {
 		return controller.status(), err
 	}
 	return controller.status(), nil
+}
+
+// runWorkerTest serializes the complete diagnostic lifecycle with every other
+// managed-runtime operation. It accepts one reviewed model only, requires the
+// persisted Cloud and automatic-download choices, installs/starts the bundled
+// Ollama runtime, verifies the exact pinned model, and keeps operationMu held
+// through inference. User-configured runtimes never enter this path.
+func (controller *managedProviderController) runWorkerTest(
+	ctx context.Context,
+	modelID string,
+	infer workerTestInference,
+) (string, uint64, uint64, error) {
+	if modelID != workerTestCanonicalModel || infer == nil || controller.policy.path == "" {
+		return "", 0, 0, errManagedControllerWorkerTest
+	}
+	controller.operationMu.Lock()
+	defer controller.operationMu.Unlock()
+	policy, policyChanged := controller.policy.snapshotWithChange()
+	if !managedControllerWorkerTestConsented(policy) {
+		return "", 0, 0, errManagedControllerConsent
+	}
+	catalog, err := openProviderModelCatalog(controller.catalogPath)
+	if err != nil {
+		return "", 0, 0, errManagedControllerWorkerTest
+	}
+	entry, found := catalog.entry(workerTestCanonicalModel)
+	if !found || entry.OllamaModel != workerTestOllamaModel || entry.OllamaManifestPath != workerTestManifestPath ||
+		entry.ContentDigest != workerTestModelDigest || entry.DownloadBytes != workerTestModelBytes {
+		return "", 0, 0, errManagedControllerWorkerTest
+	}
+	operationContext, cancel := managedControllerChangeContext(ctx, policyChanged, nil, time.Time{})
+	controller.beginOperation("worker-test", cancel, 0, "")
+	defer controller.endOperation(cancel)
+	checkPolicy := func() error {
+		current := controller.policy.snapshot()
+		if current == nil || current.Revision != policy.Revision || !managedControllerWorkerTestConsented(current) {
+			return errManagedControllerSuperseded
+		}
+		return nil
+	}
+	if _, err := controller.runtime.ensureRuntime(operationContext, policy, controller.dependencyManifestPath); err != nil {
+		return "", 0, 0, controller.operationError(operationContext, err)
+	}
+	if err := checkPolicy(); err != nil {
+		return "", 0, 0, err
+	}
+	if _, err := controller.runtime.start(operationContext, policy); err != nil {
+		return "", 0, 0, controller.operationError(operationContext, err)
+	}
+	if err := checkPolicy(); err != nil {
+		return "", 0, 0, err
+	}
+	download := plannedModelDownload{ModelID: workerTestCanonicalModel, Bytes: workerTestModelBytes}
+	record, downloaded, err := controller.runtime.pullModelResult(operationContext, policy, controller.catalogPath, download)
+	if err != nil {
+		return "", 0, 0, controller.operationError(operationContext, err)
+	}
+	if !validWorkerTestModelRecord(record) {
+		return "", 0, 0, errManagedControllerWorkerTest
+	}
+	if downloaded {
+		if err := controller.plannerState.recordDownloads([]plannedModelDownload{download}, controller.now().UTC()); err != nil {
+			return "", 0, 0, err
+		}
+	}
+	if err := checkPolicy(); err != nil {
+		return "", 0, 0, err
+	}
+	record, err = controller.runtime.authorizeModelActivation(policy, controller.catalogPath, workerTestCanonicalModel)
+	if err != nil {
+		return "", 0, 0, controller.operationError(operationContext, err)
+	}
+	if !validWorkerTestModelRecord(record) {
+		return "", 0, 0, errManagedControllerWorkerTest
+	}
+	if err := checkPolicy(); err != nil {
+		return "", 0, 0, err
+	}
+	output, inputTokens, outputTokens, err := infer(operationContext, record.OllamaModel)
+	if err != nil {
+		return "", 0, 0, controller.operationError(operationContext, err)
+	}
+	return output, inputTokens, outputTokens, nil
+}
+
+func managedControllerWorkerTestConsented(policy *capacityPolicyStateDocument) bool {
+	return managedControllerPolicyConsented(policy) && policy.AutomaticDownloads != nil && *policy.AutomaticDownloads
+}
+
+func validWorkerTestModelRecord(record managedOllamaModelRecord) bool {
+	return record.CanonicalModelID == workerTestCanonicalModel && record.OllamaModel == workerTestOllamaModel &&
+		record.OllamaManifestPath == workerTestManifestPath && record.ManifestSHA256 == workerTestModelDigest
 }
 
 func (controller *managedProviderController) reconcile(ctx context.Context, fence managedControllerFence) (managedControllerView, error) {
