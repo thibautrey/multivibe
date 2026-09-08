@@ -1,3 +1,4 @@
+import { readCloudModelCatalog } from "./cloud-model-catalog.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import type { AccountStore, OAuthStateStore } from "./store.js";
@@ -194,6 +195,10 @@ export class MultivibeCloudService {
     this.topupUrl = this.validHttpUrl(options.topupUrl, "MultiVibe Cloud top-up URL");
     this.privacyMode = options.privacyMode ?? "standard";
     this.fetchImpl = options.fetchImpl ?? fetch;
+  }
+
+  async getModelCatalog() {
+    return { models: await readCloudModelCatalog(this.apiBaseUrl, this.fetchImpl) };
   }
 
   private validRedirectUri(value: string): string {

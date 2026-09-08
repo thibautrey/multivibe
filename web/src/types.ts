@@ -281,6 +281,7 @@ export type ProjectUsageStats = {
 export type TraceRangePreset = "24h" | "7d" | "30d" | "all";
 
 export type Tab =
+  | "models"
   | "overview"
   | "accounts"
   | "aliases"
@@ -314,6 +315,8 @@ export type ExposedModel = {
   id: string;
   owned_by?: string;
   metadata?: {
+    account_ids?: string[];
+    sdk_provider?: string;
     provider?: ProviderId;
     provider_candidates?: Array<
       ProviderId

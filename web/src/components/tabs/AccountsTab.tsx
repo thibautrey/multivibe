@@ -1,3 +1,4 @@
+import type { ModelRoute } from "../../lib/modelCatalog";
 import { findAvailableCount } from "../../lib/resetCredits";
 import ModalPortal from "../ModalPortal";
 import type { Account, ProviderId, StoreSettings, TraceStats } from "../../types";
@@ -52,6 +53,8 @@ type Props = {
   completeOAuth: (flowId: string, input: string) => Promise<any>;
   oauthRedirectUri: string;
   providerSetupRequest?: number;
+  modelSetupTarget?: ModelRoute;
+  onModelSetupConsumed?: () => void;
   onboardingProviderSetup?: boolean;
   onProviderSetupClosed?: () => void;
   onSkipOnboarding?: () => void;
@@ -603,7 +606,22 @@ export function AccountsTab(props: Props) {
   const workerSetupCloseRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
-    if (providerSetupRequest) setShowAddAccount(true);
+    if (!providerSetupRequest) return;
+    const target = props.modelSetupTarget;
+    const existing = target?.accountId ? accounts.find(account => account.id === target.accountId) : undefined;
+    if (existing) openEditModal(existing);
+    else {
+      if (target?.provider) {
+        setProvider(target.provider);
+        if (target.sdkProvider) {
+          setSdkProvider(target.sdkProvider);
+          setSdkModels(target.modelId.slice(target.sdkProvider.length + 1));
+        }
+        setProviderStep(1);
+      }
+      setShowAddAccount(true);
+    }
+    props.onModelSetupConsumed?.();
   }, [providerSetupRequest]);
 
   useEffect(() => {
