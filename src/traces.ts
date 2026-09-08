@@ -293,6 +293,7 @@ export type UsageAggregate = {
 };
 
 export type TraceManagerConfig = {
+  onCompleted?: (trace: TraceEntry) => void | Promise<void>;
   filePath: string;
   historyFilePath?: string;
   retentionMax?: number;
@@ -1487,6 +1488,15 @@ export function isHiddenTraceRoute(route: string | undefined): boolean {
 }
 
 export function createTraceManager(config: TraceManagerConfig) {
+  const observers = new Set<Promise<void>>();
+  function notifyCompleted(entry: TraceEntry) {
+    if (!config.onCompleted || entry.status < 200 || observers.size >= 256) return;
+    const pending = Promise.resolve().then(() => config.onCompleted!(entry)).then(() => undefined)
+      .catch(() => { console.warn("Plugin trace observer failed"); });
+    observers.add(pending);
+    void pending.finally(() => observers.delete(pending));
+  }
+
   const {
     filePath,
     historyFilePath = `${filePath}.stats-history`,
@@ -2049,6 +2059,7 @@ export function createTraceManager(config: TraceManagerConfig) {
 
     try {
       await Promise.all([traceWrite, appendStatsHistory(finalEntry)]);
+      notifyCompleted(finalEntry);
       lastWriteError = undefined;
     } catch (error) {
       setLastWriteError(error);
@@ -2173,6 +2184,7 @@ export function createTraceManager(config: TraceManagerConfig) {
       await run;
       queueTraceCompactionIfNeeded();
       await appendStatsHistory(finalEntry);
+      notifyCompleted(finalEntry);
       lastWriteError = undefined;
     } catch (error) {
       setLastWriteError(error);
@@ -2200,6 +2212,7 @@ export function createTraceManager(config: TraceManagerConfig) {
 
   async function flushPendingWrites(): Promise<void> {
     await Promise.all([traceWriteQueue, historyWriteQueue]);
+    await Promise.all([...observers]);
     if (lastWriteError) {
       throw new Error(`trace persistence failed: ${lastWriteError.message}`);
     }

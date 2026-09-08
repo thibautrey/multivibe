@@ -127,8 +127,9 @@ export class ModuleSandbox {
       const state = this.vm.getPromiseState(exported);
       if (state.type === "pending") throw new Error("Sandbox modules must not use top-level await");
       if (state.type === "rejected") { const error = this.vm.dump(state.error); state.error.dispose(); throw new Error(String(error?.message ?? error)); }
-      state.value.dispose();
+      if (state.value !== exported) state.value.dispose();
     } finally { exported.dispose(); }
+    this.vm.unwrapResult(this.vm.evalCode(`if (!globalThis.__implementation || typeof globalThis.__implementation !== "object") throw new Error("Plugin must export a module object")`)).dispose();
     this.deadline = Infinity;
   }
   private settle(deferred: QuickJSDeferredPromise, context: ModuleContext, value: unknown, error: boolean) {
