@@ -1461,6 +1461,13 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     res.json({ ok: true, settings: publicSettings });
   });
 
+  router.get("/cloud/models", async (_req, res) => {
+    res.setHeader("cache-control", "no-store");
+    if (!options.multivibeCloud) return res.status(503).json({ error: "MultiVibe Cloud is unavailable" });
+    try { return res.json(await options.multivibeCloud.getModelCatalog()); }
+    catch { return res.status(502).json({ error: "MultiVibe Cloud catalog could not be loaded" }); }
+  });
+
   router.get("/cloud", async (_req, res) => {
     res.setHeader("cache-control", "no-store");
     if (!options.multivibeCloud) {

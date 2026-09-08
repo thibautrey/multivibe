@@ -1,3 +1,5 @@
+import { ModelsTab } from "./components/tabs/ModelsTab";
+import type { ModelRoute } from "./lib/modelCatalog";
 import { findAvailableCount } from "./lib/resetCredits";
 import ModalPortal from "./components/ModalPortal";
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -48,6 +50,7 @@ import { completeHostOnboarding, hasCompletedHostOnboarding, shouldShowHostOnboa
 
 const TAB_ITEMS: Array<{ id: Tab; label: string; description: string; group: "Operate" | "Build" | "Advanced" }> = [
   { id: "overview", label: "Home", description: "System status and next steps", group: "Operate" },
+  { id: "models", label: "Modèles", description: "Catalogue des providers, modèles locaux et MultiVibe Cloud", group: "Operate" },
   { id: "accounts", label: "Providers", description: "Accounts, models and quotas", group: "Operate" },
   { id: "aliases", label: "Routing", description: "Rules and fallbacks", group: "Operate" },
   { id: "tracing", label: "Activity", description: "Requests, performance and cost", group: "Operate" },
@@ -74,6 +77,9 @@ const USAGE_REFRESH_MAX_INTERVAL_MS = 60_000;
 function TabIcon({ tab }: { tab: Tab }) {
   if (tab === "overview") {
     return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg>;
+  }
+  if (tab === "models") {
+    return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5ZM3 12l9 5 9-5M3 16l9 5 9-5"/></svg>;
   }
   if (tab === "accounts") {
     return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="4"/><path d="M3 20c.6-4 2.6-6 6-6s5.4 2 6 6"/><path d="M16 7h5M18.5 4.5v5"/></svg>;
@@ -120,6 +126,7 @@ export default function App() {
   const [hostOnboardingComplete, setHostOnboardingComplete] = useState(() =>
     hasCompletedHostOnboarding(localStorage),
   );
+  const [modelSetupTarget, setModelSetupTarget] = useState<ModelRoute | undefined>();
   const [providerSetupRequest, setProviderSetupRequest] = useState(0);
   const [providerSetupActive, setProviderSetupActive] = useState(false);
   const [traces, setTraces] = useState<Trace[]>([]);
@@ -428,6 +435,7 @@ export default function App() {
   };
 
   const openOnboardingProviderSetup = () => {
+    setModelSetupTarget(undefined);
     setProviderSetupActive(true);
     setTab("accounts");
     setProviderSetupRequest((current) => current + 1);
@@ -1246,6 +1254,18 @@ export default function App() {
           />
         )}
 
+        {tab === "models" && <ModelsTab models={models} accounts={accounts}
+          cloudConnected={multivibeCloud.status === "connected"} onUse={openModelInDocs}
+          onConnectCloud={connectMultivibeCloud} onConfigure={(route) => {
+            if (route.source === "cloud") {
+              window.location.assign(`https://app.multivibe.cloud/models/${encodeURIComponent(route.modelId)}`);
+              return;
+            }
+            setModelSetupTarget(route);
+            setProviderSetupRequest(value => value + 1);
+            setTab("accounts");
+          }} />}
+
         {tab === "accounts" && (
           <AccountsTab
             traceStats={filteredTraceStats}
@@ -1273,6 +1293,8 @@ export default function App() {
             completeOAuth={completeOAuth}
             oauthRedirectUri={oauthRedirectUri}
             providerSetupRequest={providerSetupRequest}
+            modelSetupTarget={modelSetupTarget}
+            onModelSetupConsumed={() => { setModelSetupTarget(undefined); setProviderSetupRequest(0); }}
             onboardingProviderSetup={providerSetupActive}
             onProviderSetupClosed={() => setProviderSetupActive(false)}
             onSkipOnboarding={finishHostOnboarding}
