@@ -4,9 +4,11 @@ import {
   buildAccountSelectionTelemetry,
   commitAccountSelection,
   chooseAccount,
+  isUsageRefreshNeeded,
   parseOpenCodeUsage,
   refreshUsageIfNeeded,
   selectAccountForProvider,
+  tracksSubscriptionQuota,
 } from "./quota.js";
 import type { Account } from "./types.js";
 
@@ -55,6 +57,48 @@ test("does not treat a missing usage snapshot as untouched usage", () => {
     chooseAccount([unknownUsage, untouchedOnBothWindows])?.id,
     "known-untouched",
   );
+});
+
+test("local runtimes do not track or route by subscription quota", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  let fetches = 0;
+  globalThis.fetch = async () => {
+    fetches += 1;
+    throw new Error("unexpected quota request");
+  };
+  const local: Account = {
+    ...account("local-runtime-omlx", 100, 100),
+    provider: "openai-compatible",
+    location: "local",
+    localRuntime: {
+      source: "multivibe-local-discovery",
+      adapter: "omlx",
+      endpoint: "http://127.0.0.1:8000",
+      confirmedModelIds: ["test/model"],
+      authentication: "none",
+    },
+  };
+
+  assert.equal(tracksSubscriptionQuota(local), false);
+  assert.equal(isUsageRefreshNeeded(local), false);
+  assert.equal((await import("./quota.js")).accountHeadroom(local), undefined);
+  await refreshUsageIfNeeded(local, local.localRuntime!.endpoint, true);
+  assert.equal(fetches, 0);
+  assert.equal(local.usage, undefined);
+});
+
+test("the synthetic MultiVibe Cloud account does not track provider quota", () => {
+  const cloud: Account = {
+    id: "multivibe-cloud",
+    provider: "openai-compatible",
+    accessToken: "",
+    enabled: true,
+    multivibeCloud: true,
+  };
+
+  assert.equal(tracksSubscriptionQuota(cloud), false);
+  assert.equal(isUsageRefreshNeeded(cloud), false);
 });
 
 test("balances equal weekly usage between accounts with different quota windows", () => {
