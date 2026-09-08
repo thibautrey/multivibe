@@ -409,35 +409,35 @@ const adminRouter = createAdminRouter({
 
 const MODULE_INFERENCE_TOKEN = crypto.randomBytes(32).toString("base64url");
 const moduleServices = (application?: string): ModuleServices => {
-    const completeWithUsage: NonNullable<ModuleServices["completeWithUsage"]> = async (input, signal) => {
-      if (MULTIVIBE_CONTROL_PLANE) throw new Error("JavaScript inference plugins require the JavaScript inference profile");
-      const models = await discoverModels(store, CHATGPT_BASE_URL, MISTRAL_BASE_URL, ZAI_BASE_URL);
-      if (!models.some((model) => model.id === input.model)) throw new Error("Classifier model is not configured");
-      const response = await fetch(`http://127.0.0.1:${nodePort}/v1/chat/completions`, {
-        method: "POST", signal,
-        headers: { "content-type": "application/json", "x-multivibe-module-token": MODULE_INFERENCE_TOKEN,
-          "x-multivibe-internal-application": application ?? "default" },
-        body: JSON.stringify({ ...input, max_tokens: Math.max(1, Math.min(512, input.max_tokens)), stream: false }),
-      });
-      if (!response.ok) { await response.body?.cancel(); throw new Error(`Classifier HTTP ${response.status}`); }
-      const result = await response.json() as any;
-      const content = result?.choices?.[0]?.message?.content;
-      if (typeof content !== "string") throw new Error("Classifier did not return text");
-      const model = typeof result.model === "string" ? result.model : input.model;
-      const usage = result.usage;
-      const tokensInput = usage?.prompt_tokens ?? usage?.input_tokens;
-      const tokensOutput = usage?.completion_tokens ?? usage?.output_tokens;
-      const costUsd = typeof tokensInput === "number" && typeof tokensOutput === "number"
-        ? estimateCostUsd(model, tokensInput, tokensOutput, usage?.prompt_tokens_details?.cached_tokens ?? usage?.input_tokens_details?.cached_tokens ?? 0)
-        : undefined;
-      return { text: content, model, costUsd };
-    };
-    return {
-      listModels: () => discoverModels(store, CHATGPT_BASE_URL, MISTRAL_BASE_URL, ZAI_BASE_URL),
-      completeWithUsage,
-      complete: async (input, signal) => (await completeWithUsage(input, signal)).text,
-    };
+  const completeWithUsage: NonNullable<ModuleServices["completeWithUsage"]> = async (input, signal) => {
+    if (MULTIVIBE_CONTROL_PLANE) throw new Error("JavaScript inference plugins require the JavaScript inference profile");
+    const models = await discoverModels(store, CHATGPT_BASE_URL, MISTRAL_BASE_URL, ZAI_BASE_URL);
+    if (!models.some((model) => model.id === input.model)) throw new Error("Classifier model is not configured");
+    const response = await fetch(`http://127.0.0.1:${nodePort}/v1/chat/completions`, {
+      method: "POST", signal,
+      headers: { "content-type": "application/json", "x-multivibe-module-token": MODULE_INFERENCE_TOKEN,
+        "x-multivibe-internal-application": application ?? "default" },
+      body: JSON.stringify({ ...input, max_tokens: Math.max(1, Math.min(512, input.max_tokens)), stream: false }),
+    });
+    if (!response.ok) { await response.body?.cancel(); throw new Error(`Classifier HTTP ${response.status}`); }
+    const result = await response.json() as any;
+    const content = result?.choices?.[0]?.message?.content;
+    if (typeof content !== "string") throw new Error("Classifier did not return text");
+    const model = typeof result.model === "string" ? result.model : input.model;
+    const usage = result.usage;
+    const tokensInput = usage?.prompt_tokens ?? usage?.input_tokens;
+    const tokensOutput = usage?.completion_tokens ?? usage?.output_tokens;
+    const costUsd = typeof tokensInput === "number" && typeof tokensOutput === "number"
+      ? estimateCostUsd(model, tokensInput, tokensOutput, usage?.prompt_tokens_details?.cached_tokens ?? usage?.input_tokens_details?.cached_tokens ?? 0)
+      : undefined;
+    return { text: content, model, costUsd };
   };
+  return {
+    listModels: () => discoverModels(store, CHATGPT_BASE_URL, MISTRAL_BASE_URL, ZAI_BASE_URL),
+    completeWithUsage,
+    complete: async (input, signal) => (await completeWithUsage(input, signal)).text,
+  };
+};
 
 const proxyRouter = createProxyRouter({
   store,

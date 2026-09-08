@@ -91,8 +91,9 @@ best effort (256 pending); overload, a disabled/unhealthy plugin, or a crash can
 leave gaps. Analytics are not a billing ledger.
 
 Savings are a **counterfactual estimate**: observed token counts and cache usage
-priced at the requested model's rates minus those priced at the actual model's
-rates. This cannot predict the tokens or cache hits the original model would
+priced at the baseline model's rates minus those priced at the actual model's
+rates. For `multivibe/autorouter`, the baseline is the advanced model configured
+when routing occurred; the virtual name itself has no price. This cannot predict the tokens or cache hits the original model would
 actually have used. Unknown usage/pricing and failed provider attempts do not
 contribute savings. Classifier and failed-attempt costs are deducted only when known; failed classifier
 calls can have unmeasured spend. Negative differences are retained. The UI exposes

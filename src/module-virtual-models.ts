@@ -41,6 +41,7 @@ export function createVirtualModelMiddleware(manager?: ModuleManager, services?:
     const fail = (status: number, code: string, message: string) => res.status(status).json({ error: { type: "invalid_request_error", code, message } });
     if (!activeRouter(manager)) return fail(404, "model_not_found", "multivibe/autorouter is unavailable: enable the Automatic model router plugin.");
     if (!/\/(chat\/completions|responses)$/.test(req.path)) return fail(400, "unsupported_router_endpoint", "multivibe/autorouter supports HTTP Chat Completions and Responses, including SSE.");
+    if (req.header("x-multivibe-privacy") === "confidential_verified") return fail(400, "unsupported_router_privacy", "Use an explicit model for verified confidential inference.");
     const controller = new AbortController();
     const abort = () => controller.abort();
     req.once("aborted", abort); res.once("close", abort);
@@ -59,6 +60,7 @@ export function createVirtualModelMiddleware(manager?: ModuleManager, services?:
       }
       if (!result.value || typeof result.value.model !== "string" || result.value.model === AUTOMATIC_ROUTER_MODEL) return fail(503, "router_unavailable", "Automatic routing did not resolve a configured model.");
       req.body = result.value;
+      delete req.payloadContextInspection;
       res.locals.multivibeRequestModulesHandled = true;
       return next();
     } catch {
