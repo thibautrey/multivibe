@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { aggregateModels } from '../src/lib/modelCatalog.js';
+import { aggregateModels, modelLogo } from '../src/lib/modelCatalog.js';
 import type { Account } from '../src/types.js';
 
 const accounts: Account[] = [{ id: 'disabled', provider: 'mistral', enabled: false }, { id: 'working', provider: 'mistral', enabled: true }];
@@ -28,6 +28,32 @@ test('local discovery requires no cloud provider and SDK candidates retain names
     [{ id: 'anthropic', name: 'Anthropic', models: [{ id: 'claude', name: 'Claude' }] }]);
   assert.equal(result.find(model => model.id === 'qwen:latest')?.routes[0].ready, true);
   assert.equal(result.find(model => model.id === 'anthropic/claude')?.routes[0].sdkProvider, 'anthropic');
+  assert.equal(result.find(model => model.id === 'anthropic/claude')?.logo, 'anthropic.svg');
+});
+
+test('model logos use canonical authors, known aliases, and provider metadata with a safe fallback', () => {
+  assert.equal(modelLogo('hf:deepseek-ai/deepseek-v3'), 'deepseek-ai.svg');
+  assert.equal(modelLogo('openrouter:zai-org/glm-5'), 'zai-org.svg');
+  assert.equal(modelLogo('openrouter/google/gemini-2.5'), 'google.svg');
+  assert.equal(modelLogo('managed-model', 'Anthropic'), 'anthropic.svg');
+  assert.equal(modelLogo('openrouter/unknown-author/model'), undefined);
+  assert.equal(modelLogo('unknown-author/model'), undefined);
+  assert.equal(modelLogo('__proto__/model'), undefined);
+});
+
+test('Cloud author metadata supplies the model logo without substituting its execution provider', () => {
+  const [model] = aggregateModels([], [], [{ id: 'managed-model', name: 'Managed model', author: 'OpenAI', aliases: [], availability: 'available', network: true }], []);
+  assert.equal(model.author, 'OpenAI');
+  assert.equal(model.logo, 'openai.svg');
+});
+
+test('Cloud author metadata enriches an existing connected Cloud route', () => {
+  const [model] = aggregateModels([{ id: 'managed-model', metadata: { account_ids: ['multivibe-cloud'] } }],
+    [{ id: 'multivibe-cloud', enabled: true }],
+    [{ id: 'managed-model', name: 'Managed model', author: 'Anthropic', aliases: [], availability: 'available', network: true }], []);
+  assert.equal(model.routes.length, 1);
+  assert.equal(model.author, 'Anthropic');
+  assert.equal(model.logo, 'anthropic.svg');
 });
 
 test('OpenRouter routing namespace resolves explicit Cloud aliases and preserves usable request ID', () => {
