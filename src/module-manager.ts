@@ -1,8 +1,9 @@
+import { ModuleSandbox } from "./module-sandbox.js";
+import { ModuleStorageManager } from "./module-storage.js";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import {
   MODULE_HOOKS,
   MULTIVIBE_MODULE_API_VERSION,
@@ -52,6 +53,7 @@ type LoadedModule = {
   implementation: MultivibeModule;
   healthy: boolean;
   error?: string;
+  sandbox?: ModuleSandbox;
 };
 
 export function normalizePublicGitHubUrl(value: string): string {
@@ -175,6 +177,7 @@ function validateSettings(schema: Record<string, any> | undefined, settings: Rec
 
 export class ModuleManager {
   private locks: ModuleLock[] = [];
+  private storage: ModuleStorageManager;
   private marketplace: MarketplaceModule[] = [];
   private builtins = new Map<string, { manifest: ModuleManifest; implementation: MultivibeModule }>();
   private manifests = new Map<string, ModuleManifest>();
@@ -184,7 +187,7 @@ export class ModuleManager {
     private root: string,
     private bundledRoot?: string,
     private bundledEnabled = true,
-  ) {}
+  ) { this.storage = new ModuleStorageManager(path.join(root, "data")); }
 
   registerBuiltin(manifest: ModuleManifest, implementation: MultivibeModule): void {
     this.builtins.set(manifest.id, { manifest, implementation });
@@ -274,10 +277,9 @@ export class ModuleManager {
       const root = this.moduleRoot(lock);
       await validateTree(root);
       const manifest = await readModuleManifest(root);
-      const imported = await import(`${pathToFileURL(path.resolve(root, manifest.entrypoint)).href}?commit=${lock.commit}`);
-      const implementation = (imported.default ?? imported.module) as MultivibeModule;
-      if (!implementation || typeof implementation !== "object") throw new Error("Module entrypoint must export a module object");
-      this.loaded.set(lock.id, { lock, manifest, implementation, healthy: true });
+      if (manifest.id !== lock.id) throw new Error("Plugin identity does not match installed lock");
+      const sandbox = await ModuleSandbox.load(root, manifest);
+      this.loaded.set(lock.id, { lock, manifest, implementation: sandbox.implementation(manifest), sandbox, healthy: true });
     } catch (error) {
       this.loaded.set(lock.id, {
         lock,
@@ -371,7 +373,7 @@ export class ModuleManager {
     lock.enabled = enabled;
     await this.saveLocks();
     if (enabled && !lock.restartRequired && !this.loaded.has(id)) await this.load(lock);
-    if (!enabled) this.loaded.delete(id);
+    if (!enabled) { this.loaded.get(id)?.sandbox?.close(); this.loaded.delete(id); }
     return this.list().find((entry) => entry.id === id)!;
   }
 
@@ -434,7 +436,17 @@ export class ModuleManager {
     await this.saveLocks();
   }
 
-  async runHook<T>(hook: ModuleHookName, value: T, context: Omit<ModuleContext, "settings" | "log">): Promise<{ value: T; response?: ModuleResponse }> {
+  analytics(id: string) {
+    if (!this.locks.some((lock) => lock.id === id)) throw new Error("Module not found");
+    return this.storage.summary(id);
+  }
+
+  close(): void {
+    for (const entry of this.loaded.values()) entry.sandbox?.close();
+    this.storage.close();
+  }
+
+  async runHook<T>(hook: ModuleHookName, value: T, context: Omit<ModuleContext, "settings" | "log" | "storage">): Promise<{ value: T; response?: ModuleResponse }> {
     let current = value;
     const modules = [...this.loaded.values()].filter((entry) => entry.healthy && entry.lock.enabled && entry.manifest.hooks.includes(hook)).sort((a, b) => (a.manifest.priority ?? 100) - (b.manifest.priority ?? 100) || a.manifest.id.localeCompare(b.manifest.id));
     for (const entry of modules) {
@@ -446,7 +458,7 @@ export class ModuleManager {
         let timeout: ReturnType<typeof setTimeout> | undefined;
         const hookController = new AbortController();
         const result = await Promise.race([
-          handler(structuredClone(current) as Readonly<T>, { ...context, signal: AbortSignal.any([context.signal, hookController.signal]), settings: Object.freeze(structuredClone(entry.lock.settings)), log: { info: (message) => console.info(prefix, message), warn: (message) => console.warn(prefix, message), error: (message) => console.error(prefix, message) } }) as Promise<ModuleHookResult<T>> | ModuleHookResult<T>,
+          handler(structuredClone(current) as Readonly<T>, { ...context, storage: this.storage.forPlugin(entry.lock.id), signal: AbortSignal.any([context.signal, hookController.signal]), settings: Object.freeze(structuredClone(entry.lock.settings)), log: { info: (message) => console.info(prefix, message), warn: (message) => console.warn(prefix, message), error: (message) => console.error(prefix, message) } }) as Promise<ModuleHookResult<T>> | ModuleHookResult<T>,
           new Promise<never>((_, reject) => {
             timeout = setTimeout(() => { hookController.abort(); reject(new Error(`hook timed out after ${timeoutMs}ms`)); }, timeoutMs);
             timeout.unref?.();
@@ -457,6 +469,7 @@ export class ModuleManager {
         if (result?.action === "replace") current = result.value;
         if (result?.action === "respond") return { value: current, response: result.response };
       } catch (error) {
+        entry.sandbox?.close();
         entry.healthy = false;
         entry.error = error instanceof Error ? error.message : String(error);
         console.error(prefix, `${hook} failed: ${entry.error}`);
