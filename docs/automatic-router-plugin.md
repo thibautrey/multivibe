@@ -72,3 +72,7 @@ strings, numbers, booleans, enums, or JSON editors. Settings pages are host-rend
 from `settingsSchema`; they do not load arbitrary plugin UI scripts.
 Save through `PATCH /admin/modules/:id` with `{ "settings": {...} }`.
 Disabled plugins retain their manifest so they can be configured before enabling.
+
+Persistent router analytics and isolated plugin storage are documented in
+[Plugin storage and sandbox](plugin-storage.md). The first-party router remains a
+trusted host built-in; installed third-party modules now run in isolated WASM heaps.

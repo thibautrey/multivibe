@@ -1071,3 +1071,25 @@ test("reports the no-cache equivalent alongside provider cost", async () => {
   assert.equal(stats.totals.costUsdWithoutCache, 5.375);
   await fs.rm(directory, { recursive: true, force: true });
 });
+
+test("completed trace observers receive measured HTTP and SSE usage after persistence", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "trace-observer-"));
+  const seen: TraceEntry[] = [];
+  const manager = createTraceManager({ filePath: path.join(directory, "traces.jsonl"), onCompleted: async (trace) => { seen.push(trace); } });
+  try {
+    await manager.initialize();
+    const input = { at: Date.now(), route: "/responses", model: "gpt-4o-mini", clientRequestId: "req", traceKind: "upstream-attempt" as const,
+      status: 200, stream: false, latencyMs: 10, usage: { input_tokens: 100, output_tokens: 20, input_tokens_details: {cached_tokens:40} } };
+    await manager.appendTrace(input);
+    const id = await manager.beginTrace({...input, status:102, stream:true, usage:undefined});
+    await manager.flushPendingWrites();
+    assert.equal(seen.length,1);
+    await manager.completeTrace(id,{...input,stream:true});
+    await manager.flushPendingWrites();
+    assert.equal(seen.length,2);
+    assert.equal(seen[1].tokensInput,100);
+    assert.equal(seen[1].tokensInputCached,40);
+    assert.equal(seen[1].usageStatus,"measured");
+    assert.ok((seen[1].costUsd ?? 0)>0);
+  } finally { await fs.rm(directory,{recursive:true,force:true}); }
+});

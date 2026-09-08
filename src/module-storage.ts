@@ -23,14 +23,22 @@ function directory(root: string): void {
 
 /** A host-owned SQLite connection. Plugins receive only bound JSON operations. */
 export class ModuleStorageManager {
+  private owners = new Map<string, string>();
   private databases = new Map<string, Database.Database>();
   constructor(private root: string) {}
+  registerOwner(id: string, origin: string): void {
+    const previous = this.owners.get(id);
+    if (previous !== undefined && previous !== origin) {
+      this.databases.get(id)?.close(); this.databases.delete(id);
+    }
+    this.owners.set(id, origin);
+  }
   private database(id: string): Database.Database {
     if (!/^[a-z0-9][a-z0-9.-]{2,127}$/.test(id)) throw new Error("Invalid plugin id");
     const existing = this.databases.get(id);
     if (existing) return existing;
     directory(this.root);
-    const root = path.join(this.root, createHash("sha256").update(id).digest("hex"));
+    const root = path.join(this.root, createHash("sha256").update(JSON.stringify([id, this.owners.get(id) ?? "local"])).digest("hex"));
     directory(root);
     const filename = path.join(root, "state.sqlite");
     const fd = fs.openSync(filename, fs.constants.O_CREAT | fs.constants.O_RDWR | fs.constants.O_NOFOLLOW, 0o600);
