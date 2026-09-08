@@ -20,6 +20,7 @@ export function createDemoApi(now = Date.now()) {
       "/admin/provider-catalog": sdkProviderCatalog(),
       "/admin/accounts": { accounts: fixtures.accounts },
       "/admin/provider-agent/local-worker": { localWorker: null },
+      "/admin/cloud/models": { models: [{ id: "hf:demo/cloud-model", name: "Demo Cloud model", aliases: [], availability: "unknown", network: false }] },
       "/admin/cloud": { status: "disconnected", topupUrl: "https://app.multivibe.cloud/billing" },
       "/admin/config": { hostApplication: false, usageCacheTtlMs: 86400000, oauthRedirectUri: "http://localhost:4173/auth/callback" },
       "/v1/models": { object: "list", data: fixtures.models },

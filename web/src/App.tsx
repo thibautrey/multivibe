@@ -1256,6 +1256,7 @@ export default function App() {
 
         {tab === "models" && <ModelsTab models={models} accounts={accounts}
           cloudConnected={multivibeCloud.status === "connected"} onUse={openModelInDocs}
+          onRefresh={() => loadBase({ forceModels: true })}
           onConnectCloud={connectMultivibeCloud} onConfigure={(route) => {
             if (route.source === "cloud") {
               window.location.assign(`https://app.multivibe.cloud/models/${encodeURIComponent(route.modelId)}`);
