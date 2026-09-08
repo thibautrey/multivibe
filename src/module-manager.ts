@@ -472,6 +472,7 @@ export class ModuleManager {
           if (timeout) clearTimeout(timeout);
           hookController.abort();
         });
+        if (hook === "request.completed") continue; // Observers cannot change another plugin's telemetry.
         if (result?.action === "replace") current = result.value;
         if (result?.action === "respond") return { value: current, response: result.response };
       } catch (error) {
