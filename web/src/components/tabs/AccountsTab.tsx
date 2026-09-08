@@ -2272,7 +2272,7 @@ export function AccountsTab(props: Props) {
           <div
             id="make-money-preview-dialog"
             ref={workerSetupDialogRef}
-            className="modal panel make-money-preview-modal"
+            className="modal panel make-money-preview-modal worker-setup-modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="make-money-preview-title"
@@ -2281,14 +2281,9 @@ export function AccountsTab(props: Props) {
           >
             <div className="modal-title-row make-money-preview-header">
               <div>
-                <span className="badge badge-warn">
-                  This computer · {localWorker.trust_tier === "community" ? "Community worker" : localWorker.trust_tier}
-                </span>
-                <h2 id="make-money-preview-title">Configure Cloud capacity</h2>
+                <h2 id="make-money-preview-title">Worker settings</h2>
                 <p id="make-money-preview-summary" className="muted">
-                  Cloud jobs use only MultiVibe&apos;s managed Ollama runtime. Your
-                  oMLX, LM Studio, Ollama and compatible local endpoints remain
-                  available for local inference and are never used for Cloud work.
+                  Let MultiVibe Cloud use this computer for AI jobs.
                 </p>
               </div>
               <button
@@ -2307,26 +2302,9 @@ export function AccountsTab(props: Props) {
             </div>
 
             <section className="provider-selection-panel provider-capacity-panel" aria-labelledby="provider-capacity-title">
-              <div className="provider-selection-heading">
-                <div>
-                  <span className="eyebrow">Your limits</span>
-                  <h3 id="provider-capacity-title">Choose what to share</h3>
-                  <p>
-                    Start with the default limits or customize them in Advanced settings.
-                  </p>
-                </div>
-                {(providerCapacityStatus === "ready" || providerCapacityStatus === "saving") && (
-                  <span className={providerCapacityDraft.paused ? "badge badge-warn" : "badge"}>
-                    {providerCapacityPolicy
-                      ? `${providerCapacityDraft.paused ? "Paused" : "On"} · saved`
-                      : "Not set"}
-                  </span>
-                )}
-              </div>
-
               {providerCapacityStatus === "loading" && (
                 <div className="provider-selection-empty" role="status">
-                  Loading the protected local capacity policy…
+                  Loading settings…
                 </div>
               )}
 
@@ -2339,48 +2317,33 @@ export function AccountsTab(props: Props) {
 
               {(providerCapacityStatus === "ready" || providerCapacityStatus === "saving") && (
                 <>
-                  <div className="provider-capacity-grid">
-                    <label>
-                      Sharing
-                      <select
-                        value={providerCapacityDraft.paused ? "paused" : "available"}
-                        disabled={providerCapacityStatus === "saving"}
-                        onChange={(event) => updateProviderCapacityDraft(
-                          "paused",
-                          event.target.value === "paused",
-                        )}
-                      >
-                        <option value="paused">Paused</option>
-                        <option value="available">On</option>
-                      </select>
-                      <small>Pause stops sharing.</small>
-                    </label>
-
-                  </div>
-
-                  <label className="provider-capacity-consent">
+                  <label className="worker-sharing-control">
+                    <span>
+                      <strong id="provider-capacity-title">Allow Cloud jobs</strong>
+                      <small>You can turn this off anytime.</small>
+                    </span>
                     <input
                       type="checkbox"
-                      checked={providerCapacityDraft.allowCloudWorkloads}
+                      role="switch"
+                      aria-labelledby="provider-capacity-title"
+                      checked={providerCapacityDraft.allowCloudWorkloads && !providerCapacityDraft.paused}
                       disabled={providerCapacityStatus === "saving"}
-                      onChange={(event) => updateProviderCapacityDraft(
-                        "allowCloudWorkloads",
-                        event.target.checked,
-                      )}
+                      onChange={(event) => {
+                        const enabled = event.target.checked;
+                        setProviderCapacityDraft((current) => ({
+                          ...current,
+                          allowCloudWorkloads: enabled,
+                          paused: !enabled,
+                        }));
+                        setProviderCapacityMessage("");
+                      }}
                     />
-                    <span>
-                      <strong>Allow MultiVibe Cloud jobs</strong>
-                      <small>
-                        Off by default. You can pause sharing anytime.
-                      </small>
-                    </span>
                   </label>
 
                   <details className="make-money-preview-advanced provider-capacity-advanced">
                     <summary>
                       <span className="make-money-preview-advanced-copy">
-                        <strong>Advanced settings</strong>
-                        <span>Compute, memory, storage and downloads</span>
+                        <strong>Resource limits</strong>
                       </span>
                     </summary>
                     <div className="provider-capacity-grid">
@@ -2553,7 +2516,7 @@ export function AccountsTab(props: Props) {
 
                   {!providerCapacityInput && (
                     <p className="provider-capacity-validation">
-                      Check Advanced settings: complete every limit and use an absolute model folder.
+                      Check Resource limits: complete every limit and use an absolute model folder.
                     </p>
                   )}
 
@@ -2583,7 +2546,7 @@ export function AccountsTab(props: Props) {
                     >
                       {providerCapacityStatus === "saving"
                         ? "Saving…"
-                        : "Save limits"}
+                        : "Save changes"}
                     </button>
                   </div>
                 </>
@@ -2593,19 +2556,17 @@ export function AccountsTab(props: Props) {
             <details className="make-money-preview-advanced">
               <summary>
                 <span className="make-money-preview-advanced-copy">
-                  <strong>Local-only runtime settings</strong>
-                  <span>Configure local inference; these settings never supply Cloud jobs.</span>
+                  <strong>Local AI servers</strong>
                 </span>
               </summary>
 
             <section className="provider-selection-panel" aria-labelledby="provider-runtime-endpoints-title">
               <div className="provider-selection-heading">
                 <div>
-                  <span className="eyebrow">Manual loopback runtimes</span>
-                  <h3 id="provider-runtime-endpoints-title">Connect a supported local server</h3>
+                  <h3 id="provider-runtime-endpoints-title">Connect a local server</h3>
                   <p>
-                    Only literal <span className="mono">127.0.0.1</span> or <span className="mono">::1</span> HTTP endpoints with an explicit port are accepted.
-                    Bearers are stored only in Core&apos;s protected local file and are never returned by the API.
+                    For local use only. Cloud jobs use MultiVibe&apos;s managed Ollama runtime.
+                    Use an HTTP address with <span className="mono">127.0.0.1</span> or <span className="mono">::1</span> and a port.
                   </p>
                 </div>
                 {providerRuntimeEndpoints && (
@@ -2883,18 +2844,7 @@ export function AccountsTab(props: Props) {
 
             </details>
 
-            <div className="modal-actions make-money-preview-actions">
-              <span className="muted">
-                Cloud work still requires enrollment and your explicit saved consent
-              </span>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => setWorkerSetupOpen(false)}
-              >
-                Got it
-              </button>
-            </div>
+
           </div>
           </div>,
           document.body,
