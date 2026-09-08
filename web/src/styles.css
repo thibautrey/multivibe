@@ -4880,9 +4880,16 @@ body:has(> .modal-backdrop) {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 32px;
   padding: 28px 30px;
   background: var(--surface-accent);
+  container: overview-next-step / inline-size;
+}
+
+.overview-next-step-copy {
+  min-width: 0;
+  flex: 1 1 280px;
 }
 
 .overview-next-step h2 {
@@ -4903,7 +4910,7 @@ body:has(> .modal-backdrop) {
 
 .overview-running-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
   gap: 16px;
   align-items: stretch;
 }
@@ -4945,6 +4952,15 @@ body:has(> .modal-backdrop) {
 .overview-model-provider { font-size: 11px; overflow-wrap: anywhere; }
 .overview-model-empty { padding: 20px 0; }
 .overview-model-pagination { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 14px; font-size: 12px; }
+
+@container overview-next-step (max-width: 560px) {
+  .overview-next-step-copy {
+    flex-basis: 100%;
+  }
+  .overview-primary-action {
+    width: 100%;
+  }
+}
 
 .providers-empty-state {
   min-height: 440px;
