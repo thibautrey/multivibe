@@ -2185,10 +2185,10 @@ export function AccountsTab(props: Props) {
                       </div>
                     )}
                     {shouldDisplayOptionalQuotaWindow(a, "secondary") && (
-                    <div className="provider-quota-item">
-                      <span className="provider-quota-label">Weekly quota</span>
-                      {renderUsageCell(a.usage?.secondary?.usedPercent, a.usage?.secondary?.resetAt, a.usage?.quotaStatus === "unsupported", a.usage?.quotaStatus === "error")}
-                    </div>
+                      <div className="provider-quota-item">
+                        <span className="provider-quota-label">Weekly quota</span>
+                        {renderUsageCell(a.usage?.secondary?.usedPercent, a.usage?.secondary?.resetAt, a.usage?.quotaStatus === "unsupported", a.usage?.quotaStatus === "error")}
+                      </div>
                     )}
                     {shouldDisplayOptionalQuotaWindow(a, "monthly") && (
                       <div className="provider-quota-item">
