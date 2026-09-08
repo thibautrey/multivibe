@@ -427,16 +427,13 @@ const dialogFocusableSelector = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(",");
 
-function usageAgeLabel(fetchedAt?: number) {
-  if (typeof fetchedAt !== "number" || !Number.isFinite(fetchedAt)) {
-    return "Usage not checked";
-  }
+function usageAgeLabel(fetchedAt: number) {
   const ageMs = Math.max(0, Date.now() - fetchedAt);
-  if (ageMs < 60_000) return "Checked less than a minute ago";
+  if (ageMs < 60_000) return "just now";
   const ageMinutes = Math.floor(ageMs / 60_000);
-  if (ageMinutes < 60) return `Checked ${ageMinutes}m ago`;
+  if (ageMinutes < 60) return `${ageMinutes}m ago`;
   const ageHours = Math.floor(ageMinutes / 60);
-  return `Checked ${ageHours}h ago`;
+  return `${ageHours}h ago`;
 }
 
 function usageStatusLabel(account: Account, usageCacheTtlMs: number) {
@@ -453,6 +450,14 @@ function usageStatusLabel(account: Account, usageCacheTtlMs: number) {
   const secondary = account.usage.secondary?.usedPercent;
   if (primary === 0 && secondary === 0) return "No usage reported";
   return "Usage checked";
+}
+
+function usageSummaryLabel(account: Account, usageCacheTtlMs: number) {
+  const status = usageStatusLabel(account, usageCacheTtlMs);
+  const fetchedAt = account.usage?.fetchedAt;
+  return typeof fetchedAt === "number" && Number.isFinite(fetchedAt)
+    ? `${status} · ${usageAgeLabel(fetchedAt)}`
+    : status;
 }
 
 export function AccountsTab(props: Props) {
@@ -1945,33 +1950,27 @@ export function AccountsTab(props: Props) {
                 )}
                 <div className="provider-card-header">
                   <div className="provider-card-identity">
-                    <div className="provider-card-badges">
-                      <span className="provider-badge">
-                        <img
-                          className="provider-icon"
-                          src={runtimeIdentity.iconUrl}
-                          alt={`${runtimeIdentity.label} icon`}
-                          loading="lazy"
-                        />
-                        {runtimeIdentity.label}
-                      </span>
-                      <span className={a.enabled ? "badge badge-live" : "badge badge-warn"}>
-                        {a.enabled ? "Enabled" : "Disabled"}
-                      </span>
-                    </div>
-                    <div className="provider-card-account">
-                      <strong>
-                        {sanitized ? maskEmail(a.email) : (a.email ?? "No email set")}
-                      </strong>
-                      <div className="provider-card-meta">
-                        <span className={a.location === "local" ? "badge badge-live" : "badge"}>
-                          {a.location ?? "cloud"}
-                        </span>
-                        <span className="mono muted">
-                          {usageStatusLabel(a, usageCacheTtlMs)} · {usageAgeLabel(a.usage?.fetchedAt)}
-                        </span>
-                      </div>
-                    </div>
+                    <span className="provider-badge">
+                      <img
+                        className="provider-icon"
+                        src={runtimeIdentity.iconUrl}
+                        alt={`${runtimeIdentity.label} icon`}
+                        loading="lazy"
+                      />
+                      {runtimeIdentity.label}
+                    </span>
+                    <strong className="provider-card-account-name">
+                      {sanitized ? maskEmail(a.email) : (a.email ?? "No email set")}
+                    </strong>
+                    <span className={`provider-card-status badge ${a.enabled ? "badge-live" : "badge-warn"}`}>
+                      {a.enabled ? "Enabled" : "Disabled"}
+                    </span>
+                    <span className={`provider-card-location badge${a.location === "local" ? " badge-live" : ""}`}>
+                      {a.location ?? "cloud"}
+                    </span>
+                    <span className="provider-card-usage mono muted">
+                      {usageSummaryLabel(a, usageCacheTtlMs)}
+                    </span>
                   </div>
                   <div className="account-actions-cell">
                       <button
