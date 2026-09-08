@@ -445,14 +445,14 @@ static gboolean request_enrollment_idle(gpointer data) {
         GTK_MESSAGE_QUESTION,
         GTK_BUTTONS_NONE,
         "%s",
-        "Add this Linux host to MultiVibe Cloud?"
+        "Add this worker to MultiVibe Cloud?"
     );
     gtk_message_dialog_format_secondary_text(
         GTK_MESSAGE_DIALOG(dialog),
         "%s",
-        "MultiVibe Host will register this host's public device identity. Cloud jobs use only MultiVibe's managed Ollama runtime and still require saved capacity consent. Your private key and local runtime settings stay on this host."
+        "MultiVibe Host will register this worker's public device identity. Cloud jobs use only MultiVibe's managed Ollama runtime and still require saved capacity consent. Your private key and local runtime settings stay on this worker."
     );
-    gtk_dialog_add_button(GTK_DIALOG(dialog), "Add this Linux host", GTK_RESPONSE_ACCEPT);
+    gtk_dialog_add_button(GTK_DIALOG(dialog), "Add this worker", GTK_RESPONSE_ACCEPT);
     gtk_dialog_add_button(GTK_DIALOG(dialog), "Cancel", GTK_RESPONSE_CANCEL);
     g_signal_connect(dialog, "response", G_CALLBACK(on_enrollment_response), NULL);
     gtk_window_present(GTK_WINDOW(dialog));

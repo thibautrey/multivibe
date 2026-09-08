@@ -762,7 +762,7 @@ private final class HostPopoverController: NSViewController {
     private func workerSetupCard() -> NSView {
         let container = card()
         let title = label("Set up your local worker", size: 13, weight: .semibold, color: MenuBarPalette.text)
-        let detail = label("Connect this Mac to MultiVibe Cloud to start earning.", size: 11, color: MenuBarPalette.muted)
+        let detail = label("Connect this worker to MultiVibe Cloud to start earning.", size: 11, color: MenuBarPalette.muted)
         detail.maximumNumberOfLines = 2
         let copy = NSStackView(views: [title, detail])
         copy.orientation = .vertical
@@ -1100,9 +1100,9 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         NSApplication.shared.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.alertStyle = .informational
-        alert.messageText = "Add this Mac to MultiVibe Cloud?"
-        alert.informativeText = "MultiVibe Host will register this Mac's public device identity. Cloud jobs use only MultiVibe's managed Ollama runtime and still require your saved capacity consent. Your private key and local runtime settings stay on this Mac."
-        alert.addButton(withTitle: "Add this Mac")
+        alert.messageText = "Add this worker to MultiVibe Cloud?"
+        alert.informativeText = "MultiVibe Host will register this worker's public device identity. Cloud jobs use only MultiVibe's managed Ollama runtime and still require your saved capacity consent. Your private key and local runtime settings stay on this worker."
+        alert.addButton(withTitle: "Add this worker")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else {
             pendingEnrollmentToken = nil
@@ -1156,7 +1156,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         NSApplication.shared.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.alertStyle = success ? .informational : .warning
-        alert.messageText = success ? "This Mac is connected" : "This Mac could not be connected"
+        alert.messageText = success ? "This worker is connected" : "This worker could not be connected"
         if success {
             alert.informativeText = "Its public identity was registered securely. Cloud jobs use only MultiVibe's managed Ollama runtime and still require your saved capacity consent."
         } else {
@@ -1168,7 +1168,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
             case .expiredGrant:
                 alert.informativeText = "The MultiVibe connection link has expired. Start again from MultiVibe Cloud to create a new link."
             case .conflict:
-                alert.informativeText = "This Mac already has a different Cloud enrollment. Refresh MultiVibe Cloud and use the existing connection."
+                alert.informativeText = "This worker already has a different Cloud enrollment. Refresh MultiVibe Cloud and use the existing connection."
             case .cloudUnavailable:
                 alert.informativeText = "MultiVibe Cloud is temporarily unavailable. Keep MultiVibe Host open and try again shortly."
             case .cloudRejected, .none:
