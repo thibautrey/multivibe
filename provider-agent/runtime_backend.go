@@ -1140,6 +1140,16 @@ func (backend *ollamaRuntimeBackend) Metrics(_ context.Context, policy *capacity
 }
 
 func (backend *ollamaRuntimeBackend) Cleanup(ctx context.Context, request runtimeCleanupRequest) error {
+	if len(request.ModelIDs) > managedOllamaMaximumModels {
+		return errRuntimeBackendInvalid
+	}
+	previousID := ""
+	for _, modelID := range request.ModelIDs {
+		if !validSelectedModelID(modelID) || modelID <= previousID {
+			return errRuntimeBackendInvalid
+		}
+		previousID = modelID
+	}
 	if backend.engines != nil && len(request.ModelIDs) > 0 {
 		if err := backend.engines.stop(ctx); err != nil {
 			return err
@@ -1244,6 +1254,12 @@ func (backend *ollamaRuntimeBackend) authorizeModelActivation(policy *capacityPo
 }
 
 func (backend *ollamaRuntimeBackend) deactivateModel(ctx context.Context, policy *capacityPolicyStateDocument, catalogPath, modelID string) error {
+	if catalogPath != backend.catalogPath || !validSelectedModelID(modelID) {
+		return errRuntimeBackendInvalid
+	}
+	if _, ok := backend.catalog.entry(modelID); !ok {
+		return errRuntimeBackendInvalid
+	}
 	if backend.engines != nil {
 		if err := backend.engines.stop(ctx); err != nil {
 			return err
