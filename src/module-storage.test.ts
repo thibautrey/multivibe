@@ -39,9 +39,11 @@ test("retained data cannot be inherited by a different repository reusing a plug
   const manager = new ModuleStorageManager(root);
   try {
     manager.registerOwner("test.plugin", "https://github.com/owner/original.git");
-    await manager.forPlugin("test.plugin").set("private", "original-data");
+    const original = manager.forPlugin("test.plugin");
+    await original.set("private", "original-data");
     manager.registerOwner("test.plugin", "https://github.com/attacker/other.git");
     assert.equal(await manager.forPlugin("test.plugin").get("private"), null);
+    assert.equal(await original.get("private"), "original-data");
     manager.registerOwner("test.plugin", "https://github.com/owner/original.git");
     assert.equal(await manager.forPlugin("test.plugin").get("private"), "original-data");
   } finally { manager.close(); await fs.rm(root, {recursive:true,force:true}); }
