@@ -50,7 +50,7 @@ import { completeHostOnboarding, hasCompletedHostOnboarding, shouldShowHostOnboa
 
 const TAB_ITEMS: Array<{ id: Tab; label: string; description: string; group: "Operate" | "Build" | "Advanced" }> = [
   { id: "overview", label: "Home", description: "System status and next steps", group: "Operate" },
-  { id: "models", label: "Modèles", description: "Catalogue des providers, modèles locaux et MultiVibe Cloud", group: "Operate" },
+  { id: "models", label: "Models", description: "Explore providers, local models, and MultiVibe Cloud", group: "Operate" },
   { id: "accounts", label: "Providers", description: "Accounts, models and quotas", group: "Operate" },
   { id: "aliases", label: "Routing", description: "Rules and fallbacks", group: "Operate" },
   { id: "tracing", label: "Activity", description: "Requests, performance and cost", group: "Operate" },
