@@ -18,6 +18,14 @@ const windowsMenuSource = await readFile(
   new URL("../../host/menu/win32_menu_windows.go", import.meta.url),
   "utf8",
 );
+const linuxMenuAppSource = await readFile(
+  new URL("../../host/menu/main.go", import.meta.url),
+  "utf8",
+);
+const windowsMenuAppSource = await readFile(
+  new URL("../../host/menu/main_windows.go", import.meta.url),
+  "utf8",
+);
 
 test("the cross-platform Host dashboard describes local hardware as a worker", () => {
   assert.match(accountsTabSource, /Connect this worker to MultiVibe Cloud/);
@@ -34,4 +42,9 @@ test("every Host enrollment UI describes local hardware as a worker", () => {
   }
   assert.match(macOSMenuSource, /This worker is connected/);
   assert.doesNotMatch(macOSMenuSource, /This Mac|this Mac/);
+  for (const source of [linuxMenuAppSource, windowsMenuAppSource]) {
+    assert.match(source, /This worker is connected/);
+    assert.match(source, /This worker could not be connected/);
+    assert.doesNotMatch(source, /This (?:Linux|Windows) host/);
+  }
 });
