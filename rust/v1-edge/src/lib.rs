@@ -2051,6 +2051,33 @@ fn responses_to_chat_completions(body: &Value, client_stream: bool) -> Value {
     Value::Object(output)
 }
 
+fn validate_chat_tool_contract(body: &Value) -> Result<(), String> {
+    let empty = Vec::new();
+    let tools = match body.get("tools") {
+        None => &empty,
+        Some(value) => value.as_array().ok_or("tools must be an array")?,
+    };
+    let mut names = Vec::new();
+    for (index, tool) in tools.iter().enumerate() {
+        if tool["type"] != "function" {
+            return Err(format!("tools[{index}].type is unsupported by the Chat Completions bridge"));
+        }
+        let source = tool.get("function").filter(|v| !v.is_null()).unwrap_or(tool);
+        let name = source["name"].as_str().filter(|name| !name.trim().is_empty())
+            .ok_or_else(|| format!("tools[{index}] requires a function name"))?;
+        names.push(name);
+    }
+    match body.get("tool_choice") {
+        None => Ok(()),
+        Some(choice) if matches!(choice.as_str(), Some("auto" | "none")) => Ok(()),
+        Some(choice) if choice == "required" && !names.is_empty() => Ok(()),
+        Some(choice) if choice["type"] == "function" && names.contains(&choice.get("name")
+            .or_else(|| choice.get("function")?.get("name"))
+            .and_then(Value::as_str).unwrap_or("")) => Ok(()),
+        _ => Err("tool_choice must select an available function or be auto, none, or required".to_owned()),
+    }
+}
+
 fn sanitize_generic_chat_payload(body: &Value) -> Value {
     let mut payload = object_value(body);
     for key in [
@@ -5342,6 +5369,11 @@ async fn proxy_inference(
                     path.contains("chat/completions"),
                     path.ends_with("/responses/compact"),
                 );
+                if sends_chat {
+                    if let Err(message) = validate_chat_tool_contract(body) {
+                        return Err(error_response(StatusCode::BAD_REQUEST, message, "unsupported_tool_contract"));
+                    }
+                }
                 let mut payload = prepared_payload(
                     body,
                     path,
@@ -12138,6 +12170,25 @@ mod tests {
             converted["tool_choice"],
             json!({"type": "function", "function": {"name": "lookup"}})
         );
+    }
+
+    #[test]
+    fn chat_tool_contract_preserves_requirements() {
+        for body in [
+            json!({"tools": [{"type": "custom", "name": "exec"}]}),
+            json!({"tools": [{"type": "web_search_preview"}]}),
+            json!({"tools": [], "tool_choice": "required"}),
+            json!({"tools": [{"type": "function", "name": "lookup"}], "tool_choice": {"type": "function", "name": "missing"}}),
+        ] {
+            assert!(validate_chat_tool_contract(&body).is_err());
+        }
+        let body = json!({"tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object"}}], "tool_choice": "required",
+            "input": [{"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": "{}"}, {"type": "function_call_output", "call_id": "call_1", "output": "result"}]});
+        assert!(validate_chat_tool_contract(&body).is_ok());
+        let converted = responses_to_chat_completions(&body, false);
+        assert_eq!(converted["tool_choice"], "required");
+        assert_eq!(converted["messages"][0]["tool_calls"][0]["id"], converted["messages"][1]["tool_call_id"]);
+        assert_eq!(converted["messages"][1]["content"], "result");
     }
 
     #[test]
