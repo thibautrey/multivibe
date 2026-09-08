@@ -430,3 +430,10 @@ test("model validation fails open when provider discovery is incomplete", () => 
     false,
   );
 });
+
+test("Cloud selectors survive local aliases and image overrides unchanged", () => {
+  for (const model of ["multivibe/model", "multivibe/secured_preferred/model", "multivibe/secured_guaranteed/model", "multivibe/green_guaranteed/model"]) {
+    const candidates = buildImageAwareRoutingCandidates({ model }, [], [], "ordinary-model", undefined, true);
+    assert.deepEqual(candidates, [{ requestedModel: model, resolvedModel: model, provider: "openai-compatible" }]);
+  }
+});

@@ -451,6 +451,15 @@ export class ConfidentialInferenceClient {
   }
 
   async execute(input: ConfidentialExecutionInput): Promise<Response> {
+    const session = await this.prepare(input);
+    return session.execute(input.body);
+  }
+
+  /** Attest without receiving prompt content, then return a single-use session. */
+  async prepare(input: Omit<ConfidentialExecutionInput, "body">): Promise<Readonly<{
+    evidence: ConfidentialAttestationPayload;
+    execute(body: BodyInit, signal?: AbortSignal): Promise<Response>;
+  }>> {
     const origin = normalizedOrigin(input.baseUrl);
     const accessToken = validAccessToken(input.accessToken);
     const challenge = randomBytes(32).toString("base64url");
@@ -477,6 +486,18 @@ export class ConfidentialInferenceClient {
       await boundedJson(capabilitiesResponse!, MAX_ATTESTATION_BYTES, "not_sent"),
     );
     const evidence = verifyEvidence(capabilities, challenge, input.model, this.trustPolicy, this.now());
+    let used = false;
+    return Object.freeze({ evidence, execute: async (body: BodyInit, signal = input.signal) => {
+      if (used) failure("not_sent", "confidential_session_used", "Confidential session was already used");
+      used = true;
+      // Recheck pinned policy and freshness at dispatch, after any scheduling delay.
+      verifyEvidence(capabilities, challenge, input.model, this.trustPolicy, this.now());
+      return this.executeVerified({ ...input, body, signal }, evidence, origin, accessToken);
+    } });
+  }
+
+  private async executeVerified(input: ConfidentialExecutionInput, evidence: ConfidentialAttestationPayload,
+    origin: string, accessToken: string): Promise<Response> {
 
     const { privateKey, publicKey } = generateKeyPairSync("x25519");
     const ephemeralJwk = publicKey.export({ format: "jwk" });

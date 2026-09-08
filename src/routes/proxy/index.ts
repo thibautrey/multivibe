@@ -1,3 +1,8 @@
+// Cloud owns the entire multivibe/ namespace, including future policy selectors.
+function isCloudModelSelector(model: unknown): model is string {
+  return typeof model === "string" && model.startsWith("multivibe/");
+}
+
 import { AUTOMATIC_ROUTER_MODEL } from "../../automatic-router-model.js";
 import { createVirtualModelMiddleware, withVirtualModels } from "../../module-virtual-models.js";
 import type { ModuleServices } from "../../module-sdk.js";
@@ -1506,6 +1511,9 @@ function buildRoutingCandidates(
   aliases: ModelAlias[],
   requestEffort?: EffortTier,
 ): RoutingCandidate[] {
+  if (isCloudModelSelector(requestModel)) {
+    return [{ requestedModel: requestModel, resolvedModel: requestModel, provider: "openai-compatible" }];
+  }
   const key = normalizeModelLookupKey(requestModel);
   const alias = aliases.find(
     (a) => a.enabled && normalizeModelLookupKey(a.id) === key,
@@ -1599,7 +1607,7 @@ export function buildImageAwareRoutingCandidates(
       )
     : false;
   const routingRequestModel =
-    requestHasImage && imageRequestModelOverride && validOverride
+    !isCloudModelSelector(requestModel) && requestHasImage && imageRequestModelOverride && validOverride
       ? imageRequestModelOverride
       : requestModel;
   return buildRoutingCandidates(
@@ -2510,7 +2518,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
       | RoutingRequest
       | undefined;
     const effectivePolicyModel =
-      requestHasImage && imageRequestModelOverride
+      !isCloudModelSelector(requestModel) && requestHasImage && imageRequestModelOverride
         ? imageRequestModelOverride
         : requestModel;
     if (smartRoutingCoordinator && routingRequest && effectivePolicyModel) {
@@ -2591,6 +2599,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
       const providerScopedAccounts = accounts.filter(
         (a) =>
           normalizeProvider(a) === candidate.provider &&
+          (!isCloudModelSelector(requestModel) || a.multivibeCloud === true) &&
           (!policyAccountIds || policyAccountIds.has(a.id)),
       );
       const providerAccounts = filterProviderAccountsByModelAvailability(
