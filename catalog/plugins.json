@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "plugins": [
+    {
+      "repository": "https://github.com/thibautrey/multivibe-security-module",
+      "ref": "main"
+    }
+  ]
+}
