@@ -29,3 +29,12 @@ test('local discovery requires no cloud provider and SDK candidates retain names
   assert.equal(result.find(model => model.id === 'qwen:latest')?.routes[0].ready, true);
   assert.equal(result.find(model => model.id === 'anthropic/claude')?.routes[0].sdkProvider, 'anthropic');
 });
+
+test('OpenRouter routing namespace resolves explicit Cloud aliases and preserves usable request ID', () => {
+  const models = aggregateModels([{ id: 'openrouter/author/model', metadata: { account_ids: ['router'] } }],
+    [{ id: 'router', provider: 'ai-sdk', sdkProvider: 'openrouter', enabled: true }],
+    [{ id: 'openrouter:author/model', name: 'Model', aliases: ['author/model'], availability: 'available', network: false }],
+    [{ id: 'openrouter', name: 'OpenRouter', models: [{ id: 'author/model', name: 'Model' }] }]);
+  assert.equal(models.length, 1);
+  assert.equal(models[0].routes.find(route => route.ready)?.modelId, 'openrouter/author/model');
+});
