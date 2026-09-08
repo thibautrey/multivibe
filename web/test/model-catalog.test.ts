@@ -38,3 +38,26 @@ test('OpenRouter routing namespace resolves explicit Cloud aliases and preserves
   assert.equal(models.length, 1);
   assert.equal(models[0].routes.find(route => route.ready)?.modelId, 'openrouter/author/model');
 });
+
+test('catalog filters constrain availability and actions to the same matching route', async () => {
+  const { filterCatalog } = await import('../src/lib/modelCatalog.js');
+  const catalog = aggregateModels([{ id: 'm', metadata: { account_ids: ['working'] } }], accounts,
+    [{ id: 'hf:m', name: 'M', aliases: ['m'], availability: 'available', network: true }], []);
+  const filters = { query: '', source: 'cloud', provider: 'all', readyOnly: true, sort: 'ready' };
+  assert.equal(filterCatalog(catalog, filters).length, 0);
+  const cloud = filterCatalog(catalog, { ...filters, readyOnly: false });
+  assert.equal(cloud[0].routes.length, 1);
+  assert.equal(cloud[0].routes[0].source, 'cloud');
+  assert.equal(cloud[0].routes[0].ready, false);
+  assert.equal(filterCatalog(catalog, { ...filters, source: 'all', provider: 'mistral' })[0].routes[0].modelId, 'm');
+  assert.equal(catalog[0].routes.length, 2);
+});
+
+test('catalog search combines terms, sorts deterministically, and handles no matches', async () => {
+  const { filterCatalog } = await import('../src/lib/modelCatalog.js');
+  const catalog = aggregateModels([], [], [], [{ id: 'test', name: 'Test Provider', models: [{ id: 'b', name: 'Beta' }, { id: 'a', name: 'Alpha' }] }]);
+  const filters = { query: '  ALPHA provider ', source: 'all', provider: 'all', readyOnly: false, sort: 'name' };
+  assert.deepEqual(filterCatalog(catalog, filters).map(model => model.name), ['Alpha']);
+  assert.deepEqual(filterCatalog(catalog, { ...filters, query: '', sort: 'name-desc' }).map(model => model.name), ['Beta', 'Alpha']);
+  assert.deepEqual(filterCatalog(catalog, { ...filters, query: 'missing' }), []);
+});
