@@ -37,7 +37,7 @@ func newUpdater(container bool) (*updater, updaterState, error) {
 		return nil, updaterState{}, err
 	}
 	if !container {
-		state.CurrentVersion = hostUpdaterVersion
+		reconcileCurrentVersion(&state, hostUpdaterVersion)
 	}
 	client := &http.Client{
 		Timeout: 60 * time.Second,
@@ -248,7 +248,35 @@ func downloadLooksPresent(path string, expectedSize int64) bool {
 	return err == nil && updaterPrivateFile(path, info) && info.Size() == expectedSize
 }
 
+func newerUpdate(state updaterState) bool {
+	comparison, err := compareVersions(state.AvailableVersion, state.CurrentVersion)
+	return err == nil && comparison > 0
+}
+
+func reconcileCurrentVersion(state *updaterState, version string) {
+	changed := state.CurrentVersion != version
+	state.CurrentVersion = version
+	if changed {
+		state.FeedETag = ""
+		state.NextCheckAt = ""
+	}
+	if state.AvailableVersion != "" && !newerUpdate(*state) {
+		state.AvailableVersion = ""
+		state.AvailableCritical = false
+		state.RolloutEligible = false
+		state.Target = nil
+		state.DownloadedPath = ""
+		state.DownloadedSHA256 = ""
+		state.DownloadRequested = false
+		state.InstallRequested = false
+		state.LastError = ""
+		state.LastErrorCode = ""
+		state.Status = "current"
+	}
+}
+
 func restoreCachedStatus(state *updaterState) {
+	reconcileCurrentVersion(state, state.CurrentVersion)
 	if state.Target == nil || state.AvailableVersion == "" {
 		state.Status = "current"
 		return
@@ -265,7 +293,7 @@ func restoreCachedStatus(state *updaterState) {
 }
 
 func (update *updater) download(ctx context.Context, state *updaterState) error {
-	if state.Target == nil || state.AvailableVersion == "" || !state.RolloutEligible {
+	if state.Target == nil || !newerUpdate(*state) || !state.RolloutEligible {
 		return errors.New("no eligible update is available")
 	}
 	if state.Target.Kind == "container" {
