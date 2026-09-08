@@ -201,7 +201,7 @@ test("Cloud status reports balance and subscription without exposing the API key
   const seen: string[] = [];
   const cloud = service(stores, async (input, init) => {
     seen.push(`${String(input)} ${new Headers(init?.headers).get("authorization")}`);
-    if (String(input).endsWith("/client/v1/credits")) return response({ totalAvailableUsd: "12.50" });
+    if (String(input).endsWith("/client/v1/credits")) return response({ totalAvailableUsd: "12.50", topUpAvailableUsd: "2.50" });
     if (String(input).endsWith("/client/v1/billing/subscription")) return response({ data: { planCode: "pro", state: "active" }, quota: { status: "available", name: "Pro", remainingPercent: 25, resetsAt: "2026-10-01T00:00:00Z" } });
     if (String(input).endsWith("/client/v1/auto-recharge")) return response({ current: { state: "active", thresholdUsd: "5", rechargeUsd: "20" }, monetaryEffectsApplied: true });
     if (String(input).endsWith("/provider/v1/earnings")) return response({ currency: "USD", lifetimeNetUsd: "120", monthNetUsd: "45", averageMonthlyNetUsd: "30", monetaryEffectsApplied: true });
@@ -212,8 +212,8 @@ test("Cloud status reports balance and subscription without exposing the API key
   assert.deepEqual(status, {
     status: "connected",
     balanceUsd: "12.50",
+    dollarCreditsUsd: "2.50",
     subscription: "Pro",
-    quota: { status: "available", name: "Pro", remainingPercent: 25, usedPercent: 75, resetsAt: "2026-10-01T00:00:00Z" },
     apiKeyExpiresAt: new Date(stores.accounts[0]!.expiresAt!).toISOString(),
     topupUrl: "https://app.example.test/billing",
     autoTopup: { enabled: true, thresholdUsd: "5", rechargeUsd: "20" },
