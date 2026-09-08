@@ -2076,7 +2076,7 @@ fn claude_code_model(requested_model: &str) -> String {
 }
 
 fn claude_code_routing_model(requested_model: &str, detected: bool) -> String {
-    if detected && requested_model.to_ascii_lowercase().contains("claude") {
+    if !is_cloud_model_selector(requested_model) && detected && requested_model.to_ascii_lowercase().contains("claude") {
         claude_code_model(requested_model)
     } else {
         requested_model.to_owned()
@@ -10987,6 +10987,26 @@ mod tests {
             "multivibe-v1-edge-{label}-{}",
             Uuid::new_v4().simple()
         ))
+    }
+
+    #[test]
+    fn cloud_policy_selectors_preserve_model_and_restrict_accounts() {
+        let mut cloud = account("cloud");
+        cloud.provider = Some("openai-compatible".to_owned());
+        cloud.multivibe_cloud = Some(true);
+        let mut ordinary = cloud.clone();
+        ordinary.id = "unrelated".to_owned();
+        ordinary.multivibe_cloud = None;
+        let store = StoreFile::default();
+        for model in ["multivibe/model", "multivibe/secured_preferred/model", "multivibe/secured_guaranteed/model", "multivibe/green_guaranteed/model"] {
+            let routes = routes_for_model(&store, model, "default", &[]);
+            assert_eq!(routes.len(), 1);
+            assert_eq!(routes[0].model, model);
+            let accounts = select_accounts(&[ordinary.clone(), cloud.clone()], &routes[0], &HashMap::new(), &HashMap::new());
+            assert_eq!(accounts.len(), 1);
+            assert_eq!(accounts[0].id, "cloud");
+        }
+        assert_eq!(claude_code_routing_model("multivibe/secured_guaranteed/claude-model", true), "multivibe/secured_guaranteed/claude-model");
     }
 
     fn account(id: &str) -> Account {
