@@ -225,7 +225,8 @@ body,
 .sidebar {
   position: sticky;
   top: 18px;
-  min-height: calc(100vh - 36px);
+  height: calc(100vh - 36px);
+  height: calc(100dvh - 36px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -239,10 +240,21 @@ body,
 
 .sidebar-brand {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 11px;
   padding: 4px 8px 19px;
   border-bottom: 1px solid var(--sidebar-line);
+}
+
+.sidebar-scroll-area {
+  min-height: 0;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .brand-mark {
@@ -3927,6 +3939,7 @@ body:has(> .modal-backdrop) {
 
   .sidebar {
     position: static;
+    height: auto;
     min-height: 0;
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
@@ -3934,6 +3947,10 @@ body:has(> .modal-backdrop) {
     gap: 13px;
     padding: 9px 10px;
     border-radius: 15px;
+  }
+
+  .sidebar-scroll-area {
+    display: contents;
   }
 
   .sidebar-brand {

@@ -1045,44 +1045,46 @@ export default function App() {
             </span>
           </button>
 
-          <nav className="sidebar-nav" aria-label="Primary navigation">
-            {visibleTabItems.map((item, index) => (
-              <React.Fragment key={item.id}>
-              {(index === 0 || visibleTabItems[index - 1].group !== item.group) && <span className="sidebar-nav-label">{item.group}</span>}
-              <button
-                type="button"
-                className={tab === item.id ? "nav-tab active" : "nav-tab"}
-                onClick={() => setTab(item.id)}
-                aria-current={tab === item.id ? "page" : undefined}
-                aria-label={`${item.label}: ${item.description}`}
-              >
-                <span className="nav-tab-icon"><TabIcon tab={item.id} /></span>
-                <span className="nav-tab-copy">
-                  <span className="nav-tab-label">{item.label}</span>
-                  <span className="nav-tab-description">{item.description}</span>
-                </span>
-              </button>
-              </React.Fragment>
-            ))}
-          </nav>
+          <div className="sidebar-scroll-area">
+            <nav className="sidebar-nav" aria-label="Primary navigation">
+              {visibleTabItems.map((item, index) => (
+                <React.Fragment key={item.id}>
+                {(index === 0 || visibleTabItems[index - 1].group !== item.group) && <span className="sidebar-nav-label">{item.group}</span>}
+                <button
+                  type="button"
+                  className={tab === item.id ? "nav-tab active" : "nav-tab"}
+                  onClick={() => setTab(item.id)}
+                  aria-current={tab === item.id ? "page" : undefined}
+                  aria-label={`${item.label}: ${item.description}`}
+                >
+                  <span className="nav-tab-icon"><TabIcon tab={item.id} /></span>
+                  <span className="nav-tab-copy">
+                    <span className="nav-tab-label">{item.label}</span>
+                    <span className="nav-tab-description">{item.description}</span>
+                  </span>
+                </button>
+                </React.Fragment>
+              ))}
+            </nav>
 
-          <div className="sidebar-footer">
-            <div className="sidebar-status">
-              <span className="status-dot" />
-              <span>
-                <strong>{demo ? "Demo instance" : sanitized ? "Sanitized view" : "System online"}</strong>
-                <small>{accounts.length} accounts · {models.length} models</small>
-              </span>
+            <div className="sidebar-footer">
+              <div className="sidebar-status">
+                <span className="status-dot" />
+                <span>
+                  <strong>{demo ? "Demo instance" : sanitized ? "Sanitized view" : "System online"}</strong>
+                  <small>{accounts.length} accounts · {models.length} models</small>
+                </span>
+              </div>
+              <ThemeSwitcher value={themeMode} onChange={setThemeMode} />
+              <button className="sidebar-footer-action sidebar-lock-button" type="button" onClick={() => void logout()}>
+                <LockIcon /><span>Lock dashboard</span>
+              </button>
+              {githubPromotionDismissed && (
+                <a className="sidebar-footer-action github-repository-link" href={GITHUB_REPOSITORY_URL} target="_blank" rel="noreferrer">
+                  <GitHubIcon /><span>View on GitHub</span>
+                </a>
+              )}
             </div>
-            <ThemeSwitcher value={themeMode} onChange={setThemeMode} />
-            <button className="sidebar-footer-action sidebar-lock-button" type="button" onClick={() => void logout()}>
-              <LockIcon /><span>Lock dashboard</span>
-            </button>
-            {githubPromotionDismissed && (
-              <a className="sidebar-footer-action github-repository-link" href={GITHUB_REPOSITORY_URL} target="_blank" rel="noreferrer">
-                <GitHubIcon /><span>View on GitHub</span>
-              </a>
-            )}
           </div>
         </aside>
 
