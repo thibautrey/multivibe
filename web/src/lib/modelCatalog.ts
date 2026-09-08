@@ -15,6 +15,13 @@ export function aggregateModels(models: ExposedModel[], accounts: Account[], clo
       if (!aliases.has(alias)) aliases.set(alias, model.id);
     }
   }
+  // OpenRouter SDK IDs add a routing namespace to the exact upstream alias.
+  for (const provider of providers.filter(provider => provider.id === 'openrouter')) {
+    for (const model of provider.models) {
+      const canonical = aliases.get(model.id);
+      if (canonical) aliases.set(`openrouter/${model.id}`, canonical);
+    }
+  }
   const add = (id: string, name: string, route: ModelRoute) => {
     const key = aliases.get(id) ?? id;
     const entry = entries.get(key) ?? { id: key, name, routes: [] };
