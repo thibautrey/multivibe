@@ -1875,7 +1875,7 @@ export function AccountsTab(props: Props) {
               <a className="btn" href={localWorker.connect_url} target="_blank" rel="noreferrer">
                 {localWorker.enrollment_state === "enrolled"
                   ? "Open worker in MultiVibe Cloud"
-                  : "Connect this Mac to MultiVibe Cloud"}
+                  : "Connect this worker to MultiVibe Cloud"}
               </a>
             </div>
           </article>
@@ -3014,7 +3014,7 @@ export function AccountsTab(props: Props) {
                   <label>Prefill tokens/s<input type="number" min="0" value={manualPrefill} onChange={(e) => setManualPrefill(e.target.value)} /></label>
                   <label>Decode tokens/s<input type="number" min="0" value={manualDecode} onChange={(e) => setManualDecode(e.target.value)} /></label>
                   <label>Context window<input type="number" min="1" value={manualContext} onChange={(e) => setManualContext(e.target.value)} placeholder="262144" /></label>
-                  <label>Health URL<input type="url" value={manualHealthUrl} onChange={(e) => setManualHealthUrl(e.target.value)} placeholder="http://mac.local:8000/health" /></label>
+                  <label>Health URL<input type="url" value={manualHealthUrl} onChange={(e) => setManualHealthUrl(e.target.value)} placeholder="http://worker.local:8000/health" /></label>
                   <label>Metrics URL<input type="url" value={manualMetricsUrl} onChange={(e) => setManualMetricsUrl(e.target.value)} placeholder="Optional JSON metrics" /></label>
                 </>
               )}
