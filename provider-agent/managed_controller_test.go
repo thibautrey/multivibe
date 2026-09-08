@@ -156,7 +156,7 @@ func (runtime *managedControllerTestRuntime) managedInventory(_ *capacityPolicyS
 func managedControllerTestModelRecord(modelID string) managedOllamaModelRecord {
 	return managedOllamaModelRecord{
 		CanonicalModelID: modelID, OllamaModel: "qwen2.5:0.5b",
-		OllamaManifestPath: "registry.ollama.ai/library/qwen2.5/0.5b", ManifestSHA256: "sha256:" + strings.Repeat("a", 64),
+		OllamaManifestPath: workerTestManifestPath, ManifestSHA256: workerTestModelDigest,
 	}
 }
 
@@ -202,6 +202,115 @@ func newManagedControllerFixture(t *testing.T) managedControllerFixture {
 	return managedControllerFixture{
 		controller: controller, runtime: runtime, policy: policyStore, plans: plans,
 		plannerState: plannerState, base: base, now: now,
+	}
+}
+
+func persistWorkerTestPolicyAndCatalog(t *testing.T, fixture *managedControllerFixture, downloads bool) {
+	t.Helper()
+	policy, err := openCapacityPolicyStore(filepath.Join(fixture.base, "worker-test-capacity-policy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := managedOllamaTestPolicy(filepath.Join(fixture.base, "models"), 1, false, downloads)
+	document.AllowCloudWorkloads = managedOllamaTestBool(true)
+	document.Revision = 0
+	if _, conflict, replaceErr := policy.replace(0, *document); replaceErr != nil || conflict {
+		t.Fatalf("cannot persist worker-test policy: conflict=%v err=%v", conflict, replaceErr)
+	}
+	fixture.policy = policy
+	fixture.controller.policy = policy
+	catalog, err := os.ReadFile(filepath.Join("..", "packaging", "provider-model-catalog.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fixture.controller.catalogPath, catalog, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestManagedControllerWorkerTestRequiresPersistedConsentAndPinsPreparationThroughInference(t *testing.T) {
+	fixture := newManagedControllerFixture(t)
+	if _, _, _, err := fixture.controller.runWorkerTest(context.Background(), workerTestCanonicalModel,
+		func(context.Context, string) (string, uint64, uint64, error) {
+			return workerTestExpectedOutput, 9, 6, nil
+		}); !errors.Is(err, errManagedControllerWorkerTest) {
+		t.Fatalf("memory-only consent was accepted: %v", err)
+	}
+	persistWorkerTestPolicyAndCatalog(t, &fixture, true)
+	inferenceStarted := make(chan struct{})
+	inferenceRelease := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		_, _, _, err := fixture.controller.runWorkerTest(context.Background(), workerTestCanonicalModel,
+			func(_ context.Context, model string) (string, uint64, uint64, error) {
+				if model != workerTestOllamaModel {
+					return "", 0, 0, errors.New("wrong Ollama model")
+				}
+				close(inferenceStarted)
+				<-inferenceRelease
+				return workerTestExpectedOutput, 9, 6, nil
+			})
+		firstDone <- err
+	}()
+	select {
+	case <-inferenceStarted:
+	case <-time.After(time.Second):
+		t.Fatal("worker test did not reach inference")
+	}
+	secondStarted := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		_, _, _, err := fixture.controller.runWorkerTest(context.Background(), workerTestCanonicalModel,
+			func(context.Context, string) (string, uint64, uint64, error) {
+				close(secondStarted)
+				return workerTestExpectedOutput, 9, 6, nil
+			})
+		secondDone <- err
+	}()
+	select {
+	case <-secondStarted:
+		t.Fatal("a second managed operation crossed active worker-test inference")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(inferenceRelease)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-secondStarted:
+	case <-time.After(time.Second):
+		t.Fatal("serialized worker test did not resume")
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+	fixture.runtime.mu.Lock()
+	calls := append([]string{}, fixture.runtime.calls...)
+	fixture.runtime.mu.Unlock()
+	wantPrefix := []string{"install", "start", "pull:" + workerTestCanonicalModel, "authorize:" + workerTestCanonicalModel}
+	if len(calls) < len(wantPrefix) || !reflect.DeepEqual(calls[:len(wantPrefix)], wantPrefix) {
+		t.Fatalf("worker test lifecycle order is invalid: %v", calls)
+	}
+	planner, err := fixture.plannerState.plannerState([]string{workerTestCanonicalModel})
+	if err != nil || len(planner.Downloads) != 1 || planner.Downloads[0].Bytes != workerTestModelBytes {
+		t.Fatalf("worker test download was not durably accounted: %#v %v", planner, err)
+	}
+}
+
+func TestManagedControllerWorkerTestRejectsMissingDownloadConsentAndOtherModels(t *testing.T) {
+	fixture := newManagedControllerFixture(t)
+	persistWorkerTestPolicyAndCatalog(t, &fixture, false)
+	infer := func(context.Context, string) (string, uint64, uint64, error) {
+		t.Fatal("rejected worker test reached inference")
+		return "", 0, 0, nil
+	}
+	if _, _, _, err := fixture.controller.runWorkerTest(context.Background(), workerTestCanonicalModel, infer); !errors.Is(err, errManagedControllerConsent) {
+		t.Fatalf("missing automatic-download consent was accepted: %v", err)
+	}
+	for _, model := range []string{providerCloudAssignedModel, "other/model", workerTestOllamaModel} {
+		if _, _, _, err := fixture.controller.runWorkerTest(context.Background(), model, infer); !errors.Is(err, errManagedControllerWorkerTest) {
+			t.Fatalf("unreviewed worker-test model %q was accepted: %v", model, err)
+		}
 	}
 }
 

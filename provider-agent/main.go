@@ -850,7 +850,7 @@ func main() {
 		if managedBackend != nil {
 			managedWorkerRuntime = &runtimeEndpoint{AdapterID: managedWorkerAdapterID, Endpoint: managedBackend.endpoint}
 		}
-		workerTest = newWorkerTestService(cloudURL, client, identity, enrollmentStore, managedWorkerRuntime)
+		workerTest = newWorkerTestService(cloudURL, client, identity, enrollmentStore, managedWorkerRuntime, controller)
 		go workerTest.run(context.Background())
 		modelLifecycle = newProviderModelLifecycleService(
 			cloudURL, client, identity, enrollmentStore, capacity, demand, controller,

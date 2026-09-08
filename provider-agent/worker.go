@@ -23,6 +23,11 @@ const (
 	workerTestPrompt         = "Reply with exactly MULTIVIBE_WORKER_OK."
 	workerTestExpectedOutput = "MULTIVIBE_WORKER_OK"
 	managedWorkerAdapterID   = "ollama"
+	workerTestCanonicalModel = "hf:qwen/qwen2.5-0.5b-instruct"
+	workerTestOllamaModel    = "qwen2.5:0.5b"
+	workerTestManifestPath   = "registry.ollama.ai/library/qwen2.5/0.5b"
+	workerTestModelDigest    = "sha256:a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67"
+	workerTestModelBytes     = uint64(397821319)
 )
 
 var providerWorkerSessionToken = regexp.MustCompile(`^mwt_[A-Za-z0-9_-]{43}$`)
@@ -73,6 +78,12 @@ type workerTestPollResponse struct {
 	Job *workerTestClaim `json:"job"`
 }
 
+type workerTestInference func(context.Context, string) (string, uint64, uint64, error)
+
+type workerTestManagedRuntime interface {
+	runWorkerTest(context.Context, string, workerTestInference) (string, uint64, uint64, error)
+}
+
 type workerTestService struct {
 	baseURL    *url.URL
 	cloud      *http.Client
@@ -80,10 +91,11 @@ type workerTestService struct {
 	identity   *deviceIdentity
 	enrollment *cloudEnrollmentStore
 	managed    *runtimeEndpoint
+	controller workerTestManagedRuntime
 	now        func() time.Time
 }
 
-func newWorkerTestService(baseURL *url.URL, client *http.Client, identity *deviceIdentity, enrollment *cloudEnrollmentStore, managed *runtimeEndpoint) *workerTestService {
+func newWorkerTestService(baseURL *url.URL, client *http.Client, identity *deviceIdentity, enrollment *cloudEnrollmentStore, managed *runtimeEndpoint, controller workerTestManagedRuntime) *workerTestService {
 	cloud := *client
 	cloud.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	if cloud.Timeout <= 0 || cloud.Timeout > 10*time.Second {
@@ -92,7 +104,7 @@ func newWorkerTestService(baseURL *url.URL, client *http.Client, identity *devic
 	runtime := *client
 	runtime.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	runtime.Timeout = 2 * time.Minute
-	return &workerTestService{baseURL: baseURL, cloud: &cloud, runtime: &runtime, identity: identity, enrollment: enrollment, managed: managed, now: time.Now}
+	return &workerTestService{baseURL: baseURL, cloud: &cloud, runtime: &runtime, identity: identity, enrollment: enrollment, managed: managed, controller: controller, now: time.Now}
 }
 
 func workerTestPayloadMap(payload workerTestSessionPayload) map[string]any {
@@ -214,65 +226,32 @@ func (service *workerTestService) poll(ctx context.Context, token string) (*work
 	expiresAt, err := canonicalTimestamp(claim.ExpiresAt)
 	enrollment := service.enrollment.snapshot()
 	if !providerUUID.MatchString(claim.JobID) || !providerUUID.MatchString(claim.NodeID) ||
-		enrollment == nil || claim.NodeID != enrollment.NodeID || !validSelectedModelID(claim.Model) ||
+		enrollment == nil || claim.NodeID != enrollment.NodeID || claim.Model != workerTestCanonicalModel ||
 		claim.Prompt != workerTestPrompt || err != nil || !expiresAt.After(service.now()) || !claim.TestOnly {
 		return nil, errors.New("worker test claim is invalid")
 	}
-	// Cloud owns model scheduling, but every Cloud test must resolve through
-	// the MultiVibe-managed Ollama endpoint. The enrollment's legacy runtime
-	// metadata and every user-configured local endpoint are deliberately ignored.
-	_, model, err := service.cloudManagedRuntime(ctx, claim.Model)
-	if err != nil {
-		return nil, errors.New("worker test claim model is unavailable in the managed runtime")
-	}
-	claim.Model = model
 	return claim, nil
-}
-
-func (service *workerTestService) cloudManagedRuntime(ctx context.Context, model string) (runtimeEndpoint, string, error) {
-	if service.runtime == nil || service.managed == nil || service.managed.AdapterID != managedWorkerAdapterID {
-		return runtimeEndpoint{}, "", errors.New("worker test runtime is unavailable")
-	}
-	var adapter runtimeAdapter
-	for _, candidate := range runtimeAdapterRegistry().Adapters {
-		if candidate.ID == managedWorkerAdapterID {
-			adapter = candidate
-			break
-		}
-	}
-	if adapter.ID == "" {
-		return runtimeEndpoint{}, "", errors.New("worker test runtime is unavailable")
-	}
-	candidate := adapterCandidate{
-		Endpoint: service.managed.Endpoint, HealthURL: service.managed.Endpoint + adapter.HealthPath,
-		CatalogURL: service.managed.Endpoint + adapter.CatalogPath,
-	}
-	models, err := probeManagedRuntimeCatalog(ctx, adapter, candidate, service.runtime)
-	if err != nil {
-		return runtimeEndpoint{}, "", errors.New("worker test runtime is unavailable")
-	}
-	for _, detected := range models {
-		if model == providerCloudAssignedModel || detected == model {
-			return *service.managed, detected, nil
-		}
-	}
-	return runtimeEndpoint{}, "", errors.New("worker test runtime is unavailable")
 }
 
 func (service *workerTestService) infer(ctx context.Context, claim workerTestClaim) (string, uint64, uint64, error) {
 	deadline, deadlineErr := canonicalTimestamp(claim.ExpiresAt)
 	remaining := deadline.Sub(service.now()) - 10*time.Second
-	if deadlineErr != nil || remaining <= 0 {
+	if deadlineErr != nil || remaining <= 0 || claim.Model != workerTestCanonicalModel || service.controller == nil {
 		return "", 0, 0, errors.New("worker test claim has insufficient time remaining")
 	}
 	ctx, cancel := context.WithTimeout(ctx, remaining)
 	defer cancel()
-	endpoint, _, err := service.cloudManagedRuntime(ctx, claim.Model)
-	if err != nil {
-		return "", 0, 0, err
+	return service.controller.runWorkerTest(ctx, claim.Model, service.inferPrepared)
+}
+
+func (service *workerTestService) inferPrepared(ctx context.Context, model string) (string, uint64, uint64, error) {
+	if service.runtime == nil || service.managed == nil || service.managed.AdapterID != managedWorkerAdapterID ||
+		model != workerTestOllamaModel {
+		return "", 0, 0, errors.New("worker test runtime is unavailable")
 	}
+	endpoint := *service.managed
 	body, _ := json.Marshal(map[string]any{
-		"model": claim.Model, "messages": []map[string]string{{"role": "user", "content": claim.Prompt}},
+		"model": model, "messages": []map[string]string{{"role": "user", "content": workerTestPrompt}},
 		"stream": false, "temperature": 0, "max_tokens": 32,
 	})
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.Endpoint+"/v1/chat/completions", bytes.NewReader(body))

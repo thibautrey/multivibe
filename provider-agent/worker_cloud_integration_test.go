@@ -51,11 +51,6 @@ func TestWorkerCloudIntegrationEnrollmentDiscoveryAndInference(t *testing.T) {
 				if r.Header.Get("authorization") != "" {
 					t.Error("Cloud credential leaked to runtime")
 				}
-				if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
-					record("discover")
-					_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{map[string]string{"id": model}}})
-					return
-				}
 				if r.Method != http.MethodPost || r.URL.Path != "/v1/chat/completions" {
 					t.Errorf("unexpected runtime route: %s %s", r.Method, r.URL.Path)
 					http.NotFound(w, r)
@@ -125,7 +120,7 @@ func TestWorkerCloudIntegrationEnrollmentDiscoveryAndInference(t *testing.T) {
 					if r.Header.Get("authorization") != "Bearer "+sessionToken {
 						t.Error("missing session bearer")
 					}
-					_ = json.NewEncoder(w).Encode(workerTestPollResponse{Job: &workerTestClaim{JobID: testEnrollmentID, NodeID: testNodeID, Model: model, Prompt: workerTestPrompt, ExpiresAt: stamp(time.Minute), TestOnly: true}})
+					_ = json.NewEncoder(w).Encode(workerTestPollResponse{Job: &workerTestClaim{JobID: testEnrollmentID, NodeID: testNodeID, Model: workerTestCanonicalModel, Prompt: workerTestPrompt, ExpiresAt: stamp(time.Minute), TestOnly: true}})
 				case "/provider/v1/worker-test-jobs/" + testEnrollmentID + "/complete":
 					record("complete")
 					if r.Header.Get("authorization") != "Bearer "+sessionToken {
@@ -166,7 +161,7 @@ func TestWorkerCloudIntegrationEnrollmentDiscoveryAndInference(t *testing.T) {
 				t.Fatal(err)
 			}
 			managed := &runtimeEndpoint{AdapterID: managedWorkerAdapterID, Endpoint: runtime.URL}
-			service := newWorkerTestService(cloudURL, cloud.Client(), identity, restored, managed)
+			service := newWorkerTestService(cloudURL, cloud.Client(), identity, restored, managed, &workerTestManagedRuntimeStub{})
 			done := make(chan struct{})
 			go func() { defer close(done); service.run(ctx) }()
 			var result map[string]any
@@ -193,7 +188,7 @@ func TestWorkerCloudIntegrationEnrollmentDiscoveryAndInference(t *testing.T) {
 			mu.Lock()
 			got := append([]string(nil), events...)
 			mu.Unlock()
-			if !reflect.DeepEqual(got, []string{"enroll", "proof", "session", "poll", "discover", "discover", "infer", "complete"}) {
+			if !reflect.DeepEqual(got, []string{"enroll", "proof", "session", "poll", "infer", "complete"}) {
 				t.Errorf("unexpected cycle: %v", got)
 			}
 		})
