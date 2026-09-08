@@ -6015,6 +6015,17 @@ impl ChatResponseStreamState {
 }
 
 #[derive(Default)]
+struct ResponseChatToolState {
+    item_id: Option<String>,
+    call_id: Option<String>,
+    output_index: Option<u64>,
+    name: Option<String>,
+    arguments: String,
+    emitted: usize,
+    introduced: bool,
+}
+
+#[derive(Default)]
 struct ResponseChatStreamState {
     id: String,
     model: String,
@@ -6022,7 +6033,7 @@ struct ResponseChatStreamState {
     role_sent: bool,
     content: String,
     finished: bool,
-    tool_call_index: usize,
+    tools: Vec<ResponseChatToolState>,
 }
 
 impl ResponseChatStreamState {
@@ -6045,12 +6056,53 @@ impl ResponseChatStreamState {
         format!("data: {}\n\n", value)
     }
 
+    fn tool_event(&mut self, event: &Value, complete: bool) -> String {
+        let item = event.get("item").unwrap_or(event);
+        let item_id = value_string(event.get("item_id")).or_else(|| value_string(item.get("id")));
+        let call_id = value_string(item.get("call_id"));
+        let output_index = event.get("output_index").and_then(Value::as_u64);
+        let index = self.tools.iter().position(|tool| {
+            (item_id.is_some() && tool.item_id == item_id)
+                || (call_id.is_some() && tool.call_id == call_id)
+                || (output_index.is_some() && tool.output_index == output_index)
+        }).unwrap_or_else(|| {
+            self.tools.push(ResponseChatToolState::default());
+            self.tools.len() - 1
+        });
+        let tool = &mut self.tools[index];
+        if item_id.is_some() { tool.item_id = item_id; }
+        if call_id.is_some() && !tool.introduced { tool.call_id = call_id; }
+        if output_index.is_some() { tool.output_index = output_index; }
+        if let Some(name) = value_string(item.get("name")).filter(|name| !name.is_empty()) {
+            tool.name = Some(name);
+        }
+        if let Some(delta) = event.get("delta").and_then(Value::as_str) {
+            tool.arguments.push_str(delta);
+        } else if let Some(arguments) = item.get("arguments").and_then(Value::as_str) {
+            if tool.arguments.is_empty() || (complete && arguments.starts_with(&tool.arguments)) {
+                tool.arguments = arguments.to_owned();
+            }
+        }
+        // Argument events may precede metadata. Never expose an unnamed call.
+        let mut deltas = Vec::new();
+        if !tool.introduced && tool.name.is_some() && tool.call_id.is_some() {
+            tool.introduced = true;
+            deltas.push(json!({"tool_calls": [{"index": index, "id": tool.call_id, "type": "function", "function": {"name": tool.name, "arguments": ""}}]}));
+        }
+        if tool.introduced && tool.emitted < tool.arguments.len() {
+            deltas.push(json!({"tool_calls": [{"index": index, "function": {"arguments": &tool.arguments[tool.emitted..]}}]}));
+            tool.emitted = tool.arguments.len();
+        }
+        deltas.into_iter().map(|delta| self.chunk(delta, None)).collect()
+    }
+
     fn finish(&mut self) -> String {
         if self.finished {
             return String::new();
         }
         self.finished = true;
-        let mut out = self.chunk(json!({}), Some("stop"));
+        let reason = if self.tools.iter().any(|tool| tool.introduced) { "tool_calls" } else { "stop" };
+        let mut out = self.chunk(json!({}), Some(reason));
         out.push_str("data: [DONE]\n\n");
         out
     }
@@ -6277,11 +6329,24 @@ impl SseStreamTransformer {
                 return self.response_chat.chunk(json!({"content": text}), None);
             }
         }
-        if event_type == "response.function_call_arguments.delta" {
-            let id = value_string(value.get("item_id")).unwrap_or_else(|| new_id("call"));
-            let delta = value_string(value.get("delta")).unwrap_or_default();
-            let output = self.response_chat.chunk(json!({"tool_calls": [{"index": self.response_chat.tool_call_index, "id": id, "type": "function", "function": {"arguments": delta}}]}), None);
-            self.response_chat.tool_call_index += 1;
+        if matches!(event_type, "response.output_item.added" | "response.output_item.done")
+            && value["item"]["type"] == "function_call"
+        {
+            return self.response_chat.tool_event(value, event_type == "response.output_item.done");
+        }
+        if matches!(event_type, "response.function_call_arguments.delta" | "response.function_call_arguments.done") {
+            return self.response_chat.tool_event(value, event_type.ends_with(".done"));
+        }
+        if event_type == "response.completed" {
+            let mut output = String::new();
+            if let Some(items) = value["response"]["output"].as_array() {
+                for (index, item) in items.iter().enumerate() {
+                    if item["type"] == "function_call" {
+                        output.push_str(&self.response_chat.tool_event(&json!({"output_index": index, "item": item}), true));
+                    }
+                }
+            }
+            output.push_str(&self.response_chat.finish());
             return output;
         }
         if matches!(
@@ -12035,6 +12100,65 @@ mod tests {
         );
         let recovered = response_from_sse(empty_completed_sse, "gpt-5.3-codex");
         assert_eq!(recovered["output"][0]["content"][0]["text"], "recovered");
+    }
+
+    #[test]
+    fn response_chat_tools_preserve_names_ids_and_interleaved_arguments() {
+        let mut converter = SseStreamTransformer::new(StreamTransform::ResponseToChat, "test");
+        let mut output = String::new();
+        for event in [
+            json!({"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_a","call_id":"call_a","name":"shell","arguments":""}}),
+            json!({"type":"response.function_call_arguments.delta","item_id":"fc_a","output_index":1,"delta":"{\"cmd\":"}),
+            json!({"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_b","call_id":"call_b","name":"lookup","arguments":""}}),
+            json!({"type":"response.function_call_arguments.delta","item_id":"fc_b","output_index":2,"delta":"{}"}),
+            json!({"type":"response.function_call_arguments.delta","item_id":"fc_a","output_index":1,"delta":"\"pwd\"}"}),
+            json!({"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_a","call_id":"call_a","name":"shell","arguments":"{\"cmd\":\"pwd\"}"}}),
+            json!({"type":"response.completed","response":{"output":[]}}),
+        ] {
+            output.push_str(&converter.transform_response_event(&event));
+        }
+        let chunks: Vec<Value> = output.lines().filter_map(|line| line.strip_prefix("data: "))
+            .filter_map(|data| serde_json::from_str(data).ok()).collect();
+        let mut calls: Vec<Value> = Vec::new();
+        for chunk in &chunks {
+            if let Some(deltas) = chunk["choices"][0]["delta"]["tool_calls"].as_array() {
+                for delta in deltas {
+                    let index = delta["index"].as_u64().unwrap() as usize;
+                    if index == calls.len() {
+                        assert!(delta["function"]["name"].is_string(), "first delta must name the tool");
+                        calls.push(delta.clone());
+                    } else {
+                        assert!(delta.get("id").is_none());
+                        let args = calls[index]["function"]["arguments"].as_str().unwrap().to_owned()
+                            + delta["function"]["arguments"].as_str().unwrap();
+                        calls[index]["function"]["arguments"] = json!(args);
+                    }
+                }
+            }
+        }
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0]["id"], "call_a");
+        assert_eq!(calls[0]["function"]["arguments"], "{\"cmd\":\"pwd\"}");
+        assert_eq!(calls[1]["id"], "call_b");
+        assert_eq!(calls[1]["function"]["arguments"], "{}");
+        assert_eq!(chunks.last().unwrap()["choices"][0]["finish_reason"], "tool_calls");
+        assert!(converter.response_chat.finish().is_empty());
+    }
+
+    #[test]
+    fn response_chat_tools_buffer_arguments_until_metadata_and_recover_completed_calls() {
+        let mut converter = SseStreamTransformer::new(StreamTransform::ResponseToChat, "test");
+        assert!(converter.transform_response_event(&json!({"type":"response.function_call_arguments.delta","item_id":"fc_a","output_index":0,"delta":"{}"})).is_empty());
+        let output = converter.transform_response_event(&json!({"type":"response.completed","response":{"output":[
+            {"type":"function_call","id":"fc_a","call_id":"call_a","name":"shell","arguments":"{}"},
+            {"type":"function_call","id":"fc_b","call_id":"call_b","name":"lookup","arguments":"{}"}
+        ]}}));
+        let chat = chat_from_sse(&output, "test");
+        let calls = chat["choices"][0]["message"]["tool_calls"].as_array().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0]["function"]["name"], "shell");
+        assert_eq!(calls[0]["function"]["arguments"], "{}");
+        assert_eq!(calls[1]["function"]["name"], "lookup");
     }
 
     #[test]
