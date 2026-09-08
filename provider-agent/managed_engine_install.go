@@ -109,6 +109,10 @@ func managedEngineHTTPClient() *http.Client {
 
 func managedEnginePin(release managedEngineRelease) string {
 	raw, _ := json.Marshal(release)
+	// Version the installation layout separately from upstream artifact identities.
+	if release.ID == "llama-cpp" {
+		raw = append(raw, []byte("/diagnostic-executable-v1")...)
+	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }
@@ -155,6 +159,17 @@ func (engines *managedInferenceEngines) install(ctx context.Context, policy *cap
 	}
 	if err = secureManagedOllamaTree(staging, executable); err != nil {
 		return "", err
+	}
+	if release.ID == "llama-cpp" {
+		tool := filepath.Join(filepath.Dir(executable), "llama-fit-params")
+		if engines.manager.goos == "windows" {
+			tool += ".exe"
+		}
+		if info, statErr := os.Lstat(tool); statErr == nil && info.Mode().IsRegular() {
+			if err = secureProviderExecutableFile(tool); err != nil {
+				return "", err
+			}
+		}
 	}
 	tree, err := managedOllamaRuntimeTreeSHA256(staging)
 	if err != nil {

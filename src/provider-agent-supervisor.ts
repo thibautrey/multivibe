@@ -246,6 +246,7 @@ export type ProviderAgentControl = {
   replaceCapacityPolicy(policy: ProviderCapacityPolicy): Promise<{ conflict: boolean; policy: ProviderCapacityPolicy | null }>;
   getDemandPlan(): Promise<ProviderDemandPlan>;
   submitSignedDemand(envelope: Record<string, unknown>): Promise<{ duplicate: boolean; plan: ProviderDemandPlan }>;
+  estimateModelCompatibility(contextTokens: number): Promise<unknown>;
   getManagedOllamaStatus(): Promise<ProviderManagedOllamaView>;
   installManagedOllama(policyRevision: number): Promise<ProviderManagedOllamaView>;
   startManagedOllama(policyRevision: number): Promise<ProviderManagedOllamaView>;
@@ -646,6 +647,7 @@ export function startEmbeddedProviderAgent(options: {
     replaceCapacityPolicy: unavailable,
     getDemandPlan: unavailable,
     submitSignedDemand: unavailable,
+    estimateModelCompatibility: unavailable,
     getManagedOllamaStatus: unavailable,
     installManagedOllama: unavailable,
     startManagedOllama: unavailable,
@@ -842,6 +844,8 @@ export function startEmbeddedProviderAgent(options: {
       }, [200, 201]);
       return { duplicate: result.response.status === 200, plan: result.value };
     },
+    estimateModelCompatibility: async (contextTokens) =>
+      (await request<unknown>("/v1/model-compatibility", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ context_tokens: contextTokens }) }, [200], 125_000)).value,
     getManagedOllamaStatus: async () =>
       (await request<ProviderManagedOllamaView>("/v1/managed-ollama/status", {}, [200])).value,
     installManagedOllama: async (policyRevision) =>

@@ -75,6 +75,7 @@ function providerAgentControl(overrides: Partial<ProviderAgentControl> = {}): Pr
     replaceCapacityPolicy: unavailable,
     getDemandPlan: unavailable,
     submitSignedDemand: unavailable,
+    estimateModelCompatibility: unavailable,
     getManagedOllamaStatus: unavailable,
     installManagedOllama: unavailable,
     startManagedOllama: unavailable,
@@ -759,4 +760,23 @@ test("the macOS handoff preserves actionable enrollment failures and reserves 50
     assert.equal(response.status, 503);
     assert.deepEqual(await response.json(), { error: "provider_agent_unavailable" });
   }, { appVersion: "0.2.0" });
+});
+
+test("admin memory estimates validate context and preserve runtime evidence", async () => {
+  const contexts: number[] = [];
+  const report = { schema_version: "provider-model-compatibility-v1", context_tokens: 8192, models: [] };
+  await withAdminServer(providerAgentControl({ estimateModelCompatibility: async (tokens) => { contexts.push(tokens); return report; } }), async (baseUrl) => {
+    const post = (body: unknown) => fetch(`${baseUrl}/admin/provider-agent/model-compatibility`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+    for (const body of [{}, { context_tokens: 511 }, { context_tokens: 131073 }, { context_tokens: "8192" }, { context_tokens: 8192, model: "other" }]) {
+      assert.equal((await post(body)).status, 400);
+    }
+    assert.deepEqual(contexts, []);
+    const response = await post({ context_tokens: 8192 });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.deepEqual(await response.json(), report);
+    assert.deepEqual(contexts, [8192]);
+  });
 });

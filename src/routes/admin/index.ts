@@ -1296,6 +1296,18 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
   });
 
+  router.post("/provider-agent/model-compatibility", async (req, res) => {
+    res.setHeader("cache-control", "no-store");
+    const body = req.body;
+    if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 1 ||
+        !Number.isSafeInteger(body.context_tokens) || body.context_tokens < 512 || body.context_tokens > 131072) {
+      return res.status(400).json({ error: "invalid_compatibility_context" });
+    }
+    if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
+    try { res.json(await options.providerAgent.estimateModelCompatibility(body.context_tokens)); }
+    catch { res.status(503).json({ error: "model_estimator_unavailable" }); }
+  });
+
   router.get("/provider-agent/managed-ollama/status", async (_req, res) => {
     if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
     try {
