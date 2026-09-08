@@ -5174,3 +5174,13 @@ body:has(> .modal-backdrop) {
   opacity: 0.6;
   cursor: wait;
 }
+
+.cloud-provider-balance {
+  display: grid;
+  align-content: center;
+  gap: 8px;
+}
+
+.cloud-provider-balance strong {
+  font-size: 1.25rem;
+}

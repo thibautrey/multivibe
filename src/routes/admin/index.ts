@@ -1028,7 +1028,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
   router.get("/provider-catalog", (_req, res) => res.json(sdkProviderCatalog()));
 
   router.get("/accounts", async (_req, res) =>
-    res.json({ accounts: (await store.listAccounts()).filter((account) => !account.multivibeCloud).map(redact) }),
+    res.json({ accounts: (await store.listAccounts()).map(redact) }),
   );
 
   router.get("/quota-reset-forecast", async (_req, res) => {

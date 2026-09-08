@@ -37,10 +37,11 @@ function options(multivibeCloud: Partial<CloudRoutesStub>): AdminRoutesOptions {
 async function withServer(
   multivibeCloud: Partial<CloudRoutesStub>,
   run: (baseUrl: string) => Promise<void>,
+  store?: AdminRoutesOptions["store"],
 ) {
   const app = express();
   app.use(express.json());
-  app.use("/admin", createAdminRouter(options(multivibeCloud)));
+  app.use("/admin", createAdminRouter({ ...options(multivibeCloud), ...(store ? { store } : {}) }));
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve, reject) => {
     server.once("listening", resolve);
@@ -109,4 +110,20 @@ test("Cloud disconnect invokes the service and reports failures", async () => {
     assert.equal(failure.status, 503);
     assert.equal(calls, 2);
   });
+});
+
+test("Initial account listing includes the managed Cloud provider with redacted credentials", async () => {
+  const account = {
+    id: "multivibe-cloud", provider: "openai-compatible", multivibeCloud: true,
+    enabled: true, accessToken: "cloud-secret-access-token",
+  };
+  await withServer({}, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/admin/accounts`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.accounts.length, 1);
+    assert.equal(body.accounts[0].multivibeCloud, true);
+    assert.equal(body.accounts[0].id, account.id);
+    assert.notEqual(body.accounts[0].accessToken, account.accessToken);
+  }, { async listAccounts() { return [account]; } } as AdminRoutesOptions["store"]);
 });

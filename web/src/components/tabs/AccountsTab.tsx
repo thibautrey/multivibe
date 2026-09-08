@@ -93,7 +93,6 @@ export type LocalWorkerProvider = {
 
 export type MultivibeCloudProvider = {
   status: "disconnected" | "connected" | "unavailable";
-  quota?: { status: "available" | "no_plan" | "unavailable"; name?: string; remainingPercent?: number; usedPercent?: number; resetsAt?: string };
   dollarCreditsUsd?: string;
   balanceUsd?: string;
   subscription?: string;
@@ -1839,48 +1838,23 @@ export function AccountsTab(props: Props) {
             {hasAnyProvider && <button className="btn" onClick={() => setShowAddAccount(true)}>Add provider</button>}
           </div>
         </div>
-        <article className="local-worker-provider multivibe-cloud-provider" aria-labelledby="multivibe-cloud-provider-title">
-          <div className="local-worker-provider-identity">
-            <img
-              className="local-worker-provider-icon"
-              src="/assets/brand/multivibe-app-icon.svg"
-              alt=""
-            />
-            <div>
-              <h3 id="multivibe-cloud-provider-title">MultiVibe Cloud</h3>
-              {multivibeCloud.status === "connected" ? (
-                <p className="muted">
-                  {Number(multivibeCloud.balanceUsd).toLocaleString(undefined, { maximumFractionDigits: 2 })} credits available
-                  {multivibeCloud.subscription ? ` · ${multivibeCloud.subscription}` : ""}
-
-                </p>
-              ) : multivibeCloud.status === "unavailable" ? (
-                <p className="muted">Unavailable</p>
-              ) : null}
-              {multivibeCloud.status === "connected" && <p className="muted">
-                Additional credits: {multivibeCloud.dollarCreditsUsd === undefined ? "Unavailable" : Number(multivibeCloud.dollarCreditsUsd).toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                {" · Subscriptions and recharges share one balance"}
-              </p>}
-              {cloudError && <p className="account-inline-error">{cloudError}</p>}
+        {!accounts.some((account) => account.multivibeCloud) && (
+          <article className="local-worker-provider multivibe-cloud-provider" aria-labelledby="multivibe-cloud-provider-title">
+            <div className="local-worker-provider-identity">
+              <img className="local-worker-provider-icon" src="/assets/brand/multivibe-app-icon.svg" alt="" />
+              <div>
+                <h3 id="multivibe-cloud-provider-title">MultiVibe Cloud</h3>
+                {multivibeCloud.status === "unavailable" && <p className="muted">Unavailable</p>}
+                {cloudError && <p className="account-inline-error" role="alert">{cloudError}</p>}
+              </div>
             </div>
-          </div>
-          <div className="local-worker-provider-actions">
-            {multivibeCloud.status === "connected" ? (
-              <>
-                <a className="btn" href={multivibeCloud.topupUrl} target="_blank" rel="noreferrer">
-                  Manage plan & add credits
-                </a>
-                <button className="cloud-disconnect-link" type="button" onClick={() => void disconnectCloud()} disabled={cloudBusy}>
-                  {cloudBusy ? "Disconnecting…" : "Disconnect"}
-                </button>
-              </>
-            ) : (
+            <div className="local-worker-provider-actions">
               <button className="btn" onClick={() => void connectCloud()} disabled={cloudBusy || multivibeCloud.status === "unavailable"}>
                 {cloudBusy ? "Connecting…" : "Connect"}
               </button>
-            )}
-          </div>
-        </article>
+            </div>
+          </article>
+        )}
         {localWorker && (
           <article className="local-worker-provider" aria-labelledby="local-worker-provider-title">
             <div className="local-worker-provider-identity">
@@ -1940,7 +1914,10 @@ export function AccountsTab(props: Props) {
         <div className="provider-list">
           {accounts.map((a) => {
             const modelBlocks = activeModelBlocks(a);
-            const runtimeIdentity = runtimeIdentityForAccount(a);
+            const isCloud = a.multivibeCloud === true;
+            const runtimeIdentity = isCloud
+              ? { label: "MultiVibe Cloud", iconUrl: "/assets/brand/multivibe-app-icon.svg" }
+              : runtimeIdentityForAccount(a);
             const needsReauthentication =
               a.state?.needsTokenRefresh === true &&
               ["openai", "opencode", "xai"].includes(a.provider ?? "openai");
@@ -1977,18 +1954,18 @@ export function AccountsTab(props: Props) {
                       />
                       {runtimeIdentity.label}
                     </span>
-                    <strong className="provider-card-account-name">
+                    {(!isCloud || a.email) && <strong className="provider-card-account-name">
                       {sanitized ? maskEmail(a.email) : (a.email ?? "No email set")}
-                    </strong>
+                    </strong>}
                     <span className={`provider-card-status badge ${a.enabled ? "badge-live" : "badge-warn"}`}>
                       {a.enabled ? "Enabled" : "Disabled"}
                     </span>
                     <span className={`provider-card-location badge${a.location === "local" ? " badge-live" : ""}`}>
                       {a.location ?? "cloud"}
                     </span>
-                    <span className="provider-card-usage mono muted">
+                    {!isCloud && <span className="provider-card-usage mono muted">
                       {usageSummaryLabel(a, usageCacheTtlMs)}
-                    </span>
+                    </span>}
                   </div>
                   <div className="account-actions-cell">
                       <button
@@ -2071,7 +2048,7 @@ export function AccountsTab(props: Props) {
                             >
                               Unblock
                             </button>
-                            <button
+                            {!isCloud && <button
                               className="account-action-item"
                               onClick={() => {
                                 setOpenMenu(null);
@@ -2079,7 +2056,7 @@ export function AccountsTab(props: Props) {
                               }}
                             >
                               Refresh usage
-                            </button>
+                            </button>}
                             {((isOpenAiAccount(a) && a.enabled) ||
                               settings.defaultPassthroughAccountId === a.id) && (
                               <button
@@ -2131,7 +2108,7 @@ export function AccountsTab(props: Props) {
                                   Device-code reauth
                                 </button>
                               </>
-                            ) : (
+                            ) : !isCloud && (
                               <>
                                 <button
                                   className="account-action-item"
@@ -2156,17 +2133,44 @@ export function AccountsTab(props: Props) {
                               className="account-action-item account-action-item-danger"
                               onClick={() => {
                                 setOpenMenu(null);
-                                void del(a.id);
+                                if (isCloud) void disconnectCloud();
+                                else void del(a.id);
                               }}
+                              disabled={isCloud && cloudBusy}
                             >
-                              Delete
+                              {isCloud ? "Disconnect" : "Delete"}
                             </button>
                           </div>,
                           document.body,
                         )}
                   </div>
                 </div>
-                <div className="provider-card-content">
+                {isCloud ? (
+                  <div className="provider-card-content">
+                    <div className="cloud-provider-balance">
+                      <span className="muted">Available balance</span>
+                      <strong>
+                        {multivibeCloud.status === "connected" && multivibeCloud.balanceUsd !== undefined
+                          ? `${Number(multivibeCloud.balanceUsd).toLocaleString(undefined, { maximumFractionDigits: 2 })} credits`
+                          : "Balance unavailable"}
+                      </strong>
+                      {multivibeCloud.subscription && <span className="muted">{multivibeCloud.subscription}</span>}
+                      {multivibeCloud.status === "disconnected" && <span className="muted">Reconnect to refresh your Cloud session.</span>}
+                      {cloudError && <p className="account-inline-error" role="alert">{cloudError}</p>}
+                    </div>
+                    <div className="local-worker-provider-actions">
+                      <a className="btn" href={multivibeCloud.topupUrl} target="_blank" rel="noreferrer">
+                        Manage plan & add credits
+                      </a>
+                      {multivibeCloud.status === "disconnected" && (
+                        <button className="btn secondary" type="button" onClick={() => void connectCloud()} disabled={cloudBusy}>Reconnect</button>
+                      )}
+                      <button className="cloud-disconnect-link" type="button" onClick={() => void disconnectCloud()} disabled={cloudBusy}>
+                        {cloudBusy ? "Disconnecting…" : "Disconnect"}
+                      </button>
+                    </div>
+                  </div>
+                ) : <div className="provider-card-content">
                   <div className="provider-card-details">
                     {(a.baseUrl || a.upstreamMode || (a.provider === "opencode" && a.opencodeOrgName)) && (
                       <div className="provider-card-endpoint">
@@ -2254,7 +2258,7 @@ export function AccountsTab(props: Props) {
                   {a.usage?.quotaMessage && (
                     <p className="muted">{a.usage.quotaMessage}</p>
                   )}
-                </div>
+                </div>}
                 {modelBlocks.length > 0 && (
                   <div className="state-stack provider-card-blocks">
                     {modelBlocks.map(([model, block]) => (
