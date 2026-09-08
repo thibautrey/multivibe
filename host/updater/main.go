@@ -122,7 +122,7 @@ func runAutomatic(ctx context.Context, update *updater, state *updaterState) err
 }
 
 func requestOperation(update *updater, state *updaterState, install bool) error {
-	if state.Target == nil || state.AvailableVersion == "" || !state.RolloutEligible {
+	if state.Target == nil || !newerUpdate(*state) || !state.RolloutEligible {
 		return errors.New("no eligible update is available")
 	}
 	if update.container {
@@ -141,6 +141,12 @@ func main() {
 		os.Exit(2)
 	}
 	command := os.Args[1]
+	if command == "schedule" {
+		if err := ensureScheduler(); err != nil {
+			fatal(err.Error())
+		}
+		return
+	}
 	container := command == "docker-auto" || command == "docker-configure"
 	if command == "version" {
 		fmt.Fprintln(os.Stdout, hostUpdaterVersion)
@@ -150,12 +156,25 @@ func main() {
 	if err != nil {
 		fatal(err.Error())
 	}
+	releaseLock := func() {}
 	if command != "status" {
 		unlock, lockErr := update.store.lock()
 		if lockErr != nil {
 			fatal(lockErr.Error())
 		}
-		defer unlock()
+		locked := true
+		releaseLock = func() {
+			if locked {
+				unlock()
+				locked = false
+			}
+		}
+		defer releaseLock()
+		// Read the authoritative state only after acquiring the mutation lock.
+		update, state, err = newUpdater(container)
+		if err != nil {
+			fatal(err.Error())
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
@@ -190,7 +209,10 @@ func main() {
 		if len(os.Args) != 2 {
 			err = errors.New(command + " does not accept arguments")
 		} else {
-			err = requestOperation(update, &state, command == "request-apply")
+			err = ensureScheduler()
+			if err == nil {
+				err = requestOperation(update, &state, command == "request-apply")
+			}
 		}
 		if err == nil {
 			err = encodePublicStatus(state)
@@ -221,6 +243,10 @@ func main() {
 	default:
 		usage()
 		err = errors.New("unknown command: " + command)
+	}
+	releaseLock()
+	if err == nil && (command == "request-download" || command == "request-apply") {
+		err = wakeScheduler()
 	}
 	if err != nil {
 		message := strings.TrimSpace(err.Error())
