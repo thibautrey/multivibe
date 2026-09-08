@@ -1,3 +1,5 @@
+import type { ModuleServices } from "../../module-sdk.js";
+import { inspectModuleConversation } from "../../module-conversation.js";
 import { sdkAdapterBaseUrl } from "../../ai-sdk/connection.js";
 import { openCodeAccountHeaders, openCodeInferenceToken } from "../../opencode.js";
 import {
@@ -198,6 +200,7 @@ type ProxyRoutesOptions = {
   smartRoutingCoordinator?: SmartRoutingCoordinator;
   usageRefreshCoordinator?: UsageRefreshCoordinator;
   moduleManager?: ModuleManager;
+  moduleServices?: (application?: string) => ModuleServices;
   sessionAffinityCache?: SessionAffinityCache;
   sessionAffinityEnabled?: boolean;
   confidentialInference?: ConfidentialInferenceClient;
@@ -2011,6 +2014,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
     capacityTracker,
     smartRoutingCoordinator,
     moduleManager,
+    moduleServices,
     confidentialInference,
   } = options;
   const { recordTrace } = traceManager;
@@ -2129,6 +2133,10 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
       try {
         const hooked = await moduleManager.runHook("request.received", req.body, {
           requestId: clientRequestId,
+          sessionId: getSessionId(req) ?? extractCodexSessionId(req.headers),
+          conversation: inspectModuleConversation(req.body, req.headers, getSessionId(req) ?? extractCodexSessionId(req.headers)),
+          internal: Boolean(res.locals.multivibeModuleInternal),
+          services: res.locals.multivibeModuleInternal ? undefined : moduleServices?.(application),
           application,
           route: req.path,
           transport: Boolean(req.body?.stream) ? "sse" : "http",

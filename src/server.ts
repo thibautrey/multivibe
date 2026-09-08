@@ -1,3 +1,4 @@
+import { automaticRouterManifest, createAutomaticRouter } from "./automatic-router.js";
 import { createAuthRateLimiter } from "./auth-rate-limit.js";
 import { createSdkAdapterRouter } from "./ai-sdk/routes.js";
 import { SDK_INTERNAL_TOKEN } from "./ai-sdk/connection.js";
@@ -10,7 +11,7 @@ import { AccountStore, OAuthStateStore, cleanupOrphanedTmpFiles } from "./store.
 import { createAnonymousUsageSharingWorker } from "./anonymous-usage-sharing.js";
 import { createTraceManager } from "./traces.js";
 import { createAdminRouter } from "./routes/admin/index.js";
-import { createProxyRouter } from "./routes/proxy/index.js";
+import { createProxyRouter, discoverModels } from "./routes/proxy/index.js";
 import { createRealtimeRouter } from "./realtime-proxy.js";
 import { HostHarnessIntegrationManager } from "./host/harness-integrations.js";
 import { installResponsesWebsocketProxy } from "./websocket-responses.js";
@@ -221,6 +222,7 @@ const moduleManager = new ModuleManager(
   BUNDLED_SECURITY_MODULE_PATH,
   !MULTIVIBE_CONTROL_PLANE,
 );
+moduleManager.registerBuiltin(automaticRouterManifest, createAutomaticRouter());
 const traceManager = createTraceManager({
   filePath: TRACE_FILE_PATH,
   historyFilePath: TRACE_STATS_HISTORY_PATH,
@@ -390,6 +392,7 @@ const adminRouter = createAdminRouter({
   },
 });
 
+const MODULE_INFERENCE_TOKEN = crypto.randomBytes(32).toString("base64url");
 const proxyRouter = createProxyRouter({
   store,
   traceManager,
@@ -405,6 +408,25 @@ const proxyRouter = createProxyRouter({
   smartRoutingCoordinator: smartRouting,
   usageRefreshCoordinator,
   moduleManager,
+  moduleServices: (application) => ({
+    listModels: () => discoverModels(store, CHATGPT_BASE_URL, MISTRAL_BASE_URL, ZAI_BASE_URL),
+    complete: async (input, signal) => {
+      if (MULTIVIBE_CONTROL_PLANE) throw new Error("JavaScript inference plugins require the JavaScript inference profile");
+      const models = await discoverModels(store, CHATGPT_BASE_URL, MISTRAL_BASE_URL, ZAI_BASE_URL);
+      if (!models.some((model) => model.id === input.model)) throw new Error("Classifier model is not configured");
+      const response = await fetch(`http://127.0.0.1:${nodePort}/v1/chat/completions`, {
+        method: "POST", signal,
+        headers: { "content-type": "application/json", "x-multivibe-module-token": MODULE_INFERENCE_TOKEN,
+          "x-multivibe-internal-application": application ?? "default" },
+        body: JSON.stringify({ ...input, max_tokens: Math.max(1, Math.min(512, input.max_tokens)), stream: false }),
+      });
+      if (!response.ok) { await response.body?.cancel(); throw new Error(`Classifier HTTP ${response.status}`); }
+      const result = await response.json() as any;
+      const content = result?.choices?.[0]?.message?.content;
+      if (typeof content !== "string") throw new Error("Classifier did not return text");
+      return content;
+    },
+  }),
   ...(confidentialInference ? { confidentialInference } : {}),
 });
 
@@ -538,6 +560,13 @@ function proxyGuard(
   res: express.Response,
   next: express.NextFunction,
 ) {
+  const moduleToken = req.header("x-multivibe-module-token");
+  if (moduleToken && safeEqual(moduleToken, MODULE_INFERENCE_TOKEN)) {
+    res.locals.proxyApplication = req.header("x-multivibe-internal-application") || "default";
+    delete req.headers["x-multivibe-module-token"];
+    res.locals.multivibeModuleInternal = true;
+    return next();
+  }
   const internalToken = req.header("x-multivibe-internal-token");
   if (internalToken && safeEqual(internalToken, INTERNAL_JOB_TOKEN)) {
     res.locals.proxyApplication =
