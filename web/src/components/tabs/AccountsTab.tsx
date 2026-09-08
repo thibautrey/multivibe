@@ -89,6 +89,7 @@ export type LocalWorkerProvider = {
 
 export type MultivibeCloudProvider = {
   status: "disconnected" | "connected" | "unavailable";
+  quota?: { status: "available" | "no_plan" | "unavailable"; name?: string; remainingPercent?: number; usedPercent?: number; resetsAt?: string };
   balanceUsd?: string;
   subscription?: string;
   topupUrl: string;
@@ -1812,8 +1813,11 @@ export function AccountsTab(props: Props) {
               <h3 id="multivibe-cloud-provider-title">MultiVibe Cloud</h3>
               {multivibeCloud.status === "connected" ? (
                 <p className="muted">
-                  {usd(Number(multivibeCloud.balanceUsd ?? 0))}
-                  {multivibeCloud.subscription ? ` · ${multivibeCloud.subscription}` : ""}
+                  {multivibeCloud.quota?.status === "available" ? <>
+                    {multivibeCloud.quota.name} · {Math.floor(multivibeCloud.quota.remainingPercent!)}% monthly quota remaining
+                    <progress max={100} value={multivibeCloud.quota.remainingPercent} aria-label="Cloud monthly quota remaining" />
+                    {multivibeCloud.quota.resetsAt ? ` · Resets ${new Date(multivibeCloud.quota.resetsAt).toLocaleDateString()}` : ""}
+                  </> : multivibeCloud.quota?.status === "no_plan" ? "Choose Plus, Pro or Max" : "Monthly quota unavailable"}
                 </p>
               ) : multivibeCloud.status === "unavailable" ? (
                 <p className="muted">Unavailable</p>
@@ -1824,7 +1828,7 @@ export function AccountsTab(props: Props) {
           <div className="local-worker-provider-actions">
             {multivibeCloud.status === "connected" ? (
               <a className="btn" href={multivibeCloud.topupUrl} target="_blank" rel="noreferrer">
-                Top up
+                Manage plan
               </a>
             ) : (
               <button className="btn" onClick={() => void connectCloud()} disabled={cloudBusy || multivibeCloud.status === "unavailable"}>
