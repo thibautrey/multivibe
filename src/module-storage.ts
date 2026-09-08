@@ -82,7 +82,7 @@ export class ModuleStorageManager {
         const data = json(event.data ?? {}); const encodedMetrics = json(metrics);
         db().transaction(() => {
           db().prepare("INSERT OR IGNORE INTO events(id,type,at,data,metrics) VALUES(?,?,?,?,?)").run(event.id, event.type, Date.now(), data, encodedMetrics);
-          db().prepare("DELETE FROM events WHERE seq <= (SELECT MAX(seq) - ? FROM events)").run(MAX_EVENTS);
+          db().prepare("DELETE FROM events WHERE seq < (SELECT seq FROM events ORDER BY seq DESC LIMIT 1 OFFSET ?)").run(MAX_EVENTS - 1);
         })();
       },
       readEvents: async (type?: string, limit = 100) => {

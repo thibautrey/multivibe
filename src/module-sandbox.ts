@@ -71,6 +71,8 @@ export class ModuleSandbox {
       return this.vm.newString(JSON.stringify(hash.digest("hex")));
     });
     this.vm.setProp(this.vm.global, "__crypto", crypto); crypto.dispose();
+    const cancelled = this.vm.newFunction("__cancelled", () => this.active?.signal.aborted || !this.active ? this.vm.true : this.vm.false);
+    this.vm.setProp(this.vm.global, "__cancelled", cancelled); cancelled.dispose();
     const bridge = this.vm.newFunction("__bridge", (method, args) => {
       const context = this.active;
       if (!context || context.signal.aborted || ++this.calls > 1000) throw new Error("Plugin capability is inactive or quota exceeded");
@@ -107,7 +109,7 @@ export class ModuleSandbox {
       const rpc = async (name, args) => JSON.parse(await __bridge(name, JSON.stringify(args)));
       globalThis.__invoke = async (hook, value, metadata) => {
         const context = {...metadata, settings: Object.freeze(metadata.settings),
-          signal: Object.freeze({aborted: false, throwIfAborted() {}}),
+          signal: Object.freeze({get aborted() {return __cancelled();}, throwIfAborted() {if (__cancelled()) throw new Error("Plugin hook cancelled");}}),
           storage: Object.freeze(Object.fromEntries(["get","set","delete","list","recordEvent","readEvents"].map(name => [name, (...args) => rpc("storage."+name,args)]))),
           log: Object.freeze(Object.fromEntries(["info","warn","error"].map(name => [name, (...args) => rpc("log."+name,args)]))),
         };
@@ -157,7 +159,7 @@ export class ModuleSandbox {
         const args = JSON.stringify([hook, value, { ...metadata, hasServices: Boolean(context.services), hasUsage: Boolean(context.services?.completeWithUsage) }]);
         if (args.length > 16 * 1024 * 1024) throw new Error("Plugin hook payload exceeds sandbox quota");
         result = this.vm.unwrapResult(this.vm.evalCode(`__invoke(...${args})`));
-        while (!context.signal.aborted && Date.now() <= this.deadline) {
+        while (!this.disposed && !context.signal.aborted && Date.now() <= this.deadline) {
           this.runtime.executePendingJobs(100).unwrap();
           const state = this.vm.getPromiseState(result);
           if (state.type === "fulfilled") { try { return this.vm.dump(state.value); } finally { state.value.dispose(); } }

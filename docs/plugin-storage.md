@@ -94,7 +94,7 @@ Savings are a **counterfactual estimate**: observed token counts and cache usage
 priced at the requested model's rates minus those priced at the actual model's
 rates. This cannot predict the tokens or cache hits the original model would
 actually have used. Unknown usage/pricing and failed provider attempts do not
-contribute savings. Classifier cost is deducted only when known; failed classifier
+contribute savings. Classifier and failed-attempt costs are deducted only when known; failed classifier
 calls can have unmeasured spend. Negative differences are retained. The UI exposes
 coverage and labels the net difference as known-cost-only. Aggregates cover retained
 events, not lifetime totals or an aligned billing cohort.

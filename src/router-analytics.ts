@@ -24,7 +24,7 @@ export async function recordRouterUsage(value: any, context: ModuleContext) {
       comparison: "Same observed token counts and cache usage at the requested model's published rates" },
     metrics: {
       measured: Number(measured), comparable: Number(comparable), unknown: Number(!comparable),
-      ...(actual === undefined ? {} : { actualCostUsd: actual }),
+      ...(actual === undefined ? {} : { actualCostUsd: actual, ...(value.status >= 400 ? { failedAttemptCostUsd: actual } : {}) }),
       ...(comparable ? { baselineCostUsd: baseline!, grossSavingsUsd: baseline! - actual! } : {}),
       ...(measured ? { inputTokens: value.tokensInput, cachedInputTokens: value.tokensInputCached ?? 0, outputTokens: value.tokensOutput } : {}),
     } });
