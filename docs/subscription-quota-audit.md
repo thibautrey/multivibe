@@ -28,3 +28,16 @@ All supported probes preserve stale readings with an explicit error state, and r
 No authenticated customer quota response was obtained. OpenBao metadata searches did not locate matching Z.ai, Mistral, OpenCode, or Grok subscription credentials; API billing keys found under unrelated applications were not used. Parser/transport tests use synthetic fixtures based on the cited source contracts. Provider-specific plan availability still requires a live refresh in a connected account.
 
 This audit supersedes the implementation-gap sections of `zai-subscription-quota-assessment.md`.
+
+## Validation
+
+Worktree: source review and `git diff --check` passed. Dependency-backed validation was deferred to local `main` as required.
+
+Local `main`:
+
+- `node --import tsx --test src/quota.test.ts src/quota-blocks.test.ts src/usage-refresh.test.ts src/usage-refresh-monitor.test.ts`: 49 passed.
+- `node --import tsx --test src/routes/proxy/account-rotation.test.ts src/routes/proxy/native-stream-account-rotation.test.ts`: 4 passed.
+- `npm run build:api` and `npm run build:web`: passed. Vite emitted its bundle-size advisory.
+- `CARGO_TARGET_DIR=/tmp/multivibe-quota-cargo-target /home/codex/.cargo/bin/cargo test -p multivibe-v1-edge account_selection --lib --locked`: 2 passed. Native routing now consumes subscription credits and avoids exhausted quotas when alternatives have headroom.
+
+Rust validation initially failed with `cargo: command not found`; installed the minimal Rust toolchain. The default target directory then failed with `Permission denied` opening `target/debug/.cargo-build-lock`; the successful run used the separate temporary target directory above. No lockfiles were changed.
