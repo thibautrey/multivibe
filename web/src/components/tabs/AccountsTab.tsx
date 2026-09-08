@@ -1887,7 +1887,7 @@ export function AccountsTab(props: Props) {
           </div>
         ) : accounts.length > 0 ? (
         <div className="provider-list">
-          {accounts.map((a) => {
+          {[...accounts].sort((a, b) => Number(b.multivibeCloud === true) - Number(a.multivibeCloud === true)).map((a) => {
             const modelBlocks = activeModelBlocks(a);
             const isCloud = a.multivibeCloud === true;
             const runtimeIdentity = isCloud
