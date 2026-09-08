@@ -122,7 +122,7 @@ test("Cloud connection uses PKCE and provisions a local API-key account", async 
     const parsedUrl = new URL(url);
     if (parsedUrl.pathname === "/client/v1/projects" && init?.method === "GET") return response({ data: [] });
     if (parsedUrl.pathname === "/client/v1/projects" && init?.method === "POST") return response({ id: projectId });
-    if (url.includes(`/client/v1/projects/${projectId}/api-keys`)) {
+    if (url.includes(`/client/v1/projects/${projectId}/integrations/multivibe-core/credential`)) {
       return response({
         secret: "mvk_cloud_secret",
         apiKey: { expiresAt: new Date(Date.now() + 86_400_000).toISOString() },
@@ -140,6 +140,7 @@ test("Cloud connection uses PKCE and provisions a local API-key account", async 
   assert.equal(flow.redirectUri, "http://192.168.1.149:1455/admin/cloud/oauth/callback");
   assert.equal(authorizeUrl.searchParams.get("code_challenge_method"), "S256");
   assert.match(authorizeUrl.searchParams.get("scope") ?? "", /(?:^| )provider:read(?: |$)/);
+  assert.match(authorizeUrl.searchParams.get("scope") ?? "", /(?:^| )core:credential:create(?: |$)/);
   assert.equal(
     authorizeUrl.searchParams.get("code_challenge"),
     createHash("sha256").update(flow.codeVerifier).digest("base64url"),
@@ -168,6 +169,9 @@ test("Cloud connection uses PKCE and provisions a local API-key account", async 
     multivibeCloud: true,
   }]);
   assert.equal(stores.settings.multivibeCloud?.projectId, projectId);
+  const credentialCall = calls.find((call) => call.url.includes("/integrations/multivibe-core/credential"));
+  assert.equal(credentialCall?.init?.method, "POST");
+  assert.deepEqual(JSON.parse(String(credentialCall?.init?.body)), {});
   assert.equal(calls.filter((call) => call.init?.method === "POST").length, 3);
 });
 
@@ -304,7 +308,7 @@ test("Cloud status keeps unrelated authorization failures unavailable", async ()
     settings: { multivibeCloud: { accessToken: "cloud-access", projectId } },
   });
   const cloud = service(stores, async (input) => {
-    if (String(input).includes(`/client/v1/projects/${projectId}/api-keys`)) {
+    if (String(input).includes(`/client/v1/projects/${projectId}/integrations/multivibe-core/credential`)) {
       return response({ error: { code: "project_access_denied" } }, 403);
     }
     throw new Error(`unexpected Cloud call: ${String(input)}`);
