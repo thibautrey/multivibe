@@ -60,3 +60,15 @@ export function aggregateModels(models: ExposedModel[], accounts: Account[], clo
   }
   return [...entries.values()].sort((a, b) => Number(b.routes.some(route => route.ready)) - Number(a.routes.some(route => route.ready)) || a.name.localeCompare(b.name));
 }
+
+// Keep only matching routes so availability and actions respect the selected filters.
+export function filterCatalog(catalog: CatalogEntry[], filters: { query: string; source: string; provider: string; readyOnly: boolean; sort: string }): CatalogEntry[] {
+  const terms = filters.query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  return catalog.map(model => ({ ...model, routes: model.routes.filter(route =>
+    (filters.source === 'all' || route.source === filters.source)
+    && (filters.provider === 'all' || route.label === filters.provider)
+    && (!filters.readyOnly || route.ready)) }))
+    .filter(model => model.routes.length && terms.every(term => `${model.name} ${model.id} ${model.routes.map(route => route.label).join(' ')}`.toLowerCase().includes(term)))
+    .sort((a, b) => (filters.sort === 'ready' ? Number(b.routes.some(route => route.ready)) - Number(a.routes.some(route => route.ready)) : 0)
+      || (filters.sort === 'name-desc' ? -1 : 1) * (a.name.localeCompare(b.name, 'en') || a.id.localeCompare(b.id, 'en')));
+}
