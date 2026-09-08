@@ -130,6 +130,8 @@ export default function App() {
   const [providerSetupRequest, setProviderSetupRequest] = useState(0);
   const [providerSetupActive, setProviderSetupActive] = useState(false);
   const [traces, setTraces] = useState<Trace[]>([]);
+  const [traceStatsLoading, setTraceStatsLoading] = useState(true);
+  const traceStatsPendingRef = useRef(0);
   const [traceStats, setTraceStats] = useState<TraceStats>(EMPTY_TRACE_STATS);
   const [projectUsageStats, setProjectUsageStats] = useState<ProjectUsageStats>({
     byProject: [],
@@ -474,32 +476,46 @@ export default function App() {
   };
 
   const loadTraceStats = async (range: TraceRangePreset = traceRange) => {
-    const params = traceRangeParams(range).toString();
-    const [statsRes, usageRes] = await Promise.all([
-      api(`/admin/stats/traces?${params}`),
-      api(`/admin/stats/usage?${params}`),
-    ]);
-    setTraceStats((statsRes.stats ?? EMPTY_TRACE_STATS) as TraceStats);
-    setProjectUsageStats({ byProject: usageRes.byProject ?? [] });
+    traceStatsPendingRef.current += 1;
+    setTraceStatsLoading(true);
+    try {
+      const params = traceRangeParams(range).toString();
+      const [statsRes, usageRes] = await Promise.all([
+        api(`/admin/stats/traces?${params}`),
+        api(`/admin/stats/usage?${params}`),
+      ]);
+      setTraceStats((statsRes.stats ?? EMPTY_TRACE_STATS) as TraceStats);
+      setProjectUsageStats({ byProject: usageRes.byProject ?? [] });
+    } finally {
+      traceStatsPendingRef.current -= 1;
+      setTraceStatsLoading(traceStatsPendingRef.current > 0);
+    }
   };
 
   const loadTracing = async (page: number, range: TraceRangePreset = traceRange) => {
-    const safePage = Math.max(1, page || 1);
-    const params = traceRangeParams(range);
-    params.set("page", String(safePage));
-    params.set("pageSize", String(TRACE_PAGE_SIZE));
+    traceStatsPendingRef.current += 1;
+    setTraceStatsLoading(true);
+    try {
+      const safePage = Math.max(1, page || 1);
+      const params = traceRangeParams(range);
+      params.set("page", String(safePage));
+      params.set("pageSize", String(TRACE_PAGE_SIZE));
 
-    const [tr, statsRes, usageRes] = await Promise.all([
-      api(`/admin/traces?${params.toString()}`),
-      api(`/admin/stats/traces?${params.toString()}`),
-      api(`/admin/stats/usage?${traceRangeParams(range).toString()}`),
-    ]);
-    setTraces((tr.traces ?? []) as Trace[]);
-    setTraceStats((statsRes.stats ?? tr.stats ?? EMPTY_TRACE_STATS) as TraceStats);
-    setProjectUsageStats({ byProject: usageRes.byProject ?? [] });
-    setTracePagination((tr.pagination ?? { ...EMPTY_TRACE_PAGINATION, page: safePage }) as TracePagination);
-    setExpandedTraceId(null);
-    setExpandedTrace(null);
+      const [tr, statsRes, usageRes] = await Promise.all([
+        api(`/admin/traces?${params.toString()}`),
+        api(`/admin/stats/traces?${params.toString()}`),
+        api(`/admin/stats/usage?${traceRangeParams(range).toString()}`),
+      ]);
+      setTraces((tr.traces ?? []) as Trace[]);
+      setTraceStats((statsRes.stats ?? tr.stats ?? EMPTY_TRACE_STATS) as TraceStats);
+      setProjectUsageStats({ byProject: usageRes.byProject ?? [] });
+      setTracePagination((tr.pagination ?? { ...EMPTY_TRACE_PAGINATION, page: safePage }) as TracePagination);
+      setExpandedTraceId(null);
+      setExpandedTrace(null);
+    } finally {
+      traceStatsPendingRef.current -= 1;
+      setTraceStatsLoading(traceStatsPendingRef.current > 0);
+    }
   };
 
   useEffect(() => {
@@ -1331,6 +1347,7 @@ export default function App() {
 
         {tab === "tracing" && (
           <TracingTab
+            traceStatsLoading={traceStatsLoading}
             accounts={accounts}
             traceStats={filteredTraceStats}
             tokensTimeseries={tokensTimeseries}
