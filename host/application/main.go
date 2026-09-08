@@ -40,7 +40,10 @@ type bundleLayout struct {
 	DemandTrust        string
 }
 
-const maximumBundledDemandTrustBytes = 64 * 1024
+const (
+	maximumBundledDemandTrustBytes = 64 * 1024
+	modelsClientVersion            = "1.0.0"
+)
 
 var bundledDemandTrustKeyID = regexp.MustCompile(`^ed25519:[A-Za-z0-9_-]{43}$`)
 
@@ -567,6 +570,7 @@ func coreEnvironment(layout bundleLayout, dataDirectory, managedDirectory, deman
 	environment := []string{
 		"NODE_ENV=production",
 		"APP_VERSION=" + hostApplicationVersion,
+		"MODELS_CLIENT_VERSION=" + modelsClientVersion,
 		"HOST=" + nodeHost,
 		"PORT=" + nodePort,
 		"PUBLIC_BASE_URL=" + network.PublicBaseURL,
