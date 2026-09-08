@@ -1,3 +1,5 @@
+import { AUTOMATIC_ROUTER_MODEL } from "../../automatic-router-model.js";
+import { createVirtualModelMiddleware, withVirtualModels } from "../../module-virtual-models.js";
 import type { ModuleServices } from "../../module-sdk.js";
 import { inspectModuleConversation } from "../../module-conversation.js";
 import { sdkAdapterBaseUrl } from "../../ai-sdk/connection.js";
@@ -284,6 +286,8 @@ export type ExposedModel = {
     supports_reasoning: boolean;
     supports_tools: boolean;
     supported_tool_types: string[];
+    is_virtual?: boolean;
+    plugin_id?: string;
     is_alias?: boolean;
     alias_targets?: string[];
     catalog_source?: string;
@@ -2019,6 +2023,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
   } = options;
   const { recordTrace } = traceManager;
   const router = express.Router();
+  router.use(createVirtualModelMiddleware(moduleManager, moduleServices));
   const usageRefreshCoordinator =
     options.usageRefreshCoordinator ?? new UsageRefreshCoordinator();
 
@@ -2129,7 +2134,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
         : undefined;
     const requestBodyBeforeReceivedHook = req.body;
     const parsedRequestInspection = req.payloadContextInspection;
-    if (moduleManager) {
+    if (moduleManager && !res.locals.multivibeRequestModulesHandled) {
       try {
         const hooked = await moduleManager.runHook("request.received", req.body, {
           requestId: clientRequestId,
@@ -5133,7 +5138,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
   });
 
   async function listExposedModels() {
-    return discoverModels(store, openaiBaseUrl, mistralBaseUrl, zaiBaseUrl);
+    return withVirtualModels(await discoverModels(store, openaiBaseUrl, mistralBaseUrl, zaiBaseUrl), moduleManager);
   }
 
   router.get(["/models", "/api/v1/models"], async (req, res) => {
@@ -5141,11 +5146,13 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
       return res.json(buildClaudeCodeModelsResponse());
     }
     const models = await listExposedModels();
+    res.setHeader("Cache-Control", "no-store");
     res.json(buildModelsListResponse(models));
   });
 
-  router.get(["/models/:id", "/api/v1/models/:id"], async (req, res) => {
-    const id = req.params.id;
+  router.get(["/models/:id", "/api/v1/models/:id", `/models/${AUTOMATIC_ROUTER_MODEL}`, `/api/v1/models/${AUTOMATIC_ROUTER_MODEL}`], async (req, res) => {
+    const id = req.params.id ?? AUTOMATIC_ROUTER_MODEL;
+    res.setHeader("Cache-Control", "no-store");
     const models = await listExposedModels();
     const model = models.find((m) => m.id === id);
     if (!model)

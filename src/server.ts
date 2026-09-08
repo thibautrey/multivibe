@@ -1,3 +1,4 @@
+import { createVirtualModelMiddleware } from "./module-virtual-models.js";
 import { estimateCostUsd } from "./model-pricing.js";
 import type { ModuleServices } from "./module-sdk.js";
 import { automaticRouterManifest, createAutomaticRouter } from "./automatic-router.js";
@@ -407,22 +408,7 @@ const adminRouter = createAdminRouter({
 });
 
 const MODULE_INFERENCE_TOKEN = crypto.randomBytes(32).toString("base64url");
-const proxyRouter = createProxyRouter({
-  store,
-  traceManager,
-  openaiBaseUrl: CHATGPT_BASE_URL,
-  mistralBaseUrl: MISTRAL_BASE_URL,
-  mistralUpstreamPath: MISTRAL_UPSTREAM_PATH,
-  mistralCompactUpstreamPath: MISTRAL_COMPACT_UPSTREAM_PATH,
-  zaiBaseUrl: ZAI_BASE_URL,
-  zaiUpstreamPath: ZAI_UPSTREAM_PATH,
-  zaiCompactUpstreamPath: ZAI_COMPACT_UPSTREAM_PATH,
-  oauthConfig,
-  capacityTracker,
-  smartRoutingCoordinator: smartRouting,
-  usageRefreshCoordinator,
-  moduleManager,
-  moduleServices: (application) => {
+const moduleServices = (application?: string): ModuleServices => {
     const completeWithUsage: NonNullable<ModuleServices["completeWithUsage"]> = async (input, signal) => {
       if (MULTIVIBE_CONTROL_PLANE) throw new Error("JavaScript inference plugins require the JavaScript inference profile");
       const models = await discoverModels(store, CHATGPT_BASE_URL, MISTRAL_BASE_URL, ZAI_BASE_URL);
@@ -451,7 +437,24 @@ const proxyRouter = createProxyRouter({
       completeWithUsage,
       complete: async (input, signal) => (await completeWithUsage(input, signal)).text,
     };
-  },
+  };
+
+const proxyRouter = createProxyRouter({
+  store,
+  traceManager,
+  openaiBaseUrl: CHATGPT_BASE_URL,
+  mistralBaseUrl: MISTRAL_BASE_URL,
+  mistralUpstreamPath: MISTRAL_UPSTREAM_PATH,
+  mistralCompactUpstreamPath: MISTRAL_COMPACT_UPSTREAM_PATH,
+  zaiBaseUrl: ZAI_BASE_URL,
+  zaiUpstreamPath: ZAI_UPSTREAM_PATH,
+  zaiCompactUpstreamPath: ZAI_COMPACT_UPSTREAM_PATH,
+  oauthConfig,
+  capacityTracker,
+  smartRoutingCoordinator: smartRouting,
+  usageRefreshCoordinator,
+  moduleManager,
+  moduleServices,
   ...(confidentialInference ? { confidentialInference } : {}),
 });
 
@@ -833,6 +836,7 @@ const inferenceIdempotencyMiddleware = createInferenceIdempotencyMiddleware({
   maxBytes: INFERENCE_IDEMPOTENCY_MAX_BYTES,
   maxResponseBytes: INFERENCE_IDEMPOTENCY_MAX_RESPONSE_BYTES,
 });
+const virtualModelMiddleware = createVirtualModelMiddleware(moduleManager, moduleServices);
 const admissionMiddleware = createAdmissionMiddleware(smartRouting);
 const smartRoutingRouter = createSmartRoutingRouter(smartRouting);
 // In the native profile Rust owns the complete `/v1` surface. Keep the
@@ -844,6 +848,7 @@ if (!MULTIVIBE_CONTROL_PLANE) {
     proxyGuard,
     hostUpdateController?.inferenceMiddleware ?? ((_req, _res, next) => next()),
     inferenceIdempotencyMiddleware,
+    virtualModelMiddleware,
     admissionMiddleware,
     smartRoutingRouter,
   );
@@ -854,6 +859,7 @@ if (!MULTIVIBE_CONTROL_PLANE) {
     rootProxyGuard,
     hostUpdateController?.inferenceMiddleware ?? ((_req, _res, next) => next()),
     inferenceIdempotencyMiddleware,
+    virtualModelMiddleware,
     admissionMiddleware,
     realtimeRouter,
   );

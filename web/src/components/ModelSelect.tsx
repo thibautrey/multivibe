@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 
-export type ConfiguredPluginModel = { id: string; metadata?: { provider?: string } };
+export type ConfiguredPluginModel = { id: string; metadata?: { provider?: string; is_virtual?: boolean } };
 export const listPluginModels = () => api("/admin/modules/models").then((result): ConfiguredPluginModel[] => result.models);
 
 /** Public dashboard component; uses the instance catalog and admin session. */
-export function ModelSelect({ id, value, onChange, disabled = false }: {
-  id: string; value: string; onChange: (model: string) => void; disabled?: boolean;
+export function ModelSelect({ id, value, onChange, disabled = false, excludeVirtual = false }: {
+  id: string; value: string; onChange: (model: string) => void; disabled?: boolean; excludeVirtual?: boolean;
 }) {
   const [models, setModels] = useState<ConfiguredPluginModel[]>([]);
   const [loading, setLoading] = useState(true);
@@ -21,6 +21,6 @@ export function ModelSelect({ id, value, onChange, disabled = false }: {
   return <><select id={id} value={value} disabled={disabled || loading || Boolean(error)} onChange={(event) => onChange(event.target.value)}>
     <option value="">{loading ? "Loading models…" : "No model selected"}</option>
     {value && !models.some((model) => model.id === value) && <option value={value}>{value} (unavailable)</option>}
-    {models.map((model) => <option key={model.id} value={model.id}>{model.id}{model.metadata?.provider ? ` · ${model.metadata.provider}` : ""}</option>)}
+    {models.filter((model) => !excludeVirtual || !model.metadata?.is_virtual).map((model) => <option key={model.id} value={model.id}>{model.id}{model.metadata?.provider ? ` · ${model.metadata.provider}` : ""}</option>)}
   </select>{error && <span role="alert">{error}</span>}</>;
 }
