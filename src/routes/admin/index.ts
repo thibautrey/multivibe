@@ -39,7 +39,7 @@ import {
 import { ensureValidToken, isTokenRefreshNeeded } from "../../account-utils.js";
 import type { TraceManager } from "../../traces.js";
 import { isHiddenTraceRoute } from "../../traces.js";
-import { discoverModels } from "../proxy/index.js";
+import { discoverModels } from "../../native-model-catalog.js";
 import {
   maybeConsumeScheduledWeeklyReset,
   rateLimitResetCreditRequest,

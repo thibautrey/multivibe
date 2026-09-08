@@ -2,10 +2,6 @@
 
 set -eu
 
-if [ "${MULTIVIBE_CONTROL_PLANE:-true}" != "true" ]; then
-  exec node --import ./dist/instrument.js dist/server.js
-fi
-
 # The edge and the control plane must share this capability. Generate it once
 # in the supervisor so both children receive the exact same value.
 if [ -z "${V1_EDGE_INTERNAL_JOB_TOKEN:-}" ]; then

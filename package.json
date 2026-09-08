@@ -8,7 +8,7 @@
     "test:distribution": "node --test scripts/distribution/*.test.mjs",
     "catalog:check": "go -C provider-agent run ./cmd/catalog-check",
     "catalog:refresh": "go -C provider-agent run ./cmd/catalog-check --write",
-    "dev": "tsx watch --import ./src/instrument.ts src/server.ts",
+    "dev": "node scripts/start-native.mjs --dev",
     "build:api": "tsc -p tsconfig.json",
     "build:proxy-core-native": "node scripts/build-proxy-core-native.mjs",
     "benchmark:protocol-conversion": "node --import tsx scripts/benchmark-protocol-conversion.mjs",
@@ -25,7 +25,7 @@
     "test:source-release": "node --test scripts/source-release.test.mjs",
     "test:source-release-tag": "node --test scripts/verify-source-release-tag.test.mjs",
     "test": "tsx --test \"src/**/*.test.ts\" \"web/test/**/*.test.ts\"",
-    "start": "node --import ./dist/instrument.js dist/server.js",
+    "start": "node scripts/start-native.mjs",
     "catalog:sdk:refresh": "node scripts/refresh-ai-sdk-catalog.mjs",
     "demo": "npm --prefix web run demo",
     "test:integration:cloud": "node --import tsx --test test-integration/cloud-core.test.mjs"

@@ -1,6 +1,3 @@
-import { createVirtualModelMiddleware } from "./module-virtual-models.js";
-import { estimateCostUsd } from "./model-pricing.js";
-import type { ModuleServices } from "./module-sdk.js";
 import { automaticRouterManifest, createAutomaticRouter } from "./automatic-router.js";
 import { createAuthRateLimiter } from "./auth-rate-limit.js";
 import { createSdkAdapterRouter } from "./ai-sdk/routes.js";
@@ -14,10 +11,7 @@ import { AccountStore, OAuthStateStore, cleanupOrphanedTmpFiles } from "./store.
 import { createAnonymousUsageSharingWorker } from "./anonymous-usage-sharing.js";
 import { createTraceManager } from "./traces.js";
 import { createAdminRouter } from "./routes/admin/index.js";
-import { createProxyRouter, discoverModels } from "./routes/proxy/index.js";
-import { createRealtimeRouter } from "./realtime-proxy.js";
 import { HostHarnessIntegrationManager } from "./host/harness-integrations.js";
-import { installResponsesWebsocketProxy } from "./websocket-responses.js";
 import { oauthConfig } from "./oauth-config.js";
 import {
   ADMIN_TOKEN,
@@ -108,14 +102,13 @@ import {
 import { CodexProjectRegistry } from "./codex-projects.js";
 import { anthropicErrorEnvelope } from "./anthropic-compat.js";
 import { CapacityTracker } from "./smart-routing.js";
-import { JobRunner, JobStore } from "./jobs.js";
+import { JobStore } from "./jobs.js";
 import {
   SmartRoutingCoordinator,
   createAdmissionMiddleware,
   createSmartRoutingRouter,
 } from "./smart-routing-routes.js";
 import { startEmbeddedProviderAgent } from "./provider-agent-supervisor.js";
-import { createInferenceIdempotencyMiddleware } from "./inference-idempotency.js";
 import { createRequestTracingMiddleware } from "./request-tracing.js";
 import { createInternalV1EdgeRouter } from "./internal-v1-edge-routes.js";
 import {
@@ -408,67 +401,6 @@ const adminRouter = createAdminRouter({
   },
 });
 
-const MODULE_INFERENCE_TOKEN = crypto.randomBytes(32).toString("base64url");
-const moduleServices = (application?: string): ModuleServices => {
-  const completeWithUsage: NonNullable<ModuleServices["completeWithUsage"]> = async (input, signal) => {
-    if (MULTIVIBE_CONTROL_PLANE) throw new Error("JavaScript inference plugins require the JavaScript inference profile");
-    const models = await discoverModels(store, CHATGPT_BASE_URL, MISTRAL_BASE_URL, ZAI_BASE_URL);
-    if (!models.some((model) => model.id === input.model)) throw new Error("Classifier model is not configured");
-    const response = await fetch(`http://127.0.0.1:${nodePort}/v1/chat/completions`, {
-      method: "POST", signal,
-      headers: { "content-type": "application/json", "x-multivibe-module-token": MODULE_INFERENCE_TOKEN,
-        "x-multivibe-internal-application": application ?? "default" },
-      body: JSON.stringify({ ...input, max_tokens: Math.max(1, Math.min(512, input.max_tokens)), stream: false }),
-    });
-    if (!response.ok) { await response.body?.cancel(); throw new Error(`Classifier HTTP ${response.status}`); }
-    const result = await response.json() as any;
-    const content = result?.choices?.[0]?.message?.content;
-    if (typeof content !== "string") throw new Error("Classifier did not return text");
-    const model = typeof result.model === "string" ? result.model : input.model;
-    const usage = result.usage;
-    const tokensInput = usage?.prompt_tokens ?? usage?.input_tokens;
-    const tokensOutput = usage?.completion_tokens ?? usage?.output_tokens;
-    const costUsd = typeof tokensInput === "number" && typeof tokensOutput === "number"
-      ? estimateCostUsd(model, tokensInput, tokensOutput, usage?.prompt_tokens_details?.cached_tokens ?? usage?.input_tokens_details?.cached_tokens ?? 0)
-      : undefined;
-    return { text: content, model, costUsd };
-  };
-  return {
-    listModels: () => discoverModels(store, CHATGPT_BASE_URL, MISTRAL_BASE_URL, ZAI_BASE_URL),
-    completeWithUsage,
-    complete: async (input, signal) => (await completeWithUsage(input, signal)).text,
-  };
-};
-
-const proxyRouter = createProxyRouter({
-  store,
-  traceManager,
-  openaiBaseUrl: CHATGPT_BASE_URL,
-  mistralBaseUrl: MISTRAL_BASE_URL,
-  mistralUpstreamPath: MISTRAL_UPSTREAM_PATH,
-  mistralCompactUpstreamPath: MISTRAL_COMPACT_UPSTREAM_PATH,
-  zaiBaseUrl: ZAI_BASE_URL,
-  zaiUpstreamPath: ZAI_UPSTREAM_PATH,
-  zaiCompactUpstreamPath: ZAI_COMPACT_UPSTREAM_PATH,
-  oauthConfig,
-  capacityTracker,
-  smartRoutingCoordinator: smartRouting,
-  usageRefreshCoordinator,
-  moduleManager,
-  moduleServices,
-  ...(confidentialInference ? { confidentialInference } : {}),
-});
-
-const realtimeRouter = createRealtimeRouter({
-  store,
-  oauthConfig,
-  traceManager,
-  chatgptBaseUrl: CHATGPT_BASE_URL,
-  provider: REALTIME_PROVIDER,
-  webrtcCallUrl: REALTIME_WEBRTC_CALL_URL || undefined,
-  requestTimeoutMs: REALTIME_REQUEST_TIMEOUT_MS,
-});
-
 const ADMIN_SESSION_COOKIE = "multivibe_admin_session";
 const ADMIN_SESSION_MAX_AGE_MS = 400 * 24 * 60 * 60 * 1000;
 const DESKTOP_SESSION_MAX_AGE_MS = 60 * 1000;
@@ -573,94 +505,6 @@ function projectRegistrationGuard(
     return res.status(401).json({ error: "unauthorized" });
   }
   next();
-}
-
-function hasProxyApiKey(headers: http.IncomingHttpHeaders): boolean {
-  const proxyApiKeys = [
-    ...configuredProxyApiKeys,
-    ...store.getCachedProxyApiKeys(),
-  ];
-  if (!proxyApiKeys.length) return true;
-  return Boolean(identifyProxyApplication(headers, proxyApiKeys));
-}
-
-function proxyGuard(
-  req: express.Request,
-  res: express.Response,
-  next: express.NextFunction,
-) {
-  const moduleToken = req.header("x-multivibe-module-token");
-  if (moduleToken && safeEqual(moduleToken, MODULE_INFERENCE_TOKEN)) {
-    res.locals.proxyApplication = req.header("x-multivibe-internal-application") || "default";
-    delete req.headers["x-multivibe-module-token"];
-    res.locals.multivibeModuleInternal = true;
-    return next();
-  }
-  const internalToken = req.header("x-multivibe-internal-token");
-  if (internalToken && safeEqual(internalToken, INTERNAL_JOB_TOKEN)) {
-    res.locals.proxyApplication =
-      req.header("x-multivibe-internal-application") || "internal-job";
-    return next();
-  }
-  const proxyApiKeys = [
-    ...configuredProxyApiKeys,
-    ...store.getCachedProxyApiKeys(),
-  ];
-  if (!proxyApiKeys.length || hasAdminSession(req)) {
-    return next();
-  }
-  const application = identifyProxyApplication(req.headers, proxyApiKeys);
-  if (application) {
-    res.locals.proxyApplication = application;
-    return next();
-  }
-  if (/\/(?:v1\/)?messages(?:\?|$)/.test(req.originalUrl)) {
-    return res
-      .status(401)
-      .json(anthropicErrorEnvelope(401, "Invalid or missing proxy API key"));
-  }
-  return res.status(401).json({
-    error: {
-      message: "Invalid or missing proxy API key",
-      type: "authentication_error",
-      code: "invalid_api_key",
-    },
-  });
-}
-
-function rootProxyGuard(
-  req: express.Request,
-  res: express.Response,
-  next: express.NextFunction,
-) {
-  const pathOrUrl = req.path || "/";
-  const accepts = String(req.header("accept") ?? "").toLowerCase();
-  const isKnownProxyEndpoint =
-    pathOrUrl === "/chat/completions" ||
-    pathOrUrl === "/responses" ||
-    pathOrUrl === "/responses/compact" ||
-    pathOrUrl === "/messages" ||
-    pathOrUrl === "/models" ||
-    pathOrUrl.startsWith("/models/") ||
-    pathOrUrl === "/api/v1/models" ||
-    pathOrUrl.startsWith("/api/v1/models/") ||
-    pathOrUrl === "/api/tags" ||
-    pathOrUrl === "/version" ||
-    pathOrUrl === "/props" ||
-    pathOrUrl === "/v1/props";
-  if (
-    pathOrUrl === "/" ||
-    pathOrUrl === "/health" ||
-    pathOrUrl === "/favicon.ico" ||
-    pathOrUrl.startsWith("/admin") ||
-    pathOrUrl.startsWith("/assets") ||
-    (req.method === "GET" &&
-      accepts.includes("text/html") &&
-      !isKnownProxyEndpoint)
-  ) {
-    return next();
-  }
-  return proxyGuard(req, res, next);
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -827,46 +671,7 @@ if (!MULTIVIBE_CONTROL_PLANE) {
 
 app.use("/admin", adminGuard, adminRouter);
 
-// These middleware instances remain available to the single-process profile.
-// The native profile does not mount them on `/v1`: that surface terminates in
-// the Rust edge. SDK-backed providers use the separate internal SDK adapter.
-const inferenceIdempotencyMiddleware = createInferenceIdempotencyMiddleware({
-  ttlMs: INFERENCE_IDEMPOTENCY_TTL_MS,
-  inFlightTimeoutMs: INFERENCE_IDEMPOTENCY_IN_FLIGHT_TIMEOUT_MS,
-  maxEntries: INFERENCE_IDEMPOTENCY_MAX_ENTRIES,
-  maxBytes: INFERENCE_IDEMPOTENCY_MAX_BYTES,
-  maxResponseBytes: INFERENCE_IDEMPOTENCY_MAX_RESPONSE_BYTES,
-});
-const virtualModelMiddleware = createVirtualModelMiddleware(moduleManager, moduleServices);
-const admissionMiddleware = createAdmissionMiddleware(smartRouting);
-const smartRoutingRouter = createSmartRoutingRouter(smartRouting);
-// In the native profile Rust owns the complete `/v1` surface. Keep the
-// historical Express stack only for the single-process development profile;
-// the control-plane listener must not become a second `/v1` implementation.
-if (!MULTIVIBE_CONTROL_PLANE) {
-  app.use(
-    "/v1",
-    proxyGuard,
-    hostUpdateController?.inferenceMiddleware ?? ((_req, _res, next) => next()),
-    inferenceIdempotencyMiddleware,
-    virtualModelMiddleware,
-    admissionMiddleware,
-    smartRoutingRouter,
-  );
-  app.use("/v1", realtimeRouter);
-  app.use("/v1", proxyRouter);
-  app.use(
-    "/",
-    rootProxyGuard,
-    hostUpdateController?.inferenceMiddleware ?? ((_req, _res, next) => next()),
-    inferenceIdempotencyMiddleware,
-    virtualModelMiddleware,
-    admissionMiddleware,
-    realtimeRouter,
-  );
-  app.use("/", proxyRouter);
-}
-
+// Public inference, realtime, and WebSocket routes are owned by the Rust edge.
 app.use(express.static(webDist));
 app.get("/{*path}", (req, res, next) => {
   if (
@@ -890,80 +695,7 @@ app.get("/{*path}", (req, res, next) => {
 Sentry.setupExpressErrorHandler(app);
 
 const server = http.createServer(app);
-const jobRunner = new JobRunner(
-  jobStore,
-  async (job) => {
-    const executionTimeoutMs = Math.max(
-      1,
-      Math.min(
-        30 * 60_000,
-        job.deadlineAt ? job.deadlineAt - Date.now() : Number.POSITIVE_INFINITY,
-      ),
-    );
-    const response = await fetch(
-      `${MULTIVIBE_CONTROL_PLANE ? V1_EDGE_BASE_URL : `http://127.0.0.1:${nodePort}`}${job.route}`,
-      {
-      method: job.method,
-      headers: {
-        ...job.requestHeaders,
-        "content-type": "application/json",
-        "x-multivibe-internal-token":
-          V1_EDGE_INTERNAL_JOB_TOKEN || INTERNAL_JOB_TOKEN,
-        "x-multivibe-internal-application": job.application,
-        "x-multivibe-internal-job": "1",
-        "x-multivibe-priority": job.priority,
-        "x-multivibe-execution": "sync",
-      },
-      body: JSON.stringify(job.requestBody),
-      signal: AbortSignal.timeout(executionTimeoutMs),
-      },
-    );
-    const raw = await response.text();
-    let body: unknown = raw;
-    try {
-      body = raw ? JSON.parse(raw) : null;
-    } catch {
-      // Keep non-JSON upstream output as text.
-    }
-    const headers: Record<string, string> = {};
-    for (const name of ["content-type", "request-id", "openai-request-id", "anthropic-request-id"]) {
-      const value = response.headers.get(name);
-      if (value) headers[name] = value;
-    }
-    return {
-      status: response.status,
-      headers,
-      body,
-      capacityUnavailable:
-        response.status === 429 &&
-        typeof body === "object" &&
-        body !== null &&
-        (body as any).error?.code === "capacity_unavailable",
-    };
-  },
-  (application, id) =>
-    store.getApplicationPolicy(application).webhooks.find((webhook) => webhook.id === id),
-  JOB_WORKER_CONCURRENCY,
-);
-if (!MULTIVIBE_CONTROL_PLANE) {
-  hostUpdateController?.attachJobRunner(jobRunner);
-}
-
-if (!MULTIVIBE_CONTROL_PLANE && MULTIVIBE_CLOUD_PRIVACY_MODE !== "confidential_verified") {
-  installResponsesWebsocketProxy({
-    server,
-    port: nodePort,
-    authorize: (req) => hasProxyApiKey(req.headers),
-    admit: hostUpdateController?.admitWebsocket,
-    onTurnStarted: hostUpdateController?.websocketTurnStarted,
-    onTurnFinished: hostUpdateController?.websocketTurnFinished,
-  });
-}
-
 server.listen(nodeHost ? { port: nodePort, host: nodeHost } : { port: nodePort }, () => {
-  if (!MULTIVIBE_CONTROL_PLANE) {
-    jobRunner.start();
-  }
   smartRouting.startHealthMonitoring();
   console.log(
     `multivibe control plane listening on ${nodeHost ?? "all interfaces"}:${nodePort}`,
@@ -977,7 +709,6 @@ let shuttingDown = false;
 async function shutdown(signal: NodeJS.Signals) {
   if (shuttingDown) return;
   shuttingDown = true;
-  jobRunner.stop();
   smartRouting.stopHealthMonitoring();
   usageRefreshMonitor.stop();
   anonymousUsageSharing.stop();
