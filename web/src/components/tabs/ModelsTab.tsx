@@ -8,15 +8,14 @@ import './ModelsTab.css';
 const sources = [{ id: 'all', label: 'All sources' }, { id: 'provider', label: 'Providers' }, { id: 'local', label: 'Local models' }, { id: 'cloud', label: 'MultiVibe Cloud' }];
 const PAGE_SIZE = 20;
 
-export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure, onConnectCloud, onRefresh }: {
+export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure, onConnectCloud }: {
   models: ExposedModel[]; accounts: Account[]; cloudConnected: boolean;
-  onRefresh: () => Promise<void>; onUse: (id: string) => void; onConfigure: (route: ModelRoute) => void; onConnectCloud: () => Promise<void>;
+  onUse: (id: string) => void; onConfigure: (route: ModelRoute) => void; onConnectCloud: () => Promise<void>;
 }) {
   const [cloud, setCloud] = useState<CloudModel[]>([]);
   const [providers, setProviders] = useState<CloudProvider[]>([]);
   const [loading, setLoading] = useState(true);
-  const [errors, setErrors] = useState<string[]>([]);
-  const [revision, setRevision] = useState(0);
+  const [connectionError, setConnectionError] = useState('');
   const [query, setQuery] = useState('');
   const [source, setSource] = useState('all');
   const [provider, setProvider] = useState('all');
@@ -26,16 +25,15 @@ export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure
   const [connecting, setConnecting] = useState(false);
   useEffect(() => {
     let active = true;
-    setLoading(true); setErrors([]);
+    setLoading(true);
     void Promise.allSettled([api('/admin/cloud/models'), api('/admin/provider-catalog')]).then(([cloudResult, providerResult]) => {
       if (!active) return;
-      const failures: string[] = [];
-      if (cloudResult.status === 'fulfilled') setCloud(cloudResult.value.models); else failures.push('MultiVibe Cloud catalog could not be refreshed.');
-      if (providerResult.status === 'fulfilled') setProviders(providerResult.value.providers); else failures.push('Provider catalog could not be refreshed.');
-      setErrors(failures); setLoading(false);
+      if (cloudResult.status === 'fulfilled') setCloud(cloudResult.value.models);
+      if (providerResult.status === 'fulfilled') setProviders(providerResult.value.providers);
+      setLoading(false);
     });
     return () => { active = false; };
-  }, [revision]);
+  }, []);
   const catalog = useMemo(() => aggregateModels(models, accounts, cloud, providers), [models, accounts, cloud, providers]);
   const providerOptions = useMemo(() => [...new Set(catalog.flatMap(model => model.routes.filter(route => source === 'all' || route.source === source).map(route => route.label)))].sort((a, b) => a.localeCompare(b)), [catalog, source]);
   const filtered = useMemo(() => filterCatalog(catalog, { query, source, provider, readyOnly, sort }), [catalog, query, source, provider, readyOnly, sort]);
@@ -45,7 +43,8 @@ export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure
   const reset = () => { setQuery(''); setSource('all'); setProvider('all'); setReadyOnly(false); setPage(0); };
   const connect = async () => {
     setConnecting(true);
-    try { await onConnectCloud(); } catch { setErrors(current => [...current, 'Could not connect to MultiVibe Cloud. Please try again.']); }
+    setConnectionError('');
+    try { await onConnectCloud(); } catch { setConnectionError('Could not connect to MultiVibe Cloud. Please try again.'); }
     finally { setConnecting(false); }
   };
   const useRoute = (route: ModelRoute) => {
@@ -54,8 +53,7 @@ export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure
     else onConfigure(route);
   };
   const actionLabel = (route: ModelRoute) => route.ready ? 'Use model' : route.source === 'cloud' ? cloudConnected ? 'View access' : 'Connect Cloud' : 'Set up';
-  return <section className="panel models-catalog" aria-labelledby="models-title">
-    <header className="models-header"><div><span className="models-eyebrow">MODEL LIBRARY</span><h2 id="models-title">Find your next model.</h2><p className="muted">Explore your providers, local models, and MultiVibe Cloud in one place.</p></div><button className="btn ghost" disabled={loading} onClick={() => { setRevision(value => value + 1); void onRefresh().catch(() => setErrors(current => [...current, 'Connected models could not be refreshed.'])); }}>{loading ? 'Refreshing…' : 'Refresh'}</button></header>
+  return <section className="panel models-catalog" aria-label="Model library">
     <div className="models-layout">
       <aside className="models-sidebar" aria-label="Model filters">
         <div className="models-filter-heading"><strong>Filters</strong>{activeFilters && <button className="models-text-button" onClick={reset}>Reset</button>}</div>
@@ -66,7 +64,7 @@ export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure
       </aside>
       <div className="models-results" aria-busy={loading}>
         <div className="models-toolbar"><label className="models-search"><span className="sr-only">Search models</span><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg><input type="search" value={query} placeholder="Search models or providers…" onChange={event => { setQuery(event.target.value); setPage(0); }} /></label><select aria-label="Sort models" value={sort} onChange={event => { setSort(event.target.value); setPage(0); }}><option value="ready">Ready to use first</option><option value="name">Name: A–Z</option><option value="name-desc">Name: Z–A</option></select></div>
-        {errors.map((error, index) => <p className="models-error" role="alert" key={index}>{error} Use Refresh to try again.</p>)}
+        {connectionError && <p className="models-error" role="alert">{connectionError}</p>}
         <div className="models-result-bar"><span role="status"><strong>{filtered.length.toLocaleString('en-US')}</strong> models{loading ? ' · Updating catalogs…' : filtered.length ? ` · Showing ${currentPage * PAGE_SIZE + 1}–${Math.min((currentPage + 1) * PAGE_SIZE, filtered.length)}` : ''}</span>{activeFilters && <button className="models-text-button" onClick={reset}>Clear filters</button>}</div>
         <div className="models-list-head" aria-hidden="true"><span>Model / provider</span><span>Availability</span><span /></div>
         <ul className="models-list">{filtered.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE).map(model => {
