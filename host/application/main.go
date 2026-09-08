@@ -673,6 +673,12 @@ func run() error {
 	if err := validateLayout(layout); err != nil {
 		return err
 	}
+	if runtime.GOOS == "darwin" {
+		scheduler := exec.Command(layout.Updater, "schedule")
+		if output, err := scheduler.CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "Host update scheduler unavailable: %s (%v)\n", output, err)
+		}
+	}
 	demandTrust, err := loadBundledDemandTrust(layout.DemandTrust)
 	if err != nil {
 		return err
