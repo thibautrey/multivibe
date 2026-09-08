@@ -140,6 +140,7 @@ func providerHandlerWithManagedControllerAndCapability(core *url.URL, selections
 
 func providerHandlerWithModelLifecycle(core *url.URL, selections *selectionStore, runtimes *runtimeEndpointStore, identity *deviceIdentity, enrollment *cloudEnrollmentService, capacity *capacityPolicyStore, demand *providerDemandService, controller *managedProviderController, capability hostCapability, lifecycle *providerModelLifecycleService, outbound *communityOutboundWorker, client *http.Client, controlToken string) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/model-compatibility", modelCompatibilityHandler(controller, controlToken))
 	mux.HandleFunc("GET /health/live", func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("content-type", "application/json")
 		_, _ = response.Write([]byte("{\"ok\":true}\n"))

@@ -3,6 +3,7 @@ import type { Account, ExposedModel } from '../../types';
 import { api } from '../../lib/api';
 import { aggregateModels, filterCatalog, type CloudModel, type ModelRoute } from '../../lib/modelCatalog';
 import type { CloudProvider } from '../ProviderPicker';
+import { compatibilityFor, compatibilityLabels, compatibilityDetail, type CompatibilityReport } from '../../lib/modelCompatibility';
 import './ModelsTab.css';
 
 const sources = [{ id: 'all', label: 'All sources' }, { id: 'provider', label: 'Providers' }, { id: 'local', label: 'Local models' }, { id: 'cloud', label: 'MultiVibe Cloud' }];
@@ -20,6 +21,12 @@ export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure
   const [source, setSource] = useState('all');
   const [provider, setProvider] = useState('all');
   const [readyOnly, setReadyOnly] = useState(false);
+  const [hardware, setHardware] = useState('all');
+  const [contextTokens, setContextTokens] = useState(8192);
+  const [compatibility, setCompatibility] = useState<CompatibilityReport>();
+  const [estimating, setEstimating] = useState(false);
+  const [estimateError, setEstimateError] = useState('');
+  const [estimateRequest, setEstimateRequest] = useState(0);
   const [sort, setSort] = useState('ready');
   const [page, setPage] = useState(0);
   const [connecting, setConnecting] = useState(false);
@@ -34,13 +41,29 @@ export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure
     });
     return () => { active = false; };
   }, []);
+  useEffect(() => {
+    setCompatibility(undefined);
+    setEstimateError('');
+    if (!estimateRequest) return;
+    const controller = new AbortController();
+    let active = true;
+    setEstimating(true);
+    void api('/admin/provider-agent/model-compatibility', {
+      method: 'POST', body: JSON.stringify({ context_tokens: contextTokens }), signal: controller.signal,
+    }).then((report: CompatibilityReport) => {
+      if (active && report.schema_version === 'provider-model-compatibility-v1' && report.context_tokens === contextTokens) setCompatibility(report);
+      else if (active) setEstimateError('The runtime returned an unsupported estimate.');
+    }).catch(() => { if (active) setEstimateError('Host memory estimates are unavailable. Check Host configuration and try again.'); })
+      .finally(() => { if (active) setEstimating(false); });
+    return () => { active = false; controller.abort(); };
+  }, [contextTokens, estimateRequest]);
   const catalog = useMemo(() => aggregateModels(models, accounts, cloud, providers), [models, accounts, cloud, providers]);
   const providerOptions = useMemo(() => [...new Set(catalog.flatMap(model => model.routes.filter(route => source === 'all' || route.source === source).map(route => route.label)))].sort((a, b) => a.localeCompare(b)), [catalog, source]);
-  const filtered = useMemo(() => filterCatalog(catalog, { query, source, provider, readyOnly, sort }), [catalog, query, source, provider, readyOnly, sort]);
+  const filtered = useMemo(() => filterCatalog(catalog, { query, source, provider, readyOnly, sort }).filter(model => hardware === 'all' || (compatibilityFor(model, compatibility)?.state ?? 'unknown') === hardware), [catalog, query, source, provider, readyOnly, sort, hardware, compatibility]);
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const currentPage = Math.min(page, pages - 1);
-  const activeFilters = Boolean(query || source !== 'all' || provider !== 'all' || readyOnly);
-  const reset = () => { setQuery(''); setSource('all'); setProvider('all'); setReadyOnly(false); setPage(0); };
+  const activeFilters = Boolean(query || source !== 'all' || provider !== 'all' || readyOnly || hardware !== 'all');
+  const reset = () => { setQuery(''); setSource('all'); setProvider('all'); setReadyOnly(false); setHardware('all'); setPage(0); };
   const connect = async () => {
     setConnecting(true);
     setConnectionError('');
@@ -59,6 +82,15 @@ export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure
         <div className="models-filter-heading"><strong>Filters</strong>{activeFilters && <button className="models-text-button" onClick={reset}>Reset</button>}</div>
         <fieldset><legend>Source</legend>{sources.map(item => <button key={item.id} className="models-source" aria-pressed={source === item.id} onClick={() => { setSource(item.id); setProvider('all'); setPage(0); }}><span>{item.label}</span><span>{catalog.filter(model => item.id === 'all' || model.routes.some(route => route.source === item.id)).length.toLocaleString('en-US')}</span></button>)}</fieldset>
         <fieldset><legend>Availability</legend><label className="models-ready"><input type="checkbox" checked={readyOnly} onChange={event => { setReadyOnly(event.target.checked); setPage(0); }} /> Ready to use</label><p className="muted">Models with a connected, available account.</p></fieldset>
+        <fieldset><legend>Fit on this machine</legend>
+          <label className="models-provider">Context (tokens)<select value={contextTokens} onChange={event => { setContextTokens(Number(event.target.value)); setPage(0); }}>{[512, 2048, 4096, 8192, 16384, 32768, 65536, 131072].map(size => <option key={size} value={size}>{size.toLocaleString('en-US')}</option>)}</select></label>
+          <label className="models-provider">Memory estimate<select value={hardware} onChange={event => { setHardware(event.target.value); setPage(0); }}><option value="all">All models</option>{Object.entries(compatibilityLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          <button className="btn ghost" disabled={estimating} onClick={() => setEstimateRequest(value => value + 1)}>{estimating ? 'Estimating…' : compatibility ? 'Refresh estimates' : 'Check memory fit'}</button>
+          <p className="muted">Uses runtime estimates for downloaded managed variants. No model inference. The diagnostic runtime may be installed using your Host download permission.</p>
+          <p className="muted">Memory only: does not confirm model quality at this context or current free memory. Other variants remain unknown.</p>
+          {compatibility && <p className="muted">{compatibility.models.filter(model => model.state !== 'unknown').length} variants estimated · {compatibility.context_tokens.toLocaleString('en-US')} tokens</p>}
+          {estimateError && <p className="models-error" role="alert">{estimateError}</p>}
+        </fieldset>
         <label className="models-provider">Provider or runtime<select value={provider} onChange={event => { setProvider(event.target.value); setPage(0); }}><option value="all">All providers</option>{providerOptions.map(name => <option key={name} value={name}>{name}</option>)}</select></label>
         <div className="models-cloud-card"><strong>MultiVibe Cloud</strong><p className="muted">Cloud access depends on your plan and available capacity.</p>{!cloudConnected && <button className="btn ghost" disabled={connecting} onClick={() => void connect()}>{connecting ? 'Connecting…' : 'Connect Cloud'}</button>}</div>
       </aside>
@@ -68,9 +100,11 @@ export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure
         <div className="models-result-bar"><span role="status"><strong>{filtered.length.toLocaleString('en-US')}</strong> models{loading ? ' · Updating catalogs…' : filtered.length ? ` · Showing ${currentPage * PAGE_SIZE + 1}–${Math.min((currentPage + 1) * PAGE_SIZE, filtered.length)}` : ''}</span>{activeFilters && <button className="models-text-button" onClick={reset}>Clear filters</button>}</div>
         <div className="models-list-head" aria-hidden="true"><span>Model / provider</span><span>Availability</span><span /></div>
         <ul className="models-list">{filtered.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE).map(model => {
+          const estimate = compatibilityFor(model, compatibility);
           const ready = model.routes.find(route => route.ready);
           const preferred = ready ?? model.routes.find(route => route.accountId) ?? model.routes.find(route => route.source === 'cloud') ?? model.routes[0];
-          return <li key={model.id}><div className="models-row"><div className="models-identity"><span className={`models-mark${model.logo ? ' has-logo' : ''}`} aria-hidden="true">{model.logo ? <img src={`/assets/catalog-icons/models/${model.logo}`} alt="" loading="lazy" decoding="async" /> : model.name.replace(/^(hf|openrouter):/, '').slice(0, 2).toUpperCase()}</span><div className="models-copy"><strong>{model.name}</strong><code>{model.id}</code><span className="muted">{[...new Set(model.routes.map(route => route.label))].join(' · ')}</span></div></div><span className={`models-status${ready ? ' is-ready' : ''}`}><i />{ready ? 'Ready to use' : 'Setup needed'}</span><button className={`btn ${ready ? '' : 'ghost'}`} disabled={connecting} aria-label={`${actionLabel(preferred)}: ${model.name}`} onClick={() => useRoute(preferred)}>{actionLabel(preferred)}<span aria-hidden="true"> →</span></button></div>
+          return <li key={model.id}><div className="models-row"><div className="models-identity"><span className={`models-mark${model.logo ? ' has-logo' : ''}`} aria-hidden="true">{model.logo ? <img src={`/assets/catalog-icons/models/${model.logo}`} alt="" loading="lazy" decoding="async" /> : model.name.replace(/^(hf|openrouter):/, '').slice(0, 2).toUpperCase()}</span><div className="models-copy"><strong>{model.name}</strong><code>{model.id}</code><span className="muted">{[...new Set(model.routes.map(route => route.label))].join(' · ')}</span>{estimateRequest > 0 && <span className="models-fit" title={compatibilityDetail(estimate)}>{estimating ? 'Estimating memory…' : compatibilityLabels[estimate?.state ?? 'unknown']}{estimate?.runtime && ` · ${estimate.variant} · ${contextTokens.toLocaleString('en-US')} tokens`}</span>}</div></div><span className={`models-status${ready ? ' is-ready' : ''}`}><i />{ready ? 'Ready to use' : 'Setup needed'}</span><button className={`btn ${ready ? '' : 'ghost'}`} disabled={connecting} aria-label={`${actionLabel(preferred)}: ${model.name}`} onClick={() => useRoute(preferred)}>{actionLabel(preferred)}<span aria-hidden="true"> →</span></button></div>
+            {estimateRequest > 0 && !estimating && <details className="models-routes"><summary>Memory estimate details</summary><p className="muted">{compatibilityDetail(estimate)}</p></details>}
             {model.routes.length > 1 && <details className="models-routes"><summary>View {model.routes.length} connection options</summary><ul>{model.routes.map((route, index) => <li key={index}><div><strong>{route.label}</strong><span className="muted">{route.ready ? 'Ready to use' : 'Setup needed'} · {route.source === 'local' ? 'Local' : route.source === 'cloud' ? 'Cloud' : 'Provider'}</span></div><button className="btn ghost" disabled={connecting} onClick={() => useRoute(route)}>{actionLabel(route)}</button></li>)}</ul></details>}
           </li>;
         })}</ul>
