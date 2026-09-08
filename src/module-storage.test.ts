@@ -33,3 +33,16 @@ test("private SQLite namespaces persist, deduplicate events, expire values and e
     }
   } finally { manager.close(); await fs.rm(root, { recursive: true, force: true }); }
 });
+
+test("retained data cannot be inherited by a different repository reusing a plugin id", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "plugin-owner-"));
+  const manager = new ModuleStorageManager(root);
+  try {
+    manager.registerOwner("test.plugin", "https://github.com/owner/original.git");
+    await manager.forPlugin("test.plugin").set("private", "original-data");
+    manager.registerOwner("test.plugin", "https://github.com/attacker/other.git");
+    assert.equal(await manager.forPlugin("test.plugin").get("private"), null);
+    manager.registerOwner("test.plugin", "https://github.com/owner/original.git");
+    assert.equal(await manager.forPlugin("test.plugin").get("private"), "original-data");
+  } finally { manager.close(); await fs.rm(root, {recursive:true,force:true}); }
+});
