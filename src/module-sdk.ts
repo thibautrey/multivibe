@@ -7,6 +7,7 @@ export const MODULE_HOOKS = [
   "stream.open",
   "response.beforeClient",
   "request.error",
+  "request.completed",
 ] as const;
 
 export type ModuleHookName = (typeof MODULE_HOOKS)[number];
@@ -48,12 +49,36 @@ export type ModuleModel = {
 
 export type ModuleServices = {
   listModels(): Promise<ModuleModel[]>;
+  completeWithUsage?(input: { model: string; messages: { role: "system" | "user"; content: string }[]; max_tokens: number }, signal: AbortSignal): Promise<ModuleCompletion>;
   /** Runs a bounded non-streaming completion with routing recursion suppressed. */
   complete(input: { model: string; messages: { role: "system" | "user"; content: string }[]; max_tokens: number }, signal: AbortSignal): Promise<string>;
 };
 
+export type ModuleStorageEvent = {
+  id: string;
+  type: string;
+  data?: unknown;
+  metrics?: Record<string, number>;
+};
+
+export type ModuleStorage = {
+  get(key: string): Promise<unknown | null>;
+  set(key: string, value: unknown, ttlSeconds?: number): Promise<void>;
+  delete(key: string): Promise<void>;
+  list(prefix?: string, limit?: number): Promise<string[]>;
+  recordEvent(event: ModuleStorageEvent): Promise<void>;
+  readEvents(type?: string, limit?: number): Promise<Array<ModuleStorageEvent & { at: number }>>;
+};
+
+export type ModuleCompletion = {
+  text: string;
+  model: string;
+  costUsd?: number;
+};
+
 export type ModuleContext = {
   requestId: string;
+  storage?: ModuleStorage;
   conversation?: ModuleConversation;
   internal?: boolean;
   services?: ModuleServices;
