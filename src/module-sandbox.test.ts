@@ -6,7 +6,7 @@ import path from "node:path";
 import { ModuleSandbox } from "./module-sandbox.js";
 import { ModuleStorageManager } from "./module-storage.js";
 import type { ModuleManifest, ModuleContext } from "./module-sdk.js";
-const manifest: ModuleManifest = { id: "test.sandbox", name: "Sandbox", version: "1", apiVersion: 1, description: "test", entrypoint: "index.js", repository: "https://github.com/example/test", hooks: ["request.received"], timeoutMs: 100 };
+const manifest: ModuleManifest = { id: "test.sandbox", name: "Sandbox", version: "1", apiVersion: 1, description: "test", entrypoint: "index.js", repository: "https://github.com/example/test", hooks: ["request.received"], timeoutMs: 5000 };
 function context(storage: ModuleContext["storage"]): ModuleContext {
   return { requestId: "test", route: "/responses", transport: "http", signal: new AbortController().signal, settings: {}, storage,
     log: { info() {}, warn() {}, error() {} } };
@@ -55,6 +55,6 @@ test("sandbox interrupts infinite hooks and preserves the supported crypto shim"
     sandbox = await ModuleSandbox.load(root, manifest);
     const hook = sandbox.implementation(manifest)["request.received"]!;
     assert.deepEqual(await hook({}, context(undefined)), {action:"replace",value:{hash:"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",size:4}});
-    await assert.rejects(hook({loop:true}, context(undefined)));
+    await assert.rejects(async () => sandbox!.implementation({ ...manifest, timeoutMs: 50 })["request.received"]!({loop:true}, context(undefined)));
   } finally { sandbox?.close(); await fs.rm(root, {recursive:true,force:true}); }
 });

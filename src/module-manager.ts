@@ -344,7 +344,7 @@ export class ModuleManager {
         healthy: loaded?.healthy ?? !lock.enabled,
         error: loaded?.error,
         removable: lock.source !== "bundled",
-        execution: this.builtins.has(lock.id) ? "host-builtin" : "wasm-sandbox",
+        execution: this.builtins.has(lock.id) ? "host-builtin" as const : "wasm-sandbox" as const,
       };
     }).sort((a, b) => Number(b.source === "bundled") - Number(a.source === "bundled") || a.id.localeCompare(b.id));
   }
