@@ -23,7 +23,7 @@ export async function readCloudModelCatalog(origin: string, fetchImpl: typeof fe
     if (body.nextCursor === undefined) return [...models.values()];
     if (typeof body.nextCursor !== 'string' || !body.nextCursor || body.nextCursor.length > 8192 || cursors.has(body.nextCursor)) throw new Error('Invalid Cloud pagination');
     cursor = body.nextCursor;
-    cursors.add(cursor);
+    cursors.add(body.nextCursor);
   }
   throw new Error('Cloud catalog exceeds page limit');
 }
