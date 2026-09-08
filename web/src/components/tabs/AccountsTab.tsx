@@ -394,7 +394,7 @@ function isOpenAiAccount(account: Account) {
 
 function shouldDisplayOptionalQuotaWindow(
   account: Account,
-  window: "primary" | "monthly",
+  window: "primary" | "secondary" | "monthly",
 ) {
   // Keep the placeholder visible before the first usage refresh and preserve
   // the N/A state when the provider does not expose quota details. Once a
@@ -1626,6 +1626,7 @@ export function AccountsTab(props: Props) {
     value?: number,
     resetAt?: number,
     unsupported = false,
+    stale = false,
   ) => {
     const safeValue =
       typeof value === "number" ? Math.max(0, Math.min(100, value)) : 0;
@@ -1639,7 +1640,7 @@ export function AccountsTab(props: Props) {
                 ? `${Math.round(value)}%`
                 : "?"}
           </strong>
-          <small>{unsupported ? "Not exposed" : fmt(resetAt)}</small>
+          <small>{unsupported ? "Not exposed" : `${stale ? "Stale · " : ""}${fmt(resetAt)}`}</small>
         </div>
         <div className="mini-progress">
           <span style={{ width: `${safeValue}%` }} />
@@ -2180,17 +2181,31 @@ export function AccountsTab(props: Props) {
                     {shouldDisplayOptionalQuotaWindow(a, "primary") && (
                       <div className="provider-quota-item">
                         <span className="provider-quota-label">5h quota</span>
-                        {renderUsageCell(a.usage?.primary?.usedPercent, a.usage?.primary?.resetAt, a.usage?.quotaStatus === "unsupported")}
+                        {renderUsageCell(a.usage?.primary?.usedPercent, a.usage?.primary?.resetAt, a.usage?.quotaStatus === "unsupported", a.usage?.quotaStatus === "error")}
                       </div>
                     )}
+                    {shouldDisplayOptionalQuotaWindow(a, "secondary") && (
                     <div className="provider-quota-item">
                       <span className="provider-quota-label">Weekly quota</span>
-                      {renderUsageCell(a.usage?.secondary?.usedPercent, a.usage?.secondary?.resetAt, a.usage?.quotaStatus === "unsupported")}
+                      {renderUsageCell(a.usage?.secondary?.usedPercent, a.usage?.secondary?.resetAt, a.usage?.quotaStatus === "unsupported", a.usage?.quotaStatus === "error")}
                     </div>
+                    )}
                     {shouldDisplayOptionalQuotaWindow(a, "monthly") && (
                       <div className="provider-quota-item">
                         <span className="provider-quota-label">Monthly quota</span>
-                        {renderUsageCell(a.usage?.monthly?.usedPercent, a.usage?.monthly?.resetAt, a.usage?.quotaStatus === "unsupported")}
+                        {renderUsageCell(a.usage?.monthly?.usedPercent, a.usage?.monthly?.resetAt, a.usage?.quotaStatus === "unsupported", a.usage?.quotaStatus === "error")}
+                      </div>
+                    )}
+                    {a.usage?.credits && (
+                      <div className="provider-quota-item">
+                        <span className="provider-quota-label">Subscription credits</span>
+                        {renderUsageCell(a.usage.credits.usedPercent, a.usage.credits.resetAt, false, a.usage.quotaStatus === "error")}
+                      </div>
+                    )}
+                    {a.usage?.tools && (
+                      <div className="provider-quota-item">
+                        <span className="provider-quota-label">MCP tools quota</span>
+                        {renderUsageCell(a.usage.tools.usedPercent, a.usage.tools.resetAt, false, a.usage.quotaStatus === "error")}
                       </div>
                     )}
                   </div>

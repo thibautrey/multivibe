@@ -438,3 +438,119 @@ test("OpenCode quota errors are visible instead of being classified as unsupport
     assert.throws(() => parseOpenCodeUsage(data), /no recognized quota windows/);
   }
 });
+
+test("Z.ai parses legacy, weekly credit and MCP quotas without mixing model and tool limits", async () => {
+  const { parseZaiUsage, accountHeadroom } = await import("./quota.js");
+  const reset = Date.now() + 3600000;
+  const usage = parseZaiUsage({ success: true, code: 200, data: { limits: [
+    { type: "CREDIT_LIMIT", unit: 6, number: 1, percentage: 42, nextResetTime: reset },
+    { type: "CREDIT_LIMIT", unit: 3, number: 5, percentage: 12 },
+    { type: "TIME_LIMIT", unit: 5, number: 1, percentage: 100 },
+  ] } });
+  assert.equal(usage.primary?.usedPercent, 12);
+  assert.equal(usage.secondary?.usedPercent, 42);
+  assert.equal(usage.secondary?.resetAt, reset);
+  assert.equal(usage.tools?.usedPercent, 100);
+  assert.equal(usage.monthly, undefined);
+  assert.equal(accountHeadroom({ ...account("zai-tools", 0, 0), usage }), 58);
+  assert.equal(parseZaiUsage({ data: { limits: [{ type: "TOKENS_LIMIT", percentage: 23 }] } }).primary?.usedPercent, 23);
+  assert.equal(parseZaiUsage({ data: { weekly: { used: 1, total: 4 } } }).secondary?.usedPercent, 25);
+  assert.equal(parseZaiUsage({ data: { limits: [{ type: "TOKENS_LIMIT", unit: 3, number: 5, currentValue: 2, usage: 8 }] } }).primary?.usedPercent, 25);
+  for (const body of [{}, { success: false }, { code: 401, data: { weekly: { percent: 2 } } },
+    { data: { limits: [{ type: "TOKENS_LIMIT", unit: 99, number: 1, percentage: 10 }] } }]) {
+    assert.throws(() => parseZaiUsage(body));
+  }
+});
+
+test("Grok credits retain unknown usage and do not confuse paid on-demand spend with subscription usage", async () => {
+  const { parseXaiUsage, accountHeadroom, nextResetAt } = await import("./quota.js");
+  const end = "2026-10-01T00:00:00Z";
+  const usage = parseXaiUsage({ config: { creditUsagePercent: 25, currentPeriod: { end } } });
+  assert.equal(usage.credits?.usedPercent, 25);
+  assert.equal(usage.primary, undefined);
+  assert.equal(usage.monthly, undefined);
+  assert.equal(nextResetAt(usage), Date.parse(end));
+  assert.equal(accountHeadroom({ ...account("grok-credits", 0, 0), usage }), 75);
+  const unknown = parseXaiUsage({ config: { currentPeriod: { end }, onDemandCap: { val: 100 }, onDemandUsed: { val: 20 } } });
+  assert.equal(unknown.credits?.usedPercent, undefined);
+  assert.match(unknown.quotaMessage!, /no subscription usage percentage/);
+  assert.equal(parseXaiUsage({ config: { creditUsagePercent: 0 } }).credits?.usedPercent, 0);
+  assert.throws(() => parseXaiUsage({ config: {} }));
+});
+
+test("quota refresh dispatches credentials to each supported provider endpoint", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  for (const [provider, base, endpoint, body] of [
+    ["zai", "https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/monitor/usage/quota/limit", { data: { limits: [{ type: "TOKENS_LIMIT", percentage: 10 }] } }],
+    ["openai-compatible", "https://dev.bigmodel.cn/api/anthropic", "https://dev.bigmodel.cn/api/monitor/usage/quota/limit", { data: { weekly: { percent: 20 } } }],
+    ["xai", "https://cli-chat-proxy.grok.com/v1/", "https://cli-chat-proxy.grok.com/v1/billing?format=credits", { config: { creditUsagePercent: 30 } }],
+    ["openai", "https://chatgpt.example/", "https://chatgpt.example/backend-api/wham/usage", { rate_limit: { primary_window: { used_percent: 40, limit_window_seconds: 604800 } } }],
+  ] as const) {
+    let calls = 0;
+    globalThis.fetch = async (input, init) => {
+      calls++;
+      assert.equal(String(input), endpoint);
+      const headers = new Headers(init?.headers);
+      assert.equal(headers.get("authorization"), "Bearer test-key");
+      if (provider === "xai") assert.equal(headers.get("x-xai-token-auth"), "xai-grok-cli");
+      if (provider === "openai") assert.equal(headers.get("chatgpt-account-id"), "workspace");
+      return Response.json(body);
+    };
+    const a: Account = { id: provider, provider, accessToken: "test-key", enabled: true, chatgptAccountId: "workspace", state: { lastError: "inference failure" } };
+    await refreshUsageIfNeeded(a, base, true);
+    assert.equal(calls, 1);
+    assert.equal(a.usage?.quotaStatus, "available");
+    assert.equal(a.state?.lastError, "inference failure");
+    if (provider === "openai") {
+      assert.equal(a.usage?.primary, undefined);
+      assert.equal(a.usage?.secondary?.usedPercent, 40);
+    }
+  }
+});
+
+test("all supported quota probes retain stale data on failure and back off even after reset", async (t) => {
+  const { isUsageRefreshNeeded } = await import("./quota.js");
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  for (const provider of ["openai", "opencode", "zai", "xai"] as const) {
+    for (const status of [200, 401, 403, 429, 500]) {
+      globalThis.fetch = async () => Response.json({ error: "failed" }, { status });
+      const a: Account = { ...account(provider, 75, 25), provider };
+      a.usage!.primary!.resetAt = Date.now() - 1000;
+      await refreshUsageIfNeeded(a, "https://opencode.ai/zen/go", true);
+      assert.equal(a.usage?.quotaStatus, "error", `${provider}: ${status}`);
+      assert.equal(a.usage?.primary?.usedPercent, 75);
+      assert.ok(a.usage?.quotaMessage);
+      assert.equal(isUsageRefreshNeeded(a), false);
+      assert.equal(isUsageRefreshNeeded(a, Date.now() + 60001), true);
+    }
+  }
+});
+
+test("unsupported connections clear stale quotas without making subscription requests", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; throw new Error("unexpected call"); };
+  for (const provider of ["mistral", "ai-sdk", "openai-compatible"] as const) {
+    const a = { ...account(provider, 100, 100), provider };
+    await refreshUsageIfNeeded(a, "https://api.example", true);
+    assert.equal(a.usage?.quotaStatus, "unsupported");
+    assert.equal(a.usage?.primary, undefined);
+    assert.ok(a.usage?.quotaMessage);
+  }
+  assert.equal(calls, 0);
+});
+
+test("selection avoids exhausted monthly quotas and balances credit-only accounts by headroom", () => {
+  const exhausted = account("monthly-exhausted", 0, 0);
+  exhausted.usage!.monthly = { usedPercent: 100 };
+  const available = account("monthly-available", 20, 30);
+  assert.equal(chooseAccount([exhausted, available])?.id, available.id);
+  const high = account("credit-high", undefined, undefined);
+  high.usage!.credits = { usedPercent: 10 };
+  const low = account("credit-low", undefined, undefined);
+  low.usage!.credits = { usedPercent: 90 };
+  for (let i = 0; i < 3; i++) assert.equal(chooseAccount([high, low])?.id, high.id);
+});

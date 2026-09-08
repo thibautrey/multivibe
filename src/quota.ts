@@ -1,3 +1,4 @@
+import { buildXaiUpstreamHeaders } from "./xai.js";
 import { trimTrailingSlashes } from "./string-utils.js";
 import type {
   Account,
@@ -87,6 +88,7 @@ export function accountHeadroom(account: Account): number | undefined {
     remainingPercent(account.usage?.primary?.usedPercent),
     remainingPercent(account.usage?.secondary?.usedPercent),
     remainingPercent(account.usage?.monthly?.usedPercent),
+    remainingPercent(account.usage?.credits?.usedPercent),
   ].filter((value): value is number => typeof value === "number");
   return windows.length ? Math.min(...windows) : undefined;
 }
@@ -125,17 +127,17 @@ export function buildAccountSelectionTelemetry(
 function parseUsage(data: any): UsageSnapshot {
   const upstreamPrimary = data?.rate_limit?.primary_window;
   const upstreamSecondary = data?.rate_limit?.secondary_window;
-  const toWindow = (w: any) =>
-    w
-      ? {
-          usedPercent: typeof w.used_percent === "number" ? Math.max(0, Math.min(100, w.used_percent)) : undefined,
-          resetAt: typeof w.reset_at === "number" ? w.reset_at * 1000 : undefined,
-          windowSeconds:
-            typeof w.limit_window_seconds === "number" && Number.isFinite(w.limit_window_seconds)
-              ? w.limit_window_seconds
-              : undefined,
-        }
-      : undefined;
+  const toWindow = (w: any) => {
+    if (!w || typeof w !== "object") return undefined;
+    const percent = pickFirstNumber(w.used_percent);
+    const resetAt = parseResetAt(w.reset_at);
+    if (percent === undefined && resetAt === undefined) return undefined;
+    return {
+      usedPercent: percent === undefined ? undefined : Math.max(0, Math.min(100, percent)),
+      resetAt,
+      windowSeconds: pickFirstNumber(w.limit_window_seconds),
+    };
+  };
 
   const positionalPrimary = toWindow(upstreamPrimary);
   const positionalSecondary = toWindow(upstreamSecondary);
@@ -153,7 +155,10 @@ function parseUsage(data: any): UsageSnapshot {
     windows.find((window) => window.windowSeconds === WEEKLY_WINDOW_SECONDS) ??
     (positionalSecondary?.windowSeconds === undefined ? positionalSecondary : undefined);
 
-  return { primary, secondary, fetchedAt: Date.now() };
+  if (!primary && !secondary) {
+    throw new Error("OpenAI usage response contains no recognized quota windows");
+  }
+  return { primary, secondary, quotaStatus: "available", fetchedAt: Date.now() };
 }
 
 function parseOpenAIUsage(data: any): UsageSnapshot {
@@ -228,9 +233,9 @@ function isZaiQuotaBaseUrl(baseUrl?: string): boolean {
   if (!raw) return false;
   try {
     const { hostname } = new URL(raw);
-    return hostname === "api.z.ai" || hostname === "z.ai" || hostname === "open.bigmodel.cn";
+    return hostname === "api.z.ai" || hostname === "z.ai" || hostname === "open.bigmodel.cn" || hostname === "dev.bigmodel.cn";
   } catch {
-    return /(^|\.)z\.ai\b|open\.bigmodel\.cn\b/i.test(raw);
+    return false;
   }
 }
 
@@ -238,10 +243,7 @@ function zaiQuotaUrl(baseUrl: string): string {
   const raw = String(baseUrl ?? "").trim();
   try {
     const url = new URL(raw);
-    const host = url.hostname.toLowerCase();
-    url.pathname = host === "open.bigmodel.cn"
-      ? "/api/monitor/usage/quota/limit"
-      : "/api/monitor/usage/quota/limit";
+    url.pathname = "/api/monitor/usage/quota/limit";
     url.search = "";
     url.hash = "";
     return url.toString().replace(/\/$/, "");
@@ -285,7 +287,7 @@ function pickFirstNumber(...values: any[]): number | undefined {
   return undefined;
 }
 
-function parseZaiWindow(window: any): { usedPercent?: number; resetAt?: number } | undefined {
+function parseZaiWindow(window: any): UsageSnapshot["primary"] {
   if (!window || typeof window !== "object") return undefined;
 
   const usedPercent = pickFirstNumber(
@@ -295,10 +297,11 @@ function parseZaiWindow(window: any): { usedPercent?: number; resetAt?: number }
     window.usage_percent,
     window.percent,
     window.percentUsed,
+    window.percentage,
   );
-  const used = pickFirstNumber(window.used, window.usage, window.used_amount, window.consumed);
-  const total = pickFirstNumber(window.total, window.limit, window.quota, window.max, window.capacity);
-  const resetAt = parseResetAt(window.resetAt ?? window.reset_at ?? window.resetTime ?? window.reset_time ?? window.expireAt ?? window.expire_at);
+  const used = pickFirstNumber(window.currentValue, window.used, window.type ? undefined : window.usage, window.used_amount, window.consumed);
+  const total = pickFirstNumber(window.total, window.limit, window.quota, window.max, window.capacity, window.type ? window.usage : undefined);
+  const resetAt = parseResetAt(window.nextResetTime ?? window.resetAt ?? window.reset_at ?? window.resetTime ?? window.reset_time ?? window.expireAt ?? window.expire_at);
 
   const percent = typeof usedPercent === "number"
     ? Math.max(0, Math.min(100, usedPercent))
@@ -308,10 +311,13 @@ function parseZaiWindow(window: any): { usedPercent?: number; resetAt?: number }
   return { usedPercent: percent, resetAt };
 }
 
-function parseZaiUsage(data: any): UsageSnapshot {
+export function parseZaiUsage(data: any): UsageSnapshot {
+  if (data?.success === false || (data?.code !== undefined && ![0, 200].includes(Number(data.code))) || data?.error) {
+    throw new Error("Z.ai usage response reports a provider error");
+  }
   const root = data?.data && typeof data.data === "object" ? data.data : data;
 
-  const primary = parseZaiWindow(
+  let primary = parseZaiWindow(
     root?.primary ??
       root?.fiveHour ??
       root?.five_hour ??
@@ -321,7 +327,7 @@ function parseZaiUsage(data: any): UsageSnapshot {
       root?.rate_limit?.primary_window,
   );
 
-  const secondary = parseZaiWindow(
+  let secondary = parseZaiWindow(
     root?.secondary ??
       root?.weekly ??
       root?.week ??
@@ -332,7 +338,48 @@ function parseZaiUsage(data: any): UsageSnapshot {
       root?.rate_limit?.secondary_window,
   );
 
-  return { primary, secondary, fetchedAt: Date.now() };
+  let tools: UsageSnapshot["tools"];
+  for (const limit of Array.isArray(root?.limits) ? root.limits : []) {
+    const window = parseZaiWindow(limit);
+    if (!window) continue;
+    if (limit.type === "TIME_LIMIT") {
+      tools = window;
+      continue;
+    }
+    if (limit.type !== "TOKENS_LIMIT" && limit.type !== "CREDIT_LIMIT") continue;
+    // Provider period units: day, hour, minute, week. Do not guess unknown periods.
+    const secondsPerUnit: Record<number, number> = { 1: 86400, 3: 3600, 5: 60, 6: 604800 };
+    const unit = pickFirstNumber(limit.unit);
+    const count = pickFirstNumber(limit.number);
+    const seconds = unit !== undefined && count !== undefined
+      ? secondsPerUnit[unit] * count
+      : limit.unit == null && limit.number == null && limit.type === "TOKENS_LIMIT"
+        ? FIVE_HOUR_WINDOW_SECONDS // Legacy shape in Z.ai's official usage plugin.
+        : undefined;
+    if (seconds === FIVE_HOUR_WINDOW_SECONDS) primary = { ...window, windowSeconds: seconds };
+    else if (seconds === WEEKLY_WINDOW_SECONDS) secondary = { ...window, windowSeconds: seconds };
+    else throw new Error("Z.ai usage response contains an unsupported model quota period");
+  }
+  if (!primary && !secondary && !tools) {
+    throw new Error("Z.ai usage response contains no recognized quota windows");
+  }
+  return { primary, secondary, tools, quotaStatus: "available", fetchedAt: Date.now() };
+}
+
+export function parseXaiUsage(data: any): UsageSnapshot {
+  const config = data?.config;
+  if (!config || data?.error) throw new Error("Grok usage response contains no credit quota");
+  const percent = pickFirstNumber(config.creditUsagePercent);
+  const resetAt = parseResetAt(config.currentPeriod?.end ?? config.billingPeriodEnd);
+  if (percent === undefined && resetAt === undefined) {
+    throw new Error("Grok usage response contains no credit quota");
+  }
+  return {
+    credits: { usedPercent: percent === undefined ? undefined : Math.max(0, Math.min(100, percent)), resetAt },
+    quotaStatus: "available",
+    quotaMessage: percent === undefined ? "Grok returned the billing reset date but no subscription usage percentage." : undefined,
+    fetchedAt: Date.now(),
+  };
 }
 
 function setModelBlock(account: Account, model: string, until: number, reason: string) {
@@ -379,6 +426,7 @@ export function nextResetAt(usage?: UsageSnapshot): number | undefined {
     usage?.primary?.resetAt,
     usage?.secondary?.resetAt,
     usage?.monthly?.resetAt,
+    usage?.credits?.resetAt,
   ].filter((x): x is number => typeof x === "number" && Number.isFinite(x));
   return list.length ? Math.min(...list) : undefined;
 }
@@ -442,7 +490,9 @@ export function clearEmptyResponseHistory(account: Account, model?: string) {
 }
 
 export function accountSelectionPool(accounts: Account[]): Account[] {
-  const available = accounts.filter((a) => a.enabled);
+  const enabled = accounts.filter((a) => a.enabled);
+  const withHeadroom = enabled.filter((a) => accountHeadroom(a) !== 0);
+  const available = withHeadroom.length ? withHeadroom : enabled;
 
   if (!available.length) return [];
 
@@ -512,6 +562,12 @@ export function selectAccount(
     if (aw !== undefined && bw === undefined) return -1;
     if (aw !== undefined && bw !== undefined && aw !== bw) return aw - bw;
 
+    if (aw === undefined && bw === undefined && aheadroom !== bheadroom) {
+      if (aheadroom === undefined) return 1;
+      if (bheadroom === undefined) return -1;
+      return bheadroom - aheadroom;
+    }
+
     const ar = a.usage?.secondary?.resetAt ?? Number.MAX_SAFE_INTEGER;
     const br = b.usage?.secondary?.resetAt ?? Number.MAX_SAFE_INTEGER;
     if (ar !== br) return ar - br;
@@ -532,7 +588,8 @@ export function selectAccount(
     (account) =>
       allEffectiveAccountsNearLimit
         ? accountHeadroom(account) === selectedHeadroom
-        : weeklyUsage(account) === selectedWeeklyUsage,
+        : weeklyUsage(account) === selectedWeeklyUsage &&
+          (selectedWeeklyUsage !== undefined || accountHeadroom(account) === selectedHeadroom),
   );
   const previousId = lastSelectedAccountByProvider.get(provider);
   const previousIndex = previousId
@@ -583,10 +640,16 @@ export function isUsageRefreshNeeded(
   account: Account,
   now = Date.now(),
 ): boolean {
+  // Failed probes retain stale windows. Their old reset dates must not create
+  // an unbounded retry on every request; explicit refresh still bypasses this.
+  if (account.usage?.quotaStatus === "error") {
+    return now - account.usage.fetchedAt >= Math.min(USAGE_CACHE_TTL_MS, 60_000);
+  }
   const resetDue = [
     account.usage?.primary?.resetAt,
     account.usage?.secondary?.resetAt,
     account.usage?.monthly?.resetAt,
+    account.usage?.credits?.resetAt,
   ].some(
     (resetAt) =>
       typeof resetAt === "number" && Number.isFinite(resetAt) && resetAt <= now,
@@ -613,11 +676,13 @@ export async function refreshUsageIfNeeded(account: Account, chatgptBaseUrl: str
   // routing based on locally observed errors and request usage.
   if (
     provider === "mistral" ||
-    provider === "xai" ||
     (provider === "openai-compatible" && !shouldUseZaiQuotaEndpoint)
   ) {
     account.usage = {
-      ...account.usage,
+      quotaStatus: "unsupported",
+      quotaMessage: provider === "mistral"
+        ? "Mistral Vibe subscription quotas require a separate Mistral Console browser session. This API connection cannot retrieve them."
+        : "This connection has no supported subscription quota endpoint. Request token usage is tracked separately.",
       fetchedAt: Date.now(),
     };
     return account;
@@ -660,35 +725,51 @@ export async function refreshUsageIfNeeded(account: Account, chatgptBaseUrl: str
       return account;
     }
 
-    if (shouldUseZaiQuotaEndpoint) {
-      const usageUrl = zaiQuotaUrl(chatgptBaseUrl);
-      const res = await fetch(usageUrl, { headers, signal: controller.signal });
-      if (!res.ok) throw new Error(`usage probe failed ${res.status}`);
-      const json = await res.json();
-      account.usage = parseZaiUsage(json);
-      account.state = { ...account.state, lastError: undefined };
+    if (provider === "xai") {
+      const usageUrl = `${trimTrailingSlashes(chatgptBaseUrl)}/billing?format=credits`;
+      const res = await fetch(usageUrl, {
+        headers: { ...buildXaiUpstreamHeaders(account.accessToken, { accept: "application/json" }), ...headers },
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`Grok usage probe failed ${res.status}`);
+      account.usage = parseXaiUsage(await res.json());
+      if (/^(Grok usage|usage probe)/.test(account.state?.lastError ?? "")) {
+        account.state = { ...account.state, lastError: undefined };
+      }
       return account;
     }
 
-    const usageUrl = `${chatgptBaseUrl}/backend-api/wham/usage`;
+    if (shouldUseZaiQuotaEndpoint) {
+      const usageUrl = zaiQuotaUrl(chatgptBaseUrl);
+      const res = await fetch(usageUrl, { headers, signal: controller.signal });
+      if (!res.ok) throw new Error(`Z.ai usage probe failed ${res.status}`);
+      const json = await res.json();
+      account.usage = parseZaiUsage(json);
+      if (/^(Z.ai usage|usage probe)/.test(account.state?.lastError ?? "")) {
+        account.state = { ...account.state, lastError: undefined };
+      }
+      return account;
+    }
+
+    const usageUrl = `${trimTrailingSlashes(chatgptBaseUrl)}/backend-api/wham/usage`;
     if (provider === "openai" && account.chatgptAccountId) {
       headers["ChatGPT-Account-Id"] = account.chatgptAccountId;
     }
     const res = await fetch(usageUrl, { headers, signal: controller.signal });
-    if (!res.ok) throw new Error(`usage probe failed ${res.status}`);
+    if (!res.ok) throw new Error(`OpenAI usage probe failed ${res.status}`);
     const json = await res.json();
     account.usage = parseOpenAIUsage(json);
-    account.state = { ...account.state, lastError: undefined };
+    if (/^(OpenAI usage|usage probe)/.test(account.state?.lastError ?? "")) {
+      account.state = { ...account.state, lastError: undefined };
+    }
     return account;
   } catch (err: any) {
-    if (provider === "opencode") {
-      account.usage = {
-        ...account.usage,
-        quotaStatus: "error",
-        quotaMessage: err?.message ?? String(err),
-        fetchedAt: Date.now(),
-      };
-    }
+    account.usage = {
+      ...account.usage,
+      quotaStatus: "error",
+      quotaMessage: err?.message ?? String(err),
+      fetchedAt: Date.now(),
+    };
     rememberError(account, err?.message ?? String(err));
     return account;
   } finally {
@@ -703,7 +784,7 @@ function exhaustedQuotaResetAt(
   account: Account,
   now = Date.now(),
 ): number | undefined {
-  const resetAts = [account.usage?.primary, account.usage?.secondary, account.usage?.monthly].flatMap(
+  const resetAts = [account.usage?.primary, account.usage?.secondary, account.usage?.monthly, account.usage?.credits].flatMap(
     (window) => {
       if (
         !window ||

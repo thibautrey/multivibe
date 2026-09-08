@@ -43,6 +43,8 @@ export type UsageSnapshot = {
   primary?: UsageWindow; // normalized ~5h window
   secondary?: UsageWindow; // normalized weekly window
   monthly?: UsageWindow; // normalized monthly window when exposed by a provider
+  credits?: UsageWindow; // subscription credits; provider-defined billing period
+  tools?: UsageWindow; // MCP/tool allowance; never used for model routing
   quotaStatus?: "available" | "unsupported" | "error";
   quotaMessage?: string;
   fetchedAt: number;
