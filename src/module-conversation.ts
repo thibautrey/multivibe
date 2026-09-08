@@ -3,7 +3,7 @@ import type { ModuleConversation } from "./module-sdk.js";
 /** Hints are authoritative; absence of history is not proof of a one-off call. */
 export function inspectModuleConversation(body: any, headers: Record<string, unknown>, sessionId?: string): ModuleConversation {
   const items = Array.isArray(body?.messages) ? body.messages : Array.isArray(body?.input) ? body.input : [];
-  const continuation = Boolean(body?.previous_response_id) || items.some((item: any) =>
+  const continuation = Boolean(body?.previous_response_id) || items.filter((item: any) => item?.role === "user").length > 1 || items.some((item: any) =>
     item?.role === "assistant" || item?.role === "tool" || /^(function_call|function_call_output|tool_result)$/.test(item?.type ?? "") ||
     (Array.isArray(item?.content) && item.content.some((part: any) => part?.type === "tool_result" || part?.type === "tool_use")));
   const hint = headers["x-multivibe-conversation-mode"];
