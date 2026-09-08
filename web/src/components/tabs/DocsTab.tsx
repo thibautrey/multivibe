@@ -331,17 +331,13 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
     <div className="docs-page">
       <section className="docs-hero">
         <div className="docs-hero-copy">
-          <span className="docs-kicker">Explore · Build · Test</span>
-          <h2>Your API, ready to explore</h2>
-          <p>Choose an endpoint, adjust the example, and inspect the response. Start with List models to see what’s available.</p>
+          <h2>API explorer</h2>
+          <p>Choose an endpoint and test a request.</p>
         </div>
         <div className="docs-base-url-card">
-          <div>
-            <span className="control-label">Base URL</span>
-            <small>Use this origin for every endpoint below.</small>
-          </div>
           <div className="docs-copy-row">
-            <code>{origin}</code>
+            <span className="control-label">Base URL</span>
+            <code title={origin}>{origin}</code>
             <button
               className="docs-icon-button"
               onClick={() => void copy(origin, "origin")}
@@ -353,12 +349,7 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
           </div>
           <div className="docs-session-note">
             <span className="status-dot" />
-            <span>
-              <strong>Uses your dashboard session</strong>
-              <small>
-                Requests run against this server.
-              </small>
-            </span>
+            <span>Uses your dashboard session</span>
           </div>
         </div>
       </section>
