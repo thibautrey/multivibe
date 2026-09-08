@@ -5,9 +5,9 @@ import { aggregateModels, type CloudModel, type ModelRoute } from '../../lib/mod
 import type { CloudProvider } from '../ProviderPicker';
 import './ModelsTab.css';
 
-export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure, onConnectCloud }: {
+export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure, onConnectCloud, onRefresh }: {
   models: ExposedModel[]; accounts: Account[]; cloudConnected: boolean;
-  onUse: (id: string) => void; onConfigure: (route: ModelRoute) => void; onConnectCloud: () => Promise<void>;
+  onRefresh: () => Promise<void>; onUse: (id: string) => void; onConfigure: (route: ModelRoute) => void; onConnectCloud: () => Promise<void>;
 }) {
   const [cloud, setCloud] = useState<CloudModel[]>([]);
   const [providers, setProviders] = useState<CloudProvider[]>([]);
@@ -43,7 +43,7 @@ export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure
     finally { setConnecting(false); }
   };
   return <section className="panel models-catalog" aria-labelledby="models-title">
-    <div className="section-split-header"><div><h2 id="models-title">Modèles</h2><p className="muted">Vos providers, vos modèles locaux et le catalogue MultiVibe Cloud réunis.</p></div><button className="btn ghost" disabled={loading} onClick={() => setRevision(value => value + 1)}>Actualiser</button></div>
+    <div className="section-split-header"><div><h2 id="models-title">Modèles</h2><p className="muted">Vos providers, vos modèles locaux et le catalogue MultiVibe Cloud réunis.</p></div><button className="btn ghost" disabled={loading} onClick={() => { setRevision(value => value + 1); void onRefresh().catch(() => setErrors(current => [...current, "Les modèles connectés n’ont pas pu être actualisés."])); }}>Actualiser</button></div>
     <div className="models-cloud-banner"><div><strong>MultiVibe Cloud</strong><p className="muted">Les modèles référencés peuvent nécessiter une offre compatible ou de la capacité disponible. Leur présence au catalogue ne garantit pas leur accès.</p></div>{!cloudConnected && <button className="btn" disabled={connecting} onClick={() => void connect()}>Se connecter</button>}</div>
     <div className="models-controls"><label>Rechercher<input type="search" value={query} placeholder="Nom du modèle ou provider…" onChange={event => { setQuery(event.target.value); setPage(0); }} /></label><label>Source<select value={source} onChange={event => { setSource(event.target.value); setPage(0); }}><option value="all">Toutes les sources</option><option value="provider">Providers</option><option value="local">Local</option><option value="cloud">MultiVibe Cloud</option></select></label><label className="models-ready"><input type="checkbox" checked={readyOnly} onChange={event => { setReadyOnly(event.target.checked); setPage(0); }} /> Disponibles maintenant</label></div>
     {errors.map((error, index) => <p role="alert" key={index}>{error}</p>)}
@@ -56,7 +56,7 @@ export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure
         if (ready) onUse(ready.modelId);
         else if (preferred.source === 'cloud' && !cloudConnected) void connect();
         else onConfigure(preferred);
-      }}>{ready ? 'Utiliser' : preferred.source === 'cloud' && !cloudConnected ? 'Se connecter' : 'Configurer'}</button></li>;
+      }}>{ready ? 'Utiliser' : preferred.source === 'cloud' ? cloudConnected ? 'Voir les accès' : 'Se connecter' : 'Configurer'}</button></li>;
     })}</ul>
     {!filtered.length && !loading && <p>Aucun modèle ne correspond à ces filtres.</p>}
     {filtered.length > 30 && <div className="models-pagination"><button className="btn ghost" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>Précédent</button><span>Page {currentPage + 1} / {Math.ceil(filtered.length / 30)}</span><button className="btn ghost" disabled={(currentPage + 1) * 30 >= filtered.length} onClick={() => setPage(currentPage + 1)}>Suivant</button></div>}
