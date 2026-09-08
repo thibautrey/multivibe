@@ -103,6 +103,13 @@ test("request hooks receive conversation evidence and route the selected model u
     enabled=false;
     assert.ok(!(await get("/v1/models")).body.data.some((model:any)=>model.id===AUTOMATIC_ROUTER_MODEL));
     assert.equal((await get("/v1/models/multivibe%2Fautorouter")).status,404);
+    const disabledStatus = await new Promise<number>((resolve,reject)=>{
+      const request=http.request({host:"127.0.0.1",port,path:"/v1/chat/completions",method:"POST",headers:{"content-type":"application/json"}},res=>{res.resume();res.on("end",()=>resolve(res.statusCode!));});
+      request.on("error",reject);request.end(JSON.stringify({model:AUTOMATIC_ROUTER_MODEL,messages:[{role:"user",content:"hello"}]}));
+    });
+    assert.equal(disabledStatus,404);
+    enabled=true;
+    assert.ok((await get("/v1/models")).body.data.some((model:any)=>model.id===AUTOMATIC_ROUTER_MODEL));
     assert.deepEqual(sentModels, ["cheap", "cheap"]);
     assert.equal(classifierCalls, 1);
   } finally {
