@@ -294,6 +294,7 @@ function stripManagedBlock(value: string): string {
 
 type CodexTomlInspection = HarnessInspection & {
   profileProviders: Record<string, string>;
+  rootModelCatalogJson?: string;
 };
 
 function decodeTomlBasicString(value: string): string | undefined {
@@ -314,6 +315,7 @@ function parseCodexToml(current: string, expectedBaseUrl: string, expectedApiKey
   let providerBaseUrl: string | undefined;
   let providerBearerToken: string | undefined;
   let providerWireApi: string | undefined;
+  let rootModelCatalogJson: string | undefined;
   const profileProviders: Record<string, string> = {};
   const errors: string[] = [];
   const seen = new Set<string>();
@@ -338,6 +340,10 @@ function parseCodexToml(current: string, expectedBaseUrl: string, expectedApiKey
       if (seen.has("root.model_provider")) errors.push("duplicate root model_provider");
       seen.add("root.model_provider");
       rootProvider = value;
+    } else if (table === "" && key === "model_catalog_json") {
+      if (seen.has("root.model_catalog_json")) errors.push("duplicate root model_catalog_json");
+      seen.add("root.model_catalog_json");
+      rootModelCatalogJson = value;
     } else if (table.startsWith("profiles.") && key === "model_provider") {
       const profile = table.slice("profiles.".length);
       const seenKey = `profile.${profile}.model_provider`;
@@ -362,19 +368,29 @@ function parseCodexToml(current: string, expectedBaseUrl: string, expectedApiKey
   const profileOverrides = Object.entries(profileProviders)
     .filter(([, provider]) => provider !== "multivibe")
     .map(([profile, provider]) => `${profile}=${provider}`);
-  const configurationIssue = profileOverrides.length > 0
-    ? `Codex profiles override MultiVibe: ${profileOverrides.join(", ")}`
+  const configurationIssues = [
+    ...(rootModelCatalogJson !== undefined
+      ? ["Codex model_catalog_json overrides MultiVibe model discovery"]
+      : []),
+    ...(profileOverrides.length > 0
+      ? [`Codex profiles override MultiVibe: ${profileOverrides.join(", ")}`]
+      : []),
+  ];
+  const configurationIssue = configurationIssues.length > 0
+    ? configurationIssues.join("; ")
     : undefined;
   return {
     configured: rootProvider === "multivibe" &&
       providerBaseUrl === expectedBaseUrl &&
       (expectedApiKey ? providerBearerToken === expectedApiKey : Boolean(providerBearerToken)) &&
-      providerWireApi === "responses",
+      providerWireApi === "responses" &&
+      rootModelCatalogJson === undefined,
     repairable: errors.length === 0,
     configurationIssue: errors.length > 0 ? errors.join("; ") : configurationIssue,
     effectiveProvider: rootProvider,
     effectiveBaseUrl: providerBaseUrl,
     profileProviders,
+    rootModelCatalogJson,
   };
 }
 
@@ -421,8 +437,8 @@ function stripCodexManagedContent(value: string): string {
       if (skippingProvider) continue;
     }
     if (skippingProvider) continue;
-    if (table === "" && /^\s*model_provider\s*=/.test(line)) continue;
-    if (insideManagedBlock && /^\s*model_provider\s*=/.test(line)) continue;
+    if (table === "" && /^\s*(?:model_provider|model_catalog_json)\s*=/.test(line)) continue;
+    if (insideManagedBlock && /^\s*(?:model_provider|model_catalog_json)\s*=/.test(line)) continue;
     output.push(line);
   }
   if (insideManagedBlock) {

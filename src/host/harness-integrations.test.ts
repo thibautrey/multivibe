@@ -315,7 +315,7 @@ test("Codex installation preserves unrelated TOML and restores the original prov
   await fs.mkdir(bin, { recursive: true });
   await fs.writeFile(path.join(bin, "codex"), "binary", { mode: 0o755 });
   const configPath = path.join(home, ".codex", "config.toml");
-  const original = 'model_provider = "openai"\napproval_policy = "on-request"\n\n[history]\npersistence = "none"\n';
+  const original = 'model_provider = "openai"\nmodel_catalog_json = "/tmp/static-models.json"\napproval_policy = "on-request"\n\n[history]\npersistence = "none"\n';
   await fs.writeFile(configPath, original);
   const manager = new HostHarnessIntegrationManager({
     homeDirectory: home,
@@ -330,12 +330,50 @@ test("Codex installation preserves unrelated TOML and restores the original prov
   assert.match(configured, /model_provider = "multivibe"/);
   assert.match(configured, /experimental_bearer_token = "mv_codex"/);
   assert.match(configured, /approval_policy = "on-request"/);
+  assert.doesNotMatch(configured, /model_catalog_json/);
   const firstTable = configured.search(/^\[/m);
   const rootProvider = configured.indexOf('model_provider = "multivibe"');
   assert.ok(rootProvider >= 0 && rootProvider < firstTable, "Codex provider must remain at the TOML root");
   assert.equal((configured.match(/^model_provider\s*=/gm) ?? []).length, 1);
   await manager.uninstall("openai-codex");
   assert.equal(await fs.readFile(configPath, "utf8"), original);
+});
+
+test("Codex detects and repairs a static catalog that masks MultiVibe models", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-static-catalog-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const home = path.join(root, "home");
+  const bin = path.join(home, "bin");
+  await fs.mkdir(path.join(home, ".codex"), { recursive: true });
+  await fs.mkdir(bin, { recursive: true });
+  await fs.writeFile(path.join(bin, "codex"), "binary", { mode: 0o755 });
+  const configPath = path.join(home, ".codex", "config.toml");
+  await fs.writeFile(configPath, "model = \"gpt-5.6-luna\"\n");
+  const manager = new HostHarnessIntegrationManager({
+    homeDirectory: home,
+    statePath: path.join(home, ".multivibe", "harnesses.json"),
+    baseUrl: "http://127.0.0.1:1455",
+    definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
+    executableDirectories: [bin],
+  });
+  const credential = { apiKeyId: "key-static-catalog", apiKey: "mv_static", application: "harness-openai-codex" };
+  await manager.install("openai-codex", credential);
+  const changed = (await fs.readFile(configPath, "utf8")).replace(
+    "# <<< MultiVibe Host Codex root <<<\n",
+    "# <<< MultiVibe Host Codex root <<<\nmodel_catalog_json = \"/tmp/static-models.json\"\n",
+  );
+  await fs.writeFile(configPath, changed);
+
+  const drifted = await manager.get("openai-codex");
+  assert.equal(drifted.configured, false);
+  assert.equal(drifted.drifted, true);
+  assert.equal(drifted.repairable, true);
+  assert.match(drifted.configurationIssue ?? "", /model_catalog_json overrides MultiVibe model discovery/);
+
+  const repaired = await manager.repair("openai-codex", credential);
+  assert.equal(repaired.configured, true);
+  assert.equal(repaired.drifted, false);
+  assert.doesNotMatch(await fs.readFile(configPath, "utf8"), /model_catalog_json/);
 });
 
 test("Codex repair preserves a table inserted inside the legacy managed block", async (t) => {
