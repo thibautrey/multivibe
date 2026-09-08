@@ -402,9 +402,3 @@
     transition-duration: 0.01ms;
   }
 }
-
-.overview-running-layout > .host-harness-browser {
-  min-width: 0;
-  height: 100%;
-  box-sizing: border-box;
-}

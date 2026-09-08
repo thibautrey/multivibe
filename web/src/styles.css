@@ -4908,19 +4908,6 @@ body:has(> .modal-backdrop) {
   padding-inline: 18px;
 }
 
-.overview-running-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
-  gap: 16px;
-  align-items: stretch;
-}
-
-.overview-running-layout > .overview-next-step {
-  min-width: 0;
-  height: 100%;
-  box-sizing: border-box;
-}
-
 .overview-detail-grid {
   display: grid;
   grid-template-columns: minmax(300px, .8fr) minmax(420px, 1.2fr);
@@ -5069,9 +5056,6 @@ body:has(> .modal-backdrop) {
 @media (max-width: 760px) {
   .overview-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .overview-running-layout {
-    grid-template-columns: 1fr;
   }
   .overview-summary .metric {
     min-height: 116px;

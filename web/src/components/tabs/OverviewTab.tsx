@@ -67,12 +67,10 @@ export function OverviewTab({
         <Metric widgetId="cost" title="Cost" value={usd(traceStats.totals.costUsd)} detail="Estimated provider cost" />
       </WidgetGrid>
 
-      {isEverythingRunning && hostApplication ? (
-        <div className="overview-running-layout">
-          {nextStepCard}
-          <HostHarnessCards onApiKeysChanged={onHarnessesChanged} />
-        </div>
-      ) : nextStepCard}
+      {!isEverythingRunning && nextStepCard}
+      {isEverythingRunning && hostApplication && (
+        <HostHarnessCards onApiKeysChanged={onHarnessesChanged} />
+      )}
 
       <section className="overview-detail-grid">
         <div className="panel overview-usage-panel">
