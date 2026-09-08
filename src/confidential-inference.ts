@@ -492,7 +492,7 @@ export class ConfidentialInferenceClient {
       used = true;
       // Recheck pinned policy and freshness at dispatch, after any scheduling delay.
       verifyEvidence(capabilities, challenge, input.model, this.trustPolicy, this.now());
-      return this.executeVerified({ ...input, body, signal }, evidence, origin, accessToken);
+      return this.executeVerified({ ...input, body, ...(signal ? { signal } : {}) }, evidence, origin, accessToken);
     } });
   }
 
