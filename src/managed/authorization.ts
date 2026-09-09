@@ -49,14 +49,23 @@ export function signExecutionGrant(grant: ExecutionGrant, key: KeyObject, now = 
   const signature = sign(null, Buffer.from(`multivibe-execution-v1.${payload}`), key).toString("base64url");
   return `${payload}.${signature}`;
 }
-export function verifyExecutionGrant(token: string, body: Uint8Array, key: KeyObject, now = Date.now()): Readonly<ExecutionGrant> {
+/** Signature and bounded claims only; does not authorize execution without body verification. */
+export function verifyExecutionGrantClaims(token: string, key: KeyObject, now = Date.now(), allowExpired = false): Readonly<ExecutionGrant> {
   if (token.length > 8192 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token)
     || key.asymmetricKeyType !== "ed25519" || key.type !== "public") throw Error("invalid_execution_grant");
   const [payload, signature] = token.split(".");
   if (!payload || !signature) throw Error("invalid_execution_grant");
   if (!verify(null, Buffer.from(`multivibe-execution-v1.${payload}`), key, Buffer.from(signature, "base64url"))) throw Error("invalid_execution_grant");
   const grant: unknown = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-  validate(grant, now);
-  if (grant.bodySha256 !== executionBodyDigest(body)) throw Error("execution_body_mismatch");
+  // Receipt persistence/recovery may outlive the execution window. Validate the
+  // complete original time contract, and still reject future issuance.
+  const issuedAt = (grant as Partial<ExecutionGrant> | null)?.issuedAt;
+  if (!Number.isSafeInteger(now) || !Number.isSafeInteger(issuedAt) || Number(issuedAt) > now) throw Error("invalid_execution_grant");
+  validate(grant, allowExpired ? Number(issuedAt) : now);
   return Object.freeze(grant);
+}
+export function verifyExecutionGrant(token: string, body: Uint8Array, key: KeyObject, now = Date.now()): Readonly<ExecutionGrant> {
+  const grant = verifyExecutionGrantClaims(token, key, now);
+  if (grant.bodySha256 !== executionBodyDigest(body)) throw Error("execution_body_mismatch");
+  return grant;
 }
