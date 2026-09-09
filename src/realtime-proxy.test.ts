@@ -221,6 +221,10 @@ test("POST realtime/calls rotates accounts after a quota response", async (t) =>
   const attempted: string[] = [];
   const traces: Array<Record<string, any>> = [];
   globalThis.fetch = async (_input, init) => {
+    if (String(_input).includes("/backend-api/wham/usage")) {
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer token-a");
+      return Response.json({ rate_limit: { primary_window: { used_percent: 100 } } });
+    }
     const token = new Headers(init?.headers).get("authorization") ?? "";
     attempted.push(token);
     if (token.endsWith("token-a")) {

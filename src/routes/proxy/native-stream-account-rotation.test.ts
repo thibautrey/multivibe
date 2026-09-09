@@ -97,6 +97,10 @@ test("rotates native Responses stream to the next account after upstream 429", a
 
   globalThis.fetch = async (input, init) => {
     const url = String(input);
+    if (url.includes("/backend-api/wham/usage")) {
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer token-one");
+      return Response.json({ rate_limit: { primary_window: { used_percent: 100 } } });
+    }
 
     if (url.includes("/backend-api/codex/models")) {
       modelDiscoveryRequests += 1;
@@ -300,6 +304,10 @@ test("native Responses stream terminates cleanly when 429 exhausts all accounts"
 
   globalThis.fetch = async (input, init) => {
     const url = String(input);
+    if (url.includes("/backend-api/wham/usage")) {
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer token-one");
+      return Response.json({ rate_limit: { primary_window: { used_percent: 100 } } });
+    }
 
     if (url.includes("/backend-api/codex/models")) {
       return new Response(
