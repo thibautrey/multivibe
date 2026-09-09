@@ -8,11 +8,6 @@
   box-shadow: 0 28px 100px #0003;
   gap: 24px;
 }
-.provider-setup-steps { display: flex; gap: 12px; list-style: none; margin: 0; padding: 0 0 22px; border-bottom: 1px solid var(--line); }
-.provider-setup-steps li { display: flex; align-items: center; gap: 8px; flex: 1; font-size: 12px; font-weight: 600; color: var(--muted); }
-.provider-setup-steps li > span { display: grid; place-items: center; flex: 0 0 28px; height: 28px; border: 1px solid var(--line); border-radius: 50%; }
-.provider-setup-steps .active { color: var(--primary); }
-.provider-setup-steps .active > span, .provider-setup-steps .complete > span { background: var(--primary); color: var(--panel); border-color: var(--primary); }
 .provider-setup-heading { display: flex; align-items: center; gap: 16px; }
 .provider-setup-heading h2 { font-size: clamp(22px, 4vw, 28px); letter-spacing: -.8px; margin: 0 0 6px; }
 .provider-setup-heading p { margin: 0; font-size: 13px; }
@@ -47,8 +42,6 @@
   .modal.provider-setup-modal { padding: 18px; border-radius: 18px; gap: 18px; }
   .provider-setup-cards { grid-template-columns: 1fr; }
   .provider-setup-card { padding: 14px; }
-  .provider-setup-steps { gap: 6px; }
-  .provider-setup-steps li { font-size: 10px; gap: 5px; }
   .provider-setup-footer { flex-wrap: wrap; }
   .provider-setup-footer > .inline { width: 100%; }
   .provider-setup-footer > .inline .btn { flex: 1; }
