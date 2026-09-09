@@ -21,7 +21,7 @@ test("reset-credit increases use a brief unthrottled menu-bar popup", () => {
   assert.match(source, /closeNotification\(after: next\.kind == "reset-credit-increased" \? 5 : 8\)/);
 });
 
-test("native quota rotation follows activity, debounces, pins, and handles removal", { skip: process.platform !== "darwin" }, () => {
+test("native quota selection changes only for activity, pins, and removal", { skip: process.platform !== "darwin" }, () => {
   const source = readFileSync(new URL("../../packaging/macos/MultiVibeMenuBar.swift", import.meta.url), "utf8");
   const start = source.indexOf("private struct ProviderActivity:");
   const end = source.indexOf("private struct MenuBarGitHubStarPrompt", start);
@@ -30,36 +30,38 @@ test("native quota rotation follows activity, debounces, pins, and handles remov
     const file = join(dir, "main.swift");
     writeFileSync(file, "import Foundation\n" + source.slice(start, end) + `
 func check(_ condition: Bool, _ message: String) { precondition(condition, message) }
-private var rotation = QuotaRotation()
+private var selection = QuotaSelection()
 let ids = ["openai", "zai", "opencode"]
-rotation.update(ids: ids, activity: nil, now: 100)
-check(rotation.selected == "openai", "initial provider")
-rotation.update(ids: ids, activity: nil, now: 111)
-check(rotation.selected == "openai", "no early rotation")
-rotation.update(ids: ids, activity: nil, now: 112)
-check(rotation.selected == "zai", "12 second rotation")
-rotation.update(ids: ids, activity: ProviderActivity(providerId: "opencode", usedAt: 113000), now: 113)
-check(rotation.selected == "zai", "concurrent traffic debounce")
-rotation.update(ids: ids, activity: nil, now: 117)
-check(rotation.selected == "opencode", "pending activity wins after debounce")
-rotation.update(ids: ids, activity: nil, now: 146)
-check(rotation.selected == "opencode", "30 second activity hold")
-rotation.update(ids: ids, activity: nil, now: 147)
-check(rotation.selected == "openai", "rotation resumes")
-rotation.pin = "zai"
-rotation.update(ids: ids, activity: ProviderActivity(providerId: "openai", usedAt: 148000), now: 148)
-check(rotation.selected == "zai", "pin overrides usage")
-rotation.update(ids: ids, activity: nil, now: 300)
-check(rotation.selected == "zai", "pin overrides timer")
-rotation.update(ids: ["opencode"], activity: nil, now: 301)
-check(rotation.selected == "opencode", "removed pin falls back")
-rotation.update(ids: [], activity: nil, now: 302)
-check(rotation.selected == nil, "empty inventory")
-rotation.pin = nil
-rotation.update(ids: ids, activity: ProviderActivity(providerId: "zai", usedAt: 400000), now: 400)
-check(rotation.selected == "zai", "initial fresh activity wins")
-rotation.update(ids: ids, activity: ProviderActivity(providerId: "openai", usedAt: 401000), now: 440)
-check(rotation.selected == "opencode", "stale activity cannot hijack idle rotation")
+selection.update(ids: ids, activity: nil, now: 100)
+check(selection.selected == "openai", "initial provider")
+selection.update(ids: ids, activity: nil, now: 111)
+check(selection.selected == "openai", "idle selection stays stable")
+selection.update(ids: ids, activity: nil, now: 112)
+check(selection.selected == "openai", "elapsed time alone does not rotate")
+selection.update(ids: ids, activity: ProviderActivity(providerId: "opencode", usedAt: 113000), now: 113)
+check(selection.selected == "opencode", "fresh activity changes an idle selection")
+selection.update(ids: ids, activity: ProviderActivity(providerId: "zai", usedAt: 114000), now: 114)
+check(selection.selected == "opencode", "concurrent traffic debounce")
+selection.update(ids: ids, activity: nil, now: 117)
+check(selection.selected == "opencode", "no early concurrent activity change")
+selection.update(ids: ids, activity: nil, now: 118)
+check(selection.selected == "zai", "pending activity wins after debounce")
+selection.update(ids: ids, activity: nil, now: 300)
+check(selection.selected == "zai", "idle selection remains on the last informative provider")
+selection.pin = "zai"
+selection.update(ids: ids, activity: ProviderActivity(providerId: "openai", usedAt: 301000), now: 301)
+check(selection.selected == "zai", "pin overrides usage")
+selection.update(ids: ids, activity: nil, now: 500)
+check(selection.selected == "zai", "pin stays stable while idle")
+selection.update(ids: ["opencode"], activity: nil, now: 501)
+check(selection.selected == "opencode", "removed pin falls back")
+selection.update(ids: [], activity: nil, now: 502)
+check(selection.selected == nil, "empty inventory")
+selection.pin = nil
+selection.update(ids: ids, activity: ProviderActivity(providerId: "zai", usedAt: 600000), now: 600)
+check(selection.selected == "zai", "initial fresh activity wins")
+selection.update(ids: ids, activity: ProviderActivity(providerId: "openai", usedAt: 601000), now: 640)
+check(selection.selected == "zai", "stale activity cannot hijack the stable selection")
 `);
     execFileSync("swift", [file], { stdio: "pipe", timeout: 60000 });
   } finally {
