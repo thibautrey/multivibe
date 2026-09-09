@@ -1,7 +1,7 @@
 import type { KeyObject } from "node:crypto";
-import type { ExecutionJournal } from "./journal.js";
 import type { ManagedProviderAccount, ManagedInvocationAuthorization } from "./executor.js";
 import { authorizeManagedInjection } from "./injector-authorization.js";
+import {validateExecutionOwnership, type ExecutionOwnership} from "./coordination-client.js";
 
 /** Lives only in the credential injector process, with its own durable journal.
  * No caller-supplied URL, credential, headers, retry policy or account fallback. */
@@ -9,7 +9,7 @@ export class ManagedCredentialInjector {
   private readonly accounts: readonly ManagedProviderAccount[];
   constructor(private readonly dependencies: {
     verificationKey: KeyObject;
-    journal: Pick<ExecutionJournal, "claim">;
+    coordination: {dispatch(token: string, ownership: ExecutionOwnership): Promise<void>};
     accounts: readonly ManagedProviderAccount[];
     maximumRequestBytes: number;
     executionTimeoutMs: number;
@@ -29,6 +29,7 @@ export class ManagedCredentialInjector {
     const body = new Uint8Array(providerBody);
     const originalBody = new Uint8Array(authorization.originalBody);
     const token = authorization.token;
+    const ownership = validateExecutionOwnership(authorization.ownership);
     const clock = this.dependencies.clock ?? Date.now;
     const verify = () => authorizeManagedInjection({token,originalBody,providerBody:body,
       verificationKey:this.dependencies.verificationKey,now:clock(),maximumRequestBytes:this.dependencies.maximumRequestBytes});
@@ -36,11 +37,23 @@ export class ManagedCredentialInjector {
     const accounts = this.accounts.filter(account => account.providerId === grant.providerId
       && account.credentialRef === grant.credentialRef && account.models.has(grant.upstreamModel));
     if (accounts.length !== 1) throw Error("injector_account_unavailable");
-    await this.dependencies.journal.claim(grant);
-    // Slow persistence cannot extend the grant's dispatch window.
-    verify();
+    let dispatched = false;
     try {
-      const response = await accounts[0].chatCompletions(body,AbortSignal.timeout(this.dependencies.executionTimeoutMs),{token,originalBody,beforeDispatch:()=>{verify();}});
+      const response = await accounts[0].chatCompletions(body,AbortSignal.timeout(this.dependencies.executionTimeoutMs),{
+        token, originalBody, ownership,
+        beforeDispatch: async () => {
+          if (dispatched) throw Error("injector_multiple_dispatch_attempts");
+          dispatched = true;
+          // The shared database checks its own clock and atomically consumes the
+          // exact owner epoch. A lost response must remain ambiguous.
+          verify();
+          await this.dependencies.coordination.dispatch(token, ownership);
+        },
+      });
+      if (!dispatched) {
+        await response.body?.cancel().catch(() => undefined);
+        throw Error("injector_dispatch_fence_not_consumed");
+      }
       if (!response.ok) {
         await response.body?.cancel().catch(() => undefined);
         return Response.json({error:{code:"provider_execution_failed"}},{status:502});
@@ -49,7 +62,7 @@ export class ManagedCredentialInjector {
       return new Response(response.body,{status:response.status,
         headers:{"content-type":response.headers.get("content-type") ?? "application/octet-stream"}});
     } catch {
-      // The claim remains consumed even if dispatch outcome is unknown.
+      // The shared dispatch transition remains consumed if outcome is unknown.
       throw Error("injector_execution_uncertain");
     }
   }

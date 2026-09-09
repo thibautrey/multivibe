@@ -4,7 +4,7 @@ import {createManagedAnthropicAccount,nativeAnthropicUsageEligible} from "./nati
 import {createManagedProviderAccount} from "./provider.js";
 import {providerTokenUsage} from "./usage.js";
 const body=Buffer.from(JSON.stringify({model:"claude-sonnet-4-6",messages:[{role:"user",content:"Hello"}],max_tokens:25}));
-const authorization={token:"fixture",originalBody:body};
+const authorization={token:"fixture",originalBody:body,ownership:{ownerId:"11111111-1111-4111-8111-111111111111",epoch:1},async beforeDispatch(){}};
 test("native managed connector reuses Anthropic SDK codec with bounded credential egress",async()=>{
  let calls=0,reads=0;
  const account=createManagedAnthropicAccount({credentialRef:"account",maximumResponseBytes:8192,models:new Set(["claude-sonnet-4-6"]),async readCredential(){reads++;return "fixture-key";},

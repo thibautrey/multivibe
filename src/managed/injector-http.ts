@@ -1,12 +1,15 @@
 import { createServer, type ServerOptions } from "node:https";
 import type { TLSSocket } from "node:tls";
 import type { ManagedCredentialInjector } from "./injector.js";
+import type {ExecutionReceipt} from "./journal.js";
+import {validateExecutionOwnership, type ExecutionOwnership} from "./coordination-client.js";
 
 /** Private credential-injector endpoint; never publish through the public ingress. */
 export function createManagedInjectorServer(options: {
   tls: Pick<ServerOptions,"key"|"cert"|"ca">;
   allowedCoreUri: string;
   injector: Pick<ManagedCredentialInjector,"execute">;
+  coordination: {finish(token:string,ownership:ExecutionOwnership,receipt:ExecutionReceipt):Promise<void>};
   discovery?: {read():Promise<unknown>};
   maximumRequestBytes: number;
   maximumResponseBytes: number;
@@ -31,7 +34,7 @@ export function createManagedInjectorServer(options: {
       catch{fail(503,"provider_discovery_unavailable");}return;
     }
     if(req.method==="GET"&&req.url==="/health/live"){res.end('{"ok":true}');return;}
-    if(req.method!=="POST"||req.url!=="/internal/v1/inject"){fail(404,"not_found");return;}
+    if(req.method!=="POST"||!["/internal/v1/inject","/internal/v1/receipts"].includes(req.url??"")){fail(404,"not_found");return;}
     if(active>=options.maximumConcurrentExecutions){fail(503,"injector_busy");return;}
     const token=req.headers["x-multivibe-execution-grant"];
     if(typeof token!=="string"||token.length>8192){fail(403,"execution_grant_required");return;}
@@ -39,20 +42,27 @@ export function createManagedInjectorServer(options: {
     active++;
     try {
       const chunks:Buffer[]=[];let length=0;
-      const envelopeLimit=Math.ceil(options.maximumRequestBytes*8/3)+1024;
+      const envelopeLimit=req.url==="/internal/v1/receipts"?16384:Math.ceil(options.maximumRequestBytes*8/3)+2048;
       for await(const chunk of req){
         const bytes=Buffer.from(chunk);length+=bytes.byteLength;
         if(length>envelopeLimit){fail(413,"request_too_large");return;}chunks.push(bytes);
       }
       const envelope=JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      if(!envelope||Object.keys(envelope).sort().join()!=="originalBodyBase64,providerBodyBase64") throw Error("invalid_envelope");
+      if(!envelope||typeof envelope!=="object"||Array.isArray(envelope))throw Error("invalid_envelope");
+      if(req.url==="/internal/v1/receipts"){
+        if(Object.keys(envelope).sort().join()!=="ownership,receipt")throw Error("invalid_envelope");
+        await options.coordination.finish(token,validateExecutionOwnership(envelope.ownership),envelope.receipt as ExecutionReceipt);
+        res.end('{"ok":true}');return;
+      }
+      if(Object.keys(envelope).sort().join()!=="originalBodyBase64,ownership,providerBodyBase64")throw Error("invalid_envelope");
       const decode=(value:unknown)=>{
         if(typeof value!=="string")throw Error("invalid_envelope");
         const bytes=Buffer.from(value,"base64");
         if(bytes.length>options.maximumRequestBytes||bytes.toString("base64")!==value)throw Error("invalid_envelope");
         return bytes;
       };
-      const response=await options.injector.execute(decode(envelope.providerBodyBase64),{token,originalBody:decode(envelope.originalBodyBase64)});
+      const response=await options.injector.execute(decode(envelope.providerBodyBase64),{token,
+        originalBody:decode(envelope.originalBodyBase64),ownership:validateExecutionOwnership(envelope.ownership)});
       res.writeHead(response.status,{"content-type":response.headers.get("content-type")??"application/octet-stream","cache-control":"no-store"});
       const reader=response.body?.getReader();
       if(!reader){res.end();return;}

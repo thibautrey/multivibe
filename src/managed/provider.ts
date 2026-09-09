@@ -22,13 +22,12 @@ export function createManagedProviderAccount(options: {
 }): ManagedProviderAccount & { discoverModels(signal: AbortSignal): Promise<readonly string[]> } {
   const base = compatibleProviders[options.providerId];
   if (!base || !options.credentialRef || options.models.size > 10000) throw Error("invalid_managed_account");
-  async function request(path: string, method: "GET" | "POST", signal: AbortSignal, body?: Uint8Array, beforeDispatch?: () => void) {
+  async function request(path: string, method: "GET" | "POST", signal: AbortSignal, body?: Uint8Array, beforeDispatch?: () => Promise<void>) {
     signal.throwIfAborted();
-    beforeDispatch?.();
     const credential = await options.readCredential();
     if (!credential || credential.length > 16384 || /[\r\n]/.test(credential)) throw Error("managed_credential_unavailable");
     signal.throwIfAborted();
-    beforeDispatch?.();
+    await beforeDispatch?.();
     return options.fetchViaEgress(`${base}${path}`, { method, signal, redirect: "error",
       headers: options.providerId === "anthropic"
         ? {"x-api-key":credential,"anthropic-version":"2023-06-01","content-type":"application/json"}
