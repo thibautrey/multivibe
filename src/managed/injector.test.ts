@@ -41,7 +41,7 @@ test("injector never reads a credential for invalid requests and never retries a
  await assert.rejects(injector.execute(Buffer.from('{}'),f.authorization),/provider_body_mismatch/);
  assert.equal(dispatches,0);assert.equal(calls,0);
  await assert.rejects(injector.execute(f.body,f.authorization),/^Error: injector_execution_uncertain$/);
- await assert.rejects(injector.execute(f.body,f.authorization),/claimed/);
+ await assert.rejects(injector.execute(f.body,f.authorization),/injector_execution_uncertain/);
  assert.equal(calls,1);
 });
 test("injector rechecks expiry after durable persistence",async()=>{
