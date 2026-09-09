@@ -4,6 +4,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { exec } from "node:child_process";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import {
   HOST_HARNESS_DEFINITIONS,
   HostHarnessIntegrationManager,
@@ -633,4 +636,37 @@ test("tracking setup refuses symlinked hook files", async (t) => {
   await fs.symlink(outside, path.join(home, ".codex/hooks.json"));
   await assert.rejects(manager.enableProjectTracking("openai-codex"), /regular file|symbolic|symlink/i);
   assert.equal(await fs.readFile(outside, "utf8"), "{}");
+});
+
+
+test("the installed command registers a real session without exposing credentials in the command", async (t) => {
+  const { root, home, manager } = await trackingFixture();
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  let registration: any;
+  let token: string | undefined;
+  const server = http.createServer(async (request, response) => {
+    assert.equal(request.url, "/admin/codex-sessions");
+    token = request.headers["x-codex-project-token"] as string;
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    registration = JSON.parse(Buffer.concat(chunks).toString());
+    response.writeHead(201).end("{}");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  await manager.enableProjectTracking("openai-codex");
+  const configPath = path.join(home, ".codex/multivibe-project.json");
+  const config = JSON.parse(await fs.readFile(configPath, "utf8"));
+  config.url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  await fs.writeFile(configPath, JSON.stringify(config));
+  const manifest = JSON.parse(await fs.readFile(path.join(home, ".codex/hooks.json"), "utf8"));
+  const command = manifest.hooks.SessionStart[0].hooks[0].command;
+  assert.equal(command.includes(config.token), false);
+  await new Promise<void>((resolve, reject) => {
+    const child = exec(command, { timeout: 5000 }, (error) => error ? reject(error) : resolve());
+    child.stdin!.end(JSON.stringify({ session_id: "fixture-session", cwd: home, source: "startup" }));
+  });
+  assert.equal(token, "fixture-registration-token");
+  assert.equal(registration?.sessionId, "fixture-session");
+  assert.equal(registration?.projectRoot, home);
 });
