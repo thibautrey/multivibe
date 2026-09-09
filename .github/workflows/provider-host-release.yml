@@ -605,6 +605,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: provider-host-signed-release
@@ -622,6 +625,13 @@ jobs:
           if [ -f "release/multivibe-host_${{ needs.validate-tag.outputs.version }}_windows_amd64_setup.exe" ]; then
             node scripts/distribution/winget.mjs '${{ needs.validate-tag.outputs.version }}' 'release/multivibe-host_${{ needs.validate-tag.outputs.version }}_windows_amd64_setup.exe' distribution-packages/winget
           fi
+      - name: Generate release notes and platform download links
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES_API_BASE_URL: ${{ vars.RELEASE_NOTES_API_BASE_URL }}
+          RELEASE_NOTES_API_KEY: ${{ secrets.RELEASE_NOTES_API_KEY }}
+          RELEASE_NOTES_MODEL: ${{ vars.RELEASE_NOTES_MODEL }}
+        run: node scripts/generate-release-notes.mjs release release-notes.md container-release/container-release-notes.md
       - name: Publish the immutable GitHub release
         shell: bash
         env:
@@ -656,13 +666,11 @@ jobs:
             --trusted-key-id 8041964146f75ff5 \
             --trusted-public-key-base64 /TAkcZv7iyGJrPJY1ds1WGxrS7LvoUYnUrYERX2FOgU= \
             --output "release/multivibe-host-update-$channel.json"
-          container_notes="$(<container-release/container-release-notes.md)"
           gh release create "$GITHUB_REF_NAME" release/* container-release/container-release.json \
             --verify-tag \
             "${release_kind[@]}" \
             --title "MultiVibe Host ${{ needs.validate-tag.outputs.version }}" \
-            --notes "$container_notes" \
-            --generate-notes
+            --notes-file release-notes.md
       - name: Upload catalog submission files
         if: ${{ !contains(needs.validate-tag.outputs.version, '-') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
