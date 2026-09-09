@@ -20,7 +20,7 @@ while(queue.length) {
     if(entry!=="injector")throw Error("Native credential codec cannot enter Core package");
     const bundle=await build({entryPoints:[file],bundle:true,write:false,format:"esm",platform:"node",target:"node22",metafile:true});
     // Only this reviewed codec and its pinned schema/SDK dependencies can be bundled.
-    const allowed=new Set(["@ai-sdk/anthropic","@ai-sdk/provider","@ai-sdk/provider-utils","@standard-schema/spec","@standard-schema/utils","eventsource-parser","secure-json-parse","zod"]);
+    const allowed=new Set(["@ai-sdk/anthropic","@ai-sdk/provider","@ai-sdk/provider-utils","@workflow/serde","@standard-schema/spec","@standard-schema/utils","eventsource-parser","secure-json-parse","zod"]);
     for(const input of Object.keys(bundle.metafile.inputs)) {
       const match=input.match(/node_modules\/((?:@[^/]+\/)?[^/]+)/);
       if(match&&!allowed.has(match[1]))throw Error(`Unreviewed native codec dependency ${match[1]}`);
