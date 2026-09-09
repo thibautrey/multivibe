@@ -27,7 +27,7 @@ function aliases(...values: unknown[]): string | null | undefined {
   }
   return result;
 }
-export function providerTokenUsage(payload: unknown): ProviderTokenUsage | null {
+export function providerTokenUsage(payload: unknown, maximumOutputTokens?: number): ProviderTokenUsage | null {
   if (!record(payload) || !record(payload.usage)) return null;
   // A reported nonstandard service cannot be priced using standard-only grants.
   if (payload.service_tier !== undefined && payload.service_tier !== "default") return null;
@@ -39,6 +39,10 @@ export function providerTokenUsage(payload: unknown): ProviderTokenUsage | null 
   const inputTokens = aliases(usage.prompt_tokens, usage.input_tokens);
   const outputTokens = aliases(usage.completion_tokens, usage.output_tokens);
   if (inputTokens == null || outputTokens == null) return null;
+  // Provider-side request limits are not sufficient evidence of conformance.
+  // Compare the inclusive output count before splitting off reasoning for prices.
+  if (maximumOutputTokens !== undefined && (!Number.isSafeInteger(maximumOutputTokens)
+    || maximumOutputTokens <= 0 || BigInt(outputTokens) > BigInt(maximumOutputTokens))) return null;
   const result: ProviderTokenUsage = { inputTokens, outputTokens };
   const optional = [
     ["totalTokens", aliases(usage.total_tokens)],

@@ -80,7 +80,7 @@ export class ManagedExecutor {
       const raw = Buffer.concat(chunks);
       let payload: unknown;
       try { payload = JSON.parse(raw.toString("utf8")); } catch { payload = undefined; }
-      const usage = providerTokenUsage(payload);
+      const usage = providerTokenUsage(payload, grant.maximumOutputTokens);
       receipt.usage = usage ? { ...usage } : null;
       // A completed HTTP response without usage is still financially uncertain.
       receipt.state = usage ? "completed" : "uncertain";

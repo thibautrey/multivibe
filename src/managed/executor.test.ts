@@ -95,3 +95,28 @@ test("DeepSeek-shaped cache usage survives response conversion in the durable re
  assert.equal((await result.receipt).usage?.cachedInputTokens,"3");
  assert.equal(h.receipts[0].usage?.cachedInputTokens,"3");
 });
+
+test("JSON and SSE cannot settle output above the signed allowance, including reasoning",async()=>{
+ for(const stream of [false,true])for(const output of [8,9]){
+  const body=Buffer.from(JSON.stringify({model:"public/model",input:"fixture",stream,max_output_tokens:8}));
+  const grant:ExecutionGrant={version:1,audience:"multivibe-core-managed",attemptId:`bound-${stream}-${output}`,reservationId:"r1",
+   routeVersionId:"v1",providerId:"mistral",credentialRef:"account-1",model:"public/model",upstreamModel:"upstream",
+   operation:"responses",stream,bodySha256:executionBodyDigest(body),maximumOutputTokens:8,issuedAt:1000,expiresAt:61000};
+  let persisted:ExecutionReceipt|undefined;
+  const usage={prompt_tokens:4,completion_tokens:output,total_tokens:4+output,completion_tokens_details:{reasoning_tokens:5}};
+  const executor=new ManagedExecutor({verificationKey:keys.publicKey,maximumRequestBytes:10000,maximumResponseBytes:10000,
+   executionTimeoutMs:1000,clock:()=>1001,journal:{async claim(){},async finish(receipt){persisted=receipt;}},
+   accounts:[{providerId:"mistral",credentialRef:"account-1",models:new Set(["upstream"]),async chatCompletions(){
+    if(stream)return new Response(`data: ${JSON.stringify({object:"chat.completion.chunk",choices:[],usage})}\n\ndata: [DONE]\n\n`,
+     {headers:{"content-type":"text/event-stream"}});
+    return Response.json({choices:[{message:{role:"assistant",content:"fixture"}}],usage});
+   }}]});
+  const result=await executor.execute(signExecutionGrant(grant,keys.privateKey,1000),body);
+  // Cancellation must not bypass the same budget check during independent drain.
+  if(stream)await result.response.body!.cancel();
+  const receipt=await result.receipt;
+  assert.equal(receipt.state,output===8?"completed":"uncertain");
+  assert.equal(receipt.usage?.outputTokens??null,output===8?"8":null);
+  assert.deepEqual(persisted,receipt);
+ }
+});
