@@ -12,3 +12,30 @@ test("provider projection cannot multiply a per-choice output grant",()=>{
   assert.equal(result.max_tokens,10);
  }
 });
+
+test("OpenAI projection bounds completion and reasoning for both incoming operations",()=>{
+ for(const operation of ["responses","chat_completions"] as const){
+  for(const providerId of ["openai","mistral","xai","deepseek"]){
+   for(const limit of [undefined,"max_tokens","max_output_tokens","max_completion_tokens"]){
+    const body={model:grant.model,...(operation==="responses"?{input:"hello"}:{messages:[{role:"user",content:"hello"}]}),...(limit?{[limit]:8}:{})};
+    const result=JSON.parse(Buffer.from(managedProviderRequest({...grant,providerId,operation},Buffer.from(JSON.stringify(body)))).toString());
+    const expected=providerId==="openai"?"max_completion_tokens":"max_tokens";
+    assert.equal(result[expected],limit?8:10);
+    assert.equal(result[providerId==="openai"?"max_tokens":"max_completion_tokens"],undefined);
+    assert.equal(result.max_output_tokens,undefined);
+    assert.equal(result.model,grant.upstreamModel);
+   }
+  }
+ }
+});
+test("all supplied limit aliases must agree and fit the grant",()=>{
+ for(const limits of [
+  {max_tokens:5,max_output_tokens:6},
+  {max_tokens:11,max_completion_tokens:5},
+  {max_tokens:null,max_completion_tokens:5},
+  {max_tokens:5,max_completion_tokens:"5"},
+  {max_tokens:0},{max_output_tokens:-1},{max_completion_tokens:1.5},
+ ])assert.throws(()=>managedProviderRequest(grant,Buffer.from(JSON.stringify({model:grant.model,...limits}))),/output_limit_mismatch/);
+ const matching={model:grant.model,max_tokens:5,max_output_tokens:5,max_completion_tokens:5};
+ assert.equal(JSON.parse(Buffer.from(managedProviderRequest({...grant,providerId:"openai"},Buffer.from(JSON.stringify(matching)))).toString()).max_completion_tokens,5);
+});
