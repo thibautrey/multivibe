@@ -42,7 +42,7 @@ export function managedProviderStream(options: {
         // final usage chunk omits it or reports a different tier.
         if (payload.service_tier !== undefined && payload.service_tier !== "default") invalid = true;
         if (payload.usage !== undefined && payload.usage !== null) {
-          const next = providerTokenUsage(payload);
+          const next = providerTokenUsage(payload, options.grant.maximumOutputTokens);
           if (!next || (usage.value && JSON.stringify(usage.value) !== JSON.stringify(next))) invalid = true;
           usage.value = next;
           state.usage = payload.usage;
