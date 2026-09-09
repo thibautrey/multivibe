@@ -49,8 +49,31 @@ export function createManagedExecutionServer(options: {
       }
       // Once accepted, execution/receipt persistence survives the caller disconnecting.
       const result = await options.executor.execute(token, Buffer.concat(chunks));
+      if (result.response.headers.get("content-type") === "text/event-stream" && result.response.body) {
+        res.setHeader("content-type", "application/x-ndjson");
+        res.write(JSON.stringify({ type: "response", status: result.response.status, contentType: "text/event-stream" }) + "\n");
+        const reader = result.response.body.getReader();
+        let disconnected = res.destroyed;
+        res.once("close", () => { disconnected = true; void reader.cancel().catch(() => undefined); });
+        try {
+          for (;;) {
+            const next = await reader.read();
+            if (next.done) break;
+            if (!disconnected && !res.write(JSON.stringify({ type: "chunk", bodyBase64: Buffer.from(next.value).toString("base64") }) + "\n")) {
+              await new Promise<void>(resolve => {
+                const finish = () => { res.off("drain", finish); res.off("close", finish); resolve(); };
+                res.once("drain", finish); res.once("close", finish);
+              });
+            }
+          }
+        } catch { /* Persisted receipt remains the authority when streaming fails. */ }
+        finally { reader.releaseLock(); }
+        const receipt = await result.receipt;
+        if (!disconnected) res.end(JSON.stringify({ type: "receipt", receipt }) + "\n");
+        return;
+      }
       const responseBody = Buffer.from(await result.response.arrayBuffer()).toString("base64");
-      res.end(JSON.stringify({ receipt: result.receipt, response: {
+      res.end(JSON.stringify({ receipt: await result.receipt, response: {
         status: result.response.status, contentType: result.response.headers.get("content-type"), bodyBase64: responseBody,
       } }));
     } catch { fail(502, "execution_unavailable"); }
