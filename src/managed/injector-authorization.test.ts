@@ -8,9 +8,10 @@ const keys = generateKeyPairSync("ed25519");
 function fixture(operation: ExecutionGrant["operation"] = "responses") {
   const originalBody = Buffer.from(JSON.stringify({model:"public/model",stream:false,max_output_tokens:8,
     ...(operation === "responses" ? {input:"hello"} : {messages:[{role:"user",content:"hello"}]})}));
-  const grant: ExecutionGrant = {version:1,audience:"multivibe-core-managed",attemptId:"attempt",reservationId:"reservation",
+  const grant: ExecutionGrant = {version:2,audience:"multivibe-core-managed",attemptId:"attempt",reservationId:"reservation",
     routeVersionId:"route",providerId:"mistral",credentialRef:"scoped-account",model:"public/model",upstreamModel:"upstream",
-    operation,stream:false,bodySha256:executionBodyDigest(originalBody),maximumOutputTokens:8,issuedAt:1000,expiresAt:61000};
+    operation,stream:false,bodySha256:executionBodyDigest(originalBody),maximumOutputTokens:8,responseRecoveryKeyId:"test-key",
+    responseRecoveryPublicKey:"A5wnJM5Y01mDWCA4MsbAtTGS_l8BI4-JNVWY_KRBH1I",responseRecoveryExpiresAt:120000,issuedAt:1000,expiresAt:61000};
   return {token:signExecutionGrant(grant,keys.privateKey,1000),originalBody,providerBody:managedProviderRequest(grant,originalBody),
     verificationKey:keys.publicKey,now:1001,maximumRequestBytes:10000};
 }

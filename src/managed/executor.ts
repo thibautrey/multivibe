@@ -7,6 +7,7 @@ import { managedProviderStream } from "./stream.js";
 import { providerTokenUsage } from "./usage.js";
 import { managedProviderRequest } from "./request.js";
 import { chatCompletionObjectToResponseObject } from "../responses/converters.js";
+import {encryptExecutionResponse, type ExecutionRecoveryEnvelope} from "./response-recovery.js";
 
 /** Forward only in memory over the private authenticated injector corridor. */
 export interface ManagedInvocationAuthorization {
@@ -31,7 +32,8 @@ export class ManagedExecutor {
     verificationKey: KeyObject;
     accounts: readonly ManagedProviderAccount[];
     coordination: {claim(token: string): Promise<ExecutionOwnership>};
-    receiptWriter: {finish(token: string, ownership: ExecutionOwnership, receipt: ExecutionReceipt): Promise<void>};
+    receiptWriter: {finish(token: string, ownership: ExecutionOwnership, receipt: ExecutionReceipt,
+      recovery?:ExecutionRecoveryEnvelope): Promise<void>};
     maximumRequestBytes: number;
     maximumResponseBytes: number;
     executionTimeoutMs: number;
@@ -60,7 +62,7 @@ export class ManagedExecutor {
         && upstreamResponse.headers.get("content-type")?.startsWith("text/event-stream")) {
         return managedProviderStream({ response: upstreamResponse, grant, receipt,
           maximumBytes: this.dependencies.maximumResponseBytes,
-          finish: value => this.dependencies.receiptWriter.finish(token, ownership, value), clock: now });
+          finish: (value,recovery) => this.dependencies.receiptWriter.finish(token, ownership, value,recovery), clock: now });
       }
       const reader = upstreamResponse.body?.getReader();
       const chunks: Uint8Array[] = [];
@@ -104,7 +106,17 @@ export class ManagedExecutor {
     }
     receipt.finishedAt = now();
     // If persistence fails, do not claim success or authorize a retry.
-    await this.dependencies.receiptWriter.finish(token, ownership, receipt);
+    let recovery:ExecutionRecoveryEnvelope|undefined;
+    if(receipt.state==="completed"){
+      const contentType=response.headers.get("content-type");
+      if(contentType!=="application/json"&&contentType!=="application/json; charset=utf-8")throw Error("invalid_recovery_content_type");
+      const recoveryBody=new Uint8Array(await response.clone().arrayBuffer());
+      if(recoveryBody.byteLength>this.dependencies.maximumResponseBytes){
+        receipt.state="uncertain";
+        response=Response.json({error:{code:"provider_execution_uncertain"}},{status:502});
+      }else recovery=encryptExecutionResponse(grant,response.status,contentType,recoveryBody);
+    }
+    await this.dependencies.receiptWriter.finish(token, ownership, receipt,recovery);
     return { response, receipt };
   }
   private baseReceipt(grant: ExecutionGrant, at: number): ExecutionReceipt {

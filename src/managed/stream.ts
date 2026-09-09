@@ -3,21 +3,27 @@ import { createChatStreamAccumulator, convertChatCompletionSSEToResponseSSE } fr
 import { providerTokenUsage } from "./usage.js";
 import type { ExecutionGrant } from "./authorization.js";
 import type { ExecutionReceipt } from "./journal.js";
+import {encryptExecutionResponse, type ExecutionRecoveryEnvelope} from "./response-recovery.js";
 
 /** Drains provider evidence even when the client cancels or stops reading. Memory
  * is bounded: slow clients lose their stream, never the billing receipt. */
 export function managedProviderStream(options: {
   response: Response; grant: ExecutionGrant; receipt: ExecutionReceipt; maximumBytes: number;
-  finish: (receipt: ExecutionReceipt) => Promise<void>; clock: () => number;
+  finish: (receipt: ExecutionReceipt,recovery?:ExecutionRecoveryEnvelope) => Promise<void>; clock: () => number;
 }): { response: Response; receipt: Promise<ExecutionReceipt> } {
   let controller!: ReadableStreamDefaultController<Uint8Array>;
   let cancelled = false;
   const output = new ReadableStream<Uint8Array>({
     start(value) { controller = value; }, cancel() { cancelled = true; },
   }, { highWaterMark: 256 * 1024, size: chunk => chunk.byteLength });
+  const recoveryChunks:Buffer[]=[];let recoveryLength=0;
   const send = (value: string) => {
-    if (cancelled || !value) return;
+    if (!value) return;
     const bytes = Buffer.from(value);
+    recoveryLength+=bytes.byteLength;
+    if(recoveryLength>options.maximumBytes)throw Error("managed_stream_recovery_too_large");
+    recoveryChunks.push(bytes);
+    if (cancelled) return;
     if ((controller.desiredSize ?? 0) < bytes.byteLength) {
       cancelled = true; controller.error(Error("managed_stream_consumer_too_slow")); return;
     }
@@ -81,7 +87,10 @@ export function managedProviderStream(options: {
       invalid = true;
     } finally { reader.releaseLock(); }
     options.receipt.finishedAt = options.clock();
-    try { await options.finish(options.receipt); }
+    let recovery:ExecutionRecoveryEnvelope|undefined;
+    if(options.receipt.state==="completed")recovery=encryptExecutionResponse(options.grant,options.response.status,
+      "text/event-stream",Buffer.concat(recoveryChunks));
+    try { await options.finish(options.receipt,recovery); }
     catch (error) { if (!cancelled) { cancelled = true; controller.error(Error("receipt_persistence_failed")); } throw error; }
     if (!cancelled) {
       if (!done || invalid) controller.error(Error("provider_stream_incomplete"));
