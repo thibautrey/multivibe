@@ -53,6 +53,7 @@ export function verifyExecutionGrant(token: string, body: Uint8Array, key: KeyOb
   if (token.length > 8192 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token)
     || key.asymmetricKeyType !== "ed25519" || key.type !== "public") throw Error("invalid_execution_grant");
   const [payload, signature] = token.split(".");
+  if (!payload || !signature) throw Error("invalid_execution_grant");
   if (!verify(null, Buffer.from(`multivibe-execution-v1.${payload}`), key, Buffer.from(signature, "base64url"))) throw Error("invalid_execution_grant");
   const grant: unknown = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
   validate(grant, now);
