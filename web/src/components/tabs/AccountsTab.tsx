@@ -2891,9 +2891,6 @@ export function AccountsTab(props: Props) {
                 </button>
               </div>
             </div>
-            <ol className="provider-setup-steps" aria-label="Setup progress">
-              {["Choose provider", "Connect", "Review"].map((label, index) => <li key={label} className={index === providerStep ? "active" : index < providerStep ? "complete" : ""} aria-current={index === providerStep ? "step" : undefined}><span>{index < providerStep ? "✓" : index + 1}</span>{label}</li>)}
-            </ol>
             {providerStep > 0 && <div className="provider-setup-heading">
               <ProviderMark provider={provider} sdkProvider={sdkProvider} />
               <div><h2 id="provider-setup-title">{providerStep === 1 ? `Connect ${selectedProviderName}` : "Ready to connect?"}</h2>
