@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {createManagedAnthropicAccount} from "./native-anthropic.js";
+import {createManagedProviderAccount} from "./provider.js";
 import {providerTokenUsage} from "./usage.js";
 const body=Buffer.from(JSON.stringify({model:"claude-sonnet-4-6",messages:[{role:"user",content:"Hello"}],max_tokens:25}));
 const authorization={token:"fixture",originalBody:body};
@@ -50,4 +51,16 @@ test("native Anthropic SSE reuses the SDK streaming codec and preserves usage",a
  const text=await result.text();assert.match(text,/Hi/);assert.match(text,/\[DONE\]/);
  const usageFrame=text.split("\n\n").filter(line=>line.startsWith("data: {")).map(line=>JSON.parse(line.slice(6))).find(frame=>frame.usage);
  assert.equal(usageFrame.usage.prompt_tokens,5);assert.equal(usageFrame.usage.completion_tokens,2);assert.equal(calls,1);
+});
+
+test("registered native account uses Anthropic discovery authentication",async()=>{
+ let requests=0;
+ const account=createManagedProviderAccount({providerId:"anthropic",credentialRef:"account",models:new Set(["claude-sonnet-4-6"]),maximumResponseBytes:8192,async readCredential(){return "fixture-key";},fetchViaEgress:async(url,init)=>{
+  requests++;assert.equal(String(url),"https://api.anthropic.com/v1/models");
+  assert.equal(new Headers(init?.headers).get("x-api-key"),"fixture-key");
+  assert.equal(new Headers(init?.headers).get("anthropic-version"),"2023-06-01");
+  assert.equal(new Headers(init?.headers).get("authorization"),null);
+  return Response.json({data:[{id:"claude-sonnet-4-6"}],has_more:false});
+ }});
+ assert.deepEqual(await account.discoverModels(AbortSignal.timeout(1000)),["claude-sonnet-4-6"]);assert.equal(requests,1);
 });
