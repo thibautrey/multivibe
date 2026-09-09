@@ -1,8 +1,10 @@
+import { EXPANDED_PROVIDER_ACCESS } from "./expandedProviderMetadata";
 // Reviewed 2026-09-07. These describe the connected API/OAuth service,
 // not a provider's consumer chatbot. Trials do not count as free tiers.
 export type AccessFilter = "Paid" | "Free" | "Freemium";
 export type ProviderAccess = { paid: boolean; free: boolean; note: string; source: string };
 export const PROVIDER_ACCESS: Record<string, ProviderAccess> = {
+  ...EXPANDED_PROVIDER_ACCESS,
   manus: { paid: true, free: true, note: "Use a Manus API key. Each text request creates a private agent task; profiles are standard, lite and max. No client tool calls or token streaming. Available credits refresh automatically.", source: "https://open.manus.ai/docs/v2/task.create" },
   "qwen-coding": { paid: true, free: false, note: "Use an international Alibaba Coding Plan key. Quotas refresh where Alibaba accepts API-key access; accounts requiring console sign-in show that limitation.", source: "https://www.alibabacloud.com/help/en/model-studio/coding-plan" },
   kimi: { paid: true, free: false, note: "Use a Moonshot API key. Kimi Code subscription keys use the separate Kimi Code connection.", source: "https://platform.moonshot.ai/docs" },

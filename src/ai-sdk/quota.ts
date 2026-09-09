@@ -1,3 +1,4 @@
+import { QUOTA_FETCHERS } from "./expansion-subscriptions/index.js";
 import type { Account, UsageSnapshot } from "../types.js";
 import { fetchPoeUsage } from "./poe-provider.js";
 import { fetchMinimaxUsage } from "./minimax-provider.js";
@@ -14,6 +15,8 @@ const UNSUPPORTED_MESSAGES: Record<string, string> = {
 
 /** Fixed, reviewed endpoints only. Never send cloud keys to the caller's base URL. */
 export async function fetchSdkUsage(account: Account, signal: AbortSignal): Promise<UsageSnapshot> {
+  const fetcher = QUOTA_FETCHERS[account.sdkProvider ?? ""];
+  if (fetcher) return fetcher(account, signal);
   switch (account.sdkProvider) {
     case "poe": return fetchPoeUsage(account.accessToken, signal);
     case "minimax-coding": return fetchMinimaxUsage(account.accessToken, signal);
