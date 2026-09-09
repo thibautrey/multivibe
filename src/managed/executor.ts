@@ -1,7 +1,8 @@
 import type { KeyObject } from "node:crypto";
 import { createHash } from "node:crypto";
 import { verifyExecutionGrant, type ExecutionGrant } from "./authorization.js";
-import { type ExecutionJournal, type ExecutionReceipt } from "./journal.js";
+import type { ExecutionReceipt } from "./journal.js";
+import type { ExecutionOwnership } from "./coordination-client.js";
 import { managedProviderStream } from "./stream.js";
 import { providerTokenUsage } from "./usage.js";
 import { managedProviderRequest } from "./request.js";
@@ -11,9 +12,10 @@ import { chatCompletionObjectToResponseObject } from "../responses/converters.js
 export interface ManagedInvocationAuthorization {
   readonly token: string;
   readonly originalBody: Uint8Array;
+  readonly ownership: ExecutionOwnership;
   /** Injector-local callback, never serialized or accepted from the HTTP caller.
    * Recheck dispatch authority after asynchronous credential access. */
-  readonly beforeDispatch?: () => void;
+  readonly beforeDispatch?: () => Promise<void>;
 }
 export interface ManagedProviderAccount {
   providerId: string;
@@ -28,7 +30,8 @@ export class ManagedExecutor {
   constructor(private readonly dependencies: {
     verificationKey: KeyObject;
     accounts: readonly ManagedProviderAccount[];
-    journal: Pick<ExecutionJournal, "claim" | "finish">;
+    coordination: {claim(token: string): Promise<ExecutionOwnership>};
+    receiptWriter: {finish(token: string, ownership: ExecutionOwnership, receipt: ExecutionReceipt): Promise<void>};
     maximumRequestBytes: number;
     maximumResponseBytes: number;
     executionTimeoutMs: number;
@@ -46,18 +49,18 @@ export class ManagedExecutor {
       && account.credentialRef === grant.credentialRef && account.models.has(grant.upstreamModel));
     if (accounts.length !== 1) throw Error("execution_account_unavailable");
     const bytes = managedProviderRequest(grant, body);
-    await this.dependencies.journal.claim(grant);
+    const ownership = await this.dependencies.coordination.claim(token);
     const receipt = this.baseReceipt(grant, now());
     let response: Response;
     try {
       const upstreamResponse = await accounts[0].chatCompletions(bytes, AbortSignal.timeout(this.dependencies.executionTimeoutMs),
-        { token, originalBody: new Uint8Array(body) });
+        { token, originalBody: new Uint8Array(body), ownership });
       receipt.status = upstreamResponse.status;
       if (grant.stream && upstreamResponse.ok && upstreamResponse.body
         && upstreamResponse.headers.get("content-type")?.startsWith("text/event-stream")) {
         return managedProviderStream({ response: upstreamResponse, grant, receipt,
           maximumBytes: this.dependencies.maximumResponseBytes,
-          finish: value => this.dependencies.journal.finish(value), clock: now });
+          finish: value => this.dependencies.receiptWriter.finish(token, ownership, value), clock: now });
       }
       const reader = upstreamResponse.body?.getReader();
       const chunks: Uint8Array[] = [];
@@ -101,7 +104,7 @@ export class ManagedExecutor {
     }
     receipt.finishedAt = now();
     // If persistence fails, do not claim success or authorize a retry.
-    await this.dependencies.journal.finish(receipt);
+    await this.dependencies.receiptWriter.finish(token, ownership, receipt);
     return { response, receipt };
   }
   private baseReceipt(grant: ExecutionGrant, at: number): ExecutionReceipt {

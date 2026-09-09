@@ -1,7 +1,6 @@
 import { createServer, type ServerOptions } from "node:https";
 import type { TLSSocket } from "node:tls";
 import type { ManagedExecutor } from "./executor.js";
-import type { ExecutionJournal } from "./journal.js";
 
 /** Dedicated workload-only server: no desktop routes, account management or plugins. */
 export function createManagedExecutionServer(options: {
@@ -9,7 +8,6 @@ export function createManagedExecutionServer(options: {
   allowedClientUri: string;
   allowedDiscoveryUri?: string;
   executor: Pick<ManagedExecutor, "execute">;
-  journal: Pick<ExecutionJournal, "receipt">;
   discovery?: { read(): Promise<unknown> };
   maximumRequestBytes: number;
   maximumConcurrentExecutions: number;
@@ -35,14 +33,6 @@ export function createManagedExecutionServer(options: {
       return;
     }
     if (req.method === "GET" && req.url === "/health/live") { res.end('{"ok":true}'); return; }
-    if (req.method === "GET" && /^\/internal\/v1\/receipts\/[a-zA-Z0-9._-]{1,256}$/.test(req.url ?? "")) {
-      try {
-        const receipt = await options.journal.receipt(req.url!.split("/").at(-1)!);
-        if (!receipt) { fail(404, "receipt_unavailable"); return; }
-        res.end(JSON.stringify(receipt));
-      } catch { fail(503, "receipt_unavailable"); }
-      return;
-    }
     if (req.method !== "POST" || req.url !== "/internal/v1/execute") { fail(404, "not_found"); return; }
     if (active >= options.maximumConcurrentExecutions) { fail(503, "executor_busy"); return; }
     const token = req.headers["x-multivibe-execution-grant"];

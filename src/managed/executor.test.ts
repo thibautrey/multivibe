@@ -6,6 +6,7 @@ import { signExecutionGrant, executionBodyDigest, type ExecutionGrant } from "./
 import { providerTokenUsage } from "./usage.js";
 import type { ExecutionReceipt } from "./journal.js";
 const keys = generateKeyPairSync("ed25519");
+const ownership = {ownerId:"11111111-1111-4111-8111-111111111111",epoch:1};
 function harness(reply: () => Promise<Response>, operation: ExecutionGrant["operation"] = "responses") {
   const receipts: ExecutionReceipt[] = [];
   let calls = 0;
@@ -16,10 +17,12 @@ function harness(reply: () => Promise<Response>, operation: ExecutionGrant["oper
     operation, stream: false, bodySha256: executionBodyDigest(body), maximumOutputTokens: 8, issuedAt: 1000, expiresAt: 61000 };
   const executor = new ManagedExecutor({ verificationKey: keys.publicKey, maximumRequestBytes: 10000,
     maximumResponseBytes: 10000, executionTimeoutMs: 1000, clock: () => 1001,
-    journal: { async claim() { if (claimed) throw Error("duplicate"); claimed = true; }, async finish(receipt) { receipts.push(receipt); } },
+    coordination: { async claim() { if (claimed) throw Error("duplicate"); claimed = true; return ownership; } },
+    receiptWriter: { async finish(_token,_ownership,receipt) { receipts.push(receipt); } },
     accounts: [{ providerId: "mistral", credentialRef: "account-1", models: new Set(["upstream"]), async chatCompletions(bytes, _signal, authorization) {
       assert.deepEqual(authorization.originalBody, new Uint8Array(body));
       assert.equal(authorization.token, signExecutionGrant(grant, keys.privateKey, 1000));
+      assert.deepEqual(authorization.ownership,ownership);
       assert.equal(claimed, true);
       const payload = JSON.parse(Buffer.from(bytes).toString());
       assert.equal(payload.model, "upstream");
@@ -69,7 +72,8 @@ test("stream cancellation does not discard provider usage or the durable receipt
     operation: "responses", stream: true, bodySha256: executionBodyDigest(body), maximumOutputTokens: 8, issuedAt: 1000, expiresAt: 61000 };
   const executor = new ManagedExecutor({ verificationKey: keys.publicKey, maximumRequestBytes: 10000,
     maximumResponseBytes: 10000, executionTimeoutMs: 1000, clock: () => 1001,
-    journal: { async claim() {}, async finish(receipt) { finish = receipt; } },
+    coordination: { async claim() {return ownership;} },
+    receiptWriter: { async finish(_token,_ownership,receipt) { finish = receipt; } },
     accounts: [{ providerId: "mistral", credentialRef: "account-1", models: new Set(["upstream"]), async chatCompletions() {
       return new Response(new ReadableStream({ async start(controller) {
         controller.enqueue(Buffer.from('data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"hello"}}]}\n\n'));
@@ -105,7 +109,8 @@ test("JSON and SSE cannot settle output above the signed allowance, including re
   let persisted:ExecutionReceipt|undefined;
   const usage={prompt_tokens:4,completion_tokens:output,total_tokens:4+output,completion_tokens_details:{reasoning_tokens:5}};
   const executor=new ManagedExecutor({verificationKey:keys.publicKey,maximumRequestBytes:10000,maximumResponseBytes:10000,
-   executionTimeoutMs:1000,clock:()=>1001,journal:{async claim(){},async finish(receipt){persisted=receipt;}},
+   executionTimeoutMs:1000,clock:()=>1001,coordination:{async claim(){return ownership;}},
+   receiptWriter:{async finish(_token,_ownership,receipt){persisted=receipt;}},
    accounts:[{providerId:"mistral",credentialRef:"account-1",models:new Set(["upstream"]),async chatCompletions(){
     if(stream)return new Response(`data: ${JSON.stringify({object:"chat.completion.chunk",choices:[],usage})}\n\ndata: [DONE]\n\n`,
      {headers:{"content-type":"text/event-stream"}});

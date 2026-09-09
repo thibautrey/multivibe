@@ -1,18 +1,18 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { createPublicKey } from "node:crypto";
-import { ExecutionJournal } from "./journal.js";
 import { ManagedExecutor } from "./executor.js";
 import { createManagedExecutionServer } from "./http.js";
 import { ManagedInjectorClient } from "./injector-client.js";
 import type { ManagedProviderAccount } from "./executor.js";
+import {ManagedCoordinationClient} from "./coordination-client.js";
 
 export interface ManagedRuntimeConfig {
   host: string;
   port: number;
-  journalDirectory: string;
   providerManifestFile: string;
   injectorUrl: string;
+  coordinationUrl: string;
   tlsKeyFile: string;
   tlsCertFile: string;
   tlsCaFile: string;
@@ -39,12 +39,14 @@ export function loadManagedRuntimeConfig(env: NodeJS.ProcessEnv): ManagedRuntime
   if (env.MANAGED_CORE_CREDENTIAL_DIRECTORY !== undefined) throw Error("Provider credentials must not be configured in Core");
   const injectorUrl=new URL(required(env,"MANAGED_CORE_INJECTOR_URL"));
   if(injectorUrl.protocol!=="https:"||injectorUrl.username||injectorUrl.password||injectorUrl.pathname!=="/"||injectorUrl.search||injectorUrl.hash) throw Error("Invalid MANAGED_CORE_INJECTOR_URL");
+  const coordinationUrl=new URL(required(env,"MANAGED_CORE_COORDINATION_URL"));
+  if(coordinationUrl.protocol!=="https:"||coordinationUrl.username||coordinationUrl.password||coordinationUrl.pathname!=="/"||coordinationUrl.search||coordinationUrl.hash) throw Error("Invalid MANAGED_CORE_COORDINATION_URL");
   return {
     host: env.MANAGED_CORE_HOST ?? "0.0.0.0",
     port: integer(env, "MANAGED_CORE_PORT", 1456, 65535),
-    journalDirectory: path("MANAGED_CORE_JOURNAL_DIRECTORY"),
     providerManifestFile: path("MANAGED_CORE_PROVIDER_MANIFEST_FILE"),
     injectorUrl: required(env, "MANAGED_CORE_INJECTOR_URL"),
+    coordinationUrl: required(env, "MANAGED_CORE_COORDINATION_URL"),
     tlsKeyFile: path("MANAGED_CORE_TLS_KEY_FILE"), tlsCertFile: path("MANAGED_CORE_TLS_CERT_FILE"),
     tlsCaFile: path("MANAGED_CORE_TLS_CA_FILE"), cloudVerificationKeyFile: path("MANAGED_CORE_CLOUD_VERIFY_KEY_FILE"),
     allowedClientUri: required(env, "MANAGED_CORE_CLOUD_SPIFFE_URI"),
@@ -56,9 +58,6 @@ export function loadManagedRuntimeConfig(env: NodeJS.ProcessEnv): ManagedRuntime
   };
 }
 export async function createManagedRuntime(config: ManagedRuntimeConfig) {
-  // The journal must be an existing durable volume. Never silently create an
-  // ephemeral fallback directory when deployment omitted its volume mount.
-  if (!(await stat(config.journalDirectory)).isDirectory()) throw Error("managed_journal_directory_required");
   const rawManifest = await readFile(config.providerManifestFile);
   if (rawManifest.byteLength > 2 * 1024 * 1024) throw Error("managed_manifest_too_large");
   const manifest = JSON.parse(rawManifest.toString("utf8"));
@@ -66,6 +65,7 @@ export async function createManagedRuntime(config: ManagedRuntimeConfig) {
     || !Array.isArray(manifest.accounts) || manifest.accounts.length > 100) throw Error("invalid_managed_manifest");
   const tls={key:await readFile(config.tlsKeyFile),cert:await readFile(config.tlsCertFile),ca:await readFile(config.tlsCaFile)};
   const injector=new ManagedInjectorClient(config.injectorUrl,tls,config.maximumRequestBytes,config.maximumResponseBytes,config.executionTimeoutMs);
+  const coordination=new ManagedCoordinationClient(config.coordinationUrl,tls,Math.min(config.executionTimeoutMs,30000));
   const refs = new Set<string>();
   const accounts: ManagedProviderAccount[] = manifest.accounts.map((account: Record<string, unknown>): ManagedProviderAccount => {
     if (!account || Object.keys(account).sort().join() !== "credentialRef,models,providerId"
@@ -78,15 +78,14 @@ export async function createManagedRuntime(config: ManagedRuntimeConfig) {
     return {providerId:account.providerId as string,credentialRef:account.credentialRef,models:new Set<string>(account.models),
       chatCompletions:(body,signal,authorization)=>injector.execute(body,signal,authorization)};
   });
-  const journal = new ExecutionJournal(config.journalDirectory);
   const key = createPublicKey(await readFile(config.cloudVerificationKeyFile));
   if (key.asymmetricKeyType !== "ed25519") throw Error("invalid_cloud_verification_key");
-  const executor = new ManagedExecutor({ verificationKey: key, journal, accounts,
+  const executor = new ManagedExecutor({ verificationKey: key, coordination, receiptWriter:injector, accounts,
     maximumRequestBytes: config.maximumRequestBytes, maximumResponseBytes: config.maximumResponseBytes,
     executionTimeoutMs: config.executionTimeoutMs });
   const server = createManagedExecutionServer({
     tls,
-    allowedClientUri: config.allowedClientUri, allowedDiscoveryUri:config.allowedDiscoveryUri, executor, journal, discovery: {read:()=>injector.discovery()},
+    allowedClientUri: config.allowedClientUri, allowedDiscoveryUri:config.allowedDiscoveryUri, executor, discovery: {read:()=>injector.discovery()},
     maximumRequestBytes: config.maximumRequestBytes, maximumConcurrentExecutions: config.maximumConcurrentExecutions,
   });
   return { server, accounts };

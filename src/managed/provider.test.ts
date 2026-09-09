@@ -14,7 +14,8 @@ test("discovery and execution use the same fixed provider corridor with one cred
     }) as typeof fetch,
   });
   assert.deepEqual(await account.discoverModels(AbortSignal.timeout(1000)), ["model"]);
-  await account.chatCompletions(Buffer.from("{}"), AbortSignal.timeout(1000), {token:"unused-direct-connector-fixture",originalBody:Buffer.from("{}")});
+  await account.chatCompletions(Buffer.from("{}"), AbortSignal.timeout(1000), {token:"unused-direct-connector-fixture",originalBody:Buffer.from("{}"),
+    ownership:{ownerId:"11111111-1111-4111-8111-111111111111",epoch:1},async beforeDispatch(){}});
   assert.deepEqual(calls, ["https://api.mistral.ai/v1/models", "https://api.mistral.ai/v1/chat/completions"]);
   assert.equal(reads, 2);
 });

@@ -1,18 +1,18 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { resolve, isAbsolute } from "node:path";
 import { createPublicKey } from "node:crypto";
 import { ManagedDiscovery } from "./discovery.js";
-import { ExecutionJournal } from "./journal.js";
 import { ManagedCredentialInjector } from "./injector.js";
 import { createManagedInjectorServer } from "./injector-http.js";
 import { createManagedProviderAccount, type ManagedCompatibleProvider } from "./provider.js";
 import { createProviderProxyFetch } from "./provider-proxy-fetch.js";
+import {ManagedCoordinationClient} from "./coordination-client.js";
 
 export interface ManagedInjectorRuntimeConfig {
   host: string;
   port: number;
-  journalDirectory: string;
   providerManifestFile: string;
+  coordinationUrl: string;
   providerCredentialDirectory: string;
   tlsKeyFile: string;
   tlsCertFile: string;
@@ -36,11 +36,13 @@ function integer(env: NodeJS.ProcessEnv, name: string, fallback: number, maximum
 }
 export function loadManagedInjectorRuntimeConfig(env: NodeJS.ProcessEnv): ManagedInjectorRuntimeConfig {
   const path = (name: string) => { const value = required(env, name); if (!isAbsolute(value)) throw Error(`Invalid ${name}`); return value; };
+  const coordinationUrl=new URL(required(env,"MANAGED_INJECTOR_COORDINATION_URL"));
+  if(coordinationUrl.protocol!=="https:"||coordinationUrl.username||coordinationUrl.password||coordinationUrl.pathname!=="/"||coordinationUrl.search||coordinationUrl.hash)throw Error("Invalid MANAGED_INJECTOR_COORDINATION_URL");
   return {
     host: env.MANAGED_INJECTOR_HOST ?? "0.0.0.0",
     port: integer(env, "MANAGED_INJECTOR_PORT", 1457, 65535),
-    journalDirectory: path("MANAGED_INJECTOR_JOURNAL_DIRECTORY"),
     providerManifestFile: path("MANAGED_INJECTOR_PROVIDER_MANIFEST_FILE"),
+    coordinationUrl: required(env,"MANAGED_INJECTOR_COORDINATION_URL"),
     providerCredentialDirectory: path("MANAGED_INJECTOR_CREDENTIAL_DIRECTORY"),
     tlsKeyFile: path("MANAGED_INJECTOR_TLS_KEY_FILE"), tlsCertFile: path("MANAGED_INJECTOR_TLS_CERT_FILE"),
     tlsCaFile: path("MANAGED_INJECTOR_TLS_CA_FILE"), cloudVerificationKeyFile: path("MANAGED_INJECTOR_CLOUD_VERIFY_KEY_FILE"),
@@ -52,9 +54,6 @@ export function loadManagedInjectorRuntimeConfig(env: NodeJS.ProcessEnv): Manage
   };
 }
 export async function createManagedInjectorRuntime(config: ManagedInjectorRuntimeConfig) {
-  // The journal must be an existing durable volume. Never silently create an
-  // ephemeral fallback directory when deployment omitted its volume mount.
-  if (!(await stat(config.journalDirectory)).isDirectory()) throw Error("managed_journal_directory_required");
   const rawManifest = await readFile(config.providerManifestFile);
   if (rawManifest.byteLength > 2 * 1024 * 1024) throw Error("managed_manifest_too_large");
   const manifest = JSON.parse(rawManifest.toString("utf8"));
@@ -81,15 +80,15 @@ export async function createManagedInjectorRuntime(config: ManagedInjectorRuntim
       },
     });
   });
-  const journal = new ExecutionJournal(config.journalDirectory);
   const key = createPublicKey(await readFile(config.cloudVerificationKeyFile));
   if (key.asymmetricKeyType !== "ed25519") throw Error("invalid_cloud_verification_key");
-  const injector = new ManagedCredentialInjector({ verificationKey: key, journal, accounts,
+  const tls={key:await readFile(config.tlsKeyFile),cert:await readFile(config.tlsCertFile),ca:await readFile(config.tlsCaFile)};
+  const coordination=new ManagedCoordinationClient(config.coordinationUrl,tls,Math.min(config.executionTimeoutMs,30000));
+  const injector = new ManagedCredentialInjector({ verificationKey: key, coordination, accounts,
     maximumRequestBytes: config.maximumRequestBytes,
     executionTimeoutMs: config.executionTimeoutMs });
   const server = createManagedInjectorServer({
-    tls: { key: await readFile(config.tlsKeyFile), cert: await readFile(config.tlsCertFile), ca: await readFile(config.tlsCaFile) },
-    allowedCoreUri: config.allowedClientUri, injector, discovery: new ManagedDiscovery(accounts),
+    tls, allowedCoreUri: config.allowedClientUri, injector, coordination, discovery: new ManagedDiscovery(accounts),
     maximumRequestBytes: config.maximumRequestBytes, maximumResponseBytes: config.maximumResponseBytes, maximumConcurrentExecutions: config.maximumConcurrentExecutions,
   });
   return { server, accounts };
