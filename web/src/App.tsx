@@ -496,9 +496,12 @@ export default function App() {
     }
   };
 
-  const loadTracing = async (page: number, range: TraceRangePreset = traceRange) => {
-    traceStatsPendingRef.current += 1;
-    setTraceStatsLoading(true);
+  const loadTracing = async (page: number, range: TraceRangePreset = traceRange, background = false) => {
+    // Poll in place: loading placeholders are only for explicit navigation.
+    if (!background) {
+      traceStatsPendingRef.current += 1;
+      setTraceStatsLoading(true);
+    }
     try {
       const safePage = Math.max(1, page || 1);
       const params = traceRangeParams(range);
@@ -514,11 +517,15 @@ export default function App() {
       setTraceStats((statsRes.stats ?? tr.stats ?? EMPTY_TRACE_STATS) as TraceStats);
       setProjectUsageStats({ byProject: usageRes.byProject ?? [] });
       setTracePagination((tr.pagination ?? { ...EMPTY_TRACE_PAGINATION, page: safePage }) as TracePagination);
-      setExpandedTraceId(null);
-      setExpandedTrace(null);
+      if (!background) {
+        setExpandedTraceId(null);
+        setExpandedTrace(null);
+      }
     } finally {
-      traceStatsPendingRef.current -= 1;
-      setTraceStatsLoading(traceStatsPendingRef.current > 0);
+      if (!background) {
+        traceStatsPendingRef.current -= 1;
+        setTraceStatsLoading(traceStatsPendingRef.current > 0);
+      }
     }
   };
 
@@ -658,7 +665,7 @@ export default function App() {
   useEffect(() => {
     if (tab !== "tracing") return;
     const timer = window.setInterval(() => {
-      void loadTracing(tracePagination.page, traceRange).catch(handleError);
+      void loadTracing(tracePagination.page, traceRange, true).catch(handleError);
     }, 10_000);
     return () => window.clearInterval(timer);
   }, [tab, tracePagination.page, traceRange]);
