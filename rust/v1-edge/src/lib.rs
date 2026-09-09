@@ -9443,19 +9443,22 @@ fn codex_model_shape(model: &Value) -> Option<Value> {
     if let Some(value) = model.get("codexModelInfo") {
         return Some(value.clone());
     }
-    if model
-        .get("metadata")
-        .and_then(|metadata| metadata.get("provider"))
-        .and_then(Value::as_str)
-        != Some("zai")
-    {
+    let provider = model.get("metadata")?.get("provider")?.as_str()?;
+    if provider != "zai" && provider != "openai-compatible" {
         return None;
     }
     let id = model.get("id").and_then(Value::as_str)?;
+    // Non-chat runtimes share the OpenAI-compatible model endpoint.
+    if id.to_ascii_lowercase().split(['-', '_', '/']).any(|part| {
+        matches!(part, "tts" | "asr" | "whisper" | "kokoro" | "embed" | "embedding" | "rerank" | "reranker")
+    }) {
+        return None;
+    }
+    let provider_name = if provider == "zai" { "z.ai" } else { "OpenAI-compatible" };
     Some(json!({
         "slug": id,
         "display_name": id,
-        "description": format!("z.ai model {id}"),
+        "description": format!("{provider_name} model {id}"),
         "base_instructions": "",
         "supported_reasoning_levels": [],
         "shell_type": "shell_command",
@@ -11152,6 +11155,18 @@ mod tests {
         });
         tokio::task::yield_now().await;
         (format!("http://{address}"), task)
+    }
+
+    #[test]
+    fn codex_catalog_includes_local_chat_but_not_audio_models() {
+        let models = ["Qwen3.8-27B-4bit", "Kokoro-82M-bf16", "Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16", "whisper-large-v3-turbo-asr-4bit"]
+            .map(|id| json!({"id": id, "metadata": {"provider": "openai-compatible"}}));
+        let response = models_list_response(&models, json!({}));
+        assert_eq!(response["data"].as_array().unwrap().len(), 4);
+        let native = response["models"].as_array().unwrap();
+        assert_eq!(native.len(), 1);
+        assert_eq!(native[0]["slug"], "Qwen3.8-27B-4bit");
+        assert_eq!(native[0]["visibility"], "list");
     }
 
     #[tokio::test]
