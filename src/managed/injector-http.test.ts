@@ -21,6 +21,7 @@ test("injector mTLS enforces Core identity, bounded envelope and sanitized strea
   }
   const ca=await readFile(join(dir,"ca.crt"));let calls=0;
   server=createManagedInjectorServer({tls:{ca,key:await readFile(join(dir,"server.key")),cert:await readFile(join(dir,"server.crt"))},
+   discovery:{async read(){return {accounts:[],version:1};}},
    allowedCoreUri:"spiffe://multivibe/core",maximumRequestBytes:128,maximumResponseBytes:128,maximumConcurrentExecutions:1,
    injector:{async execute(body,authorization){calls++;assert.equal(Buffer.from(body).toString(),"provider");
     assert.equal(Buffer.from(authorization.originalBody).toString(),"original");assert.equal(authorization.token,"signed-fixture");
@@ -45,6 +46,7 @@ test("injector mTLS enforces Core identity, bounded envelope and sanitized strea
   assert.deepEqual(await send("core",envelope),{status:200,body:"data: hello\n\n",secret:undefined});assert.equal(calls,1);
   const tls={ca,cert:await readFile(join(dir,"core.crt")),key:await readFile(join(dir,"core.key"))};
   const client=new ManagedInjectorClient(`https://localhost:${port}`,tls,128,128,1000);
+  assert.deepEqual(await client.discovery(),{accounts:[],version:1});
   const authorization={token:"signed-fixture",originalBody:Buffer.from("original")};
   const result=await client.execute(Buffer.from("provider"),AbortSignal.timeout(1000),authorization);
   assert.equal(await result.text(),"data: hello\n\n");assert.equal(calls,2);
