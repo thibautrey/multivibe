@@ -21,11 +21,25 @@ while(queue.length) {
     const bundle=await build({entryPoints:[file],bundle:true,write:false,format:"esm",platform:"node",target:"node22",metafile:true});
     // Only this reviewed codec and its pinned schema/SDK dependencies can be bundled.
     const allowed=new Set(["@ai-sdk/anthropic","@ai-sdk/provider","@ai-sdk/provider-utils","@workflow/serde","@standard-schema/spec","@standard-schema/utils","eventsource-parser","secure-json-parse","zod"]);
+    const packages=new Set();
     for(const input of Object.keys(bundle.metafile.inputs)) {
       const match=input.match(/node_modules\/((?:@[^/]+\/)?[^/]+)/);
+      if(match)packages.add(match[1]);
       if(match&&!allowed.has(match[1]))throw Error(`Unreviewed native codec dependency ${match[1]}`);
       if(!match&&!['dist/managed/native-anthropic.js','dist/ai-sdk/anthropic-model.js','dist/ai-sdk/protocol.js'].includes(input))throw Error(`Unreviewed native codec source ${input}`);
     }
+    const notices=[];
+    for(const name of [...packages].sort()) {
+      const directory=resolve("node_modules",name);
+      const metadata=JSON.parse(await readFile(resolve(directory,"package.json"),"utf8"));
+      let license;
+      for(const filename of ["LICENSE","LICENSE.md","LICENSE.txt","license","license.md"]) {
+        try{license=await readFile(resolve(directory,filename),"utf8");break;}catch(error){if(error.code!=="ENOENT")throw error;}
+      }
+      if(!license)throw Error(`Missing bundled dependency license ${name}`);
+      notices.push(`${name}@${metadata.version} (${metadata.license})\n${license}`);
+    }
+    await writeFile(resolve(outputRoot,"native-third-party-notices.txt"),notices.join("\n\n"));
     text=bundle.outputFiles[0].text;
     await writeFile(resolve(outputRoot,"native-codec-inputs.json"),JSON.stringify(Object.keys(bundle.metafile.inputs).sort(),null,2));
   }
