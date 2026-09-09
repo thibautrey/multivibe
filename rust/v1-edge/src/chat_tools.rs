@@ -11,12 +11,17 @@ impl ChatTools {
     pub(crate) fn prepare(body: &Value) -> Result<(Value, Self), String> {
         let mut adapter = Self::default();
         let mut body = body.clone();
-        let Some(tools) = body.get("tools") else { return Ok((body, adapter)); };
+        let Some(tools) = body.get("tools") else {
+            return Ok((body, adapter));
+        };
         let tools = tools.as_array().ok_or("tools must be an array")?;
         let mut flattened = Vec::new();
         for tool in tools {
             if tool["type"] == "namespace" {
-                let namespace = tool["name"].as_str().filter(|s| !s.is_empty()).ok_or("namespace requires a name")?;
+                let namespace = tool["name"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .ok_or("namespace requires a name")?;
                 for child in tool["tools"].as_array().ok_or("namespace requires tools")? {
                     adapter.add(child, Some(namespace), &mut flattened)?;
                 }
@@ -26,7 +31,10 @@ impl ChatTools {
         }
         // Aliases are request-local and must never shadow a real function.
         for (alias, _, _, _) in &adapter.entries {
-            if tools.iter().any(|t| t["name"] == *alias || t["function"]["name"] == *alias) {
+            if tools
+                .iter()
+                .any(|t| t["name"] == *alias || t["function"]["name"] == *alias)
+            {
                 return Err("tool name conflicts with a bridge alias".into());
             }
         }
@@ -34,18 +42,33 @@ impl ChatTools {
         if let Some(choice) = body.get_mut("tool_choice") {
             let name = choice["name"].as_str().unwrap_or("");
             let namespace = choice["namespace"].as_str();
-            if let Some((alias, _, _, _)) = adapter.entries.iter().find(|(_, n, ns, _)| n == name && ns.as_deref() == namespace) {
+            if let Some((alias, _, _, _)) = adapter
+                .entries
+                .iter()
+                .find(|(_, n, ns, _)| n == name && ns.as_deref() == namespace)
+            {
                 *choice = json!({"type": "function", "name": alias});
             }
         }
         if let Some(items) = body.get_mut("input").and_then(Value::as_array_mut) {
             for item in items {
-                if !matches!(item["type"].as_str(), Some("function_call" | "custom_tool_call")) { continue; }
+                if !matches!(
+                    item["type"].as_str(),
+                    Some("function_call" | "custom_tool_call")
+                ) {
+                    continue;
+                }
                 let name = item["name"].as_str().unwrap_or("");
                 let namespace = item["namespace"].as_str();
-                if let Some((alias, _, _, custom)) = adapter.entries.iter().find(|(_, n, ns, _)| n == name && ns.as_deref() == namespace) {
+                if let Some((alias, _, _, custom)) = adapter
+                    .entries
+                    .iter()
+                    .find(|(_, n, ns, _)| n == name && ns.as_deref() == namespace)
+                {
                     if *custom {
-                        let input = item["input"].as_str().ok_or("custom tool call requires string input")?;
+                        let input = item["input"]
+                            .as_str()
+                            .ok_or("custom tool call requires string input")?;
                         item["arguments"] = Value::String(json!({"input": input}).to_string());
                         item.as_object_mut().unwrap().remove("input");
                     }
@@ -58,17 +81,33 @@ impl ChatTools {
         Ok((body, adapter))
     }
 
-    fn add(&mut self, tool: &Value, namespace: Option<&str>, output: &mut Vec<Value>) -> Result<(), String> {
+    fn add(
+        &mut self,
+        tool: &Value,
+        namespace: Option<&str>,
+        output: &mut Vec<Value>,
+    ) -> Result<(), String> {
         let custom = tool["type"] == "custom";
         if !custom && tool["type"] != "function" {
             return Err("unsupported tool type for the Chat Completions bridge".into());
         }
         let source = tool.get("function").unwrap_or(tool);
-        let name = source["name"].as_str().filter(|s| !s.trim().is_empty()).ok_or("tool requires a name")?;
-        if !custom && namespace.is_none() { output.push(tool.clone()); return Ok(()); }
+        let name = source["name"]
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+            .ok_or("tool requires a name")?;
+        if !custom && namespace.is_none() {
+            output.push(tool.clone());
+            return Ok(());
+        }
         let alias = format!("mv_tool_{}", self.entries.len());
         let mut converted = source.clone();
-        converted["description"] = json!(format!("Tool {}{}: {}", namespace.map(|ns| format!("{ns}. ")).unwrap_or_default(), name, source["description"].as_str().unwrap_or("")));
+        converted["description"] = json!(format!(
+            "Tool {}{}: {}",
+            namespace.map(|ns| format!("{ns}. ")).unwrap_or_default(),
+            name,
+            source["description"].as_str().unwrap_or("")
+        ));
         converted["type"] = json!("function");
         converted["name"] = json!(alias);
         if custom {
@@ -81,29 +120,45 @@ impl ChatTools {
             converted["parameters"] = json!({"type": "object", "properties": {"input": {"type": "string"}}, "required": ["input"], "additionalProperties": false});
             converted.as_object_mut().unwrap().remove("format");
         }
-        self.entries.push((alias, name.to_owned(), namespace.map(str::to_owned), custom));
+        self.entries
+            .push((alias, name.to_owned(), namespace.map(str::to_owned), custom));
         output.push(converted);
         Ok(())
     }
 
     pub(crate) fn restore_item(&self, item: &mut Value) -> Result<(), String> {
-        if item["type"] != "function_call" { return Ok(()); }
-        let Some((_, name, namespace, custom)) = self.entries.iter().find(|(alias, _, _, _)| item["name"] == *alias) else { return Ok(()); };
+        if item["type"] != "function_call" {
+            return Ok(());
+        }
+        let Some((_, name, namespace, custom)) = self
+            .entries
+            .iter()
+            .find(|(alias, _, _, _)| item["name"] == *alias)
+        else {
+            return Ok(());
+        };
         if *custom {
-            let args: Value = serde_json::from_str(item["arguments"].as_str().unwrap_or("")).map_err(|_| "upstream returned invalid custom tool arguments")?;
-            let input = args["input"].as_str().ok_or("upstream custom tool arguments require string input")?;
+            let args: Value = serde_json::from_str(item["arguments"].as_str().unwrap_or(""))
+                .map_err(|_| "upstream returned invalid custom tool arguments")?;
+            let input = args["input"]
+                .as_str()
+                .ok_or("upstream custom tool arguments require string input")?;
             item["input"] = json!(input);
             item["type"] = json!("custom_tool_call");
             item.as_object_mut().unwrap().remove("arguments");
         }
         item["name"] = json!(name);
-        if let Some(namespace) = namespace { item["namespace"] = json!(namespace); }
+        if let Some(namespace) = namespace {
+            item["namespace"] = json!(namespace);
+        }
         Ok(())
     }
 
     pub(crate) fn restore_response(&self, response: &mut Value) -> Result<(), String> {
         if let Some(items) = response.get_mut("output").and_then(Value::as_array_mut) {
-            for item in items { self.restore_item(item)?; }
+            for item in items {
+                self.restore_item(item)?;
+            }
         }
         Ok(())
     }
@@ -145,12 +200,16 @@ mod tests {
 
     #[test]
     fn invalid_custom_output_is_never_executed_as_a_function() {
-        let (_, adapter) = ChatTools::prepare(&json!({"tools": [{"type": "custom", "name": "exec"}]})).unwrap();
+        let (_, adapter) =
+            ChatTools::prepare(&json!({"tools": [{"type": "custom", "name": "exec"}]})).unwrap();
         for arguments in ["broken", "{}", "{\"input\":42}"] {
             assert!(adapter.restore_item(&mut json!({"type": "function_call", "name": "mv_tool_0", "arguments": arguments})).is_err());
         }
-        assert!(ChatTools::prepare(&json!({"tools": [
-            {"type": "custom", "name": "exec"}, {"type": "function", "name": "mv_tool_0"}
-        ]})).is_err());
+        assert!(
+            ChatTools::prepare(&json!({"tools": [
+                {"type": "custom", "name": "exec"}, {"type": "function", "name": "mv_tool_0"}
+            ]}))
+            .is_err()
+        );
     }
 }
