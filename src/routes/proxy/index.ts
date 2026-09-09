@@ -2698,7 +2698,6 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
           : preferredAccount
             ? "policy-preferred"
             : "quota-headroom";
-        recordHostMenuProviderUsage(selected);
         const previousAttemptAccountId = completedRoutingAccountId;
         const accountSelection = buildAccountSelectionTelemetry(
           quotaSelection,
@@ -3122,6 +3121,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
                   "This request is not supported by verified confidential computing. The message was not sent.",
                 );
               }
+              recordHostMenuProviderUsage(selected);
               return confidentialInference.execute({
                 baseUrl: upstreamBaseUrl,
                 accessToken: selected.accessToken,
@@ -3142,6 +3142,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
               },
               {
                 onAttemptStart: () => {
+                  recordHostMenuProviderUsage(selected);
                   upstreamAttemptStartedAt = Date.now();
                   currentUpstreamAttempt = ++upstreamAttemptCount;
                   setProviderAttemptCount(upstreamAttemptCount);

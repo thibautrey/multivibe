@@ -49,6 +49,7 @@ private struct HostCredentials: Decodable {
 }
 
 private struct QuotaWindow: Decodable {
+    let label: String?
     let remainingPercent: Double
     let resetAt: Double?
 }
@@ -721,7 +722,7 @@ private final class HostPopoverController: NSViewController {
             ? []
             : quotaWindows.compactMap { item in
                 guard let window = item.window else { return nil }
-                return compactQuota(title: item.title, window: window)
+                return compactQuota(title: window.label ?? item.title, window: window)
         }
 
         var contentViews: [NSView] = [header]
