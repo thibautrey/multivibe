@@ -54,6 +54,8 @@ private struct QuotaWindow: Decodable {
 }
 
 private struct MenuBarAccount: Decodable {
+    let provider: String?
+    let providerName: String?
     let displayName: String
     let enabled: Bool
     let status: String
@@ -276,6 +278,9 @@ private final class HostPopoverController: NSViewController {
     private let settingsStack = NSStackView()
     private let settingsButton = NSButton(title: "Settings", target: nil, action: nil)
     private var settingsExpanded = false
+    private var selectedProvider: String?
+    private var providerAccounts: [MenuBarAccount] = []
+    private let accountSection = NSStackView()
     private let primaryButton = NSButton(title: "Open Dashboard", target: nil, action: nil)
     private let startAtLoginButton = NSButton(checkboxWithTitle: "Launch at login", target: nil, action: nil)
 
@@ -463,14 +468,12 @@ private final class HostPopoverController: NSViewController {
             child.removeFromSuperview()
         }
 
-        contentStack.addArrangedSubview(sectionLabel("Accounts · remaining capacity"))
-        contentStack.addArrangedSubview(summaryCard(summary?.quota))
-        contentStack.addArrangedSubview(sectionLabel("Accounts"))
-        if let accounts = summary?.accounts, !accounts.isEmpty {
-            contentStack.addArrangedSubview(accountsCard(accounts))
-        } else {
-            contentStack.addArrangedSubview(emptyAccountsCard(operational: operational))
-        }
+        providerAccounts = summary?.accounts ?? []
+        accountSection.orientation = .vertical
+        accountSection.alignment = .leading
+        accountSection.spacing = 8
+        renderAccounts(operational: operational)
+        contentStack.addArrangedSubview(accountSection)
         if workerNeedsSetup {
             contentStack.addArrangedSubview(sectionLabel("Worker"))
             contentStack.addArrangedSubview(workerSetupCard())
@@ -503,6 +506,80 @@ private final class HostPopoverController: NSViewController {
         startAtLoginButton.target = self
         startAtLoginButton.action = #selector(didChangeStartAtLogin)
         settingsStack.addArrangedSubview(startAtLoginButton)
+    }
+
+    private func renderAccounts(operational: Bool) {
+        for child in accountSection.arrangedSubviews {
+            accountSection.removeArrangedSubview(child)
+            child.removeFromSuperview()
+        }
+        let providers = Array(Set(providerAccounts.map { $0.provider ?? "openai" })).sorted {
+            if $0 == "openai" { return $1 != "openai" }
+            if $1 == "openai" { return false }
+            return $0 < $1
+        }
+        if !providers.contains(selectedProvider ?? "") { selectedProvider = providers.first }
+        if !providers.isEmpty {
+            // Wrap native tab controls so every provider remains reachable in the fixed-width popover.
+            for offset in stride(from: 0, to: providers.count, by: 3) {
+                let group = Array(providers[offset..<min(offset + 3, providers.count)])
+                let tabs = NSSegmentedControl(labels: group.map { provider in
+                    providerAccounts.first { ($0.provider ?? "openai") == provider }?.providerName ?? "OpenAI"
+                }, trackingMode: .selectOne, target: self, action: #selector(didSelectProvider(_:)))
+                tabs.segmentStyle = .rounded
+                tabs.selectedSegment = group.firstIndex(of: selectedProvider ?? "") ?? -1
+                tabs.translatesAutoresizingMaskIntoConstraints = false
+                tabs.widthAnchor.constraint(equalToConstant: 384).isActive = true
+                for (index, provider) in group.enumerated() {
+                    tabs.setTag(providers.firstIndex(of: provider)!, forSegment: index)
+                    tabs.setWidth(384 / CGFloat(group.count), forSegment: index)
+                }
+                tabs.setAccessibilityLabel("Quota provider")
+                accountSection.addArrangedSubview(tabs)
+            }
+        }
+        let accounts = providerAccounts.filter { ($0.provider ?? "openai") == selectedProvider }
+        if accounts.isEmpty {
+            accountSection.addArrangedSubview(emptyAccountsCard(operational: operational))
+            return
+        }
+        accountSection.addArrangedSubview(sectionLabel("Remaining capacity · " + accountCount(accounts.count)))
+        let windows: [(String, [QuotaWindow])] = [
+            ("5 hours", accounts.compactMap { $0.fiveHour }),
+            ("Weekly", accounts.compactMap { $0.weekly }),
+            ("Monthly", accounts.compactMap { $0.monthly }),
+        ]
+        let cells = windows.compactMap { title, values -> NSView? in
+            guard !values.isEmpty else { return nil }
+            return quotaCell(title: title, value: values.reduce(0) { $0 + $1.remainingPercent } / Double(values.count), detail: accountCount(values.count))
+        }
+        if !cells.isEmpty {
+            let container = card()
+            let stack = NSStackView(views: cells)
+            stack.distribution = .fillEqually
+            stack.spacing = 12
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(stack)
+            NSLayoutConstraint.activate([
+                stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
+                stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
+                stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+                stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            ])
+            accountSection.addArrangedSubview(container)
+        }
+        accountSection.addArrangedSubview(accountsCard(accounts))
+    }
+
+    @objc private func didSelectProvider(_ sender: NSSegmentedControl) {
+        guard sender.selectedSegment >= 0 else { return }
+        let providers = Array(Set(providerAccounts.map { $0.provider ?? "openai" })).sorted {
+            if $0 == "openai" { return $1 != "openai" }
+            if $1 == "openai" { return false }
+            return $0 < $1
+        }
+        selectedProvider = providers[sender.tag(forSegment: sender.selectedSegment)]
+        renderAccounts(operational: true)
     }
 
     @objc private func didToggleSettings() {
@@ -611,7 +688,7 @@ private final class HostPopoverController: NSViewController {
     private func accountCard(_ account: MenuBarAccount) -> NSView {
         let container = NSView()
         container.translatesAutoresizingMaskIntoConstraints = false
-        let name = label(account.displayName, size: 13, weight: .semibold, color: MenuBarPalette.text)
+        let name = label(account.displayName, size: 12, weight: .semibold, color: MenuBarPalette.text)
         name.lineBreakMode = .byTruncatingMiddle
         name.maximumNumberOfLines = 1
         let state = statusBadge(account.status)
@@ -630,7 +707,7 @@ private final class HostPopoverController: NSViewController {
         let visibleQuotaWindows: [NSView] = unsupported
             ? []
             : quotaWindows.compactMap { item in
-                guard let window = item.window, hasResetTime(window.resetAt) else { return nil }
+                guard let window = item.window else { return nil }
                 return compactQuota(title: item.title, window: window)
         }
 
@@ -647,21 +724,22 @@ private final class HostPopoverController: NSViewController {
         let updated = label(updatedText, size: 10, color: MenuBarPalette.muted)
         updated.lineBreakMode = .byTruncatingTail
         updated.maximumNumberOfLines = 1
-        contentViews.append(updated)
+        if visibleQuotaWindows.isEmpty { contentViews.append(updated) }
+        container.toolTip = account.displayName + " · " + updatedText
 
         let stack = NSStackView(views: contentViews)
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 10
+        stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false
         header.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         windowsView?.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         container.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 13),
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 9),
             stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 15),
             stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -15),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -13),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -9),
         ])
         return container
     }

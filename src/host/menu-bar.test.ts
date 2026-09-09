@@ -49,7 +49,9 @@ test("buildHostMenuBarAccountsSummary preserves SwiftBar quota aggregation", () 
 
   const summary = buildHostMenuBarAccountsSummary(accounts, now);
 
-  assert.equal(summary.accounts.length, 2);
+  assert.equal(summary.accounts.length, 3);
+  assert.equal(summary.accounts[2].provider, "mistral");
+  assert.equal(summary.accounts[2].providerName, "Mistral");
   assert.deepEqual(summary.quota, {
     fiveHourRemainingPercent: 60,
     fiveHourAccountCount: 2,
@@ -158,7 +160,9 @@ test("legacy OpenAI accounts retain priority and empty inventories have no quota
     { id: "legacy", accessToken: "secret", enabled: true },
     { id: "zai", provider: "zai", accessToken: "secret", enabled: true },
   ]);
-  assert.equal(summary.accounts.length, 1);
+  assert.equal(summary.accounts.length, 2);
+  assert.equal(summary.accounts[0].provider, "openai");
+  assert.equal(summary.accounts[1].provider, "zai");
   assert.equal(summary.accounts[0].displayName, "OpenAI account 1");
   assert.deepEqual(buildHostMenuBarAccountsSummary([]), {
     accounts: [], quota: { fiveHourAccountCount: 0, weeklyAccountCount: 0 },
