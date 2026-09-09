@@ -15,6 +15,7 @@ function firstRule(selector: string) {
 }
 
 test("the desktop model library has one shared vertical scroll surface", () => {
+  assert.match(firstRule(".app-shell-models > .workspace"), /height:\s*100%/);
   const workspace = firstRule(".app-shell-models .workspace-content");
   assert.match(workspace, /flex:\s*1 1 0/);
   assert.match(workspace, /overflow:\s*hidden/);
