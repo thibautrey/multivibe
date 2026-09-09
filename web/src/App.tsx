@@ -1,3 +1,4 @@
+import { getRangeBounds } from "./lib/trace-range";
 import { ModelsTab } from "./components/tabs/ModelsTab";
 import type { ModelRoute } from "./lib/modelCatalog";
 import { findAvailableCount } from "./lib/resetCredits";
@@ -28,7 +29,7 @@ import type {
   Tab,
   Trace,
   TracePagination,
-  TraceRangePreset,
+  TraceRange,
   TraceStats,
 } from "./types";
 import { AccountsTab, type LocalWorkerProvider, type MultivibeCloudProvider } from "./components/tabs/AccountsTab";
@@ -161,7 +162,7 @@ export default function App() {
   const [expandedTraceId, setExpandedTraceId] = useState<string | null>(null);
   const [expandedTrace, setExpandedTrace] = useState<Trace | null>(null);
   const [expandedTraceLoading, setExpandedTraceLoading] = useState(false);
-  const [traceRange, setTraceRange] = useState<TraceRangePreset>("7d");
+  const [traceRange, setTraceRange] = useState<TraceRange>("7d");
   const [traceExportInProgress, setTraceExportInProgress] = useState(false);
   const tracePageRef = useRef(tracePagination.page);
   const traceRangeRef = useRef(traceRange);
@@ -461,17 +462,7 @@ export default function App() {
     setAccounts((result.accounts ?? []) as Account[]);
   };
 
-  const getRangeBounds = (range: TraceRangePreset): { sinceMs?: number; untilMs?: number } => {
-    const now = Date.now();
-    const since = (durationMs: number) =>
-      Math.floor((now - durationMs) / 3_600_000) * 3_600_000;
-    if (range === "24h") return { sinceMs: since(24 * 60 * 60 * 1000), untilMs: now };
-    if (range === "7d") return { sinceMs: since(7 * 24 * 60 * 60 * 1000), untilMs: now };
-    if (range === "30d") return { sinceMs: since(30 * 24 * 60 * 60 * 1000), untilMs: now };
-    return {};
-  };
-
-  const traceRangeParams = (range: TraceRangePreset) => {
+  const traceRangeParams = (range: TraceRange) => {
     const { sinceMs, untilMs } = getRangeBounds(range);
     const params = new URLSearchParams();
     if (typeof sinceMs === "number") params.set("sinceMs", String(sinceMs));
@@ -479,7 +470,7 @@ export default function App() {
     return params;
   };
 
-  const loadTraceStats = async (range: TraceRangePreset = traceRange) => {
+  const loadTraceStats = async (range: TraceRange = traceRange) => {
     traceStatsPendingRef.current += 1;
     setTraceStatsLoading(true);
     try {
@@ -496,7 +487,7 @@ export default function App() {
     }
   };
 
-  const loadTracing = async (page: number, range: TraceRangePreset = traceRange, background = false) => {
+  const loadTracing = async (page: number, range: TraceRange = traceRange, background = false) => {
     // Poll in place: loading placeholders are only for explicit navigation.
     if (!background) {
       traceStatsPendingRef.current += 1;

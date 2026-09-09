@@ -279,6 +279,8 @@ export type ProjectUsageStats = {
   }>;
 };
 
+export type TraceRange = TraceRangePreset | { startDate: string; endDate: string };
+
 export type TraceRangePreset = "24h" | "7d" | "30d" | "all";
 
 export type Tab =
