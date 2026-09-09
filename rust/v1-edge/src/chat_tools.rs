@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 pub(crate) struct ChatTools {
     // Alias, original name, optional namespace, free-form input.
     entries: Vec<(String, String, Option<String>, bool)>,
+    unavailable_tools: Vec<String>,
 }
 
 impl ChatTools {
@@ -16,17 +17,53 @@ impl ChatTools {
         };
         let tools = tools.as_array().ok_or("tools must be an array")?;
         let mut flattened = Vec::new();
-        for tool in tools {
+        for (index, tool) in tools.iter().enumerate() {
+            // Codex advertises hosted web search even for unrelated coding turns.
+            // It cannot run on a function-only upstream. Make optional capability
+            // loss explicit to both the model and the HTTP client; never pretend
+            // to execute it or relax an explicit tool selection.
+            if matches!(
+                tool["type"].as_str(),
+                Some("web_search" | "web_search_preview" | "web_search_preview_2025_03_11")
+            ) {
+                let choice = body.get("tool_choice");
+                if choice.is_some_and(|choice| {
+                    matches!(
+                        choice["type"].as_str(),
+                        Some("web_search" | "web_search_preview" | "web_search_preview_2025_03_11")
+                    )
+                }) {
+                    return Err(format!(
+                        "tools[{index}]: explicitly selected web search requires an upstream with native Responses web search support"
+                    ));
+                }
+                let kind = tool["type"].as_str().unwrap().to_owned();
+                if !adapter.unavailable_tools.contains(&kind) {
+                    adapter.unavailable_tools.push(kind);
+                }
+                continue;
+            }
             if tool["type"] == "namespace" {
                 let namespace = tool["name"]
                     .as_str()
                     .filter(|s| !s.is_empty())
                     .ok_or("namespace requires a name")?;
-                for child in tool["tools"].as_array().ok_or("namespace requires tools")? {
-                    adapter.add(child, Some(namespace), &mut flattened)?;
+                for (child_index, child) in tool["tools"]
+                    .as_array()
+                    .ok_or("namespace requires tools")?
+                    .iter()
+                    .enumerate()
+                {
+                    adapter
+                        .add(child, Some(namespace), &mut flattened)
+                        .map_err(|message| {
+                            format!("tools[{index}].tools[{child_index}]: {message}")
+                        })?;
                 }
             } else {
-                adapter.add(tool, None, &mut flattened)?;
+                adapter
+                    .add(tool, None, &mut flattened)
+                    .map_err(|message| format!("tools[{index}]: {message}"))?;
             }
         }
         // Aliases are request-local and must never shadow a real function.
@@ -37,6 +74,18 @@ impl ChatTools {
             {
                 return Err("tool name conflicts with a bridge alias".into());
             }
+        }
+        if !adapter.unavailable_tools.is_empty() {
+            if body["tool_choice"] == "required" && flattened.is_empty() {
+                return Err("tool_choice required cannot be satisfied: this upstream has no native Responses web search support".into());
+            }
+            let instructions = body
+                .get("instructions")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            body["instructions"] = json!(format!(
+                "{instructions}\n\nProvider capability notice: the native Responses web_search tool is unavailable on this upstream. All advertised client function tools remain available. If web research is needed, use an available client search/browser tool; if none is available, explain that limitation. Do not claim to have searched or fabricate search results."
+            ));
         }
         body["tools"] = Value::Array(flattened);
         if let Some(choice) = body.get_mut("tool_choice") {
@@ -89,7 +138,15 @@ impl ChatTools {
     ) -> Result<(), String> {
         let custom = tool["type"] == "custom";
         if !custom && tool["type"] != "function" {
-            return Err("unsupported tool type for the Chat Completions bridge".into());
+            let kind = tool["type"].as_str().unwrap_or("missing");
+            let kind: String = kind
+                .chars()
+                .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+                .take(64)
+                .collect();
+            return Err(format!(
+                "unsupported tool type '{kind}' for the Chat Completions bridge"
+            ));
         }
         let source = tool.get("function").unwrap_or(tool);
         let name = source["name"]
@@ -124,6 +181,15 @@ impl ChatTools {
             .push((alias, name.to_owned(), namespace.map(str::to_owned), custom));
         output.push(converted);
         Ok(())
+    }
+
+    pub(crate) fn add_response_headers(&self, headers: &mut Vec<(String, String)>) {
+        if !self.unavailable_tools.is_empty() {
+            headers.push((
+                "x-multivibe-unavailable-tools".into(),
+                self.unavailable_tools.join(","),
+            ));
+        }
     }
 
     pub(crate) fn restore_item(&self, item: &mut Value) -> Result<(), String> {
@@ -195,7 +261,68 @@ mod tests {
         assert_eq!(function["name"], "wait");
         assert_eq!(function["namespace"], "functions");
         assert_eq!(function["type"], "function_call");
-        assert!(ChatTools::prepare(&json!({"tools": [{"type": "web_search_preview"}]})).is_err());
+        assert!(ChatTools::prepare(&json!({"tools": [{"type": "file_search"}]})).is_err());
+    }
+
+    #[test]
+    fn codex_optional_web_search_does_not_block_client_tools() {
+        for kind in [
+            "web_search",
+            "web_search_preview",
+            "web_search_preview_2025_03_11",
+        ] {
+            for choice in [Value::Null, json!("auto"), json!("none"), json!("required")] {
+                let mut body = json!({"instructions": "Keep existing instructions.", "tools": [
+                    {"type": "function", "name": "exec_command", "parameters": {"type": "object"}},
+                    {"type": "custom", "name": "apply_patch"},
+                    {"type": "namespace", "name": "browser", "tools": [{"type": "function", "name": "search"}]},
+                    {"type": kind, "external_web_access": false}
+                ]});
+                if !choice.is_null() {
+                    body["tool_choice"] = choice.clone();
+                }
+                let (adapted, adapter) = ChatTools::prepare(&body).unwrap();
+                assert_eq!(adapted["tools"].as_array().unwrap().len(), 3);
+                assert_eq!(adapted["tools"][0], body["tools"][0]);
+                assert_eq!(adapted["tool_choice"], choice);
+                assert!(
+                    adapted["instructions"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("Keep existing instructions.")
+                );
+                assert!(
+                    adapted["instructions"]
+                        .as_str()
+                        .unwrap()
+                        .contains("web_search tool is unavailable")
+                );
+                let mut headers = Vec::new();
+                adapter.add_response_headers(&mut headers);
+                assert_eq!(
+                    headers,
+                    vec![("x-multivibe-unavailable-tools".into(), kind.into())]
+                );
+            }
+            for body in [
+                json!({"tools": [{"type": kind}], "tool_choice": "required"}),
+                json!({"tools": [{"type": kind}, {"type": "function", "name": "exec"}], "tool_choice": {"type": kind}}),
+            ] {
+                assert!(
+                    ChatTools::prepare(&body)
+                        .err()
+                        .unwrap()
+                        .contains("web search")
+                );
+            }
+        }
+        let error = ChatTools::prepare(
+            &json!({"tools": [{"type": "function", "name": "exec"}, {"type": "file_search"}]}),
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("tools[1]"));
+        assert!(error.contains("'file_search'"));
     }
 
     #[test]
