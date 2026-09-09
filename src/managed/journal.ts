@@ -1,7 +1,7 @@
-import { mkdir, open, readFile } from "node:fs/promises";
+import { mkdir, open, readFile, link, unlink } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { ExecutionGrant } from "./authorization.js";
 
 export interface ExecutionReceipt {
@@ -49,7 +49,16 @@ export class ExecutionJournal {
     const claim = JSON.parse(await readFile(this.path(receipt.attemptId, ".claim"), "utf8"));
     if (claim.attemptId !== receipt.attemptId || claim.reservationId !== receipt.reservationId
       || claim.bodySha256 !== receipt.bodySha256 || claim.routeVersionId !== receipt.routeVersionId) throw Error("receipt_claim_mismatch");
-    await this.writeOnce(this.path(receipt.attemptId, ".receipt"), receipt);
+    const destination = this.path(receipt.attemptId, ".receipt");
+    const temporary = this.path(receipt.attemptId, `.receipt-${randomUUID()}.pending`);
+    try {
+      // Publish only a fully written and synced record. A concurrent reader must
+      // observe either no receipt or a complete receipt, never partial JSON.
+      await this.writeOnce(temporary, receipt);
+      await link(temporary, destination);
+      const directory = await open(this.directory, constants.O_RDONLY);
+      try { await directory.sync(); } finally { await directory.close(); }
+    } finally { await unlink(temporary).catch(() => undefined); }
   }
   async receipt(attemptId: string): Promise<ExecutionReceipt | undefined> {
     try { return JSON.parse(await readFile(this.path(attemptId, ".receipt"), "utf8")) as ExecutionReceipt; }
