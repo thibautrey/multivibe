@@ -296,6 +296,8 @@ export type TraceManagerConfig = {
   onCompleted?: (trace: TraceEntry) => void | Promise<void>;
   filePath: string;
   historyFilePath?: string;
+  /** Another process appends traces; consume its journal without rewriting it. */
+  externalWriter?: boolean;
   retentionMax?: number;
   pageSizeMax?: number;
   legacyLimitMax?: number;
@@ -1525,7 +1527,7 @@ export function createTraceManager(config: TraceManagerConfig) {
   function rememberStatsHistoryId(id: string) {
     statsHistoryIds.delete(id);
     statsHistoryIds.add(id);
-    while (statsHistoryIds.size > trackedHistoryIdLimit) {
+    while (!config.externalWriter && statsHistoryIds.size > trackedHistoryIdLimit) {
       const oldest = statsHistoryIds.values().next().value;
       if (typeof oldest !== "string") break;
       statsHistoryIds.delete(oldest);
@@ -1649,7 +1651,9 @@ export function createTraceManager(config: TraceManagerConfig) {
     cacheInit = (async () => {
       await Promise.all([ensureParentDir(filePath), ensureParentDir(historyFilePath)]);
       const [{ traces, physicalLineCount }] = await Promise.all([
-        readTraceFileFromDisk(),
+        config.externalWriter
+          ? Promise.resolve({ traces: [], physicalLineCount: 0 })
+          : readTraceFileFromDisk(),
         scanStatsHistory(ingestPersistedStatsTrace),
       ]);
       traceCache.splice(0, traceCache.length, ...traces);
@@ -1659,11 +1663,67 @@ export function createTraceManager(config: TraceManagerConfig) {
     await cacheInit;
   }
 
-  async function initialize(): Promise<void> {
+  let externalOffset = 0;
+  let externalIdentity: string | undefined;
+  let externalSync: Promise<void> | undefined;
+
+  async function syncExternalTraces(): Promise<void> {
     await ensureCacheReady();
+    if (!config.externalWriter) return;
+    if (externalSync) return externalSync;
+    externalSync = queueTraceWrite(async () => {
+      let handle;
+      try {
+        handle = await fs.open(filePath, "r");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+        throw error;
+      }
+      try {
+        const stat = await handle.stat();
+        const identity = `${stat.dev}:${stat.ino}`;
+        if (identity !== externalIdentity || stat.size < externalOffset) {
+          externalOffset = 0;
+          externalIdentity = identity;
+        }
+        if (stat.size <= externalOffset) return;
+        const input = handle.createReadStream({
+          start: externalOffset, end: stat.size - 1, autoClose: false,
+        });
+        let pending = Buffer.alloc(0);
+        for await (const chunk of input) {
+          pending = Buffer.concat([pending, chunk as Buffer]);
+          let newline: number;
+          while ((newline = pending.indexOf(10)) >= 0) {
+            const line = pending.subarray(0, newline).toString("utf8");
+            let entry: TraceEntry | null = null;
+            try { entry = normalizeTrace(JSON.parse(line)); } catch {}
+            if (entry) {
+              const index = traceCache.findIndex((trace) => trace.id === entry!.id);
+              if (index >= 0) traceCache.splice(index, 1);
+              traceCache.push(entry);
+              trimTraceCache();
+              if (entry.lifecycleState !== "started") await appendStatsHistory(entry);
+            }
+            // Commit the cursor only after durable history persistence. A final
+            // partial line is retried on the next read, including split UTF-8.
+            externalOffset += newline + 1;
+            pending = pending.subarray(newline + 1);
+          }
+        }
+      } finally {
+        await handle.close();
+      }
+    });
+    try { await externalSync; } finally { externalSync = undefined; }
+  }
+
+  async function initialize(): Promise<void> {
+    await syncExternalTraces();
   }
 
   async function writeTraceWindow(entries: TraceEntry[]): Promise<void> {
+    if (config.externalWriter) throw new Error("Cannot rewrite an externally written trace journal");
     const tmp = `${filePath}.tmp-${randomUUID()}`;
     const BATCH_SIZE = 1000;
     const MAX_ENTRY_SIZE = 1024 * 1024; // 1MB per entry max
@@ -1712,6 +1772,7 @@ export function createTraceManager(config: TraceManagerConfig) {
 
   function queueTraceCompactionIfNeeded() {
     if (
+      config.externalWriter ||
       traceCompactionQueued ||
       physicalTraceLineCount <= traceCompactionThreshold
     ) {
@@ -1778,12 +1839,12 @@ export function createTraceManager(config: TraceManagerConfig) {
   }
 
   async function readTraceWindow(): Promise<TraceEntry[]> {
-    await ensureCacheReady();
+    await syncExternalTraces();
     return traceCache.slice();
   }
 
   async function readTraceById(id: string): Promise<TraceEntry | null> {
-    await ensureCacheReady();
+    await syncExternalTraces();
     return traceCache.find((trace) => trace.id === id) ?? null;
   }
 
@@ -1801,12 +1862,12 @@ export function createTraceManager(config: TraceManagerConfig) {
   }
 
   async function readTraceListWindow(): Promise<TraceListEntry[]> {
-    await ensureCacheReady();
+    await syncExternalTraces();
     return traceCache.map(toTraceListEntry);
   }
 
   async function readStatsHistory(): Promise<TraceEntry[]> {
-    await ensureCacheReady();
+    await syncExternalTraces();
     const traces = await scanStatsHistory<true>(() => undefined, () => true);
     return traces ?? [];
   }
@@ -1815,7 +1876,7 @@ export function createTraceManager(config: TraceManagerConfig) {
     sinceMs?: number,
     untilMs?: number,
   ): Promise<TraceEntry[]> {
-    await ensureCacheReady();
+    await syncExternalTraces();
     const traces = await scanStatsHistory<true>(
       () => undefined,
       (t) => {
@@ -1844,7 +1905,7 @@ export function createTraceManager(config: TraceManagerConfig) {
     untilMs: number,
     modelAllowlist: Readonly<Record<string, string>>,
   ): Promise<AnonymousModelOutputTotal[]> {
-    await ensureCacheReady();
+    await syncExternalTraces();
     const totals = new Map<string, number>();
     await scanStatsHistory((trace) => {
       const completedAt = trace.completedAt ?? trace.at;
@@ -1875,7 +1936,7 @@ export function createTraceManager(config: TraceManagerConfig) {
   }
 
   async function seedStatsHistoryIfMissing() {
-    await ensureCacheReady();
+    await syncExternalTraces();
     for (const entry of traceCache) {
       if (entry.lifecycleState === "started" || statsHistoryIds.has(entry.id)) {
         continue;
@@ -1885,6 +1946,7 @@ export function createTraceManager(config: TraceManagerConfig) {
   }
 
   async function compactTraceStorageIfNeeded() {
+    if (config.externalWriter) return;
     await ensureCacheReady();
     if (physicalTraceLineCount <= traceCompactionThreshold) return;
     await queueTraceWrite(async () => {
@@ -1899,7 +1961,7 @@ export function createTraceManager(config: TraceManagerConfig) {
     sinceMs?: number,
     untilMs?: number,
   ): Promise<{ totalStored: number; matched: number; stats: TraceStats }> {
-    await ensureCacheReady();
+    await syncExternalTraces();
     const selectedBuckets = Array.from(statsBuckets.values())
       .filter((bucket) => {
         if (
@@ -2225,7 +2287,7 @@ export function createTraceManager(config: TraceManagerConfig) {
   }
 
   async function readTracesLegacy(limit = 200): Promise<TraceEntry[]> {
-    await ensureCacheReady();
+    await syncExternalTraces();
     const sliced = traceCache.slice(
       -Math.max(1, Math.min(limit, legacyLimitMax)),
     );

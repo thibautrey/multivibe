@@ -242,6 +242,7 @@ const traceManager = createTraceManager({
       transport: trace.stream ? "sse" : "http", signal: AbortSignal.timeout(5000) });
   },
   filePath: TRACE_FILE_PATH,
+  externalWriter: MULTIVIBE_CONTROL_PLANE,
   historyFilePath: TRACE_STATS_HISTORY_PATH,
   retentionMax: TRACE_RETENTION_MAX,
   resolveCodexProject: (sessionId, projectRoot, projectHost) =>
