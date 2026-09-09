@@ -12,7 +12,7 @@ export function createManagedAnthropicAccount(options:{
  const models=new Set(options.models);
  if(!options.credentialRef||models.size>10000||!Number.isSafeInteger(options.maximumResponseBytes)||options.maximumResponseBytes<1)throw Error("invalid_managed_account");
  return {providerId:"anthropic",credentialRef:options.credentialRef,models,
- async chatCompletions(bytes,signal){
+ async chatCompletions(bytes,signal,authorization){
   const body=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes));
   if(!models.has(body.model)||!Number.isSafeInteger(body.max_tokens)||body.max_tokens<1
    ||(body.n!==undefined&&body.n!==1)||(body.stream!==undefined&&typeof body.stream!=="boolean"))throw Error("invalid_native_managed_request");
@@ -34,11 +34,13 @@ export function createManagedAnthropicAccount(options:{
    // obtain another provider invocation within this attempt.
    dispatched=true;
    signal.throwIfAborted();
+   authorization.beforeDispatch?.();
    const credential=await options.readCredential();
    if(!credential||credential.length>16384||/[\r\n]/.test(credential))throw Error("managed_credential_unavailable");
    signal.throwIfAborted();
    const headers=new Headers(init.headers);
    headers.delete("authorization");headers.set("x-api-key",credential);
+   authorization.beforeDispatch?.();
    const response=await options.fetchViaEgress(input,{...init,headers,signal,redirect:"error"});
    const reader=response.body?.getReader();
    if(!reader)return response;

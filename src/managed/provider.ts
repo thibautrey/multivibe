@@ -22,11 +22,13 @@ export function createManagedProviderAccount(options: {
 }): ManagedProviderAccount & { discoverModels(signal: AbortSignal): Promise<readonly string[]> } {
   const base = compatibleProviders[options.providerId];
   if (!base || !options.credentialRef || options.models.size > 10000) throw Error("invalid_managed_account");
-  async function request(path: string, method: "GET" | "POST", signal: AbortSignal, body?: Uint8Array) {
+  async function request(path: string, method: "GET" | "POST", signal: AbortSignal, body?: Uint8Array, beforeDispatch?: () => void) {
     signal.throwIfAborted();
+    beforeDispatch?.();
     const credential = await options.readCredential();
     if (!credential || credential.length > 16384 || /[\r\n]/.test(credential)) throw Error("managed_credential_unavailable");
     signal.throwIfAborted();
+    beforeDispatch?.();
     return options.fetchViaEgress(`${base}${path}`, { method, signal, redirect: "error",
       headers: options.providerId === "anthropic"
         ? {"x-api-key":credential,"anthropic-version":"2023-06-01","content-type":"application/json"}
@@ -38,7 +40,7 @@ export function createManagedProviderAccount(options: {
     providerId: options.providerId, credentialRef: options.credentialRef, models: new Set(options.models),
     chatCompletions: options.providerId === "anthropic"
       ? createManagedAnthropicAccount({...options,maximumResponseBytes:options.maximumResponseBytes ?? 8*1024*1024}).chatCompletions
-      : (body, signal) => request("/chat/completions", "POST", signal, body),
+      : (body, signal, authorization) => request("/chat/completions", "POST", signal, body, authorization.beforeDispatch),
     async discoverModels(signal) {
       const allIds = new Set<string>();
       const cursors = new Set<string>();
