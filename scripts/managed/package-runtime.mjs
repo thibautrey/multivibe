@@ -5,6 +5,7 @@ import ts from "typescript";
 const sourceRoot = resolve("dist");
 const outputRoot = resolve(process.argv[2] ?? "managed-dist");
 if (outputRoot === sourceRoot || outputRoot.startsWith(sourceRoot + sep)) throw Error("Managed output must be separate from dist");
+await mkdir(outputRoot, { recursive: false });
 const queue = [resolve(sourceRoot,"managed/main.js")];
 const visited = new Set();
 while(queue.length) {
