@@ -195,11 +195,9 @@
 .host-harness-browser {
   display: grid;
   gap: 16px;
-  overflow: hidden;
-  background:
-    radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--primary) 14%, transparent), transparent 34%),
-    linear-gradient(135deg, color-mix(in srgb, var(--primary) 6%, transparent), transparent 62%),
-    var(--panel);
+  padding: 0;
+  overflow: visible;
+  background: transparent;
 }
 
 .host-harness-rail {
