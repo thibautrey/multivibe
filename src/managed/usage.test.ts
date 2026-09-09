@@ -20,3 +20,8 @@ test("contradictory aliases and missing or inconsistent cache partitions remain 
   assert.equal(providerTokenUsage({usage:{...base,...fields}}),null,JSON.stringify(fields));
  }
 });
+
+test("reported unquoted service tiers cannot produce settled usage",()=>{
+ for(const service_tier of ["priority","flex","auto",null,4])assert.equal(providerTokenUsage({service_tier,usage:base}),null);
+ assert.ok(providerTokenUsage({service_tier:"default",usage:base}));
+});

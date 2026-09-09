@@ -29,6 +29,8 @@ function aliases(...values: unknown[]): string | null | undefined {
 }
 export function providerTokenUsage(payload: unknown): ProviderTokenUsage | null {
   if (!record(payload) || !record(payload.usage)) return null;
+  // A reported nonstandard service cannot be priced using standard-only grants.
+  if (payload.service_tier !== undefined && payload.service_tier !== "default") return null;
   const usage = payload.usage;
   for (const key of ["prompt_tokens_details", "input_tokens_details", "completion_tokens_details", "output_tokens_details"]) {
     if (usage[key] !== undefined && usage[key] !== null && !record(usage[key])) return null;

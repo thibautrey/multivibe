@@ -38,6 +38,9 @@ export function managedProviderStream(options: {
       else {
         const payload = JSON.parse(data);
         if (!payload || payload.object !== "chat.completion.chunk" || payload.error) throw Error("invalid_provider_stream");
+        // A tier reported on an earlier chunk must not disappear when the
+        // final usage chunk omits it or reports a different tier.
+        if (payload.service_tier !== undefined && payload.service_tier !== "default") invalid = true;
         if (payload.usage !== undefined && payload.usage !== null) {
           const next = providerTokenUsage(payload);
           if (!next || (usage.value && JSON.stringify(usage.value) !== JSON.stringify(next))) invalid = true;
