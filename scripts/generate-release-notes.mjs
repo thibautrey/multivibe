@@ -106,13 +106,7 @@ async function main() {
     diffStat: bounded(git('diff', '--stat', base, target), 12000),
     patch: bounded(git('diff', '--no-ext-diff', '--no-textconv', '--unified=3', base, target, '--', '.', ':!package-lock.json', ':!web/package-lock.json', ':!Cargo.lock', ':!*.sum'), 80000),
   };
-  let summary;
-  try { summary = await generateSummary(context); }
-  catch {
-    // Never log provider bodies/errors: they may echo credentials or source context.
-    console.log('::warning::AI release notes unavailable or invalid; using the factual changelog. Check release notes API configuration.');
-    summary = previous ? `Changes since **${previous}**.` : 'First release in this release series.';
-  }
+  const summary = await generateSummary(context);
   const comparison = previous
     ? `[Full comparison](https://github.com/${repository}/compare/${encodeURIComponent(previous)}...${encodeURIComponent(tag)})`
     : `[Release source](https://github.com/${repository}/tree/${encodeURIComponent(tag)})`;
@@ -122,5 +116,5 @@ async function main() {
   await writeFile(output, body);
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch(() => { console.error('Release notes generation failed before publication. Check release history and artifacts.'); process.exitCode = 1; });
+  main().catch(() => { console.error('Optional release notes generation failed; the release workflow will use its original notes.'); process.exitCode = 1; });
 }
