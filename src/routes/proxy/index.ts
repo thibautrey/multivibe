@@ -1,3 +1,5 @@
+import { oauthConfig as defaultOAuthConfig } from "../../oauth-config.js";
+import { buildCopilotHeaders, trustedCopilotBaseUrl, copilotModelEntries } from "../../github-copilot.js";
 import { recordHostMenuProviderUsage } from "../../host/menu-bar.js";
 // Cloud owns the entire multivibe/ namespace, including future policy selectors.
 function isCloudModelSelector(model: unknown): model is string {
@@ -346,8 +348,10 @@ export function buildUpstreamRequestHeaders(
     model?: string;
     conversationId?: string;
     opencodeHeaders?: Record<string, string>;
+    payload?: any;
   } = {},
 ): Record<string, string> {
+  if (provider === "github-copilot") return buildCopilotHeaders(accessToken, options.payload);
   if (provider === "xai") {
     return buildXaiUpstreamHeaders(accessToken, options);
   }
@@ -658,6 +662,7 @@ function accountBaseUrl(
   zaiBaseUrl: string,
 ): string {
   const provider = normalizeProvider(account);
+  if (provider === "github-copilot") return trustedCopilotBaseUrl(account.baseUrl);
   if (provider === "ai-sdk") return sdkAdapterBaseUrl(account);
   if (provider === "openai-compatible") {
     return trimTrailingSlash(String(account.baseUrl ?? ""));
@@ -678,11 +683,14 @@ export function resolveUpstreamMode(
     provider?: ProviderId;
     upstreamMode?: UpstreamMode;
     compatibilityMode?: string;
+    copilotModelEndpoints?: Record<string, UpstreamMode>;
   },
   isChatCompletionsPath: boolean,
   isResponsesCompactPath: boolean,
+  model?: string,
 ): UpstreamMode {
   const provider = normalizeProvider(account);
+  if (provider === "github-copilot") return (model ? account.copilotModelEndpoints?.[model] : undefined) ?? account.upstreamMode ?? "chat/completions";
   if (provider === "ai-sdk") return "chat/completions";
   if (account.upstreamMode) return account.upstreamMode;
   if (provider === "zai") return "chat/completions";
@@ -984,10 +992,19 @@ async function refreshModels(
     }
     let catalogComplete = activeAccounts.length > 0;
 
-    for (const account of activeAccounts) {
+    for (let account of activeAccounts) {
       const provider = normalizeProvider(account);
       try {
+        if (provider === "github-copilot") {
+          const valid = await ensureValidToken(account, defaultOAuthConfig);
+          if (valid !== account) {
+            account = valid;
+            store.markAccountModified(account.id, account);
+          }
+          if (account.state?.needsTokenRefresh) { catalogComplete = false; continue; }
+        }
         const headers: Record<string, string> =
+          provider === "github-copilot" ? buildCopilotHeaders(account.accessToken, undefined, "application/json") :
           provider === "xai"
             ? buildXaiUpstreamHeaders(account.accessToken, {
                 accept: "application/json",
@@ -1040,6 +1057,7 @@ async function refreshModels(
           } else {
             const catalogPath = isDiscoveredLocalRuntimeAccount(account)
               ? localRuntimeCatalogPath(account.localRuntime!.adapter)
+              : provider === "github-copilot" ? "/models"
               : provider === "zai"
                 ? ZAI_MODELS_PATH
                 : "/v1/models";
@@ -1052,7 +1070,7 @@ async function refreshModels(
         else delete headers.authorization;
         const r = await fetch(url, {
           headers,
-          redirect: isDiscoveredLocalRuntimeAccount(account)
+          redirect: (isDiscoveredLocalRuntimeAccount(account) || provider === "github-copilot")
             ? "manual"
             : "follow",
         });
@@ -1098,12 +1116,17 @@ async function refreshModels(
         }
 
         const upstream =
+          provider === "github-copilot" ? copilotModelEntries(json) :
           provider === "xai"
             ? xaiModelEntries(json)
             : Array.isArray(json?.data)
               ? json.data
               : [];
-        if (upstream.length === 0) {
+        if (provider === "github-copilot") {
+          account.copilotModelEndpoints = Object.fromEntries(upstream.map((entry: any) => [entry.id, entry.upstreamMode]));
+          store.markAccountModified(account.id, account);
+        }
+        if (upstream.length === 0 && provider !== "github-copilot") {
           catalogComplete = false;
           continue;
         }
@@ -1572,6 +1595,7 @@ function buildRoutingCandidates(
       "openai",
       "openai-compatible",
       "opencode",
+      "github-copilot",
       "mistral",
       "zai",
       "xai",
@@ -2404,6 +2428,8 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
     // accounts avoids wasting API calls and prevents a race where stale
     // account objects overwrite admin changes (e.g. re-enabling a disabled
     // account).
+    const copilotAuthRetried = new Set<string>();
+    const copilotAuthFailed = new Set<string>();
     const prepareAccount = async (account: Account): Promise<Account> => {
       const valid = await ensureValidToken(account, oauthConfig);
       // Persist token refreshes before a background usage probe can complete.
@@ -2649,7 +2675,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
         if (requestSignal.aborted) return;
         const usableAccounts = providerAccounts.filter(
           (account) =>
-            !tried.has(account.id) &&
+            !tried.has(account.id) && !copilotAuthFailed.has(account.id) &&
             accountUsable(account, candidate.resolvedModel),
         );
         const preferredResource = eligiblePolicyEntries.find(
@@ -2780,6 +2806,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
           selected,
           isChatCompletionsPath,
           isResponsesCompactPath,
+          candidate.resolvedModel,
         );
         const shouldSendChatCompletions = upstreamMode === "chat/completions";
         if (shouldSendChatCompletions) {
@@ -2803,7 +2830,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
         if (
           shouldSendChatCompletions &&
           (candidate.provider === "openai-compatible" ||
-            candidate.provider === "opencode")
+            candidate.provider === "opencode" || candidate.provider === "github-copilot")
         ) {
           payloadToUpstream = sanitizeGenericChatCompletionsPayload(
             payloadToUpstream,
@@ -3017,6 +3044,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
             : selected.accessToken,
           {
             model: candidate.resolvedModel,
+            payload: payloadToUpstream,
             conversationId: sessionId,
             opencodeHeaders: candidate.provider === "opencode" ? openCodeAccountHeaders(selected) : undefined,
           },
@@ -3061,6 +3089,8 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
             upstreamPath = shouldSendChatCompletions
               ? "/v1/chat/completions"
               : "/v1/responses";
+          } else if (candidate.provider === "github-copilot") {
+            upstreamPath = shouldSendChatCompletions ? "/chat/completions" : "/responses";
           } else if (candidate.provider === "xai") {
             upstreamPath = shouldSendChatCompletions
               ? XAI_CHAT_COMPLETIONS_PATH
@@ -3087,7 +3117,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
           );
           if (authorization) headers.authorization = authorization;
           else delete headers.authorization;
-          const redirect = isDiscoveredLocalRuntimeAccount(selected)
+          const redirect = (isDiscoveredLocalRuntimeAccount(selected) || candidate.provider === "github-copilot")
             ? "manual"
             : "follow";
           let upstreamAttemptStartedAt = Date.now();
@@ -3192,6 +3222,28 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
           }
           latencyBreakdown.upstreamHeadersMs =
             Date.now() - upstreamStartedAt;
+
+          // Renew before any streaming path commits an upstream authentication error.
+          if (upstream.status === 401 && candidate.provider === "github-copilot") {
+            recordRetriedUpstreamAttempt(401, "GitHub Copilot rejected the inference token");
+            await upstream.body?.cancel();
+            if (!copilotAuthRetried.has(selected.id)) {
+              copilotAuthRetried.add(selected.id);
+              const refreshed = await ensureValidToken({ ...selected, expiresAt: 1 }, oauthConfig);
+              Object.assign(selected, refreshed);
+              await store.upsertAccount(selected);
+              if (!refreshed.state?.needsTokenRefresh) {
+                tried.delete(selected.id);
+                i -= 1;
+                continue;
+              }
+            }
+            copilotAuthFailed.add(selected.id);
+            selected.state = { ...selected.state, needsTokenRefresh: true, authBlockedUntil: Date.now() + 60_000 };
+            rememberError(selected, "GitHub Copilot authentication failed. Sign in again.");
+            await store.upsertAccount(selected);
+            continue;
+          }
 
           if (
             candidate.provider !== "xai" &&
@@ -4228,6 +4280,18 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
             text = JSON.stringify(parsed);
           } else if (parsed?.object === "response") {
             parsed = stripReasoningFromResponseObject(parsed);
+            if (shouldReturnChatCompletions && !clientRequestedStream && upstream.ok) {
+              const normalized = ensureNonEmptyChatCompletion(responseObjectToChatCompletion(
+                parsed, req.body?.model ?? payloadToUpstream?.model ?? "unknown",
+              ));
+              if (normalized.patched) {
+                await retryEmptyAssistantOutput("empty assistant output in response object", false, {
+                  upstreamContentType: contentType, tracePayload: parsed,
+                });
+                continue;
+              }
+              parsed = normalized.chat;
+            }
             text = JSON.stringify(parsed);
           }
 
@@ -4967,6 +5031,12 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
       );
     }
     if (res.headersSent && !isNativeResponsesStream) return;
+
+    const routedAccounts = accounts.filter(account => account.enabled &&
+      routingCandidates.some(candidate => candidate.provider === normalizeProvider(account)));
+    if (routedAccounts.length && routedAccounts.every(account => copilotAuthFailed.has(account.id))) {
+      return sendPreparationError(503, "GitHub Copilot authentication failed. Sign in again.");
+    }
 
     const elapsed = Date.now() - hangStart;
     if (elapsed >= HANG_RETRY_MAX_DURATION_MS) break; // fall through to final error response

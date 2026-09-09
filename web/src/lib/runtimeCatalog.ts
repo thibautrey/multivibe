@@ -34,6 +34,10 @@ const RUNTIME_CATALOG: Record<string, RuntimeIdentity> = {
     iconUrl: "https://z.ai/favicon.png",
     homepageUrl: "https://z.ai",
   },
+  "github-copilot": {
+    id: "github-copilot", label: "GitHub Copilot",
+    iconUrl: "https://github.com/favicon.ico", homepageUrl: "https://github.com/features/copilot",
+  },
   xai: {
     id: "xai",
     label: "Grok Build",
@@ -134,7 +138,7 @@ export function runtimeIdentityForAccount(
   account: Pick<Account, "provider" | "localRuntime" | "sdkProvider">,
 ): RuntimeIdentity {
   if (account.provider === "ai-sdk") {
-    const names: Record<string, string> = { anthropic: "Anthropic", google: "Google Gemini", openrouter: "OpenRouter", deepseek: "DeepSeek", groq: "Groq", togetherai: "Together AI", cerebras: "Cerebras", perplexity: "Perplexity" };
+    const names: Record<string, string> = { anthropic: "Anthropic", google: "Google Gemini", openrouter: "OpenRouter", mammouth: "Mammouth AI", deepseek: "DeepSeek", groq: "Groq", togetherai: "Together AI", cerebras: "Cerebras", perplexity: "Perplexity" };
     return fallbackIdentity(account.sdkProvider ?? "ai-sdk", names[account.sdkProvider ?? ""] ?? "Cloud provider");
   }
   if (account.localRuntime?.adapter) {
