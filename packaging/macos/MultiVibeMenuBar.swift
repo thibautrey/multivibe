@@ -547,6 +547,9 @@ private final class HostPopoverController: NSViewController {
             contentStack.addArrangedSubview(picker)
         }
         quotaProviders = summary?.providers ?? []
+        if quotaProviders.isEmpty, let accounts = summary?.accounts, !accounts.isEmpty {
+            quotaProviders = [ProviderQuota(id: "legacy", displayName: "Accounts", accounts: accounts, windows: [])]
+        }
         accountSection.orientation = .vertical
         accountSection.alignment = .leading
         accountSection.spacing = 8
