@@ -1093,3 +1093,67 @@ test("completed trace observers receive measured HTTP and SSE usage after persis
     assert.ok((seen[1].costUsd ?? 0)>0);
   } finally { await fs.rm(directory,{recursive:true,force:true}); }
 });
+
+test("external Rust journal updates cached totals and survives restart without double counting", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-native-usage-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, "traces.jsonl");
+  const config = { filePath, externalWriter: true, retentionMax: 2 };
+  const record = (id: string, route = "/responses") => ({
+    id, at: Date.now(), route, status: 200, isError: false, stream: true,
+    latencyMs: 10, lifecycleState: "completed", model: "gpt-4o-mini",
+    usageStatus: "measured", tokensInput: 12, tokensOutput: 3, tokensTotal: 15,
+  });
+  // More records than both display retention and the normal recent-ID cache.
+  const initial = Array.from({ length: 2002 }, (_, i) => record(`rust-${i}`));
+  await fs.writeFile(filePath, initial.map((value) => JSON.stringify(value)).join("\n") + "\n");
+  let manager = createTraceManager(config);
+  await manager.initialize();
+  assert.equal((await manager.getTraceStats()).stats.totals.tokensTotal, 2002 * 15);
+  assert.equal((await manager.readTraceWindow()).length, 2);
+
+  const next = record("chat", "/chat/completions");
+  await fs.appendFile(filePath, JSON.stringify(next) + "\n");
+  const results = await Promise.all(Array.from({ length: 5 }, () => manager.getTraceStats()));
+  for (const result of results) assert.equal(result.stats.totals.tokensTotal, 2003 * 15);
+  assert.equal((await manager.readTraceById("chat"))?.tokensTotal, 15);
+  assert.equal((await manager.readTraceListWindow()).at(-1)?.id, "chat");
+  assert.equal((await manager.readStatsHistoryRange()).length, 2003);
+  assert.equal((await manager.aggregateAnonymousOutputTokens(0, Date.now() + 1, {
+    "gpt-4o-mini": "gpt-4o-mini",
+  }))[0].outputTokens, 2003 * 3);
+
+  const before = await fs.readFile(filePath, "utf8");
+  await manager.compactTraceStorageIfNeeded();
+  assert.equal(await fs.readFile(filePath, "utf8"), before);
+  await assert.rejects(manager.writeTraceWindow([]), /externally written/);
+  manager = createTraceManager(config);
+  await manager.initialize();
+  await manager.seedStatsHistoryIfMissing();
+  assert.equal((await manager.getTraceStats()).stats.totals.tokensTotal, 2003 * 15);
+  assert.equal((await manager.readStatsHistory()).length, 2003);
+});
+
+test("external journal waits for complete UTF-8 lines and follows replacement and truncation", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-native-partial-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, "traces.jsonl");
+  const manager = createTraceManager({ filePath, externalWriter: true });
+  await manager.initialize(); // The Rust writer may not have created the file yet.
+  const record = (id: string) => JSON.stringify({
+    id, at: Date.now(), route: "/responses", status: 200, stream: true,
+    latencyMs: 1, lifecycleState: "completed", tokensTotal: 8,
+  }) + "\n";
+  const line = Buffer.from(record("é"));
+  const split = line.indexOf(Buffer.from("é")) + 1;
+  await fs.writeFile(filePath, line.subarray(0, split));
+  assert.equal((await manager.getTraceStats()).stats.totals.requests, 0);
+  await fs.appendFile(filePath, line.subarray(split));
+  assert.equal((await manager.readTracesLegacy())[0].id, "é");
+  assert.equal((await manager.getTraceStats()).stats.totals.tokensTotal, 8);
+  await fs.writeFile(`${filePath}.replacement`, record("replacement"));
+  await fs.rename(`${filePath}.replacement`, filePath);
+  assert.equal((await manager.getTraceStats()).stats.totals.tokensTotal, 16);
+  await fs.writeFile(filePath, record("x"));
+  assert.equal((await manager.getTraceStats()).stats.totals.tokensTotal, 24);
+});
