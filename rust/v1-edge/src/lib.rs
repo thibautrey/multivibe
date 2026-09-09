@@ -12223,6 +12223,7 @@ mod tests {
         let mut stream = String::new();
         for chunk in [
             json!({"index": 0, "id": "call_exec", "function": {"name": "mv_tool_0", "arguments": "{\"input\":\"print("}}),
+            json!({"index": 0, "function": {"arguments": " "}}),
             json!({"index": 0, "function": {"arguments": "42)\"}"}}),
         ] {
             stream.push_str(&converter.transform_chat_chunk(&json!({"object": "chat.completion.chunk", "choices": [{"delta": {"tool_calls": [chunk]}, "finish_reason": null}]})));
@@ -12235,7 +12236,7 @@ mod tests {
         assert!(!stream.contains("response.function_call_arguments.delta"));
         let result = response_from_sse(&stream, "glm-test");
         assert_eq!(result["output"][0]["type"], "custom_tool_call");
-        assert_eq!(result["output"][0]["input"], "print(42)");
+        assert_eq!(result["output"][0]["input"], "print( 42)");
         assert_eq!(result["output"][0]["call_id"], "call_exec");
     }
 
