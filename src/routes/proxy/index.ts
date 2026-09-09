@@ -1,3 +1,4 @@
+import { recordHostMenuProviderUsage } from "../../host/menu-bar.js";
 // Cloud owns the entire multivibe/ namespace, including future policy selectors.
 function isCloudModelSelector(model: unknown): model is string {
   return typeof model === "string" && model.startsWith("multivibe/");
@@ -2697,6 +2698,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
           : preferredAccount
             ? "policy-preferred"
             : "quota-headroom";
+        recordHostMenuProviderUsage(selected);
         const previousAttemptAccountId = completedRoutingAccountId;
         const accountSelection = buildAccountSelectionTelemetry(
           quotaSelection,

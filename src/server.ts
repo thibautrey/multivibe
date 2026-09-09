@@ -1,3 +1,4 @@
+import { getHostMenuProviderActivity } from "./host/menu-bar.js";
 import { automaticRouterManifest, createAutomaticRouter } from "./automatic-router.js";
 import { createAuthRateLimiter } from "./auth-rate-limit.js";
 import { createSdkAdapterRouter } from "./ai-sdk/routes.js";
@@ -547,6 +548,11 @@ if (!MULTIVIBE_CONTROL_PLANE) {
     res.json({ authenticated: !ADMIN_TOKEN || hasAdminSession(req) });
   });
 }
+
+app.get("/admin/host/menu-bar/activity", adminGuard, (_req, res) => {
+  res.setHeader("cache-control", "no-store");
+  res.json({ activity: getHostMenuProviderActivity() ?? null });
+});
 
 app.get("/admin/host/menu-bar", adminGuard, async (req, res) => {
   res.setHeader("cache-control", "no-store");

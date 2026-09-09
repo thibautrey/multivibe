@@ -71,6 +71,66 @@ private struct MenuBarQuota: Decodable {
     let weeklyAccountCount: Int
 }
 
+private struct ProviderQuota: Decodable {
+    struct Window: Decodable {
+        let label: String
+        let remainingPercent: Double
+        let accountCount: Int
+    }
+    let id: String
+    let displayName: String
+    let accounts: [MenuBarAccount]
+    let windows: [Window]
+}
+
+private struct ProviderActivity: Decodable {
+    let providerId: String
+    let usedAt: Double
+}
+
+// Time is injected so rotation and concurrent-provider debounce are deterministic.
+private struct QuotaRotation {
+    var selected: String?
+    var pin: String?
+    var changedAt: TimeInterval = -.infinity
+    var holdUntil: TimeInterval = 0
+    var observedUsage: Double = 0
+    var pending: ProviderActivity?
+
+    mutating func update(ids: [String], activity: ProviderActivity?, now: TimeInterval) {
+        guard !ids.isEmpty else { selected = nil; pending = nil; return }
+        if let activity, activity.usedAt > observedUsage {
+            observedUsage = activity.usedAt
+            if now - activity.usedAt / 1000 < 30, ids.contains(activity.providerId) {
+                pending = activity
+            }
+        }
+        if let pin, ids.contains(pin) {
+            select(pin, now: now)
+            pending = nil
+            return
+        }
+        if !ids.contains(selected ?? "") { select(pending?.providerId ?? ids[0], now: now) }
+        if let activity = pending {
+            if now - activity.usedAt / 1000 >= 30 || !ids.contains(activity.providerId) {
+                pending = nil
+            } else if selected == activity.providerId || now - changedAt >= 5 {
+                select(activity.providerId, now: now)
+                holdUntil = now + 30
+                pending = nil
+            }
+        }
+        if now >= holdUntil, now - changedAt >= 12, ids.count > 1 {
+            let index = ids.firstIndex(of: selected ?? "") ?? 0
+            select(ids[(index + 1) % ids.count], now: now)
+        }
+    }
+
+    private mutating func select(_ id: String, now: TimeInterval) {
+        if selected != id { selected = id; changedAt = now }
+    }
+}
+
 private struct MenuBarGitHubStarPrompt: Decodable {
     let generatedOutputTokens: Double
     let threshold: Double
@@ -109,6 +169,7 @@ private struct MenuBarSummary: Decodable {
     }
 
     let operational: Bool
+    let providers: [ProviderQuota]?
     let accounts: [MenuBarAccount]
     let quota: MenuBarQuota
     let githubStarPrompt: MenuBarGitHubStarPrompt?
@@ -262,6 +323,8 @@ private final class FlippedView: NSView {
 }
 
 private final class HostPopoverController: NSViewController {
+    var selectQuotaProvider: ((String?) -> Void)?
+    var pinnedQuotaProvider: String?
     var openDashboard: (() -> Void)?
     var configureWorker: (() -> Void)?
     var checkForUpdates: (() -> Void)?
@@ -463,13 +526,35 @@ private final class HostPopoverController: NSViewController {
             child.removeFromSuperview()
         }
 
-        contentStack.addArrangedSubview(sectionLabel("Accounts · remaining capacity"))
-        contentStack.addArrangedSubview(summaryCard(summary?.quota))
-        contentStack.addArrangedSubview(sectionLabel("Accounts"))
-        if let accounts = summary?.accounts, !accounts.isEmpty {
-            contentStack.addArrangedSubview(accountsCard(accounts))
+        if let providers = summary?.providers, !providers.isEmpty {
+            let picker = NSPopUpButton()
+            picker.addItem(withTitle: "Automatic · follow usage and rotate")
+            for provider in providers { picker.addItem(withTitle: "Pin \(provider.displayName)") }
+            picker.selectItem(at: providers.firstIndex(where: { $0.id == pinnedQuotaProvider }).map { $0 + 1 } ?? 0)
+            picker.target = self
+            picker.action = #selector(didSelectQuotaProvider(_:))
+            picker.itemArray.first?.representedObject = ""
+            for (index, provider) in providers.enumerated() { picker.item(at: index + 1)?.representedObject = provider.id }
+            contentStack.addArrangedSubview(picker)
+            for provider in providers {
+                contentStack.addArrangedSubview(sectionLabel("\(provider.displayName) · remaining capacity"))
+                if provider.windows.isEmpty {
+                    contentStack.addArrangedSubview(label("Quota unavailable", size: 12, color: MenuBarPalette.muted))
+                } else {
+                    for window in provider.windows {
+                        contentStack.addArrangedSubview(quotaCell(title: window.label, value: window.remainingPercent, detail: accountCount(window.accountCount)))
+                    }
+                }
+                contentStack.addArrangedSubview(accountsCard(provider.accounts))
+            }
         } else {
-            contentStack.addArrangedSubview(emptyAccountsCard(operational: operational))
+            contentStack.addArrangedSubview(sectionLabel("Accounts · remaining capacity"))
+            contentStack.addArrangedSubview(summaryCard(summary?.quota))
+            if let accounts = summary?.accounts, !accounts.isEmpty {
+                contentStack.addArrangedSubview(accountsCard(accounts))
+            } else {
+                contentStack.addArrangedSubview(emptyAccountsCard(operational: operational))
+            }
         }
         if workerNeedsSetup {
             contentStack.addArrangedSubview(sectionLabel("Worker"))
@@ -531,6 +616,11 @@ private final class HostPopoverController: NSViewController {
         view.translatesAutoresizingMaskIntoConstraints = false
         view.widthAnchor.constraint(equalToConstant: 384).isActive = true
         return view
+    }
+
+    @objc private func didSelectQuotaProvider(_ sender: NSPopUpButton) {
+        let id = sender.selectedItem?.representedObject as? String
+        selectQuotaProvider?(id?.isEmpty == false ? id : nil)
     }
 
     private func summaryCard(_ quota: MenuBarQuota?) -> NSView {
@@ -630,7 +720,7 @@ private final class HostPopoverController: NSViewController {
         let visibleQuotaWindows: [NSView] = unsupported
             ? []
             : quotaWindows.compactMap { item in
-                guard let window = item.window, hasResetTime(window.resetAt) else { return nil }
+                guard let window = item.window else { return nil }
                 return compactQuota(title: item.title, window: window)
         }
 
@@ -1007,6 +1097,12 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
     private let notificationPopover = NSPopover()
     private let notificationPopup = NotificationPopup()
     private var refreshTimer: Timer?
+    private var quotaTimer: Timer?
+    private var rotation = QuotaRotation(pin: UserDefaults.standard.string(forKey: "quotaProviderPin"))
+    private var providerActivity: ProviderActivity?
+    private var pollingActivity = false
+    private var quotaTicks = 0
+
     private var signalSources: [DispatchSourceSignal] = []
     private var ownedService: Process?
     private var dashboardURL = URL(string: "http://127.0.0.1:\(configuredHostPort)")!
@@ -1056,6 +1152,20 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         didFinishLaunching = true
         configureStatusItem()
         configurePopover()
+        popoverController.selectQuotaProvider = { [weak self] id in
+            guard let self else { return }
+            self.rotation.pin = id
+            self.rotation.holdUntil = 0
+            UserDefaults.standard.set(id, forKey: "quotaProviderPin")
+            self.render()
+        }
+        quotaTimer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.renderQuota()
+            self.quotaTicks += 1
+            if self.quotaTicks % 2 == 0 { self.pollProviderActivity() }
+        }
+        RunLoop.main.add(quotaTimer!, forMode: .common)
         configureTerminationSignals()
         render()
         ensureServiceIsRunning()
@@ -1203,6 +1313,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
 
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
+        quotaTimer?.invalidate()
         notificationCloseWorkItem?.cancel()
         if let process = ownedService, process.isRunning { process.terminate() }
     }
@@ -1263,18 +1374,66 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         }
     }
 
-    private func render() {
+    private func pollProviderActivity() {
+        guard operational, !pollingActivity, let request = authorizedRequest(path: "/admin/host/menu-bar/activity") else { return }
+        pollingActivity = true
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
+            struct Response: Decodable { let activity: ProviderActivity? }
+            let activity = (response as? HTTPURLResponse)?.statusCode == 200
+                ? data.flatMap { try? JSONDecoder().decode(Response.self, from: $0) }?.activity : nil
+            DispatchQueue.main.async {
+                self?.pollingActivity = false
+                self?.providerActivity = activity
+                self?.renderQuota()
+            }
+        }.resume()
+    }
+
+    private func renderQuota() {
         guard let button = statusItem.button else { return }
-        if let quota = summary?.quota, operational {
-            var parts: [String] = []
-            if let weekly = quota.weeklyRemainingPercent { parts.append("W:\(Int(weekly.rounded()))%") }
-            if let fiveHour = quota.fiveHourRemainingPercent { parts.append("5h:\(Int(fiveHour.rounded()))%") }
-            button.title = parts.isEmpty ? "" : "  " + parts.joined(separator: "  ")
-            button.font = .monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+        let now = Date().timeIntervalSince1970
+        let providers = summary?.providers ?? []
+        let eligible = providers.filter { !$0.windows.isEmpty || $0.id == rotation.pin }
+        rotation.update(ids: eligible.map(\.id), activity: providerActivity, now: now)
+        var title = ""
+        var tooltip = "MultiVibe Host — \(statusText)"
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+        if operational, let provider = eligible.first(where: { $0.id == rotation.selected }) {
+            let values = provider.windows.map { "\($0.label):\(Int($0.remainingPercent.rounded()))%" }.joined(separator: "  ")
+            let quota = values.isEmpty ? "Quota unavailable" : values
+            title = "  " + (now - rotation.changedAt < 3 ? "\(provider.displayName) · " : "") + quota
+            tooltip = "\(provider.displayName) — \(quota)"
+            // Reserve the widest provider + quota combination, including the brief label.
+            let width = eligible.map { provider -> CGFloat in
+                let values = provider.windows.map { "\($0.label):100%" }.joined(separator: "  ")
+                let text = "  \(provider.displayName) · " + (values.isEmpty ? "Quota unavailable" : values)
+                return (text as NSString).size(withAttributes: [.font: font]).width + 36
+            }.max() ?? 36
+            statusItem.length = width
         } else {
-            button.title = ""
+            statusItem.length = NSStatusItem.variableLength
+            if operational, providers.isEmpty, let quota = summary?.quota {
+                title = [quota.weeklyRemainingPercent.map { "W:\(Int($0.rounded()))%" }, quota.fiveHourRemainingPercent.map { "5h:\(Int($0.rounded()))%" }].compactMap { $0 }.joined(separator: "  ")
+            }
         }
-        button.toolTip = "MultiVibe Host — \(statusText)"
+        if button.title != title {
+            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                button.wantsLayer = true
+                let transition = CATransition()
+                transition.type = .fade
+                transition.duration = 0.2
+                button.layer?.add(transition, forKey: "quotaFade")
+            }
+            button.title = title
+        }
+        button.font = font
+        button.toolTip = tooltip
+        button.setAccessibilityLabel(tooltip)
+    }
+
+    private func render() {
+        renderQuota()
+        popoverController.pinnedQuotaProvider = rotation.pin
         popoverController.render(
             summary: summary,
             workerNeedsSetup: workerConfigurationState == "unconfigured" && workerSetupURL != nil,
