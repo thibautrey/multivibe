@@ -83,7 +83,8 @@ export async function createManagedInjectorRuntime(config: ManagedInjectorRuntim
   const key = createPublicKey(await readFile(config.cloudVerificationKeyFile));
   if (key.asymmetricKeyType !== "ed25519") throw Error("invalid_cloud_verification_key");
   const tls={key:await readFile(config.tlsKeyFile),cert:await readFile(config.tlsCertFile),ca:await readFile(config.tlsCaFile)};
-  const coordination=new ManagedCoordinationClient(config.coordinationUrl,tls,Math.min(config.executionTimeoutMs,30000));
+  const coordination=new ManagedCoordinationClient(config.coordinationUrl,tls,Math.min(config.executionTimeoutMs,30000),30000,
+    config.maximumResponseBytes);
   const injector = new ManagedCredentialInjector({ verificationKey: key, coordination, accounts,
     maximumRequestBytes: config.maximumRequestBytes,
     executionTimeoutMs: config.executionTimeoutMs });

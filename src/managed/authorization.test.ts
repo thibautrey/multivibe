@@ -8,10 +8,11 @@ import { executionBodyDigest, signExecutionGrant, verifyExecutionGrant, type Exe
 import { ExecutionJournal } from "./journal.js";
 const keys = generateKeyPairSync("ed25519");
 const body = Buffer.from('{"model":"test"}');
-const grant: ExecutionGrant = { version: 1, audience: "multivibe-core-managed", attemptId: "attempt-1",
+const grant: ExecutionGrant = { version: 2, audience: "multivibe-core-managed", attemptId: "attempt-1",
   reservationId: "reservation-1", routeVersionId: "route-1", providerId: "mistral",
   credentialRef: "mistral/account-1", model: "mistral/model", upstreamModel: "model",
   operation: "responses", stream: false, bodySha256: executionBodyDigest(body), maximumOutputTokens: 32,
+  responseRecoveryKeyId:"test-key",responseRecoveryPublicKey:"A5wnJM5Y01mDWCA4MsbAtTGS_l8BI4-JNVWY_KRBH1I",responseRecoveryExpiresAt:120000,
   issuedAt: 1000, expiresAt: 61000 };
 test("execution authorization binds payload, trusted issuer, schema, and validity", () => {
   const token = signExecutionGrant(grant, keys.privateKey, 1000);
