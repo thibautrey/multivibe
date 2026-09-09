@@ -86,3 +86,12 @@ test("stream cancellation does not discard provider usage or the durable receipt
   assert.deepEqual(receipt.usage, { inputTokens: "4", outputTokens: "2" });
   assert.deepEqual(finish, receipt);
 });
+
+test("DeepSeek-shaped cache usage survives response conversion in the durable receipt",async()=>{
+ const h=harness(async()=>Response.json({choices:[{message:{role:"assistant",content:"Hello"},finish_reason:"stop"}],
+  usage:{prompt_tokens:4,completion_tokens:2,total_tokens:6,prompt_cache_hit_tokens:3,prompt_cache_miss_tokens:1}}));
+ const result=await h.executor.execute(h.token,h.body);
+ assert.equal((await result.receipt).state,"completed");
+ assert.equal((await result.receipt).usage?.cachedInputTokens,"3");
+ assert.equal(h.receipts[0].usage?.cachedInputTokens,"3");
+});

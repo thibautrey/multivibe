@@ -15,26 +15,56 @@ function quantity(value: unknown): string | undefined {
     && BigInt(value) <= 9223372036854775807n) return value;
   return undefined;
 }
+/** Undefined means absent; null means invalid or contradictory evidence. Never
+ * choose the first alias and silently discard a different authoritative value. */
+function aliases(...values: unknown[]): string | null | undefined {
+  let result: string | undefined;
+  for (const value of values) {
+    if (value === undefined) continue;
+    const parsed = quantity(value);
+    if (parsed === undefined || (result !== undefined && result !== parsed)) return null;
+    result = parsed;
+  }
+  return result;
+}
 export function providerTokenUsage(payload: unknown): ProviderTokenUsage | null {
   if (!record(payload) || !record(payload.usage)) return null;
   const usage = payload.usage;
-  const inputTokens = quantity(usage.prompt_tokens ?? usage.input_tokens);
-  const outputTokens = quantity(usage.completion_tokens ?? usage.output_tokens);
-  if (inputTokens === undefined || outputTokens === undefined) return null;
+  for (const key of ["prompt_tokens_details", "input_tokens_details", "completion_tokens_details", "output_tokens_details"]) {
+    if (usage[key] !== undefined && usage[key] !== null && !record(usage[key])) return null;
+  }
+  const detail = (key: string, field: string) => record(usage[key]) ? usage[key][field] : undefined;
+  const inputTokens = aliases(usage.prompt_tokens, usage.input_tokens);
+  const outputTokens = aliases(usage.completion_tokens, usage.output_tokens);
+  if (inputTokens == null || outputTokens == null) return null;
   const result: ProviderTokenUsage = { inputTokens, outputTokens };
   const optional = [
-    ["totalTokens", usage.total_tokens],
-    ["cachedInputTokens", record(usage.prompt_tokens_details) ? usage.prompt_tokens_details.cached_tokens : undefined],
-    ["reasoningTokens", record(usage.completion_tokens_details) ? usage.completion_tokens_details.reasoning_tokens : undefined],
+    ["totalTokens", aliases(usage.total_tokens)],
+    ["cachedInputTokens", aliases(detail("prompt_tokens_details", "cached_tokens"),
+      detail("input_tokens_details", "cached_tokens"), usage.prompt_cache_hit_tokens)],
+    ["reasoningTokens", aliases(detail("completion_tokens_details", "reasoning_tokens"),
+      detail("output_tokens_details", "reasoning_tokens"), usage.reasoning_tokens)],
   ] as const;
   for (const [name, value] of optional) {
-    if (value === undefined) continue;
-    const parsed = quantity(value);
-    if (parsed === undefined) return null;
-    result[name] = parsed;
+    if (value === null) return null;
+    if (value !== undefined) result[name] = value;
   }
   if (result.totalTokens !== undefined && BigInt(result.totalTokens) !== BigInt(inputTokens) + BigInt(outputTokens)) return null;
   if (result.cachedInputTokens !== undefined && BigInt(result.cachedInputTokens) > BigInt(inputTokens)) return null;
   if (result.reasoningTokens !== undefined && BigInt(result.reasoningTokens) > BigInt(outputTokens)) return null;
+  // DeepSeek reports cache hits and misses as a partition of prompt_tokens.
+  // Validate that partition without inventing a missing hit measurement.
+  if (usage.prompt_cache_miss_tokens !== undefined) {
+    const misses = quantity(usage.prompt_cache_miss_tokens);
+    if (misses === undefined || result.cachedInputTokens === undefined
+      || BigInt(misses) + BigInt(result.cachedInputTokens) !== BigInt(inputTokens)) return null;
+  }
+  // These native cache fields do not share compatible-provider input semantics.
+  // Until their own adapter/price dimensions exist, positive or invalid values
+  // must remain uncertain rather than disappearing from a token-only receipt.
+  for (const value of [usage.cache_creation_input_tokens, usage.cache_read_input_tokens,
+    detail("input_tokens_details", "cache_write_tokens"), detail("prompt_tokens_details", "cache_write_tokens")]) {
+    if (value !== undefined && quantity(value) !== "0") return null;
+  }
   return result;
 }
