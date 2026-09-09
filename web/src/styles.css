@@ -5233,3 +5233,91 @@ body:has(> .modal-backdrop) {
   opacity: 0.5;
   cursor: wait;
 }
+
+
+/* Keep tracing navigation and its global actions in one compact toolbar. */
+.trace-workspace-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  padding: 10px 12px;
+}
+
+.trace-workspace-toolbar .trace-view-tabs {
+  flex: 1 1 560px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.trace-workspace-toolbar .trace-workspace-controls {
+  margin-left: auto;
+  padding: 0;
+}
+
+.trace-workspace-toolbar .trace-range-controls {
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.trace-workspace-toolbar .trace-range-field {
+  min-width: 150px;
+}
+
+.trace-workspace-toolbar select,
+.trace-workspace-toolbar .trace-export-button {
+  height: 40px;
+  min-height: 40px;
+  margin: 0;
+  flex: none;
+  font-size: 12px;
+}
+
+.trace-workspace-toolbar .trace-range-field select {
+  width: 100%;
+}
+
+.trace-export-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.trace-export-format {
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: .04em;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+
+@media (max-width: 760px) {
+  .trace-workspace-toolbar .trace-view-tabs {
+    min-width: 0;
+    flex-basis: 100%;
+  }
+
+  .trace-workspace-toolbar .trace-workspace-controls,
+  .trace-workspace-toolbar .trace-range-controls {
+    width: 100%;
+  }
+
+  .trace-workspace-toolbar .trace-range-controls {
+    flex-direction: row;
+  }
+
+  .trace-workspace-toolbar .trace-range-field {
+    flex: 1;
+    min-width: 0;
+    width: auto;
+  }
+
+  .trace-workspace-toolbar .trace-export-button {
+    width: auto;
+  }
+}

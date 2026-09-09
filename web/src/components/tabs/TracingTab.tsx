@@ -331,26 +331,7 @@ function TracingTabContent(props: Props) {
   return (
     <>
       <section className="panel trace-workspace-header">
-        <div className="trace-workspace-controls">
-          <div className="trace-range-controls">
-            <label className="trace-range-field">
-              <span>Time range</span>
-              <select
-                value={traceRange}
-                onChange={(event) => setTraceRange(event.target.value as TraceRangePreset)}
-                aria-label="Trace time range"
-              >
-                <option value="24h">Last 24h</option>
-                <option value="7d">Last 7d</option>
-                <option value="30d">Last 30d</option>
-                <option value="all">All time</option>
-              </select>
-            </label>
-            <button className="btn secondary" onClick={() => void exportTracesZip()} disabled={traceExportInProgress}>
-              {traceExportInProgress ? "Exporting..." : "Export all (.zip)"}
-            </button>
-          </div>
-        </div>
+        <div className="trace-workspace-toolbar">
         <nav className="trace-view-tabs" role="tablist" aria-label="Tracing views">
           {viewOptions.map((view) => (
             <button
@@ -368,6 +349,29 @@ function TracingTabContent(props: Props) {
             </button>
           ))}
         </nav>
+        <div className="trace-workspace-controls">
+          <div className="trace-range-controls">
+            <label className="trace-range-field">
+              <span className="sr-only">Time range</span>
+              <select
+                value={traceRange}
+                onChange={(event) => setTraceRange(event.target.value as TraceRangePreset)}
+                aria-label="Trace time range"
+              >
+                <option value="24h">Last 24 hours</option>
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+                <option value="all">All time</option>
+              </select>
+            </label>
+            <button className="btn secondary trace-export-button" type="button" title="Export all recorded traces as a ZIP archive" onClick={() => void exportTracesZip()} disabled={traceExportInProgress}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M5 16v4h14v-4" /></svg>
+              <span>{traceExportInProgress ? "Exporting…" : "Export all"}</span>
+              <span className="trace-export-format">ZIP</span>
+            </button>
+          </div>
+        </div>
+        </div>
         <div className="trace-sharing-setting">
           <div>
             <h2>Help rank useful self-hosted models</h2>
