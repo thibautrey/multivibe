@@ -166,6 +166,11 @@ private struct MenuBarSummary: Decodable {
         let today: Decimal?
         let week: Decimal?
         let month: Decimal?
+        let lifetime: Decimal?
+
+        var hasStartedEarning: Bool {
+            available && [lifetime, today, week, month].compactMap { $0 }.contains { $0 > 0 }
+        }
     }
 
     let operational: Bool
@@ -559,9 +564,9 @@ private final class HostPopoverController: NSViewController {
         if workerNeedsSetup {
             contentStack.addArrangedSubview(sectionLabel("Worker"))
             contentStack.addArrangedSubview(workerSetupCard())
-        } else {
+        } else if let earnings = summary?.earnings, earnings.hasStartedEarning {
             contentStack.addArrangedSubview(sectionLabel("Earnings"))
-            contentStack.addArrangedSubview(earningsCard(summary?.earnings))
+            contentStack.addArrangedSubview(earningsCard(earnings))
         }
         // An available update stays visible even while settings are collapsed.
         if updateStatus?.availableVersion != nil {
