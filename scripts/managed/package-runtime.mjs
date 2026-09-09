@@ -36,6 +36,12 @@ while(queue.length) {
       for(const filename of ["LICENSE","LICENSE.md","LICENSE.txt","license","license.md"]) {
         try{license=await readFile(resolve(directory,filename),"utf8");break;}catch(error){if(error.code!=="ENOENT")throw error;}
       }
+      // provider-utils 5.0.36 omits its license file. Its package declares the
+      // same Apache-2.0 Vercel repository as the pinned Anthropic package.
+      if(!license&&name==="@ai-sdk/provider-utils"&&metadata.version==="5.0.36"
+        &&metadata.license==="Apache-2.0"&&metadata.repository?.url==="https://github.com/vercel/ai") {
+        license=await readFile(resolve("node_modules/@ai-sdk/anthropic/LICENSE"),"utf8");
+      }
       if(!license)throw Error(`Missing bundled dependency license ${name}`);
       notices.push(`${name}@${metadata.version} (${metadata.license})\n${license}`);
     }
