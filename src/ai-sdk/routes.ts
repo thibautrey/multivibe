@@ -1,3 +1,4 @@
+import {googleUsageEligible} from "./google-usage.js";
 import express from "express";
 import { timingSafeEqual } from "node:crypto";
 import type { LanguageModelV4 } from "@ai-sdk/provider";
@@ -44,14 +45,15 @@ export function createSdkAdapterRouter(options: {
       }
       const params = sdkCallOptions(req.body, controller.signal);
       const model = (options.createModel ?? createSdkModel)(account, modelId);
+      const validateUsage = account.sdkProvider === "google" ? googleUsageEligible : undefined;
       if (!req.body.stream) {
-        res.json(chatResult(req.body.model, await model.doGenerate(params))); return;
+        res.json(chatResult(req.body.model, await model.doGenerate(params), validateUsage)); return;
       }
       // doStream awaits the upstream HTTP response. Authentication and quota
       // failures reach the routing layer before we commit streaming headers.
       const result = await model.doStream(params);
       res.status(200).set({"content-type": "text/event-stream", "cache-control": "no-cache", "x-accel-buffering": "no"});
-      for await (const frame of chatStream(req.body.model, result.stream, req.body.stream_options?.include_usage === true)) {
+      for await (const frame of chatStream(req.body.model, result.stream, req.body.stream_options?.include_usage === true, validateUsage)) {
         if (controller.signal.aborted) break;
         if (!res.write(frame)) await new Promise<void>((resolve) => {
           const done = () => { res.off("drain", done); res.off("close", done); resolve(); };
