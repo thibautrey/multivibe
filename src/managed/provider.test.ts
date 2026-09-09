@@ -51,3 +51,16 @@ test("native discovery has an aggregate byte limit and aborts without additional
  await assert.rejects(account.discoverModels(controller.signal),/discovery_too_large/);assert.equal(calls,2);
  controller.abort();await assert.rejects(account.discoverModels(controller.signal));assert.equal(reads,2);
 });
+test("discovery refuses page/model ceilings and a failed later page",async()=>{
+ for(const scenario of ["pages","models","later-error"]){
+  let calls=0;
+  const account=createManagedProviderAccount({providerId:"anthropic",credentialRef:"account",models:new Set(),async readCredential(){return "fixture-key";},fetchViaEgress:async()=>{
+   calls++;
+   if(scenario==="later-error"&&calls===2)return new Response("private diagnostic",{status:503});
+   const data=Array.from({length:scenario==="models"?6000:1},(_,i)=>({id:`model-${calls}-${i}`}));
+   return Response.json({data,has_more:true,last_id:data.at(-1)!.id});
+  }});
+  await assert.rejects(account.discoverModels(AbortSignal.timeout(3000)),/provider_discovery_(incomplete|too_large|unavailable)/);
+  assert.equal(calls,scenario==="pages"?100:2);
+ }
+});
