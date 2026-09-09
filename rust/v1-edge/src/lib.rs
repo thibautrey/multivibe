@@ -5759,6 +5759,7 @@ async fn proxy_inference(
                     || (client_stream && (content_type_is_sse || can_stream_without_content_type))
                 {
                     let mut stream_headers = response_headers;
+                    chat_tools.add_response_headers(&mut stream_headers);
                     if can_stream_without_content_type {
                         stream_headers.retain(|(name, _)| name != "content-type");
                         stream_headers
@@ -5968,6 +5969,7 @@ fn render_buffered_success(
     mut upstream_headers: Vec<(String, String)>,
     chat_tools: &chat_tools::ChatTools,
 ) -> BufferedReply {
+    chat_tools.add_response_headers(&mut upstream_headers);
     let text = String::from_utf8_lossy(bytes).to_string();
     let is_sse = content_type
         .to_ascii_lowercase()
@@ -12319,7 +12321,7 @@ mod tests {
             }
         }
         let rejected = client.post(format!("{edge_url}/v1/responses")).bearer_auth("test-key")
-            .json(&json!({"model": "glm-test", "input": "test", "tools": [{"type": "web_search_preview"}]}))
+            .json(&json!({"model": "glm-test", "input": "test", "tools": [{"type": "file_search"}]}))
             .send().await.unwrap();
         assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
         assert_eq!(calls.load(AtomicOrdering::SeqCst), 2);
@@ -12339,6 +12341,8 @@ mod tests {
                 let counter = counter.clone();
                 async move {
                     counter.fetch_add(1, AtomicOrdering::SeqCst);
+                    assert_eq!(body["tools"].as_array().unwrap().len(), 1);
+                    assert!(body["messages"][0]["content"].as_str().unwrap().contains("web_search tool is unavailable"));
                     assert_eq!(body["tools"][0]["type"], "function");
                     assert_eq!(body["tools"][0]["function"]["name"], "mv_tool_0");
                     assert!(body["tools"][0].get("name").is_none());
@@ -12379,9 +12383,10 @@ mod tests {
         for turn in 0..2 {
             let response = client.post(format!("{edge_url}/v1/responses")).bearer_auth("test-key")
                 .json(&json!({"model": "glm-test", "stream": false, "input": input,
-                    "tools": [{"type": "custom", "name": "lookup", "format": {"type": "text"}}]}))
+                    "tools": [{"type": "custom", "name": "lookup", "format": {"type": "text"}}, {"type": "web_search", "external_web_access": false}]}))
                 .send().await.unwrap();
             assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()["x-multivibe-unavailable-tools"], "web_search");
             let result: Value = response.json().await.unwrap();
             if turn == 0 {
                 let call = result["output"].as_array().unwrap().iter().find(|v| v["type"] == "custom_tool_call").unwrap();
@@ -12395,7 +12400,7 @@ mod tests {
             }
         }
         let rejected = client.post(format!("{edge_url}/v1/responses")).bearer_auth("test-key")
-            .json(&json!({"model": "glm-test", "input": "test", "tools": [{"type": "web_search_preview"}]}))
+            .json(&json!({"model": "glm-test", "input": "test", "tools": [{"type": "file_search"}]}))
             .send().await.unwrap();
         assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
         assert_eq!(calls.load(AtomicOrdering::SeqCst), 2);
