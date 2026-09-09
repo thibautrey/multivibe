@@ -286,8 +286,11 @@ Inputs are bounded and marked when truncated; generated summaries may omit detai
 Download links are assembled from the actual release files, including multipart
 archives and reconstruction instructions. Unsupported/unbuilt targets are omitted.
 Existing container installation instructions remain in Host notes. Missing AI
-configuration, timeouts or invalid responses produce a CI warning and a factual
-changelog fallback; release-history or artifact errors stop publication.
+configuration, timeouts, invalid responses, or any other notes-generation failure
+produce a CI warning without failing the release job. The optional step has a
+three-minute timeout. On failure, Host releases use the original GitHub-generated
+notes plus container instructions; source releases use their original static
+release description. Failed or partial notes files are never published.
 
 Run `node --test scripts/generate-release-notes.test.mjs` to validate without an API
 key. Both release workflows write `release-notes.md` outside the signed asset folder
