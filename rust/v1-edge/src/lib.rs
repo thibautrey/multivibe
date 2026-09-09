@@ -2727,7 +2727,7 @@ fn chat_from_sse(text: &str, model: &str) -> Value {
                             if let Some(name) = value_string(function.get("name")) {
                                 tool_calls[index]["function"]["name"] = Value::String(name);
                             }
-                            if let Some(arguments) = value_string(function.get("arguments")) {
+                            if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
                                 tool_calls[index]["function"]["arguments"] =
                                     Value::String(format!(
                                         "{}{}",
@@ -6394,7 +6394,7 @@ impl SseStreamTransformer {
                         if let Some(name) = value_string(function.get("name")) {
                             state["name"] = Value::String(name);
                         }
-                        if let Some(arguments) = value_string(function.get("arguments")) {
+                        if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
                             let previous = state
                                 .get("arguments")
                                 .and_then(Value::as_str)
