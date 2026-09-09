@@ -68,10 +68,11 @@ impl ChatTools {
         if !custom && namespace.is_none() { output.push(tool.clone()); return Ok(()); }
         let alias = format!("mv_tool_{}", self.entries.len());
         let mut converted = source.clone();
+        converted["description"] = json!(format!("Tool {}{}: {}", namespace.map(|ns| format!("{ns}. ")).unwrap_or_default(), name, source["description"].as_str().unwrap_or("")));
         converted["type"] = json!("function");
         converted["name"] = json!(alias);
         if custom {
-            let mut description = source["description"].as_str().unwrap_or("").to_owned();
+            let mut description = converted["description"].as_str().unwrap_or("").to_owned();
             description.push_str("\nPass the complete raw tool input as the input string.");
             if let Some(format) = source.get("format") {
                 description.push_str(&format!("\nThe input must obey this format: {format}"));

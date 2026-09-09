@@ -1821,7 +1821,7 @@ fn chat_completions_to_responses(body: &Value, session_id: Option<&str>) -> Valu
                         "type": "function_call",
                         "call_id": value_string(call.get("id")).unwrap_or_else(|| new_id("call")),
                         "name": value_string(function.get("name")).unwrap_or_else(|| "unknown".to_owned()),
-                        "arguments": function.get("arguments").map(json_string).unwrap_or_else(|| "{}".to_owned()),
+                        "arguments": function.get("arguments").map(|value| value.as_str().map(str::to_owned).unwrap_or_else(|| json_string(value))).unwrap_or_else(|| "{}".to_owned()),
                     }));
                 }
             }
@@ -1919,7 +1919,7 @@ fn responses_to_chat_completions(body: &Value, client_stream: bool) -> Value {
                                 "type": "function",
                                 "function": {
                                     "name": value_string(item.get("name")).unwrap_or_else(|| "unknown".to_owned()),
-                                    "arguments": item.get("arguments").map(json_string).unwrap_or_else(|| "{}".to_owned()),
+                                    "arguments": item.get("arguments").map(|value| value.as_str().map(str::to_owned).unwrap_or_else(|| json_string(value))).unwrap_or_else(|| "{}".to_owned()),
                                 }
                             }]
                         }));
@@ -2478,7 +2478,7 @@ fn chat_to_response(value: &Value, fallback_model: &str) -> Value {
                 "id": call.get("id"),
                 "call_id": call.get("id"),
                 "name": function.get("name").cloned().unwrap_or_else(|| Value::String("unknown".to_owned())),
-                "arguments": function.get("arguments").map(json_string).unwrap_or_else(|| "{}".to_owned()),
+                "arguments": function.get("arguments").map(|value| value.as_str().map(str::to_owned).unwrap_or_else(|| json_string(value))).unwrap_or_else(|| "{}".to_owned()),
             }));
         }
     }
@@ -2532,7 +2532,7 @@ fn response_to_chat(value: &Value, model: &str) -> Value {
                         let id = value_string(item.get("call_id"))
                             .or_else(|| value_string(item.get("id")))
                             .unwrap_or_else(|| new_id("call"));
-                        tool_calls.push(json!({"id": id, "type": "function", "function": {"name": name, "arguments": item.get("arguments").map(json_string).unwrap_or_else(|| "{}".to_owned())}}));
+                        tool_calls.push(json!({"id": id, "type": "function", "function": {"name": name, "arguments": item.get("arguments").map(|value| value.as_str().map(str::to_owned).unwrap_or_else(|| json_string(value))).unwrap_or_else(|| "{}".to_owned())}}));
                     }
                 }
                 _ => {}
