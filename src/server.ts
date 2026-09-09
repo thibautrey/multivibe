@@ -592,6 +592,7 @@ app.get("/admin/host/menu-bar", adminGuard, async (req, res) => {
       today: null,
       week: null,
       month: Number(cloud.workerEarnings.monthNetUsd),
+      lifetime: Number(cloud.workerEarnings.lifetimeNetUsd),
     } : {
       available: false,
       currency: null,
