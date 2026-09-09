@@ -65,7 +65,7 @@ export async function createManagedRuntime(config: ManagedRuntimeConfig) {
   const tls={key:await readFile(config.tlsKeyFile),cert:await readFile(config.tlsCertFile),ca:await readFile(config.tlsCaFile)};
   const injector=new ManagedInjectorClient(config.injectorUrl,tls,config.maximumRequestBytes,config.maximumResponseBytes,config.executionTimeoutMs);
   const refs = new Set<string>();
-  const accounts: ManagedProviderAccount[] = manifest.accounts.map((account: Record<string, unknown>) => {
+  const accounts: ManagedProviderAccount[] = manifest.accounts.map((account: Record<string, unknown>): ManagedProviderAccount => {
     if (!account || Object.keys(account).sort().join() !== "credentialRef,models,providerId"
       || !["mistral", "openai", "xai", "deepseek"].includes(String(account.providerId))
       || typeof account.credentialRef !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$/.test(account.credentialRef)
