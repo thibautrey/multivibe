@@ -5,6 +5,7 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request } from "node:https";
+import { ManagedInjectorClient } from "./injector-client.js";
 import { createManagedInjectorServer } from "./injector-http.js";
 
 test("injector mTLS enforces Core identity, bounded envelope and sanitized streaming response",async()=>{
@@ -42,6 +43,15 @@ test("injector mTLS enforces Core identity, bounded envelope and sanitized strea
   assert.equal((await send("core",JSON.stringify({originalBodyBase64:"!!!",providerBodyBase64:"!!!"}))).status,502);assert.equal(calls,0);
   assert.equal((await send("core","x".repeat(2000))).status,413);assert.equal(calls,0);
   assert.deepEqual(await send("core",envelope),{status:200,body:"data: hello\n\n",secret:undefined});assert.equal(calls,1);
+  const tls={ca,cert:await readFile(join(dir,"core.crt")),key:await readFile(join(dir,"core.key"))};
+  const client=new ManagedInjectorClient(`https://localhost:${port}`,tls,128,128,1000);
+  const authorization={token:"signed-fixture",originalBody:Buffer.from("original")};
+  const result=await client.execute(Buffer.from("provider"),AbortSignal.timeout(1000),authorization);
+  assert.equal(await result.text(),"data: hello\n\n");assert.equal(calls,2);
+  const small=new ManagedInjectorClient(`https://localhost:${port}`,tls,128,1,1000);
+  const truncated=await small.execute(Buffer.from("provider"),AbortSignal.timeout(1000),authorization);
+  await assert.rejects(truncated.text(),/injector_response_unavailable/);
+  assert.throws(()=>new ManagedInjectorClient(`http://localhost:${port}`,tls,128,128,1000),/invalid_injector_client/);
  } finally {
   if(server){server.closeAllConnections();await new Promise<void>(resolve=>server!.close(()=>resolve()));}
   await rm(dir,{recursive:true,force:true});
