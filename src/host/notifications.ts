@@ -6,6 +6,7 @@ import {
   type CodexQuotaResetForecast,
 } from "../quota-reset-forecast.js";
 import type { MultivibeCloudStatus } from "../multivibe-cloud.js";
+import type { ResetCreditIncrease } from "../rate-limit-reset.js";
 
 export const WEEKLY_QUOTA_WARNING_REMAINING_PERCENT = 10;
 export const FORECAST_WARNING_SCORE = 90;
@@ -20,6 +21,7 @@ export type HostNotification = {
   kind:
     | "will-codex-reset"
     | "weekly-quota"
+    | "reset-credit-increased"
     | "provider-quota-limit"
     | "cloud-balance"
     | "cloud-auto-topup"
@@ -42,6 +44,7 @@ export type HostNotificationInput = {
   cloud?: MultivibeCloudStatus;
   workerConfigured: boolean;
   generatedOutputTokens: number;
+  resetCreditIncreases?: ResetCreditIncrease[];
 };
 
 function finiteNonNegative(value: unknown): number | undefined {
@@ -220,6 +223,20 @@ function providerQuotaNotifications(accounts: Account[], now = Date.now()): Host
 
 export function buildHostNotifications(input: HostNotificationInput): HostNotification[] {
   const notifications: HostNotification[] = providerQuotaNotifications(input.accounts);
+  for (const increase of input.resetCreditIncreases ?? []) {
+    const added = increase.availableCount - increase.previousCount;
+    if (added <= 0) continue;
+    const displayName = increase.displayName.trim().slice(0, 100) || "OpenAI account";
+    notifications.push({
+      id: `reset-credit-increased:${increase.accountId.slice(0, 80)}:${increase.availableCount}`,
+      kind: "reset-credit-increased",
+      priority: 70,
+      repeatMode: "edge",
+      message: added === 1
+        ? `A new OpenAI quota reset credit is available for ${displayName} (${increase.availableCount} available).`
+        : `${added} new OpenAI quota reset credits are available for ${displayName} (${increase.availableCount} available).`,
+    });
+  }
   const openAiConfigured = openAiAccounts(input.accounts).length > 0;
   if (
     openAiConfigured &&
