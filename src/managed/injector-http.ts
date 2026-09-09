@@ -42,7 +42,7 @@ export function createManagedInjectorServer(options: {
     active++;
     try {
       const chunks:Buffer[]=[];let length=0;
-      const envelopeLimit=req.url==="/internal/v1/receipts"?16384:Math.ceil(options.maximumRequestBytes*8/3)+2048;
+      const envelopeLimit=req.url==="/internal/v1/receipts"?16384:Math.ceil(options.maximumRequestBytes*8/3)+1024;
       for await(const chunk of req){
         const bytes=Buffer.from(chunk);length+=bytes.byteLength;
         if(length>envelopeLimit){fail(413,"request_too_large");return;}chunks.push(bytes);

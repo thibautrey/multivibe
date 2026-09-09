@@ -58,12 +58,12 @@ export function createManagedAnthropicAccount(options:{
    // obtain another provider invocation within this attempt.
    dispatched=true;
    signal.throwIfAborted();
-   await authorization.beforeDispatch?.();
    const credential=await options.readCredential();
    if(!credential||credential.length>16384||/[\r\n]/.test(credential))throw Error("managed_credential_unavailable");
    signal.throwIfAborted();
    const headers=new Headers(init.headers);
    headers.delete("authorization");headers.set("x-api-key",credential);
+   await authorization.beforeDispatch?.();
    const response=await options.fetchViaEgress(input,{...init,headers,signal,redirect:"error"});
    const reader=response.body?.getReader();
    if(!reader)return response;
