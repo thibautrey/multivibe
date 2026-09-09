@@ -9,7 +9,8 @@
 }
 .app-shell-models .workspace-content {
   min-height: 0;
-  flex: 1 1 auto;
+  flex: 1 1 0;
+  overflow: hidden;
 }
 .models-catalog {
   min-width: 0;
