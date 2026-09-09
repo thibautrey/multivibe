@@ -5321,3 +5321,26 @@ body:has(> .modal-backdrop) {
     width: auto;
   }
 }
+
+.trace-workspace-toolbar .trace-range-controls {
+  flex-wrap: wrap;
+}
+
+.trace-custom-range {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+  max-width: 100%;
+}
+
+.trace-custom-range input {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  margin: 0;
+}
+
+.trace-custom-range > small {
+  flex-basis: 100%;
+}

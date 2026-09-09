@@ -1,3 +1,4 @@
+import { TraceRangePicker } from "../TraceRangePicker";
 import React, { useState } from "react";
 import {
   Bar,
@@ -24,7 +25,7 @@ import {
 import { Metric } from "../Metric";
 import { TtftComparisonChart } from "../TtftComparisonChart";
 import { WidgetGrid } from "../WidgetGrid";
-import type { Account, ProjectUsageStats, StoreSettings, Trace, TracePagination, TraceRangePreset, TraceStats } from "../../types";
+import type { Account, ProjectUsageStats, StoreSettings, Trace, TracePagination, TraceRange, TraceStats } from "../../types";
 
 type Props = {
   accounts: Account[];
@@ -35,8 +36,8 @@ type Props = {
   modelCostChartData: Array<any>;
   tracePagination: TracePagination;
   gotoTracePage: (page: number) => Promise<void>;
-  traceRange: TraceRangePreset;
-  setTraceRange: (range: TraceRangePreset) => void;
+  traceRange: TraceRange;
+  setTraceRange: (range: TraceRange) => void;
   exportTracesZip: () => Promise<void>;
   traceExportInProgress: boolean;
   traces: Trace[];
@@ -272,7 +273,9 @@ function TracingTabContent(props: Props) {
   const errorCount = traceStats.totals.errors;
   const usageCoverage = providerAttemptCount > 0 ? traceStats.totals.requestsWithUsage / providerAttemptCount : 0;
   const pricingCoverage = providerAttemptCount > 0 ? traceStats.totals.requestsWithCost / providerAttemptCount : 0;
-  const rangeLabel = traceRange === "24h"
+  const rangeLabel = typeof traceRange === "object"
+    ? `${traceRange.startDate} – ${traceRange.endDate}`
+    : traceRange === "24h"
     ? "Last 24 hours"
     : traceRange === "7d"
       ? "Last 7 days"
@@ -309,19 +312,7 @@ function TracingTabContent(props: Props) {
         </nav>
         <div className="trace-workspace-controls">
           <div className="trace-range-controls">
-            <label className="trace-range-field">
-              <span className="sr-only">Time range</span>
-              <select
-                value={traceRange}
-                onChange={(event) => setTraceRange(event.target.value as TraceRangePreset)}
-                aria-label="Trace time range"
-              >
-                <option value="24h">Last 24 hours</option>
-                <option value="7d">Last 7 days</option>
-                <option value="30d">Last 30 days</option>
-                <option value="all">All time</option>
-              </select>
-            </label>
+            <TraceRangePicker range={traceRange} onChange={setTraceRange} />
             <button className="btn secondary trace-export-button" type="button" title="Export all recorded traces as a ZIP archive" onClick={() => void exportTracesZip()} disabled={traceExportInProgress}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M5 16v4h14v-4" /></svg>
               <span>{traceExportInProgress ? "Exporting…" : "Export all"}</span>
