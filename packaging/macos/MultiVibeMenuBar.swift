@@ -463,7 +463,7 @@ private final class HostPopoverController: NSViewController {
             child.removeFromSuperview()
         }
 
-        contentStack.addArrangedSubview(sectionLabel("OpenAI · remaining capacity"))
+        contentStack.addArrangedSubview(sectionLabel("Accounts · remaining capacity"))
         contentStack.addArrangedSubview(summaryCard(summary?.quota))
         contentStack.addArrangedSubview(sectionLabel("Accounts"))
         if let accounts = summary?.accounts, !accounts.isEmpty {
@@ -718,7 +718,7 @@ private final class HostPopoverController: NSViewController {
 
     private func emptyAccountsCard(operational: Bool) -> NSView {
         let container = card()
-        let title = label(operational ? "No OpenAI account yet" : "Host data unavailable", size: 13, weight: .semibold, color: MenuBarPalette.text)
+        let title = label(operational ? "No account connected yet" : "Host data unavailable", size: 13, weight: .semibold, color: MenuBarPalette.text)
         let detail = label(
             operational ? "Add an account from the dashboard to see its quota here." : "Start or refresh MultiVibe Host to load your accounts.",
             size: 11,
@@ -884,7 +884,7 @@ private final class HostPopoverController: NSViewController {
     }
 
     private func usageDetail(_ account: MenuBarAccount) -> String {
-        if account.usageStatus == "unsupported" { return "OpenAI does not expose quota usage for this account." }
+        if account.usageStatus == "unsupported" { return "This provider does not expose quota usage for this account." }
         guard let fetchedAt = account.fetchedAt, fetchedAt.isFinite else { return "Waiting for the first quota refresh." }
         let date = Date(timeIntervalSince1970: fetchedAt / 1_000)
         let formatter = RelativeDateTimeFormatter()

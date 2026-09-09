@@ -123,3 +123,44 @@ test("buildHostMenuBarGitHubStarPrompt becomes eligible at five million output t
   assert.equal(buildHostMenuBarGitHubStarPrompt("5,000,000").generatedOutputTokens, 0);
   assert.equal(buildHostMenuBarGitHubStarPrompt(Number.POSITIVE_INFINITY).generatedOutputTokens, 0);
 });
+
+test("non-OpenAI accounts supply menu quotas when OpenAI is absent", () => {
+  const summary = buildHostMenuBarAccountsSummary([
+    {
+      id: "zai-secret-id", provider: "zai", accessToken: "zai-secret", enabled: true,
+      usage: { fetchedAt: 123, primary: { usedPercent: 20, resetAt: 456 } },
+    },
+    {
+      id: "opencode-secret-id", provider: "opencode", accessToken: "opencode-secret", enabled: true,
+      email: "person@example.com",
+      usage: { primary: { usedPercent: 60 }, secondary: { usedPercent: 30 }, monthly: { usedPercent: 10 } },
+    },
+    {
+      id: "mistral-secret-id", provider: "mistral", accessToken: "mistral-secret", enabled: false,
+      usage: { quotaStatus: "unsupported", fetchedAt: 123 },
+    },
+  ]);
+  assert.deepEqual(summary.quota, {
+    fiveHourRemainingPercent: 60, fiveHourAccountCount: 2,
+    weeklyRemainingPercent: 70, weeklyAccountCount: 1,
+  });
+  assert.equal(summary.accounts[0].displayName, "z.ai account 1");
+  assert.deepEqual(summary.accounts[0].fiveHour, { remainingPercent: 80, resetAt: 456 });
+  assert.equal(summary.accounts[1].displayName, "OpenCode · person@example.com");
+  assert.equal(summary.accounts[1].monthly?.remainingPercent, 90);
+  assert.equal(summary.accounts[2].status, "paused");
+  assert.equal(summary.accounts[2].usageStatus, "unsupported");
+  assert.equal(JSON.stringify(summary).includes("secret"), false);
+});
+
+test("legacy OpenAI accounts retain priority and empty inventories have no quota", () => {
+  const summary = buildHostMenuBarAccountsSummary([
+    { id: "legacy", accessToken: "secret", enabled: true },
+    { id: "zai", provider: "zai", accessToken: "secret", enabled: true },
+  ]);
+  assert.equal(summary.accounts.length, 1);
+  assert.equal(summary.accounts[0].displayName, "OpenAI account 1");
+  assert.deepEqual(buildHostMenuBarAccountsSummary([]), {
+    accounts: [], quota: { fiveHourAccountCount: 0, weeklyAccountCount: 0 },
+  });
+});
