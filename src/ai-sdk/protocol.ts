@@ -109,11 +109,24 @@ export function sdkCallOptions(body: any, signal: AbortSignal): LanguageModelV4C
   return options;
 }
 
+/** Public conversion must not turn unknown billing measurements into zero. */
 export function chatUsage(usage: LanguageModelV4Usage) {
-  const input = usage.inputTokens.total ?? 0, output = usage.outputTokens.total ?? 0;
+  const input = usage.inputTokens.total, output = usage.outputTokens.total;
+  const valid = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+  if (!valid(input) || !valid(output) || !Number.isSafeInteger(input + output)) return null;
+  const cached = usage.inputTokens.cacheRead, written = usage.inputTokens.cacheWrite;
+  const reasoning = usage.outputTokens.reasoning;
+  for (const [value, maximum] of [[cached,input],[written,input],[reasoning,output]] as const) {
+    if (value !== undefined && (!valid(value) || value > maximum)) return null;
+  }
+  if (cached !== undefined && written !== undefined && cached + written > input) return null;
   return { prompt_tokens: input, completion_tokens: output, total_tokens: input + output,
-    prompt_tokens_details: { cached_tokens: usage.inputTokens.cacheRead ?? 0 },
-    completion_tokens_details: { reasoning_tokens: usage.outputTokens.reasoning ?? 0 } };
+    ...(cached !== undefined ? {prompt_tokens_details: {cached_tokens: cached}} : {}),
+    ...(reasoning !== undefined ? {completion_tokens_details: {reasoning_tokens: reasoning}} : {}),
+    // Preserve this separately priced native dimension. Managed billing can
+    // leave it uncertain until a corresponding adapter and rate are supported.
+    ...(written !== undefined ? {cache_creation_input_tokens: written} : {}),
+  };
 }
 const finishReason = (reason: string) => ({ "tool-calls": "tool_calls", "content-filter": "content_filter", other: "stop" }[reason] ?? reason);
 export function chatResult(model: string, result: LanguageModelV4GenerateResult) {

@@ -61,6 +61,7 @@ test("does not fabricate completion for truncated provider streams", async () =>
 test("maps buffered results and keeps provider namespaces distinct", () => {
   const result = chatResult("google/test", {content: [{type: "text", text: "Hello"}], usage, finishReason: {unified: "stop", raw: "STOP"}, warnings: []});
   assert.equal(result.choices[0].message.content, "Hello");
+  assert.ok(result.usage);
   assert.equal(result.usage.total_tokens, 15);
   const account: Account = {id: "one", provider: "ai-sdk", sdkProvider: "openrouter", accessToken: "key", enabled: true, sdkModels: ["anthropic/custom-model"]};
   assert.equal(sdkAccountModels(account)[0].id, "openrouter/anthropic/custom-model");
@@ -74,4 +75,22 @@ test("maps buffered results and keeps provider namespaces distinct", () => {
   }
   assert.doesNotThrow(() => validateSdkAccount({...account, id: "sdk-account_123"}));
   assert.throws(() => validateSdkAccount({...account, baseUrl: "https://untrusted.test"}));
+});
+
+test("JSON and streaming preserve missing usage and positive cache writes",async()=>{
+ for(const measured of [
+  {...usage,inputTokens:{...usage.inputTokens,total:undefined}},
+  {...usage,outputTokens:{...usage.outputTokens,total:undefined}},
+  {...usage,inputTokens:{...usage.inputTokens,cacheRead:13}},
+  {...usage,outputTokens:{...usage.outputTokens,reasoning:-1}},
+ ]){
+  const result=chatResult("anthropic/test",{content:[],usage:measured,finishReason:{unified:"stop",raw:"stop"},warnings:[]});
+  assert.equal(result.usage,null);
+  const stream=new ReadableStream<LanguageModelV4StreamPart>({start(controller){controller.enqueue({type:"finish",usage:measured,finishReason:{unified:"stop",raw:"stop"}});controller.close();}});
+  const frames=[];for await(const frame of chatStream("anthropic/test",stream,true))frames.push(frame);
+  assert.equal(JSON.parse(frames.at(-2)!.slice(6)).usage,null);
+ }
+ const measured={...usage,inputTokens:{total:12,noCache:undefined,cacheRead:undefined,cacheWrite:5},outputTokens:{total:3,text:undefined,reasoning:undefined}};
+ const result=chatResult("anthropic/test",{content:[],usage:measured,finishReason:{unified:"stop",raw:"stop"},warnings:[]});
+ assert.deepEqual(result.usage,{prompt_tokens:12,completion_tokens:3,total_tokens:15,cache_creation_input_tokens:5});
 });

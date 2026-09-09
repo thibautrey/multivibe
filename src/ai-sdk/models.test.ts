@@ -31,5 +31,6 @@ for (const provider of ["anthropic", "google", "groq"]) test(`uses the real ${pr
   const result = chatResult(`${provider}/test`, await model.doGenerate(sdkCallOptions({messages: [{role: "user", content: "Hello"}], max_tokens: 50}, new AbortController().signal)));
   assert.equal(requests, 1);
   assert.equal(result.choices[0].message.content, "Hi");
+  assert.ok(result.usage);
   assert.equal(result.usage.total_tokens, 7);
 });
