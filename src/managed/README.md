@@ -33,3 +33,13 @@ All provider requests use the fixed CONNECT egress corridor and verified provide
 The internal API requires mutual TLS and signed execution grants. Non-stream replies contain independent response and receipt fields. Stream replies use application/x-ndjson framing with a response frame, base64 body chunks, then a durable receipt. The public Cloud response remains normal SSE. Client cancellation stops delivery, while a bounded provider drain collects evidence. Missing terminal usage stays uncertain; no implicit provider retry occurs.
 
 This runtime is not yet activated in production. Replica-safe storage, crash reconciliation, all priced dimensions and signed deployment provenance remain integration requirements.
+
+Receipt publication uses a synced temporary file and an exclusive hard link to
+publish the completed JSON atomically. The journal volume must support atomic
+exclusive create, hard links, and directory fsync. A missing receipt after a
+claim remains uncertain; startup must never delete claims to make retries work.
+
+The independent-process test races eight Node processes against the same local
+journal and verifies one winner and seven rejections. A new process after the
+winner exits is also rejected. This proves process-level coordination on the
+tested filesystem; actual Kubernetes volume semantics still require validation.
