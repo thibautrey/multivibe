@@ -1745,7 +1745,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
               !notificationPopover.isShown, let button = statusItem.button,
               let next = pendingNotifications.first else { return }
         let urgent = next.priority >= 80
-        let spacing = next.kind == "github-star"
+        let spacing = next.kind == "github-star" || next.kind == "provider-quota-limit"
             ? 0
             : (urgent ? Self.notificationUrgentSpacing : Self.notificationGamificationSpacing)
         let spacingKey = urgent
@@ -1778,7 +1778,11 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
             action: { [weak self] in self?.performNotificationAction(next) }
         ))
         notificationPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        NSApplication.shared.activate(ignoringOtherApps: true)
+        if next.kind == "provider-quota-limit" {
+            closeNotification(after: 8)
+        } else {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
     }
 
     private func performNotificationAction(_ notification: MenuBarNotification) {

@@ -74,3 +74,28 @@ test("output-token milestones stay sparse and avoid the existing five-million pr
   assert.equal(outputTokenMilestone(5_000_000), 1_000_000);
   assert.equal(outputTokenMilestone(10_000_000), 10_000_000);
 });
+
+test("quota limits notify across providers without exposing account errors", () => {
+  const accounts: Account[] = ["openai", "zai", "mistral", "xai", "opencode", "openai-compatible", "ai-sdk"].map((provider) =>
+    openAi({ provider: provider as Account["provider"], sdkProvider: "anthropic", usage: { fetchedAt: Date.now(), credits: { usedPercent: 100 } } }));
+  const notifications = buildHostNotifications({ accounts: [...accounts, accounts[0]], workerConfigured: false, generatedOutputTokens: 0 });
+  assert.equal(notifications.length, 7);
+  assert.ok(notifications.every((item) => item.kind === "provider-quota-limit" && item.repeatMode === "condition"));
+  assert.ok(notifications.some((item) => item.message.startsWith("anthropic")));
+});
+
+test("active routing limits notify without usage data; recovery and unrelated failures do not", () => {
+  const notify = (account: Account) => buildHostNotifications({ accounts: [account], workerConfigured: false, generatedOutputTokens: 0 });
+  const blocked = (reason: string, until = Date.now() + 60_000) => openAi({ usage: undefined, state: { modelBlocks: { model: { until, reason } } } });
+  assert.equal(notify(blocked("Upstream 429 secret error text")).length, 1);
+  assert.ok(!notify(blocked("insufficient_quota secret"))[0].message.includes("secret"));
+  assert.equal(notify(blocked("Upstream 500")).length, 0);
+  assert.equal(notify(blocked("Upstream 429", Date.now() - 1)).length, 0);
+  assert.equal(notify(openAi({ enabled: false, usage: { fetchedAt: 1, primary: { usedPercent: 100 } } })).length, 0);
+  for (const usage of [
+    { fetchedAt: 1, primary: { usedPercent: 99 } },
+    { fetchedAt: 1, primary: { usedPercent: NaN } },
+    { fetchedAt: 1, primary: { usedPercent: 100, resetAt: Date.now() - 1 } },
+    { fetchedAt: 1, tools: { usedPercent: 100 } },
+  ]) assert.equal(notify(openAi({ usage })).length, 0);
+});

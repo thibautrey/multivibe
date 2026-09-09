@@ -43,7 +43,7 @@ export function hostMenuProviderId(account: Pick<Account, "provider" | "sdkProvi
   return account.provider === "ai-sdk" ? `ai-sdk:${account.sdkProvider || "unknown"}` : account.provider ?? "openai";
 }
 
-function providerName(account: Account): string {
+export function providerName(account: Account): string {
   return {
     openai: "OpenAI", opencode: "OpenCode", zai: "z.ai", mistral: "Mistral",
     xai: "xAI", "openai-compatible": "OpenAI-compatible", "ai-sdk": account.sdkProvider || "AI SDK",
