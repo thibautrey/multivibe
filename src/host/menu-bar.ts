@@ -108,14 +108,28 @@ export function buildHostMenuBarAccountsSummary(
   const openAIAccounts = source.filter(
     (account) => (account.provider ?? "openai") === "openai",
   );
-  const accounts = openAIAccounts.map((account, index): HostMenuBarAccount => {
+  const selectedAccounts = openAIAccounts.length ? openAIAccounts : source;
+  const accounts = selectedAccounts.map((account, index): HostMenuBarAccount => {
+    const provider = account.provider ?? "openai";
+    const providerName = {
+      openai: "OpenAI",
+      opencode: "OpenCode",
+      zai: "z.ai",
+      mistral: "Mistral",
+      xai: "xAI",
+      "openai-compatible": "OpenAI-compatible",
+      "ai-sdk": account.sdkProvider || "AI SDK",
+    }[provider];
+    const email = account.email?.trim();
     const fiveHour = quotaWindow(account.usage?.primary);
     const weekly = quotaWindow(account.usage?.secondary);
     const monthly = quotaWindow(account.usage?.monthly);
     const fetchedAt = finiteNumber(account.usage?.fetchedAt);
     const hasQuota = Boolean(fiveHour || weekly || monthly);
     return {
-      displayName: account.email?.trim() || `OpenAI account ${index + 1}`,
+      displayName: email
+        ? provider === "openai" ? email : `${providerName} · ${email}`
+        : `${providerName} account ${index + 1}`,
       enabled: account.enabled,
       status: accountStatus(account, now),
       usageStatus: account.usage?.quotaStatus === "unsupported"

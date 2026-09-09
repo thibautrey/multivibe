@@ -487,7 +487,7 @@ func (menu *windowsMenu) bodyText(lines []string) string {
 		return lines[index]
 	}
 	var builder strings.Builder
-	builder.WriteString("OPENAI CAPACITY\n")
+	builder.WriteString("ACCOUNT CAPACITY\n")
 	builder.WriteString("5h quota: ")
 	if line(modelFiveHourPresent) == "1" {
 		builder.WriteString(line(modelFiveHourValue))
@@ -532,7 +532,7 @@ func (menu *windowsMenu) bodyText(lines []string) string {
 	}
 	if accountCount == 0 {
 		if menu.operational {
-			builder.WriteString("No OpenAI account yet. Add an account from the dashboard.\n")
+			builder.WriteString("No account connected yet. Add an account from the dashboard.\n")
 		} else {
 			builder.WriteString("Host data unavailable. Start or refresh MultiVibe Host.\n")
 		}

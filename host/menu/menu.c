@@ -233,7 +233,7 @@ static GtkWidget *account_card(gchar **fields) {
 static GtkWidget *empty_accounts_card(int operational) {
     GtkWidget *frame = card();
     GtkWidget *box = card_content(frame);
-    gtk_box_pack_start(GTK_BOX(box), text_label(operational ? "No OpenAI account yet" : "Host data unavailable", "update-title"), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), text_label(operational ? "No account connected yet" : "Host data unavailable", "update-title"), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box), text_label(
         operational ? "Add an account from the dashboard to see its quota here." : "Start or refresh MultiVibe Host to load your accounts.",
         "muted"), FALSE, FALSE, 5);
@@ -345,7 +345,7 @@ static void apply_model(const char *model) {
     gtk_widget_set_sensitive(refresh_button, !field_bool(lines, line_count, 3));
 
     remove_content_children();
-    gtk_box_pack_start(GTK_BOX(content_box), section_label("OPENAI CAPACITY"), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(content_box), section_label("ACCOUNT CAPACITY"), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(content_box), summary_card(
         line_at(lines, line_count, 4), line_at(lines, line_count, 5), line_at(lines, line_count, 6),
         line_at(lines, line_count, 7), line_at(lines, line_count, 8), line_at(lines, line_count, 9)), FALSE, FALSE, 0);

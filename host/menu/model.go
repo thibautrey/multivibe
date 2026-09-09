@@ -201,7 +201,7 @@ func hasResetTime(timestamp *float64) bool {
 
 func usageText(account menuAccount) string {
 	if account.UsageStatus == "unsupported" {
-		return "OpenAI does not expose quota usage for this account."
+		return "This provider does not expose quota usage for this account."
 	}
 	if account.FetchedAt == nil || math.IsNaN(*account.FetchedAt) || math.IsInf(*account.FetchedAt, 0) {
 		return "Waiting for the first quota refresh."
