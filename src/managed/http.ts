@@ -9,6 +9,7 @@ export function createManagedExecutionServer(options: {
   allowedClientUri: string;
   executor: Pick<ManagedExecutor, "execute">;
   journal: Pick<ExecutionJournal, "receipt">;
+  discovery?: { read(): Promise<unknown> };
   maximumRequestBytes: number;
   maximumConcurrentExecutions: number;
 }) {
@@ -23,6 +24,11 @@ export function createManagedExecutionServer(options: {
     const socket = req.socket as TLSSocket;
     const san = socket.getPeerCertificate().subjectaltname?.split(", ") ?? [];
     if (!socket.authorized || !san.includes(`URI:${options.allowedClientUri}`)) { fail(403, "workload_forbidden"); return; }
+    if (req.method === "GET" && req.url === "/internal/v1/providers/discovery" && options.discovery) {
+      try { res.end(JSON.stringify(await options.discovery.read())); }
+      catch { fail(503, "provider_discovery_unavailable"); }
+      return;
+    }
     if (req.method === "GET" && req.url === "/health/live") { res.end('{"ok":true}'); return; }
     if (req.method === "GET" && /^\/internal\/v1\/receipts\/[a-zA-Z0-9._-]{1,256}$/.test(req.url ?? "")) {
       try {
