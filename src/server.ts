@@ -91,7 +91,13 @@ import { ModuleManager } from "./module-manager.js";
 import { createProviderWorkerEstimateClient } from "./provider-worker-estimate.js";
 import { createBodyParserMiddleware } from "./middleware/decompression.js";
 import http from "node:http";
-import { scheduleWeeklyReset, startScheduledWeeklyResetMonitor } from "./rate-limit-reset.js";
+import {
+  findAvailableResetCreditCount,
+  rateLimitResetCreditRequest,
+  ResetCreditIncreaseMonitor,
+  scheduleWeeklyReset,
+  startScheduledWeeklyResetMonitor,
+} from "./rate-limit-reset.js";
 import {
   startUsageRefreshMonitor,
 } from "./usage-refresh-monitor.js";
@@ -319,6 +325,17 @@ const multivibeCloud = new MultivibeCloudService(store, oauthStore, {
   privacyMode: MULTIVIBE_CLOUD_PRIVACY_MODE,
 });
 const quotaResetForecastCache = new CodexQuotaResetForecastCache();
+const resetCreditIncreaseMonitor = new ResetCreditIncreaseMonitor({
+  listAccounts: () => store.listAccounts(),
+  readAvailableCount: async (account) => {
+    const response = await rateLimitResetCreditRequest(
+      account,
+      CHATGPT_BASE_URL,
+      false,
+    );
+    return findAvailableResetCreditCount(response);
+  },
+});
 const HOST_CLOUD_STATUS_CACHE_MS = 60_000;
 let hostCloudStatusCache: {
   value: Awaited<ReturnType<MultivibeCloudService["getStatus"]>>;
@@ -352,6 +369,7 @@ startScheduledWeeklyResetMonitor({
   oauthConfig,
   openaiBaseUrl: CHATGPT_BASE_URL,
 });
+if (MULTIVIBE_HOST_APPLICATION) resetCreditIncreaseMonitor.start();
 const usageRefreshCoordinator = new UsageRefreshCoordinator();
 const usageRefreshMonitor = startUsageRefreshMonitor({
   store,
@@ -573,6 +591,9 @@ app.get("/admin/host/menu-bar", adminGuard, async (req, res) => {
     ? previousForecastScoreValue
     : undefined;
   const generatedOutputTokens = traceStats.stats.totals.tokensOutput;
+  const resetCreditIncreases = req.query.consume_notifications === "1"
+    ? resetCreditIncreaseMonitor.drainIncreases()
+    : [];
   res.json({
     operational: true,
     ...accountSummary,
@@ -581,6 +602,7 @@ app.get("/admin/host/menu-bar", adminGuard, async (req, res) => {
     ...(cloud ? { cloud } : {}),
     notifications: buildHostNotifications({
       accounts,
+      resetCreditIncreases,
       ...(forecast ? { forecast } : {}),
       ...(previousForecastScore === undefined ? {} : { previousForecastScore }),
       ...(cloud ? { cloud } : {}),

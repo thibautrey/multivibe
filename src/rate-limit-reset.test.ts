@@ -8,6 +8,7 @@ import {
   hasReachedScheduledWeeklyResetThreshold,
   maybeConsumeScheduledWeeklyReset,
   rateLimitResetCreditRequest,
+  ResetCreditIncreaseMonitor,
   scheduleWeeklyReset,
 } from "./rate-limit-reset.js";
 import { AccountStore } from "./store.js";
@@ -68,6 +69,53 @@ test("available reset credit count supports nested API response shapes", () => {
     2,
   );
   assert.equal(findAvailableResetCreditCount({ data: {} }), undefined);
+});
+
+test("reset-credit monitor baselines silently and queues only later increases", async () => {
+  let count: number | undefined = 1;
+  const accounts = [scheduledAccount(50)];
+  accounts[0].state = {};
+  const monitor = new ResetCreditIncreaseMonitor({
+    listAccounts: async () => accounts,
+    readAvailableCount: async () => count,
+  });
+
+  await monitor.checkNow();
+  assert.deepEqual(monitor.drainIncreases(), []);
+
+  count = 3;
+  await monitor.checkNow();
+  assert.deepEqual(monitor.drainIncreases(), [{
+    accountId: "account-1",
+    displayName: "test@example.com",
+    previousCount: 1,
+    availableCount: 3,
+  }]);
+  assert.deepEqual(monitor.drainIncreases(), []);
+
+  count = 2;
+  await monitor.checkNow();
+  assert.deepEqual(monitor.drainIncreases(), []);
+});
+
+test("reset-credit monitor preserves its baseline across transient failures", async () => {
+  let result: number | Error = 1;
+  const monitor = new ResetCreditIncreaseMonitor({
+    listAccounts: async () => [scheduledAccount(50)],
+    readAvailableCount: async () => {
+      if (result instanceof Error) throw result;
+      return result;
+    },
+  });
+
+  await monitor.checkNow();
+  result = new Error("temporary upstream failure");
+  await monitor.checkNow();
+  result = 2;
+  await monitor.checkNow();
+  assert.deepEqual(monitor.drainIncreases().map(({ previousCount, availableCount }) => ({ previousCount, availableCount })), [
+    { previousCount: 1, availableCount: 2 },
+  ]);
 });
 
 test("reset credit requests prefer the WHAM route", async () => {

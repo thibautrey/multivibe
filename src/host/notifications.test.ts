@@ -46,6 +46,39 @@ test("weekly warning is offered once per quota cycle only below an 80 percent fo
   }).some((item) => item.kind === "weekly-quota"), false);
 });
 
+test("reset-credit increases produce brief account-specific edge notifications", () => {
+  const notifications = buildHostNotifications({
+    accounts: [openAi()],
+    workerConfigured: false,
+    generatedOutputTokens: 0,
+    resetCreditIncreases: [{
+      accountId: "openai-account",
+      displayName: "test@example.com",
+      previousCount: 1,
+      availableCount: 3,
+    }],
+  });
+  const notification = notifications.find((item) => item.kind === "reset-credit-increased");
+  assert.equal(notification?.id, "reset-credit-increased:openai-account:3");
+  assert.equal(notification?.priority, 70);
+  assert.equal(notification?.repeatMode, "edge");
+  assert.equal(
+    notification?.message,
+    "2 new OpenAI quota reset credits are available for test@example.com (3 available).",
+  );
+  assert.equal(buildHostNotifications({
+    accounts: [openAi()],
+    workerConfigured: false,
+    generatedOutputTokens: 0,
+    resetCreditIncreases: [{
+      accountId: "openai-account",
+      displayName: "test@example.com",
+      previousCount: 3,
+      availableCount: 3,
+    }],
+  }).some((item) => item.kind === "reset-credit-increased"), false);
+});
+
 test("Cloud notifications distinguish low balance from active auto top-up", () => {
   const base = { accounts: [], workerConfigured: false, generatedOutputTokens: 0 };
   const low = buildHostNotifications({ ...base, cloud: { status: "connected", balanceUsd: "2.10", topupUrl: "https://app.example/billing" } })[0];

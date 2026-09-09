@@ -15,6 +15,12 @@ test("native menu bar sizes the status item to its visible quota", () => {
   assert.doesNotMatch(renderQuota, /Reserve the widest|statusItem\.length = width/u);
 });
 
+test("reset-credit increases use a brief unthrottled menu-bar popup", () => {
+  const source = readFileSync(new URL("../../packaging/macos/MultiVibeMenuBar.swift", import.meta.url), "utf8");
+  assert.match(source, /next\.kind == "reset-credit-increased"/);
+  assert.match(source, /closeNotification\(after: next\.kind == "reset-credit-increased" \? 5 : 8\)/);
+});
+
 test("native quota rotation follows activity, debounces, pins, and handles removal", { skip: process.platform !== "darwin" }, () => {
   const source = readFileSync(new URL("../../packaging/macos/MultiVibeMenuBar.swift", import.meta.url), "utf8");
   const start = source.indexOf("private struct ProviderActivity:");

@@ -1542,11 +1542,11 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         guard !refreshing else { return }
         refreshing = true
         render()
-        var summaryPath = "/admin/host/menu-bar"
+        var summaryPath = "/admin/host/menu-bar?consume_notifications=1"
         if UserDefaults.standard.object(forKey: Self.notificationLastForecastScoreKey) != nil {
             let previousScore = UserDefaults.standard.double(forKey: Self.notificationLastForecastScoreKey)
             if previousScore.isFinite && previousScore >= 0 && previousScore <= 100 {
-                summaryPath += "?previous_forecast_score=\(previousScore)"
+                summaryPath += "&previous_forecast_score=\(previousScore)"
             }
         }
         guard let request = authorizedRequest(path: summaryPath) else {
@@ -1753,7 +1753,9 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         }
         guard let next = pendingNotifications.first else { return }
         let urgent = next.priority >= 80
-        let spacing = next.kind == "github-star" || next.kind == "provider-quota-limit"
+        let isBriefNotification = next.kind == "provider-quota-limit"
+            || next.kind == "reset-credit-increased"
+        let spacing = next.kind == "github-star" || isBriefNotification
             ? 0
             : (urgent ? Self.notificationUrgentSpacing : Self.notificationGamificationSpacing)
         let spacingKey = urgent
@@ -1786,8 +1788,8 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
             action: { [weak self] in self?.performNotificationAction(next) }
         ))
         notificationPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        if next.kind == "provider-quota-limit" {
-            closeNotification(after: 8)
+        if isBriefNotification {
+            closeNotification(after: next.kind == "reset-credit-increased" ? 5 : 8)
         } else {
             NSApplication.shared.activate(ignoringOtherApps: true)
         }

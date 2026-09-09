@@ -14,6 +14,7 @@ export const WEEKLY_RESET_REMAINING_THRESHOLD_PERCENT = 0.5;
 const WEEKLY_RESET_USED_THRESHOLD_PERCENT =
   100 - WEEKLY_RESET_REMAINING_THRESHOLD_PERCENT;
 const AUTO_RESET_POLL_INTERVAL_MS = 60_000;
+export const RESET_CREDIT_POLL_INTERVAL_MS = 60_000;
 
 const resetAttempts = new Map<string, Promise<AutoResetResult>>();
 
@@ -21,6 +22,100 @@ export type AutoResetResult =
   | { status: "not-scheduled" | "threshold-not-reached" | "in-progress" }
   | { status: "consumed"; result: unknown }
   | { status: "failed"; error: string };
+
+export type ResetCreditIncrease = {
+  accountId: string;
+  displayName: string;
+  previousCount: number;
+  availableCount: number;
+};
+
+type ResetCreditIncreaseMonitorOptions = {
+  listAccounts: () => Promise<Account[]>;
+  readAvailableCount: (account: Account) => Promise<number | undefined>;
+  pollIntervalMs?: number;
+};
+
+/**
+ * Polls the separate OpenAI reset-credit allowance without putting that
+ * upstream request on the latency-sensitive menu-bar endpoint. The first
+ * successful reading is only a baseline; later increases stay queued until
+ * the native menu consumes them.
+ */
+export class ResetCreditIncreaseMonitor {
+  private readonly previousCounts = new Map<string, number>();
+  private readonly pendingIncreases = new Map<string, ResetCreditIncrease>();
+  private readonly pollIntervalMs: number;
+  private inFlight?: Promise<void>;
+
+  constructor(private readonly options: ResetCreditIncreaseMonitorOptions) {
+    this.pollIntervalMs = Math.max(
+      1_000,
+      options.pollIntervalMs ?? RESET_CREDIT_POLL_INTERVAL_MS,
+    );
+  }
+
+  async checkNow(): Promise<void> {
+    if (this.inFlight) return this.inFlight;
+    const check = this.runCheck();
+    this.inFlight = check;
+    try {
+      await check;
+    } finally {
+      if (this.inFlight === check) this.inFlight = undefined;
+    }
+  }
+
+  start(): NodeJS.Timeout {
+    void this.checkNow().catch(() => undefined);
+    const timer = setInterval(
+      () => void this.checkNow().catch(() => undefined),
+      this.pollIntervalMs,
+    );
+    timer.unref();
+    return timer;
+  }
+
+  drainIncreases(): ResetCreditIncrease[] {
+    const increases = [...this.pendingIncreases.values()];
+    this.pendingIncreases.clear();
+    return increases;
+  }
+
+  private async runCheck(): Promise<void> {
+    const accounts = (await this.options.listAccounts()).filter(
+      (account) => account.enabled && normalizeProvider(account) === "openai",
+    );
+    const activeIds = new Set(accounts.map((account) => account.id));
+    for (const accountId of this.previousCounts.keys()) {
+      if (!activeIds.has(accountId)) this.previousCounts.delete(accountId);
+    }
+
+    await Promise.all(accounts.map(async (account) => {
+      let availableCount: number | undefined;
+      try {
+        availableCount = await this.options.readAvailableCount(account);
+      } catch {
+        // A transient auth or upstream failure must not erase the last good
+        // baseline and turn recovery into a false increase.
+        return;
+      }
+      if (availableCount === undefined || !Number.isFinite(availableCount)) return;
+      const normalizedCount = Math.max(0, Math.floor(availableCount));
+      const previousCount = this.previousCounts.get(account.id);
+      this.previousCounts.set(account.id, normalizedCount);
+      if (previousCount === undefined || normalizedCount <= previousCount) return;
+
+      const existing = this.pendingIncreases.get(account.id);
+      this.pendingIncreases.set(account.id, {
+        accountId: account.id,
+        displayName: account.email?.trim() || "OpenAI account",
+        previousCount: existing?.previousCount ?? previousCount,
+        availableCount: normalizedCount,
+      });
+    }));
+  }
+}
 
 export async function scheduleWeeklyReset(
   account: Account,
