@@ -1,3 +1,4 @@
+import { SDK_PROVIDER_NAMES } from "./expandedProviderMetadata";
 import type { Account } from "../types";
 
 export type RuntimeIdentity = {
@@ -138,8 +139,8 @@ export function runtimeIdentityForAccount(
   account: Pick<Account, "provider" | "localRuntime" | "sdkProvider">,
 ): RuntimeIdentity {
   if (account.provider === "ai-sdk") {
-    const names: Record<string, string> = { anthropic: "Anthropic", google: "Google Gemini", openrouter: "OpenRouter", mammouth: "Mammouth AI", deepseek: "DeepSeek", groq: "Groq", togetherai: "Together AI", cerebras: "Cerebras", perplexity: "Perplexity" };
-    return fallbackIdentity(account.sdkProvider ?? "ai-sdk", names[account.sdkProvider ?? ""] ?? "Cloud provider");
+
+    return fallbackIdentity(account.sdkProvider ?? "ai-sdk", SDK_PROVIDER_NAMES[account.sdkProvider ?? ""] ?? "Cloud provider");
   }
   if (account.localRuntime?.adapter) {
     return runtimeIdentityForAdapter(account.localRuntime.adapter);
