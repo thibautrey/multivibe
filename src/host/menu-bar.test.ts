@@ -133,7 +133,7 @@ test("non-OpenAI accounts supply menu quotas when OpenAI is absent", () => {
     {
       id: "opencode-secret-id", provider: "opencode", accessToken: "opencode-secret", enabled: true,
       email: "person@example.com",
-      usage: { primary: { usedPercent: 60 }, secondary: { usedPercent: 30 }, monthly: { usedPercent: 10 } },
+      usage: { fetchedAt: 123, primary: { usedPercent: 60 }, secondary: { usedPercent: 30 }, monthly: { usedPercent: 10 } },
     },
     {
       id: "mistral-secret-id", provider: "mistral", accessToken: "mistral-secret", enabled: false,
