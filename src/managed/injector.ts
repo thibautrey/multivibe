@@ -40,7 +40,7 @@ export class ManagedCredentialInjector {
     // Slow persistence cannot extend the grant's dispatch window.
     verify();
     try {
-      const response = await accounts[0].chatCompletions(body,AbortSignal.timeout(this.dependencies.executionTimeoutMs),{token,originalBody});
+      const response = await accounts[0].chatCompletions(body,AbortSignal.timeout(this.dependencies.executionTimeoutMs),{token,originalBody,beforeDispatch:()=>{verify();}});
       if (!response.ok) {
         await response.body?.cancel().catch(() => undefined);
         return Response.json({error:{code:"provider_execution_failed"}},{status:502});

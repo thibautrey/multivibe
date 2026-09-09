@@ -8,7 +8,13 @@ import { managedProviderRequest } from "./request.js";
 import { chatCompletionObjectToResponseObject } from "../responses/converters.js";
 
 /** Forward only in memory over the private authenticated injector corridor. */
-export interface ManagedInvocationAuthorization { readonly token: string; readonly originalBody: Uint8Array }
+export interface ManagedInvocationAuthorization {
+  readonly token: string;
+  readonly originalBody: Uint8Array;
+  /** Injector-local callback, never serialized or accepted from the HTTP caller.
+   * Recheck dispatch authority after asynchronous credential access. */
+  readonly beforeDispatch?: () => void;
+}
 export interface ManagedProviderAccount {
   providerId: string;
   credentialRef: string;

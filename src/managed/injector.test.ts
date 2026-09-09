@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ExecutionJournal } from "./journal.js";
 import { ManagedCredentialInjector } from "./injector.js";
+import { createManagedProviderAccount } from "./provider.js";
 import { managedProviderRequest } from "./request.js";
 import { executionBodyDigest, signExecutionGrant, type ExecutionGrant } from "./authorization.js";
 const keys=generateKeyPairSync("ed25519");
@@ -72,4 +73,20 @@ test("injector independently enforces OpenAI completion projection before creden
  assert.equal(claims,0);assert.equal(calls,0);
  assert.equal(await (await injector.execute(body,authorization)).text(),"ok");
  assert.equal(claims,1);assert.equal(calls,1);
+});
+
+test("credential access cannot extend compatible or native grant dispatch validity",async()=>{
+ for(const providerId of ["mistral","anthropic"] as const){
+  let now=1001,reads=0,calls=0,claims=0;
+  const originalBody=Buffer.from(JSON.stringify({model:"public",input:"hello",max_output_tokens:8}));
+  const grant:ExecutionGrant={version:1,audience:"multivibe-core-managed",attemptId:"expiry",reservationId:"r",routeVersionId:"v",
+   providerId,credentialRef:"account",model:"public",upstreamModel:"upstream",operation:"responses",stream:false,
+   bodySha256:executionBodyDigest(originalBody),maximumOutputTokens:8,issuedAt:1000,expiresAt:61000};
+  const account=createManagedProviderAccount({providerId,credentialRef:"account",models:new Set(["upstream"]),maximumResponseBytes:8192,
+   async readCredential(){reads++;now=61000;return "fixture-key";},async fetchViaEgress(){calls++;return new Response("must not execute");}});
+  const injector=new ManagedCredentialInjector({verificationKey:keys.publicKey,maximumRequestBytes:8192,executionTimeoutMs:1000,clock:()=>now,
+   journal:{async claim(){claims++;}},accounts:[account]});
+  await assert.rejects(injector.execute(managedProviderRequest(grant,originalBody),{token:signExecutionGrant(grant,keys.privateKey,1000),originalBody}),/^Error: injector_execution_uncertain$/);
+  assert.equal(reads,1);assert.equal(claims,1);assert.equal(calls,0);
+ }
 });
