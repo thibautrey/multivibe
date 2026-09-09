@@ -1,8 +1,19 @@
 import test from "node:test";
+import assert from "node:assert/strict";
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+
+test("native menu bar sizes the status item to its visible quota", () => {
+  const source = readFileSync(new URL("../../packaging/macos/MultiVibeMenuBar.swift", import.meta.url), "utf8");
+  const start = source.indexOf("private func renderQuota()");
+  const end = source.indexOf("private func render()", start);
+  const renderQuota = source.slice(start, end);
+
+  assert.match(renderQuota, /statusItem\.length = NSStatusItem\.variableLength/u);
+  assert.doesNotMatch(renderQuota, /Reserve the widest|statusItem\.length = width/u);
+});
 
 test("native quota rotation follows activity, debounces, pins, and handles removal", { skip: process.platform !== "darwin" }, () => {
   const source = readFileSync(new URL("../../packaging/macos/MultiVibeMenuBar.swift", import.meta.url), "utf8");

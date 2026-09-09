@@ -1461,20 +1461,13 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         var title = ""
         var tooltip = "MultiVibe Host — \(statusText)"
         let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+        statusItem.length = NSStatusItem.variableLength
         if operational, let provider = eligible.first(where: { $0.id == rotation.selected }) {
             let values = provider.windows.map { "\($0.label):\(Int($0.remainingPercent.rounded()))%" }.joined(separator: "  ")
             let quota = values.isEmpty ? "Quota unavailable" : values
             title = "  " + (now - rotation.changedAt < 3 ? "\(provider.displayName) · " : "") + quota
             tooltip = "\(provider.displayName) — \(quota)"
-            // Reserve the widest provider + quota combination, including the brief label.
-            let width = eligible.map { provider -> CGFloat in
-                let values = provider.windows.map { "\($0.label):100%" }.joined(separator: "  ")
-                let text = "  \(provider.displayName) · " + (values.isEmpty ? "Quota unavailable" : values)
-                return (text as NSString).size(withAttributes: [.font: font]).width + 36
-            }.max() ?? 36
-            statusItem.length = width
         } else {
-            statusItem.length = NSStatusItem.variableLength
             if operational, providers.isEmpty, let quota = summary?.quota {
                 title = [quota.weeklyRemainingPercent.map { "W:\(Int($0.rounded()))%" }, quota.fiveHourRemainingPercent.map { "5h:\(Int($0.rounded()))%" }].compactMap { $0 }.joined(separator: "  ")
             }
