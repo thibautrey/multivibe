@@ -1018,7 +1018,7 @@ export default function App() {
 
   return (
     <div className="page">
-      <div className="shell app-shell">
+      <div className={`shell app-shell${tab === "models" ? " app-shell-models" : ""}`}>
         <aside className="sidebar">
           <div className="sidebar-brand">
             <img className="brand-mark" src="/assets/brand/multivibe-app-icon.svg" alt="" />

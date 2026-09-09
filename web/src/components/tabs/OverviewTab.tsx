@@ -31,6 +31,7 @@ export function OverviewTab({
   const isReady = stats.enabled > 0 && models.length > 0;
   const hasTraffic = traceStats.totals.requests > 0;
   const isEverythingRunning = Boolean(stats.total && models.length && hasTraffic);
+  const showHostHarnesses = hostApplication && stats.total > 0 && models.length > 0;
 
   const nextStepCard = (
     <section className="panel overview-next-step">
@@ -52,6 +53,7 @@ export function OverviewTab({
       </button>
     </section>
   );
+  const hostHarnessCard = <HostHarnessCards onApiKeysChanged={onHarnessesChanged} />;
 
   return (
     <>
@@ -67,9 +69,16 @@ export function OverviewTab({
         <Metric widgetId="cost" title="Cost" value={usd(traceStats.totals.costUsd)} detail="Estimated provider cost" />
       </WidgetGrid>
 
-      {!isEverythingRunning && nextStepCard}
-      {isEverythingRunning && hostApplication && (
-        <HostHarnessCards onApiKeysChanged={onHarnessesChanged} />
+      {showHostHarnesses && !isEverythingRunning ? (
+        <div className="overview-host-next-step-layout">
+          {hostHarnessCard}
+          {nextStepCard}
+        </div>
+      ) : (
+        <>
+          {!isEverythingRunning && nextStepCard}
+          {showHostHarnesses && hostHarnessCard}
+        </>
       )}
 
       <section className="overview-detail-grid">
