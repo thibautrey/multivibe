@@ -18,6 +18,7 @@ export interface ManagedRuntimeConfig {
   tlsCaFile: string;
   cloudVerificationKeyFile: string;
   allowedClientUri: string;
+  allowedDiscoveryUri?: string;
   maximumRequestBytes: number;
   maximumResponseBytes: number;
   maximumConcurrentExecutions: number;
@@ -47,6 +48,7 @@ export function loadManagedRuntimeConfig(env: NodeJS.ProcessEnv): ManagedRuntime
     tlsKeyFile: path("MANAGED_CORE_TLS_KEY_FILE"), tlsCertFile: path("MANAGED_CORE_TLS_CERT_FILE"),
     tlsCaFile: path("MANAGED_CORE_TLS_CA_FILE"), cloudVerificationKeyFile: path("MANAGED_CORE_CLOUD_VERIFY_KEY_FILE"),
     allowedClientUri: required(env, "MANAGED_CORE_CLOUD_SPIFFE_URI"),
+    ...(env.MANAGED_CORE_DISCOVERY_SPIFFE_URI ? {allowedDiscoveryUri:env.MANAGED_CORE_DISCOVERY_SPIFFE_URI} : {}),
     maximumRequestBytes: integer(env, "MANAGED_CORE_MAX_REQUEST_BYTES", 2 * 1024 * 1024, 16 * 1024 * 1024),
     maximumResponseBytes: integer(env, "MANAGED_CORE_MAX_RESPONSE_BYTES", 8 * 1024 * 1024, 64 * 1024 * 1024),
     maximumConcurrentExecutions: integer(env, "MANAGED_CORE_MAX_CONCURRENCY", 16, 1024),
@@ -84,7 +86,7 @@ export async function createManagedRuntime(config: ManagedRuntimeConfig) {
     executionTimeoutMs: config.executionTimeoutMs });
   const server = createManagedExecutionServer({
     tls,
-    allowedClientUri: config.allowedClientUri, executor, journal, discovery: {read:()=>injector.discovery()},
+    allowedClientUri: config.allowedClientUri, allowedDiscoveryUri:config.allowedDiscoveryUri, executor, journal, discovery: {read:()=>injector.discovery()},
     maximumRequestBytes: config.maximumRequestBytes, maximumConcurrentExecutions: config.maximumConcurrentExecutions,
   });
   return { server, accounts };

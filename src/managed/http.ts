@@ -7,6 +7,7 @@ import type { ExecutionJournal } from "./journal.js";
 export function createManagedExecutionServer(options: {
   tls: Pick<ServerOptions, "key" | "cert" | "ca">;
   allowedClientUri: string;
+  allowedDiscoveryUri?: string;
   executor: Pick<ManagedExecutor, "execute">;
   journal: Pick<ExecutionJournal, "receipt">;
   discovery?: { read(): Promise<unknown> };
@@ -16,6 +17,7 @@ export function createManagedExecutionServer(options: {
   if (!options.allowedClientUri.startsWith("spiffe://") || !options.tls.key || !options.tls.cert || !options.tls.ca
     || !Number.isSafeInteger(options.maximumRequestBytes) || options.maximumRequestBytes <= 0
     || !Number.isSafeInteger(options.maximumConcurrentExecutions) || options.maximumConcurrentExecutions <= 0) throw Error("invalid_managed_server_configuration");
+  if (options.allowedDiscoveryUri !== undefined && !options.allowedDiscoveryUri.startsWith("spiffe://")) throw Error("invalid_discovery_identity");
   let active = 0;
   const server = createServer({ ...options.tls, requestCert: true, rejectUnauthorized: true, minVersion: "TLSv1.3" }, async (req, res) => {
     res.setHeader("content-type", "application/json");
@@ -23,7 +25,10 @@ export function createManagedExecutionServer(options: {
     const fail = (status: number, code: string) => { res.statusCode = status; res.end(JSON.stringify({ error: { code } })); };
     const socket = req.socket as TLSSocket;
     const san = socket.getPeerCertificate().subjectaltname?.split(", ") ?? [];
-    if (!socket.authorized || !san.includes(`URI:${options.allowedClientUri}`)) { fail(403, "workload_forbidden"); return; }
+    const executionWorkload = san.includes(`URI:${options.allowedClientUri}`);
+    const discoveryOnly = req.method === "GET" && req.url === "/internal/v1/providers/discovery"
+      && options.allowedDiscoveryUri !== undefined && san.includes(`URI:${options.allowedDiscoveryUri}`);
+    if (!socket.authorized || (!executionWorkload && !discoveryOnly)) { fail(403, "workload_forbidden"); return; }
     if (req.method === "GET" && req.url === "/internal/v1/providers/discovery" && options.discovery) {
       try { res.end(JSON.stringify(await options.discovery.read())); }
       catch { fail(503, "provider_discovery_unavailable"); }
