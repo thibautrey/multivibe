@@ -338,9 +338,9 @@ function TracingTabContent(props: Props) {
                 aria-describedby="anonymous-usage-sharing-description anonymous-usage-sharing-default"
                 onChange={(event) => void setAnonymousUsageSharing(event.target.checked)}
               />
-              <span>Share anonymous model demand</span>
+              <span>Share anonymous demand</span>
             </label>
-            <small id="anonymous-usage-sharing-default" className="muted">Uncheck to stop immediately and delete any unsent envelope.</small>
+            <small id="anonymous-usage-sharing-default" className="muted">Uncheck to stop sharing and delete unsent data.</small>
             <span className="muted" role="status" aria-live="polite">{sharingNotice}</span>
           </div>
         </div>
