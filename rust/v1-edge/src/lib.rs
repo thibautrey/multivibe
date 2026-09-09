@@ -12359,10 +12359,12 @@ mod tests {
         let jobs_path = temporary_path("tool-roundtrip-jobs");
         let mut provider = account("strict-chat");
         provider.provider = Some("zai".to_owned());
+        let provider_url = url.clone();
         provider.base_url = Some(url);
         provider.upstream_mode = Some("chat/completions".to_owned());
         fs::write(&store_path, serde_json::to_vec(&store_with_accounts(vec![provider])).unwrap()).await.unwrap();
         let mut config = EdgeConfig::default();
+        config.zai_base_url = provider_url;
         config.zai_upstream_path = "/v1/chat/completions".to_owned();
         config.zai_models_path = "/v1/models".to_owned();
         config.store_path = store_path.clone();
