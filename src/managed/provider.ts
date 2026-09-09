@@ -23,6 +23,7 @@ export function createManagedProviderAccount(options: {
   const base = compatibleProviders[options.providerId];
   if (!base || !options.credentialRef || options.models.size > 10000) throw Error("invalid_managed_account");
   async function request(path: string, method: "GET" | "POST", signal: AbortSignal, body?: Uint8Array) {
+    signal.throwIfAborted();
     const credential = await options.readCredential();
     if (!credential || credential.length > 16384 || /[\r\n]/.test(credential)) throw Error("managed_credential_unavailable");
     signal.throwIfAborted();
@@ -39,12 +40,15 @@ export function createManagedProviderAccount(options: {
       ? createManagedAnthropicAccount({...options,maximumResponseBytes:options.maximumResponseBytes ?? 8*1024*1024}).chatCompletions
       : (body, signal) => request("/chat/completions", "POST", signal, body),
     async discoverModels(signal) {
-      const response = await request("/models", "GET", signal);
+      const allIds = new Set<string>();
+      const cursors = new Set<string>();
+      let path = "/models", size = 0, modelCount = 0;
+      for (let page = 0; page < 100; page++) {
+      const response = await request(path, "GET", signal);
       if (!response.ok) { await response.body?.cancel(); throw Error("provider_discovery_unavailable"); }
       const reader = response.body?.getReader();
       if (!reader) throw Error("provider_discovery_invalid");
       const chunks: Uint8Array[] = [];
-      let size = 0;
       try {
         for (;;) {
           const next = await reader.read();
@@ -62,7 +66,23 @@ export function createManagedProviderAccount(options: {
         if (typeof id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$/.test(id)) throw Error("provider_discovery_invalid");
         return id;
       });
-      return Object.freeze([...new Set<string>(ids)].sort());
+      modelCount += ids.length;
+      if (modelCount > 10000) throw Error("provider_discovery_too_large");
+      for (const id of ids) allIds.add(id);
+      if (options.providerId !== "anthropic") {
+        if (parsed.has_more === true) throw Error("provider_discovery_incomplete");
+        return Object.freeze([...allIds].sort());
+      }
+      if (typeof parsed.has_more !== "boolean") throw Error("provider_discovery_invalid");
+      if (!parsed.has_more) return Object.freeze([...allIds].sort());
+      const cursor = parsed.last_id;
+      if (!ids.length || typeof cursor !== "string" || cursor !== ids.at(-1) || cursors.has(cursor)) {
+        throw Error("provider_discovery_invalid_cursor");
+      }
+      cursors.add(cursor);
+      path = `/models?after_id=${encodeURIComponent(cursor)}`;
+      }
+      throw Error("provider_discovery_incomplete");
     },
   };
 }
