@@ -1117,6 +1117,7 @@ private final class NotificationPopup: NSViewController {
         guard let configuration else { return }
         messageLabel.stringValue = configuration.message
         actionButton.title = configuration.actionTitle
+        actionButton.isHidden = configuration.actionTitle.isEmpty
         actionButton.isEnabled = true
     }
 
@@ -1181,6 +1182,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
     private var pendingEnrollmentToken: String?
     private var enrollmentInProgress = false
     private var githubStarPromptPresented = false
+    private var startupNotificationPresented = false
     private var notificationCloseWorkItem: DispatchWorkItem?
     private var githubStarPromptAcknowledged = UserDefaults.standard.bool(forKey: githubStarPromptAcknowledgedKey)
     private var acknowledgedNotificationIDs = Set(
@@ -1742,8 +1744,21 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
 
     private func presentNextNotificationIfNeeded() {
         guard operational, currentNotification == nil, !popover.isShown,
-              !notificationPopover.isShown, let button = statusItem.button,
-              let next = pendingNotifications.first else { return }
+              !notificationPopover.isShown, let button = statusItem.button else { return }
+        if !startupNotificationPresented {
+            startupNotificationPresented = true
+            notificationPopup.configure(.init(
+                message: "MultiVibe started, get vibing!",
+                actionTitle: "",
+                confirmationMessage: nil,
+                confirmationTitle: nil,
+                action: {}
+            ))
+            notificationPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            closeNotification(after: 2)
+            return
+        }
+        guard let next = pendingNotifications.first else { return }
         let urgent = next.priority >= 80
         let spacing = next.kind == "github-star" || next.kind == "provider-quota-limit"
             ? 0
