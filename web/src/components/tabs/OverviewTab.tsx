@@ -5,7 +5,7 @@ import { ProgressStat } from "../ProgressStat";
 import { HostHarnessCards } from "../../host/HostHarnessCarousel";
 import { usd } from "../../lib/ui";
 import { AvailableModels } from "../AvailableModels";
-import type { ExposedModel, TraceStats } from "../../types";
+import type { ActivityView, ExposedModel, TraceStats } from "../../types";
 
 type Props = {
   stats: { total: number; enabled: number; blocked: number };
@@ -13,7 +13,7 @@ type Props = {
   traceStats: TraceStats;
   models: ExposedModel[];
   openModelInDocs: (modelId: string) => void;
-  navigate: (tab: "accounts" | "docs" | "tracing") => void;
+  navigate: (tab: "accounts" | "docs" | "tracing", activityView?: ActivityView) => void;
   hostApplication: boolean;
   onHarnessesChanged: () => Promise<void>;
 };
@@ -64,9 +64,9 @@ export function OverviewTab({
           detail={isReady ? "Providers and models are available" : "Connect a provider to get started"}
           tone={isReady ? "success" : "warning"}
         />
-        <Metric widgetId="providers" title="Providers" value={`${stats.enabled}/${stats.total}`} detail="Enabled accounts" tone={stats.enabled > 0 ? "success" : "default"} />
-        <Metric widgetId="requests" title="Requests" value={`${traceStats.totals.requests}`} detail="In the selected period" />
-        <Metric widgetId="cost" title="Cost" value={usd(traceStats.totals.costUsd)} detail="Estimated provider cost" />
+        <Metric widgetId="providers" title="Providers" value={`${stats.enabled}/${stats.total}`} detail="Enabled accounts" tone={stats.enabled > 0 ? "success" : "default"} onClick={() => navigate("accounts")} ariaLabel="Open Providers" />
+        <Metric widgetId="requests" title="Requests" value={`${traceStats.totals.requests}`} detail="In the selected period" onClick={() => navigate("tracing", "performance")} ariaLabel="Open Activity performance" />
+        <Metric widgetId="cost" title="Cost" value={usd(traceStats.totals.costUsd)} detail="Estimated provider cost" onClick={() => navigate("tracing", "usage")} ariaLabel="Open Activity usage and cost" />
       </WidgetGrid>
 
       {showHostHarnesses && !isEverythingRunning ? (

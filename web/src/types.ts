@@ -284,6 +284,8 @@ export type TraceRange = TraceRangePreset | { startDate: string; endDate: string
 
 export type TraceRangePreset = "24h" | "7d" | "30d" | "all";
 
+export type ActivityView = "overview" | "performance" | "usage" | "requests";
+
 export type Tab =
   | "models"
   | "overview"
