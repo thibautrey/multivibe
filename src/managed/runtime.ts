@@ -69,7 +69,7 @@ export async function createManagedRuntime(config: ManagedRuntimeConfig) {
   const refs = new Set<string>();
   const accounts: ManagedProviderAccount[] = manifest.accounts.map((account: Record<string, unknown>): ManagedProviderAccount => {
     if (!account || Object.keys(account).sort().join() !== "credentialRef,models,providerId"
-      || !["mistral", "openai", "xai", "deepseek"].includes(String(account.providerId))
+      || !["mistral", "openai", "xai", "deepseek", "anthropic"].includes(String(account.providerId))
       || typeof account.credentialRef !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$/.test(account.credentialRef)
       || refs.has(account.credentialRef)
       || !Array.isArray(account.models) || account.models.length > 10000

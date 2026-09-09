@@ -1,4 +1,4 @@
-import {createSdkModel} from "../ai-sdk/models.js";
+import {createAnthropicCodec} from "../ai-sdk/anthropic-model.js";
 import {sdkCallOptions,chatResult,chatStream} from "../ai-sdk/protocol.js";
 import type {ManagedProviderAccount} from "./executor.js";
 
@@ -58,7 +58,7 @@ export function createManagedAnthropicAccount(options:{
   };
   // A nonsecret placeholder prevents the SDK from consulting ambient keys.
   // Only the fixed guarded fetch can replace it with an actual credential.
-  const model=createSdkModel({id:"managed-native",provider:"ai-sdk",sdkProvider:"anthropic",accessToken:"managed-placeholder",enabled:true},body.model,guardedFetch);
+  const model=createAnthropicCodec(body.model,"managed-placeholder","https://api.anthropic.com/v1",guardedFetch);
   const params=sdkCallOptions(body,signal);
   if(!body.stream){
    const result=chatResult(body.model,await model.doGenerate(params));

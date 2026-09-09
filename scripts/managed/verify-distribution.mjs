@@ -10,8 +10,8 @@ try {
   execFileSync(process.execPath,["scripts/managed/package-runtime.mjs",output,entry],{stdio:"inherit"});
   const files=JSON.parse(await readFile(join(output,"runtime-files.json"),"utf8"));
   const required=entry==="core"?["managed/main.js","managed/runtime.js","managed/injector-client.js"]:
-    ["managed/injector-main.js","managed/injector-runtime.js","managed/provider.js"];
-  const forbidden=entry==="core"?["managed/provider.js","managed/provider-proxy-fetch.js","managed/injector.js","managed/injector-runtime.js"]:
+    ["managed/injector-main.js","managed/injector-runtime.js","managed/provider.js","managed/native-anthropic.js"];
+  const forbidden=entry==="core"?["managed/native-anthropic.js","managed/provider.js","managed/provider-proxy-fetch.js","managed/injector.js","managed/injector-runtime.js"]:
     ["managed/executor.js","managed/http.js","managed/runtime.js"];
   for(const file of required)assert.ok(files.includes(file),`${entry} missing ${file}`);
   for(const file of forbidden)assert.ok(!files.includes(file),`${entry} must exclude ${file}`);

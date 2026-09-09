@@ -1,6 +1,9 @@
 import type { ManagedProviderAccount } from "./executor.js";
 
+import {createManagedAnthropicAccount} from "./native-anthropic.js";
+
 const compatibleProviders = {
+  anthropic: "https://api.anthropic.com/v1",
   mistral: "https://api.mistral.ai/v1",
   openai: "https://api.openai.com/v1",
   xai: "https://api.x.ai/v1",
@@ -13,6 +16,7 @@ export function createManagedProviderAccount(options: {
   providerId: ManagedCompatibleProvider;
   credentialRef: string;
   models: ReadonlySet<string>;
+  maximumResponseBytes?: number;
   readCredential: () => Promise<string>;
   fetchViaEgress: typeof fetch;
 }): ManagedProviderAccount & { discoverModels(signal: AbortSignal): Promise<readonly string[]> } {
@@ -23,13 +27,17 @@ export function createManagedProviderAccount(options: {
     if (!credential || credential.length > 16384 || /[\r\n]/.test(credential)) throw Error("managed_credential_unavailable");
     signal.throwIfAborted();
     return options.fetchViaEgress(`${base}${path}`, { method, signal, redirect: "error",
-      headers: { authorization: `Bearer ${credential}`, "content-type": "application/json" },
+      headers: options.providerId === "anthropic"
+        ? {"x-api-key":credential,"anthropic-version":"2023-06-01","content-type":"application/json"}
+        : { authorization: `Bearer ${credential}`, "content-type": "application/json" },
       ...(body ? { body: new TextDecoder("utf-8", { fatal: true }).decode(body) } : {}),
     });
   }
   return {
     providerId: options.providerId, credentialRef: options.credentialRef, models: new Set(options.models),
-    chatCompletions: (body, signal) => request("/chat/completions", "POST", signal, body),
+    chatCompletions: options.providerId === "anthropic"
+      ? createManagedAnthropicAccount({...options,maximumResponseBytes:options.maximumResponseBytes ?? 8*1024*1024}).chatCompletions
+      : (body, signal) => request("/chat/completions", "POST", signal, body),
     async discoverModels(signal) {
       const response = await request("/models", "GET", signal);
       if (!response.ok) { await response.body?.cancel(); throw Error("provider_discovery_unavailable"); }
