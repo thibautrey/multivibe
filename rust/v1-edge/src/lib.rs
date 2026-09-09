@@ -6,6 +6,7 @@
 //! means request bytes, upstream bytes and SSE frames do not cross a JS/native
 //! boundary on the hot path.
 
+mod chat_tools;
 mod confidential;
 mod dashboard;
 mod idempotency;
@@ -2766,6 +2767,7 @@ struct BufferedReply {
 }
 
 struct StreamingReply {
+    chat_tools: chat_tools::ChatTools,
     status: StatusCode,
     headers: Vec<(String, String)>,
     upstream: reqwest::Response,
@@ -5369,13 +5371,19 @@ async fn proxy_inference(
                     path.contains("chat/completions"),
                     path.ends_with("/responses/compact"),
                 );
+                let (chat_body, chat_tools) = if sends_chat && path.ends_with("/responses") {
+                    chat_tools::ChatTools::prepare(body).map_err(|message|
+                        error_response(StatusCode::BAD_REQUEST, message, "unsupported_tool_contract"))?
+                } else {
+                    (body.clone(), chat_tools::ChatTools::default())
+                };
                 if sends_chat {
-                    if let Err(message) = validate_chat_tool_contract(body) {
+                    if let Err(message) = validate_chat_tool_contract(&chat_body) {
                         return Err(error_response(StatusCode::BAD_REQUEST, message, "unsupported_tool_contract"));
                     }
                 }
                 let mut payload = prepared_payload(
-                    body,
+                    &chat_body,
                     path,
                     &account,
                     &route,
@@ -5503,6 +5511,7 @@ async fn proxy_inference(
                             &content_type,
                             &clear_body,
                             confidential_reply.headers,
+                            &chat_tools,
                         )
                     } else {
                         BufferedReply {
@@ -5762,6 +5771,7 @@ async fn proxy_inference(
                         (!content_type.trim().is_empty()).then(|| content_type.clone()),
                     );
                     return Ok(ProxyResult::Streaming(StreamingReply {
+                        chat_tools,
                         status: response.status(),
                         headers: stream_headers,
                         upstream: response,
@@ -5781,6 +5791,7 @@ async fn proxy_inference(
                     &content_type,
                     &bytes,
                     response_headers,
+                    &chat_tools,
                 );
                 let outcome = buffered_trace_outcome(&reply, &content_type, bytes.is_empty());
                 let completed_at = outcome.completed_at;
@@ -5955,6 +5966,7 @@ fn render_buffered_success(
     content_type: &str,
     bytes: &Bytes,
     mut upstream_headers: Vec<(String, String)>,
+    chat_tools: &chat_tools::ChatTools,
 ) -> BufferedReply {
     let text = String::from_utf8_lossy(bytes).to_string();
     let is_sse = content_type
@@ -6000,6 +6012,13 @@ fn render_buffered_success(
         json!({"error": "upstream returned invalid JSON"})
     };
 
+    if let Err(message) = chat_tools.restore_response(&mut output) {
+        return BufferedReply {
+            status: StatusCode::BAD_GATEWAY,
+            headers: vec![("content-type".into(), "application/json".into())],
+            body: Bytes::from(json!({"error": {"code": "invalid_tool_arguments", "message": message}}).to_string()),
+        };
+    }
     if messages {
         if parsed.is_none() && is_sse {
             output = response_from_sse(&text, model);
@@ -6042,6 +6061,7 @@ fn render_buffered_success(
 
 #[derive(Default)]
 struct ChatResponseStreamState {
+    chat_tools: chat_tools::ChatTools,
     response_id: String,
     output_item_id: String,
     model: String,
@@ -6084,6 +6104,11 @@ impl ChatResponseStreamState {
         if !self.content.is_empty() {
             output.push(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": self.content}]}));
         }
+        for tool in &mut self.tool_calls {
+            if let Err(message) = self.chat_tools.restore_item(tool) {
+                return sse_frame("response.failed", &json!({"type": "response.failed", "response": {"id": self.response_id, "status": "failed", "error": {"code": "invalid_tool_arguments", "message": message}}}));
+            }
+        }
         output.extend(self.tool_calls.clone());
         if output.is_empty() {
             output.push(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": ""}]}));
@@ -6094,6 +6119,22 @@ impl ChatResponseStreamState {
             out.push_str(&sse_frame("response.output_text.done", &json!({"type": "response.output_text.done", "item_id": self.output_item_id, "output_index": 0, "content_index": 0, "text": self.content})));
             out.push_str(&sse_frame("response.content_part.done", &json!({"type": "response.content_part.done", "item_id": self.output_item_id, "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": self.content}})));
             out.push_str(&sse_frame("response.output_item.done", &json!({"type": "response.output_item.done", "output_index": 0, "item": {"id": self.output_item_id, "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": self.content}]}})));
+        }
+        for (index, tool) in self.tool_calls.iter().enumerate() {
+            let output_index = index + usize::from(!self.content.is_empty());
+            let custom = tool["type"] == "custom_tool_call";
+            let field = if custom { "input" } else { "arguments" };
+            let event = if custom { "response.custom_tool_call_input.done" } else { "response.function_call_arguments.done" };
+            let mut added = tool.clone();
+            added[field] = json!("");
+            added["status"] = json!("in_progress");
+            out.push_str(&sse_frame("response.output_item.added", &json!({"type": "response.output_item.added", "output_index": output_index, "item": added})));
+            let mut done = json!({"type": event, "item_id": tool["id"], "output_index": output_index});
+            done[field] = tool[field].clone();
+            out.push_str(&sse_frame(event, &done));
+            let mut completed = tool.clone();
+            completed["status"] = json!("completed");
+            out.push_str(&sse_frame("response.output_item.done", &json!({"type": "response.output_item.done", "output_index": output_index, "item": completed})));
         }
         out.push_str(&response_completed_sse(&response));
         out
@@ -6360,7 +6401,7 @@ impl SseStreamTransformer {
                                 .unwrap_or_default()
                                 .to_owned();
                             state["arguments"] = Value::String(format!("{previous}{arguments}"));
-                            output.push_str(&sse_frame("response.function_call_arguments.delta", &json!({"type": "response.function_call_arguments.delta", "item_id": state.get("id"), "output_index": index, "delta": arguments})));
+
                         }
                     }
                 }
@@ -6515,6 +6556,7 @@ fn streaming_response(reply: StreamingReply) -> Response {
     builder = set_response_headers(builder, &headers);
     let transform = reply.transform;
     let model = reply.requested_model;
+    let chat_tools = reply.chat_tools;
     let status = reply.status.as_u16();
     let mut trace = reply.trace;
     let mut upstream = reply.upstream.bytes_stream();
@@ -6541,6 +6583,7 @@ fn streaming_response(reply: StreamingReply) -> Response {
             }
         } else {
             let mut converter = SseStreamTransformer::new(transform, &model);
+            converter.chat_response.chat_tools = chat_tools;
             while let Some(chunk) = upstream.next().await {
                 match chunk {
                     Ok(chunk) => {
@@ -12173,6 +12216,30 @@ mod tests {
     }
 
     #[test]
+    fn custom_tool_stream_restores_split_json_and_emits_item_lifecycle() {
+        let (_, adapter) = chat_tools::ChatTools::prepare(&json!({"tools": [{"type": "custom", "name": "exec"}]})).unwrap();
+        let mut converter = SseStreamTransformer::new(StreamTransform::ChatToResponse, "glm-test");
+        converter.chat_response.chat_tools = adapter;
+        let mut stream = String::new();
+        for chunk in [
+            json!({"index": 0, "id": "call_exec", "function": {"name": "mv_tool_0", "arguments": "{\"input\":\"print("}}),
+            json!({"index": 0, "function": {"arguments": "42)\"}"}}),
+        ] {
+            stream.push_str(&converter.transform_chat_chunk(&json!({"object": "chat.completion.chunk", "choices": [{"delta": {"tool_calls": [chunk]}, "finish_reason": null}]})));
+        }
+        stream.push_str(&converter.finish());
+        assert!(stream.contains("response.output_item.added"));
+        assert!(stream.contains("response.custom_tool_call_input.done"));
+        assert!(stream.contains("response.output_item.done"));
+        assert!(!stream.contains("mv_tool_0"));
+        assert!(!stream.contains("response.function_call_arguments.delta"));
+        let result = response_from_sse(&stream, "glm-test");
+        assert_eq!(result["output"][0]["type"], "custom_tool_call");
+        assert_eq!(result["output"][0]["input"], "print(42)");
+        assert_eq!(result["output"][0]["call_id"], "call_exec");
+    }
+
+    #[test]
     fn chat_tool_contract_preserves_requirements() {
         for body in [
             json!({"tools": [{"type": "custom", "name": "exec"}]}),
@@ -12251,7 +12318,81 @@ mod tests {
             }
         }
         let rejected = client.post(format!("{edge_url}/v1/responses")).bearer_auth("test-key")
-            .json(&json!({"model": "glm-test", "input": "test", "tools": [{"type": "custom", "name": "exec"}]}))
+            .json(&json!({"model": "glm-test", "input": "test", "tools": [{"type": "web_search_preview"}]}))
+            .send().await.unwrap();
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 2);
+        edge_task.abort();
+        upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn zai_custom_tool_round_trip() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let upstream = Router::new()
+            .route("/v1/models", get(|| async { Json(json!({"data": [{"id": "glm-test"}]})) }))
+            .route("/v1/chat/completions", post(move |Json(body): Json<Value>| {
+                let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, AtomicOrdering::SeqCst);
+                    assert_eq!(body["tools"][0]["type"], "function");
+                    assert_eq!(body["tools"][0]["function"]["name"], "mv_tool_0");
+                    assert!(body["tools"][0].get("name").is_none());
+                    let returned = body["messages"].as_array().unwrap().iter().any(|m| m["role"] == "tool");
+                    let message = if returned {
+                        let messages = body["messages"].as_array().unwrap();
+                        assert!(messages.iter().any(|m| m["tool_call_id"] == "call_lookup" && m["content"] == "42"));
+                        json!({"role": "assistant", "content": "The result is 42."})
+                    } else {
+                        json!({"role": "assistant", "content": null, "tool_calls": [{"id": "call_lookup", "type": "function", "function": {"name": "mv_tool_0", "arguments": "{\"input\":\"print(42)\"}"}}]})
+                    };
+                    Json(json!({"id": "chat_test", "object": "chat.completion", "model": "glm-test", "created": 1,
+                        "choices": [{"index": 0, "message": message, "finish_reason": if returned { "stop" } else { "tool_calls" }}],
+                        "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10}}))
+                }
+            }));
+        let (url, upstream_task) = start_server(upstream).await;
+        let store_path = temporary_path("tool-roundtrip-store");
+        let jobs_path = temporary_path("tool-roundtrip-jobs");
+        let mut provider = account("strict-chat");
+        provider.provider = Some("zai".to_owned());
+        provider.base_url = Some(url);
+        provider.upstream_mode = Some("chat/completions".to_owned());
+        fs::write(&store_path, serde_json::to_vec(&store_with_accounts(vec![provider])).unwrap()).await.unwrap();
+        let mut config = EdgeConfig::default();
+        config.zai_upstream_path = "/v1/chat/completions".to_owned();
+        config.zai_models_path = "/v1/models".to_owned();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.legacy_jobs_db_path = None;
+        config.configured_api_keys = vec![("test".to_owned(), "test-key".to_owned())];
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let client = reqwest::Client::new();
+        let mut input = json!([{"role": "user", "content": "Look up the result"}]);
+        for turn in 0..2 {
+            let response = client.post(format!("{edge_url}/v1/responses")).bearer_auth("test-key")
+                .json(&json!({"model": "glm-test", "stream": false, "input": input,
+                    "tools": [{"type": "custom", "name": "lookup", "format": {"type": "text"}}]}))
+                .send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let result: Value = response.json().await.unwrap();
+            if turn == 0 {
+                let call = result["output"].as_array().unwrap().iter().find(|v| v["type"] == "custom_tool_call").unwrap();
+                assert_eq!(call["call_id"], "call_lookup");
+                assert_eq!(call["name"], "lookup");
+                assert_eq!(call["input"], "print(42)");
+                input.as_array_mut().unwrap().push(call.clone());
+                input.as_array_mut().unwrap().push(json!({"type": "custom_tool_call_output", "call_id": "call_lookup", "output": "42"}));
+            } else {
+                assert!(result.to_string().contains("The result is 42."));
+            }
+        }
+        let rejected = client.post(format!("{edge_url}/v1/responses")).bearer_auth("test-key")
+            .json(&json!({"model": "glm-test", "input": "test", "tools": [{"type": "web_search_preview"}]}))
             .send().await.unwrap();
         assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
         assert_eq!(calls.load(AtomicOrdering::SeqCst), 2);
