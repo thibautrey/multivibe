@@ -10,6 +10,9 @@ export function managedProviderRequest(grant: Readonly<ExecutionGrant>, body: Ui
     // max_tokens is a per-choice limit. Multiple choices would multiply the
     // spend behind a grant that authorizes only one bounded output.
     if (parsed.n !== undefined && parsed.n !== 1) throw Error("execution_single_output_required");
+    if (parsed.service_tier !== undefined && parsed.service_tier !== "default") {
+      throw Error("execution_service_tier_not_authorized");
+    }
     const outputLimits = [parsed.max_output_tokens, parsed.max_completion_tokens, parsed.max_tokens]
       .filter(value => value !== undefined);
     if (outputLimits.some(value => !Number.isSafeInteger(value) || value <= 0
@@ -18,6 +21,10 @@ export function managedProviderRequest(grant: Readonly<ExecutionGrant>, body: Ui
     }
     const outputLimit = outputLimits[0] ?? grant.maximumOutputTokens;
     const upstream = grant.operation === "responses" ? responsesToChatCompletionsPayload(parsed) : { ...parsed };
+    // Grants currently authorize standard service only. Omission would let
+    // OpenAI inherit the provider project's potentially different pricing tier.
+    delete upstream.service_tier;
+    if (grant.providerId === "openai") upstream.service_tier = "default";
     upstream.model = grant.upstreamModel;
     upstream.stream = grant.stream;
     if (grant.stream) upstream.stream_options = { include_usage: true };

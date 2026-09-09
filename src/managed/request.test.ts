@@ -39,3 +39,16 @@ test("all supplied limit aliases must agree and fit the grant",()=>{
  const matching={model:grant.model,max_tokens:5,max_output_tokens:5,max_completion_tokens:5};
  assert.equal(JSON.parse(Buffer.from(managedProviderRequest({...grant,providerId:"openai"},Buffer.from(JSON.stringify(matching)))).toString()).max_completion_tokens,5);
 });
+
+test("managed requests cannot select an unquoted service tier",()=>{
+ for(const operation of ["responses","chat_completions"] as const){
+  for(const service_tier of ["priority","fast","flex","auto","scale",null,5]){
+   assert.throws(()=>managedProviderRequest({...grant,providerId:"openai",operation},Buffer.from(JSON.stringify({model:grant.model,service_tier}))),/service_tier_not_authorized/);
+  }
+  for(const service_tier of [undefined,"default"]){
+   const body=Buffer.from(JSON.stringify({model:grant.model,input:"hello",messages:[],service_tier}));
+   assert.equal(JSON.parse(Buffer.from(managedProviderRequest({...grant,providerId:"openai",operation},body)).toString()).service_tier,"default");
+   assert.equal(JSON.parse(Buffer.from(managedProviderRequest({...grant,operation},body)).toString()).service_tier,undefined);
+  }
+ }
+});
