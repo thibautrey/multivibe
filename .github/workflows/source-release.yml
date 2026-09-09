@@ -41,6 +41,9 @@ jobs:
             release-out/source-release.json
             release-out/SHA256SUMS
       - name: Generate release notes and platform download links
+        id: release-notes
+        continue-on-error: true
+        timeout-minutes: 3
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_NOTES_API_BASE_URL: ${{ vars.RELEASE_NOTES_API_BASE_URL }}
@@ -50,6 +53,7 @@ jobs:
       - name: Publish immutable source release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES_OUTCOME: ${{ steps.release-notes.outcome }}
         shell: bash
         run: |
           set -euo pipefail
@@ -57,4 +61,10 @@ jobs:
             echo "::error::A source release already exists; refusing to overwrite it."
             exit 1
           fi
-          gh release create "$GITHUB_REF_NAME" release-out/* --verify-tag --title "MultiVibe Core source $GITHUB_REF_NAME" --notes-file release-notes.md
+          if [[ "$RELEASE_NOTES_OUTCOME" == success && -s release-notes.md ]]; then
+            notes_args=(--notes-file release-notes.md)
+          else
+            echo "::warning::Optional release notes generation failed; using the original release notes."
+            notes_args=(--notes "Immutable Apache-2.0 source release with GitHub OIDC build provenance.")
+          fi
+          gh release create "$GITHUB_REF_NAME" release-out/* --verify-tag --title "MultiVibe Core source $GITHUB_REF_NAME" "${notes_args[@]}"

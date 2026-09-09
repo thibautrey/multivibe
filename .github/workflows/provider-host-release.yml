@@ -626,6 +626,9 @@ jobs:
             node scripts/distribution/winget.mjs '${{ needs.validate-tag.outputs.version }}' 'release/multivibe-host_${{ needs.validate-tag.outputs.version }}_windows_amd64_setup.exe' distribution-packages/winget
           fi
       - name: Generate release notes and platform download links
+        id: release-notes
+        continue-on-error: true
+        timeout-minutes: 3
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_NOTES_API_BASE_URL: ${{ vars.RELEASE_NOTES_API_BASE_URL }}
@@ -636,6 +639,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES_OUTCOME: ${{ steps.release-notes.outcome }}
           MULTIVIBE_UPDATE_SIGNING_KEY_BASE64: ${{ secrets.MULTIVIBE_UPDATE_SIGNING_KEY_BASE64 }}
         run: |
           set -euo pipefail
@@ -666,11 +670,17 @@ jobs:
             --trusted-key-id 8041964146f75ff5 \
             --trusted-public-key-base64 /TAkcZv7iyGJrPJY1ds1WGxrS7LvoUYnUrYERX2FOgU= \
             --output "release/multivibe-host-update-$channel.json"
+          if [[ "$RELEASE_NOTES_OUTCOME" == success && -s release-notes.md ]]; then
+            notes_args=(--notes-file release-notes.md)
+          else
+            echo "::warning::Optional release notes generation failed; using the original release notes."
+            notes_args=(--notes "$(<container-release/container-release-notes.md)" --generate-notes)
+          fi
           gh release create "$GITHUB_REF_NAME" release/* container-release/container-release.json \
             --verify-tag \
             "${release_kind[@]}" \
             --title "MultiVibe Host ${{ needs.validate-tag.outputs.version }}" \
-            --notes-file release-notes.md
+            "${notes_args[@]}"
       - name: Upload catalog submission files
         if: ${{ !contains(needs.validate-tag.outputs.version, '-') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

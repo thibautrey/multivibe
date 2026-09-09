@@ -125,6 +125,7 @@ test("the release workflow publishes a tested image from the verified Linux arch
   assert.match(workflow, /--trusted-key-id 8041964146f75ff5/u);
   assert.match(workflow, /--trusted-public-key-base64 \/TAkcZv7iyGJrPJY1ds1WGxrS7LvoUYnUrYERX2FOgU=/u);
   assert.match(workflow, /--notes-file release-notes\.md/u);
+  assert.match(workflow, /--generate-notes/u);
   assert.match(workflow, /generate-release-notes\.mjs release release-notes\.md container-release\/container-release-notes\.md/u);
 });
 

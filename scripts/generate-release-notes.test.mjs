@@ -46,7 +46,7 @@ test('rejects missing config, unsafe URLs, errors, empty, truncated and linked A
   }
 });
 
-test('CLI generates first-release and previous-release notes without credentials', async () => {
+test('CLI reports optional generation failure without leaving a notes file', async () => {
   const { mkdtemp, mkdir, writeFile, readFile, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
@@ -71,13 +71,35 @@ test('CLI generates first-release and previous-release notes without credentials
     command('git', ['commit', '-qam', 'Fix reconnect']);
     command('git', ['tag', 'v1.1.0']);
     for (const first of ['', '1']) {
-      const stdout = command(process.execPath, [fileURLToPath(new URL('./generate-release-notes.mjs', import.meta.url)), 'assets', 'notes.md', 'extra.md'], { env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, GITHUB_REF_NAME: 'v1.1.0', GITHUB_REPOSITORY: 'owner/repo', RELEASE_NOTES_API_KEY: '', FIRST_RELEASE: first } });
-      const notes = await readFile(join(root, 'notes.md'), 'utf8');
-      assert.match(stdout, /warning/);
-      assert.match(notes, /Fix reconnect/);
-      assert.match(notes, /Verified container instructions/);
-      assert.match(notes, /Apple Silicon/);
-      assert.match(notes, first ? /First release/ : /compare\/v1.0.0\.\.\.v1.1.0/);
+      assert.throws(() => command(process.execPath, [fileURLToPath(new URL('./generate-release-notes.mjs', import.meta.url)), 'assets', 'notes.md', 'extra.md'], { env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, GITHUB_REF_NAME: 'v1.1.0', GITHUB_REPOSITORY: 'owner/repo', RELEASE_NOTES_API_KEY: '', FIRST_RELEASE: first }, stdio: ['ignore', 'pipe', 'pipe'] }), /Optional release notes generation failed/);
+      await assert.rejects(readFile(join(root, 'notes.md')), { code: 'ENOENT' });
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('workflows select original notes for failures, timeouts, skipped steps and partial output', async () => {
+  const { readFile, mkdtemp, writeFile, rm, mkdir } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { execFileSync } = await import('node:child_process');
+  const root = await mkdtemp(join(tmpdir(), 'notes-fallback-test-'));
+  try {
+    await mkdir(join(root, 'container-release'));
+    await writeFile(join(root, 'container-release/container-release-notes.md'), 'Original container instructions');
+    for (const workflow of ['provider-host-release.yml', 'source-release.yml']) {
+      const text = await readFile(new URL(`../.github/workflows/${workflow}`, import.meta.url), 'utf8');
+      assert.match(text, /id: release-notes\n        continue-on-error: true\n        timeout-minutes: 3/u);
+      assert.match(text, /RELEASE_NOTES_OUTCOME: \$\{\{ steps.release-notes.outcome \}\}/u);
+      const selection = text.match(/          if \[\[ "\$RELEASE_NOTES_OUTCOME"[\s\S]*?          fi/u)[0];
+      for (const [outcome, contents] of [['failure', 'partial notes'], ['cancelled', 'partial notes'], ['skipped', ''], ['success', ''], ['success', 'Complete notes']]) {
+        await writeFile(join(root, 'release-notes.md'), contents);
+        const result = execFileSync('bash', ['-c', `${selection}\nprintf '%s\\n' "\${notes_args[@]}"`], { cwd: root, encoding: 'utf8', env: { ...process.env, RELEASE_NOTES_OUTCOME: outcome } });
+        if (outcome === 'success' && contents) assert.match(result, /--notes-file\nrelease-notes.md/u);
+        else {
+          assert.doesNotMatch(result, /--notes-file/u);
+          assert.match(result, workflow.startsWith('provider') ? /Original container instructions\n--generate-notes/u : /Immutable Apache-2.0 source release/u);
+        }
+      }
     }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
