@@ -225,3 +225,36 @@ test("does not mutate the stale account while refreshing in background", async (
   assert.equal(original.usage?.fetchedAt, staleAt);
   release();
 });
+
+test("429 checks force fresh usage, coalesce bursts, and isolate accounts", async () => {
+  let calls = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const coordinator = new UsageRefreshCoordinator(async (value, _url, force) => {
+    assert.equal(force, true);
+    calls++;
+    await gate;
+    value.usage = { fetchedAt: Date.now(), primary: { usedPercent: 100 } };
+    return value;
+  });
+  const source = account(Date.now());
+  const updates: Account[] = [];
+  const update = (value: Account) => { updates.push(value); };
+  const first = coordinator.refreshAfterRateLimit(source, "https://example.test", update);
+  await coordinator.refreshAfterRateLimit(source, "https://example.test", update);
+  assert.equal(calls, 1);
+  const second = coordinator.refreshAfterRateLimit({ ...source, id: "other" }, "https://example.test", update);
+  assert.equal(calls, 2);
+  release();
+  await Promise.all([first, second]);
+  await coordinator.refreshAfterRateLimit(source, "https://example.test", update);
+  assert.equal(calls, 2);
+  assert.equal(updates.length, 2);
+  assert.equal(updates[0].usage?.primary?.usedPercent, 100);
+  assert.equal(source.usage?.primary?.usedPercent, 10);
+});
+
+test("429 probe failures do not interrupt routing or publish false quota data", async () => {
+  const coordinator = new UsageRefreshCoordinator(async () => { throw new Error("unavailable"); });
+  await coordinator.refreshAfterRateLimit(account(), "https://example.test", () => assert.fail("no update expected"));
+});

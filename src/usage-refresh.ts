@@ -32,6 +32,7 @@ type InFlightRefresh = {
 };
 
 export class UsageRefreshCoordinator {
+  private readonly rateLimitChecks = new Map<string, number>();
   private readonly inFlight = new Map<string, InFlightRefresh>();
 
   constructor(
@@ -50,6 +51,27 @@ export class UsageRefreshCoordinator {
   ): Promise<Account> {
     if (!force && !isUsageRefreshNeeded(account)) return account;
     return this.start(account, baseUrl, force).active.promise;
+  }
+
+  /** Recheck the affected account promptly, without delaying failover or flooding usage APIs. */
+  async refreshAfterRateLimit(
+    account: Account,
+    baseUrl: string,
+    onUpdate: (account: Account) => void | Promise<void>,
+  ): Promise<void> {
+    const key = `${account.id}\u0000${baseUrl}`;
+    const now = Date.now();
+    for (const [entry, checkedAt] of this.rateLimitChecks) {
+      if (now - checkedAt >= 30_000) this.rateLimitChecks.delete(entry);
+    }
+    if (this.rateLimitChecks.has(key)) return;
+    this.rateLimitChecks.set(key, now);
+    try {
+      const updated = await this.refresh(account, baseUrl, true);
+      if (updated.usage) await onUpdate(updated);
+    } catch {
+      // A failed quota probe leaves the normal short rate-limit cooldown intact.
+    }
   }
 
   private start(
