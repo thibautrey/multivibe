@@ -11,7 +11,9 @@ test("stream retains a nonstandard tier across later standard usage evidence",as
   const body=frames.map(frame=>`data: ${JSON.stringify(frame)}\n\n`).join("")+"data: [DONE]\n\n";
   let saved:ExecutionReceipt|undefined;
   const result=managedProviderStream({response:new Response(body),grant,receipt,maximumBytes:10000,clock:()=>1001,async finish(value){saved=value;}});
-  await result.response.text();const final=await result.receipt;
+  if(service_tier==="priority")await assert.rejects(result.response.text(),/provider_stream_incomplete/);
+  else await result.response.text();
+  const final=await result.receipt;
   assert.equal(final.state,service_tier==="default"?"completed":"uncertain");
   if(service_tier==="priority")assert.equal(final.usage,null);
   assert.equal(saved,final);
