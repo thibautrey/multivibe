@@ -476,8 +476,8 @@ function TracingTabContent(props: Props) {
                     <YAxis />
                     <Tooltip />
                     <Legend />
-                    <Line type="monotone" dataKey="latencyP50Ms" name="p50" stroke="var(--chart-3)" strokeWidth={2} dot={false} />
-                    <Line type="monotone" dataKey="latencyP95Ms" name="p95" stroke="var(--danger)" strokeWidth={2} dot={false} />
+                    <Line isAnimationActive={false} type="monotone" dataKey="latencyP50Ms" name="p50" stroke="var(--chart-3)" strokeWidth={2} dot={false} />
+                    <Line isAnimationActive={false} type="monotone" dataKey="latencyP95Ms" name="p95" stroke="var(--danger)" strokeWidth={2} dot={false} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -495,7 +495,7 @@ function TracingTabContent(props: Props) {
                     <YAxis tickFormatter={formatTokenRate} />
                     <Tooltip formatter={(value: any) => formatTokenRate(Number(value) || 0)} />
                     <Legend />
-                    <Line type="monotone" dataKey="inferenceTokensPerSecond" name="tokens/s" stroke="var(--accent)" strokeWidth={2} dot={false} connectNulls={false} />
+                    <Line isAnimationActive={false} type="monotone" dataKey="inferenceTokensPerSecond" name="tokens/s" stroke="var(--accent)" strokeWidth={2} dot={false} connectNulls={false} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -513,8 +513,8 @@ function TracingTabContent(props: Props) {
                     <YAxis />
                     <Tooltip />
                     <Legend />
-                    <Line type="monotone" dataKey="errors" name="errors" stroke="var(--danger)" strokeWidth={2} dot={false} />
-                    <Line type="monotone" dataKey="requests" name="requests" stroke="var(--chart-4)" strokeWidth={2} dot={false} />
+                    <Line isAnimationActive={false} type="monotone" dataKey="errors" name="errors" stroke="var(--danger)" strokeWidth={2} dot={false} />
+                    <Line isAnimationActive={false} type="monotone" dataKey="requests" name="requests" stroke="var(--chart-4)" strokeWidth={2} dot={false} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -532,9 +532,9 @@ function TracingTabContent(props: Props) {
                     <YAxis tickFormatter={formatTokenChartValue} />
                     <Tooltip formatter={formatTooltipValue} />
                     <Legend />
-                    <Line type="monotone" dataKey="tokensInput" name="input" stroke="var(--chart-1)" strokeWidth={2} dot={false} />
-                    <Line type="monotone" dataKey="tokensOutput" name="output" stroke="var(--chart-2)" strokeWidth={2} dot={false} />
-                    <Line type="monotone" dataKey="tokensTotal" name="total" stroke="var(--chart-3)" strokeWidth={2} dot={false} />
+                    <Line isAnimationActive={false} type="monotone" dataKey="tokensInput" name="input" stroke="var(--chart-1)" strokeWidth={2} dot={false} />
+                    <Line isAnimationActive={false} type="monotone" dataKey="tokensOutput" name="output" stroke="var(--chart-2)" strokeWidth={2} dot={false} />
+                    <Line isAnimationActive={false} type="monotone" dataKey="tokensTotal" name="total" stroke="var(--chart-3)" strokeWidth={2} dot={false} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -563,7 +563,7 @@ function TracingTabContent(props: Props) {
                     <YAxis />
                     <Tooltip formatter={(v: any) => usd(Number(v) || 0)} />
                     <Legend />
-                    <Line type="monotone" dataKey="costUsd" name="cost usd" stroke="var(--chart-3)" strokeWidth={2} dot={false} />
+                    <Line isAnimationActive={false} type="monotone" dataKey="costUsd" name="cost usd" stroke="var(--chart-3)" strokeWidth={2} dot={false} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -578,7 +578,7 @@ function TracingTabContent(props: Props) {
                     <YAxis />
                     <Tooltip formatter={(v: any) => usd(Number(v) || 0)} />
                     <Legend />
-                    <Bar dataKey="costUsd" name="cost usd" fill="var(--chart-3)" radius={[5, 5, 0, 0]} />
+                    <Bar isAnimationActive={false} dataKey="costUsd" name="cost usd" fill="var(--chart-3)" radius={[5, 5, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -593,7 +593,7 @@ function TracingTabContent(props: Props) {
                     <YAxis />
                     <Tooltip />
                     <Legend />
-                    <Bar dataKey="count" name="attempts" fill="var(--chart-1)" radius={[5, 5, 0, 0]} />
+                    <Bar isAnimationActive={false} dataKey="count" name="attempts" fill="var(--chart-1)" radius={[5, 5, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -603,7 +603,7 @@ function TracingTabContent(props: Props) {
               <div className="chart-wrap">
                 <ResponsiveContainer width="100%" height={260}>
                   <PieChart>
-                    <Pie data={modelChartData} dataKey="tokensTotal" nameKey="label" outerRadius={90} label={formatPieTokenLabel}>
+                    <Pie isAnimationActive={false} data={modelChartData} dataKey="tokensTotal" nameKey="label" outerRadius={90} label={formatPieTokenLabel}>
                       {modelChartData.map((entry, idx) => (
                         <Cell key={`${entry.label}-${idx}`} fill={chartColors[idx % chartColors.length]} />
                       ))}
