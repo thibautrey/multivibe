@@ -198,7 +198,7 @@ export function HostHarnessCards({ onApiKeysChanged, variant = "default" }: Prop
 
   return (
     <section
-      className={`panel host-harness-browser host-harness-${variant}`}
+      className={`host-harness-browser host-harness-${variant}`}
       aria-label={variant === "default" ? "Coding agents" : variant === "onboarding" ? "Detected coding tools" : undefined}
     >
       {loaded && harnesses.length === 0 && variant === "onboarding" && (
