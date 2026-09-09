@@ -152,3 +152,23 @@ test("repair reuses the managed key without returning it to the browser", async 
     assert.doesNotMatch(await response.text(), /mv_managed-secret/);
   });
 });
+
+test("project tracking is installed on the Host without returning an installer command or credentials", async () => {
+  await withServer(options(), async (baseUrl) => {
+    assert.equal((await fetch(`${baseUrl}/admin/host-harnesses/openai-codex/project-tracking`, { method: "POST" })).status, 404);
+  });
+  const manager = {
+    enableProjectTracking: async (id: string) => {
+      assert.equal(id, "openai-codex");
+      return { ...disconnectedHarness(), id, projectTracking: "installed" };
+    },
+  } as unknown as AdminRoutesOptions["hostHarnessIntegrations"];
+  await withServer(options({ hostApplication: true, hostHarnessIntegrations: manager }), async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/admin/host-harnesses/openai-codex/project-tracking`, { method: "POST" });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    const result = await response.json() as any;
+    assert.equal(result.harness.projectTracking, "installed");
+    assert.deepEqual(Object.keys(result), ["harness"]);
+  });
+});

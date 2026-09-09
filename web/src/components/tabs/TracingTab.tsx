@@ -16,8 +16,7 @@ import {
 } from "recharts";
 import { estimateCostUsd } from "../../model-pricing";
 import { fmt, formatTokenCount, formatTokenRate, maskEmail, maskId, pct, routeLabel, usd } from "../../lib/ui";
-import { api } from "../../lib/api";
-import { copyTextToClipboard } from "../../lib/clipboard";
+import { HostHarnessCards } from "../../host/HostHarnessCarousel";
 import {
   runtimeIdentityForAccount,
   runtimeIdentityForProvider,
@@ -238,49 +237,8 @@ function TracingTabContent(props: Props) {
     () => new Map(accounts.map((account) => [account.id, runtimeIdentityForAccount(account)])),
     [accounts],
   );
-  const [installHookBusy, setInstallHookBusy] = React.useState(false);
-  const [installHookNotice, setInstallHookNotice] = React.useState<string | null>(null);
   const [sharingBusy, setSharingBusy] = React.useState(false);
   const [sharingNotice, setSharingNotice] = React.useState<string | null>(null);
-  const installHookNoticeTimer = React.useRef<number | undefined>(undefined);
-
-  React.useEffect(
-    () => () => {
-      if (installHookNoticeTimer.current !== undefined) {
-        window.clearTimeout(installHookNoticeTimer.current);
-      }
-    },
-    [],
-  );
-
-  const showInstallHookNotice = (message: string) => {
-    setInstallHookNotice(message);
-    if (installHookNoticeTimer.current !== undefined) {
-      window.clearTimeout(installHookNoticeTimer.current);
-    }
-    installHookNoticeTimer.current = window.setTimeout(() => {
-      setInstallHookNotice(null);
-      installHookNoticeTimer.current = undefined;
-    }, 3_500);
-  };
-
-  const installHook = async () => {
-    setInstallHookBusy(true);
-    try {
-      const response = await api("/admin/codex-hook-install-command", {
-        method: "POST",
-        body: JSON.stringify({ baseUrl: window.location.origin }),
-      });
-      const command = String(response.command ?? "");
-      if (!command) throw new Error("The server returned an empty install command");
-      await copyTextToClipboard(command);
-      showInstallHookNotice("Paste and execute the command in your terminal");
-    } catch (error: any) {
-      showInstallHookNotice(error?.message ?? String(error));
-    } finally {
-      setInstallHookBusy(false);
-    }
-  };
 
   const setAnonymousUsageSharing = async (enabled: boolean) => {
     setSharingBusy(true);
@@ -620,14 +578,13 @@ function TracingTabContent(props: Props) {
             </section>
           </section>
 
+          <HostHarnessCards />
           <section className="panel trace-project-panel">
             <div className="section-split-header">
               <div><h2>Usage by project</h2><p className="muted">Codex-attributed consumption with model-level details on demand.</p></div>
               <div className="project-attribution-actions">
                 <span className="badge">Codex session attribution</span>
-                <button className="btn secondary install-hook-button" type="button" onClick={() => void installHook()} disabled={installHookBusy}>
-                  {installHookBusy ? "Preparing..." : "Install hook"}
-                </button>
+
               </div>
             </div>
             <div className="table-wrap">
@@ -674,12 +631,6 @@ function TracingTabContent(props: Props) {
               </table>
             </div>
           </section>
-        </div>
-      )}
-
-      {installHookNotice && (
-        <div className="hook-install-toast" role="status" aria-live="polite">
-          {installHookNotice}
         </div>
       )}
 

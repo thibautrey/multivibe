@@ -572,6 +572,20 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
   });
 
+  router.post("/host-harnesses/:id/project-tracking", async (req, res) => {
+    res.setHeader("cache-control", "no-store");
+    if (!options.hostApplication || !options.hostHarnessIntegrations) {
+      return res.status(404).json({ error: "Project tracking setup is available only in MultiVibe Host" });
+    }
+    try {
+      const harness = await options.hostHarnessIntegrations.enableProjectTracking(String(req.params.id));
+      return res.json({ harness });
+    } catch (error: any) {
+      return res.status(error instanceof HostHarnessIntegrationError ? error.status : 500)
+        .json({ error: error?.message ?? "Project tracking setup failed" });
+    }
+  });
+
   router.post("/host-harnesses/:id/install", async (req, res) => {
     res.setHeader("cache-control", "no-store");
     if (!options.hostApplication || !options.hostHarnessIntegrations) {

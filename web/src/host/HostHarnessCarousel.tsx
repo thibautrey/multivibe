@@ -172,6 +172,21 @@ export function HostHarnessCards({ onApiKeysChanged, variant = "default" }: Prop
     }
   };
 
+  const enableProjectTracking = async (harness: HostHarness) => {
+    setBusyId(harness.id);
+    setMessage("");
+    setError("");
+    try {
+      const result = await api(`/admin/host-harnesses/${encodeURIComponent(harness.id)}/project-tracking`, { method: "POST" });
+      updateHarness(result.harness as HostHarness);
+      setMessage("Project tracking installed. In Codex on this computer, open /hooks and trust the MultiVibe SessionStart hook, then start or resume a session.");
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const toggleDetails = (harnessId: string) => {
     setExpandedHarnesses((current) => {
       const next = new Set(current);
@@ -232,7 +247,10 @@ export function HostHarnessCards({ onApiKeysChanged, variant = "default" }: Prop
               </div>
             </div>}
 
+            {harness.projectTracking === "installed" && <p className="host-harness-note">Project tracking installed. In Codex on this computer, open /hooks and trust the MultiVibe SessionStart hook, then start or resume a session.</p>}
+            {harness.projectTracking === "unavailable" && <p className="host-harness-note">Project tracking is unavailable because project registration is disabled.</p>}
             <div className="host-harness-actions">
+              {harness.projectTracking === "not-installed" && <button className="btn secondary" type="button" disabled={busyId === harness.id} onClick={() => void enableProjectTracking(harness)}>{busyId === harness.id ? "Configuring…" : "Set up project tracking"}</button>}
               {!connected && harness.canInstall && <button className="btn host-harness-primary-action" type="button" disabled={busyId === harness.id} onClick={() => void connect(harness)}>{busyId === harness.id ? "Connecting…" : "Connect automatically"}</button>}
               {harness.managed && harness.drifted && harness.repairable && <button className="btn secondary host-harness-primary-action" type="button" disabled={busyId === harness.id} onClick={() => void repair(harness)}>{busyId === harness.id ? "Repairing…" : "Repair connection"}</button>}
               {harness.managed && <button className="btn secondary host-harness-primary-action" type="button" disabled={busyId === harness.id || !harness.canUninstall} onClick={() => void disconnect(harness)}>{busyId === harness.id ? "Restoring…" : "Disconnect and restore"}</button>}

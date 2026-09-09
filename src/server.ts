@@ -200,6 +200,7 @@ const store = new AccountStore(STORE_PATH);
 const hostHarnessIntegrations = MULTIVIBE_HOST_APPLICATION
   ? new HostHarnessIntegrationManager({
       homeDirectory: HOST_HARNESS_HOME_DIRECTORY,
+      projectRegistrationToken: CODEX_PROJECT_REGISTRATION_TOKEN,
       statePath: HOST_HARNESS_INTEGRATIONS_STATE_PATH,
       apiKeyForId: (id) => store.getCachedProxyApiKeys().find((entry) => entry.id === id)?.key,
       baseUrl: MULTIVIBE_CONTROL_PLANE

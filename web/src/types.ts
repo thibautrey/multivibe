@@ -440,6 +440,7 @@ export type CreatedProxyApiKey = ProxyApiKey & {
 };
 
 export type HostHarness = {
+  projectTracking?: "installed" | "not-installed" | "unavailable";
   id: string;
   name: string;
   category: "cli" | "editor" | "agent" | "framework" | "service";
