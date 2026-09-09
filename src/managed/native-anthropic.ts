@@ -1,6 +1,30 @@
 import {createAnthropicCodec} from "../ai-sdk/anthropic-model.js";
 import {sdkCallOptions,chatResult,chatStream} from "../ai-sdk/protocol.js";
+import type {LanguageModelV4Usage} from "@ai-sdk/provider";
 import type {ManagedProviderAccount} from "./executor.js";
+
+/** Validate native financial evidence before the shared SDK presentation codec.
+ * SDK totals can deliberately exclude advisor or other separately priced work. */
+export function nativeAnthropicUsageEligible(usage:LanguageModelV4Usage):boolean {
+ const raw=usage.raw;
+ if(!raw||typeof raw!=="object"||Array.isArray(raw))return false;
+ const allowed=new Set(["input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens",
+  "output_tokens_details","iterations","server_tool_use","service_tier","cache_creation","inference_geo"]);
+ if(Object.keys(raw).some(key=>!allowed.has(key)))return false;
+ const count=(value:unknown):value is number=>typeof value==="number"&&Number.isSafeInteger(value)&&value>=0;
+ if(!count(raw.input_tokens)||!count(raw.output_tokens))return false;
+ for(const key of ["cache_creation_input_tokens","cache_read_input_tokens"]){
+  if(raw[key]!==undefined&&raw[key]!==null&&!count(raw[key]))return false;
+ }
+ if(raw.iterations!=null&&(!Array.isArray(raw.iterations)||raw.iterations.length!==0))return false;
+ if(raw.service_tier!==undefined&&raw.service_tier!=="standard")return false;
+ if(raw.server_tool_use!=null&&(typeof raw.server_tool_use!=="object"||Array.isArray(raw.server_tool_use)
+  ||Object.values(raw.server_tool_use).some(value=>value!==0)))return false;
+ const cacheRead=Number(raw.cache_read_input_tokens??0),cacheWrite=Number(raw.cache_creation_input_tokens??0);
+ const total=raw.input_tokens+cacheRead+cacheWrite;
+ return Number.isSafeInteger(total)&&usage.inputTokens.total===total&&usage.outputTokens.total===raw.output_tokens
+  &&(usage.inputTokens.cacheRead??0)===cacheRead&&(usage.inputTokens.cacheWrite??0)===cacheWrite;
+}
 
 /** Native codec reuse inside the credential injector only. This connector does
  * not activate a route or grant authority: the injector must authorize and fence
@@ -63,12 +87,12 @@ export function createManagedAnthropicAccount(options:{
   const model=createAnthropicCodec(body.model,"managed-placeholder","https://api.anthropic.com/v1",guardedFetch);
   const params=sdkCallOptions(body,signal);
   if(!body.stream){
-   const result=chatResult(body.model,await model.doGenerate(params));
+   const result=chatResult(body.model,await model.doGenerate(params),nativeAnthropicUsageEligible);
    const {provider_metadata:_,...publicResult}=result;
    return Response.json(publicResult);
   }
   const result=await model.doStream(params);
-  const iterator=chatStream(body.model,result.stream,true);
+  const iterator=chatStream(body.model,result.stream,true,nativeAnthropicUsageEligible);
   return new Response(new ReadableStream<Uint8Array>({
    async pull(controller){try{const next=await iterator.next();if(next.done)controller.close();else controller.enqueue(Buffer.from(next.value));}catch(error){controller.error(error);}},
    async cancel(){await iterator.return(undefined);}

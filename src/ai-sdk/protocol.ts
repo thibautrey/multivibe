@@ -129,7 +129,7 @@ export function chatUsage(usage: LanguageModelV4Usage) {
   };
 }
 const finishReason = (reason: string) => ({ "tool-calls": "tool_calls", "content-filter": "content_filter", other: "stop" }[reason] ?? reason);
-export function chatResult(model: string, result: LanguageModelV4GenerateResult) {
+export function chatResult(model: string, result: LanguageModelV4GenerateResult, validateUsage?: (usage: LanguageModelV4Usage) => boolean) {
   if (result.finishReason.unified === "error") throw new Error("Provider generation failed");
   const tools = result.content.filter((part) => part.type === "tool-call");
   const text = result.content.filter((part) => part.type === "text").map((part) => part.text).join("");
@@ -138,13 +138,13 @@ export function chatResult(model: string, result: LanguageModelV4GenerateResult)
     choices: [{ index: 0, message: { role: "assistant", content: text || null,
       ...(reasoning ? { reasoning_content: reasoning } : {}),
       ...(tools.length ? { tool_calls: tools.map((tool) => ({ id: tool.toolCallId, type: "function", function: { name: tool.toolName, arguments: tool.input } })) } : {}),
-    }, finish_reason: finishReason(result.finishReason.unified) }], usage: chatUsage(result.usage),
+    }, finish_reason: finishReason(result.finishReason.unified) }], usage: validateUsage && !validateUsage(result.usage) ? null : chatUsage(result.usage),
     ...(result.providerMetadata ? { provider_metadata: result.providerMetadata } : {}),
   };
 }
 
 /** Incremental translation; no buffering of the generated answer or execution of tools. */
-export async function* chatStream(model: string, stream: ReadableStream<LanguageModelV4StreamPart>, includeUsage: boolean): AsyncGenerator<string> {
+export async function* chatStream(model: string, stream: ReadableStream<LanguageModelV4StreamPart>, includeUsage: boolean, validateUsage?: (usage: LanguageModelV4Usage) => boolean): AsyncGenerator<string> {
   const id = `chatcmpl-${randomUUID()}`, created = Math.floor(Date.now()/1000);
   const chunk = (delta: any, finish: string | null = null) => `data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model, choices: [{index: 0, delta, finish_reason: finish}] })}\n\n`;
   const tools = new Map<string, number>();
@@ -172,7 +172,7 @@ export async function* chatStream(model: string, stream: ReadableStream<Language
         if (part.finishReason.unified === "error") throw new Error("Provider stream failed");
         finished = true;
         yield chunk({}, finishReason(part.finishReason.unified));
-        if (includeUsage) yield `data: ${JSON.stringify({id, object: "chat.completion.chunk", created, model, choices: [], usage: chatUsage(part.usage)})}\n\n`;
+        if (includeUsage) yield `data: ${JSON.stringify({id, object: "chat.completion.chunk", created, model, choices: [], usage: validateUsage && !validateUsage(part.usage) ? null : chatUsage(part.usage)})}\n\n`;
       }
     }
     if (!finished) throw new Error("Provider stream ended before a finish event");

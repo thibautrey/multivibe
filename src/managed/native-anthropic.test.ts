@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {createManagedAnthropicAccount} from "./native-anthropic.js";
+import {createManagedAnthropicAccount,nativeAnthropicUsageEligible} from "./native-anthropic.js";
 import {createManagedProviderAccount} from "./provider.js";
 import {providerTokenUsage} from "./usage.js";
 const body=Buffer.from(JSON.stringify({model:"claude-sonnet-4-6",messages:[{role:"user",content:"Hello"}],max_tokens:25}));
@@ -63,4 +63,14 @@ test("registered native account uses Anthropic discovery authentication",async()
   return Response.json({data:[{id:"claude-sonnet-4-6"}],has_more:false});
  }});
  assert.deepEqual(await account.discoverModels(AbortSignal.timeout(1000)),["claude-sonnet-4-6"]);assert.equal(requests,1);
+});
+
+test("native usage rejects SDK-normalized hidden work and raw contradictions",()=>{
+ const baseline={inputTokens:{total:5,noCache:5,cacheRead:0,cacheWrite:0},outputTokens:{total:2,text:2,reasoning:undefined},raw:{input_tokens:5,output_tokens:2}};
+ assert.equal(nativeAnthropicUsageEligible(baseline),true);
+ for(const extra of [{iterations:[{type:"advisor_message",input_tokens:100,output_tokens:50}]},
+  {iterations:[{type:"fallback_message",model:"different",input_tokens:5,output_tokens:2}]},
+  {server_tool_use:{web_search_requests:1}},{service_tier:"priority"},{input_tokens:4},{output_tokens:null},
+  {new_billable_operation:1}])assert.equal(nativeAnthropicUsageEligible({...baseline,raw:{...baseline.raw,...extra}}),false);
+ assert.equal(nativeAnthropicUsageEligible({...baseline,raw:undefined}),false);
 });
