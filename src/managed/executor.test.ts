@@ -17,7 +17,9 @@ function harness(reply: () => Promise<Response>, operation: ExecutionGrant["oper
   const executor = new ManagedExecutor({ verificationKey: keys.publicKey, maximumRequestBytes: 10000,
     maximumResponseBytes: 10000, executionTimeoutMs: 1000, clock: () => 1001,
     journal: { async claim() { if (claimed) throw Error("duplicate"); claimed = true; }, async finish(receipt) { receipts.push(receipt); } },
-    accounts: [{ providerId: "mistral", credentialRef: "account-1", models: new Set(["upstream"]), async chatCompletions(bytes) {
+    accounts: [{ providerId: "mistral", credentialRef: "account-1", models: new Set(["upstream"]), async chatCompletions(bytes, _signal, authorization) {
+      assert.deepEqual(authorization.originalBody, new Uint8Array(body));
+      assert.equal(authorization.token, signExecutionGrant(grant, keys.privateKey, 1000));
       assert.equal(claimed, true);
       const payload = JSON.parse(Buffer.from(bytes).toString());
       assert.equal(payload.model, "upstream");
