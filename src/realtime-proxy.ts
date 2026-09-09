@@ -1,3 +1,4 @@
+import { UsageRefreshCoordinator } from "./usage-refresh.js";
 import express from "express";
 import {
   CODEX_CLI_ORIGINATOR,
@@ -34,6 +35,8 @@ import {
   authorizationForAccountRequest,
   isDiscoveredLocalRuntimeAccount,
 } from "./local-runtime-discovery.js";
+
+const rateLimitUsageCoordinator = new UsageRefreshCoordinator();
 
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -286,7 +289,7 @@ async function forwardRealtimeCall(
       lastStatus = upstream.status;
       lastError = errorText || `Realtime upstream returned ${upstream.status}`;
 
-      if (!upstream.ok && isQuotaErrorText(`${upstream.status} ${errorText}`)) {
+      if (!upstream.ok && (upstream.status === 429 || isQuotaErrorText(`${upstream.status} ${errorText}`))) {
         markQuotaHit(
           prepared,
           "realtime",
@@ -294,6 +297,12 @@ async function forwardRealtimeCall(
           errorText,
         );
         await options.store.upsertAccount(prepared);
+        if (upstream.status === 429) {
+          void rateLimitUsageCoordinator.refreshAfterRateLimit(
+            prepared, prepared.baseUrl ?? options.chatgptBaseUrl,
+            async (updated) => { await options.store.patchAccount(updated.id, { usage: updated.usage }); },
+          );
+        }
         continue;
       }
       if (!upstream.ok && [401, 403, 500, 502, 503, 504].includes(upstream.status)) {

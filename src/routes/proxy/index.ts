@@ -2051,6 +2051,15 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
   const usageRefreshCoordinator =
     options.usageRefreshCoordinator ?? new UsageRefreshCoordinator();
 
+  function checkRateLimitedAccount(account: Account, status: number): void {
+    if (status !== 429) return;
+    void usageRefreshCoordinator.refreshAfterRateLimit(
+      account,
+      accountBaseUrl(account, openaiBaseUrl, mistralBaseUrl, zaiBaseUrl),
+      async (updated) => { await store.patchAccount(updated.id, { usage: updated.usage }); },
+    );
+  }
+
   function rejectNonPost(routeLabel: string): express.RequestHandler {
     return (req, res, next) => {
       if (req.method === "POST") return next();
@@ -3235,6 +3244,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
                 upstreamText,
               );
               await store.upsertAccount(selected);
+              checkRateLimitedAccount(selected, upstream.status);
 
               const traceId =
                 nativeStreamTraceId ?? (await nativeStreamTracePromise!);
@@ -4768,6 +4778,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
               `z.ai error ${zaiErrorCode}: ${text.slice(0, 200)}`,
             );
             await store.upsertAccount(selected);
+            checkRateLimitedAccount(selected, upstream.status);
             continue;
           }
 
@@ -4783,6 +4794,7 @@ export function createProxyRouter(options: ProxyRoutesOptions) {
               text,
             );
             await store.upsertAccount(selected);
+            checkRateLimitedAccount(selected, upstream.status);
             continue;
           }
 
