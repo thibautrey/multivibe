@@ -74,3 +74,11 @@ test("native usage rejects SDK-normalized hidden work and raw contradictions",()
   {new_billable_operation:1}])assert.equal(nativeAnthropicUsageEligible({...baseline,raw:{...baseline.raw,...extra}}),false);
  assert.equal(nativeAnthropicUsageEligible({...baseline,raw:undefined}),false);
 });
+test("native SDK response with advisor usage cannot become a priced chat completion",async()=>{
+ const account=createManagedAnthropicAccount({credentialRef:"account",maximumResponseBytes:8192,models:new Set(["claude-sonnet-4-6"]),async readCredential(){return "fixture-key";},fetchViaEgress:async()=>Response.json({
+  id:"msg_advisor",type:"message",role:"assistant",model:"claude-sonnet-4-6",content:[{type:"text",text:"Hi"}],stop_reason:"end_turn",stop_sequence:null,
+  usage:{input_tokens:5,output_tokens:2,iterations:[{type:"advisor_message",model:"other-model",input_tokens:30,output_tokens:10}]}
+ })});
+ const result=await (await account.chatCompletions(body,AbortSignal.timeout(1000),authorization)).json();
+ assert.equal(result.choices[0].message.content,"Hi");assert.equal(result.usage,null);assert.equal(providerTokenUsage(result),null);
+});
