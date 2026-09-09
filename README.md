@@ -258,3 +258,37 @@ Pleiades Solutions trademarks beyond Apache-2.0 Section 6.
 ## ⭐ Star History
 
 [View the public star history](https://www.star-history.com/?type=date&repos=thibautrey%2Fmultivibe).
+
+### AI release notes in GitHub Actions
+
+Host (`v*`) and Core source (`source-v*`) releases generate notes before publishing.
+Configure these repository **Settings → Secrets and variables → Actions** entries:
+
+| Type | Name | Value |
+| --- | --- | --- |
+| Variable | `RELEASE_NOTES_API_BASE_URL` | OpenAI-compatible API base URL including its API prefix, for example `https://api.openai.com/v1` |
+| Variable | `RELEASE_NOTES_MODEL` | A model ID supported by that endpoint |
+| Secret | `RELEASE_NOTES_API_KEY` | API key for that endpoint |
+
+The generator calls `POST <base-url>/chat/completions`. It sends committed release
+messages, GitHub's PR changelog, diff statistics and a bounded code patch to the
+configured provider. The key is available only to the notes step, never build jobs.
+No provider response bodies or credentials are logged. Configure an endpoint that
+is reachable from the GitHub runner and permitted to process this repository's code.
+
+The baseline is the highest earlier published version in the same tag family whose
+commit is an ancestor of the new release. Stable releases exclude prereleases;
+prereleases can compare against earlier prereleases. Drafts, future versions and the
+current release are excluded. A first release uses its committed history. The full
+GitHub changelog and comparison link remain available beneath the AI summary.
+Inputs are bounded and marked when truncated; generated summaries may omit detail.
+
+Download links are assembled from the actual release files, including multipart
+archives and reconstruction instructions. Unsupported/unbuilt targets are omitted.
+Existing container installation instructions remain in Host notes. Missing AI
+configuration, timeouts or invalid responses produce a CI warning and a factual
+changelog fallback; release-history or artifact errors stop publication.
+
+Run `node --test scripts/generate-release-notes.test.mjs` to validate without an API
+key. Both release workflows write `release-notes.md` outside the signed asset folder
+and pass it to `gh release create --notes-file`.
