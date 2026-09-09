@@ -13,7 +13,7 @@ test("native quota rotation follows activity, debounces, pins, and handles remov
     const file = join(dir, "main.swift");
     writeFileSync(file, "import Foundation\n" + source.slice(start, end) + `
 func check(_ condition: Bool, _ message: String) { precondition(condition, message) }
-var rotation = QuotaRotation()
+private var rotation = QuotaRotation()
 let ids = ["openai", "zai", "opencode"]
 rotation.update(ids: ids, activity: nil, now: 100)
 check(rotation.selected == "openai", "initial provider")

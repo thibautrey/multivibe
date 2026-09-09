@@ -3,6 +3,7 @@ import type { Account, UsageWindow } from "../types.js";
 export const GITHUB_STAR_OUTPUT_TOKEN_THRESHOLD = 5_000_000;
 
 export type HostMenuBarQuotaWindow = {
+  label?: string;
   remainingPercent: number;
   resetAt?: number;
 };
@@ -58,6 +59,13 @@ export function getHostMenuProviderActivity() {
   return latestActivity;
 }
 
+function durationLabel(seconds: number): string {
+  if (seconds === 604800) return "Weekly";
+  if (seconds === 2592000) return "Monthly";
+  const divisor = seconds >= 86400 ? 86400 : seconds >= 3600 ? 3600 : 60;
+  return `${Number((seconds / divisor).toFixed(2))}${divisor === 86400 ? "d" : divisor === 3600 ? "h" : "m"}`;
+}
+
 function providerWindows(accounts: Account[]): HostMenuBarProvider["windows"] {
   const groups = new Map<string, { label: string; values: number[] }>();
   for (const account of accounts) {
@@ -71,7 +79,7 @@ function providerWindows(accounts: Account[]): HostMenuBarProvider["windows"] {
       if (!quota) continue;
       const duration = finiteNumber(window?.windowSeconds);
       const label = duration && duration > 0 && duration !== seconds
-        ? `${duration >= 86400 ? duration / 86400 : duration >= 3600 ? duration / 3600 : duration / 60}${duration >= 86400 ? "d" : duration >= 3600 ? "h" : "m"}`
+        ? durationLabel(duration)
         : fallback;
       const groupKey = `${key}:${label}`;
       const group = groups.get(groupKey) ?? { label: key === "credits" && label !== fallback ? `Credits ${label}` : label, values: [] };
@@ -123,6 +131,8 @@ function quotaWindow(window?: UsageWindow): HostMenuBarQuotaWindow | undefined {
   if (usedPercent === undefined) return undefined;
   const resetAt = finiteNumber(window?.resetAt);
   return {
+    ...(window?.windowSeconds && Number.isFinite(window.windowSeconds) && window.windowSeconds > 0
+      ? { label: durationLabel(window.windowSeconds) } : {}),
     remainingPercent: 100 - Math.max(0, Math.min(100, usedPercent)),
     ...(resetAt === undefined ? {} : { resetAt }),
   };
