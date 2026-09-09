@@ -25,3 +25,29 @@ test("upstream errors do not trigger retries or expose response bodies", async (
   await assert.rejects(account.discoverModels(AbortSignal.timeout(1000)), /^Error: provider_discovery_unavailable$/);
   assert.equal(calls, 1);
 });
+
+test("native discovery follows bounded Anthropic cursors and deduplicates complete inventory",async()=>{
+ const urls:string[]=[];
+ const account=createManagedProviderAccount({providerId:"anthropic",credentialRef:"account",models:new Set(),async readCredential(){return "fixture-key";},fetchViaEgress:async(url)=>{
+  urls.push(String(url));return urls.length===1?Response.json({data:[{id:"model-z"},{id:"model/a"}],has_more:true,last_id:"model/a"}):Response.json({data:[{id:"model/a"},{id:"model-b"}],has_more:false,last_id:"model-b"});
+ }});
+ assert.deepEqual(await account.discoverModels(AbortSignal.timeout(1000)),["model-b","model-z","model/a"]);
+ assert.deepEqual(urls,["https://api.anthropic.com/v1/models","https://api.anthropic.com/v1/models?after_id=model%2Fa"]);
+});
+test("native discovery rejects missing, mismatched and looping cursors without returning partial models",async()=>{
+ for(const payload of [{data:[{id:"model"}]},{data:[],has_more:true,last_id:"model"},{data:[{id:"model"}],has_more:true,last_id:"other"},{data:[{id:"model"}],has_more:true,last_id:"model"}]){
+  let calls=0;
+  const account=createManagedProviderAccount({providerId:"anthropic",credentialRef:"account",models:new Set(),async readCredential(){return "fixture-key";},fetchViaEgress:async()=>{calls++;return Response.json(payload);}});
+  await assert.rejects(account.discoverModels(AbortSignal.timeout(1000)),/provider_discovery_invalid/);
+  assert.ok(calls<=2);
+ }
+});
+test("native discovery has an aggregate byte limit and aborts without additional credential reads",async()=>{
+ let calls=0,reads=0;
+ const controller=new AbortController();
+ const account=createManagedProviderAccount({providerId:"anthropic",credentialRef:"account",models:new Set(),async readCredential(){reads++;return "fixture-key";},fetchViaEgress:async()=>{
+  calls++;return Response.json({data:[{id:`model-${calls}`}],padding:"x".repeat(1100000),has_more:true,last_id:`model-${calls}`});
+ }});
+ await assert.rejects(account.discoverModels(controller.signal),/discovery_too_large/);assert.equal(calls,2);
+ controller.abort();await assert.rejects(account.discoverModels(controller.signal));assert.equal(reads,2);
+});
