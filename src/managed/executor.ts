@@ -2,6 +2,7 @@ import type { KeyObject } from "node:crypto";
 import { createHash } from "node:crypto";
 import { verifyExecutionGrant, type ExecutionGrant } from "./authorization.js";
 import { type ExecutionJournal, type ExecutionReceipt } from "./journal.js";
+import { managedProviderStream } from "./stream.js";
 import { providerTokenUsage } from "./usage.js";
 import { responsesToChatCompletionsPayload } from "../responses/payloads.js";
 import { chatCompletionObjectToResponseObject } from "../responses/converters.js";
@@ -14,7 +15,7 @@ export interface ManagedProviderAccount {
    * This function must issue one request only; never install Core's desktop retry router. */
   chatCompletions(body: Uint8Array, signal: AbortSignal): Promise<Response>;
 }
-export interface ManagedExecutionResult { response: Response; receipt: ExecutionReceipt }
+export interface ManagedExecutionResult { response: Response; receipt: ExecutionReceipt | Promise<ExecutionReceipt> }
 export class ManagedExecutor {
   constructor(private readonly dependencies: {
     verificationKey: KeyObject;
@@ -36,18 +37,17 @@ export class ManagedExecutor {
     const accounts = this.dependencies.accounts.filter(account => account.providerId === grant.providerId
       && account.credentialRef === grant.credentialRef && account.models.has(grant.upstreamModel));
     if (accounts.length !== 1) throw Error("execution_account_unavailable");
-    // Streaming uses a separate durable drain path; do not silently buffer a stream.
-    if (grant.stream) throw Error("execution_stream_not_supported");
     const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
       || ![grant.model, grant.upstreamModel].includes(parsed.model)
-      || (parsed.stream !== undefined && parsed.stream !== false)) throw Error("execution_payload_mismatch");
+      || (parsed.stream ?? false) !== grant.stream) throw Error("execution_payload_mismatch");
     const outputLimit = parsed.max_output_tokens ?? parsed.max_completion_tokens ?? parsed.max_tokens;
     if (outputLimit !== undefined && (!Number.isSafeInteger(outputLimit) || outputLimit <= 0
       || outputLimit > grant.maximumOutputTokens)) throw Error("execution_output_limit_mismatch");
     const upstream = grant.operation === "responses" ? responsesToChatCompletionsPayload(parsed) : { ...parsed };
     upstream.model = grant.upstreamModel;
-    upstream.stream = false;
+    upstream.stream = grant.stream;
+    if (grant.stream) upstream.stream_options = { include_usage: true };
     delete upstream.max_output_tokens;
     delete upstream.max_completion_tokens;
     upstream.max_tokens = outputLimit ?? grant.maximumOutputTokens;
@@ -59,6 +59,12 @@ export class ManagedExecutor {
     try {
       const upstreamResponse = await accounts[0].chatCompletions(bytes, AbortSignal.timeout(this.dependencies.executionTimeoutMs));
       receipt.status = upstreamResponse.status;
+      if (grant.stream && upstreamResponse.ok && upstreamResponse.body
+        && upstreamResponse.headers.get("content-type")?.startsWith("text/event-stream")) {
+        return managedProviderStream({ response: upstreamResponse, grant, receipt,
+          maximumBytes: this.dependencies.maximumResponseBytes,
+          finish: value => this.dependencies.journal.finish(value), clock: now });
+      }
       const reader = upstreamResponse.body?.getReader();
       const chunks: Uint8Array[] = [];
       let length = 0;
