@@ -6,11 +6,11 @@ import type {ManagedProviderAccount} from "./executor.js";
  * not activate a route or grant authority: the injector must authorize and fence
  * the original Cloud request before invoking it. No desktop router is imported. */
 export function createManagedAnthropicAccount(options:{
- credentialRef:string;models:ReadonlySet<string>;
+ credentialRef:string;models:ReadonlySet<string>;maximumResponseBytes:number;
  readCredential:()=>Promise<string>;fetchViaEgress:typeof fetch;
 }):ManagedProviderAccount {
  const models=new Set(options.models);
- if(!options.credentialRef||models.size>10000)throw Error("invalid_managed_account");
+ if(!options.credentialRef||models.size>10000||!Number.isSafeInteger(options.maximumResponseBytes)||options.maximumResponseBytes<1)throw Error("invalid_managed_account");
  return {providerId:"anthropic",credentialRef:options.credentialRef,models,
  async chatCompletions(bytes,signal){
   const body=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes));
@@ -22,7 +22,7 @@ export function createManagedAnthropicAccount(options:{
    if(body[key]!==undefined)throw Error("unsupported_native_managed_option");
   }
   if(!Array.isArray(body.messages)||body.messages.some((message:unknown)=>!message||typeof message!=="object"
-   ||!("content" in message)||typeof message.content!=="string"||!("role" in message)
+   ||"provider_options" in message||!("content" in message)||typeof message.content!=="string"||!("role" in message)
    ||!["user","assistant","system","developer"].includes(String(message.role))))throw Error("native_managed_text_required");
   let dispatched=false;
   const guardedFetch:typeof fetch=async(input,init)=>{
@@ -39,7 +39,22 @@ export function createManagedAnthropicAccount(options:{
    signal.throwIfAborted();
    const headers=new Headers(init.headers);
    headers.delete("authorization");headers.set("x-api-key",credential);
-   return options.fetchViaEgress(input,{...init,headers,signal,redirect:"error"});
+   const response=await options.fetchViaEgress(input,{...init,headers,signal,redirect:"error"});
+   const reader=response.body?.getReader();
+   if(!reader)return response;
+   let received=0;
+   // Bound raw provider bytes before the SDK buffers/parses them. The outer
+   // managed response bound applies after conversion and cannot protect this.
+   return new Response(new ReadableStream<Uint8Array>({
+    async pull(controller){try{
+     const next=await reader.read();
+     if(next.done){controller.close();reader.releaseLock();return;}
+     received+=next.value.byteLength;
+     if(received>options.maximumResponseBytes){await reader.cancel();reader.releaseLock();throw Error("native_managed_response_too_large");}
+     controller.enqueue(next.value);
+    }catch(error){controller.error(error);}},
+    async cancel(){await reader.cancel();reader.releaseLock();}
+   }),{status:response.status,headers:response.headers});
   };
   // A nonsecret placeholder prevents the SDK from consulting ambient keys.
   // Only the fixed guarded fetch can replace it with an actual credential.
