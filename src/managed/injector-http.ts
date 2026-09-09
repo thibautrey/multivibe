@@ -7,6 +7,7 @@ export function createManagedInjectorServer(options: {
   tls: Pick<ServerOptions,"key"|"cert"|"ca">;
   allowedCoreUri: string;
   injector: Pick<ManagedCredentialInjector,"execute">;
+  discovery?: {read():Promise<unknown>};
   maximumRequestBytes: number;
   maximumResponseBytes: number;
   maximumConcurrentExecutions: number;
@@ -24,6 +25,10 @@ export function createManagedInjectorServer(options: {
     const socket=req.socket as TLSSocket;
     if(!socket.authorized || !socket.getPeerCertificate().subjectaltname?.split(", ").includes(`URI:${options.allowedCoreUri}`)) {
       fail(403,"workload_forbidden");return;
+    }
+    if(req.method==="GET"&&req.url==="/internal/v1/providers/discovery"&&options.discovery){
+      try{res.setHeader("content-type","application/json");res.setHeader("cache-control","no-store");res.end(JSON.stringify(await options.discovery.read()));}
+      catch{fail(503,"provider_discovery_unavailable");}return;
     }
     if(req.method==="GET"&&req.url==="/health/live"){res.end('{"ok":true}');return;}
     if(req.method!=="POST"||req.url!=="/internal/v1/inject"){fail(404,"not_found");return;}

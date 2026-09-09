@@ -1,19 +1,18 @@
 import { readFile, stat } from "node:fs/promises";
-import { resolve, isAbsolute } from "node:path";
+import { isAbsolute } from "node:path";
 import { createPublicKey } from "node:crypto";
-import { ManagedDiscovery } from "./discovery.js";
 import { ExecutionJournal } from "./journal.js";
 import { ManagedExecutor } from "./executor.js";
 import { createManagedExecutionServer } from "./http.js";
-import { createManagedProviderAccount, type ManagedCompatibleProvider } from "./provider.js";
-import { createProviderProxyFetch } from "./provider-proxy-fetch.js";
+import { ManagedInjectorClient } from "./injector-client.js";
+import type { ManagedProviderAccount } from "./executor.js";
 
 export interface ManagedRuntimeConfig {
   host: string;
   port: number;
   journalDirectory: string;
   providerManifestFile: string;
-  providerCredentialDirectory: string;
+  injectorUrl: string;
   tlsKeyFile: string;
   tlsCertFile: string;
   tlsCaFile: string;
@@ -36,12 +35,15 @@ function integer(env: NodeJS.ProcessEnv, name: string, fallback: number, maximum
 }
 export function loadManagedRuntimeConfig(env: NodeJS.ProcessEnv): ManagedRuntimeConfig {
   const path = (name: string) => { const value = required(env, name); if (!isAbsolute(value)) throw Error(`Invalid ${name}`); return value; };
+  if (env.MANAGED_CORE_CREDENTIAL_DIRECTORY !== undefined) throw Error("Provider credentials must not be configured in Core");
+  const injectorUrl=new URL(required(env,"MANAGED_CORE_INJECTOR_URL"));
+  if(injectorUrl.protocol!=="https:"||injectorUrl.username||injectorUrl.password||injectorUrl.pathname!=="/"||injectorUrl.search||injectorUrl.hash) throw Error("Invalid MANAGED_CORE_INJECTOR_URL");
   return {
     host: env.MANAGED_CORE_HOST ?? "0.0.0.0",
     port: integer(env, "MANAGED_CORE_PORT", 1456, 65535),
     journalDirectory: path("MANAGED_CORE_JOURNAL_DIRECTORY"),
     providerManifestFile: path("MANAGED_CORE_PROVIDER_MANIFEST_FILE"),
-    providerCredentialDirectory: path("MANAGED_CORE_CREDENTIAL_DIRECTORY"),
+    injectorUrl: required(env, "MANAGED_CORE_INJECTOR_URL"),
     tlsKeyFile: path("MANAGED_CORE_TLS_KEY_FILE"), tlsCertFile: path("MANAGED_CORE_TLS_CERT_FILE"),
     tlsCaFile: path("MANAGED_CORE_TLS_CA_FILE"), cloudVerificationKeyFile: path("MANAGED_CORE_CLOUD_VERIFY_KEY_FILE"),
     allowedClientUri: required(env, "MANAGED_CORE_CLOUD_SPIFFE_URI"),
@@ -60,26 +62,19 @@ export async function createManagedRuntime(config: ManagedRuntimeConfig) {
   const manifest = JSON.parse(rawManifest.toString("utf8"));
   if (!manifest || Object.keys(manifest).sort().join() !== "accounts,version" || manifest.version !== 1
     || !Array.isArray(manifest.accounts) || manifest.accounts.length > 100) throw Error("invalid_managed_manifest");
-  const fetchViaEgress = createProviderProxyFetch();
+  const tls={key:await readFile(config.tlsKeyFile),cert:await readFile(config.tlsCertFile),ca:await readFile(config.tlsCaFile)};
+  const injector=new ManagedInjectorClient(config.injectorUrl,tls,config.maximumRequestBytes,config.maximumResponseBytes,config.executionTimeoutMs);
   const refs = new Set<string>();
-  const accounts = manifest.accounts.map((account: Record<string, unknown>) => {
-    if (!account || Object.keys(account).sort().join() !== "credentialFile,credentialRef,models,providerId"
+  const accounts: ManagedProviderAccount[] = manifest.accounts.map((account: Record<string, unknown>) => {
+    if (!account || Object.keys(account).sort().join() !== "credentialRef,models,providerId"
       || !["mistral", "openai", "xai", "deepseek"].includes(String(account.providerId))
       || typeof account.credentialRef !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$/.test(account.credentialRef)
-      || refs.has(account.credentialRef) || typeof account.credentialFile !== "string"
-      || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(account.credentialFile)
+      || refs.has(account.credentialRef)
       || !Array.isArray(account.models) || account.models.length > 10000
       || account.models.some(id => typeof id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$/.test(id))) throw Error("invalid_managed_account");
     refs.add(account.credentialRef);
-    const filename = resolve(config.providerCredentialDirectory, account.credentialFile);
-    return createManagedProviderAccount({ providerId: account.providerId as ManagedCompatibleProvider,
-      credentialRef: account.credentialRef, models: new Set<string>(account.models), fetchViaEgress,
-      readCredential: async () => {
-        const credential = await readFile(filename);
-        if (credential.byteLength > 16384) throw Error("managed_credential_too_large");
-        return credential.toString("utf8").trim();
-      },
-    });
+    return {providerId:account.providerId as string,credentialRef:account.credentialRef,models:new Set<string>(account.models),
+      chatCompletions:(body,signal,authorization)=>injector.execute(body,signal,authorization)};
   });
   const journal = new ExecutionJournal(config.journalDirectory);
   const key = createPublicKey(await readFile(config.cloudVerificationKeyFile));
@@ -88,8 +83,8 @@ export async function createManagedRuntime(config: ManagedRuntimeConfig) {
     maximumRequestBytes: config.maximumRequestBytes, maximumResponseBytes: config.maximumResponseBytes,
     executionTimeoutMs: config.executionTimeoutMs });
   const server = createManagedExecutionServer({
-    tls: { key: await readFile(config.tlsKeyFile), cert: await readFile(config.tlsCertFile), ca: await readFile(config.tlsCaFile) },
-    allowedClientUri: config.allowedClientUri, executor, journal, discovery: new ManagedDiscovery(accounts),
+    tls,
+    allowedClientUri: config.allowedClientUri, executor, journal, discovery: {read:()=>injector.discovery()},
     maximumRequestBytes: config.maximumRequestBytes, maximumConcurrentExecutions: config.maximumConcurrentExecutions,
   });
   return { server, accounts };

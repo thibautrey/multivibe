@@ -17,10 +17,17 @@ export class ManagedInjectorClient {
       ||authorization.token.length>8192||/[\r\n]/.test(authorization.token))throw Error("invalid_injector_request");
     const envelope=JSON.stringify({originalBodyBase64:Buffer.from(authorization.originalBody).toString("base64"),
       providerBodyBase64:Buffer.from(body).toString("base64")});
+    return this.open("/internal/v1/inject",signal,envelope,authorization.token);
+  }
+  async discovery():Promise<unknown> {
+    const response=await this.open("/internal/v1/providers/discovery",AbortSignal.timeout(this.timeoutMs));
+    return JSON.parse(await response.text());
+  }
+  private open(path:string,signal:AbortSignal,envelope?:string,token?:string):Promise<Response> {
     return new Promise((resolve,reject)=>{
-      const req=request(new URL("/internal/v1/inject",this.base),{...this.tls,method:"POST",minVersion:"TLSv1.3",rejectUnauthorized:true,
+      const req=request(new URL(path,this.base),{...this.tls,method:envelope ? "POST" : "GET",minVersion:"TLSv1.3",rejectUnauthorized:true,
         signal:AbortSignal.any([signal,AbortSignal.timeout(this.timeoutMs)]),headers:{"content-type":"application/json",
-          "x-multivibe-execution-grant":authorization.token}},res=>{
+          ...(token ? {"x-multivibe-execution-grant":token} : {})}},res=>{
         if(!res.statusCode||res.statusCode<200||res.statusCode>=300){res.destroy();reject(Error("injector_execution_unavailable"));return;}
         const iterator=res[Symbol.asyncIterator]();let bytes=0;
         const stream=new ReadableStream<Uint8Array>({
