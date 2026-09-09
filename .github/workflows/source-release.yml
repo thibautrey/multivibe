@@ -23,8 +23,33 @@ jobs:
       - run: npm run build:api
       - run: node --test dist/managed/*.test.js
       - run: node scripts/managed/verify-distribution.mjs
-  release:
+  managed-images:
     needs: managed-validation
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        dockerfile: [Dockerfile.managed, Dockerfile.injector]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build isolated runtime without publishing
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          build-args: CORE_SHA=${{ github.sha }}
+          pull: true
+          no-cache: true
+          push: false
+          provenance: mode=max
+          sbom: true
+  release:
+    needs: [managed-validation, managed-images]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
