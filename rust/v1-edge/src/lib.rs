@@ -3444,7 +3444,7 @@ fn client_trace_outcome(
     TraceOutcome {
         status,
         completed_at,
-        lifecycle_state: if client_disconnected == Some(true) {
+        lifecycle_state: if status == 499 {
             "interrupted"
         } else {
             "completed"
@@ -4296,6 +4296,7 @@ struct StreamingTrace {
     upstream_content_type: Option<String>,
     saw_bytes: bool,
     ttft_ms: Option<u64>,
+    status: u16,
     finished: bool,
 }
 
@@ -4305,6 +4306,7 @@ impl StreamingTrace {
         context: TraceContext,
         client_context: TraceContext,
         upstream_content_type: Option<String>,
+        status: StatusCode,
     ) -> Self {
         Self {
             sink,
@@ -4314,6 +4316,7 @@ impl StreamingTrace {
             upstream_content_type,
             saw_bytes: false,
             ttft_ms: None,
+            status: status.as_u16(),
             finished: false,
         }
     }
@@ -4406,6 +4409,25 @@ impl Drop for StreamingTrace {
         let context = self.context.clone();
         let client_context = self.client_context.clone();
         let completed_at = now_ms();
+        if self.observer.diagnostics.saw_response_completed {
+            let outcome = self.outcome(
+                self.status,
+                completed_at,
+                "completed",
+                None,
+                Some(true),
+            );
+            let status = self.status;
+            handle.spawn(async move {
+                sink.record(&context, outcome).await;
+                sink.record(
+                    &client_context,
+                    client_trace_outcome(status, completed_at, None, Some(true)),
+                )
+                .await;
+            });
+            return;
+        }
         let error = "client disconnected before the upstream stream completed".to_owned();
         let outcome = self.outcome(
             499,
@@ -5770,6 +5792,7 @@ async fn proxy_inference(
                         trace_context,
                         client_context,
                         (!content_type.trim().is_empty()).then(|| content_type.clone()),
+                        response.status(),
                     );
                     return Ok(ProxyResult::Streaming(StreamingReply {
                         chat_tools,
@@ -12030,6 +12053,7 @@ mod tests {
 
         let store_path = temporary_path("stream-capacity");
         let jobs_path = temporary_path("stream-capacity-jobs");
+        let trace_path = temporary_path("stream-capacity-trace");
         let mut target = account("capacity-stream");
         target.capacity_profile = Some(CapacityProfile {
             max_concurrent: Some(1),
@@ -12048,6 +12072,7 @@ mod tests {
         config.configured_api_keys = vec![("capacity-app".to_owned(), "edge-secret".to_owned())];
         config.models_cache_ttl = Duration::from_secs(60);
         config.upstream_timeout = Duration::from_secs(5);
+        config.trace_path = Some(trace_path.clone());
 
         let state = EdgeState::new(config).await.unwrap();
         let (edge_url, edge_task) = start_server(build_router(state)).await;
@@ -12101,10 +12126,125 @@ mod tests {
         .await
         .expect("dropping the client stream should release its capacity lease");
 
+        timeout(Duration::from_secs(2), async {
+            loop {
+                if fs::read_to_string(&trace_path)
+                    .await
+                    .is_ok_and(|contents| contents.lines().any(|line| {
+                        serde_json::from_str::<Value>(line).is_ok_and(|trace| {
+                            trace["traceKind"] == "client-request" && trace["status"] == 499
+                        })
+                    }))
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("a pre-terminal client disconnect should remain a 499");
+
         edge_task.abort();
         upstream_task.abort();
         let _ = fs::remove_file(store_path).await;
         let _ = fs::remove_file(jobs_path).await;
+        let _ = fs::remove_file(trace_path).await;
+    }
+
+    #[tokio::test]
+    async fn completed_sse_is_not_traced_as_499_when_client_drops_before_eof() {
+        let upstream = Router::new()
+            .route(
+                "/backend-api/codex/models",
+                get(|| async { Json(json!({"models": [{"slug": "gpt-completed"}]})) }),
+            )
+            .route(
+                "/backend-api/codex/responses",
+                post(|| async {
+                    let body = stream! {
+                        yield Ok::<Bytes, Infallible>(Bytes::from_static(
+                            b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n",
+                        ));
+                        std::future::pending::<()>().await;
+                    };
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "text/event-stream")
+                        .body(Body::from_stream(body))
+                        .unwrap()
+                }),
+            );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+
+        let store_path = temporary_path("completed-drop-store");
+        let jobs_path = temporary_path("completed-drop-jobs");
+        let trace_path = temporary_path("completed-drop-trace");
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![account("completed-drop")])).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.chatgpt_base_url = upstream_url;
+        config.configured_api_keys = vec![("completed-app".to_owned(), "edge-secret".to_owned())];
+        config.models_cache_ttl = Duration::from_secs(60);
+        config.upstream_timeout = Duration::from_secs(5);
+        config.trace_path = Some(trace_path.clone());
+
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let mut response = reqwest::Client::new()
+            .post(format!("{edge_url}/v1/responses"))
+            .header("authorization", "Bearer edge-secret")
+            .json(&json!({
+                "model": "gpt-completed",
+                "input": "hello",
+                "stream": true
+            }))
+            .send()
+            .await
+            .unwrap();
+        let chunk = response.chunk().await.unwrap().unwrap();
+        assert!(String::from_utf8_lossy(&chunk).contains("response.completed"));
+        drop(response);
+
+        let traces = timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(contents) = fs::read_to_string(&trace_path).await {
+                    let traces = contents
+                        .lines()
+                        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                        .collect::<Vec<_>>();
+                    if traces.iter().any(|trace| trace["traceKind"] == "client-request") {
+                        break traces;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("dropping after response.completed should finalize the trace");
+        for trace in traces.iter().filter(|trace| {
+            matches!(
+                trace["traceKind"].as_str(),
+                Some("client-request" | "upstream-attempt")
+            )
+        }) {
+            assert_eq!(trace["status"], 200);
+            assert_eq!(trace["isError"], false);
+            assert_eq!(trace["lifecycleState"], "completed");
+            assert_eq!(trace["clientDisconnected"], true);
+            assert!(trace.get("error").is_none());
+        }
+
+        edge_task.abort();
+        upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+        let _ = fs::remove_file(trace_path).await;
     }
 
     #[test]
