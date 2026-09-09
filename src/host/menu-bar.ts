@@ -26,9 +26,64 @@ export type HostMenuBarQuotaAggregate = {
 };
 
 export type HostMenuBarAccountsSummary = {
+  providers: HostMenuBarProvider[];
   accounts: HostMenuBarAccount[];
   quota: HostMenuBarQuotaAggregate;
 };
+
+export type HostMenuBarProvider = {
+  id: string;
+  displayName: string;
+  accounts: HostMenuBarAccount[];
+  windows: Array<{ label: string; remainingPercent: number; accountCount: number }>;
+};
+
+export function hostMenuProviderId(account: Pick<Account, "provider" | "sdkProvider">): string {
+  return account.provider === "ai-sdk" ? `ai-sdk:${account.sdkProvider || "unknown"}` : account.provider ?? "openai";
+}
+
+function providerName(account: Account): string {
+  return {
+    openai: "OpenAI", opencode: "OpenCode", zai: "z.ai", mistral: "Mistral",
+    xai: "xAI", "openai-compatible": "OpenAI-compatible", "ai-sdk": account.sdkProvider || "AI SDK",
+  }[account.provider ?? "openai"];
+}
+
+// Ephemeral routing activity: no account identifiers or credentials are exposed.
+let latestActivity: { providerId: string; usedAt: number } | undefined;
+export function recordHostMenuProviderUsage(account: Pick<Account, "provider" | "sdkProvider">, now = Date.now()): void {
+  latestActivity = { providerId: hostMenuProviderId(account), usedAt: now };
+}
+export function getHostMenuProviderActivity() {
+  return latestActivity;
+}
+
+function providerWindows(accounts: Account[]): HostMenuBarProvider["windows"] {
+  const groups = new Map<string, { label: string; values: number[] }>();
+  for (const account of accounts) {
+    if (account.usage?.quotaStatus === "unsupported") continue;
+    for (const [key, fallback, seconds] of [
+      ["primary", "5h", 18000], ["secondary", "Weekly", 604800],
+      ["monthly", "Monthly", 2592000], ["credits", "Credits", 0],
+    ] as const) {
+      const window = account.usage?.[key];
+      const quota = quotaWindow(window);
+      if (!quota) continue;
+      const duration = finiteNumber(window?.windowSeconds);
+      const label = duration && duration > 0 && duration !== seconds
+        ? `${duration >= 86400 ? duration / 86400 : duration >= 3600 ? duration / 3600 : duration / 60}${duration >= 86400 ? "d" : duration >= 3600 ? "h" : "m"}`
+        : fallback;
+      const groupKey = `${key}:${label}`;
+      const group = groups.get(groupKey) ?? { label: key === "credits" && label !== fallback ? `Credits ${label}` : label, values: [] };
+      group.values.push(quota.remainingPercent);
+      groups.set(groupKey, group);
+    }
+  }
+  return [...groups.values()].map(({ label, values }) => ({
+    label, remainingPercent: values.reduce((sum, value) => sum + value, 0) / values.length,
+    accountCount: values.length,
+  }));
+}
 
 export type HostMenuBarGitHubStarPrompt = {
   generatedOutputTokens: number;
@@ -108,18 +163,13 @@ export function buildHostMenuBarAccountsSummary(
   const openAIAccounts = source.filter(
     (account) => (account.provider ?? "openai") === "openai",
   );
-  const selectedAccounts = openAIAccounts.length ? openAIAccounts : source;
-  const accounts = selectedAccounts.map((account, index): HostMenuBarAccount => {
+  // Retain the legacy fields for older native clients, without mixing providers.
+  const selectedAccounts = openAIAccounts.length ? openAIAccounts : source.filter(
+    (account) => hostMenuProviderId(account) === (source[0] && hostMenuProviderId(source[0])),
+  );
+  const mapAccounts = (selectedAccounts: Account[]) => selectedAccounts.map((account, index): HostMenuBarAccount => {
     const provider = account.provider ?? "openai";
-    const providerName = {
-      openai: "OpenAI",
-      opencode: "OpenCode",
-      zai: "z.ai",
-      mistral: "Mistral",
-      xai: "xAI",
-      "openai-compatible": "OpenAI-compatible",
-      "ai-sdk": account.sdkProvider || "AI SDK",
-    }[provider];
+    const name = providerName(account);
     const email = account.email?.trim();
     const fiveHour = quotaWindow(account.usage?.primary);
     const weekly = quotaWindow(account.usage?.secondary);
@@ -128,8 +178,8 @@ export function buildHostMenuBarAccountsSummary(
     const hasQuota = Boolean(fiveHour || weekly || monthly);
     return {
       displayName: email
-        ? provider === "openai" ? email : `${providerName} · ${email}`
-        : `${providerName} account ${index + 1}`,
+        ? provider === "openai" ? email : `${name} · ${email}`
+        : `${name} account ${index + 1}`,
       enabled: account.enabled,
       status: accountStatus(account, now),
       usageStatus: account.usage?.quotaStatus === "unsupported"
@@ -143,10 +193,20 @@ export function buildHostMenuBarAccountsSummary(
       ...(monthly ? { monthly } : {}),
     };
   });
+  const accounts = mapAccounts(selectedAccounts);
+  const providerGroups = new Map<string, Account[]>();
+  for (const account of source) {
+    const id = hostMenuProviderId(account);
+    providerGroups.set(id, [...(providerGroups.get(id) ?? []), account]);
+  }
+  const providers = [...providerGroups].map(([id, group]) => ({
+    id, displayName: providerName(group[0]), accounts: mapAccounts(group), windows: providerWindows(group),
+  }));
   const fiveHourRemainingPercent = averageRemaining(accounts.map((account) => account.fiveHour));
   const weeklyRemainingPercent = averageRemaining(accounts.map((account) => account.weekly));
 
   return {
+    providers,
     accounts,
     quota: {
       ...(fiveHourRemainingPercent === undefined ? {} : { fiveHourRemainingPercent }),

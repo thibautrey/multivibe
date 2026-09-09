@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   buildHostMenuBarAccountsSummary,
   buildHostMenuBarGitHubStarPrompt,
+  recordHostMenuProviderUsage,
+  getHostMenuProviderActivity,
 } from "./menu-bar.js";
 import type { Account } from "../types.js";
 
@@ -140,16 +142,18 @@ test("non-OpenAI accounts supply menu quotas when OpenAI is absent", () => {
       usage: { quotaStatus: "unsupported", fetchedAt: 123 },
     },
   ]);
-  assert.deepEqual(summary.quota, {
-    fiveHourRemainingPercent: 60, fiveHourAccountCount: 2,
-    weeklyRemainingPercent: 70, weeklyAccountCount: 1,
-  });
-  assert.equal(summary.accounts[0].displayName, "z.ai account 1");
-  assert.deepEqual(summary.accounts[0].fiveHour, { remainingPercent: 80, resetAt: 456 });
-  assert.equal(summary.accounts[1].displayName, "OpenCode · person@example.com");
-  assert.equal(summary.accounts[1].monthly?.remainingPercent, 90);
-  assert.equal(summary.accounts[2].status, "paused");
-  assert.equal(summary.accounts[2].usageStatus, "unsupported");
+  assert.equal(summary.providers.length, 3);
+  assert.deepEqual(summary.providers[0].windows, [{ label: "5h", remainingPercent: 80, accountCount: 1 }]);
+  assert.deepEqual(summary.providers[1].windows, [
+    { label: "5h", remainingPercent: 40, accountCount: 1 },
+    { label: "Weekly", remainingPercent: 70, accountCount: 1 },
+    { label: "Monthly", remainingPercent: 90, accountCount: 1 },
+  ]);
+  assert.equal(summary.providers[0].accounts[0].displayName, "z.ai account 1");
+  assert.equal(summary.providers[1].accounts[0].displayName, "OpenCode · person@example.com");
+  assert.equal(summary.providers[2].accounts[0].status, "paused");
+  assert.equal(summary.providers[2].accounts[0].usageStatus, "unsupported");
+  assert.deepEqual(summary.providers[2].windows, []);
   assert.equal(JSON.stringify(summary).includes("secret"), false);
 });
 
@@ -161,6 +165,23 @@ test("legacy OpenAI accounts retain priority and empty inventories have no quota
   assert.equal(summary.accounts.length, 1);
   assert.equal(summary.accounts[0].displayName, "OpenAI account 1");
   assert.deepEqual(buildHostMenuBarAccountsSummary([]), {
-    accounts: [], quota: { fiveHourAccountCount: 0, weeklyAccountCount: 0 },
+    providers: [], accounts: [], quota: { fiveHourAccountCount: 0, weeklyAccountCount: 0 },
   });
+});
+
+test("provider groups separate SDK providers and incompatible quota periods", () => {
+  const accounts: Account[] = [
+    { id: "a", provider: "openai", enabled: true, accessToken: "secret", usage: { fetchedAt: 1, primary: { usedPercent: 20 } } },
+    { id: "b", provider: "openai", enabled: true, accessToken: "secret", usage: { fetchedAt: 1, primary: { usedPercent: 60 } } },
+    { id: "c", provider: "ai-sdk", sdkProvider: "anthropic", enabled: true, accessToken: "secret", usage: { fetchedAt: 1, primary: { usedPercent: 5, windowSeconds: 3600 } } },
+    { id: "d", provider: "ai-sdk", sdkProvider: "google", enabled: true, accessToken: "secret", usage: { fetchedAt: 1, credits: { usedPercent: 25 } } },
+  ];
+  const summary = buildHostMenuBarAccountsSummary(accounts);
+  assert.equal(summary.providers.length, 3);
+  assert.deepEqual(summary.providers[0].windows, [{ label: "5h", remainingPercent: 60, accountCount: 2 }]);
+  assert.equal(summary.providers[1].windows[0].label, "1h");
+  assert.equal(summary.providers[2].windows[0].label, "Credits");
+  recordHostMenuProviderUsage(accounts[0], 100);
+  recordHostMenuProviderUsage(accounts[2], 200);
+  assert.deepEqual(getHostMenuProviderActivity(), { providerId: "ai-sdk:anthropic", usedAt: 200 });
 });
