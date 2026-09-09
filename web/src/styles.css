@@ -824,6 +824,20 @@ small {
   background: var(--panel);
 }
 
+.metric-interactive {
+  cursor: pointer;
+}
+
+.metric-interactive:hover {
+  border-color: color-mix(in srgb, var(--primary) 24%, var(--line));
+  box-shadow: var(--shadow-sm);
+}
+
+.metric-interactive:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
 .metric::after {
   content: "";
   position: absolute;

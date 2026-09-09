@@ -25,7 +25,7 @@ import {
 import { Metric } from "../Metric";
 import { TtftComparisonChart } from "../TtftComparisonChart";
 import { WidgetGrid } from "../WidgetGrid";
-import type { Account, ProjectUsageStats, StoreSettings, Trace, TracePagination, TraceRange, TraceStats } from "../../types";
+import type { ActivityView, Account, ProjectUsageStats, StoreSettings, Trace, TracePagination, TraceRange, TraceStats } from "../../types";
 
 type Props = {
   accounts: Account[];
@@ -49,6 +49,8 @@ type Props = {
   sanitized: boolean;
   settings: StoreSettings;
   patchSettings: (body: Partial<StoreSettings>) => Promise<void>;
+  activeView?: ActivityView;
+  onActiveViewChange?: (view: ActivityView) => void;
 };
 
 const TTFT_BUCKET_ORDER = ["lt1k", "1k-8k", "8k-32k", "32k-64k", "64k-128k", "128k-plus", "unknown"] as const;
@@ -267,7 +269,9 @@ function TracingTabContent(props: Props) {
     "var(--chart-5)",
   ];
   const accountSelectionSummary = traceStats.accountSelection;
-  const [activeView, setActiveView] = React.useState<"overview" | "performance" | "usage" | "requests">("overview");
+  const [localActiveView, setLocalActiveView] = React.useState<ActivityView>("overview");
+  const activeView = props.activeView ?? localActiveView;
+  const setActiveView = props.onActiveViewChange ?? setLocalActiveView;
   const requestCount = traceStats.totals.requests;
   const providerAttemptCount = traceStats.totals.upstreamAttempts;
   const errorCount = traceStats.totals.errors;

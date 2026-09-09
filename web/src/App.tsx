@@ -15,6 +15,7 @@ import {
 } from "./lib/ui";
 import type {
   Account,
+  ActivityView,
   ApplicationPolicy,
   ApplicationWebhook,
   ExposedModel,
@@ -68,9 +69,17 @@ function tabFromSearch(search: string): Tab {
     : "overview";
 }
 
+function activityViewFromSearch(search: string): ActivityView {
+  const requestedView = new URLSearchParams(search).get("view");
+  return requestedView === "performance" || requestedView === "usage" || requestedView === "requests"
+    ? requestedView
+    : "overview";
+}
+
 const demo = import.meta.env.DEV && import.meta.env.MODE === "demo";
 
 const initialTab = tabFromSearch(window.location.search);
+const initialActivityView = activityViewFromSearch(window.location.search);
 
 const USAGE_REFRESH_MIN_INTERVAL_MS = 50_000;
 const USAGE_REFRESH_MAX_INTERVAL_MS = 60_000;
@@ -119,6 +128,7 @@ function activeModelBlockCount(account: Account) {
 export default function App() {
   const [githubPromotion] = useState(() => readGitHubPromotionState(localStorage));
   const [tab, setTab] = useState<Tab>(initialTab);
+  const [activityView, setActivityView] = useState<ActivityView>(initialActivityView);
   const [locationSearch, setLocationSearch] = useState(window.location.search);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [localWorker, setLocalWorker] = useState<LocalWorkerProvider | null>(null);
@@ -324,15 +334,18 @@ export default function App() {
   useEffect(() => {
     const u = new URL(window.location.href);
     u.searchParams.set("tab", tab);
+    if (tab === "tracing" && activityView !== "overview") u.searchParams.set("view", activityView);
+    else u.searchParams.delete("view");
     window.history.replaceState({}, "", u.toString());
     setLocationSearch(u.search);
-  }, [tab]);
+  }, [activityView, tab]);
 
   useEffect(() => {
     const onPopstate = () => {
       const search = window.location.search;
       setLocationSearch(search);
       setTab(tabFromSearch(search));
+      setActivityView(activityViewFromSearch(search));
     };
     window.addEventListener("popstate", onPopstate);
     return () => window.removeEventListener("popstate", onPopstate);
@@ -1226,7 +1239,10 @@ export default function App() {
             traceStats={filteredTraceStats}
             models={models}
             openModelInDocs={openModelInDocs}
-            navigate={setTab}
+            navigate={(nextTab, nextActivityView) => {
+              if (nextActivityView) setActivityView(nextActivityView);
+              setTab(nextTab);
+            }}
             hostApplication={hostApplication}
             onHarnessesChanged={loadBase}
           />
@@ -1330,6 +1346,8 @@ export default function App() {
             sanitized={sanitized}
             settings={settings}
             patchSettings={patchSettings}
+            activeView={activityView}
+            onActiveViewChange={setActivityView}
           />
         )}
 
