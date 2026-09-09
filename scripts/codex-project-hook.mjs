@@ -55,6 +55,7 @@ function sanitizeRemote(value) {
 
 async function loadConfig() {
   const configPath =
+    (process.argv.includes("--config") ? process.argv[process.argv.indexOf("--config") + 1] : undefined) ||
     process.env.MULTIVIBE_PROJECT_CONFIG ||
     path.join(codexHome(), "multivibe-project.json");
   return JSON.parse(await fs.readFile(configPath, "utf8"));

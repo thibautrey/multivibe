@@ -562,3 +562,75 @@ test("Codex reports profile overrides without hiding a correct default provider"
   assert.equal(installed.configured, true);
   assert.match(installed.configurationIssue ?? "", /normal=litellm/);
 });
+
+async function trackingFixture() {
+  const fixtureValue = await fixture();
+  const definition: HostHarnessDefinition = {
+    id: "openai-codex", name: "Codex", category: "cli", executables: [], footprints: [".codex"],
+    configuration: {
+      relativePath: ".codex/config.toml",
+      render: () => 'model_provider = "multivibe"\n',
+      isConfigured: (value) => value.includes('"multivibe"'),
+    },
+  };
+  await fs.mkdir(path.join(fixtureValue.home, ".codex"));
+  const manager = new HostHarnessIntegrationManager({
+    homeDirectory: fixtureValue.home,
+    statePath: path.join(fixtureValue.home, ".multivibe", "harnesses.json"),
+    baseUrl: "http://127.0.0.1:1455", projectRegistrationToken: "fixture-registration-token",
+    definitions: [definition], executableDirectories: [],
+  });
+  return { ...fixtureValue, manager };
+}
+
+const trackingCredential = { apiKeyId: "fixture-key", apiKey: "fixture-secret", application: "harness-openai-codex" };
+
+test("connecting Codex installs private tracking without downloads and restores unrelated hooks on disconnect", async (t) => {
+  const { root, home, manager } = await trackingFixture();
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const hooksPath = path.join(home, ".codex/hooks.json");
+  const original = { hooks: { SessionStart: [{ hooks: [{ type: "command", command: "echo existing" }] }], Stop: [] } };
+  await fs.writeFile(hooksPath, JSON.stringify(original));
+  assert.equal((await manager.install("openai-codex", trackingCredential)).projectTracking, "installed");
+  const configPath = path.join(home, ".codex/multivibe-project.json");
+  assert.equal((await fs.stat(configPath)).mode & 0o777, 0o600);
+  assert.equal(JSON.parse(await fs.readFile(configPath, "utf8")).token, "fixture-registration-token");
+  await manager.enableProjectTracking("openai-codex");
+  assert.equal(JSON.parse(await fs.readFile(hooksPath, "utf8")).hooks.SessionStart.length, 2);
+  await manager.uninstall("openai-codex");
+  assert.deepEqual(JSON.parse(await fs.readFile(hooksPath, "utf8")), original);
+  await assert.rejects(fs.stat(configPath), { code: "ENOENT" });
+});
+
+test("existing Codex connections can add tracking without changing provider configuration", async (t) => {
+  const { root, home, manager } = await trackingFixture();
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const configPath = path.join(home, ".codex/config.toml");
+  const original = 'model_provider = "custom"\n';
+  await fs.writeFile(configPath, original);
+  assert.equal((await manager.enableProjectTracking("openai-codex")).projectTracking, "installed");
+  assert.equal(await fs.readFile(configPath, "utf8"), original);
+  await fs.writeFile(path.join(home, ".codex/hooks/multivibe-project-hook.mjs"), "changed");
+  assert.equal((await manager.get("openai-codex")).projectTracking, "not-installed");
+});
+
+test("invalid existing hooks roll back the provider connection without overwriting user data", async (t) => {
+  const { root, home, manager } = await trackingFixture();
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const hooksPath = path.join(home, ".codex/hooks.json");
+  await fs.writeFile(hooksPath, "invalid JSON");
+  await assert.rejects(manager.install("openai-codex", trackingCredential), /valid JSON/);
+  assert.equal(await fs.readFile(hooksPath, "utf8"), "invalid JSON");
+  await assert.rejects(fs.stat(path.join(home, ".codex/config.toml")), { code: "ENOENT" });
+  assert.equal((await manager.get("openai-codex")).managed, false);
+});
+
+test("tracking setup refuses symlinked hook files", async (t) => {
+  const { root, home, manager } = await trackingFixture();
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const outside = path.join(root, "outside.json");
+  await fs.writeFile(outside, "{}");
+  await fs.symlink(outside, path.join(home, ".codex/hooks.json"));
+  await assert.rejects(manager.enableProjectTracking("openai-codex"), /regular file|symbolic|symlink/i);
+  assert.equal(await fs.readFile(outside, "utf8"), "{}");
+});

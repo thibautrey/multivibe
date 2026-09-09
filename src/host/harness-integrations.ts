@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const MAX_CONFIG_BYTES = 1024 * 1024;
 const STATE_SCHEMA_VERSION = "multivibe-host-harness-integrations-v1";
@@ -29,6 +30,7 @@ export type HostHarnessView = {
   configPath?: string;
   unavailableReason?: string;
   configurationIssue?: string;
+  projectTracking?: "installed" | "not-installed" | "unavailable";
   effectiveProvider?: string;
   effectiveBaseUrl?: string;
 };
@@ -691,6 +693,7 @@ export type HostHarnessManagerOptions = {
   homeDirectory: string;
   statePath: string;
   baseUrl: string;
+  projectRegistrationToken?: string;
   apiKeyForId?: (id: string) => string | undefined;
   definitions?: readonly HostHarnessDefinition[];
   executableDirectories?: string[];
@@ -703,12 +706,14 @@ export class HostHarnessIntegrationManager {
   private readonly apiKeyForId: (id: string) => string | undefined;
   private readonly definitions: readonly HostHarnessDefinition[];
   private readonly executableDirectories: string[];
+  private readonly projectRegistrationToken: string;
   private operation = Promise.resolve();
 
   constructor(options: HostHarnessManagerOptions) {
     if (!path.isAbsolute(options.homeDirectory)) {
       throw new Error("Host harness home directory must be absolute");
     }
+    this.projectRegistrationToken = options.projectRegistrationToken ?? "";
     this.homeDirectory = path.resolve(options.homeDirectory);
     this.statePath = path.resolve(options.statePath);
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
@@ -729,6 +734,90 @@ export class HostHarnessIntegrationManager {
   async get(id: string): Promise<HostHarnessView> {
     const definition = this.definition(id);
     return this.view(definition, await this.readState());
+  }
+
+  async enableProjectTracking(id: string): Promise<HostHarnessView> {
+    return this.serial(async () => {
+      const current = await this.view(this.definition(id), await this.readState());
+      if (id !== "openai-codex" || !current.detected) {
+        throw new HostHarnessIntegrationError("Project tracking requires Codex on this host", 409);
+      }
+      if (!this.projectRegistrationToken) {
+        throw new HostHarnessIntegrationError("Codex project registration is disabled", 503);
+      }
+      await this.writeProjectTracking();
+      return this.view(this.definition(id), await this.readState());
+    });
+  }
+
+  private async projectTrackingFiles() {
+    const paths = await Promise.all([
+      ".codex/hooks.json", ".codex/multivibe-project.json", ".codex/hooks/multivibe-project-hook.mjs",
+    ].map((relative) => this.safeConfigPath(relative)));
+    const originals = await Promise.all(paths.map((file) => readBounded(file)));
+    const manifest = parseJsonObject(originals[0]?.content ?? null, ".codex/hooks.json");
+    if (manifest.hooks !== undefined && (!manifest.hooks || typeof manifest.hooks !== "object" || Array.isArray(manifest.hooks))) {
+      throw new HostHarnessIntegrationError("Codex hooks must contain a hooks object", 409);
+    }
+    const hooks = (manifest.hooks ?? {}) as Record<string, any>;
+    if (hooks.SessionStart !== undefined && !Array.isArray(hooks.SessionStart)) {
+      throw new HostHarnessIntegrationError("Codex SessionStart hooks must be an array", 409);
+    }
+    return { paths, originals, manifest, hooks };
+  }
+
+  private async writeProjectTracking(remove = false): Promise<() => Promise<void>> {
+    const { paths, originals, manifest, hooks } = await this.projectTrackingFiles();
+    const owned = (handler: any) => typeof handler?.command === "string" && handler.command.includes("multivibe-project-hook.mjs");
+    const groups = (hooks.SessionStart ?? []).flatMap((group: any) => {
+      if (!Array.isArray(group?.hooks) || !group.hooks.some(owned)) return [group];
+      const remaining = group.hooks.filter((handler: any) => !owned(handler));
+      return remaining.length ? [{ ...group, hooks: remaining }] : [];
+    });
+    const quote = (value: string) => process.platform === "win32" ? `"${value.replace(/"/g, '""')}"` : `'${value.replace(/'/g, `'"'"'`)}'`;
+    if (!remove) groups.push({ matcher: "startup|resume|clear|compact", hooks: [{
+      type: "command", command: `${quote(process.execPath)} ${quote(paths[2])} --config ${quote(paths[1])}`,
+      timeout: 2, statusMessage: "Identifying Codex project",
+    }] });
+    hooks.SessionStart = groups;
+    manifest.hooks = hooks;
+    const restore = async () => {
+      for (let i = 0; i < paths.length; i++) {
+        const original = originals[i];
+        if (original) await writeAtomic(paths[i], original.content, original.mode);
+        else await fs.rm(paths[i], { force: true });
+      }
+    };
+    try {
+      if (!remove) {
+        const source = await fs.readFile(fileURLToPath(new URL("../../scripts/codex-project-hook.mjs", import.meta.url)), "utf8");
+        await writeAtomic(paths[2], source, 0o700);
+        await writeAtomic(paths[1], `${JSON.stringify({ url: this.baseUrl, token: this.projectRegistrationToken }, null, 2)}\n`, 0o600);
+      }
+      if (!remove || originals[0]) await writeAtomic(paths[0], `${JSON.stringify(manifest, null, 2)}\n`, 0o600);
+      // Only remove our credentials and executable when the saved destination belongs to this Host.
+      if (remove && originals[1]) {
+        const config = JSON.parse(originals[1].content);
+        if (config.url === this.baseUrl && config.token === this.projectRegistrationToken) {
+          await fs.rm(paths[1], { force: true });
+          await fs.rm(paths[2], { force: true });
+        }
+      }
+    } catch (error) { await restore(); throw error; }
+    return restore;
+  }
+
+  private async projectTrackingStatus(): Promise<"installed" | "not-installed" | "unavailable"> {
+    if (!this.projectRegistrationToken) return "unavailable";
+    try {
+      const { paths, originals, hooks } = await this.projectTrackingFiles();
+      const config = JSON.parse(originals[1]?.content ?? "{}");
+      const source = await fs.readFile(fileURLToPath(new URL("../../scripts/codex-project-hook.mjs", import.meta.url)), "utf8");
+      return config.url === this.baseUrl && config.token === this.projectRegistrationToken && originals[2]?.content === source &&
+        (hooks.SessionStart ?? []).some((group: any) => group?.hooks?.some((handler: any) =>
+          handler.type === "command" && handler.command?.includes(paths[2]) && handler.command?.includes(paths[1])))
+        ? "installed" : "not-installed";
+    } catch { return "not-installed"; }
   }
 
   async install(id: string, credential: { apiKeyId: string; apiKey: string; application: string }): Promise<HostHarnessView> {
@@ -769,9 +858,12 @@ export class HostHarnessIntegrationManager {
           ? { configurationRevision: definition.configuration.revision }
           : {}),
       };
+      let restoreTracking: (() => Promise<void>) | undefined;
       try {
+        if (id === "openai-codex" && this.projectRegistrationToken) restoreTracking = await this.writeProjectTracking();
         await this.writeState(state);
       } catch (error) {
+        await restoreTracking?.();
         if (original) await writeAtomic(configPath, original.content, original.mode);
         else await fs.unlink(configPath).catch(() => undefined);
         throw error;
@@ -807,7 +899,9 @@ export class HostHarnessIntegrationManager {
         : context;
       const repaired = definition.configuration.render(current.content, preparedContext);
       await writeAtomic(configPath, repaired, current.mode);
+      let restoreTracking: (() => Promise<void>) | undefined;
       try {
+        if (id === "openai-codex" && this.projectRegistrationToken) restoreTracking = await this.writeProjectTracking();
         state.installations[id] = {
           ...installation,
           installedSha256: sha256(repaired),
@@ -820,6 +914,7 @@ export class HostHarnessIntegrationManager {
         };
         await this.writeState(state);
       } catch (error) {
+        await restoreTracking?.();
         await writeAtomic(configPath, current.content, current.mode);
         throw error;
       }
@@ -843,14 +938,21 @@ export class HostHarnessIntegrationManager {
       if (!current || sha256(current.content) !== installation.installedSha256) {
         throw new HostHarnessIntegrationError(`~/${definition.configuration!.relativePath} changed after MultiVibe was installed; it was left untouched`, 409);
       }
-      if (installation.originalContentBase64 === null) {
-        await fs.unlink(configPath);
-      } else {
-        const original = Buffer.from(installation.originalContentBase64, "base64").toString("utf8");
-        await writeAtomic(configPath, original, installation.originalMode ?? 0o600);
+      const restoreTracking = id === "openai-codex" ? await this.writeProjectTracking(true) : undefined;
+      try {
+        if (installation.originalContentBase64 === null) {
+          await fs.unlink(configPath);
+        } else {
+          const original = Buffer.from(installation.originalContentBase64, "base64").toString("utf8");
+          await writeAtomic(configPath, original, installation.originalMode ?? 0o600);
+        }
+        delete state.installations[id];
+        await this.writeState(state);
+      } catch (error) {
+        await restoreTracking?.();
+        await writeAtomic(configPath, current.content, current.mode);
+        throw error;
       }
-      delete state.installations[id];
-      await this.writeState(state);
       return { view: await this.view(definition, state), apiKeyId: installation.apiKeyId };
     });
   }
@@ -935,6 +1037,7 @@ export class HostHarnessIntegrationManager {
       category: definition.category,
       detected,
       detectedBy: Array.from(new Set(detectedBy)),
+      ...(definition.id === "openai-codex" ? { projectTracking: await this.projectTrackingStatus() } : {}),
       configured,
       managed: Boolean(installation),
       drifted,
