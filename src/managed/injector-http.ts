@@ -3,13 +3,14 @@ import type { TLSSocket } from "node:tls";
 import type { ManagedCredentialInjector } from "./injector.js";
 import type {ExecutionReceipt} from "./journal.js";
 import {validateExecutionOwnership, type ExecutionOwnership} from "./coordination-client.js";
+import type {ExecutionRecoveryEnvelope} from "./response-recovery.js";
 
 /** Private credential-injector endpoint; never publish through the public ingress. */
 export function createManagedInjectorServer(options: {
   tls: Pick<ServerOptions,"key"|"cert"|"ca">;
   allowedCoreUri: string;
   injector: Pick<ManagedCredentialInjector,"execute">;
-  coordination: {finish(token:string,ownership:ExecutionOwnership,receipt:ExecutionReceipt):Promise<void>};
+  coordination: {finish(token:string,ownership:ExecutionOwnership,receipt:ExecutionReceipt,recovery?:ExecutionRecoveryEnvelope):Promise<void>};
   discovery?: {read():Promise<unknown>};
   maximumRequestBytes: number;
   maximumResponseBytes: number;
@@ -42,7 +43,7 @@ export function createManagedInjectorServer(options: {
     active++;
     try {
       const chunks:Buffer[]=[];let length=0;
-      const envelopeLimit=req.url==="/internal/v1/receipts"?16384:Math.ceil(options.maximumRequestBytes*8/3)+1024;
+      const envelopeLimit=req.url==="/internal/v1/receipts"?Math.ceil(options.maximumResponseBytes*4/3)+32768:Math.ceil(options.maximumRequestBytes*8/3)+1024;
       for await(const chunk of req){
         const bytes=Buffer.from(chunk);length+=bytes.byteLength;
         if(length>envelopeLimit){fail(413,"request_too_large");return;}chunks.push(bytes);
@@ -50,8 +51,9 @@ export function createManagedInjectorServer(options: {
       const envelope=JSON.parse(Buffer.concat(chunks).toString("utf8"));
       if(!envelope||typeof envelope!=="object"||Array.isArray(envelope))throw Error("invalid_envelope");
       if(req.url==="/internal/v1/receipts"){
-        if(Object.keys(envelope).sort().join()!=="ownership,receipt")throw Error("invalid_envelope");
-        await options.coordination.finish(token,validateExecutionOwnership(envelope.ownership),envelope.receipt as ExecutionReceipt);
+        if(Object.keys(envelope).sort().join()!=="ownership,receipt,recovery")throw Error("invalid_envelope");
+        await options.coordination.finish(token,validateExecutionOwnership(envelope.ownership),envelope.receipt as ExecutionReceipt,
+          envelope.recovery===null?undefined:envelope.recovery as ExecutionRecoveryEnvelope);
         res.end('{"ok":true}');return;
       }
       if(Object.keys(envelope).sort().join()!=="originalBodyBase64,ownership,providerBodyBase64")throw Error("invalid_envelope");

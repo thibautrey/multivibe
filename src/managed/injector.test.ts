@@ -10,9 +10,10 @@ const keys=generateKeyPairSync("ed25519");
 const ownership={ownerId:"11111111-1111-4111-8111-111111111111",epoch:1};
 function fixture() {
  const originalBody=Buffer.from(JSON.stringify({model:"public",input:"hello",max_output_tokens:8}));
- const grant:ExecutionGrant={version:1,audience:"multivibe-core-managed",attemptId:"a",reservationId:"r",routeVersionId:"v",
+ const grant:ExecutionGrant={version:2,audience:"multivibe-core-managed",attemptId:"a",reservationId:"r",routeVersionId:"v",
  providerId:"mistral",credentialRef:"account",model:"public",upstreamModel:"upstream",operation:"responses",stream:false,
- bodySha256:executionBodyDigest(originalBody),maximumOutputTokens:8,issuedAt:1000,expiresAt:61000};
+ bodySha256:executionBodyDigest(originalBody),maximumOutputTokens:8,responseRecoveryKeyId:"test-key",
+ responseRecoveryPublicKey:"A5wnJM5Y01mDWCA4MsbAtTGS_l8BI4-JNVWY_KRBH1I",responseRecoveryExpiresAt:120000,issuedAt:1000,expiresAt:61000};
  return {body:managedProviderRequest(grant,originalBody),authorization:{token:signExecutionGrant(grant,keys.privateKey,1000),originalBody,ownership}};
 }
 test("injector consumes one shared dispatch fence across concurrent replicas",async()=>{
@@ -57,9 +58,10 @@ test("injector rechecks expiry after durable persistence",async()=>{
 
 test("injector independently enforces OpenAI completion projection before credential access",async()=>{
  const originalBody=Buffer.from(JSON.stringify({model:"public",input:"hello",max_output_tokens:8}));
- const grant:ExecutionGrant={version:1,audience:"multivibe-core-managed",attemptId:"openai",reservationId:"r",routeVersionId:"v",
+ const grant:ExecutionGrant={version:2,audience:"multivibe-core-managed",attemptId:"openai",reservationId:"r",routeVersionId:"v",
  providerId:"openai",credentialRef:"account",model:"public",upstreamModel:"o3",operation:"responses",stream:false,
- bodySha256:executionBodyDigest(originalBody),maximumOutputTokens:8,issuedAt:1000,expiresAt:61000};
+ bodySha256:executionBodyDigest(originalBody),maximumOutputTokens:8,responseRecoveryKeyId:"test-key",
+ responseRecoveryPublicKey:"A5wnJM5Y01mDWCA4MsbAtTGS_l8BI4-JNVWY_KRBH1I",responseRecoveryExpiresAt:120000,issuedAt:1000,expiresAt:61000};
  const authorization={token:signExecutionGrant(grant,keys.privateKey,1000),originalBody,ownership};
  let calls=0,dispatches=0;
  const injector=new ManagedCredentialInjector({verificationKey:keys.publicKey,maximumRequestBytes:10000,executionTimeoutMs:1000,
@@ -78,9 +80,10 @@ test("credential access cannot extend compatible or native grant dispatch validi
  for(const providerId of ["mistral","anthropic"] as const){
   let now=1001,reads=0,calls=0,dispatches=0;
   const originalBody=Buffer.from(JSON.stringify({model:"public",input:"hello",max_output_tokens:8}));
-  const grant:ExecutionGrant={version:1,audience:"multivibe-core-managed",attemptId:"expiry",reservationId:"r",routeVersionId:"v",
+  const grant:ExecutionGrant={version:2,audience:"multivibe-core-managed",attemptId:"expiry",reservationId:"r",routeVersionId:"v",
    providerId,credentialRef:"account",model:"public",upstreamModel:"upstream",operation:"responses",stream:false,
-   bodySha256:executionBodyDigest(originalBody),maximumOutputTokens:8,issuedAt:1000,expiresAt:61000};
+   bodySha256:executionBodyDigest(originalBody),maximumOutputTokens:8,responseRecoveryKeyId:"test-key",
+   responseRecoveryPublicKey:"A5wnJM5Y01mDWCA4MsbAtTGS_l8BI4-JNVWY_KRBH1I",responseRecoveryExpiresAt:120000,issuedAt:1000,expiresAt:61000};
   const account=createManagedProviderAccount({providerId,credentialRef:"account",models:new Set(["upstream"]),maximumResponseBytes:8192,
    async readCredential(){reads++;now=61000;return "fixture-key";},async fetchViaEgress(){calls++;return new Response("must not execute");}});
   const injector=new ManagedCredentialInjector({verificationKey:keys.publicKey,maximumRequestBytes:8192,executionTimeoutMs:1000,clock:()=>now,

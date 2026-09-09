@@ -1,6 +1,7 @@
 import {randomUUID} from "node:crypto";
 import {request} from "node:https";
 import type {ExecutionReceipt} from "./journal.js";
+import type {ExecutionRecoveryEnvelope} from "./response-recovery.js";
 
 export interface ExecutionOwnership {readonly ownerId: string; readonly epoch: number}
 
@@ -20,12 +21,14 @@ export function validateExecutionOwnership(value: unknown): ExecutionOwnership {
 export class ManagedCoordinationClient {
   private readonly base: URL;
   constructor(baseUrl: string, private readonly tls: {ca: Buffer; cert: Buffer; key: Buffer},
-    private readonly timeoutMs: number, private readonly leaseMs = 30000) {
+    private readonly timeoutMs: number, private readonly leaseMs = 30000,
+    private readonly maximumRecoveryBytes = 8*1024*1024) {
     this.base = new URL(baseUrl);
     if (this.base.protocol !== "https:" || this.base.username || this.base.password || this.base.pathname !== "/"
       || this.base.search || this.base.hash || !tls.ca.length || !tls.cert.length || !tls.key.length
       || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000
-      || !Number.isSafeInteger(leaseMs) || leaseMs < 100 || leaseMs > 30000) {
+      || !Number.isSafeInteger(leaseMs) || leaseMs < 100 || leaseMs > 30000
+      || !Number.isSafeInteger(maximumRecoveryBytes)||maximumRecoveryBytes<1||maximumRecoveryBytes>64*1024*1024) {
       throw Error("invalid_coordination_client");
     }
   }
@@ -38,16 +41,17 @@ export class ManagedCoordinationClient {
     if (!result || typeof result !== "object" || Array.isArray(result)
       || Object.keys(result).join() !== "ok" || (result as {ok?: unknown}).ok !== true) throw Error("coordination_invalid_response");
   }
-  async finish(token: string, ownership: ExecutionOwnership, receipt: ExecutionReceipt): Promise<void> {
+  async finish(token: string, ownership: ExecutionOwnership, receipt: ExecutionReceipt,recovery?:ExecutionRecoveryEnvelope): Promise<void> {
     validateExecutionOwnership(ownership);
-    const result = await this.post("finish", token, {ownership, receipt});
+    const result = await this.post("finish", token, {ownership, receipt,recovery:recovery??null});
     if (!result || typeof result !== "object" || Array.isArray(result)
       || Object.keys(result).join() !== "ok" || (result as {ok?: unknown}).ok !== true) throw Error("coordination_invalid_response");
   }
   private post(action: "claim" | "dispatch" | "finish", token: string, body: unknown): Promise<unknown> {
     if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token) || token.length > 8192) throw Error("invalid_coordination_grant");
     const payload = JSON.stringify(body);
-    if (Buffer.byteLength(payload) > 16384) throw Error("coordination_request_too_large");
+    const maximum=action==="finish"?Math.ceil(this.maximumRecoveryBytes*4/3)+32768:16384;
+    if (Buffer.byteLength(payload) > maximum) throw Error("coordination_request_too_large");
     return new Promise((resolve, reject) => {
       const req = request(new URL(`/internal/v1/coordination/${action}`, this.base), {
         ...this.tls, method: "POST", minVersion: "TLSv1.3", rejectUnauthorized: true,
