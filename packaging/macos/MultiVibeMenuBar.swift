@@ -89,12 +89,11 @@ private struct ProviderActivity: Decodable {
     let usedAt: Double
 }
 
-// Time is injected so rotation and concurrent-provider debounce are deterministic.
-private struct QuotaRotation {
+// Time is injected so activity freshness and concurrent-provider debounce are deterministic.
+private struct QuotaSelection {
     var selected: String?
     var pin: String?
     var changedAt: TimeInterval = -.infinity
-    var holdUntil: TimeInterval = 0
     var observedUsage: Double = 0
     var pending: ProviderActivity?
 
@@ -117,13 +116,8 @@ private struct QuotaRotation {
                 pending = nil
             } else if selected == activity.providerId || now - changedAt >= 5 {
                 select(activity.providerId, now: now)
-                holdUntil = now + 30
                 pending = nil
             }
-        }
-        if now >= holdUntil, now - changedAt >= 12, ids.count > 1 {
-            let index = ids.firstIndex(of: selected ?? "") ?? 0
-            select(ids[(index + 1) % ids.count], now: now)
         }
     }
 
@@ -537,7 +531,7 @@ private final class HostPopoverController: NSViewController {
 
         if let providers = summary?.providers, !providers.isEmpty {
             let picker = NSPopUpButton()
-            picker.addItem(withTitle: "Automatic · follow usage and rotate")
+            picker.addItem(withTitle: "Automatic · follow active provider")
             for provider in providers { picker.addItem(withTitle: "Pin \(provider.displayName)") }
             picker.selectItem(at: providers.firstIndex(where: { $0.id == pinnedQuotaProvider }).map { $0 + 1 } ?? 0)
             picker.target = self
@@ -1160,7 +1154,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
     private let notificationPopup = NotificationPopup()
     private var refreshTimer: Timer?
     private var quotaTimer: Timer?
-    private var rotation = QuotaRotation(pin: UserDefaults.standard.string(forKey: "quotaProviderPin"))
+    private var quotaSelection = QuotaSelection(pin: UserDefaults.standard.string(forKey: "quotaProviderPin"))
     private var providerActivity: ProviderActivity?
     private var pollingActivity = false
     private var quotaTicks = 0
@@ -1217,8 +1211,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         configurePopover()
         popoverController.selectQuotaProvider = { [weak self] id in
             guard let self else { return }
-            self.rotation.pin = id
-            self.rotation.holdUntil = 0
+            self.quotaSelection.pin = id
             UserDefaults.standard.set(id, forKey: "quotaProviderPin")
             self.render()
         }
@@ -1456,16 +1449,16 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         guard let button = statusItem.button else { return }
         let now = Date().timeIntervalSince1970
         let providers = summary?.providers ?? []
-        let eligible = providers.filter { !$0.windows.isEmpty || $0.id == rotation.pin }
-        rotation.update(ids: eligible.map(\.id), activity: providerActivity, now: now)
+        let eligible = providers.filter { !$0.windows.isEmpty || $0.id == quotaSelection.pin }
+        quotaSelection.update(ids: eligible.map(\.id), activity: providerActivity, now: now)
         var title = ""
         var tooltip = "MultiVibe Host — \(statusText)"
         let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
         statusItem.length = NSStatusItem.variableLength
-        if operational, let provider = eligible.first(where: { $0.id == rotation.selected }) {
+        if operational, let provider = eligible.first(where: { $0.id == quotaSelection.selected }) {
             let values = provider.windows.map { "\($0.label):\(Int($0.remainingPercent.rounded()))%" }.joined(separator: "  ")
             let quota = values.isEmpty ? "Quota unavailable" : values
-            title = "  " + (now - rotation.changedAt < 3 ? "\(provider.displayName) · " : "") + quota
+            title = "  " + (now - quotaSelection.changedAt < 3 ? "\(provider.displayName) · " : "") + quota
             tooltip = "\(provider.displayName) — \(quota)"
         } else {
             if operational, providers.isEmpty, let quota = summary?.quota {
@@ -1489,7 +1482,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
 
     private func render() {
         renderQuota()
-        popoverController.pinnedQuotaProvider = rotation.pin
+        popoverController.pinnedQuotaProvider = quotaSelection.pin
         popoverController.render(
             summary: summary,
             workerNeedsSetup: workerConfigurationState == "unconfigured" && workerSetupURL != nil,
