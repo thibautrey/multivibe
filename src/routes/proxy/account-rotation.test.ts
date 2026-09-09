@@ -77,6 +77,10 @@ test("rotates to the next account when a 429 is returned as SSE", async (t) => {
 
   globalThis.fetch = async (input, init) => {
     const url = String(input);
+    if (url.includes("/backend-api/wham/usage")) {
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer token-one");
+      return Response.json({ rate_limit: { primary_window: { used_percent: 100 } } });
+    }
     if (url.includes("/backend-api/codex/models")) {
       modelDiscoveryRequests += 1;
       return new Response(
