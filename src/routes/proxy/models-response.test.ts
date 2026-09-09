@@ -48,7 +48,7 @@ test("serves OpenAI and Codex model catalogs in one response", () => {
   assert.equal(response.object, "list");
   assert.equal(response.data.length, 2);
   assert.equal("codexModelInfo" in response.data[0], false);
-  assert.deepEqual(response.models, [codexModelInfo]);
+  assert.deepEqual(response.models, [codexModelInfo, toCodexModelShape(openAiCompatibleModel)]);
 });
 
 test("adapts z.ai models to the native Codex catalog", () => {
@@ -106,4 +106,12 @@ test("adapts z.ai models to the native Codex catalog", () => {
       experimental_supported_tools: [],
     },
   ]);
+});
+
+ test("lists oMLX chat models in Codex without exposing speech models", () => {
+  const models = ["Qwen3.8-27B-4bit", "Kokoro-82M-bf16", "Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16", "whisper-large-v3-turbo-asr-4bit"].map(id => ({id, metadata: {provider: "openai-compatible"}}));
+  const response = buildModelsListResponse(models);
+  assert.equal(response.data.length, 4);
+  assert.deepEqual(response.models.map(model => model.slug), ["Qwen3.8-27B-4bit"]);
+  assert.equal(response.models[0].visibility, "list");
 });
