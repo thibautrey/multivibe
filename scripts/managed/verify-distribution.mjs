@@ -20,6 +20,20 @@ try {
   // cannot hide an accidental dependency on node_modules or desktop files.
   const runtime=entry==="core"?"managed/runtime.js":"managed/injector-runtime.js";
   execFileSync(process.execPath,["--input-type=module","-e",`await import(${JSON.stringify(pathToFileURL(join(output,runtime)).href)})`],{cwd:output,stdio:"inherit"});
+  if(entry==="injector") {
+   const codecUrl=pathToFileURL(join(output,"managed/native-anthropic.js")).href;
+   execFileSync(process.execPath,["--input-type=module","-e",`
+    import assert from 'node:assert/strict';
+    const {createManagedAnthropicAccount}=await import(${JSON.stringify(codecUrl)});
+    let calls=0;
+    const account=createManagedAnthropicAccount({credentialRef:'fixture',models:new Set(['claude-sonnet-4-6']),maximumResponseBytes:8192,
+     async readCredential(){return 'fixture-key';},async fetchViaEgress(){calls++;return Response.json({id:'msg_fixture',type:'message',role:'assistant',model:'claude-sonnet-4-6',content:[{type:'text',text:'Hi'}],stop_reason:'end_turn',stop_sequence:null,usage:{input_tokens:5,output_tokens:2}});}});
+    const body=Buffer.from(JSON.stringify({model:'claude-sonnet-4-6',messages:[{role:'user',content:'hello'}],max_tokens:25}));
+    const response=await account.chatCompletions(body,AbortSignal.timeout(1000),{token:'fixture',originalBody:body});
+    assert.equal((await response.json()).usage.total_tokens,7);assert.equal(calls,1);
+   `],{cwd:output,stdio:"inherit"});
+   assert.match(await readFile(join(output,"native-third-party-notices.txt"),"utf8"),/@ai-sdk\/anthropic@4\.0\.49/);
+  }
   assert.ok(!files.some(file=>file==="server.js"||file.startsWith("node_modules/")));
  }
  console.log("Managed distribution import boundaries verified");
