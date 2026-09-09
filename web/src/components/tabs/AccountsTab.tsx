@@ -17,6 +17,7 @@ import {
   runtimeIdentityForAdapter,
 } from "../../lib/runtimeCatalog";
 import { tracksSubscriptionQuota } from "../../lib/accountQuota";
+import { PROVIDER_ACCESS } from "../../lib/providerAccess";
 
 import { ProviderPicker, ProviderMark, SETUP_PROVIDERS, type SetupProvider } from "../ProviderPicker";
 import { Metric } from "../Metric";
@@ -49,7 +50,7 @@ type Props = {
     email: string,
     accountId?: string,
     method?: OAuthMethod,
-    provider?: "openai" | "opencode" | "xai",
+    provider?: "openai" | "opencode" | "xai" | "github-copilot",
   ) => Promise<any>;
   pollDeviceOAuth: (flowId: string) => Promise<any>;
   completeOAuth: (flowId: string, input: string) => Promise<any>;
@@ -163,7 +164,7 @@ type OAuthDialogState = {
   accountId?: string;
   pendingPriority?: number;
   pendingEnabled?: boolean;
-  provider: "openai" | "opencode" | "xai";
+  provider: "openai" | "opencode" | "xai" | "github-copilot";
 };
 
 type ProviderAgentSelection = {
@@ -379,14 +380,15 @@ function capacityPolicyStateFromDraft(
 }
 
 function isOAuthProvider(provider: AccountProvider) {
-  return provider === "openai" || provider === "xai";
+  return provider === "openai" || provider === "xai" || provider === "github-copilot";
 }
 
 function isManualTokenProvider(provider: AccountProvider) {
   return provider === "ai-sdk" || provider === "mistral" || provider === "openai-compatible" || provider === "opencode" || provider === "zai";
 }
 
-function oauthProviderLabel(provider: "openai" | "opencode" | "xai") {
+function oauthProviderLabel(provider: "openai" | "opencode" | "xai" | "github-copilot") {
+  if (provider === "github-copilot") return "GitHub Copilot";
   if (provider === "opencode") return "OpenCode";
   if (provider === "xai") return "Grok Build";
   return "OpenAI";
@@ -1172,7 +1174,7 @@ export function AccountsTab(props: Props) {
     setManualAccessToken("");
     setManualRefreshToken("");
     setManualBaseUrl("");
-    setManualOAuthMethod(next === "xai" ? "device" : "browser");
+    setManualOAuthMethod((next === "xai" || next === "github-copilot") ? "device" : "browser");
     setProviderError("");
   }, [provider, sdkProvider]);
   const selectedProviderName = provider === "ai-sdk"
@@ -1238,7 +1240,7 @@ export function AccountsTab(props: Props) {
   const openOAuthDialog = async (options: {
     email: string;
     method: OAuthMethod;
-    provider: "openai" | "opencode" | "xai";
+    provider: "openai" | "opencode" | "xai" | "github-copilot";
     mode: "create" | "reauth";
     accountId?: string;
     pendingPriority?: number;
@@ -1311,7 +1313,7 @@ export function AccountsTab(props: Props) {
       try {
         await openOAuthDialog({
           email: manualEmail.trim(),
-          method: provider === "xai" ? "device" : manualOAuthMethod,
+          method: (provider === "xai" || provider === "github-copilot") ? "device" : manualOAuthMethod,
           provider,
           mode: "create",
           pendingPriority: Number(manualPriority) || 0,
@@ -1358,6 +1360,7 @@ export function AccountsTab(props: Props) {
   const openEditModal = (account: Account) => {
     setOpenMenu(null);
     const nextProvider: AccountProvider =
+      account.provider === "github-copilot" ? "github-copilot" :
       account.provider === "ai-sdk" ? "ai-sdk" :
       account.provider === "mistral"
         ? "mistral"
@@ -1389,7 +1392,7 @@ export function AccountsTab(props: Props) {
       healthUrl: account.capacityProfile?.healthUrl ?? "",
       metricsUrl: account.capacityProfile?.metricsUrl ?? "",
     });
-    setEditOAuthMethod(nextProvider === "xai" ? "device" : "browser");
+    setEditOAuthMethod((nextProvider === "xai" || nextProvider === "github-copilot") ? "device" : "browser");
   };
 
   const saveEditedAccount = async () => {
@@ -1407,7 +1410,7 @@ export function AccountsTab(props: Props) {
         await openOAuthDialog({
           email: editingAccount.email.trim(),
           method:
-            editingAccount.provider === "xai" ? "device" : editOAuthMethod,
+            (editingAccount.provider === "xai" || editingAccount.provider === "github-copilot") ? "device" : editOAuthMethod,
           provider: editingAccount.provider,
           mode: "reauth",
           accountId: editingAccount.id,
@@ -1559,7 +1562,7 @@ export function AccountsTab(props: Props) {
       await reauthOpenCodeAccount(account);
       return;
     }
-    if (provider !== "xai") return;
+    if (provider !== "xai" && provider !== "github-copilot") return;
 
     setOpenMenu(null);
     setOauthBusyId(account.id);
@@ -1567,7 +1570,7 @@ export function AccountsTab(props: Props) {
       await openOAuthDialog({
         email: account.email?.trim() ?? "",
         method: "device",
-        provider: "xai",
+        provider,
         mode: "reauth",
         accountId: account.id,
       });
@@ -1901,7 +1904,7 @@ export function AccountsTab(props: Props) {
               : runtimeIdentityForAccount(a);
             const needsReauthentication =
               a.state?.needsTokenRefresh === true &&
-              ["openai", "opencode", "xai"].includes(a.provider ?? "openai");
+              ["openai", "opencode", "xai", "github-copilot"].includes(a.provider ?? "openai");
             return (
               <article
                 key={a.id}
@@ -2225,16 +2228,34 @@ export function AccountsTab(props: Props) {
                         )}
                         {shouldDisplayOptionalQuotaWindow(a, "monthly") && (
                           <div className="provider-quota-item">
-                            <span className="provider-quota-label">Monthly quota</span>
+                            <span className="provider-quota-label">{a.usage?.monthly?.label ?? "Monthly quota"}</span>
                             {renderUsageCell(a.usage?.monthly?.usedPercent, a.usage?.monthly?.resetAt, a.usage?.quotaStatus === "unsupported", a.usage?.quotaStatus === "error")}
+                          </div>
+                        )}
+                        {a.usage?.balance && (
+                          <div className="provider-quota-item">
+                            <span className="provider-quota-label">Available balance</span>
+                            <span>{Number(a.usage.balance.remaining).toLocaleString()} {a.usage.balance.unit}{a.usage.quotaStatus === "error" ? " (stale)" : ""}</span>
                           </div>
                         )}
                         {a.usage?.credits && (
                           <div className="provider-quota-item">
-                            <span className="provider-quota-label">Subscription credits</span>
+                            <span className="provider-quota-label">{a.usage.credits.label ?? "Subscription credits"}</span>
                             {renderUsageCell(a.usage.credits.usedPercent, a.usage.credits.resetAt, false, a.usage.quotaStatus === "error")}
                           </div>
                         )}
+                        {a.usage?.spend && (
+                          <div className="provider-quota-item">
+                            <span className="provider-quota-label">API key spend</span>
+                            <span>{Number(a.usage.spend.amount).toLocaleString(undefined, { maximumFractionDigits: 6 })} {a.usage.spend.unit}{a.usage.quotaStatus === "error" ? " (stale)" : ""}</span>
+                          </div>
+                        )}
+                        {a.usage?.allowances?.map((window: { label: string; usedPercent?: number; resetAt?: number }) => (
+                          <div className="provider-quota-item" key={window.label}>
+                            <span className="provider-quota-label">{window.label}</span>
+                            {renderUsageCell(window.usedPercent, window.resetAt, false, a.usage.quotaStatus === "error")}
+                          </div>
+                        ))}
                         {a.usage?.tools && (
                           <div className="provider-quota-item">
                             <span className="provider-quota-label">MCP tools quota</span>
@@ -2909,12 +2930,10 @@ export function AccountsTab(props: Props) {
               </label>
               {isOAuthProvider(provider) && (
                 <label>
-                  {provider === "xai"
-                    ? "Grok Build login method"
-                    : "OpenAI login method"}
+                  {`${oauthProviderLabel(provider)} login method`}
                   <select
                     value={manualOAuthMethod}
-                    disabled={provider === "xai"}
+                    disabled={provider !== "openai"}
                     onChange={(e) =>
                       setManualOAuthMethod(e.target.value as OAuthMethod)
                     }
@@ -2940,7 +2959,8 @@ export function AccountsTab(props: Props) {
                 <label>Model IDs (optional)
                   <textarea value={sdkModels} onChange={(event) => setSdkModels(event.target.value)} placeholder="Leave empty for the catalog, or enter model IDs separated by commas" />
                 </label>
-                <p className="muted">{sdkProviders.find((entry) => entry.id === sdkProvider)?.models.length ?? 0} text-generation models listed by models.dev. Access and pricing depend on your provider account. Subscription quotas are not supplied by the catalog.</p>
+                <p className="muted">{sdkProviders.find((entry) => entry.id === sdkProvider)?.models.length ?? 0} text-generation models listed in the provider catalog. Access and pricing depend on your provider account. Subscription quotas are not supplied by the catalog.</p>
+                {PROVIDER_ACCESS[sdkProvider] && <p className="muted">{PROVIDER_ACCESS[sdkProvider].note}</p>}
               </>}
               {provider === "nvidia-pair" ? (
                 <div className="muted">PAIR is probed without a token and is isolated as personal-cluster capacity.</div>
@@ -2967,7 +2987,9 @@ export function AccountsTab(props: Props) {
                 </>
               ) : (
                 <div className="muted">
-                  {provider === "xai"
+                  {provider === "github-copilot"
+                    ? "Sign in on GitHub with a one-time device code. Models depend on your Copilot plan and organization policy. Premium request and chat quotas are refreshed when GitHub exposes them."
+                    : provider === "xai"
                     ? "Grok Build uses xAI device OAuth and the SuperGrok / X Premium+ subscription quota."
                     : "OpenAI onboarding uses OAuth. Browser callback opens the login page and asks for the callback URL. Device code shows a one-time code and completes automatically after approval."}
                 </div>
@@ -3057,7 +3079,7 @@ export function AccountsTab(props: Props) {
                     ? "Starting OAuth..."
                     : "Creating..."
                   : isOAuthProvider(provider)
-                    ? provider === "xai"
+                    ? provider === "github-copilot" ? "Sign in with GitHub" : provider === "xai"
                       ? "Start Grok device login"
                       : "Start OAuth"
                     : "Create account"}
@@ -3128,12 +3150,10 @@ export function AccountsTab(props: Props) {
               </label>
               {isOAuthProvider(editingAccount.provider) && (
                 <label>
-                  {editingAccount.provider === "xai"
-                    ? "Grok Build reauth method"
-                    : "OpenAI reauth method"}
+                  {`${oauthProviderLabel(editingAccount.provider)} reauth method`}
                   <select
                     value={editOAuthMethod}
-                    disabled={editingAccount.provider === "xai"}
+                    disabled={editingAccount.provider !== "openai"}
                     onChange={(e) =>
                       setEditOAuthMethod(e.target.value as OAuthMethod)
                     }
@@ -3226,7 +3246,9 @@ export function AccountsTab(props: Props) {
                 </>
               ) : (
                 <div className="muted">
-                  {editingAccount.provider === "xai"
+                  {editingAccount.provider === "github-copilot"
+                    ? "Sign in again on GitHub and approve the one-time device code."
+                    : editingAccount.provider === "xai"
                     ? "Grok Build reauth uses xAI device OAuth. Save changes, then approve the one-time code."
                     : "OpenAI reauth uses OAuth. Save changes to open the login flow, then paste the full callback URL instead of editing tokens manually."}
                 </div>
@@ -3363,7 +3385,7 @@ export function AccountsTab(props: Props) {
             <div className="muted">
               {oauthDialog.method === "device"
                 ? `Open the verification URL, enter the one-time code, and approve the ${
-                    oauthDialog.provider === "xai"
+                    oauthDialog.provider === "github-copilot" ? "GitHub" : oauthDialog.provider === "xai"
                       ? "xAI"
                       : oauthDialog.provider === "opencode"
                         ? "OpenCode"

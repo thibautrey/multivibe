@@ -5,6 +5,7 @@ export type ProviderId =
   | "opencode"
   | "mistral"
   | "zai"
+  | "github-copilot"
   | "xai";
 
 export type LocalRuntimeAdapterId =

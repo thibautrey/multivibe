@@ -51,7 +51,7 @@
 | Area | What MultiVibe provides |
 | --- | --- |
 | Client APIs | Responses, Chat Completions, Anthropic Messages, models, Realtime WebRTC, SSE, and Responses over WebSocket |
-| Providers | OpenAI/ChatGPT, generic OpenAI-compatible APIs, OpenCode Zen/Go, Mistral, z.ai Coding Plan, and Grok Build subscriptions |
+| Providers | OpenAI/ChatGPT, GitHub Copilot, Poe, MiniMax, OpenRouter, Abacus.AI, Manus, Kimi, Hugging Face, Mammouth AI, Qwen Coding Plan, Z.AI GLM Coding Plan, Perplexity, Grok Build, OpenCode Zen/Go, Mistral, and other reviewed or custom APIs. See [provider setup and quota coverage](docs/providers/README.md). |
 | Account routing | Automatic model discovery, quota headroom selection, account/model blocks, retries, and optional Codex session affinity |
 | Smart aliases | Conditional schema-v2 policies, local/cloud candidates, capacity constraints, scoring, budgets, simulation, and queue/reject fallbacks |
 | Deferred work | Durable edge jobs, priority and application fairness, idempotency, polling/SSE results, cancellation, and signed webhooks |

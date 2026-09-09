@@ -1,3 +1,4 @@
+import { COPILOT_BASE_URL } from "./github-copilot.js";
 import { isDeepStrictEqual } from "node:util";
 import {
   OPENCODE_BASE_URL,
@@ -57,6 +58,8 @@ function usageBaseUrl(
   switch (normalizeProvider(account)) {
     case "openai-compatible":
       return trimTrailingSlash(String(account.baseUrl ?? ""));
+    case "github-copilot":
+      return account.baseUrl ?? COPILOT_BASE_URL;
     case "opencode":
       return trimTrailingSlash(account.baseUrl ?? options.opencodeBaseUrl ?? OPENCODE_BASE_URL);
     case "mistral":
@@ -70,7 +73,7 @@ function usageBaseUrl(
   }
 }
 
-const TOKEN_FIELDS = ["accessToken", "refreshToken", "expiresAt"] as const;
+const TOKEN_FIELDS = ["accessToken", "refreshToken", "expiresAt", "baseUrl"] as const;
 const STATE_FIELDS = [
   "lastError",
   "recentErrors",

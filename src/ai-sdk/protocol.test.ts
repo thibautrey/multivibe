@@ -3,7 +3,7 @@ import test from "node:test";
 import type { LanguageModelV4StreamPart, LanguageModelV4Usage } from "@ai-sdk/provider";
 import { sdkCallOptions, chatStream, chatResult } from "./protocol.js";
 import { sdkAccountModels, sdkModelId, sdkProviderCatalog } from "./catalog.js";
-import { validateSdkAccount } from "./providers.js";
+import { SDK_PROVIDERS, validateSdkAccount } from "./providers.js";
 import type { Account } from "../types.js";
 
 const usage: LanguageModelV4Usage = {inputTokens: {total: 12, noCache: 8, cacheRead: 4, cacheWrite: 0}, outputTokens: {total: 3, text: 2, reasoning: 1}};
@@ -68,7 +68,7 @@ test("maps buffered results and keeps provider namespaces distinct", () => {
   assert.equal(sdkModelId(account, "openrouter/anthropic/custom-model"), "anthropic/custom-model");
   assert.throws(() => sdkModelId(account, "anthropic/custom-model"));
   assert.throws(() => sdkModelId(account, "openrouter/unknown"));
-  assert.equal(sdkProviderCatalog().providers.length, 8);
+  assert.deepEqual(sdkProviderCatalog().providers.map(({ id }) => id), SDK_PROVIDERS.map(({ id }) => id));
   assert.throws(() => validateSdkAccount({...account, sdkProvider: "uninstalled-package"}));
   for (const id of ["../other", "a/b", "a?b", "", "a".repeat(129)]) {
     assert.throws(() => validateSdkAccount({...account, id}), /Invalid provider account ID/);
@@ -93,4 +93,23 @@ test("JSON and streaming preserve missing usage and positive cache writes",async
  const measured={...usage,inputTokens:{total:12,noCache:undefined,cacheRead:undefined,cacheWrite:5},outputTokens:{total:3,text:undefined,reasoning:undefined}};
  const result=chatResult("anthropic/test",{content:[],usage:measured,finishReason:{unified:"stop",raw:"stop"},warnings:[]});
  assert.deepEqual(result.usage,{prompt_tokens:12,completion_tokens:3,total_tokens:15,cache_creation_input_tokens:5});
+});
+
+test("Mammouth exposes documented models, provenance and custom model selection", () => {
+  const account: Account = { id: "mammouth", provider: "ai-sdk", sdkProvider: "mammouth", accessToken: "key", enabled: true };
+  assert.doesNotThrow(() => validateSdkAccount(account));
+  const catalog = sdkProviderCatalog().providers.find((provider) => provider.id === "mammouth")!;
+  assert.equal(catalog.name, "Mammouth AI");
+  assert.equal(catalog.source, "https://info.mammouth.ai/docs/api-quick-start/");
+  const models = sdkAccountModels(account);
+  assert.ok(models.some((model) => model.id === "mammouth/mammouth-recommended"));
+  assert.ok(models.some((model) => model.id === "mammouth/claude-sonnet-4-6"));
+  assert.equal(models[0].catalog_source, catalog.source);
+  assert.equal(models[0].supports_tools, undefined);
+  assert.equal(new Set(models.map((model) => model.id)).size, models.length);
+  account.sdkModels = ["custom-model"];
+  assert.deepEqual(sdkAccountModels(account).map((model) => model.id), ["mammouth/custom-model"]);
+  assert.equal(sdkModelId(account, "mammouth/custom-model"), "custom-model");
+  assert.throws(() => sdkModelId(account, "mammouth/gpt-5.5"));
+  assert.throws(() => sdkModelId(account, "openrouter/custom-model"));
 });

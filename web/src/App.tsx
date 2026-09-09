@@ -799,7 +799,7 @@ export default function App() {
     email: string,
     accountId?: string,
     method: "browser" | "device" = "browser",
-    provider: "openai" | "opencode" | "xai" = "openai",
+    provider: "openai" | "opencode" | "xai" | "github-copilot" = "openai",
   ) => {
     return api("/admin/oauth/start", {
       method: "POST",

@@ -4,12 +4,12 @@ import { matchesAccessFilter, PROVIDER_ACCESS } from "../src/lib/providerAccess"
 import { SDK_PROVIDERS } from "../../src/ai-sdk/providers";
 
 test("free tiers also support paid and freemium filtering", () => {
-  for (const id of ["openai", "google", "groq", "openrouter", "opencode", "mistral", "zai"]) {
+  for (const id of ["github-copilot", "openai", "google", "groq", "openrouter", "opencode", "mistral"]) {
     for (const filter of ["Paid", "Free", "Freemium"] as const) assert.equal(matchesAccessFilter(id, filter), true, `${id}: ${filter}`);
   }
 });
 test("trials and consumer free plans do not imply free API access", () => {
-  for (const id of ["cerebras", "togetherai", "deepseek", "anthropic", "perplexity", "xai"]) {
+  for (const id of ["cerebras", "togetherai", "deepseek", "anthropic", "perplexity", "xai", "mammouth", "zai"]) {
     assert.equal(matchesAccessFilter(id, "Free"), false);
     assert.equal(matchesAccessFilter(id, "Freemium"), false);
     assert.equal(matchesAccessFilter(id, "Paid"), true);

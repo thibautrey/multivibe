@@ -8,7 +8,9 @@ import {
 import type { Account } from "./types.js";
 import { refreshXaiAccessToken } from "./xai.js";
 import { refreshOpenCodeAccessToken } from "./opencode.js";
+import { refreshCopilotAccessToken } from "./github-copilot.js";
 
+const copilotRefreshes = new Map<string, Promise<Account>>();
 const xaiRefreshes = new Map<string, Promise<Account>>();
 const openCodeRefreshes = new Map<string, Promise<Account>>();
 
@@ -18,7 +20,7 @@ export function isAccountReauthenticationError(
 ): boolean {
   const provider = normalizeProvider(account);
   return status === 401 &&
-    (provider === "openai" || provider === "opencode" || provider === "xai");
+    (provider === "openai" || provider === "opencode" || provider === "xai" || provider === "github-copilot");
 }
 
 export function isTokenRefreshNeeded(
@@ -27,7 +29,7 @@ export function isTokenRefreshNeeded(
 ): account is Account & { expiresAt: number; refreshToken: string } {
   const provider = normalizeProvider(account);
   return (
-    (provider === "openai" || provider === "opencode" || provider === "xai") &&
+    (provider === "openai" || provider === "opencode" || provider === "xai" || provider === "github-copilot") &&
     typeof account.expiresAt === "number" &&
     account.expiresAt > 0 &&
     now >= account.expiresAt - 5 * 60_000 &&
@@ -53,6 +55,22 @@ export async function ensureValidToken(
   oauthConfig: OAuthConfig,
 ): Promise<Account> {
   if (!isTokenRefreshNeeded(account)) return account;
+
+  if (normalizeProvider(account) === "github-copilot") {
+    const key = `${account.id}:${account.refreshToken}`;
+    const current = copilotRefreshes.get(key);
+    if (current) return current;
+    const refresh = refreshCopilotAccessToken(account)
+      .catch((err: any) => {
+        const failed = { ...account };
+        rememberError(failed, err?.message ?? "GitHub Copilot token refresh failed");
+        failed.state = { ...failed.state, needsTokenRefresh: true, authBlockedUntil: Date.now() + 60_000 };
+        return failed;
+      })
+      .finally(() => { copilotRefreshes.delete(key); });
+    copilotRefreshes.set(key, refresh);
+    return refresh;
+  }
 
   if (normalizeProvider(account) === "xai") {
     const current = xaiRefreshes.get(account.id);

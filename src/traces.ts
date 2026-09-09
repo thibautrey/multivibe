@@ -23,6 +23,7 @@ function normalizeSelectionProvider(value: unknown): ProviderId {
     value === "opencode" ||
     value === "mistral" ||
     value === "zai" ||
+    value === "github-copilot" ||
     value === "xai"
     ? value
     : "openai";
@@ -626,6 +627,7 @@ function normalizeTrace(raw: any): TraceEntry | null {
       raw.provider === "opencode" ||
       raw.provider === "mistral" ||
       raw.provider === "zai" ||
+      raw.provider === "github-copilot" ||
       raw.provider === "xai"
         ? raw.provider
         : undefined,

@@ -6,20 +6,23 @@ import { PROVIDER_ACCESS, matchesAccessFilter, type AccessFilter } from "../lib/
 export type SetupProvider = ProviderId | "nvidia-pair";
 export const SETUP_PROVIDERS: { id: SetupProvider; name: string; description: string; method: string; icon?: string }[] = [
   { id: "openai", name: "OpenAI", description: "Connect your ChatGPT account with OAuth.", method: "Account sign-in", icon: "openai" },
+  { id: "github-copilot", name: "GitHub Copilot", description: "Connect your GitHub account to use Copilot models.", method: "Device sign-in" },
   { id: "xai", name: "Grok Build", description: "Use your SuperGrok or X Premium+ subscription.", method: "Device sign-in", icon: "xai" },
   { id: "opencode", name: "OpenCode Zen / Go", description: "Connect with an API key or your Console account.", method: "API key or sign-in", icon: "opencode" },
   { id: "mistral", name: "Mistral", description: "Access Mistral models with your API key.", method: "API key", icon: "mistral" },
-  { id: "zai", name: "z.ai", description: "Bring your z.ai API key to access GLM models.", method: "API key", icon: "zai" },
+  { id: "zai", name: "Z.AI GLM Coding Plan", description: "Use your GLM Coding Plan key with subscription quota tracking.", method: "API key", icon: "zai" },
   { id: "nvidia-pair", name: "NVIDIA PAIR", description: "Connect your Personal AI Router endpoint.", method: "Local endpoint", icon: "nvidia" },
   { id: "openai-compatible", name: "OpenAI-compatible", description: "Connect a local server or another hosted API.", method: "Custom endpoint" },
 ];
 
 export type CloudProvider = { id: string; name: string; models: Array<{ id: string; name: string }> };
 
+const PROVIDER_ICONS = new Set(["anthropic", "cerebras", "deepseek", "google", "groq", "mammouth", "mistral", "nvidia", "openai", "opencode", "openrouter", "perplexity", "togetherai", "xai", "zai"]);
+
 export function ProviderMark({ provider, sdkProvider }: { provider: SetupProvider; sdkProvider?: string }) {
   const icon = provider === "ai-sdk" ? sdkProvider : SETUP_PROVIDERS.find((item) => item.id === provider)?.icon;
   return <span className="provider-setup-mark" aria-hidden="true">
-    {icon ? <img src={`/assets/providers/${icon}.svg`} alt="" /> :
+    {icon && PROVIDER_ICONS.has(icon) ? <img src={`/assets/providers/${icon}.svg`} alt="" /> :
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="3" width="18" height="7" rx="2" /><rect x="3" y="14" width="18" height="7" rx="2" /><path d="M7 6h.01M7 17h.01M12 6h5M12 17h5" /></svg>}
   </span>;
 }

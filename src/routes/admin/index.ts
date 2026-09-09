@@ -1,3 +1,4 @@
+import { COPILOT_BASE_URL, requestCopilotDeviceCode, pollCopilotDeviceCode, accountFromCopilotOAuth, trustedCopilotBaseUrl } from "../../github-copilot.js";
 import { withVirtualModels } from "../../module-virtual-models.js";
 import { MULTIVIBE_CONTROL_PLANE } from "../../config.js";
 import { createAuthRateLimiter } from "../../auth-rate-limit.js";
@@ -215,8 +216,8 @@ function redact(account: Account) {
   return {
     ...publicAccount,
     opencodeApiKey: opencodeApiKey ? "[redacted]" : undefined,
-    accessToken: account.accessToken ? `${account.accessToken.slice(0, 8)}...` : "",
-    refreshToken: account.refreshToken
+    accessToken: account.provider === "github-copilot" ? "[redacted]" : account.accessToken ? `${account.accessToken.slice(0, 8)}...` : "",
+    refreshToken: account.provider === "github-copilot" ? (account.refreshToken ? "[redacted]" : undefined) : account.refreshToken
       ? `${account.refreshToken.slice(0, 8)}...`
       : undefined,
   };
@@ -806,6 +807,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
   const usageBaseUrlForAccount = (account: Account): string => {
     const provider = normalizeProvider(account);
     if (provider === "openai-compatible") return account.baseUrl ?? "";
+    if (provider === "github-copilot") return account.baseUrl ?? COPILOT_BASE_URL;
     if (provider === "opencode") return account.baseUrl ?? OPENCODE_BASE_URL;
     if (provider === "mistral") return mistralBaseUrl;
     if (provider === "zai") return zaiBaseUrl;
@@ -1915,6 +1917,9 @@ export function createAdminRouter(options: AdminRoutesOptions) {
         return res.status(400).json({ error: error?.message ?? String(error) });
       }
     }
+    if (body.provider === "github-copilot") {
+      return res.status(400).json({ error: "Connect GitHub Copilot using device sign-in" });
+    }
     if (!body.accessToken)
       return res.status(400).json({ error: "accessToken required" });
     const provider =
@@ -2019,6 +2024,10 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     const existing = (await store.listAccounts()).find((a) => a.id === req.params.id);
     if (!existing) return res.status(404).json({ error: "not found" });
     const next = { ...existing, ...body };
+    if (next.provider === "github-copilot") {
+      if (existing.provider !== "github-copilot") return res.status(400).json({ error: "Connect GitHub Copilot using device sign-in" });
+      try { trustedCopilotBaseUrl(next.baseUrl); } catch (error: any) { return res.status(400).json({ error: error.message }); }
+    }
     if (next.provider === "ai-sdk") {
       try { validateSdkAccount(next); } catch (error: any) { return res.status(400).json({ error: error.message }); }
       body.upstreamMode = "chat/completions";
@@ -2215,13 +2224,14 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     const email = String(req.body?.email ?? "").trim();
     const targetAccountId = String(req.body?.accountId ?? "").trim() || undefined;
     const provider =
+      req.body?.provider === "github-copilot" ? "github-copilot" :
       req.body?.provider === "xai"
         ? "xai"
         : req.body?.provider === "opencode"
           ? "opencode"
           : "openai";
     const method =
-      provider === "xai" || provider === "opencode" || req.body?.method === "device"
+      provider === "github-copilot" || provider === "xai" || provider === "opencode" || req.body?.method === "device"
         ? "device"
         : "browser";
     if (provider === "openai" && !email) {
@@ -2262,8 +2272,8 @@ export function createAdminRouter(options: AdminRoutesOptions) {
             expiresAt: device.expiresAt,
           });
         }
-        if (provider === "opencode") {
-          const device = await requestOpenCodeDeviceCode();
+        if (provider === "opencode" || provider === "github-copilot") {
+          const device = provider === "github-copilot" ? await requestCopilotDeviceCode() : await requestOpenCodeDeviceCode();
           await oauthStore.create({
             ...flow,
             deviceAuthId: device.deviceCode,
@@ -2348,9 +2358,9 @@ export function createAdminRouter(options: AdminRoutesOptions) {
 
     const flow = await oauthStore.get(flowId);
     if (!flow) return res.status(404).json({ error: "flow not found" });
-    if (flow.provider === "xai" || flow.provider === "opencode") {
+    if (flow.provider === "github-copilot" || flow.provider === "xai" || flow.provider === "opencode") {
       return res.status(400).json({
-        error: `${flow.provider === "xai" ? "Grok Build" : "OpenCode"} OAuth uses the device-code completion endpoint`,
+        error: `${flow.provider === "github-copilot" ? "GitHub Copilot" : flow.provider === "xai" ? "Grok Build" : "OpenCode"} OAuth uses the device-code completion endpoint`,
       });
     }
 
@@ -2385,6 +2395,13 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     if (flow.method !== "device") {
       return res.status(400).json({ error: "flow is not a device authorization flow" });
     }
+    if (flow.provider === "github-copilot") {
+      if (flow.status === "success") {
+        const account = (await store.listAccounts()).find((account) => account.id === flow.accountId);
+        return res.json({ ok: true, status: "success", account: account ? redact(account) : undefined });
+      }
+      if (flow.status === "error") return res.status(400).json({ error: flow.error ?? "GitHub authorization failed" });
+    }
     if (flow.expiresAt && flow.expiresAt < Date.now()) {
       await oauthStore.update(flow.id, {
         status: "error",
@@ -2395,6 +2412,25 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
 
     try {
+      if (flow.provider === "github-copilot") {
+        if (!flow.deviceAuthId) throw new Error("GitHub device code is missing");
+        const result = await pollCopilotDeviceCode(flow.deviceAuthId, flow.intervalSeconds);
+        if (result.status === "pending") {
+          await oauthStore.update(flow.id, { intervalSeconds: result.intervalSeconds });
+          return res.json({ ok: true, status: "pending", intervalSeconds: result.intervalSeconds });
+        }
+        const existing = flow.targetAccountId
+          ? (await store.listAccounts()).find((account) => account.id === flow.targetAccountId)
+          : undefined;
+        if (flow.targetAccountId && (!existing || normalizeProvider(existing) !== "github-copilot")) {
+          throw new Error("Target GitHub Copilot account not found for reauth");
+        }
+        const account = await accountFromCopilotOAuth(flow, result.githubToken, existing);
+        await refreshUsageIfNeeded(account, account.baseUrl ?? COPILOT_BASE_URL, true);
+        await store.addOrUpdate(account);
+        await oauthStore.update(flow.id, { status: "success", completedAt: Date.now(), accountId: account.id });
+        return res.json({ ok: true, status: "success", account: redact(account) });
+      }
       if (flow.provider === "opencode") {
         if (!flow.deviceAuthId) {
           throw new Error("OpenCode device authorization is missing its device code");

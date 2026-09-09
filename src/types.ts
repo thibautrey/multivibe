@@ -5,6 +5,7 @@ export type ProviderId =
   | "opencode"
   | "mistral"
   | "zai"
+  | "github-copilot"
   | "xai";
 export type UpstreamMode = "responses" | "chat/completions";
 export type CompatibilityMode =
@@ -34,12 +35,16 @@ export type CapacityProfile = {
 };
 
 export type UsageWindow = {
+  label?: string;
   usedPercent?: number;
   resetAt?: number; // epoch ms
   windowSeconds?: number;
 };
 
 export type UsageSnapshot = {
+  balance?: { remaining: number; unit: string }; // absolute balance; never infer a percentage without a total
+  spend?: { amount: number; unit: string };
+  allowances?: Array<UsageWindow & { label: string }>; // informational allowances, not hard inference limits
   primary?: UsageWindow; // normalized ~5h window
   secondary?: UsageWindow; // normalized weekly window
   monthly?: UsageWindow; // normalized monthly window when exposed by a provider
@@ -132,6 +137,7 @@ export type Account = {
   opencodeConsoleUrl?: string;
   opencodeApiKey?: string;
   opencodeHeaders?: Record<string, string>;
+  copilotModelEndpoints?: Record<string, UpstreamMode>;
   xaiUserId?: string;
   xaiAuthScope?: string;
   oidcIssuer?: string;
@@ -280,7 +286,7 @@ export type OAuthFlowState = {
   redirectUri?: string;
   createdAt: number;
   method?: "browser" | "device";
-  provider?: "openai" | "opencode" | "xai";
+  provider?: "openai" | "opencode" | "xai" | "github-copilot";
   targetAccountId?: string;
   status: "pending" | "success" | "error";
   error?: string;

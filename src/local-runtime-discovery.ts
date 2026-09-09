@@ -1,3 +1,4 @@
+import { trustedCopilotBaseUrl } from "./github-copilot.js";
 import { sdkAdapterBaseUrl, SDK_INTERNAL_TOKEN } from "./ai-sdk/connection.js";
 import { openCodeInferenceToken } from "./opencode.js";
 import type {
@@ -448,6 +449,13 @@ export function authorizationForAccountRequest(
   account: Account,
   requestUrl: string,
 ): string | undefined {
+  if (account.provider === "github-copilot") {
+    const url = new URL(requestUrl);
+    if (url.origin !== trustedCopilotBaseUrl(account.baseUrl) || url.username || url.password ||
+        !["/models", "/chat/completions", "/responses"].includes(url.pathname)) {
+      throw new Error("GitHub Copilot request is outside its account boundary");
+    }
+  }
   if (account.provider === "ai-sdk") {
     if (!requestUrl.startsWith(`${sdkAdapterBaseUrl(account)}/v1/`)) {
       throw new Error("SDK adapter request is outside its account boundary");

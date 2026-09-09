@@ -1,4 +1,6 @@
 import { buildXaiUpstreamHeaders } from "./xai.js";
+import { fetchSdkUsage } from "./ai-sdk/quota.js";
+import { fetchCopilotUsage } from "./copilot-quota.js";
 import { trimTrailingSlashes } from "./string-utils.js";
 import type {
   Account,
@@ -34,6 +36,7 @@ export function normalizeProvider(account?: Pick<Account, "provider">): Provider
   if (account?.provider === "opencode") return "opencode";
   if (account?.provider === "mistral") return "mistral";
   if (account?.provider === "zai") return "zai";
+  if (account?.provider === "github-copilot") return "github-copilot";
   if (account?.provider === "xai") return "xai";
   return "openai";
 }
@@ -689,11 +692,6 @@ export async function refreshUsageIfNeeded(account: Account, chatgptBaseUrl: str
   }
   if (!force && !isUsageRefreshNeeded(account)) return account;
   const provider = normalizeProvider(account);
-  if (provider === "ai-sdk") {
-    account.usage = { fetchedAt: Date.now(), quotaStatus: "unsupported",
-      quotaMessage: "This provider does not expose subscription quota windows. Request token usage is tracked separately." };
-    return account;
-  }
   const shouldUseZaiQuotaEndpoint =
     provider === "zai" || (provider === "openai-compatible" && isZaiQuotaBaseUrl(chatgptBaseUrl));
 
@@ -716,6 +714,16 @@ export async function refreshUsageIfNeeded(account: Account, chatgptBaseUrl: str
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), USAGE_TIMEOUT_MS);
   try {
+    if (provider === "ai-sdk" || provider === "github-copilot") {
+      const previousQuotaError = account.usage?.quotaStatus === "error" ? account.usage.quotaMessage : undefined;
+      account.usage = provider === "ai-sdk"
+        ? await fetchSdkUsage(account, controller.signal)
+        : await fetchCopilotUsage(account, controller.signal);
+      if (previousQuotaError && account.state?.lastError === previousQuotaError) {
+        account.state = { ...account.state, lastError: undefined };
+      }
+      return account;
+    }
     const headers: Record<string, string> = {
       authorization: bearerToken(account.accessToken),
       accept: "application/json",
