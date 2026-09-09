@@ -29,7 +29,7 @@ export function managedProviderStream(options: {
     const hash = createHash("sha256");
     const state = createChatStreamAccumulator(options.grant.model);
     let pending = "", length = 0, done = false, invalid = false;
-    let usage: ReturnType<typeof providerTokenUsage> = null;
+    const usage: { value: ReturnType<typeof providerTokenUsage> } = { value: null };
     const frame = (text: string) => {
       const data = text.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
       if (!data) return;
@@ -40,8 +40,8 @@ export function managedProviderStream(options: {
         if (!payload || payload.object !== "chat.completion.chunk" || payload.error) throw Error("invalid_provider_stream");
         if (payload.usage !== undefined && payload.usage !== null) {
           const next = providerTokenUsage(payload);
-          if (!next || (usage && JSON.stringify(usage) !== JSON.stringify(next))) invalid = true;
-          usage = next;
+          if (!next || (usage.value && JSON.stringify(usage.value) !== JSON.stringify(next))) invalid = true;
+          usage.value = next;
           state.usage = payload.usage;
         }
         payload.model = options.grant.model;
@@ -69,8 +69,8 @@ export function managedProviderStream(options: {
       pending += decoder.decode();
       if (pending.trim()) invalid = true;
       options.receipt.responseSha256 = hash.digest("hex");
-      if (done && !invalid && usage) {
-        options.receipt.usage = { ...usage };
+      if (done && !invalid && usage.value) {
+        options.receipt.usage = { ...usage.value };
         options.receipt.state = "completed";
       }
     } catch {
