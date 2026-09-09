@@ -1,3 +1,6 @@
+import { CATALOGS as INFERENCE_CATALOGS } from "./expansion-inference/index.js";
+import { CATALOGS as SUBSCRIPTION_CATALOGS } from "./expansion-subscriptions/index.js";
+import { CATALOGS as GATEWAY_CATALOGS } from "./expansion-gateways/index.js";
 import type { Account } from "../types.js";
 import { SDK_PROVIDERS, sdkProvider } from "./providers.js";
 import { MAMMOUTH_CATALOG } from "./mammouth-catalog.js";
@@ -8,11 +11,14 @@ import { KIMI_MODELS, KIMI_CODING_MODELS } from "./kimi-provider.js";
 import { HUGGINGFACE_MODELS, ABACUS_MODELS } from "./additional-providers.js";
 import { QWEN_MODELS } from "./qwen-provider.js";
 import { MANUS_MODELS } from "./manus-provider.js";
+import { CLOUD_PLATFORM_CATALOGS } from "./cloud-platforms.js";
 
 export type SdkCatalogModel = { id: string; name: string; context?: number; output?: number; tools?: boolean; reasoning?: boolean; input: string[]; cost?: Record<string, number> };
 export type SdkCatalog = { source: string; fetchedAt: string; models: Record<string, SdkCatalogModel[]> };
 
 const REVIEWED_CATALOGS: Record<string, SdkCatalog> = {
+  ...CLOUD_PLATFORM_CATALOGS,
+  ...Object.fromEntries(Object.entries({ ...INFERENCE_CATALOGS, ...SUBSCRIPTION_CATALOGS, ...GATEWAY_CATALOGS }).map(([id, catalog]) => [id, { ...catalog, models: { [id]: catalog.models } }])),
   poe: { source: POE_CATALOG_SOURCE, fetchedAt: "2026-09-09T00:00:00.000Z", models: { poe: POE_MODELS } },
   mammouth: MAMMOUTH_CATALOG,
   manus: { source: "https://open.manus.ai/docs/v2/task.create", fetchedAt: "2026-09-09T00:00:00.000Z", models: { manus: MANUS_MODELS } },
@@ -31,7 +37,7 @@ function catalogForProvider(id: string) {
 
 export function sdkProviderCatalog() {
   return { source: SDK_CATALOG.source, fetchedAt: SDK_CATALOG.fetchedAt,
-    providers: SDK_PROVIDERS.map(({ id, name }) => ({ id, name, source: catalogForProvider(id).source, fetchedAt: catalogForProvider(id).fetchedAt, models: catalogForProvider(id).models[id] ?? [] })) };
+    providers: SDK_PROVIDERS.map(({ id, name, endpointPlaceholder, endpointRequired, credentialLabel, requiresModelSelection }) => ({ id, name, endpointPlaceholder, endpointRequired, credentialLabel, requiresModelSelection, source: catalogForProvider(id).source, fetchedAt: catalogForProvider(id).fetchedAt, models: catalogForProvider(id).models[id] ?? [] })) };
 }
 
 export function sdkAccountModels(account: Account) {
@@ -44,9 +50,9 @@ export function sdkAccountModels(account: Account) {
     : catalog;
   return selected.map((model) => ({
     id: `${provider.id}/${model.id}`, object: "model", owned_by: provider.id, created: 0,
-    name: model.name, ...("context" in model ? { context_window: model.context, max_output_tokens: model.output,
-      supports_tools: model.tools, supported_tool_types: model.tools ? ["function"] : [], supports_reasoning: model.reasoning,
-      input_modalities: model.input, pricing: model.cost } : {}),
+    name: model.name, context_window: model.context, max_output_tokens: model.output,
+    supports_tools: model.tools, supported_tool_types: model.tools === undefined ? undefined : model.tools ? ["function"] : [],
+    supports_reasoning: model.reasoning, input_modalities: model.input, pricing: model.cost,
     catalog_source: metadata.source, catalog_fetched_at: metadata.fetchedAt,
   }));
 }

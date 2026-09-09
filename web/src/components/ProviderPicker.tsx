@@ -15,7 +15,8 @@ export const SETUP_PROVIDERS: { id: SetupProvider; name: string; description: st
   { id: "openai-compatible", name: "OpenAI-compatible", description: "Connect a local server or another hosted API.", method: "Custom endpoint" },
 ];
 
-export type CloudProvider = { id: string; name: string; models: Array<{ id: string; name: string }> };
+export type CloudProvider = { id: string; name: string; models: Array<{ id: string; name: string }>;
+  endpointPlaceholder?: string; endpointRequired?: boolean; credentialLabel?: string; requiresModelSelection?: boolean };
 
 const PROVIDER_ICONS = new Set(["anthropic", "cerebras", "deepseek", "google", "groq", "mammouth", "mistral", "nvidia", "openai", "opencode", "openrouter", "perplexity", "togetherai", "xai", "zai"]);
 
@@ -40,7 +41,7 @@ export const ProviderPicker = memo(function ProviderPicker({ value, sdkProvider,
   const providers = [
     ...SETUP_PROVIDERS,
     ...cloudProviders.map((item) => ({ id: "ai-sdk" as const, sdkProvider: item.id, name: item.name,
-      description: `Connect ${item.name} with your API key.`, method: "API key" })),
+      description: `Connect ${item.name} with your ${item.credentialLabel ?? "API key"}.`, method: item.credentialLabel ?? "API key" })),
   ];
   const normalized = query.trim().toLocaleLowerCase();
   const matches = providers.filter((item) =>

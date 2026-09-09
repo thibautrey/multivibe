@@ -19,7 +19,7 @@ import {
 import { tracksSubscriptionQuota } from "../../lib/accountQuota";
 import { PROVIDER_ACCESS } from "../../lib/providerAccess";
 
-import { ProviderPicker, ProviderMark, SETUP_PROVIDERS, type SetupProvider } from "../ProviderPicker";
+import { ProviderPicker, ProviderMark, SETUP_PROVIDERS, type SetupProvider, type CloudProvider } from "../ProviderPicker";
 import { Metric } from "../Metric";
 import { WidgetGrid } from "../WidgetGrid";
 import { createPortal } from "react-dom";
@@ -131,6 +131,8 @@ function currentFloatingViewport(): FloatingMenuViewport {
 type EditAccountState = {
   id: string;
   provider: AccountProvider;
+  sdkProvider?: string;
+  sdkModels: string;
   upstreamMode: "" | "responses" | "chat/completions";
   email: string;
   accessToken: string;
@@ -553,7 +555,7 @@ export function AccountsTab(props: Props) {
     }
   };
   const [provider, setProvider] = useState<AccountProvider>("openai");
-  const [sdkProviders, setSdkProviders] = useState<Array<{id: string; name: string; models: Array<{id: string; name: string}>}>>([]);
+  const [sdkProviders, setSdkProviders] = useState<CloudProvider[]>([]);
   const [sdkProvider, setSdkProvider] = useState("anthropic");
   const [sdkModels, setSdkModels] = useState("");
   const [sdkCatalogError, setSdkCatalogError] = useState("");
@@ -1180,12 +1182,16 @@ export function AccountsTab(props: Props) {
   const selectedProviderName = provider === "ai-sdk"
     ? sdkProviders.find((item) => item.id === sdkProvider)?.name
     : SETUP_PROVIDERS.find((item) => item.id === provider)?.name;
+  const selectedSdkProvider = sdkProviders.find((item) => item.id === sdkProvider);
+  const editingSdkProvider = sdkProviders.find((item) => item.id === editingAccount?.sdkProvider);
 
   const providerConnectionReady = isOAuthProvider(provider)
     ? provider !== "openai" || Boolean(manualEmail.trim())
     : (provider === "nvidia-pair" || provider === "opencode" || Boolean(manualAccessToken.trim())) &&
       (!(provider === "openai-compatible" || provider === "nvidia-pair") || Boolean(manualBaseUrl.trim())) &&
-      (provider !== "ai-sdk" || sdkProviders.some((entry) => entry.id === sdkProvider));
+      (provider !== "ai-sdk" || Boolean(selectedSdkProvider) &&
+        (!selectedSdkProvider?.endpointRequired || Boolean(manualBaseUrl.trim())) &&
+        (!selectedSdkProvider?.requiresModelSelection || sdkModels.split(/[\n,]+/).some((id) => id.trim())));
 
   useEffect(() => {
     if (!showAddAccount || oauthDialog) return;
@@ -1337,7 +1343,7 @@ export function AccountsTab(props: Props) {
         accessToken: provider === "nvidia-pair" ? undefined : manualAccessToken.trim(),
         refreshToken: manualRefreshToken.trim() || undefined,
         baseUrl:
-          provider === "openai-compatible" || provider === "nvidia-pair" ? manualBaseUrl.trim() : undefined,
+          provider === "openai-compatible" || provider === "nvidia-pair" || provider === "ai-sdk" && selectedSdkProvider?.endpointPlaceholder ? manualBaseUrl.trim() || undefined : undefined,
         upstreamMode: manualUpstreamMode || undefined,
         priority: Number(manualPriority) || 0,
         enabled: manualEnabled,
@@ -1376,6 +1382,8 @@ export function AccountsTab(props: Props) {
     setEditingAccount({
       id: account.id,
       provider: nextProvider,
+      sdkProvider: account.sdkProvider,
+      sdkModels: account.sdkModels?.join(", ") ?? "",
       upstreamMode: account.upstreamMode ?? "",
       email: account.email ?? "",
       accessToken: account.accessToken ?? "",
@@ -1423,7 +1431,7 @@ export function AccountsTab(props: Props) {
 
     if (!editingAccount.accessToken.trim()) return;
     if (
-      editingAccount.provider === "openai-compatible" &&
+      (editingAccount.provider === "openai-compatible" || editingAccount.provider === "ai-sdk" && editingSdkProvider?.endpointRequired) &&
       !editingAccount.baseUrl.trim()
     )
       return;
@@ -1434,9 +1442,10 @@ export function AccountsTab(props: Props) {
         accessToken: editingAccount.accessToken.trim(),
         refreshToken: editingAccount.refreshToken.trim() || undefined,
         baseUrl:
-          editingAccount.provider === "openai-compatible"
+          editingAccount.provider === "openai-compatible" || editingAccount.provider === "ai-sdk" && editingSdkProvider?.endpointPlaceholder
             ? editingAccount.baseUrl.trim()
             : undefined,
+        sdkModels: editingAccount.provider === "ai-sdk" ? editingAccount.sdkModels.split(/[\n,]+/).map((id) => id.trim()).filter(Boolean) : undefined,
         upstreamMode: editingAccount.upstreamMode || undefined,
         priority: Number(editingAccount.priority) || 0,
         enabled: editingAccount.enabled,
@@ -2956,8 +2965,12 @@ export function AccountsTab(props: Props) {
                 </label>
               )}
               {provider === "ai-sdk" && <>
-                <label>Model IDs (optional)
-                  <textarea value={sdkModels} onChange={(event) => setSdkModels(event.target.value)} placeholder="Leave empty for the catalog, or enter model IDs separated by commas" />
+                {selectedSdkProvider?.endpointPlaceholder && <label>
+                  Provider endpoint {selectedSdkProvider.endpointRequired ? "(required)" : "(optional)"}
+                  <input type="url" value={manualBaseUrl} onChange={(event) => setManualBaseUrl(event.target.value)} placeholder={selectedSdkProvider.endpointPlaceholder} />
+                </label>}
+                <label>{selectedSdkProvider?.requiresModelSelection ? "Deployment / model names (required)" : "Model IDs (optional)"}
+                  <textarea value={sdkModels} onChange={(event) => setSdkModels(event.target.value)} placeholder={selectedSdkProvider?.requiresModelSelection ? "Enter your deployed model names separated by commas" : "Leave empty for the catalog, or enter model IDs separated by commas"} />
                 </label>
                 <p className="muted">{sdkProviders.find((entry) => entry.id === sdkProvider)?.models.length ?? 0} text-generation models listed in the provider catalog. Access and pricing depend on your provider account. Subscription quotas are not supplied by the catalog.</p>
                 {PROVIDER_ACCESS[sdkProvider] && <p className="muted">{PROVIDER_ACCESS[sdkProvider].note}</p>}
@@ -2967,7 +2980,7 @@ export function AccountsTab(props: Props) {
               ) : isManualTokenProvider(provider) ? (
                 <>
                   <label>
-                    API key
+                    {provider === "ai-sdk" ? selectedSdkProvider?.credentialLabel ?? "API key" : "API key"}
                     <input
                       type="password" autoComplete="off"
                       value={manualAccessToken}
@@ -3005,7 +3018,7 @@ export function AccountsTab(props: Props) {
                 <div><dt>Provider</dt><dd>{provider === "ai-sdk" ? sdkProviders.find((item) => item.id === sdkProvider)?.name : SETUP_PROVIDERS.find((item) => item.id === provider)?.name}</dd></div>
                 <div><dt>Account</dt><dd>{manualEmail.trim() || "No email label"}</dd></div>
                 <div><dt>Connection</dt><dd>{isOAuthProvider(provider) ? manualOAuthMethod === "device" ? "Device sign-in" : "Browser sign-in" : provider === "opencode" && !manualAccessToken.trim() ? "OpenCode device sign-in" : provider === "nvidia-pair" ? "Token-free endpoint" : "API key provided"}</dd></div>
-                {(provider === "openai-compatible" || provider === "nvidia-pair") && <div><dt>Endpoint</dt><dd>{manualBaseUrl}</dd></div>}
+                {(provider === "openai-compatible" || provider === "nvidia-pair" || provider === "ai-sdk" && selectedSdkProvider?.endpointPlaceholder) && <div><dt>Endpoint</dt><dd>{manualBaseUrl || selectedSdkProvider?.endpointPlaceholder}</dd></div>}
               </dl>
               {isOAuthProvider(provider) && <p className="provider-setup-note">Next, approve the connection with your provider to finish setup.</p>}
               {!onboardingProviderSetup && <details className="provider-setup-advanced"><summary>Advanced settings <span>Routing, priority & capacity</span></summary><div className="grid modal-grid">
@@ -3065,12 +3078,7 @@ export function AccountsTab(props: Props) {
               {!(provider === "opencode" && !manualAccessToken.trim()) && <button
                 className="btn"
                 disabled={
-                  isSubmitting ||
-                  (isOAuthProvider(provider)
-                    ? provider === "openai" && !manualEmail.trim()
-                    : (provider !== "nvidia-pair" && !manualAccessToken.trim()) ||
-                      ((provider === "openai-compatible" || provider === "nvidia-pair") &&
-                        !manualBaseUrl.trim()))
+                  isSubmitting || !providerConnectionReady
                 }
                 onClick={() => { setProviderError(""); void submitManualAccount().catch((error) => setProviderError(error instanceof Error ? error.message : String(error))); }}
               >
@@ -3165,7 +3173,7 @@ export function AccountsTab(props: Props) {
                   </select>
                 </label>
               )}
-              {editingAccount.provider === "openai-compatible" && (
+              {(editingAccount.provider === "openai-compatible" || editingAccount.provider === "ai-sdk" && editingSdkProvider?.endpointPlaceholder) && (
                 <label>
                   Base URL
                   <input
@@ -3177,10 +3185,14 @@ export function AccountsTab(props: Props) {
                           : current,
                       )
                     }
-                    placeholder="https://your-api.example.com"
+                    placeholder={editingSdkProvider?.endpointPlaceholder ?? "https://your-api.example.com"}
                   />
                 </label>
               )}
+              {editingAccount.provider === "ai-sdk" && <label>
+                {editingSdkProvider?.requiresModelSelection ? "Deployment / model names (required)" : "Model IDs (optional)"}
+                <textarea value={editingAccount.sdkModels} onChange={(event) => setEditingAccount((current) => current ? { ...current, sdkModels: event.target.value } : current)} />
+              </label>}
               <label>
                 Upstream mode (optional)
                 <select
@@ -3291,8 +3303,9 @@ export function AccountsTab(props: Props) {
                     ? editingAccount.provider === "openai" &&
                       !editingAccount.email.trim()
                     : !editingAccount.accessToken.trim() ||
-                      (editingAccount.provider === "openai-compatible" &&
-                        !editingAccount.baseUrl.trim()))
+                      ((editingAccount.provider === "openai-compatible" || editingAccount.provider === "ai-sdk" && editingSdkProvider?.endpointRequired) &&
+                        !editingAccount.baseUrl.trim()) ||
+                      (editingAccount.provider === "ai-sdk" && editingSdkProvider?.requiresModelSelection && !editingAccount.sdkModels.split(/[\n,]+/).some((id) => id.trim())))
                 }
                 onClick={() => void saveEditedAccount()}
               >
