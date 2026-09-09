@@ -1,3 +1,4 @@
+import { hostMenuProviderId, providerName } from "./menu-bar.js";
 import type { Account } from "../types.js";
 import { normalizeProvider } from "../quota.js";
 import {
@@ -19,6 +20,7 @@ export type HostNotification = {
   kind:
     | "will-codex-reset"
     | "weekly-quota"
+    | "provider-quota-limit"
     | "cloud-balance"
     | "cloud-auto-topup"
     | "worker-earnings"
@@ -193,8 +195,31 @@ function compactCount(value: number): string {
   return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 0 }).format(value);
 }
 
+// Use normalized usage and routing blocks so providers without a usage API also notify.
+function providerQuotaNotifications(accounts: Account[], now = Date.now()): HostNotification[] {
+  const limited = new Map<string, Account>();
+  for (const account of accounts) {
+    if (!account.enabled) continue;
+    const exhausted = account.usage?.quotaStatus !== "unsupported" &&
+      [account.usage?.primary, account.usage?.secondary, account.usage?.monthly, account.usage?.credits]
+        .some((window) => typeof window?.usedPercent === "number" &&
+          Number.isFinite(window.usedPercent) && window.usedPercent >= 100 &&
+          (window.resetAt === undefined || window.resetAt > now));
+    const blocked = Object.values(account.state?.modelBlocks ?? {}).some((block) =>
+      block.until > now && /\b429\b|rate[_ -]?limit|usage[_ -]?limit|insufficient[_ -]?quota|quota.{0,30}(?:exhausted|exceeded)|(?:exhausted|exceeded).{0,30}quota|limit[_ -]?exhausted/i.test(block.reason));
+    if (exhausted || blocked) limited.set(hostMenuProviderId(account), account);
+  }
+  return [...limited].map(([id, account]) => ({
+    id: `provider-quota-limit:${id}`,
+    kind: "provider-quota-limit",
+    priority: 100,
+    repeatMode: "condition",
+    message: `${providerName(account).slice(0, 100)} has reached a quota or rate limit on a connected account. Check its limits in the dashboard.`,
+  }));
+}
+
 export function buildHostNotifications(input: HostNotificationInput): HostNotification[] {
-  const notifications: HostNotification[] = [];
+  const notifications: HostNotification[] = providerQuotaNotifications(input.accounts);
   const openAiConfigured = openAiAccounts(input.accounts).length > 0;
   if (
     openAiConfigured &&
