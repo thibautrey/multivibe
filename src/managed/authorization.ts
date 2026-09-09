@@ -2,7 +2,7 @@ import { createHash, sign, verify, type KeyObject } from "node:crypto";
 
 /** Versioned internal contract. Never accept a customer-supplied execution grant. */
 export interface ExecutionGrant {
-  version: 1;
+  version: 2;
   audience: "multivibe-core-managed";
   attemptId: string;
   reservationId: string;
@@ -15,12 +15,16 @@ export interface ExecutionGrant {
   stream: boolean;
   bodySha256: string;
   maximumOutputTokens: number;
+  responseRecoveryKeyId: string;
+  responseRecoveryPublicKey: string;
+  responseRecoveryExpiresAt: number;
   issuedAt: number;
   expiresAt: number;
 }
 const fields = ["version", "audience", "attemptId", "reservationId", "routeVersionId",
   "providerId", "credentialRef", "model", "upstreamModel", "operation", "stream",
-  "bodySha256", "maximumOutputTokens", "issuedAt", "expiresAt"].sort();
+  "bodySha256", "maximumOutputTokens", "responseRecoveryKeyId", "responseRecoveryPublicKey",
+  "responseRecoveryExpiresAt", "issuedAt", "expiresAt"].sort();
 const identifier = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$/;
 export function executionBodyDigest(body: Uint8Array): string {
   return createHash("sha256").update(body).digest("hex");
@@ -29,14 +33,19 @@ function validate(value: unknown, now: number): asserts value is ExecutionGrant 
   if (!value || typeof value !== "object" || Array.isArray(value)) throw Error("invalid_execution_grant");
   const v = value as Record<string, unknown>;
   if (Object.keys(v).sort().join() !== fields.join()
-    || v.version !== 1 || v.audience !== "multivibe-core-managed"
+    || v.version !== 2 || v.audience !== "multivibe-core-managed"
     || !["responses", "chat_completions"].includes(String(v.operation))
     || typeof v.stream !== "boolean"
     || typeof v.bodySha256 !== "string" || !/^[a-f0-9]{64}$/.test(v.bodySha256)
+    || typeof v.responseRecoveryKeyId !== "string" || !identifier.test(v.responseRecoveryKeyId)
+    || typeof v.responseRecoveryPublicKey !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(v.responseRecoveryPublicKey)
     || !Number.isSafeInteger(v.maximumOutputTokens) || Number(v.maximumOutputTokens) <= 0
     || !Number.isSafeInteger(v.issuedAt) || !Number.isSafeInteger(v.expiresAt)
+    || !Number.isSafeInteger(v.responseRecoveryExpiresAt)
     || !Number.isSafeInteger(now) || Number(v.issuedAt) > now
     || Number(v.expiresAt) <= now || Number(v.expiresAt) - Number(v.issuedAt) > 60_000
+    || Number(v.responseRecoveryExpiresAt) <= Number(v.expiresAt)
+    || Number(v.responseRecoveryExpiresAt) - Number(v.issuedAt) > 15 * 60_000
     || Number(v.expiresAt) <= Number(v.issuedAt)) throw Error("invalid_execution_grant");
   for (const key of ["attemptId", "reservationId", "routeVersionId", "providerId", "credentialRef", "model", "upstreamModel"]) {
     if (typeof v[key] !== "string" || !identifier.test(v[key] as string)) throw Error("invalid_execution_grant");
@@ -46,7 +55,7 @@ export function signExecutionGrant(grant: ExecutionGrant, key: KeyObject, now = 
   validate(grant, now);
   if (key.asymmetricKeyType !== "ed25519" || key.type !== "private") throw Error("invalid_execution_signing_key");
   const payload = Buffer.from(JSON.stringify(grant)).toString("base64url");
-  const signature = sign(null, Buffer.from(`multivibe-execution-v1.${payload}`), key).toString("base64url");
+  const signature = sign(null, Buffer.from(`multivibe-execution-v2.${payload}`), key).toString("base64url");
   return `${payload}.${signature}`;
 }
 /** Signature and bounded claims only; does not authorize execution without body verification. */
@@ -55,7 +64,7 @@ export function verifyExecutionGrantClaims(token: string, key: KeyObject, now = 
     || key.asymmetricKeyType !== "ed25519" || key.type !== "public") throw Error("invalid_execution_grant");
   const [payload, signature] = token.split(".");
   if (!payload || !signature) throw Error("invalid_execution_grant");
-  if (!verify(null, Buffer.from(`multivibe-execution-v1.${payload}`), key, Buffer.from(signature, "base64url"))) throw Error("invalid_execution_grant");
+  if (!verify(null, Buffer.from(`multivibe-execution-v2.${payload}`), key, Buffer.from(signature, "base64url"))) throw Error("invalid_execution_grant");
   const grant: unknown = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
   // Receipt persistence/recovery may outlive the execution window. Validate the
   // complete original time contract, and still reject future issuance.

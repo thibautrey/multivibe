@@ -2,6 +2,7 @@ import { request } from "node:https";
 import type { ManagedInvocationAuthorization } from "./executor.js";
 import type {ExecutionReceipt} from "./journal.js";
 import {validateExecutionOwnership, type ExecutionOwnership} from "./coordination-client.js";
+import type {ExecutionRecoveryEnvelope} from "./response-recovery.js";
 
 /** Core-side transport: only workload TLS keys, never provider API credentials. */
 export class ManagedInjectorClient {
@@ -21,9 +22,9 @@ export class ManagedInjectorClient {
       ownership:validateExecutionOwnership(authorization.ownership),providerBodyBase64:Buffer.from(body).toString("base64")});
     return this.open("/internal/v1/inject",signal,envelope,authorization.token);
   }
-  async finish(token:string,ownership:ExecutionOwnership,receipt:ExecutionReceipt):Promise<void> {
-    const envelope=JSON.stringify({ownership:validateExecutionOwnership(ownership),receipt});
-    if(Buffer.byteLength(envelope)>16384)throw Error("injector_receipt_too_large");
+  async finish(token:string,ownership:ExecutionOwnership,receipt:ExecutionReceipt,recovery?:ExecutionRecoveryEnvelope):Promise<void> {
+    const envelope=JSON.stringify({ownership:validateExecutionOwnership(ownership),receipt,recovery:recovery??null});
+    if(Buffer.byteLength(envelope)>Math.ceil(this.maximumResponseBytes*4/3)+32768)throw Error("injector_receipt_too_large");
     const response=await this.open("/internal/v1/receipts",AbortSignal.timeout(this.timeoutMs),envelope,token);
     let result:unknown;
     try{result=JSON.parse(await response.text());}catch{throw Error("injector_receipt_response_invalid");}
