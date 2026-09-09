@@ -1,6 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { resolve, isAbsolute } from "node:path";
 import { createPublicKey } from "node:crypto";
+import { ManagedDiscovery } from "./discovery.js";
 import { ExecutionJournal } from "./journal.js";
 import { ManagedExecutor } from "./executor.js";
 import { createManagedExecutionServer } from "./http.js";
@@ -88,7 +89,7 @@ export async function createManagedRuntime(config: ManagedRuntimeConfig) {
     executionTimeoutMs: config.executionTimeoutMs });
   const server = createManagedExecutionServer({
     tls: { key: await readFile(config.tlsKeyFile), cert: await readFile(config.tlsCertFile), ca: await readFile(config.tlsCaFile) },
-    allowedClientUri: config.allowedClientUri, executor, journal,
+    allowedClientUri: config.allowedClientUri, executor, journal, discovery: new ManagedDiscovery(accounts),
     maximumRequestBytes: config.maximumRequestBytes, maximumConcurrentExecutions: config.maximumConcurrentExecutions,
   });
   return { server, accounts };
