@@ -8,6 +8,8 @@ export type HostMenuBarQuotaWindow = {
 };
 
 export type HostMenuBarAccount = {
+  provider: string;
+  providerName: string;
   displayName: string;
   enabled: boolean;
   status: "ready" | "paused" | "attention" | "limited";
@@ -108,8 +110,7 @@ export function buildHostMenuBarAccountsSummary(
   const openAIAccounts = source.filter(
     (account) => (account.provider ?? "openai") === "openai",
   );
-  const selectedAccounts = openAIAccounts.length ? openAIAccounts : source;
-  const accounts = selectedAccounts.map((account, index): HostMenuBarAccount => {
+  const accounts = source.map((account, index): HostMenuBarAccount => {
     const provider = account.provider ?? "openai";
     const providerName = {
       openai: "OpenAI",
@@ -127,6 +128,8 @@ export function buildHostMenuBarAccountsSummary(
     const fetchedAt = finiteNumber(account.usage?.fetchedAt);
     const hasQuota = Boolean(fiveHour || weekly || monthly);
     return {
+      provider,
+      providerName,
       displayName: email
         ? provider === "openai" ? email : `${providerName} · ${email}`
         : `${providerName} account ${index + 1}`,
@@ -143,16 +146,18 @@ export function buildHostMenuBarAccountsSummary(
       ...(monthly ? { monthly } : {}),
     };
   });
-  const fiveHourRemainingPercent = averageRemaining(accounts.map((account) => account.fiveHour));
-  const weeklyRemainingPercent = averageRemaining(accounts.map((account) => account.weekly));
+  // Preserve the legacy aggregate for older menu clients. Tabs aggregate their own provider.
+  const aggregateAccounts = openAIAccounts.length ? accounts.filter((account) => account.provider === "openai") : accounts;
+  const fiveHourRemainingPercent = averageRemaining(aggregateAccounts.map((account) => account.fiveHour));
+  const weeklyRemainingPercent = averageRemaining(aggregateAccounts.map((account) => account.weekly));
 
   return {
     accounts,
     quota: {
       ...(fiveHourRemainingPercent === undefined ? {} : { fiveHourRemainingPercent }),
-      fiveHourAccountCount: accounts.filter((account) => account.fiveHour).length,
+      fiveHourAccountCount: aggregateAccounts.filter((account) => account.fiveHour).length,
       ...(weeklyRemainingPercent === undefined ? {} : { weeklyRemainingPercent }),
-      weeklyAccountCount: accounts.filter((account) => account.weekly).length,
+      weeklyAccountCount: aggregateAccounts.filter((account) => account.weekly).length,
     },
   };
 }
