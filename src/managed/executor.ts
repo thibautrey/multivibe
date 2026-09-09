@@ -82,8 +82,8 @@ export class ManagedExecutor {
       try { payload = JSON.parse(raw.toString("utf8")); } catch { payload = undefined; }
       const usage = providerTokenUsage(payload, grant.maximumOutputTokens);
       receipt.usage = usage ? { ...usage } : null;
-      // A completed HTTP response without usage is still financially uncertain.
-      receipt.state = usage ? "completed" : "uncertain";
+      // Provider errors may report consumption, but cannot authorize automatic settlement.
+      receipt.state = upstreamResponse.ok && usage ? "completed" : "uncertain";
       if (!upstreamResponse.ok) {
         // Provider error bodies and headers can contain credentials or internal account data.
         response = Response.json({ error: { code: "provider_execution_failed" } }, { status: 502 });

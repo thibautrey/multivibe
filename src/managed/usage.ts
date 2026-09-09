@@ -28,7 +28,7 @@ function aliases(...values: unknown[]): string | null | undefined {
   return result;
 }
 export function providerTokenUsage(payload: unknown, maximumOutputTokens?: number): ProviderTokenUsage | null {
-  if (!record(payload) || !record(payload.usage)) return null;
+  if (!record(payload) || payload.error != null || !record(payload.usage)) return null;
   // A reported nonstandard service cannot be priced using standard-only grants.
   if (payload.service_tier !== undefined && payload.service_tier !== "default") return null;
   const usage = payload.usage;

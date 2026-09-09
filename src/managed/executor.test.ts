@@ -120,3 +120,24 @@ test("JSON and SSE cannot settle output above the signed allowance, including re
   assert.deepEqual(persisted,receipt);
  }
 });
+
+test("provider HTTP failures with token usage remain durable uncertainty",async()=>{
+ for(const status of [400,429,500,503]){
+  const h=harness(async()=>Response.json({usage:{prompt_tokens:4,completion_tokens:2,total_tokens:6}},{status}));
+  const result=await h.executor.execute(h.token,h.body);
+  const receipt=await result.receipt;
+  assert.equal(result.response.status,502);
+  assert.equal(receipt.state,"uncertain");
+  assert.equal(receipt.status,status);
+  assert.deepEqual(receipt.usage,{inputTokens:"4",outputTokens:"2",totalTokens:"6"});
+  assert.deepEqual(h.receipts,[receipt]);
+  await assert.rejects(h.executor.execute(h.token,h.body),/duplicate/);
+  assert.equal(h.calls(),1);
+ }
+});
+test("provider error payloads cannot manufacture authoritative usage under HTTP 200",async()=>{
+ const h=harness(async()=>Response.json({error:{message:"fixture failure"},usage:{prompt_tokens:4,completion_tokens:2}}));
+ const result=await h.executor.execute(h.token,h.body);
+ assert.equal((await result.receipt).state,"uncertain");
+ assert.equal((await result.receipt).usage,null);
+});
