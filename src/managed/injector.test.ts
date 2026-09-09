@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { ManagedCredentialInjector } from "./injector.js";
+import type {ManagedInvocationAuthorization} from "./executor.js";
 import { createManagedProviderAccount } from "./provider.js";
 import { managedProviderRequest } from "./request.js";
 import { executionBodyDigest, signExecutionGrant, type ExecutionGrant } from "./authorization.js";
@@ -19,7 +20,7 @@ test("injector consumes one shared dispatch fence across concurrent replicas",as
   const coordination={async dispatch(){if(consumed)throw Error("fenced");consumed=true;}};
   const options={verificationKey:keys.publicKey,coordination,maximumRequestBytes:10000,
    executionTimeoutMs:1000,clock:()=>1001,accounts:[{providerId:"mistral",credentialRef:"account",models:new Set(["upstream"]),
-    async chatCompletions(_body,_signal,authorization){await authorization.beforeDispatch?.();calls++;
+    async chatCompletions(_body:Uint8Array,_signal:AbortSignal,authorization:ManagedInvocationAuthorization){await authorization.beforeDispatch?.();calls++;
      return new Response("ok",{headers:{"x-provider-secret":"hidden","content-type":"text/plain"}});}}]};
   const f=fixture(),injector=new ManagedCredentialInjector(options);
   const results=await Promise.allSettled([injector.execute(f.body,f.authorization),injector.execute(f.body,f.authorization)]);
