@@ -54,3 +54,22 @@ test("injector rechecks expiry after durable persistence",async()=>{
  await assert.rejects(injector.execute(f.body,f.authorization),/invalid_execution_grant/);
  assert.equal(calls,0);
 });
+
+test("injector independently enforces OpenAI completion projection before credential access",async()=>{
+ const originalBody=Buffer.from(JSON.stringify({model:"public",input:"hello",max_output_tokens:8}));
+ const grant:ExecutionGrant={version:1,audience:"multivibe-core-managed",attemptId:"openai",reservationId:"r",routeVersionId:"v",
+ providerId:"openai",credentialRef:"account",model:"public",upstreamModel:"o3",operation:"responses",stream:false,
+ bodySha256:executionBodyDigest(originalBody),maximumOutputTokens:8,issuedAt:1000,expiresAt:61000};
+ const authorization={token:signExecutionGrant(grant,keys.privateKey,1000),originalBody};
+ let calls=0,claims=0;
+ const injector=new ManagedCredentialInjector({verificationKey:keys.publicKey,maximumRequestBytes:10000,executionTimeoutMs:1000,
+ clock:()=>1001,journal:{async claim(){claims++;}},accounts:[{providerId:"openai",credentialRef:"account",models:new Set(["o3"]),
+ async chatCompletions(bytes){calls++;const payload=JSON.parse(Buffer.from(bytes).toString());
+ assert.equal(payload.max_completion_tokens,8);assert.equal(payload.max_tokens,undefined);return new Response("ok");}}]});
+ const body=managedProviderRequest(grant,originalBody);
+ const stale=JSON.parse(Buffer.from(body).toString());delete stale.max_completion_tokens;stale.max_tokens=8;
+ await assert.rejects(injector.execute(Buffer.from(JSON.stringify(stale)),authorization),/provider_body_mismatch/);
+ assert.equal(claims,0);assert.equal(calls,0);
+ assert.equal(await (await injector.execute(body,authorization)).text(),"ok");
+ assert.equal(claims,1);assert.equal(calls,1);
+});
