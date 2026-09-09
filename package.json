@@ -26,6 +26,7 @@
     "test:source-release-tag": "node --test scripts/verify-source-release-tag.test.mjs",
     "test": "tsx --test \"src/**/*.test.ts\" \"web/test/**/*.test.ts\"",
     "start": "node scripts/start-native.mjs",
+    "start:injector": "node dist/managed/injector-main.js",
     "start:managed": "node dist/managed/main.js",
     "catalog:sdk:refresh": "node scripts/refresh-ai-sdk-catalog.mjs",
     "demo": "npm --prefix web run demo",
