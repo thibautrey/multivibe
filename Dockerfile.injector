@@ -1,0 +1,24 @@
+# syntax=docker/dockerfile:1.7
+# Dedicated credential injector image; separate from Core execution and administration.
+FROM node:22-alpine@sha256:1b2479dd35a99687d6638f5976fd235e26c5b37e8122f786fcd5fe231d63de5b AS dependencies
+WORKDIR /build
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
+FROM dependencies AS build
+COPY tsconfig.json ./
+COPY src ./src
+COPY scripts/managed/package-runtime.mjs ./scripts/managed/package-runtime.mjs
+RUN --network=none npm run build:api
+RUN --network=none node scripts/managed/package-runtime.mjs /managed-runtime injector
+
+FROM gcr.io/distroless/nodejs22-debian12:nonroot@sha256:afa48e2ae1100924bfb069244f4ef70c0f9c061654c669da6b7faa7881c1ec7f
+WORKDIR /app
+ARG CORE_SHA
+LABEL org.opencontainers.image.source="https://github.com/thibautrey/multivibe"
+LABEL org.opencontainers.image.revision=$CORE_SHA
+ENV NODE_ENV=production
+COPY --from=build --chown=65532:65532 /managed-runtime ./
+COPY --chown=65532:65532 LICENSE NOTICE ./
+USER 65532:65532
+EXPOSE 1457
+CMD ["managed/injector-main.js"]
