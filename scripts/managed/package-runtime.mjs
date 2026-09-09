@@ -6,7 +6,9 @@ const sourceRoot = resolve("dist");
 const outputRoot = resolve(process.argv[2] ?? "managed-dist");
 if (outputRoot === sourceRoot || outputRoot.startsWith(sourceRoot + sep)) throw Error("Managed output must be separate from dist");
 await mkdir(outputRoot, { recursive: false });
-const queue = [resolve(sourceRoot,"managed/main.js")];
+const entry = process.argv[3] ?? "core";
+if (!["core", "injector"].includes(entry)) throw Error("Unknown managed package entry");
+const queue = [resolve(sourceRoot,entry === "injector" ? "managed/injector-main.js" : "managed/main.js")];
 const visited = new Set();
 while(queue.length) {
   const file=queue.pop();
