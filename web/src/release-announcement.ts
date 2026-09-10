@@ -62,7 +62,11 @@ export function compareVersions(left: string, right: string) {
   return 0;
 }
 
-export function readReleaseAnnouncement(storage: ReleaseAnnouncementStorage, runningVersion: string) {
+export function readReleaseAnnouncement(
+  storage: ReleaseAnnouncementStorage,
+  runningVersion: string,
+  lastInstalledAt: string | null = null,
+) {
   const current = normalizedVersion(runningVersion);
   if (!parseVersion(current)) return null;
 
@@ -70,7 +74,8 @@ export function readReleaseAnnouncement(storage: ReleaseAnnouncementStorage, run
   const existingPending = storage.getItem(PENDING_RELEASE_VERSION_KEY);
   let pending = existingPending && parseVersion(existingPending) ? normalizedVersion(existingPending) : null;
 
-  if (previous && compareVersions(current, previous) === 1) {
+  const confirmedUpdateWithoutBrowserBaseline = !previous && !pending && Boolean(lastInstalledAt);
+  if (confirmedUpdateWithoutBrowserBaseline || (previous && compareVersions(current, previous) === 1)) {
     pending = current;
     storage.setItem(PENDING_RELEASE_VERSION_KEY, current);
   }

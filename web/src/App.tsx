@@ -270,7 +270,11 @@ export default function App() {
     const loadReleaseAnnouncement = async () => {
       try {
         const status = await api("/admin/host-update");
-        const version = readReleaseAnnouncement(localStorage, String(status?.current_version ?? ""));
+        const version = readReleaseAnnouncement(
+          localStorage,
+          String(status?.current_version ?? ""),
+          typeof status?.last_installed_at === "string" ? status.last_installed_at : null,
+        );
         if (!version || cancelled) return;
         setReleaseAnnouncementVersion(version);
         setReleaseDetails(null);
