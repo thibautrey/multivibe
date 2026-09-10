@@ -100,6 +100,7 @@ import {
 import type { HostUpdateController, HostUpdateStatus } from "../../host/update-controller.js";
 import type { MultivibeCloudService } from "../../multivibe-cloud.js";
 import { fetchCodexQuotaResetForecast } from "../../quota-reset-forecast.js";
+import type { MultivibeTeamSyncService, TeamSyncManifest } from "../../team-sync.js";
 
 const MULTIVIBE_CLOUD_FLOW_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -134,6 +135,7 @@ export type AdminRoutesOptions = {
   moduleManager?: ModuleManager;
   hostUpdateController?: HostUpdateController;
   multivibeCloud?: MultivibeCloudService;
+  teamSync?: MultivibeTeamSyncService;
   appVersion?: string;
 };
 
@@ -989,6 +991,31 @@ export function createAdminRouter(options: AdminRoutesOptions) {
   router.get("/accounts", async (_req, res) =>
     res.json({ accounts: (await store.listAccounts()).map(redact) }),
   );
+
+  router.get("/team", async (_req,res)=>{
+    if(!options.teamSync)return res.status(503).json({error:"Multivibe Team Sync is unavailable"});
+    return res.json(await options.teamSync.status());
+  });
+  router.get("/team/providers/eligible",async(_req,res)=>{
+    if(!options.teamSync)return res.status(503).json({error:"Multivibe Team Sync is unavailable"});
+    return res.json({schemaVersion:"multivibe-team-import-preview-v1",providers:await options.teamSync.eligibleProviders()});
+  });
+  router.post("/team/sync",async(req,res)=>{
+    if(!options.teamSync)return res.status(503).json({error:"Multivibe Team Sync is unavailable"});
+    try{return res.json({ok:true,...await options.teamSync.applyManifest(req.body as TeamSyncManifest)});}catch(error){return res.status(409).json({error:error instanceof Error?error.message:"Team Sync failed"});}
+  });
+  router.post("/team/providers/:id/duplicate",async(req,res)=>{
+    if(!options.teamSync)return res.status(503).json({error:"Multivibe Team Sync is unavailable"});
+    try{return res.status(201).json({account:redact(await options.teamSync.duplicateAsLocal(req.params.id))});}catch(error){return res.status(404).json({error:error instanceof Error?error.message:"Team provider not found"});}
+  });
+  router.get("/team/analytics/outbox",(_req,res)=>{
+    if(!options.teamSync)return res.status(503).json({error:"Multivibe Team Sync is unavailable"});
+    return res.json(options.teamSync.analyticsBatch());
+  });
+  router.post("/team/disconnect",async(_req,res)=>{
+    if(!options.teamSync)return res.status(503).json({error:"Multivibe Team Sync is unavailable"});
+    await options.teamSync.detach();return res.json({ok:true});
+  });
 
   router.get("/quota-reset-forecast", async (_req, res) => {
     res.setHeader("cache-control", "no-store");
@@ -1963,6 +1990,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
     const existing = (await store.listAccounts()).find((a) => a.id === req.params.id);
     if (!existing) return res.status(404).json({ error: "not found" });
+    if (existing.multivibeTeam?.readOnly) return res.status(409).json({ error: "Synchronized Team providers are read-only; duplicate the provider for local changes" });
     const next = { ...existing, ...body };
     if (next.provider === "github-copilot") {
       if (existing.provider !== "github-copilot") return res.status(400).json({ error: "Connect GitHub Copilot using device sign-in" });
@@ -1982,6 +2010,8 @@ export function createAdminRouter(options: AdminRoutesOptions) {
   });
 
   router.delete("/accounts/:id", async (req, res) => {
+    const existing=(await store.listAccounts()).find(account=>account.id===req.params.id);
+    if(existing?.multivibeTeam?.readOnly)return res.status(409).json({error:"Synchronized Team providers must be removed from Multivibe Cloud"});
     const ok = await store.deleteAccount(req.params.id);
     if (!ok) return res.status(404).json({ error: "not found" });
     res.json({ ok: true });
