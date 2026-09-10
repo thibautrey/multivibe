@@ -35,6 +35,14 @@ test("announces only a newer version and keeps it pending until dismissal", () =
   assert.equal(readReleaseAnnouncement(store, "0.2.60"), null);
 });
 
+test("uses a confirmed native installation when no browser baseline exists", () => {
+  const updatedStore = storage();
+  assert.equal(readReleaseAnnouncement(updatedStore, "0.2.61", "2026-09-10T10:00:00Z"), "0.2.61");
+
+  const firstInstallStore = storage();
+  assert.equal(readReleaseAnnouncement(firstInstallStore, "0.2.61"), null);
+});
+
 test("uses the first trusted GitHub-hosted Markdown image as the banner", () => {
   const markdown = "Welcome!\n\n![MultiVibe v1.2](https://raw.githubusercontent.com/thibautrey/multivibe/main/docs/images/release-1.2.png)\n\n## Improvements\n- Faster startup";
   assert.deepEqual(extractReleaseBanner(markdown), {
