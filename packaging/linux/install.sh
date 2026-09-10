@@ -19,12 +19,15 @@ fail() {
 usage() {
   cat <<'EOF'
 Usage: ./install.sh [--foreground] [--automatic-update]
+                    [--managed-profile /absolute/path]
 
 Install MultiVibe Host for the current user. When a usable systemd user
 manager is present, the default mode installs and starts a user service.
 Use --foreground on private environment or another host without a systemd user manager;
 the installer will start MultiVibe Host in the current terminal after the
 installation has completed.
+
+--managed-profile consumes a mode-0600, one-time Team enrollment JSON file.
 EOF
 }
 
@@ -72,10 +75,16 @@ is_managed_launcher() {
 }
 
 MODE=service
+MANAGED_PROFILE=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --foreground) MODE=foreground ;;
     --automatic-update) ;;
+    --managed-profile)
+      shift
+      [ "$#" -gt 0 ] || fail "--managed-profile requires a value"
+      MANAGED_PROFILE=$1
+      ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; fail "unknown option: $1" ;;
   esac
@@ -146,6 +155,39 @@ done
 ensure_directory "$LOCAL_ROOT" "the per-user installation directory"
 ensure_directory "$LIBRARY_DIRECTORY" "the per-user library directory"
 ensure_directory "$BIN_DIRECTORY" "the per-user binary directory"
+ensure_directory "$DATA_DIRECTORY" "the MultiVibe private data directory"
+
+install_managed_profile() {
+  source=$1
+  validate_absolute_path "$source" "the managed profile path"
+  [ -f "$source" ] && [ ! -L "$source" ] || fail "the managed profile must be a regular file"
+  [ "$(stat -c '%u' "$source")" = "$(id -u)" ] || fail "the managed profile must belong to the target user"
+  [ "$(stat -c '%a' "$source")" = "600" ] || fail "the managed profile must use mode 0600"
+  size=$(stat -c '%s' "$source")
+  case "$size" in ''|*[!0-9]*) fail "the managed profile size is invalid" ;; esac
+  [ "$size" -ge 2 ] && [ "$size" -le 16384 ] || fail "the managed profile size is invalid"
+  destination="$DATA_DIRECTORY/managed-team-enrollment.json"
+  [ "$source" != "$destination" ] || fail "the managed profile source must be a staging file"
+  staged=$(mktemp "$DATA_DIRECTORY/.managed-team-enrollment.XXXXXX") || fail "the managed profile could not be staged"
+  if ! cp "$source" "$staged" || ! chmod 600 "$staged"; then
+    rm -f "$staged"
+    fail "the managed profile could not be staged"
+  fi
+  if [ -e "$destination" ]; then
+    [ -f "$destination" ] && [ ! -L "$destination" ] && cmp -s "$destination" "$staged" || {
+      rm -f "$staged"
+      fail "a different managed profile is already pending"
+    }
+    rm -f "$staged"
+  else
+    mv "$staged" "$destination" || fail "the managed profile could not be committed"
+  fi
+  rm -f "$source" || fail "the consumed managed profile staging file could not be removed"
+}
+
+if [ -n "$MANAGED_PROFILE" ]; then
+  install_managed_profile "$MANAGED_PROFILE"
+fi
 
 if [ -L "$INSTALL_ROOT" ]; then
   fail "the installation destination must not be a symbolic link"

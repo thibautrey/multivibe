@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://multivibe.cloud/schemas/multivibe-managed-enrollment-v1.schema.json",
+  "title": "MultiVibe managed Team enrollment",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "profileId",
+    "managementChannel",
+    "organizationId",
+    "membershipId",
+    "deviceClaim",
+    "instanceName",
+    "bootstrapToken",
+    "cloudApiOrigin",
+    "issuedAt",
+    "expiresAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "multivibe-managed-enrollment-v1" },
+    "profileId": { "type": "string", "format": "uuid" },
+    "managementChannel": { "enum": ["device", "user"] },
+    "organizationId": { "type": "string", "format": "uuid" },
+    "membershipId": { "type": "string", "format": "uuid" },
+    "deviceClaim": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["issuer", "subject", "nonce"],
+          "properties": {
+            "issuer": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$" },
+            "subject": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$" },
+            "nonce": { "type": "string", "minLength": 22, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+$" }
+          }
+        }
+      ]
+    },
+    "instanceName": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "bootstrapToken": { "type": "string", "pattern": "^mvmb_[A-Za-z0-9_-]{43}$" },
+    "cloudApiOrigin": { "const": "https://app.multivibe.cloud" },
+    "issuedAt": { "type": "integer", "minimum": 0 },
+    "expiresAt": { "type": "integer", "minimum": 1 }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "managementChannel": { "const": "device" } } },
+      "then": { "properties": { "deviceClaim": { "type": "object" } } }
+    }
+  ]
+}

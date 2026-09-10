@@ -79,6 +79,14 @@ test("native packages include the updater and platform schedulers", async () => 
   assert.match(packager, /uninstall\.ps1/u);
   assert.match(packager, /multivibe-host\.ico/u);
   assert.match(windows, /Register-ScheduledTask/u);
+  assert.match(macos, /--managed-profile/u);
+  assert.match(macos, /managed-team-enrollment\.json/u);
+  assert.match(macos, /must use mode 0600/u);
+  assert.match(linux, /--managed-profile/u);
+  assert.match(linux, /managed-team-enrollment\.json/u);
+  assert.match(windows, /ManagedProfilePath/u);
+  assert.match(windows, /managed-team-enrollment\.json/u);
+  assert.match(windows, /Assert-PrivateAcl \$sourcePath/u);
   assert.match(windows, /Restore-ManagedTaskSnapshot/u);
   assert.match(windows, /Stop-ScheduledTask/u);
   assert.match(windows, /Get-Process -Name \$name/u);
