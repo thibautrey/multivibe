@@ -1474,12 +1474,29 @@ async function validateMacDiskImage(diskImage, work, options) {
     await command("hdiutil", ["attach", "-quiet", "-readonly", "-nobrowse", "-mountpoint", mount, diskImage]);
     mounted = true;
     const entries = (await readdir(mount, { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name));
-    if (entries.length !== 2 || entries[0].name !== "Applications" || !entries[0].isSymbolicLink() ||
-      entries[1].name !== "MultiVibe Host.app" || !entries[1].isDirectory() || entries[1].isSymbolicLink()) {
-      throw new Error("provider-host disk image must contain only MultiVibe Host.app and the Applications shortcut");
+    const allowedEntries = new Set([".background", ".DS_Store", ".fseventsd", "Applications", "MultiVibe Host.app"]);
+    if (entries.some((entry) => !allowedEntries.has(entry.name))) {
+      throw new Error("provider-host disk image contains an unexpected root entry");
+    }
+    const visibleEntries = entries.filter((entry) => !entry.name.startsWith("."));
+    if (visibleEntries.length !== 2 || visibleEntries[0].name !== "Applications" || !visibleEntries[0].isSymbolicLink() ||
+      visibleEntries[1].name !== "MultiVibe Host.app" || !visibleEntries[1].isDirectory() || visibleEntries[1].isSymbolicLink()) {
+      throw new Error("provider-host disk image must expose only MultiVibe Host.app and the Applications shortcut");
     }
     if (await readlink(path.join(mount, "Applications")) !== "/Applications") {
       throw new Error("provider-host disk image Applications shortcut is invalid");
+    }
+    const finderMetadata = await lstat(path.join(mount, ".DS_Store"));
+    if (!finderMetadata.isFile() || finderMetadata.isSymbolicLink() || finderMetadata.size < 1 || finderMetadata.size > 1024 * 1024) {
+      throw new Error("provider-host disk image Finder layout metadata is invalid");
+    }
+    const backgroundPath = path.join(mount, ".background", "dmg-background.png");
+    const backgroundInfo = await lstat(backgroundPath);
+    const background = await readFile(backgroundPath);
+    if (!backgroundInfo.isFile() || backgroundInfo.isSymbolicLink() || backgroundInfo.size < 24 ||
+      backgroundInfo.size > 2 * 1024 * 1024 || !background.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ||
+      background.readUInt32BE(16) !== 720 || background.readUInt32BE(20) !== 440) {
+      throw new Error("provider-host disk image background is invalid");
     }
     const application = path.join(mount, "MultiVibe Host.app");
     await validateProviderDemandTrustFile(path.join(

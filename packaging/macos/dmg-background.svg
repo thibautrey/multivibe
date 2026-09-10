@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="440" viewBox="0 0 720 440" role="img" aria-labelledby="title desc">
+  <title id="title">MultiVibe Host installer background</title>
+  <desc id="desc">A dark branded installer background with an arrow pointing from MultiVibe Host to Applications.</desc>
+  <defs>
+    <linearGradient id="backdrop" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f9fcfb"/>
+      <stop offset="0.58" stop-color="#f1f7f5"/>
+      <stop offset="1" stop-color="#e6f0ed"/>
+    </linearGradient>
+    <linearGradient id="arrow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#55c7b8"/>
+      <stop offset="1" stop-color="#efb26f"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="48%" r="58%">
+      <stop offset="0" stop-color="#55c7b8" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#55c7b8" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-30%" y="-50%" width="160%" height="200%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="5" result="blur"/>
+      <feOffset dy="3" result="offset"/>
+      <feColorMatrix in="offset" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .20 0"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="720" height="440" fill="url(#backdrop)"/>
+  <rect width="720" height="440" fill="url(#glow)"/>
+  <path d="M0 1H720" stroke="#14231f" stroke-opacity="0.08"/>
+
+  <g transform="translate(291 55)">
+    <rect width="36" height="36" rx="9" fill="#101c19" stroke="#55c7b8" stroke-opacity="0.32"/>
+    <path d="M9 26V11.5L18 22.5 27 11.5V26" fill="none" stroke="#55c7b8" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M18 22.5 27 11.5" fill="none" stroke="#efb26f" stroke-width="3.4" stroke-linecap="round"/>
+  </g>
+  <text x="337" y="81" fill="#14231f" font-family="Avenir Next, Helvetica Neue, sans-serif" font-size="20" font-weight="600" letter-spacing="-.25">MultiVibe Host</text>
+
+  <g filter="url(#shadow)">
+    <path d="M294 219H414" fill="none" stroke="url(#arrow)" stroke-width="8" stroke-linecap="round"/>
+    <path d="m398 202 18 17-18 17" fill="none" stroke="#efb26f" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <text x="360" y="369" fill="#24413a" font-family="Avenir Next, Helvetica Neue, sans-serif" font-size="17" font-weight="500" text-anchor="middle">Drag MultiVibe Host to Applications</text>
+  <text x="360" y="397" fill="#6e837c" font-family="Avenir Next, Helvetica Neue, sans-serif" font-size="12" text-anchor="middle">Then open it from your Applications folder</text>
+</svg>
