@@ -9479,8 +9479,14 @@ fn codex_model_shape(model: &Value) -> Option<Value> {
     if let Some(value) = model.get("codexModelInfo") {
         return Some(value.clone());
     }
-    let provider = model.get("metadata")?.get("provider")?.as_str()?;
-    if provider != "zai" && provider != "openai-compatible" {
+    let metadata = model.get("metadata")?;
+    let provider = metadata.get("provider")?.as_str()?;
+    let is_text_capable_ai_sdk_model = provider == "ai-sdk"
+        && metadata
+            .get("input_modalities")
+            .and_then(Value::as_array)
+            .is_some_and(|modalities| modalities.iter().any(|value| value.as_str() == Some("text")));
+    if provider != "zai" && provider != "openai-compatible" && !is_text_capable_ai_sdk_model {
         return None;
     }
     let id = model.get("id").and_then(Value::as_str)?;
@@ -9490,7 +9496,11 @@ fn codex_model_shape(model: &Value) -> Option<Value> {
     }) {
         return None;
     }
-    let provider_name = if provider == "zai" { "z.ai" } else { "OpenAI-compatible" };
+    let provider_name = match provider {
+        "zai" => "z.ai",
+        "ai-sdk" => "AI SDK",
+        _ => "OpenAI-compatible",
+    };
     Some(json!({
         "slug": id,
         "display_name": id,
@@ -11203,6 +11213,32 @@ mod tests {
         assert_eq!(native.len(), 1);
         assert_eq!(native[0]["slug"], "Qwen3.8-27B-4bit");
         assert_eq!(native[0]["visibility"], "list");
+    }
+
+    #[test]
+    fn codex_catalog_includes_text_ai_sdk_models_but_not_utility_models() {
+        let models = [
+            json!({"id": "deepseek/deepseek-v4-flash", "metadata": {"provider": "ai-sdk", "input_modalities": ["text"]}}),
+            json!({"id": "deepseek/deepseek-v4-flash-vision-exp", "metadata": {"provider": "ai-sdk", "input_modalities": ["text", "image"]}}),
+            json!({"id": "deepseek/deepseek-v4-pro", "metadata": {"provider": "ai-sdk", "input_modalities": ["text"]}}),
+            json!({"id": "image-generator", "metadata": {"provider": "ai-sdk", "input_modalities": ["image"]}}),
+            json!({"id": "speech/tts-1", "metadata": {"provider": "ai-sdk", "input_modalities": ["text"]}}),
+            json!({"id": "openai/text-embedding-3-small", "metadata": {"provider": "ai-sdk", "input_modalities": ["text"]}}),
+            json!({"id": "cohere/rerank-v3.5", "metadata": {"provider": "ai-sdk", "input_modalities": ["text"]}}),
+        ];
+        let response = models_list_response(&models, json!({}));
+        assert_eq!(response["data"].as_array().unwrap().len(), models.len());
+        let slugs = response["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|model| model["slug"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(slugs, [
+            "deepseek/deepseek-v4-flash",
+            "deepseek/deepseek-v4-flash-vision-exp",
+            "deepseek/deepseek-v4-pro",
+        ]);
     }
 
     #[tokio::test]
