@@ -304,10 +304,15 @@ cat > "$STAGED_UPDATE_LAUNCH_AGENT" <<EOF
     <string>$DESTINATION_APPLICATION/Contents/Helpers/multivibe-host-updater</string>
     <string>auto</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>MULTIVIBE_HOST_DATA_DIR</key>
+    <string>$HOME/Library/Application Support/MultiVibe</string>
+    <key>MULTIVIBE_CONTROL_PLANE_PORT</key>
+    <string>1456</string>
+  </dict>
   <key>StartInterval</key>
   <integer>3600</integer>
-  <key>RunAtLoad</key>
-  <true/>
   <key>ProcessType</key>
   <string>Background</string>
   <key>StandardOutPath</key>

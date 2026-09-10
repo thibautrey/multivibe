@@ -9,6 +9,38 @@ import (
 	"testing"
 )
 
+func TestResolveHostControlPlanePort(t *testing.T) {
+	tests := []struct {
+		name          string
+		goos          string
+		controlPlane  string
+		hostPort      string
+		want          string
+		wantError     bool
+	}{
+		{name: "macOS default", goos: "darwin", want: "1456"},
+		{name: "macOS ignores edge port", goos: "darwin", hostPort: "1455", want: "1456"},
+		{name: "explicit control plane", goos: "darwin", controlPlane: "1460", hostPort: "1455", want: "1460"},
+		{name: "other platform default", goos: "linux", want: "1455"},
+		{name: "other platform host port", goos: "windows", hostPort: "2480", want: "2480"},
+		{name: "invalid control plane", goos: "linux", controlPlane: "not-a-port", wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := resolveHostControlPlanePort(test.goos, test.controlPlane, test.hostPort)
+			if test.wantError {
+				if err == nil {
+					t.Fatal("invalid port was accepted")
+				}
+				return
+			}
+			if err != nil || got != test.want {
+				t.Fatalf("resolveHostControlPlanePort() = %q, %v; want %q", got, err, test.want)
+			}
+		})
+	}
+}
+
 func writeTarFixture(t *testing.T, name string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fixture.tar.gz")
