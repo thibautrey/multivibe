@@ -20,7 +20,7 @@ func TestSchedulerPlistEscapesInstalledPaths(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, want := range []string{"A&amp;B", "<integer>60</integer>", "<string>auto</string>", "MULTIVIBE_HOST_DATA_DIR"} {
+	for _, want := range []string{"A&amp;B", "<integer>60</integer>", "<string>auto</string>", "MULTIVIBE_HOST_DATA_DIR", "MULTIVIBE_CONTROL_PLANE_PORT", "1456"} {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("missing %s", want)
 		}

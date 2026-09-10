@@ -148,6 +148,33 @@ type hostCredentials struct {
 	AdminToken    string `json:"admin_token"`
 }
 
+func resolveHostControlPlanePort(goos, controlPlanePort, hostPort string) (string, error) {
+	port := strings.TrimSpace(controlPlanePort)
+	if port == "" && goos == "darwin" {
+		// macOS runs the Node control plane separately from the Rust edge.
+		port = "1456"
+	}
+	if port == "" {
+		port = strings.TrimSpace(hostPort)
+	}
+	if port == "" {
+		port = "1455"
+	}
+	parsed, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || parsed == 0 || strconv.FormatUint(parsed, 10) != port {
+		return "", errors.New("the Host control-plane port is invalid")
+	}
+	return port, nil
+}
+
+func hostControlPlanePort() (string, error) {
+	return resolveHostControlPlanePort(
+		runtime.GOOS,
+		os.Getenv("MULTIVIBE_CONTROL_PLANE_PORT"),
+		os.Getenv("MULTIVIBE_HOST_PORT"),
+	)
+}
+
 func (update *updater) hostRequest(ctx context.Context, method, route string) (*http.Response, error) {
 	credentialPath := filepath.Join(update.store.directory, "host-credentials.json")
 	info, err := os.Lstat(credentialPath)
@@ -162,9 +189,9 @@ func (update *updater) hostRequest(ctx context.Context, method, route string) (*
 	if decodeStrictJSON(data, &credentials) != nil || credentials.SchemaVersion != "multivibe-host-credentials-v1" || len(credentials.AdminToken) < 32 {
 		return nil, errors.New("the local Host credentials are invalid")
 	}
-	port := strings.TrimSpace(os.Getenv("MULTIVIBE_HOST_PORT"))
-	if port == "" {
-		port = "1455"
+	port, err := hostControlPlanePort()
+	if err != nil {
+		return nil, err
 	}
 	request, err := http.NewRequestWithContext(ctx, method, "http://127.0.0.1:"+port+route, nil)
 	if err != nil {
@@ -176,9 +203,30 @@ func (update *updater) hostRequest(ctx context.Context, method, route string) (*
 }
 
 func (update *updater) drain(ctx context.Context) error {
-	response, err := update.hostRequest(ctx, http.MethodPost, "/admin/host-update/drain")
-	if err != nil {
-		return errors.New("the running Host could not enter update drain mode")
+	var response *http.Response
+	var err error
+	startupDeadline := time.Now().Add(30 * time.Second)
+	for {
+		response, err = update.hostRequest(ctx, http.MethodPost, "/admin/host-update/drain")
+		if err == nil && response.StatusCode == http.StatusOK {
+			break
+		}
+		if err == nil {
+			status := response.StatusCode
+			_ = response.Body.Close()
+			if status < http.StatusInternalServerError || status >= 600 {
+				return fmt.Errorf("the Host refused update drain mode with HTTP %d", status)
+			}
+			err = fmt.Errorf("the Host returned HTTP %d while entering update drain mode", status)
+		}
+		if !time.Now().Before(startupDeadline) {
+			return fmt.Errorf("the running Host could not enter update drain mode: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {

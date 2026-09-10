@@ -31,7 +31,7 @@ func schedulerPlist(executable, data string) []byte {
 <plist version="1.0"><dict>
 <key>Label</key><string>%s</string>
 <key>ProgramArguments</key><array><string>%s</string><string>auto</string></array>
-<key>EnvironmentVariables</key><dict><key>MULTIVIBE_HOST_DATA_DIR</key><string>%s</string></dict>
+<key>EnvironmentVariables</key><dict><key>MULTIVIBE_HOST_DATA_DIR</key><string>%s</string><key>MULTIVIBE_CONTROL_PLANE_PORT</key><string>1456</string></dict>
 <key>StartInterval</key><integer>60</integer>
 <key>ProcessType</key><string>Background</string>
 <key>StandardErrorPath</key><string>%s</string>
