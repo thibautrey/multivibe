@@ -1581,6 +1581,15 @@ fn value_string(value: Option<&Value>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// Read protocol payload text without normalizing its boundaries.
+///
+/// Generated-token streams commonly put the separator before the next token
+/// (for example, `" world"`). Using `value_string` for those deltas silently
+/// joins words together because it trims the separator on every chunk.
+fn raw_string(value: Option<&Value>) -> Option<String> {
+    value.and_then(Value::as_str).map(ToOwned::to_owned)
+}
+
 fn object_value(value: &Value) -> Map<String, Value> {
     value.as_object().cloned().unwrap_or_default()
 }
@@ -2160,7 +2169,7 @@ fn anthropic_text(value: Option<&Value>) -> Option<String> {
                 .iter()
                 .filter_map(|part| {
                     (part.get("type").and_then(Value::as_str) == Some("text"))
-                        .then(|| value_string(part.get("text")))
+                        .then(|| raw_string(part.get("text")))
                         .flatten()
                 })
                 .collect::<Vec<_>>()
@@ -2210,7 +2219,7 @@ fn anthropic_to_responses(body: &Value, claude_code: bool, config: &EdgeConfig) 
             let mut message_content = Vec::new();
             for part in parts {
                 if part.get("type").and_then(Value::as_str) == Some("text") {
-                    if let Some(text) = value_string(part.get("text")) {
+                    if let Some(text) = raw_string(part.get("text")) {
                         message_content.push(json!({"type": if role == "assistant" { "output_text" } else { "input_text" }, "text": text}));
                     }
                 } else if role == "user" {
@@ -2357,7 +2366,7 @@ fn responses_to_anthropic(response: &Value, requested_model: &str) -> Value {
                             part.get("type").and_then(Value::as_str),
                             Some("output_text" | "text")
                         ) {
-                            if let Some(text) = value_string(part.get("text")) {
+                            if let Some(text) = raw_string(part.get("text")) {
                                 content.push(json!({"type": "text", "text": text}));
                             }
                         }
@@ -2457,7 +2466,7 @@ fn chat_to_response(value: &Value, fallback_model: &str) -> Value {
             } else if let Some(parts) = content.as_array() {
                 parts
                     .iter()
-                    .filter_map(|part| value_string(part.get("text")))
+                    .filter_map(|part| raw_string(part.get("text")))
                     .collect::<Vec<_>>()
                     .join("")
             } else {
@@ -2516,8 +2525,8 @@ fn response_to_chat(value: &Value, model: &str) -> Value {
                                 Some("output_text" | "refusal")
                             ) {
                                 content.push_str(
-                                    value_string(part.get("text"))
-                                        .or_else(|| value_string(part.get("refusal")))
+                                    raw_string(part.get("text"))
+                                        .or_else(|| raw_string(part.get("refusal")))
                                         .as_deref()
                                         .unwrap_or_default(),
                                 );
@@ -2612,7 +2621,7 @@ fn response_from_sse(text: &str, model: &str) -> Value {
             completed = event.get("response").cloned();
         } else if event.get("type").and_then(Value::as_str) == Some("response.output_text.delta") {
             output_text.push_str(
-                value_string(event.get("delta"))
+                raw_string(event.get("delta"))
                     .as_deref()
                     .unwrap_or_default(),
             );
@@ -2621,7 +2630,7 @@ fn response_from_sse(text: &str, model: &str) -> Value {
         {
             let id = value_string(event.get("item_id")).unwrap_or_else(|| "call_0".to_owned());
             let call = function_calls.entry(id.clone()).or_insert_with(|| json!({"type": "function_call", "id": id, "call_id": id, "name": "unknown", "arguments": ""}));
-            let delta = value_string(event.get("delta")).unwrap_or_default();
+            let delta = raw_string(event.get("delta")).unwrap_or_default();
             call["arguments"] = Value::String(format!(
                 "{}{}",
                 call.get("arguments")
@@ -2707,7 +2716,9 @@ fn chat_from_sse(text: &str, model: &str) -> Value {
                 finish_reason = Box::leak(reason.into_boxed_str());
             }
             if let Some(delta) = choice.get("delta") {
-                if let Some(value) = value_string(delta.get("content")) {
+                if let Some(value) =
+                    raw_string(delta.get("content")).filter(|value| !value.is_empty())
+                {
                     content.push_str(&value);
                 }
                 if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
@@ -6391,7 +6402,9 @@ impl SseStreamTransformer {
             return output;
         };
         if let Some(delta) = choice.get("delta") {
-            if let Some(content) = value_string(delta.get("content")) {
+            if let Some(content) =
+                raw_string(delta.get("content")).filter(|content| !content.is_empty())
+            {
                 if !self.chat_response.content_started {
                     self.chat_response.content_started = true;
                     output.push_str(&sse_frame("response.output_item.added", &json!({"type": "response.output_item.added", "output_index": 0, "item": {"id": self.chat_response.output_item_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})));
@@ -6468,7 +6481,7 @@ impl SseStreamTransformer {
             return String::new();
         }
         if event_type == "response.output_text.delta" {
-            let text = value_string(value.get("delta")).unwrap_or_default();
+            let text = raw_string(value.get("delta")).unwrap_or_default();
             if text.is_empty() {
                 return String::new();
             }
@@ -6476,7 +6489,7 @@ impl SseStreamTransformer {
             return self.response_chat.chunk(json!({"content": text}), None);
         }
         if event_type == "response.output_text.done" && self.response_chat.content.is_empty() {
-            if let Some(text) = value_string(value.get("text")) {
+            if let Some(text) = raw_string(value.get("text")).filter(|text| !text.is_empty()) {
                 self.response_chat.content.push_str(&text);
                 return self.response_chat.chunk(json!({"content": text}), None);
             }
@@ -6535,7 +6548,7 @@ impl SseStreamTransformer {
                 let key =
                     value_string(value.get("item_id")).unwrap_or_else(|| "block-0".to_owned());
                 let index = *self.anthropic.blocks.entry(key).or_insert(0);
-                if let Some(text) = value_string(value.get("delta")) {
+                if let Some(text) = raw_string(value.get("delta")) {
                     output.push_str(&sse_frame("content_block_delta", &json!({"type": "content_block_delta", "index": index, "delta": {"type": "text_delta", "text": text}})));
                 }
             }
@@ -6543,7 +6556,7 @@ impl SseStreamTransformer {
                 let key =
                     value_string(value.get("item_id")).unwrap_or_else(|| "block-0".to_owned());
                 let index = *self.anthropic.blocks.entry(key).or_insert(0);
-                if let Some(delta) = value_string(value.get("delta")) {
+                if let Some(delta) = raw_string(value.get("delta")) {
                     output.push_str(&sse_frame("content_block_delta", &json!({"type": "content_block_delta", "index": index, "delta": {"type": "input_json_delta", "partial_json": delta}})));
                 }
             }
@@ -12601,21 +12614,24 @@ mod tests {
         let response_sse = concat!(
             "event: response.output_text.delta\n",
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\" world\"}\n\n",
             "event: response.completed\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}]}}\n\n"
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello world\"}]}]}}\n\n"
         );
         let response = response_from_sse(response_sse, "gpt-5.3-codex");
         assert_eq!(response["id"], "resp-1");
-        assert_eq!(response["output"][0]["content"][0]["text"], "hello");
+        assert_eq!(response["output"][0]["content"][0]["text"], "hello world");
 
         let chat_sse = concat!(
             "data: {\"id\":\"chat-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chat-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"choices\":[{\"delta\":{\"content\":\" world\"},\"finish_reason\":null}]}\n\n",
             "data: {\"id\":\"chat-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
             "data: [DONE]\n\n"
         );
         let chat = chat_from_sse(chat_sse, "gpt-5.3-codex");
         assert_eq!(chat["id"], "chat-1");
-        assert_eq!(chat["choices"][0]["message"]["content"], "hello");
+        assert_eq!(chat["choices"][0]["message"]["content"], "hello world");
 
         let empty_completed_sse = concat!(
             "event: response.output_text.delta\n",
@@ -12625,6 +12641,41 @@ mod tests {
         );
         let recovered = response_from_sse(empty_completed_sse, "gpt-5.3-codex");
         assert_eq!(recovered["output"][0]["content"][0]["text"], "recovered");
+    }
+
+    #[test]
+    fn generated_text_deltas_preserve_token_boundaries_in_both_stream_directions() {
+        let mut chat_to_response =
+            SseStreamTransformer::new(StreamTransform::ChatToResponse, "glm-test");
+        let mut response_sse = String::new();
+        for content in ["**Conclusion:", " this", " is", " correct."] {
+            response_sse.push_str(&chat_to_response.transform_chat_chunk(&json!({
+                "object": "chat.completion.chunk",
+                "choices": [{"delta": {"content": content}, "finish_reason": null}]
+            })));
+        }
+        response_sse.push_str(&chat_to_response.finish());
+        let response = response_from_sse(&response_sse, "glm-test");
+        assert_eq!(
+            response["output"][0]["content"][0]["text"],
+            "**Conclusion: this is correct."
+        );
+
+        let mut response_to_chat =
+            SseStreamTransformer::new(StreamTransform::ResponseToChat, "glm-test");
+        let mut chat_sse = String::new();
+        for delta in ["**Conclusion:", " this", " is", " correct."] {
+            chat_sse.push_str(&response_to_chat.transform_response_event(&json!({
+                "type": "response.output_text.delta",
+                "delta": delta
+            })));
+        }
+        chat_sse.push_str(&response_to_chat.finish());
+        let chat = chat_from_sse(&chat_sse, "glm-test");
+        assert_eq!(
+            chat["choices"][0]["message"]["content"],
+            "**Conclusion: this is correct."
+        );
     }
 
     #[test]
