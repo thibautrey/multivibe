@@ -77,7 +77,7 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
     else if (route.source === 'cloud' && !cloudConnected) void connect();
     else onConfigure(route);
   };
-  const actionLabel = (route: ModelRoute) => route.ready ? 'Use model' : !canConfigure ? 'Ask your admin' : route.source === 'cloud' ? cloudConnected ? 'View access' : 'Connect Cloud' : 'Set up';
+  const actionLabel = (route: ModelRoute) => route.ready ? canConfigure ? 'Use model' : 'Open chat' : !canConfigure ? 'Ask your admin' : route.source === 'cloud' ? cloudConnected ? 'View access' : 'Connect Cloud' : 'Set up';
   return <section className="panel models-catalog" aria-label="Model library">
     <div className="models-layout">
       <aside className="models-sidebar" aria-label="Model filters">
