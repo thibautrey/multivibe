@@ -108,10 +108,58 @@ test("adapts z.ai models to the native Codex catalog", () => {
   ]);
 });
 
- test("lists oMLX chat models in Codex without exposing speech models", () => {
+test("lists oMLX chat models in Codex without exposing speech models", () => {
   const models = ["Qwen3.8-27B-4bit", "Kokoro-82M-bf16", "Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16", "whisper-large-v3-turbo-asr-4bit"].map(id => ({id, metadata: {provider: "openai-compatible"}}));
   const response = buildModelsListResponse(models);
   assert.equal(response.data.length, 4);
   assert.deepEqual(response.models.map(model => model.slug), ["Qwen3.8-27B-4bit"]);
   assert.equal(response.models[0].visibility, "list");
+});
+
+test("lists text-capable AI SDK models in Codex", () => {
+  const models = [
+    {
+      id: "deepseek/deepseek-v4-flash",
+      metadata: { provider: "ai-sdk", input_modalities: ["text"] },
+    },
+    {
+      id: "deepseek/deepseek-v4-flash-vision-exp",
+      metadata: { provider: "ai-sdk", input_modalities: ["text", "image"] },
+    },
+    {
+      id: "deepseek/deepseek-v4-pro",
+      metadata: { provider: "ai-sdk", input_modalities: ["text"] },
+    },
+  ];
+
+  const response = buildModelsListResponse(models);
+
+  assert.deepEqual(response.models.map(model => model.slug), models.map(model => model.id));
+  assert.equal(response.models[0].description, "AI SDK model deepseek/deepseek-v4-flash");
+});
+
+test("keeps non-text, speech, embedding and reranking AI SDK models out of Codex", () => {
+  const models = [
+    {
+      id: "image-generator",
+      metadata: { provider: "ai-sdk", input_modalities: ["image"] },
+    },
+    {
+      id: "speech/tts-1",
+      metadata: { provider: "ai-sdk", input_modalities: ["text"] },
+    },
+    {
+      id: "openai/text-embedding-3-small",
+      metadata: { provider: "ai-sdk", input_modalities: ["text"] },
+    },
+    {
+      id: "cohere/rerank-v3.5",
+      metadata: { provider: "ai-sdk", input_modalities: ["text"] },
+    },
+  ];
+
+  const response = buildModelsListResponse(models);
+
+  assert.equal(response.data.length, models.length);
+  assert.deepEqual(response.models, []);
 });

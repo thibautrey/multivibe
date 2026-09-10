@@ -2,6 +2,7 @@ type ModelWithOptionalCodexInfo = {
   id: string;
   codexModelInfo?: Record<string, unknown>;
   metadata?: {
+    input_modalities?: string[];
     provider?: string;
   };
   [key: string]: unknown;
@@ -23,10 +24,23 @@ export function toOpenAiModelShape(model: ModelWithOptionalCodexInfo) {
 export function toCodexModelShape(model: ModelWithOptionalCodexInfo) {
   if (model.codexModelInfo) return model.codexModelInfo;
   const provider = model.metadata?.provider;
-  if (provider !== "zai" && provider !== "openai-compatible" && provider !== "github-copilot") return undefined;
+  const isTextCapableAiSdkModel =
+    provider === "ai-sdk" && model.metadata?.input_modalities?.includes("text");
+  if (
+    provider !== "zai" &&
+    provider !== "openai-compatible" &&
+    provider !== "github-copilot" &&
+    !isTextCapableAiSdkModel
+  ) return undefined;
   // Audio, embedding and reranking runtimes also share /v1/models.
   if (/(?:^|[-_/])(?:tts|asr|whisper|kokoro|embed|embedding|rerank|reranker)(?:$|[-_/])/i.test(model.id)) return undefined;
-  const providerName = provider === "github-copilot" ? "GitHub Copilot" : provider === "zai" ? "z.ai" : "OpenAI-compatible";
+  const providerName = provider === "github-copilot"
+    ? "GitHub Copilot"
+    : provider === "zai"
+      ? "z.ai"
+      : provider === "ai-sdk"
+        ? "AI SDK"
+        : "OpenAI-compatible";
 
   return {
     slug: model.id,
