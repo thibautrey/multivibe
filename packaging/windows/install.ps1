@@ -4,6 +4,7 @@
 param(
     [switch]$AutomaticUpdate,
     [string]$SourceDirectory,
+    [string]$ManagedProfilePath,
     [int]$UpdaterProcessId = 0
 )
 
@@ -181,6 +182,38 @@ function Set-PrivateAclTree([string]$Root, [string]$Description) {
             Fail "$Description contains a reparse point"
         }
         Set-PrivateAcl $child.FullName $child.PSIsContainer
+    }
+}
+
+function Install-ManagedProfile([string]$Source, [string]$DataDirectory) {
+    $sourcePath = Normalize-Path $Source "the managed profile path"
+    $sourceItem = Get-Item -LiteralPath $sourcePath -Force -ErrorAction Stop
+    if ($sourceItem.PSIsContainer -or ($sourceItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $sourceItem.Length -lt 2 -or $sourceItem.Length -gt 16384) {
+        Fail "the managed profile must be a bounded regular file"
+    }
+    Assert-PrivateAcl $sourcePath $false "the managed profile"
+    $dataRoot = Get-RequiredDirectory $DataDirectory "the MultiVibe private data directory"
+    Set-PrivateAcl $dataRoot $true
+    $destination = Join-Path $dataRoot "managed-team-enrollment.json"
+    if ($sourcePath.Equals($destination, $PathComparison)) { Fail "the managed profile source must be a staging file" }
+    $staged = Join-Path $dataRoot (".managed-team-enrollment-" + [Guid]::NewGuid().ToString("N") + ".tmp")
+    try {
+        Copy-Item -LiteralPath $sourcePath -Destination $staged -ErrorAction Stop
+        Set-PrivateAcl $staged $false
+        if (Test-Path -LiteralPath $destination) {
+            $destinationItem = Get-Item -LiteralPath $destination -Force
+            if ($destinationItem.PSIsContainer -or ($destinationItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash) {
+                Fail "a different managed profile is already pending"
+            }
+        } else {
+            Move-Item -LiteralPath $staged -Destination $destination -ErrorAction Stop
+            Set-PrivateAcl $destination $false
+        }
+        Remove-Item -LiteralPath $sourcePath -Force -ErrorAction Stop
+    } finally {
+        if (Test-Path -LiteralPath $staged) { Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue }
     }
 }
 
@@ -421,6 +454,7 @@ try {
     $appData = Normalize-Path $appData "APPDATA"
     $installBase = Join-Path $localAppData "Programs\MultiVibe Host"
     $versionsRoot = Join-Path $installBase "versions"
+    $dataDirectory = Join-Path $localAppData "MultiVibe"
     $startMenuDirectory = Get-RequiredDirectory (Join-Path $appData "Microsoft\Windows\Start Menu\Programs") "the per-user Start Menu directory"
     $shortcutPath = Join-Path $startMenuDirectory "MultiVibe Host.lnk"
 
@@ -432,6 +466,10 @@ try {
     $manifest = Get-Manifest $sourceRoot
     $version = [string]$manifest.version
     Invoke-BundleVerifier $sourceRoot -RequireRuntime
+
+    if (-not [string]::IsNullOrWhiteSpace($ManagedProfilePath)) {
+        Install-ManagedProfile $ManagedProfilePath $dataDirectory
+    }
 
     if (Test-Path -LiteralPath $installBase) {
         $baseItem = Get-Item -LiteralPath $installBase -Force

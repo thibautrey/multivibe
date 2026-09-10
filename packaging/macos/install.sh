@@ -17,9 +17,12 @@ fail() {
 usage() {
   cat <<'EOF'
 Usage: ./install.sh [--automatic-update] [--source-application /absolute/path]
+                    [--managed-profile /absolute/path]
 
 Install the signed MultiVibe Host application and LaunchAgent for the current
 macOS user. No administrator privileges are required.
+
+--managed-profile consumes a mode-0600, one-time Team enrollment JSON file.
 EOF
 }
 
@@ -66,6 +69,7 @@ verify_signed_application() {
 AUTOMATIC_UPDATE=false
 SOURCE_APPLICATION_OVERRIDE=""
 DESTINATION_APPLICATION_OVERRIDE=""
+MANAGED_PROFILE=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --automatic-update) AUTOMATIC_UPDATE=true ;;
@@ -78,6 +82,11 @@ while [ "$#" -gt 0 ]; do
       shift
       [ "$#" -gt 0 ] || fail "--source-application requires a value"
       SOURCE_APPLICATION_OVERRIDE=$1
+      ;;
+    --managed-profile)
+      shift
+      [ "$#" -gt 0 ] || fail "--managed-profile requires a value"
+      MANAGED_PROFILE=$1
       ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; fail "unknown option: $1" ;;
@@ -135,6 +144,7 @@ LAUNCH_AGENTS_DIRECTORY="$HOME/Library/LaunchAgents"
 LAUNCH_AGENT="$LAUNCH_AGENTS_DIRECTORY/$LABEL.plist"
 UPDATE_LAUNCH_AGENT="$LAUNCH_AGENTS_DIRECTORY/$UPDATE_LABEL.plist"
 LOG_DIRECTORY="$HOME/Library/Logs/MultiVibe Host"
+DATA_DIRECTORY="$HOME/Library/Application Support/MultiVibe"
 USER_ID=$(id -u)
 case "$USER_ID" in
   ''|*[!0-9]*) fail "the current user identifier is invalid" ;;
@@ -148,6 +158,41 @@ ensure_directory "$HOME/Library" "the per-user Library directory"
 ensure_directory "$LAUNCH_AGENTS_DIRECTORY" "the LaunchAgents directory"
 ensure_directory "$HOME/Library/Logs" "the per-user Logs directory"
 ensure_directory "$LOG_DIRECTORY" "the MultiVibe Host log directory"
+ensure_directory "$HOME/Library/Application Support" "the Application Support directory"
+ensure_directory "$DATA_DIRECTORY" "the MultiVibe private data directory"
+
+install_managed_profile() {
+  source=$1
+  case "$source" in /*) ;; *) fail "the managed profile path must be absolute" ;; esac
+  case "$source" in *'/../'*|*/..|*'/./'*|*/.|*[![:print:]]*) fail "the managed profile path is not clean" ;; esac
+  [ -f "$source" ] && [ ! -L "$source" ] || fail "the managed profile must be a regular file"
+  [ "$(/usr/bin/stat -f '%u' "$source")" = "$USER_ID" ] || fail "the managed profile must belong to the target user"
+  [ "$(/usr/bin/stat -f '%Lp' "$source")" = "600" ] || fail "the managed profile must use mode 0600"
+  size=$(/usr/bin/stat -f '%z' "$source")
+  case "$size" in ''|*[!0-9]*) fail "the managed profile size is invalid" ;; esac
+  [ "$size" -ge 2 ] && [ "$size" -le 16384 ] || fail "the managed profile size is invalid"
+  destination="$DATA_DIRECTORY/managed-team-enrollment.json"
+  [ "$source" != "$destination" ] || fail "the managed profile source must be a staging file"
+  staged=$(mktemp "$DATA_DIRECTORY/.managed-team-enrollment.XXXXXX") || fail "the managed profile could not be staged"
+  if ! /bin/cp "$source" "$staged" || ! /bin/chmod 600 "$staged"; then
+    /bin/rm -f "$staged"
+    fail "the managed profile could not be staged"
+  fi
+  if [ -e "$destination" ]; then
+    [ -f "$destination" ] && [ ! -L "$destination" ] && /usr/bin/cmp -s "$destination" "$staged" || {
+      /bin/rm -f "$staged"
+      fail "a different managed profile is already pending"
+    }
+    /bin/rm -f "$staged"
+  else
+    /bin/mv "$staged" "$destination" || fail "the managed profile could not be committed"
+  fi
+  /bin/rm -f "$source" || fail "the consumed managed profile staging file could not be removed"
+}
+
+if [ -n "$MANAGED_PROFILE" ]; then
+  install_managed_profile "$MANAGED_PROFILE"
+fi
 
 if [ -L "$DESTINATION_APPLICATION" ]; then
   fail "the application destination must not be a symbolic link"
