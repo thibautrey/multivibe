@@ -7,7 +7,7 @@ ARG KUBECTL_SHA256=8efbb9435132a190920eb65a47a8c1ecf755ad85ab57a600c9bedbab460bb
 
 ENV DEBIAN_FRONTEND=noninteractive \
     HOME=/runner \
-    RUNNER_TOOL_CACHE=/opt/hostedtoolcache
+    RUNNER_TOOL_CACHE=/runner/_tool
 
 RUN chmod 1777 /tmp \
     && apt-get update \
