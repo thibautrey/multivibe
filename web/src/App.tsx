@@ -1,3 +1,6 @@
+import { canManageWorkspace, workspaceLabel, type TeamWorkspace } from "./lib/teamWorkspace";
+import { TeamMachineConsent } from "./components/TeamMachineConsent";
+import { TeamMachineCard } from "./components/TeamMachineCard";
 import { getRangeBounds } from "./lib/trace-range";
 import { ModelsTab } from "./components/tabs/ModelsTab";
 import type { ModelRoute } from "./lib/modelCatalog";
@@ -135,7 +138,7 @@ function activeModelBlockCount(account: Account) {
 
 export default function App() {
   const [githubPromotion] = useState(() => readGitHubPromotionState(localStorage));
-  const [tab, setTab] = useState<Tab>(initialTab);
+  const [requestedTab, setTab] = useState<Tab>(initialTab);
   const [activityView, setActivityView] = useState<ActivityView>(initialActivityView);
   const [locationSearch, setLocationSearch] = useState(window.location.search);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -145,6 +148,7 @@ export default function App() {
     topupUrl: "https://app.multivibe.cloud/billing",
   });
   const [hostApplication, setHostApplication] = useState(false);
+  const [teamWorkspace, setTeamWorkspace] = useState<TeamWorkspace>({ state: "unavailable", role: null });
   const [baseLoaded, setBaseLoaded] = useState(false);
   const [hostOnboardingComplete, setHostOnboardingComplete] = useState(() =>
     hasCompletedHostOnboarding(localStorage),
@@ -194,9 +198,10 @@ export default function App() {
   const localRuntimeDiscoveryGenerationRef = useRef(0);
   const mobileNavigationRef = useRef<HTMLDialogElement>(null);
   const mobileNavigationTriggerRef = useRef<HTMLButtonElement>(null);
-  const visibleTabItems = hostApplication
-    ? TAB_ITEMS
-    : TAB_ITEMS.filter((item) => item.id !== "updates");
+  const canManage = canManageWorkspace(teamWorkspace);
+  const visibleTabItems = TAB_ITEMS.filter(item => (hostApplication || item.id !== "updates") &&
+    (canManage || ["overview", "models", "updates"].includes(item.id)));
+  const tab = visibleTabItems.some(item => item.id === requestedTab) ? requestedTab : "overview";
   const activeTabItem = visibleTabItems.find((item) => item.id === tab) ?? visibleTabItems[0];
   const sanitized = useMemo(() => {
     const params = new URLSearchParams(locationSearch);
@@ -432,7 +437,7 @@ export default function App() {
 
   const loadBase = async (options: { forceModels?: boolean } = {}) => {
     const modelsUrl = options.forceModels ? "/v1/models?refresh=true" : "/v1/models";
-    const [acc, localWorkerRes, cloudRes, cfg, mdl, aliasRes, settingsRes, apiKeysRes, policiesRes, modulesRes] = await Promise.all([
+    const [acc, localWorkerRes, cloudRes, cfg, mdl, aliasRes, settingsRes, apiKeysRes, policiesRes, modulesRes, teamRes] = await Promise.all([
       api("/admin/accounts"),
       api("/admin/provider-agent/local-worker").catch(() => ({ localWorker: null })),
       api("/admin/cloud").catch(() => ({ status: "unavailable", topupUrl: "https://app.multivibe.cloud/billing" })),
@@ -443,7 +448,9 @@ export default function App() {
       api("/admin/proxy-api-keys"),
       api("/admin/application-policies"),
       api("/admin/modules"),
+      api("/admin/team/workspace").catch(() => ({ state: "unavailable", role: null })),
     ]);
+    setTeamWorkspace(teamRes as TeamWorkspace);
     setAccounts((acc.accounts ?? []) as Account[]);
     setLocalWorker((localWorkerRes.localWorker ?? null) as LocalWorkerProvider | null);
     setMultivibeCloud(cloudRes as MultivibeCloudProvider);
@@ -1121,7 +1128,7 @@ export default function App() {
           >
             <span className="mobile-navigation-current-icon"><TabIcon tab={tab} /></span>
             <span className="mobile-navigation-current-copy">
-              <small>Workspace</small>
+              <small>{workspaceLabel(teamWorkspace)}</small>
               <strong>{activeTabItem.label}</strong>
             </span>
             <span className="mobile-navigation-trigger-label">
@@ -1132,6 +1139,8 @@ export default function App() {
 
           <div className="sidebar-scroll-area">
             <nav className="sidebar-nav" aria-label="Primary navigation">
+              <a className="btn workspace-chat-link" href="https://chat.multivibe.cloud">Open chat →</a>
+              <span className="sidebar-nav-label">{workspaceLabel(teamWorkspace)}</span>
               {visibleTabItems.map((item, index) => (
                 <React.Fragment key={item.id}>
                 {(index === 0 || visibleTabItems[index - 1].group !== item.group) && <span className="sidebar-nav-label">{item.group}</span>}
@@ -1288,7 +1297,7 @@ export default function App() {
           </div></ModalPortal>
         )}
 
-        {githubPromotionOpen && authenticated && !releaseModalVersion && (
+        {githubPromotionOpen && authenticated && canManage && !releaseModalVersion && (
           <ModalPortal><div className="modal-backdrop github-promotion-backdrop" role="presentation" onClick={(event) => {
             if (event.target === event.currentTarget) closeGitHubPromotion();
           }}>
@@ -1314,7 +1323,7 @@ export default function App() {
           completed: hostOnboardingComplete,
           hostApplication,
           sanitized,
-        }) && !providerSetupActive && (
+        }) && canManage && !providerSetupActive && (
           <HostOnboarding
             accountCount={accounts.length}
             cloudUrl="https://app.multivibe.cloud"
@@ -1325,6 +1334,7 @@ export default function App() {
         )}
 
         <div className="workspace">
+          <a className="btn core-mobile-chat" href="https://chat.multivibe.cloud">Open chat →</a>
 
           {demo && <div className="demo-notice" role="note"><strong>Demo instance</strong><span>Fictional data · Read-only · No providers connected</span></div>}
 
@@ -1332,7 +1342,23 @@ export default function App() {
 
           <main className={`workspace-content workspace-${tab}`}>
 
-        {tab === "overview" && (
+        {tab === "overview" && teamWorkspace.state !== "personal" && (
+          <section className="panel team-workspace-home">
+            <span className="eyebrow">{workspaceLabel(teamWorkspace)}</span>
+            <h1>{canManage ? "Your team, in one place" : "Ready when you are"}</h1>
+            <p>{teamWorkspace.state === "unavailable" ? "Team access could not be verified. Retry to restore your workspace controls." : canManage ? "Manage shared resources in Cloud, or configure this instance using the navigation." : "Start a conversation or explore the models available to this machine. Your team manages shared providers and configuration."}</p>
+            <div className="team-workspace-actions">
+              <a className="btn" href="https://chat.multivibe.cloud">Open chat →</a>
+              <button className="btn secondary" onClick={() => setTab("models")}>Browse models</button>
+              <a className="btn secondary" href="https://app.multivibe.cloud/team">{canManage ? "Manage team" : "View my team"}</a>
+              {teamWorkspace.role === "billing" && <a className="btn secondary" href="https://app.multivibe.cloud/billing">Team billing</a>}
+              {(teamWorkspace.state === "unavailable" || teamWorkspace.role === null) && <button className="btn secondary" onClick={() => void loadBase().catch(() => setError("Could not refresh workspace access."))}>Retry connection</button>}
+            </div>
+            {teamWorkspace.state === "team" && <><TeamMachineConsent /><TeamMachineCard /></>}
+          </section>
+        )}
+
+        {tab === "overview" && canManage && teamWorkspace.state === "personal" && (
           <OverviewTab
             stats={stats}
             usageStats={usageStats}
@@ -1348,8 +1374,8 @@ export default function App() {
           />
         )}
 
-        {tab === "models" && <ModelsTab models={models} accounts={accounts}
-          cloudConnected={multivibeCloud.status === "connected"} onUse={openModelInDocs}
+        {tab === "models" && <ModelsTab canConfigure={canManage} models={models} accounts={accounts}
+          cloudConnected={multivibeCloud.status === "connected"} onUse={canManage ? openModelInDocs : () => window.location.assign("https://chat.multivibe.cloud")}
           onConnectCloud={connectMultivibeCloud} onConfigure={(route) => {
             if (route.source === "cloud") {
               window.location.assign(`https://app.multivibe.cloud/models/${encodeURIComponent(route.modelId)}`);
