@@ -17,7 +17,11 @@ const requestedNames = [
   "Claude Code", "OpenAI Codex", "OpenCode", "OpenClaw", "Hermes Agent", "Pi", "Goose",
   "OpenHands", "Cline", "Aider", "Qwen Code", "Gemini CLI", "Google Antigravity",
   "GitHub Copilot CLI / Coding Agent", "Kiro / Kiro CLI", "Warp Agent", "Amp", "Crush",
-  "Kilo Code", "Roo Code", "Continue", "mini-SWE-agent", "Open Interpreter", "SWE-agent", "AutoCodeRover",
+  "Kilo Code", "Roo Code", "Continue", "mini-SWE-agent", "Mistral Vibe", "gptme", "AIChat",
+  "ShellGPT", "Fabric", "GPTScript", "Kimi Code CLI", "Pochi", "Zed Agent Panel", "JetBrains Junie",
+  "Amazon Q Developer CLI", "Sourcegraph Cody", "Tabby", "Trae", "Qoder", "CodeRabbit CLI",
+  "Qodo Merge / PR-Agent", "GPT Engineer", "AiderDesk", "PearAI", "Devika", "smol developer",
+  "SWE-smith", "SWE-ReX", "Agentless", "Open Interpreter", "SWE-agent", "AutoCodeRover",
   "Mentat", "GPT-Pilot", "Plandex", "Cursor Agent", "Windsurf Cascade", "Devin", "Pythagora",
   "Agent Zero", "OpenManus", "Manus", "AutoGen", "CrewAI", "LangGraph", "smolagents",
   "Letta", "AutoGPT", "BabyAGI", "MetaGPT", "SuperAGI", "AgentGPT", "CAMEL", "PydanticAI",
@@ -175,7 +179,7 @@ test("all model-aware harnesses synchronize the live MultiVibe catalog", async (
   const catalogHarnesses = new Set(["openclaw", "pi", "crush", "continue"]);
   const harnessIds = [
     "openclaw", "pi", "crush", "continue", "hermes-agent", "goose", "openhands",
-    "aider", "mini-swe-agent", "open-interpreter", "agent-zero", "autogpt",
+    "aider", "mini-swe-agent", "gptme", "shell-gpt", "open-interpreter", "agent-zero", "autogpt",
   ];
   const originalFetch = globalThis.fetch;
   t.after(() => {
@@ -264,6 +268,73 @@ test("mini-SWE-agent uses its platform config and preserves unrelated dotenv set
   assert.match(configured, /MSWEA_COST_TRACKING="ignore_errors"/);
 
   await manager.uninstall("mini-swe-agent");
+  assert.equal(await fs.readFile(configPath, "utf8"), original);
+});
+
+test("gptme installs a named MultiVibe provider and safely updates an existing env table", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-gptme-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const home = path.join(root, "home");
+  const bin = path.join(home, "bin");
+  const configPath = path.join(home, ".config", "gptme", "config.toml");
+  const original = '[env]\nMODEL = "openai/gpt-4o"\nEDITOR = "vim"\n\n[[providers]]\nname = "existing"\nbase_url = "http://example.test/v1"\n';
+  await fs.mkdir(bin, { recursive: true });
+  await fs.mkdir(path.dirname(configPath), { recursive: true });
+  await fs.writeFile(path.join(bin, "gptme"), "binary", { mode: 0o755 });
+  await fs.writeFile(configPath, original);
+
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = async () => Response.json({ data: [{ id: "gpt-5.5" }] });
+  const definition = HOST_HARNESS_DEFINITIONS.find((entry) => entry.id === "gptme")!;
+  const manager = new HostHarnessIntegrationManager({
+    homeDirectory: home,
+    statePath: path.join(home, ".multivibe", "harnesses.json"),
+    baseUrl: "http://127.0.0.1:1455",
+    definitions: [definition],
+    executableDirectories: [bin],
+  });
+
+  await manager.install("gptme", { apiKeyId: "key-gptme", apiKey: "mv_gptme", application: "harness-gptme" });
+  const configured = await fs.readFile(configPath, "utf8");
+  assert.match(configured, /\[env\]\nMODEL = "multivibe\/gpt-5\.5"\nEDITOR = "vim"/);
+  assert.match(configured, /\[\[providers\]\]\nname = "existing"/);
+  assert.match(configured, /name = "multivibe"\nbase_url = "http:\/\/127\.0\.0\.1:1455\/v1"/);
+  assert.match(configured, /api_key = "mv_gptme"/);
+  await manager.uninstall("gptme");
+  assert.equal(await fs.readFile(configPath, "utf8"), original);
+});
+
+test("ShellGPT preserves its runtime settings while selecting MultiVibe", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-shell-gpt-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const home = path.join(root, "home");
+  const bin = path.join(home, "bin");
+  const configPath = path.join(home, ".config", "shell_gpt", ".sgptrc");
+  const original = "REQUEST_TIMEOUT=90\n";
+  await fs.mkdir(bin, { recursive: true });
+  await fs.mkdir(path.dirname(configPath), { recursive: true });
+  await fs.writeFile(path.join(bin, "sgpt"), "binary", { mode: 0o755 });
+  await fs.writeFile(configPath, original);
+
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = async () => Response.json({ data: [{ id: "gpt-5.5" }] });
+  const definition = HOST_HARNESS_DEFINITIONS.find((entry) => entry.id === "shell-gpt")!;
+  const manager = new HostHarnessIntegrationManager({
+    homeDirectory: home,
+    statePath: path.join(home, ".multivibe", "harnesses.json"),
+    baseUrl: "http://127.0.0.1:1455",
+    definitions: [definition],
+    executableDirectories: [bin],
+  });
+
+  await manager.install("shell-gpt", { apiKeyId: "key-shell-gpt", apiKey: "mv_shell_gpt", application: "harness-shell-gpt" });
+  const configured = await fs.readFile(configPath, "utf8");
+  assert.match(configured, /^REQUEST_TIMEOUT=90/m);
+  assert.match(configured, /API_BASE_URL="http:\/\/127\.0\.0\.1:1455\/v1"/);
+  assert.match(configured, /DEFAULT_MODEL="gpt-5\.5"/);
+  await manager.uninstall("shell-gpt");
   assert.equal(await fs.readFile(configPath, "utf8"), original);
 });
 

@@ -558,6 +558,69 @@ const miniSweAgentConfiguration = modelAwareConfiguration(managedBlockConfigurat
   ].join("\n"),
 ));
 
+function renderGptmeToml(current: string | null, context: HarnessContext): string {
+  const modelId = selectDefaultModelId(context);
+  const lines = stripManagedBlock(current ?? "").trimEnd().split(/\r?\n/);
+  const output: string[] = [];
+  let table = "";
+  let envTableSeen = false;
+  let modelWritten = false;
+  const writeModel = () => {
+    if (!modelWritten) output.push(`MODEL = ${jsonString(`multivibe/${modelId}`)}`);
+    modelWritten = true;
+  };
+
+  for (const line of lines) {
+    const nextTable = /^\s*\[\[/.test(line) ? "__array__" : matchTomlTableHeader(line);
+    if (nextTable !== undefined) {
+      if (table === "env") writeModel();
+      table = nextTable;
+      if (table === "env") {
+        if (envTableSeen) throw new HostHarnessIntegrationError("~/.config/gptme/config.toml contains duplicate [env] tables", 409);
+        envTableSeen = true;
+      }
+      output.push(line);
+      continue;
+    }
+    if (table === "env" && /^\s*MODEL\s*=/.test(line)) {
+      if (modelWritten) throw new HostHarnessIntegrationError("~/.config/gptme/config.toml contains duplicate env.MODEL values", 409);
+      writeModel();
+      continue;
+    }
+    output.push(line);
+  }
+  if (table === "env") writeModel();
+  if (!envTableSeen) {
+    if (output.some((line) => line.trim())) output.push("");
+    output.push("[env]");
+    writeModel();
+  }
+  const prefix = output.join("\n").trimEnd();
+  const provider = [
+    "[[providers]]",
+    'name = "multivibe"',
+    `base_url = ${jsonString(`${context.baseUrl}/v1`)}`,
+    `api_key = ${jsonString(context.apiKey)}`,
+    `default_model = ${jsonString(modelId)}`,
+  ].join("\n");
+  return `${prefix ? `${prefix}\n\n` : ""}${MANAGED_BLOCK_START}\n${provider}\n${MANAGED_BLOCK_END}\n`;
+}
+
+const gptmeConfiguration = modelAwareConfiguration({
+  relativePath: ".config/gptme/config.toml",
+  render: renderGptmeToml,
+  isConfigured: (current, baseUrl) => current.includes(`${baseUrl}/v1`),
+});
+
+const shellGptConfiguration = modelAwareConfiguration(managedBlockConfiguration(
+  ".config/shell_gpt/.sgptrc",
+  ({ baseUrl, apiKey, modelIds }) => [
+    `OPENAI_API_KEY=${jsonString(apiKey)}`,
+    `API_BASE_URL=${jsonString(`${baseUrl}/v1`)}`,
+    `DEFAULT_MODEL=${jsonString(selectDefaultModelId({ baseUrl, apiKey, modelIds }))}`,
+  ].join("\n"),
+));
+
 const interpreterConfiguration = modelAwareConfiguration(managedBlockConfiguration(".config/open-interpreter/config.yaml", ({ baseUrl, apiKey, modelIds }) => [
   "llm:",
   `  model: ${jsonString(`openai/${selectDefaultModelId({ baseUrl, apiKey, modelIds })}`)}`,
@@ -621,6 +684,43 @@ export const HOST_HARNESS_DEFINITIONS: readonly HostHarnessDefinition[] = [
     "Library/Application Support/mini-swe-agent",
     "AppData/Local/mini-swe-agent/mini-swe-agent",
   ], miniSweAgentConfiguration),
+  definition("mistral-vibe", "Mistral Vibe", "agent", ["vibe"], [".vibe"], undefined, manualReason),
+  definition("gptme", "gptme", "agent", ["gptme"], [".config/gptme"], gptmeConfiguration),
+  definition("aichat", "AIChat", "agent", ["aichat"], [".config/aichat"], undefined, manualReason),
+  definition("shell-gpt", "ShellGPT", "cli", ["sgpt"], [".config/shell_gpt"], shellGptConfiguration),
+  definition("fabric", "Fabric", "framework", ["fabric"], [".config/fabric"], undefined, manualReason),
+  definition("gptscript", "GPTScript", "framework", ["gptscript"], [".config/gptscript"], undefined, projectReason),
+  definition("kimi-code", "Kimi Code CLI", "agent", ["kimi"], [".kimi-code", ".kimi"], undefined, manualReason),
+  definition("pochi", "Pochi", "editor", [], [
+    ".vscode/extensions/tabbyml.pochi-*",
+    "Library/Application Support/Code/User/globalStorage/tabbyml.pochi",
+    ".config/Code/User/globalStorage/tabbyml.pochi",
+  ], undefined, manualReason),
+  definition("zed-agent", "Zed Agent Panel", "editor", ["zed"], [".config/zed", "Library/Application Support/Zed"], undefined, manualReason),
+  definition("jetbrains-junie", "JetBrains Junie", "editor", ["junie"], [".junie", ".junie.json"], undefined, manualReason),
+  definition("amazon-q-developer", "Amazon Q Developer CLI", "agent", ["q", "qchat"], [".aws/amazonq", ".local/share/amazon-q"], undefined, manualReason),
+  definition("sourcegraph-cody", "Sourcegraph Cody", "editor", ["cody"], [
+    ".vscode/extensions/sourcegraph.cody-ai-*",
+    "Library/Application Support/Code/User/globalStorage/sourcegraph.cody-ai",
+    ".config/Code/User/globalStorage/sourcegraph.cody-ai",
+  ], undefined, manualReason),
+  definition("tabby", "Tabby", "editor", ["tabby"], [
+    ".tabby", ".vscode/extensions/tabbyml.vscode-tabby-*",
+    "Library/Application Support/Code/User/globalStorage/tabbyml.vscode-tabby",
+    ".config/Code/User/globalStorage/tabbyml.vscode-tabby",
+  ], undefined, manualReason),
+  definition("trae", "Trae", "editor", ["trae"], [".trae", "Library/Application Support/Trae"], undefined, manualReason),
+  definition("qoder", "Qoder", "editor", ["qoder", "qodercli"], [".qoder", "Library/Application Support/Qoder"], undefined, manualReason),
+  definition("coderabbit-cli", "CodeRabbit CLI", "agent", ["coderabbit"], [".coderabbit", ".coderabbit.yaml", ".coderabbit.yml"], undefined, projectReason),
+  definition("qodo-merge", "Qodo Merge / PR-Agent", "agent", ["qodo", "pr-agent"], [".qodo", ".pr_agent.toml"], undefined, projectReason),
+  definition("gpt-engineer", "GPT Engineer", "agent", ["gpte", "gpt-engineer"], [".gpteng"], undefined, projectReason),
+  definition("aider-desk", "AiderDesk", "editor", ["aider-desk"], [".aider-desk", "Library/Application Support/AiderDesk"], undefined, manualReason),
+  definition("pearai", "PearAI", "editor", ["pearai"], [".pearai", "Library/Application Support/PearAI"], undefined, manualReason),
+  definition("devika", "Devika", "agent", ["devika"], [".devika"], undefined, projectReason),
+  definition("smol-developer", "smol developer", "agent", ["smol-dev"], [".smol-dev"], undefined, projectReason),
+  definition("swe-smith", "SWE-smith", "framework", ["swe-smith"], [".swe-smith"], undefined, projectReason),
+  definition("swe-rex", "SWE-ReX", "framework", ["swerex", "swe-rex"], [".swerex"], undefined, projectReason),
+  definition("agentless", "Agentless", "agent", ["agentless"], [".agentless"], undefined, projectReason),
   definition("open-interpreter", "Open Interpreter", "cli", ["interpreter"], [".config/open-interpreter"], interpreterConfiguration),
   definition("swe-agent", "SWE-agent", "agent", ["sweagent", "swe-agent"], [".config/swe-agent"], undefined, projectReason),
   definition("autocoderover", "AutoCodeRover", "agent", ["autocoderover", "acr"], [".autocoderover"], undefined, projectReason),
