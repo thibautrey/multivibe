@@ -4911,7 +4911,12 @@ fn prepared_payload(
     let messages_route = path.ends_with("/messages");
     let compact = path.ends_with("/responses/compact");
     let sends_chat = resolve_upstream_mode(account, chat_route, compact);
-    let mut payload = if sends_chat {
+    let mut payload = if account.multivibe_cloud == Some(true) && !sends_chat && !chat_route {
+        // Cloud owns and validates its Responses contract. Codex parity
+        // defaults (store, include, text, forced streaming) are upstream
+        // provider fields and must not cross the managed inference boundary.
+        body.clone()
+    } else if sends_chat {
         if chat_route {
             let mut value = body.clone();
             if let Some(object) = value.as_object_mut() {
@@ -12393,6 +12398,47 @@ mod tests {
         );
         assert!(!anthropic["model"].as_str().unwrap().contains("claude"));
         assert_eq!(anthropic["instructions"], "You are helpful");
+    }
+
+    #[test]
+    fn managed_cloud_responses_preserve_the_client_contract() {
+        let mut cloud = account("cloud");
+        cloud.provider = Some("openai-compatible".to_owned());
+        cloud.multivibe_cloud = Some(true);
+        cloud.compatibility_mode = Some("responses".to_owned());
+        let route = RouteCandidate {
+            requested_model: "public-model".to_owned(),
+            model: "core-model".to_owned(),
+            provider: Some("openai-compatible".to_owned()),
+            account_ids: vec![cloud.id.clone()],
+        };
+        let payload = prepared_payload(
+            &json!({"model": "public-model", "input": "Bonjour", "stream": false}),
+            "/v1/responses",
+            &cloud,
+            &route,
+            Some("session-1"),
+            false,
+            false,
+            &EdgeConfig::default(),
+        );
+
+        assert_eq!(payload["model"], "core-model");
+        assert_eq!(payload["input"], "Bonjour");
+        assert_eq!(payload["stream"], false);
+        for field in [
+            "store",
+            "include",
+            "text",
+            "parallel_tool_calls",
+            "prompt_cache_key",
+            "instructions",
+        ] {
+            assert!(
+                payload.get(field).is_none(),
+                "unexpected managed Cloud field: {field}"
+            );
+        }
     }
 
     #[test]
