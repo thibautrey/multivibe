@@ -540,6 +540,24 @@ const continueConfiguration = modelAwareConfiguration(managedBlockConfiguration(
   ].join("\n")),
 ].join("\n")));
 
+function miniSweAgentGlobalConfigPath(): string {
+  if (process.platform === "darwin") return "Library/Application Support/mini-swe-agent/.env";
+  if (process.platform === "win32") return "AppData/Local/mini-swe-agent/mini-swe-agent/.env";
+  return ".config/mini-swe-agent/.env";
+}
+
+const miniSweAgentConfiguration = modelAwareConfiguration(managedBlockConfiguration(
+  miniSweAgentGlobalConfigPath(),
+  ({ baseUrl, apiKey, modelIds }) => [
+    'MSWEA_CONFIGURED="true"',
+    `MSWEA_MODEL_NAME=${jsonString(`openai/${selectDefaultModelId({ baseUrl, apiKey, modelIds })}`)}`,
+    `OPENAI_API_KEY=${jsonString(apiKey)}`,
+    `OPENAI_API_BASE=${jsonString(`${baseUrl}/v1`)}`,
+    `OPENAI_BASE_URL=${jsonString(`${baseUrl}/v1`)}`,
+    'MSWEA_COST_TRACKING="ignore_errors"',
+  ].join("\n"),
+));
+
 const interpreterConfiguration = modelAwareConfiguration(managedBlockConfiguration(".config/open-interpreter/config.yaml", ({ baseUrl, apiKey, modelIds }) => [
   "llm:",
   `  model: ${jsonString(`openai/${selectDefaultModelId({ baseUrl, apiKey, modelIds })}`)}`,
@@ -598,6 +616,11 @@ export const HOST_HARNESS_DEFINITIONS: readonly HostHarnessDefinition[] = [
   definition("kilo-code", "Kilo Code", "editor", ["kilo"], [".vscode/extensions/kilocode.kilo-code-*", "Library/Application Support/Code/User/globalStorage/kilocode.kilo-code", ".config/Code/User/globalStorage/kilocode.kilo-code"], undefined, manualReason),
   definition("roo-code", "Roo Code", "editor", ["roo"], [".vscode/extensions/rooveterinaryinc.roo-cline-*", "Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline", ".config/Code/User/globalStorage/rooveterinaryinc.roo-cline"], undefined, manualReason),
   definition("continue", "Continue", "editor", ["cn", "continue"], [".continue", ".vscode/extensions/continue.continue-*"], continueConfiguration),
+  definition("mini-swe-agent", "mini-SWE-agent", "agent", ["mini", "mini-extra"], [
+    ".config/mini-swe-agent",
+    "Library/Application Support/mini-swe-agent",
+    "AppData/Local/mini-swe-agent/mini-swe-agent",
+  ], miniSweAgentConfiguration),
   definition("open-interpreter", "Open Interpreter", "cli", ["interpreter"], [".config/open-interpreter"], interpreterConfiguration),
   definition("swe-agent", "SWE-agent", "agent", ["sweagent", "swe-agent"], [".config/swe-agent"], undefined, projectReason),
   definition("autocoderover", "AutoCodeRover", "agent", ["autocoderover", "acr"], [".autocoderover"], undefined, projectReason),
