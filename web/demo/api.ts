@@ -5,7 +5,7 @@ import { createDemoFixtures } from "./fixtures";
 
 export const DEMO_READ_ONLY = "Demo instance is read-only. Provider connections, configuration changes, exports, and inference are unavailable.";
 
-export function createDemoApi(now = Date.now()) {
+export function createDemoApi(now = Date.now(), workspace: "personal" | "owner" | "admin" | "member" | "billing" = "personal") {
   const fixtures = createDemoFixtures(now);
   const json = (body: unknown, status = 200) => ({ status, body });
   return (method: string, input: string) => {
@@ -16,6 +16,7 @@ export function createDemoApi(now = Date.now()) {
     if (method === "POST" && path === "/admin/usage/refresh-stale") return json({ accounts: fixtures.accounts });
     if (method !== "GET" && method !== "HEAD") return json({ error: DEMO_READ_ONLY }, 403);
     const reads: Record<string, unknown> = {
+      "/admin/team/workspace": {state: workspace === "personal" ? "personal" : "team", role: workspace === "personal" ? null : workspace},
       "/admin/session": { authenticated: true },
       "/admin/provider-catalog": sdkProviderCatalog(),
       "/admin/accounts": { accounts: fixtures.accounts },
