@@ -4788,6 +4788,80 @@ body:has(> .modal-backdrop) {
 .github-promotion-later:hover { color: var(--text); text-decoration: underline; }
 @media (max-width: 560px) { .github-promotion-actions { align-items: stretch; flex-direction: column; } .github-promotion-actions .btn { width: 100%; } }
 
+.release-announcement-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--primary) 30%, var(--sidebar-line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--primary) 9%, var(--sidebar-surface));
+  box-shadow: 0 8px 22px rgba(7, 25, 21, .1);
+}
+
+.release-announcement-open {
+  width: 100%;
+  display: grid;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--sidebar-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.release-announcement-open:hover { background: rgba(91, 209, 194, .08); }
+.release-announcement-open img { width: 100%; height: 72px; display: block; object-fit: cover; }
+.release-announcement-copy { display: grid; gap: 2px; padding: 11px 34px 11px 12px; }
+.release-announcement-copy small { color: var(--primary); font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.release-announcement-copy strong { overflow: hidden; color: var(--sidebar-text); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.release-announcement-copy > span { color: var(--sidebar-muted); font-size: 10px; font-weight: 650; }
+.release-announcement-dismiss {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 25px;
+  height: 25px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--sidebar-line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--sidebar) 86%, transparent);
+  color: var(--sidebar-text);
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+}
+.release-announcement-dismiss:hover { background: var(--sidebar); }
+.release-announcement-dismiss svg,
+.release-notes-close svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+
+.release-notes-backdrop { z-index: 1120; }
+.release-notes-modal { position: relative; width: min(720px, 100%); overflow: auto; padding: 0; }
+.release-notes-close { position: absolute; z-index: 2; top: 14px; right: 14px; background: color-mix(in srgb, var(--panel-strong) 88%, transparent); backdrop-filter: blur(8px); }
+.release-notes-banner { width: 100%; max-height: 280px; display: block; object-fit: cover; border-radius: 15px 15px 0 0; }
+.release-notes-header { display: grid; gap: 7px; padding: 24px 28px 20px; border-bottom: 1px solid var(--line); }
+.release-notes-header h2 { margin: 0; padding-right: 34px; font-size: clamp(1.55rem, 4vw, 2.25rem); letter-spacing: -.04em; }
+.release-notes-header small { color: var(--muted); font-size: 11px; }
+.release-notes-body { display: grid; gap: 9px; padding: 24px 28px; color: var(--muted-strong); line-height: 1.65; }
+.release-notes-body h3 { margin: 13px 0 0; color: var(--text); font-size: 1.05rem; }
+.release-notes-body h3:first-child { margin-top: 0; }
+.release-notes-body p { margin: 0; overflow-wrap: anywhere; }
+.release-note-list-item { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 5px; }
+.release-note-list-item > span { color: var(--primary); }
+.release-note-break { height: 4px; }
+.release-notes-empty,
+.release-notes-loading { margin: 0; padding: 24px 28px; }
+.release-notes-error { margin: 24px 28px; padding: 12px; border: 1px solid; border-radius: 10px; }
+.release-notes-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 18px 28px; border-top: 1px solid var(--line); background: var(--surface-muted); }
+
+@media (max-width: 560px) {
+  .release-notes-header,
+  .release-notes-body { padding-right: 18px; padding-left: 18px; }
+  .release-notes-banner { max-height: 190px; }
+  .release-notes-actions { align-items: stretch; flex-direction: column-reverse; padding: 16px 18px; }
+  .release-notes-actions .btn { width: 100%; }
+}
+
 /* Simplified workspace hierarchy */
 .app-shell {
   grid-template-columns: 232px minmax(0, 1fr);

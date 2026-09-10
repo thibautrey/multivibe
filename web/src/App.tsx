@@ -41,6 +41,7 @@ import { AliasesTab } from "./components/tabs/AliasesTab";
 import { ApiKeysTab } from "./components/tabs/ApiKeysTab";
 import { PluginsTab } from "./components/tabs/PluginsTab";
 import { UpdatesTab } from "./components/tabs/UpdatesTab";
+import { ReleaseAnnouncementCard, ReleaseNotesModal } from "./components/ReleaseAnnouncement";
 import { HostOnboarding } from "./host/HostOnboarding";
 import {
   initialThemeMode,
@@ -49,6 +50,13 @@ import {
 } from "./components/ui/ThemeSwitcher";
 import { dismissGitHubPromotion, GITHUB_NEW_ISSUE_URL, GITHUB_REPOSITORY_URL, readGitHubPromotionState } from "./github-promotion";
 import { completeHostOnboarding, hasCompletedHostOnboarding, shouldShowHostOnboarding } from "./host/onboarding";
+import {
+  dismissReleaseAnnouncement,
+  fetchGitHubReleaseNotes,
+  readReleaseAnnouncement,
+  releaseUrl,
+  type GitHubReleaseNotes,
+} from "./release-announcement";
 
 const TAB_ITEMS: Array<{ id: Tab; label: string; description: string; group: "Operate" | "Build" | "Advanced" }> = [
   { id: "overview", label: "Home", description: "System status and next steps", group: "Operate" },
@@ -166,6 +174,11 @@ export default function App() {
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [githubPromotionOpen, setGitHubPromotionOpen] = useState(!demo && !githubPromotion.dismissed && Date.now() >= githubPromotion.showAt);
   const [githubPromotionDismissed, setGitHubPromotionDismissed] = useState(demo || githubPromotion.dismissed);
+  const [releaseAnnouncementVersion, setReleaseAnnouncementVersion] = useState<string | null>(null);
+  const [releaseDetails, setReleaseDetails] = useState<GitHubReleaseNotes | null>(null);
+  const [releaseDetailsLoading, setReleaseDetailsLoading] = useState(false);
+  const [releaseDetailsError, setReleaseDetailsError] = useState("");
+  const [releaseModalVersion, setReleaseModalVersion] = useState<string | null>(null);
   const [usageCacheTtlMs, setUsageCacheTtlMs] = useState(300_000);
   const [oauthRedirectUri, setOauthRedirectUri] = useState("");
   const [error, setError] = useState("");
@@ -207,6 +220,21 @@ export default function App() {
     setGitHubPromotionDismissed(true);
   };
 
+  const dismissCurrentReleaseAnnouncement = () => {
+    if (!releaseAnnouncementVersion) return;
+    dismissReleaseAnnouncement(localStorage, releaseAnnouncementVersion);
+    setReleaseAnnouncementVersion(null);
+  };
+
+  const openCurrentReleaseNotes = () => {
+    if (!releaseAnnouncementVersion) return;
+    const version = releaseAnnouncementVersion;
+    dismissReleaseAnnouncement(localStorage, version);
+    setReleaseAnnouncementVersion(null);
+    setReleaseModalVersion(version);
+    setMobileNavigationOpen(false);
+  };
+
   useEffect(() => {
     if (githubPromotionDismissed || githubPromotionOpen) return;
     const remaining = githubPromotion.showAt - Date.now();
@@ -226,6 +254,43 @@ export default function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [githubPromotionOpen]);
+
+  useEffect(() => {
+    if (!releaseModalVersion) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setReleaseModalVersion(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [releaseModalVersion]);
+
+  useEffect(() => {
+    if (authenticated !== true || !hostApplication) return;
+    let cancelled = false;
+    const loadReleaseAnnouncement = async () => {
+      try {
+        const status = await api("/admin/host-update");
+        const version = readReleaseAnnouncement(localStorage, String(status?.current_version ?? ""));
+        if (!version || cancelled) return;
+        setReleaseAnnouncementVersion(version);
+        setReleaseDetails(null);
+        setReleaseDetailsError("");
+        setReleaseDetailsLoading(true);
+        try {
+          const details = await fetchGitHubReleaseNotes(version);
+          if (!cancelled) setReleaseDetails(details);
+        } catch (reason) {
+          if (!cancelled) setReleaseDetailsError(reason instanceof Error ? reason.message : String(reason));
+        } finally {
+          if (!cancelled) setReleaseDetailsLoading(false);
+        }
+      } catch {
+        // A non-native or temporarily unavailable updater must not interrupt the dashboard.
+      }
+    };
+    void loadReleaseAnnouncement();
+    return () => { cancelled = true; };
+  }, [authenticated, hostApplication]);
 
   useEffect(() => {
     const dialog = mobileNavigationRef.current;
@@ -1084,6 +1149,14 @@ export default function App() {
             </nav>
 
             <div className="sidebar-footer">
+              {releaseAnnouncementVersion && (
+                <ReleaseAnnouncementCard
+                  version={releaseAnnouncementVersion}
+                  release={releaseDetails}
+                  onOpen={openCurrentReleaseNotes}
+                  onDismiss={dismissCurrentReleaseAnnouncement}
+                />
+              )}
               <div className="sidebar-status">
                 <span className="status-dot" />
                 <span>
@@ -1168,6 +1241,14 @@ export default function App() {
             </nav>
 
             <footer className="mobile-navigation-footer">
+              {releaseAnnouncementVersion && (
+                <ReleaseAnnouncementCard
+                  version={releaseAnnouncementVersion}
+                  release={releaseDetails}
+                  onOpen={openCurrentReleaseNotes}
+                  onDismiss={dismissCurrentReleaseAnnouncement}
+                />
+              )}
               <div className="mobile-navigation-status">
                 <span className="status-dot" />
                 <span>
@@ -1188,7 +1269,22 @@ export default function App() {
           </div>
         </dialog>
 
-        {githubPromotionOpen && authenticated && (
+        {releaseModalVersion && authenticated && (
+          <ModalPortal><div className="modal-backdrop release-notes-backdrop" role="presentation" onClick={(event) => {
+            if (event.target === event.currentTarget) setReleaseModalVersion(null);
+          }}>
+            <ReleaseNotesModal
+              version={releaseModalVersion}
+              release={releaseDetails}
+              loading={releaseDetailsLoading}
+              error={releaseDetailsError}
+              fallbackUrl={releaseUrl(releaseModalVersion)}
+              onClose={() => setReleaseModalVersion(null)}
+            />
+          </div></ModalPortal>
+        )}
+
+        {githubPromotionOpen && authenticated && !releaseModalVersion && (
           <ModalPortal><div className="modal-backdrop github-promotion-backdrop" role="presentation" onClick={(event) => {
             if (event.target === event.currentTarget) closeGitHubPromotion();
           }}>
