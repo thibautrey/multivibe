@@ -30,7 +30,7 @@
     "start:managed": "node dist/managed/main.js",
     "catalog:sdk:refresh": "node scripts/refresh-ai-sdk-catalog.mjs",
     "demo": "npm --prefix web run demo",
-    "test:integration:cloud": "node --import tsx --test test-integration/cloud-core.test.mjs"
+    "test:integration:cloud": "cargo build -p multivibe-v1-edge && node --import tsx --test test-integration/cloud-core.test.mjs"
   },
   "dependencies": {
     "@foxglove/wasm-zstd": "^1.0.1",

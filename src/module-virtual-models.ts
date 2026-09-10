@@ -2,7 +2,7 @@ import type { RequestHandler } from "express";
 import { randomUUID } from "node:crypto";
 import type { ModuleManager } from "./module-manager.js";
 import type { ModuleServices } from "./module-sdk.js";
-import type { ExposedModel } from "./routes/proxy/index.js";
+import type { ExposedModel } from "./model-catalog-types.js";
 import { getSessionId } from "./responses/payloads.js";
 import { extractCodexSessionId } from "./codex-projects.js";
 import { inspectModuleConversation } from "./module-conversation.js";
