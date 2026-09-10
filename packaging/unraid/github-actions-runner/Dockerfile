@@ -19,6 +19,7 @@ RUN chmod 1777 /tmp \
         docker.io \
         docker-compose-v2 \
         file \
+        gettext-base \
         git \
         gnupg \
         gh \
