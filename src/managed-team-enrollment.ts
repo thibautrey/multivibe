@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { promises as fs, type FileHandle } from "node:fs";
+import { promises as fs } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type { AccountStore } from "./store.js";
 
@@ -175,6 +176,8 @@ export function validateManagedTeamEnrollmentProfile(value: unknown, now = Date.
   ], "Managed enrollment profile is invalid");
   const channel = profile.managementChannel;
   const claim = profile.deviceClaim === null ? null : exactObject(profile.deviceClaim, ["issuer", "subject", "nonce"], "Managed enrollment device claim is invalid");
+  const issuedAt = profile.issuedAt;
+  const expiresAt = profile.expiresAt;
   if (profile.schemaVersion !== "multivibe-managed-enrollment-v1"
     || typeof profile.profileId !== "string" || !UUID.test(profile.profileId)
     || (channel !== "device" && channel !== "user")
@@ -187,9 +190,10 @@ export function validateManagedTeamEnrollmentProfile(value: unknown, now = Date.
     || typeof profile.instanceName !== "string" || profile.instanceName.trim() !== profile.instanceName
     || profile.instanceName.length < 1 || profile.instanceName.length > 80
     || typeof profile.bootstrapToken !== "string" || !BOOTSTRAP_TOKEN.test(profile.bootstrapToken)
-    || !Number.isSafeInteger(profile.issuedAt) || !Number.isSafeInteger(profile.expiresAt)
-    || profile.expiresAt <= profile.issuedAt || profile.expiresAt - profile.issuedAt > MAX_BOOTSTRAP_LIFETIME_MS
-    || profile.issuedAt > now + CLOCK_SKEW_MS || profile.expiresAt <= now) {
+    || typeof issuedAt !== "number" || !Number.isSafeInteger(issuedAt)
+    || typeof expiresAt !== "number" || !Number.isSafeInteger(expiresAt)
+    || expiresAt <= issuedAt || expiresAt - issuedAt > MAX_BOOTSTRAP_LIFETIME_MS
+    || issuedAt > now + CLOCK_SKEW_MS || expiresAt <= now) {
     throw new Error("Managed enrollment profile is invalid or expired");
   }
   return Object.freeze({
@@ -202,8 +206,8 @@ export function validateManagedTeamEnrollmentProfile(value: unknown, now = Date.
     instanceName: profile.instanceName,
     bootstrapToken: profile.bootstrapToken,
     cloudApiOrigin: productionOrLoopbackOrigin(profile.cloudApiOrigin),
-    issuedAt: profile.issuedAt,
-    expiresAt: profile.expiresAt,
+    issuedAt,
+    expiresAt,
   });
 }
 
