@@ -4,10 +4,12 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import {
+  AccountStoreManagedEnrollmentInstaller,
   ManagedTeamEnrollmentService,
   validateManagedTeamEnrollmentProfile,
   type ManagedTeamEnrollmentResult,
 } from "./managed-team-enrollment.js";
+import { AccountStore } from "./store.js";
 
 const now = Date.UTC(2026, 8, 10, 10, 0, 0);
 const organizationId = "10000000-0000-4000-8000-000000000001";
@@ -29,7 +31,8 @@ function result(): ManagedTeamEnrollmentResult {
   return {
     schemaVersion: "multivibe-managed-enrollment-result-v1", enrollmentId: "50000000-0000-4000-8000-000000000005",
     organizationId, membershipId, instanceId, managementChannel: "device", deviceClaim,
-    instanceAccessToken: `mvmi_${"b".repeat(43)}`, instanceAccessTokenExpiresAt: now + 3_600_000,
+    instanceAccessToken: `mvmi_${"b".repeat(43)}`, instanceRefreshToken: `mvir_${"d".repeat(43)}`,
+    instanceAccessTokenExpiresAt: now + 3_600_000,
     teamPersonalKey: { id: "60000000-0000-4000-8000-000000000006", secret, prefix: secret.slice(0, 12), expiresAt: now + 86_400_000 },
   };
 }
@@ -106,6 +109,26 @@ test("failed or mismatched enrollment remains pending and keeps the bootstrap fo
     await assert.rejects(service.enrollIfPresent(), /mismatched/);
     assert.equal((await service.status()).state, "pending");
     await fs.access(profilePath);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test("the AccountStore installer links the member, local key and renewable Cloud connection idempotently", async () => {
+  const directory = await fs.mkdtemp(path.join(process.cwd(), ".managed-enrollment-test-"));
+  const store = new AccountStore(path.join(directory, "accounts.json"));
+  try {
+    await store.init();
+    const installer = new AccountStoreManagedEnrollmentInstaller(store, () => now);
+    await installer.install(result(), profile());
+    await installer.install(result(), profile());
+    const keys = await store.listProxyApiKeys();
+    assert.equal(keys.length, 1);
+    assert.deepEqual(keys[0].principal, { type: "member", id: membershipId });
+    const settings = await store.getSettings();
+    assert.equal(settings.multivibeCloud?.accessToken, result().instanceAccessToken);
+    assert.equal(settings.multivibeCloud?.refreshToken, result().instanceRefreshToken);
+    assert.equal(settings.multivibeTeam?.membershipId, membershipId);
+    assert.equal(settings.multivibeTeam?.managementChannel, "device");
+    assert.equal(settings.multivibeTeam?.managedEnrollmentId, result().enrollmentId);
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
 

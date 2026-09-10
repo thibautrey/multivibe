@@ -4,6 +4,7 @@ import test from "node:test";
 import express from "express";
 import { createAdminRouter, type AdminRoutesOptions } from "./index.js";
 import type { MultivibeCloudService } from "../../multivibe-cloud.js";
+import type { ManagedTeamEnrollmentService } from "../../managed-team-enrollment.js";
 
 const flowId = "00000000-0000-4000-8000-000000000001";
 type CloudRoutesStub = Pick<
@@ -126,4 +127,23 @@ test("Initial account listing includes the managed Cloud provider with redacted 
     assert.equal(body.accounts[0].id, account.id);
     assert.notEqual(body.accounts[0].accessToken, account.accessToken);
   }, { async listAccounts() { return [account]; } } as AdminRoutesOptions["store"]);
+});
+
+test("managed Team enrollment status is exposed only through its redacted projection", async () => {
+  const status = {
+    schemaVersion: "multivibe-managed-enrollment-status-v1", state: "enrolled", profileId: flowId,
+    organizationId: "10000000-0000-4000-8000-000000000001", membershipId: "20000000-0000-4000-8000-000000000002",
+    instanceId: "30000000-0000-4000-8000-000000000003", managementChannel: "device",
+    enrollmentId: "40000000-0000-4000-8000-000000000004", teamKeyPrefix: "mvt_redacted", enrolledAt: Date.now(),
+  } as const;
+  const app = express();
+  app.use("/admin", createAdminRouter({ ...options({}), managedTeamEnrollment: { status: async () => status } as unknown as ManagedTeamEnrollmentService }));
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolve) => server.once("listening", resolve));
+  try {
+    const address = server.address() as AddressInfo;
+    const response = await fetch(`http://127.0.0.1:${address.port}/admin/team/managed-enrollment`);
+    assert.equal(response.status, 200);assert.equal(response.headers.get("cache-control"), "no-store");
+    const text = await response.text();assert.equal(text.includes("mvmb_"), false);assert.equal(text.includes("mvir_"), false);assert.equal(text.includes("instanceAccessToken"), false);
+  } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
 });

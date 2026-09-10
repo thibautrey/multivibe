@@ -7,6 +7,7 @@ import { isIP } from "node:net";
 import type { AccountStore, OAuthStateStore } from "./store.js";
 import type { Account, OAuthFlowState, PrivacyMode, StoreSettings } from "./types.js";
 import type { MultivibeTeamSyncService, TeamSyncManifest } from "./team-sync.js";
+import type { ManagedEnrollmentIdentity } from "./managed-team-enrollment.js";
 
 const CLIENT_ID = "multivibe-core";
 const ACCOUNT_ID = "multivibe-cloud";
@@ -68,6 +69,7 @@ export type MultivibeCloudServiceOptions = {
   topupUrl: string;
   privacyMode?: PrivacyMode;
   fetchImpl?: typeof fetch;
+  managedTeamIdentity?: ManagedEnrollmentIdentity;
 };
 
 function normalizedOrigin(value: string, label: string): string {
@@ -192,6 +194,7 @@ export class MultivibeCloudService {
   private readonly topupUrl: string;
   private readonly privacyMode: PrivacyMode;
   private readonly fetchImpl: typeof fetch;
+  private readonly managedTeamIdentity?: ManagedEnrollmentIdentity;
 
   constructor(
     private readonly store: AccountStore,
@@ -205,6 +208,7 @@ export class MultivibeCloudService {
     this.topupUrl = this.validHttpUrl(options.topupUrl, "MultiVibe Cloud top-up URL");
     this.privacyMode = options.privacyMode ?? "standard";
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.managedTeamIdentity = options.managedTeamIdentity;
   }
 
   async getModelCatalog() {
@@ -373,6 +377,47 @@ export class MultivibeCloudService {
   private async refreshConnectionIfNeeded(connection: CloudConnection): Promise<CloudConnection> {
     if (!connection.refreshToken || !connection.expiresAt || connection.expiresAt > Date.now() + 60_000) {
       return connection;
+    }
+    if (connection.refreshToken.startsWith("mvir_")) {
+      if (!/^mvir_[A-Za-z0-9_-]{43}$/.test(connection.refreshToken) || !this.managedTeamIdentity) {
+        throw new Error("Managed Team refresh state is invalid");
+      }
+      const settings = await this.store.getSettings();
+      const enrollmentId = settings.multivibeTeam?.managedEnrollmentId;
+      const identity = this.managedTeamIdentity.getIdentity();
+      if (!enrollmentId || !UUID_PATTERN.test(enrollmentId)
+        || settings.multivibeTeam?.instanceId !== identity.instanceId) {
+        throw new Error("Managed Team refresh state is invalid");
+      }
+      const response = await this.fetchImpl(`${this.apiBaseUrl}/team/v1/instances/managed-refresh`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${connection.refreshToken}`,
+          "content-type": "application/json",
+          accept: "application/json",
+        },
+        body: JSON.stringify(this.managedTeamIdentity.signRequest({
+          schemaVersion: "multivibe-team-managed-refresh-v1",
+          enrollmentId,
+        })),
+      });
+      const tokenData = await this.readJson(response);
+      if (!response.ok) throw new CloudHttpError(response.status);
+      const expiresIn = Number(tokenData.expiresIn);
+      if (tokenData.schemaVersion !== "multivibe-managed-refresh-result-v1"
+        || typeof tokenData.accessToken !== "string" || !/^mvmi_[A-Za-z0-9_-]{43}$/.test(tokenData.accessToken)
+        || typeof tokenData.refreshToken !== "string" || !/^mvir_[A-Za-z0-9_-]{43}$/.test(tokenData.refreshToken)
+        || !Number.isSafeInteger(expiresIn) || expiresIn < 60 || expiresIn > 86_400) {
+        throw new Error("Managed Team refresh response is invalid");
+      }
+      const next: CloudConnection = {
+        ...connection,
+        accessToken: tokenData.accessToken,
+        refreshToken: tokenData.refreshToken,
+        expiresAt: Date.now() + expiresIn * 1000,
+      };
+      await this.store.patchSettings({ multivibeCloud: next });
+      return next;
     }
     const response = await this.fetchImpl(`${this.authBaseUrl}/oauth/token`, {
       method: "POST",

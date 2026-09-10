@@ -26,7 +26,7 @@ an instance private key. On first start MultiVibe:
 4. verifies that the returned organization, membership, instance, management
    channel, and device claim exactly match the profile;
 5. installs the once-shown employee Team key and the instance-scoped access
-   grant in the private local store; and
+   and rotating refresh grants in the private local store; and
 6. deletes the bootstrap profile.
 
 The Cloud exchange must atomically mark a bootstrap as used before issuing
@@ -35,9 +35,24 @@ seat/instance-capacity failure, organization mismatch, device-claim mismatch,
 replay from another instance, or invalid proof of possession. Request bodies,
 authorization headers, and returned secrets must never be logged.
 
+Owners and Team administrators create the profile with
+`POST /client/v1/team/managed-enrollments`; the exact input fields are
+`membershipId`, `managementChannel`, `deviceClaim`, `instanceName`, and
+`expiresInSeconds`. The response is the complete profile and is intentionally
+shown only on creation. `GET /client/v1/team/managed-enrollments` returns the
+redacted inventory, and `DELETE /client/v1/team/managed-enrollments/:profileId`
+revokes an unconsumed profile. Billing and member roles cannot use these
+administration endpoints.
+
 The public local status exposes identifiers, enrollment state, management
 channel, and the Team-key prefix only. It never returns bootstrap, access-token,
 personal-key, or private-key material.
+
+Before an instance access grant expires, Host signs a refresh proof with the
+same local Ed25519 identity and sends the `mvir_` credential only in the
+Authorization header to `POST /team/v1/instances/managed-refresh`. Cloud
+rotates both managed grants atomically. Reuse of the previous refresh
+credential revokes the managed session.
 
 ## Device channel and user channel
 

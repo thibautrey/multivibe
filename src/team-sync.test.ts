@@ -27,3 +27,9 @@ test("Team analytics are aggregate-only and omit request content",async t=>{
  const recovered=new MultivibeTeamSyncService(store,path.join(root,"identity.json"));await recovered.initialize();assert.equal(recovered.analyticsBatch().buckets.length,1);
  const envelope=recovered.signRequest({cursor:1});assert.equal(envelope.instanceId,recovered.getIdentity().instanceId);assert.ok(envelope.signature.length>40);
 });
+test("Team synchronization preserves managed enrollment bindings",async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),"multivibe-managed-team-sync-"));t.after(()=>fs.rm(root,{recursive:true,force:true}));const store=new AccountStore(path.join(root,"accounts.json"));await store.init();const sync=new MultivibeTeamSyncService(store,path.join(root,"identity.json"));await sync.initialize();
+ const identity=sync.getIdentity();await store.patchSettings({multivibeTeam:{enabled:true,instanceId:identity.instanceId,instanceName:"Managed Mac",syncCursor:0,organizationId:"10000000-0000-4000-8000-000000000001",membershipId:"20000000-0000-4000-8000-000000000002",managementChannel:"device",deviceClaim:{issuer:"intune",subject:"device-42",nonce:"n".repeat(22)},managedEnrollmentId:"30000000-0000-4000-8000-000000000003",teamKeyId:"40000000-0000-4000-8000-000000000004"}});
+ await sync.applyManifest({schemaVersion:"multivibe-team-sync-v1",cursor:1,providers:[],removedProviderIds:[]});
+ const settings=await store.getSettings();assert.equal(settings.multivibeTeam?.managedEnrollmentId,"30000000-0000-4000-8000-000000000003");assert.equal(settings.multivibeTeam?.membershipId,"20000000-0000-4000-8000-000000000002");assert.equal(settings.multivibeTeam?.syncCursor,1);
+});
