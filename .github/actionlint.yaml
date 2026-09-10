@@ -1,0 +1,6 @@
+self-hosted-runner:
+  labels:
+    - multivibe-linux
+    - multivibe-docker
+
+config-variables: null

@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   managed-validation:
-    runs-on: ubuntu-24.04
+    runs-on: multivibe-linux
     permissions:
       contents: read
     steps:
@@ -25,7 +25,7 @@ jobs:
       - run: node scripts/managed/verify-distribution.mjs
   managed-images:
     needs: managed-validation
-    runs-on: ubuntu-24.04
+    runs-on: multivibe-docker
     permissions:
       contents: read
     strategy:
@@ -50,7 +50,7 @@ jobs:
           sbom: true
   release:
     needs: [managed-validation, managed-images]
-    runs-on: ubuntu-24.04
+    runs-on: multivibe-linux
     permissions:
       contents: write
       id-token: write
