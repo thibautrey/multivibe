@@ -6,6 +6,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import type { AccountStore, OAuthStateStore } from "./store.js";
 import type { Account, OAuthFlowState, PrivacyMode, StoreSettings } from "./types.js";
+import type { MultivibeTeamSyncService, TeamSyncManifest } from "./team-sync.js";
 
 const CLIENT_ID = "multivibe-core";
 const ACCOUNT_ID = "multivibe-cloud";
@@ -17,6 +18,11 @@ const SCOPES = [
   "projects:write",
   "core:credential:create",
   "provider:read",
+  "team:read",
+  "team:instances",
+  "team:providers",
+  "team:analytics:write",
+  "team:keys",
 ].join(" ");
 const FLOW_LIFETIME_MS = 10 * 60_000;
 const API_KEY_LIFETIME_MS = 365 * 24 * 60 * 60_000;
@@ -203,6 +209,14 @@ export class MultivibeCloudService {
 
   async getModelCatalog() {
     return { models: await readCloudModelCatalog(this.apiBaseUrl, this.fetchImpl) };
+  }
+
+  async syncTeam(teamSync:MultivibeTeamSyncService):Promise<void>{
+    const settings=await this.store.getSettings();let connection=currentCloudConnection(settings);if(!connection)return;connection=await this.refreshConnectionIfNeeded(connection);const identity=teamSync.getIdentity();
+    if(!settings.multivibeTeam?.enabled){await this.requestJson('/team/v1/instances/enroll',connection.accessToken,{method:'POST',body:teamSync.enrollmentDocument(settings.multivibeTeam?.instanceName??'Multivibe instance','core-0.2')});}
+    const cursor=settings.multivibeTeam?.syncCursor??0;const manifest=await this.requestJson(`/team/v1/sync?cursor=${cursor}&instanceId=${encodeURIComponent(identity.instanceId)}`,connection.accessToken) as TeamSyncManifest;const applied=await teamSync.applyManifest(manifest);
+    if(applied.applied.length||applied.removed.length){const revisions=new Map(manifest.providers.map(provider=>[provider.id,provider.revision]));await this.requestJson('/team/v1/acknowledgements',connection.accessToken,{method:'POST',body:teamSync.signRequest({schemaVersion:'multivibe-team-acknowledgements-v1',cursor:manifest.cursor,acknowledgements:[...applied.applied.map(providerId=>({providerId,revision:revisions.get(providerId)??manifest.cursor,status:'applied'})),...applied.removed.map(providerId=>({providerId,revision:manifest.cursor,status:'removed'}))]})});}
+    const batch=teamSync.analyticsBatch();if(batch.buckets.length){const result=await this.requestJson('/team/v1/analytics/batches',connection.accessToken,{method:'POST',body:teamSync.signRequest(batch)}) as Record<string,unknown>;const accepted=Array.isArray(result.acceptedBucketIds)?result.acceptedBucketIds.filter(value=>typeof value==='string') as string[]:[];await teamSync.acknowledgeAnalytics(accepted);}
   }
 
   private validRedirectUri(value: string): string {
