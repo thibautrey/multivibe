@@ -45,6 +45,12 @@ const RUNTIME_CATALOG: Record<string, RuntimeIdentity> = {
     iconUrl: "https://grok.com/favicon.ico",
     homepageUrl: "https://grok.com",
   },
+  deepseek: {
+    id: "deepseek",
+    label: "DeepSeek",
+    iconUrl: "/assets/providers/deepseek.svg",
+    homepageUrl: "https://www.deepseek.com",
+  },
   ollama: {
     id: "ollama",
     label: "Ollama",
@@ -139,8 +145,10 @@ export function runtimeIdentityForAccount(
   account: Pick<Account, "provider" | "localRuntime" | "sdkProvider">,
 ): RuntimeIdentity {
   if (account.provider === "ai-sdk") {
-
-    return fallbackIdentity(account.sdkProvider ?? "ai-sdk", SDK_PROVIDER_NAMES[account.sdkProvider ?? ""] ?? "Cloud provider");
+    return runtimeIdentityForAdapter(
+      account.sdkProvider ?? "ai-sdk",
+      SDK_PROVIDER_NAMES[account.sdkProvider ?? ""] ?? "Cloud provider",
+    );
   }
   if (account.localRuntime?.adapter) {
     return runtimeIdentityForAdapter(account.localRuntime.adapter);
