@@ -56,14 +56,10 @@ export const compactNumber = (v: number) =>
 export const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
 
 const usdFormatter = new Intl.NumberFormat(undefined, {
-  style: "currency",
-  currency: "USD",
   minimumFractionDigits: 2,
   maximumFractionDigits: 4,
 });
 const compactUsdFormatter = new Intl.NumberFormat(undefined, {
-  style: "currency",
-  currency: "USD",
   minimumFractionDigits: 0,
   maximumFractionDigits: 1,
 });
@@ -76,7 +72,7 @@ const costUnits = [
 export const usd = (v: number) => {
   const absoluteValue = Math.abs(v);
   const unitIndex = costUnits.findIndex((unit) => absoluteValue >= unit.value);
-  if (unitIndex === -1) return usdFormatter.format(v);
+  if (unitIndex === -1) return `${usdFormatter.format(v)} $US`;
 
   let unit = costUnits[unitIndex];
   let scaledValue = v / unit.value;
@@ -85,7 +81,7 @@ export const usd = (v: number) => {
     scaledValue = v / unit.value;
   }
 
-  return `${compactUsdFormatter.format(scaledValue)}${unit.suffix}`;
+  return `${compactUsdFormatter.format(scaledValue)}${unit.suffix} $US`;
 };
 
 export function formatTokenCount(v: number): string {
