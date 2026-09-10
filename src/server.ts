@@ -13,6 +13,7 @@ import crypto from "node:crypto";
 import { AccountStore, OAuthStateStore, cleanupOrphanedTmpFiles } from "./store.js";
 import { createAnonymousUsageSharingWorker } from "./anonymous-usage-sharing.js";
 import { createTraceManager } from "./traces.js";
+import { MultivibeTeamSyncService } from "./team-sync.js";
 import { createAdminRouter } from "./routes/admin/index.js";
 import { HostHarnessIntegrationManager } from "./host/harness-integrations.js";
 import { oauthConfig } from "./oauth-config.js";
@@ -208,6 +209,7 @@ const store = new AccountStore(STORE_PATH);
 const teamMachineSharing = new TeamMachineSharing(store, path.join(dataDir, "team-machine-sharing.json"), JSON.parse(process.env.MULTIVIBE_TEAM_MACHINE_TRUSTED_KEYS ?? "{}"));
 await teamMachineSharing.initialize();
 app.use("/team-machine", teamMachineSharing.inferenceRouter());
+const teamSync = new MultivibeTeamSyncService(store, `${STORE_PATH}.team-instance.json`);
 const hostHarnessIntegrations = MULTIVIBE_HOST_APPLICATION
   ? new HostHarnessIntegrationManager({
       homeDirectory: HOST_HARNESS_HOME_DIRECTORY,
@@ -235,6 +237,11 @@ const moduleManager = new ModuleManager(
 moduleManager.registerBuiltin(automaticRouterManifest, createAutomaticRouter());
 const traceManager = createTraceManager({
   onCompleted: async (trace) => {
+    const principal = trace.application
+      ? store.getCachedProxyApiKeys().find((entry) => entry.application === trace.application)?.principal
+        ?? { type: "service" as const, id: trace.application, name: trace.application }
+      : { type: "unassigned" as const };
+    await teamSync.recordTrace(trace, principal);
     if (!trace.clientRequestId) return;
     // Never expose trace bodies, credentials, account details, or headers to analytics hooks.
     const value = { traceId: trace.id, traceKind: trace.traceKind, model: trace.resolvedModel ?? trace.model,
@@ -256,6 +263,7 @@ const traceManager = createTraceManager({
 const configuredProxyApiKeys = parseProxyApiKeys(PROXY_API_KEY, PROXY_API_KEYS);
 await Promise.all([
   store.init(),
+  teamSync.initialize(),
   oauthStore.init(),
   codexProjectRegistry.init(),
   traceManager.initialize(),
@@ -332,7 +340,8 @@ const multivibeCloud = new MultivibeCloudService(store, oauthStore, {
 });
 const teamMachineTimer=setInterval(()=>{void multivibeCloud.syncMachine(teamMachineSharing).catch(()=>undefined);},2000);
 teamMachineTimer.unref();
-
+const teamSyncTimer=setInterval(()=>{void multivibeCloud.syncTeam(teamSync).catch(()=>undefined);},60_000);
+teamSyncTimer.unref();
 const quotaResetForecastCache = new CodexQuotaResetForecastCache();
 const resetCreditIncreaseMonitor = new ResetCreditIncreaseMonitor({
   listAccounts: () => store.listAccounts(),
@@ -420,6 +429,7 @@ const adminRouter = createAdminRouter({
   moduleManager,
   hostUpdateController,
   multivibeCloud,
+  teamSync,
   appVersion: process.env.APP_VERSION ?? "unknown",
   storagePaths: {
     accountsPath: STORE_PATH,
