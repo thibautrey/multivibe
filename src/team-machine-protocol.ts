@@ -7,7 +7,7 @@ export type MachinePolicy = {
   revision: number; consentId: string; runtimeId: string;
   transport: MachineTransport; endpoint: string | null; enabled: boolean;
   models: Array<{ id: string; members: string[] }>;
-  keys: Array<{ digest: string; memberId: string }>;
+  keys: Array<{ digest: string; memberId: string; expiresAt: number }>;
   maxConcurrent: number; issuedAt: number; expiresAt: number; entitlementEndsAt: number;
 };
 export type SignedMachinePolicy = { policy: MachinePolicy; signature: string; keyId: string };
@@ -41,8 +41,8 @@ export function validateMachinePolicy(p: MachinePolicy, now: number): void {
   }
   const keys = new Set<string>();
   for (const key of p.keys) {
-    exact(key, ['digest','memberId']);
-    if (!/^[a-f0-9]{64}$/.test(key.digest) || !UUID.test(key.memberId) || keys.has(key.digest)) throw new Error('machine_key_invalid');
+    exact(key, ['digest','memberId','expiresAt']);
+    if (!/^[a-f0-9]{64}$/.test(key.digest) || !UUID.test(key.memberId) || !Number.isSafeInteger(key.expiresAt) || key.expiresAt <= p.issuedAt || keys.has(key.digest)) throw new Error('machine_key_invalid');
     keys.add(key.digest);
   }
 }

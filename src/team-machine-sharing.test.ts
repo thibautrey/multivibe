@@ -33,7 +33,7 @@ test('consent, restart, renewal, rollback, suspension and local revocation',asyn
 });
 test('model ACLs and private endpoint policy validate without URL credentials',()=>{
  const now=Date.now(),p=policy(now),member=randomUUID();
- const model={id:'model',members:[member]};const key={digest:createHash('sha256').update('key').digest('hex'),memberId:member};
+ const model={id:'model',members:[member]};const key={digest:createHash('sha256').update('key').digest('hex'),memberId:member,expiresAt:now+TEAM_MACHINE_LEASE_MS};
  assert.doesNotThrow(()=>issueMachinePolicy({...p,models:[model],keys:[key]},'test',pair.privateKey,now));
  assert.throws(()=>issueMachinePolicy({...p,endpoint:'http://machine.local'},'test',pair.privateKey,now),/tls/);
  assert.throws(()=>issueMachinePolicy({...p,models:[model,model]},'test',pair.privateKey,now),/model/);
