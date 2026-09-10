@@ -23,6 +23,11 @@ landing and Cloud deployment workflows. Actions such as `setup-node` and the
 Cosign installer continue to install the workflow-pinned Node and Cosign
 versions at job runtime.
 
+The runner tool cache is `/runner/_tool`, inside the persistent runner bind
+mount, so downloaded tools remain executable across jobs and container
+restarts. Keep `/runner` owned by UID/GID `1001`; do not replace the tool cache
+with a root-owned temporary mount.
+
 Use a separate persistent directory for each runner. The registration token is
 short-lived and must not be committed. The entrypoint accepts it from a file so
 it does not appear in the container command line or persistent environment:
@@ -60,7 +65,6 @@ docker run -d \
   --cap-drop ALL \
   --tmpfs /tmp:rw,nosuid,nodev \
   --tmpfs /run:rw,nosuid,nodev \
-  --tmpfs /opt/hostedtoolcache:rw,nosuid,nodev \
   --mount type=bind,src=/mnt/user/appdata/multivibe-github-runner-docker,dst=/runner \
   --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock \
   --mount type=bind,src=/run/multivibe-github-runner-docker.token,dst=/run/multivibe-runner-token,readonly \
@@ -68,6 +72,7 @@ docker run -d \
   --env RUNNER_REPO_URL=https://github.com/thibautrey/multivibe \
   --env RUNNER_NAME=multivibe-unraid-docker-1 \
   --env RUNNER_LABELS=multivibe-docker \
+  --env RUNNER_TOOL_CACHE=/runner/_tool \
   --env RUNNER_TOKEN_FILE=/run/multivibe-runner-token \
   multivibe/github-actions-runner:2.336.0-deploy
 ```
