@@ -9,8 +9,8 @@ import './ModelsTab.css';
 const sources = [{ id: 'all', label: 'All sources' }, { id: 'provider', label: 'Providers' }, { id: 'local', label: 'Local models' }, { id: 'cloud', label: 'MultiVibe Cloud' }];
 const PAGE_SIZE = 20;
 
-export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure, onConnectCloud }: {
-  models: ExposedModel[]; accounts: Account[]; cloudConnected: boolean;
+export function ModelsTab({ canConfigure = true, models, accounts, cloudConnected, onUse, onConfigure, onConnectCloud }: {
+  canConfigure?: boolean; models: ExposedModel[]; accounts: Account[]; cloudConnected: boolean;
   onUse: (id: string) => void; onConfigure: (route: ModelRoute) => void; onConnectCloud: () => Promise<void>;
 }) {
   const [cloud, setCloud] = useState<CloudModel[]>([]);
@@ -58,7 +58,7 @@ export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure
     return () => { active = false; controller.abort(); };
   }, [contextTokens, estimateRequest]);
   const currentCompatibility = compatibility?.context_tokens === contextTokens ? compatibility : undefined;
-  const catalog = useMemo(() => aggregateModels(models, accounts, cloud, providers), [models, accounts, cloud, providers]);
+  const catalog = useMemo(() => aggregateModels(models, accounts, canConfigure ? cloud : [], canConfigure ? providers : []), [models, accounts, cloud, providers, canConfigure]);
   const providerOptions = useMemo(() => [...new Set(catalog.flatMap(model => model.routes.filter(route => source === 'all' || route.source === source).map(route => route.label)))].sort((a, b) => a.localeCompare(b)), [catalog, source]);
   const filtered = useMemo(() => filterCatalog(catalog, { query, source, provider, readyOnly, sort }).filter(model => hardware === 'all' || (compatibilityFor(model, currentCompatibility)?.state ?? 'unknown') === hardware), [catalog, query, source, provider, readyOnly, sort, hardware, currentCompatibility]);
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
@@ -73,17 +73,18 @@ export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure
   };
   const useRoute = (route: ModelRoute) => {
     if (route.ready) onUse(route.modelId);
+    else if (!canConfigure) return;
     else if (route.source === 'cloud' && !cloudConnected) void connect();
     else onConfigure(route);
   };
-  const actionLabel = (route: ModelRoute) => route.ready ? 'Use model' : route.source === 'cloud' ? cloudConnected ? 'View access' : 'Connect Cloud' : 'Set up';
+  const actionLabel = (route: ModelRoute) => route.ready ? 'Use model' : !canConfigure ? 'Ask your admin' : route.source === 'cloud' ? cloudConnected ? 'View access' : 'Connect Cloud' : 'Set up';
   return <section className="panel models-catalog" aria-label="Model library">
     <div className="models-layout">
       <aside className="models-sidebar" aria-label="Model filters">
         <div className="models-filter-heading"><strong>Filters</strong>{activeFilters && <button className="models-text-button" onClick={reset}>Reset</button>}</div>
         <fieldset><legend>Source</legend>{sources.map(item => <button key={item.id} className="models-source" aria-pressed={source === item.id} onClick={() => { setSource(item.id); setProvider('all'); setPage(0); }}><span>{item.label}</span><span>{catalog.filter(model => item.id === 'all' || model.routes.some(route => route.source === item.id)).length.toLocaleString('en-US')}</span></button>)}</fieldset>
         <fieldset><legend>Availability</legend><label className="models-ready"><input type="checkbox" checked={readyOnly} onChange={event => { setReadyOnly(event.target.checked); setPage(0); }} /> Ready to use</label><p className="muted">Models with a connected, available account.</p></fieldset>
-        <fieldset><legend>Fit on this machine</legend>
+        {canConfigure && <fieldset><legend>Fit on this machine</legend>
           <label className="models-provider">Context (tokens)<select value={contextTokens} onChange={event => { setContextTokens(Number(event.target.value)); setPage(0); }}>{[512, 2048, 4096, 8192, 16384, 32768, 65536, 131072].map(size => <option key={size} value={size}>{size.toLocaleString('en-US')}</option>)}</select></label>
           <label className="models-provider">Memory estimate<select value={hardware} onChange={event => { setHardware(event.target.value); if (event.target.value !== 'all' && !estimateRequest) setEstimateRequest(1); setPage(0); }}><option value="all">All models</option>{Object.entries(compatibilityLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <button className="btn ghost" disabled={estimating} onClick={() => setEstimateRequest(value => value + 1)}>{estimating ? 'Estimating…' : compatibility ? 'Refresh estimates' : 'Check memory fit'}</button>
@@ -91,7 +92,7 @@ export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure
           <p className="muted">Memory only: does not confirm model quality at this context or current free memory. Other variants remain unknown.</p>
           {compatibility && <p className="muted">{compatibility.models.filter(model => model.state !== 'unknown').length} variants estimated · {compatibility.context_tokens.toLocaleString('en-US')} tokens</p>}
           {estimateError && <p className="models-error" role="alert">{estimateError}</p>}
-        </fieldset>
+        </fieldset>}
         <label className="models-provider">Provider or runtime<select value={provider} onChange={event => { setProvider(event.target.value); setPage(0); }}><option value="all">All providers</option>{providerOptions.map(name => <option key={name} value={name}>{name}</option>)}</select></label>
         <div className="models-cloud-card"><strong>MultiVibe Cloud</strong><p className="muted">Cloud access depends on your plan and available capacity.</p>{!cloudConnected && <button className="btn ghost" disabled={connecting} onClick={() => void connect()}>{connecting ? 'Connecting…' : 'Connect Cloud'}</button>}</div>
       </aside>
@@ -104,9 +105,9 @@ export function ModelsTab({ models, accounts, cloudConnected, onUse, onConfigure
           const estimate = compatibilityFor(model, currentCompatibility);
           const ready = model.routes.find(route => route.ready);
           const preferred = ready ?? model.routes.find(route => route.accountId) ?? model.routes.find(route => route.source === 'cloud') ?? model.routes[0];
-          return <li key={model.id}><div className="models-row"><div className="models-identity"><span className={`models-mark${model.logo ? ' has-logo' : ''}`} aria-hidden="true">{model.logo ? <img src={`/assets/catalog-icons/models/${model.logo}`} alt="" loading="lazy" decoding="async" /> : model.name.replace(/^(hf|openrouter):/, '').slice(0, 2).toUpperCase()}</span><div className="models-copy"><strong>{model.name}</strong><code>{model.id}</code><span className="muted">{[...new Set(model.routes.map(route => route.label))].join(' · ')}</span>{estimateRequest > 0 && <span className="models-fit" title={compatibilityDetail(estimate)}>{estimating ? 'Estimating memory…' : compatibilityLabels[estimate?.state ?? 'unknown']}{estimate?.runtime && ` · ${estimate.variant} · ${contextTokens.toLocaleString('en-US')} tokens`}</span>}</div></div><span className={`models-status${ready ? ' is-ready' : ''}`}><i />{ready ? 'Ready to use' : 'Setup needed'}</span><button className={`btn ${ready ? '' : 'ghost'}`} disabled={connecting} aria-label={`${actionLabel(preferred)}: ${model.name}`} onClick={() => useRoute(preferred)}>{actionLabel(preferred)}<span aria-hidden="true"> →</span></button></div>
+          return <li key={model.id}><div className="models-row"><div className="models-identity"><span className={`models-mark${model.logo ? ' has-logo' : ''}`} aria-hidden="true">{model.logo ? <img src={`/assets/catalog-icons/models/${model.logo}`} alt="" loading="lazy" decoding="async" /> : model.name.replace(/^(hf|openrouter):/, '').slice(0, 2).toUpperCase()}</span><div className="models-copy"><strong>{model.name}</strong><code>{model.id}</code><span className="muted">{[...new Set(model.routes.map(route => route.label))].join(' · ')}</span>{estimateRequest > 0 && <span className="models-fit" title={compatibilityDetail(estimate)}>{estimating ? 'Estimating memory…' : compatibilityLabels[estimate?.state ?? 'unknown']}{estimate?.runtime && ` · ${estimate.variant} · ${contextTokens.toLocaleString('en-US')} tokens`}</span>}</div></div><span className={`models-status${ready ? ' is-ready' : ''}`}><i />{ready ? 'Ready to use' : 'Setup needed'}</span><button className={`btn ${ready ? '' : 'ghost'}`} disabled={connecting || (!canConfigure && !preferred.ready)} aria-label={`${actionLabel(preferred)}: ${model.name}`} onClick={() => useRoute(preferred)}>{actionLabel(preferred)}<span aria-hidden="true"> →</span></button></div>
             {estimateRequest > 0 && !estimating && <details className="models-routes"><summary>Memory estimate details</summary><p className="muted">{compatibilityDetail(estimate)}</p></details>}
-            {model.routes.length > 1 && <details className="models-routes"><summary>View {model.routes.length} connection options</summary><ul>{model.routes.map((route, index) => <li key={index}><div><strong>{route.label}</strong><span className="muted">{route.ready ? 'Ready to use' : 'Setup needed'} · {route.source === 'local' ? 'Local' : route.source === 'cloud' ? 'Cloud' : 'Provider'}</span></div><button className="btn ghost" disabled={connecting} onClick={() => useRoute(route)}>{actionLabel(route)}</button></li>)}</ul></details>}
+            {model.routes.length > 1 && <details className="models-routes"><summary>View {model.routes.length} connection options</summary><ul>{model.routes.map((route, index) => <li key={index}><div><strong>{route.label}</strong><span className="muted">{route.ready ? 'Ready to use' : 'Setup needed'} · {route.source === 'local' ? 'Local' : route.source === 'cloud' ? 'Cloud' : 'Provider'}</span></div><button className="btn ghost" disabled={connecting || (!canConfigure && !route.ready)} onClick={() => useRoute(route)}>{actionLabel(route)}</button></li>)}</ul></details>}
           </li>;
         })}</ul>
         {!filtered.length && <div className="models-empty"><h3>{loading ? 'Loading your model library…' : activeFilters ? 'No models match your filters' : 'Your model library is empty'}</h3><p className="muted">{loading ? 'Connected models will appear as catalogs become available.' : activeFilters ? 'Try a different search, source, or provider.' : 'Connect a provider or refresh the catalog to get started.'}</p>{activeFilters && <button className="btn ghost" onClick={reset}>Clear filters</button>}</div>}

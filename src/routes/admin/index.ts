@@ -994,6 +994,14 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     res.json({ accounts: (await store.listAccounts()).map(redact) }),
   );
 
+  router.get("/team/workspace", async (_req, res) => {
+    res.setHeader("cache-control", "no-store");
+    if (!options.multivibeCloud) {
+      const settings = await store.getSettings();
+      return res.json({ state: settings.multivibeTeam?.enabled ? "team" : "personal", role: null });
+    }
+    return res.json(await options.multivibeCloud.teamWorkspace());
+  });
   router.get("/team", async (_req,res)=>{
     if(!options.teamSync)return res.status(503).json({error:"Multivibe Team Sync is unavailable"});
     return res.json(await options.teamSync.status());

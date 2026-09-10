@@ -527,6 +527,25 @@ export class MultivibeCloudService {
   private machineRefreshAt = 0;
   private machineSyncRunning = false;
   private machineRelayRunning = 0;
+  /** UI context comes from Cloud; local enrollment alone never grants an admin role. */
+  async teamWorkspace(): Promise<{ state: "personal" | "team" | "unavailable"; role: "owner" | "admin" | "billing" | "member" | null }> {
+    const settings = await this.store.getSettings();
+    let connection = currentCloudConnection(settings);
+    const enrolled = settings.multivibeTeam?.enabled === true;
+    if (!connection) return { state: enrolled ? "team" : "personal", role: null };
+    try {
+      connection = await this.refreshConnectionIfNeeded(connection);
+      const overview = recordValue(await this.requestJson("/client/v1/team", connection.accessToken));
+      const role = overview?.role;
+      if (role !== "owner" && role !== "admin" && role !== "billing" && role !== "member") throw new Error("team_role_unavailable");
+      const subscription = recordValue(overview?.subscription);
+      if (!enrolled && subscription?.state === "inactive") return { state: "personal", role: null };
+      return { state: "team", role };
+    } catch {
+      return { state: enrolled ? "team" : "unavailable", role: null };
+    }
+  }
+
   async machineConnection():Promise<{organizationId:string}> {
     let connection=currentCloudConnection(await this.store.getSettings());
     if(!connection)throw new Error('team_connection_required');
