@@ -150,6 +150,13 @@ export type Account = {
   localRuntime?: LocalRuntimeMetadata;
   /** Internal account created by the automatic MultiVibe Cloud connection flow. */
   multivibeCloud?: boolean;
+  /** Cloud-authoritative Team provider metadata. Synced accounts are immutable locally. */
+  multivibeTeam?: {
+    providerId: string;
+    deliveryMode: "distributed" | "cloud_proxy";
+    revision: number;
+    readOnly: true;
+  };
   /** Enforced transport for this account. Confidential accounts cannot use the ordinary provider path. */
   privacyMode?: PrivacyMode;
   usage?: UsageSnapshot;
@@ -247,6 +254,14 @@ export type StoreSettings = {
     projectId?: string;
     apiKeyExpiresAt?: number;
   };
+  multivibeTeam?: {
+    enabled: boolean;
+    instanceId: string;
+    instanceName: string;
+    syncCursor: number;
+    lastSuccessfulSyncAt?: string;
+    lastSuccessfulAnalyticsUploadAt?: string;
+  };
 };
 
 export type StoredProxyApiKey = {
@@ -254,6 +269,11 @@ export type StoredProxyApiKey = {
   application: string;
   key: string;
   createdAt: number;
+  principal?: {
+    type: "member" | "service";
+    id: string;
+    name?: string;
+  };
 };
 
 export type ApplicationWebhook = {
