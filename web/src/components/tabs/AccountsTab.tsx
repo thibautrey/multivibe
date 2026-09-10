@@ -1,3 +1,4 @@
+import { TeamMachineCard } from "../TeamMachineCard";
 import type { ModelRoute } from "../../lib/modelCatalog";
 import { findAvailableCount } from "../../lib/resetCredits";
 import ModalPortal from "../ModalPortal";
@@ -1848,6 +1849,7 @@ export function AccountsTab(props: Props) {
             </div>
           </article>
         )}
+        <TeamMachineCard />
         {localWorker && (
           <article className="local-worker-provider" aria-labelledby="local-worker-provider-title">
             <div className="local-worker-provider-identity">
