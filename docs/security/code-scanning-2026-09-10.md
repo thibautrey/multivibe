@@ -37,6 +37,7 @@ The earlier source-backed classifications remain valid:
 ## Validation boundary
 
 - The live GitHub API inventory and per-alert data-flow messages were reviewed on 2026-09-10.
+- All 31 reviewed alerts were dismissed on GitHub as false positives with alert-specific evidence; the open-alert inventory was then verified empty.
 - The changed artifact in this follow-up is documentation only; no dependency or generated artifact was changed.
 - Targeted existing tests should be run from integrated local `main` in accordance with the repository worktree policy.
 - Hosted alert dismissal records triage status only. It does not replace a future CodeQL run for subsequent source changes.
