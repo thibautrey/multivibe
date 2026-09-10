@@ -1,3 +1,4 @@
+import { TeamMachineConsent } from "../TeamMachineConsent";
 import { TeamMachineCard } from "../TeamMachineCard";
 import type { ModelRoute } from "../../lib/modelCatalog";
 import { findAvailableCount } from "../../lib/resetCredits";
@@ -1849,6 +1850,7 @@ export function AccountsTab(props: Props) {
             </div>
           </article>
         )}
+        <TeamMachineConsent />
         <TeamMachineCard />
         {localWorker && (
           <article className="local-worker-provider" aria-labelledby="local-worker-provider-title">

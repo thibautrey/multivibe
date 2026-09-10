@@ -1,3 +1,4 @@
+import { readFile as readTeamIdentity } from "node:fs/promises";
 import { TeamMachineSharing } from "./team-machine-sharing.js";
 import { getHostMenuProviderActivity } from "./host/menu-bar.js";
 import { automaticRouterManifest, createAutomaticRouter } from "./automatic-router.js";
@@ -329,6 +330,9 @@ const multivibeCloud = new MultivibeCloudService(store, oauthStore, {
   topupUrl: `${MULTIVIBE_CLOUD_API_BASE_URL}/billing`,
   privacyMode: MULTIVIBE_CLOUD_PRIVACY_MODE,
 });
+const teamMachineTimer=setInterval(()=>{void multivibeCloud.syncMachine(teamMachineSharing).catch(()=>undefined);},2000);
+teamMachineTimer.unref();
+
 const quotaResetForecastCache = new CodexQuotaResetForecastCache();
 const resetCreditIncreaseMonitor = new ResetCreditIncreaseMonitor({
   listAccounts: () => store.listAccounts(),
@@ -704,7 +708,11 @@ if (!MULTIVIBE_CONTROL_PLANE) {
   });
 }
 
-app.use("/admin/team-machine", adminGuard, teamMachineSharing.adminRouter());
+app.use("/admin/team-machine", adminGuard, teamMachineSharing.adminRouter(async () => {
+  const context=await multivibeCloud.machineConnection();
+  const identity=JSON.parse(await readTeamIdentity(`${STORE_PATH}.team-instance.json`, "utf8"));
+  return {...context,instanceId:identity.instanceId};
+}));
 app.use("/admin", adminGuard, adminRouter);
 
 // Public inference, realtime, and WebSocket routes are owned by the Rust edge.
