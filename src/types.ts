@@ -261,6 +261,12 @@ export type StoreSettings = {
     syncCursor: number;
     lastSuccessfulSyncAt?: string;
     lastSuccessfulAnalyticsUploadAt?: string;
+    organizationId?: string;
+    membershipId?: string;
+    managementChannel?: "device" | "user";
+    deviceClaim?: { issuer: string; subject: string; nonce: string } | null;
+    managedEnrollmentId?: string;
+    teamKeyId?: string;
   };
 };
 

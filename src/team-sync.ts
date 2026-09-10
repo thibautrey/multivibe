@@ -14,7 +14,7 @@ export type TeamProviderManifest = Readonly<{
 export type TeamSyncManifest = Readonly<{schemaVersion:"multivibe-team-sync-v1";cursor:number;providers:readonly TeamProviderManifest[];removedProviderIds:readonly string[]} >;
 export type TeamInstanceEnrollment=Readonly<{schemaVersion:"multivibe-team-instance-enrollment-v1";id:string;name:string;publicKeySpki:string;encryptionPublicKeySpki:string;version:string}>;
 /** The one-use mvmb_ bootstrap is carried only in Authorization, never JSON. */
-export type ManagedTeamEnrollmentExchange=Readonly<{schemaVersion:"multivibe-team-managed-enrollment-v1";profileId:string;organizationId:string;membershipId:string;managementChannel:"mdm"|"intune"|"jamf";instance:TeamInstanceEnrollment;deviceClaim?:Readonly<{issuer:string;subject:string;nonce:string}>}>;
+export type ManagedTeamEnrollmentExchange=Readonly<{schemaVersion:"multivibe-team-managed-enrollment-v1";profileId:string;organizationId:string;membershipId:string;managementChannel:"device"|"user";instance:TeamInstanceEnrollment;deviceClaim?:Readonly<{issuer:string;subject:string;nonce:string}>}>;
 
 type IdentityDocument={schemaVersion:1;instanceId:string;privateKeyPkcs8:string;publicKeySpki:string;encryptionPrivateKeyPkcs8:string;encryptionPublicKeySpki:string;createdAt:string};
 type Aggregate={
@@ -83,7 +83,7 @@ export class MultivibeTeamSyncService {
       await this.store.addOrUpdate(account); applied.push(item.id);
     }
     for(const providerId of manifest.removedProviderIds){const account=(await this.store.listAccounts()).find(value=>value.multivibeTeam?.providerId===providerId);if(account){await this.store.deleteAccount(account.id);removed.push(providerId);}}
-    await this.store.patchSettings({multivibeTeam:{enabled:true,instanceId:this.getIdentity().instanceId,instanceName:settings.multivibeTeam?.instanceName??'Multivibe instance',syncCursor:manifest.cursor,lastSuccessfulSyncAt:new Date().toISOString(),lastSuccessfulAnalyticsUploadAt:settings.multivibeTeam?.lastSuccessfulAnalyticsUploadAt}});
+    await this.store.patchSettings({multivibeTeam:{...settings.multivibeTeam,enabled:true,instanceId:this.getIdentity().instanceId,instanceName:settings.multivibeTeam?.instanceName??'Multivibe instance',syncCursor:manifest.cursor,lastSuccessfulSyncAt:new Date().toISOString(),lastSuccessfulAnalyticsUploadAt:settings.multivibeTeam?.lastSuccessfulAnalyticsUploadAt}});
     return {applied,removed};
   }
 

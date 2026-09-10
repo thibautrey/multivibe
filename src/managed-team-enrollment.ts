@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs, type FileHandle } from "node:fs";
 import path from "node:path";
+import type { AccountStore } from "./store.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const BOOTSTRAP_TOKEN = /^mvmb_[A-Za-z0-9_-]{43}$/;
 const INSTANCE_TOKEN = /^mvmi_[A-Za-z0-9_-]{43,128}$/;
+const INSTANCE_REFRESH_TOKEN = /^mvir_[A-Za-z0-9_-]{43,128}$/;
 const TEAM_KEY = /^mvt_[A-Za-z0-9_-]{32,128}$/;
 const CLAIM_COMPONENT = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 const CLAIM_NONCE = /^[A-Za-z0-9_-]{22,128}$/;
@@ -52,6 +54,7 @@ export type ManagedTeamEnrollmentResult = Readonly<{
   managementChannel: ManagedEnrollmentChannel;
   deviceClaim: ManagedEnrollmentDeviceClaim | null;
   instanceAccessToken: string;
+  instanceRefreshToken: string;
   instanceAccessTokenExpiresAt: number;
   teamPersonalKey: Readonly<{
     id: string;
@@ -95,7 +98,49 @@ export interface ManagedEnrollmentIdentity {
 }
 
 export interface ManagedEnrollmentInstaller {
-  install(result: ManagedTeamEnrollmentResult): Promise<void>;
+  install(result: ManagedTeamEnrollmentResult, profile: ManagedTeamEnrollmentProfile): Promise<void>;
+}
+
+export class AccountStoreManagedEnrollmentInstaller implements ManagedEnrollmentInstaller {
+  constructor(private readonly store: AccountStore, private readonly now = Date.now) {}
+
+  async install(result: ManagedTeamEnrollmentResult, profile: ManagedTeamEnrollmentProfile): Promise<void> {
+    const settings = await this.store.getSettings();
+    const connected = settings.multivibeTeam;
+    if (connected && (connected.instanceId !== result.instanceId
+      || connected.organizationId && connected.organizationId !== result.organizationId
+      || connected.membershipId && connected.membershipId !== result.membershipId)) {
+      throw new Error("Managed enrollment conflicts with the existing Team connection");
+    }
+    if (settings.multivibeCloud && !connected?.managedEnrollmentId) {
+      throw new Error("Managed enrollment cannot replace an interactive Cloud connection");
+    }
+    const application = `managed-team-${result.membershipId.slice(0, 8)}`;
+    const keys = this.store.getCachedProxyApiKeys();
+    const byID = keys.find(entry => entry.id === result.teamPersonalKey.id);
+    const byApplication = keys.find(entry => entry.application === application);
+    if (byID && (byID.key !== result.teamPersonalKey.secret || byID.application !== application)
+      || byApplication && (byApplication.id !== result.teamPersonalKey.id || byApplication.key !== result.teamPersonalKey.secret)) {
+      throw new Error("Managed enrollment Team key conflicts with local state");
+    }
+    if (!byID) {
+      await this.store.addProxyApiKey({
+        id: result.teamPersonalKey.id, application, key: result.teamPersonalKey.secret, createdAt: this.now(),
+        principal: { type: "member", id: result.membershipId },
+      });
+    }
+    await this.store.patchSettings({
+      multivibeCloud: { accessToken: result.instanceAccessToken, refreshToken: result.instanceRefreshToken, expiresAt: result.instanceAccessTokenExpiresAt },
+      multivibeTeam: {
+        enabled: true, instanceId: result.instanceId, instanceName: profile.instanceName,
+        syncCursor: connected?.syncCursor ?? 0, lastSuccessfulSyncAt: connected?.lastSuccessfulSyncAt,
+        lastSuccessfulAnalyticsUploadAt: connected?.lastSuccessfulAnalyticsUploadAt,
+        organizationId: result.organizationId, membershipId: result.membershipId,
+        managementChannel: result.managementChannel, deviceClaim: result.deviceClaim,
+        managedEnrollmentId: result.enrollmentId, teamKeyId: result.teamPersonalKey.id,
+      },
+    });
+  }
 }
 
 function exactObject(value: unknown, keys: readonly string[], error: string): Record<string, unknown> {
@@ -174,7 +219,7 @@ function validateIdentity(value: TeamInstanceIdentity): TeamInstanceIdentity {
 function validateEnrollmentResult(value: unknown, profile: ManagedTeamEnrollmentProfile, identity: TeamInstanceIdentity, now: number): ManagedTeamEnrollmentResult {
   const result = exactObject(value, [
     "schemaVersion", "enrollmentId", "organizationId", "membershipId", "instanceId", "managementChannel",
-    "deviceClaim", "instanceAccessToken", "instanceAccessTokenExpiresAt", "teamPersonalKey",
+    "deviceClaim", "instanceAccessToken", "instanceRefreshToken", "instanceAccessTokenExpiresAt", "teamPersonalKey",
   ], "Managed enrollment result is invalid");
   const key = exactObject(result.teamPersonalKey, ["id", "secret", "prefix", "expiresAt"], "Managed enrollment result is invalid");
   if (result.schemaVersion !== "multivibe-managed-enrollment-result-v1"
@@ -182,7 +227,8 @@ function validateEnrollmentResult(value: unknown, profile: ManagedTeamEnrollment
     || result.organizationId !== profile.organizationId || result.membershipId !== profile.membershipId
     || result.instanceId !== identity.instanceId || result.managementChannel !== profile.managementChannel
     || !sameDeviceClaim(result.deviceClaim, profile.deviceClaim) || typeof result.instanceAccessToken !== "string"
-    || !INSTANCE_TOKEN.test(result.instanceAccessToken) || !Number.isSafeInteger(result.instanceAccessTokenExpiresAt)
+    || !INSTANCE_TOKEN.test(result.instanceAccessToken) || typeof result.instanceRefreshToken !== "string"
+    || !INSTANCE_REFRESH_TOKEN.test(result.instanceRefreshToken) || !Number.isSafeInteger(result.instanceAccessTokenExpiresAt)
     || (result.instanceAccessTokenExpiresAt as number) <= now || typeof key.id !== "string" || !UUID.test(key.id)
     || typeof key.secret !== "string" || !TEAM_KEY.test(key.secret) || typeof key.prefix !== "string"
     || key.prefix !== key.secret.slice(0, 12) || !Number.isSafeInteger(key.expiresAt) || (key.expiresAt as number) <= now) {
@@ -324,7 +370,7 @@ export class ManagedTeamEnrollmentService {
     try { decoded = JSON.parse(await response.text()); }
     catch { throw new Error("Managed enrollment returned an invalid response"); }
     const result = validateEnrollmentResult(decoded, profile, identity, this.options.now?.() ?? Date.now());
-    await this.options.installer.install(result);
+    await this.options.installer.install(result, profile);
     const enrolled: EnrollmentState = Object.freeze({
       ...pending, state: "enrolled", enrollmentId: result.enrollmentId,
       teamKeyPrefix: result.teamPersonalKey.prefix, enrolledAt: this.options.now?.() ?? Date.now(),

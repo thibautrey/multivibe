@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import type { AccountStore, OAuthStateStore } from "./store.js";
 import { MultivibeCloudService } from "./multivibe-cloud.js";
+import type { ManagedEnrollmentIdentity } from "./managed-team-enrollment.js";
 import type { Account, OAuthFlowState, StoreSettings } from "./types.js";
 
 const projectId = "00000000-0000-4000-8000-000000000001";
@@ -74,6 +75,7 @@ function service(
   stores: ReturnType<typeof fakeStores>,
   fetchImpl: typeof fetch,
   privacyMode: "standard" | "confidential_verified" = "standard",
+  managedTeamIdentity?: ManagedEnrollmentIdentity,
 ) {
   return new MultivibeCloudService(stores.store, stores.oauthStore, {
     authBaseUrl: "https://auth.example.test",
@@ -83,8 +85,44 @@ function service(
     topupUrl: "https://app.example.test/billing",
     privacyMode,
     fetchImpl,
+    managedTeamIdentity,
   });
 }
+
+test("managed Team connections rotate through the signed instance refresh route", async () => {
+  const instanceId = "30000000-0000-4000-8000-000000000003";
+  const enrollmentId = "60000000-0000-4000-8000-000000000006";
+  const oldRefreshToken = `mvir_${"q".repeat(43)}`;
+  const stores = fakeStores({
+    settings: {
+      multivibeCloud: { accessToken: `mvmi_${"o".repeat(43)}`, refreshToken: oldRefreshToken, expiresAt: Date.now() - 1000 },
+      multivibeTeam: { enabled: true, instanceId, instanceName: "Managed Mac", syncCursor: 0, managedEnrollmentId: enrollmentId },
+    },
+    accounts: [{ id: "multivibe-cloud", provider: "openai-compatible", accessToken: "mvk_local", baseUrl: "https://api.example.test", enabled: true, location: "cloud", multivibeCloud: true, expiresAt: Date.now() + 2 * 86_400_000 }],
+  });
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const identity: ManagedEnrollmentIdentity = {
+    getIdentity: () => ({ instanceId, publicKeySpki: "signing-public", encryptionPublicKeySpki: "encryption-public" }),
+    signRequest: (payload) => ({ schemaVersion: "multivibe-team-instance-envelope-v1", instanceId, issuedAt: new Date().toISOString(), payload, signature: "s".repeat(86) }),
+  };
+  const cloud = service(stores, async (input, init) => {
+    const url = String(input); calls.push({ url, init });
+    if (url.endsWith("/team/v1/instances/managed-refresh")) return response({ schemaVersion: "multivibe-managed-refresh-result-v1", accessToken: `mvmi_${"a".repeat(43)}`, refreshToken: `mvir_${"r".repeat(43)}`, expiresIn: 3600 });
+    if (url.endsWith("/client/v1/credits")) return response({ totalAvailableUsd: "1" });
+    if (url.endsWith("/client/v1/billing/subscription")) return response({ data: null });
+    if (url.endsWith("/client/v1/auto-recharge")) return response({});
+    if (url.endsWith("/provider/v1/earnings")) return response({});
+    throw new Error(`unexpected Cloud call: ${url}`);
+  }, "standard", identity);
+
+  assert.equal((await cloud.getStatus()).status, "connected");
+  const refresh = calls.find((call) => call.url.endsWith("/team/v1/instances/managed-refresh"))!;
+  assert.equal(new Headers(refresh.init?.headers).get("authorization"), `Bearer ${oldRefreshToken}`);
+  assert.deepEqual(JSON.parse(String(refresh.init?.body)).payload, { schemaVersion: "multivibe-team-managed-refresh-v1", enrollmentId });
+  assert.equal(calls.some((call) => call.url.endsWith("/oauth/token")), false);
+  assert.match(stores.settings.multivibeCloud?.accessToken ?? "", /^mvmi_/);
+  assert.match(stores.settings.multivibeCloud?.refreshToken ?? "", /^mvir_/);
+});
 
 test("Cloud connection persists confidential mode on an existing managed account", async () => {
   const stores = fakeStores({

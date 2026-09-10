@@ -16,6 +16,7 @@ import { AccountStore, OAuthStateStore, cleanupOrphanedTmpFiles } from "./store.
 import { createAnonymousUsageSharingWorker } from "./anonymous-usage-sharing.js";
 import { createTraceManager } from "./traces.js";
 import { MultivibeTeamSyncService } from "./team-sync.js";
+import { AccountStoreManagedEnrollmentInstaller, ManagedTeamEnrollmentService } from "./managed-team-enrollment.js";
 import { createAdminRouter } from "./routes/admin/index.js";
 import { HostHarnessIntegrationManager } from "./host/harness-integrations.js";
 import { oauthConfig } from "./oauth-config.js";
@@ -222,6 +223,14 @@ if(process.env.MULTIVIBE_TEAM_MACHINE_TLS_CERT_PATH && process.env.MULTIVIBE_TEA
 }
 
 const teamSync = new MultivibeTeamSyncService(store, `${STORE_PATH}.team-instance.json`);
+const appVersion = process.env.APP_VERSION ?? "unknown";
+const managedTeamEnrollment = new ManagedTeamEnrollmentService({
+  profilePath: path.join(dataDir, "managed-team-enrollment.json"),
+  statePath: path.join(dataDir, "managed-team-enrollment-state.json"),
+  identity: teamSync,
+  installer: new AccountStoreManagedEnrollmentInstaller(store),
+  appVersion,
+});
 teamMachineSharing.setUsageRecorder((trace,memberId)=>teamSync.recordTrace(trace,{type:"member",id:memberId}));
 const hostHarnessIntegrations = MULTIVIBE_HOST_APPLICATION
   ? new HostHarnessIntegrationManager({
@@ -282,6 +291,13 @@ await Promise.all([
   traceManager.initialize(),
   moduleManager.initialize(),
 ]);
+const attemptManagedTeamEnrollment = async () => {
+  try { await managedTeamEnrollment.enrollIfPresent(); }
+  catch (error) { Sentry.captureException(error, { tags: { subsystem: "managed-team-enrollment" } }); }
+};
+void attemptManagedTeamEnrollment();
+const managedTeamEnrollmentTimer = setInterval(() => { void attemptManagedTeamEnrollment(); }, 60_000);
+managedTeamEnrollmentTimer.unref();
 if (MULTIVIBE_CONTROL_PLANE) {
   const incompatibleInferenceModules = moduleManager
     .list()
@@ -350,6 +366,7 @@ const multivibeCloud = new MultivibeCloudService(store, oauthStore, {
   redirectUri: MULTIVIBE_CLOUD_REDIRECT_URI,
   topupUrl: `${MULTIVIBE_CLOUD_API_BASE_URL}/billing`,
   privacyMode: MULTIVIBE_CLOUD_PRIVACY_MODE,
+  managedTeamIdentity: teamSync,
 });
 const teamMachineTimer=setInterval(()=>{void multivibeCloud.syncMachine(teamMachineSharing).catch(()=>undefined);},2000);
 teamMachineTimer.unref();
@@ -446,7 +463,8 @@ const adminRouter = createAdminRouter({
   hostUpdateController,
   multivibeCloud,
   teamSync,
-  appVersion: process.env.APP_VERSION ?? "unknown",
+  managedTeamEnrollment,
+  appVersion,
   storagePaths: {
     accountsPath: STORE_PATH,
     oauthStatePath: OAUTH_STATE_PATH,

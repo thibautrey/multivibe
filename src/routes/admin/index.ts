@@ -101,6 +101,7 @@ import type { HostUpdateController, HostUpdateStatus } from "../../host/update-c
 import type { MultivibeCloudService } from "../../multivibe-cloud.js";
 import { fetchCodexQuotaResetForecast } from "../../quota-reset-forecast.js";
 import type { MultivibeTeamSyncService, TeamSyncManifest } from "../../team-sync.js";
+import type { ManagedTeamEnrollmentService } from "../../managed-team-enrollment.js";
 
 const MULTIVIBE_CLOUD_FLOW_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -136,6 +137,7 @@ export type AdminRoutesOptions = {
   hostUpdateController?: HostUpdateController;
   multivibeCloud?: MultivibeCloudService;
   teamSync?: MultivibeTeamSyncService;
+  managedTeamEnrollment?: ManagedTeamEnrollmentService;
   appVersion?: string;
 };
 
@@ -995,6 +997,11 @@ export function createAdminRouter(options: AdminRoutesOptions) {
   router.get("/team", async (_req,res)=>{
     if(!options.teamSync)return res.status(503).json({error:"Multivibe Team Sync is unavailable"});
     return res.json(await options.teamSync.status());
+  });
+  router.get("/team/managed-enrollment", async (_req,res)=>{
+    if(!options.managedTeamEnrollment)return res.status(503).json({error:"Managed Team enrollment is unavailable"});
+    res.setHeader("cache-control","no-store");
+    return res.json(await options.managedTeamEnrollment.status());
   });
   router.get("/team/providers/eligible",async(_req,res)=>{
     if(!options.teamSync)return res.status(503).json({error:"Multivibe Team Sync is unavailable"});
