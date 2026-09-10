@@ -1,3 +1,4 @@
+import type { TraceEntry } from "./traces.js";
 import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -13,6 +14,9 @@ type State = { consent: Consent | null; envelope: SignedMachinePolicy | null; st
 export class TeamMachineSharing {
   private state: State = { consent: null, envelope: null, stopped: false, lastClock: 0 };
   private active = 0;
+  private recordUsage: ((trace:TraceEntry,memberId:string)=>Promise<void>) | undefined;
+  setUsageRecorder(recorder:(trace:TraceEntry,memberId:string)=>Promise<void>){this.recordUsage=recorder;}
+
   private writes = Promise.resolve();
   constructor(private store: AccountStore, private filename: string, private trustedKeys: Record<string,string>, private clock = Date.now) {}
   async initialize() {
@@ -75,7 +79,7 @@ export class TeamMachineSharing {
   private authorize(secret: string, transport: string) {
     const p = this.policy(); if (!p || p.transport !== transport) throw new Error('machine_access_denied');
     const digest = createHash('sha256').update(secret).digest('hex');
-    const member = p.keys.find(k => k.digest === digest)?.memberId;
+    const member = p.keys.find(k => k.digest === digest && k.expiresAt > this.clock())?.memberId;
     if (!member) throw new Error('machine_access_denied');
     return { policy:p, member };
   }
@@ -93,9 +97,12 @@ export class TeamMachineSharing {
     // Recheck after asynchronous account lookup before reserving the slot.
     if(this.active>=p.maxConcurrent)throw new Error('machine_capacity_exhausted');
     this.active++;
+    const startedAt=this.clock();
     try {
       const response=await fetch(target,{method:'POST',redirect:'error',headers:{'content-type':'application/json',...(authorization?{authorization}:{})},body:JSON.stringify(body),signal:AbortSignal.any([signal,AbortSignal.timeout(300000)])});
-      let released=false;return {response,release:()=>{if(!released){released=true;this.active--;}}};
+      let released=false;return {response,release:()=>{if(!released){released=true;this.active--;
+        void this.recordUsage?.({id:randomUUID(),at:startedAt,completedAt:this.clock(),traceKind:'upstream-attempt',lifecycleState:'completed',route:'team-machine/'+transport,application:'team-machine/'+transport,model:body.model,provider:'openai-compatible',executionLocation:'local',status:signal.aborted?499:response.status,isError:signal.aborted||!response.ok,stream:body.stream===true,latencyMs:this.clock()-startedAt,usageStatus:'missing',costStatus:'unpriced'},member).catch(()=>undefined);
+      }}};
     }catch(error){this.active--;throw error;}
   }
   inferenceRouter() {

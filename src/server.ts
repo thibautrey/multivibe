@@ -1,3 +1,4 @@
+import { TeamMachineDirectory } from "./team-machine-directory.js";
 import { readFile as readTeamIdentity } from "node:fs/promises";
 import { TeamMachineSharing } from "./team-machine-sharing.js";
 import { getHostMenuProviderActivity } from "./host/menu-bar.js";
@@ -207,6 +208,9 @@ await cleanupOrphanedTmpFiles(dataDir);
 const store = new AccountStore(STORE_PATH);
 const teamMachineSharing = new TeamMachineSharing(store, path.join(dataDir, "team-machine-sharing.json"), JSON.parse(process.env.MULTIVIBE_TEAM_MACHINE_TRUSTED_KEYS ?? "{}"));
 await teamMachineSharing.initialize();
+const teamMachineDirectory=new TeamMachineDirectory(path.join(dataDir,"team-machine-directory.json"),JSON.parse(process.env.MULTIVIBE_TEAM_MACHINE_TRUSTED_KEYS ?? "{}"));
+await teamMachineDirectory.initialize();
+app.use("/v1",teamMachineDirectory.router());
 app.use("/team-machine", teamMachineSharing.inferenceRouter());
 const hostHarnessIntegrations = MULTIVIBE_HOST_APPLICATION
   ? new HostHarnessIntegrationManager({
@@ -332,6 +336,8 @@ const multivibeCloud = new MultivibeCloudService(store, oauthStore, {
 });
 const teamMachineTimer=setInterval(()=>{void multivibeCloud.syncMachine(teamMachineSharing).catch(()=>undefined);},2000);
 teamMachineTimer.unref();
+const teamMachineDirectoryTimer=setInterval(()=>{void multivibeCloud.syncMachineDirectory(teamMachineDirectory).catch(()=>undefined);},30000);
+teamMachineDirectoryTimer.unref();
 
 const quotaResetForecastCache = new CodexQuotaResetForecastCache();
 const resetCreditIncreaseMonitor = new ResetCreditIncreaseMonitor({
