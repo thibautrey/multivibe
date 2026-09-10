@@ -1,16 +1,64 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
-import express from 'express';
 import http from 'node:http';
 import { AccountStore, OAuthStateStore } from '../src/store.ts';
 import { MultivibeCloudService } from '../src/multivibe-cloud.ts';
-import { createProxyRouter } from '../src/routes/proxy/index.ts';
+
+const edgeApiKey = 'integration-edge-key';
+
+async function availablePort() {
+  const server = http.createServer();
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  return address.port;
+}
+
+async function startNativeEdge(t, root, storePath, jobsPath) {
+  const port = await availablePort();
+  const edge = spawn(path.join(root, 'target', 'debug', 'multivibe-v1-edge'), [], {
+    cwd: root,
+    env: {
+      ...process.env,
+      V1_EDGE_HOST: '127.0.0.1',
+      V1_EDGE_PORT: String(port),
+      V1_EDGE_STORE_PATH: storePath,
+      V1_EDGE_JOBS_PATH: jobsPath,
+      V1_EDGE_INTERNAL_JOB_TOKEN: 'integration-internal-token',
+      NODE_CONTROL_PLANE_URL: 'http://127.0.0.1:9',
+      PROXY_API_KEY: edgeApiKey,
+      MODELS_CACHE_MS: '1000',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let output = '';
+  edge.stdout.on('data', chunk => { output += chunk; });
+  edge.stderr.on('data', chunk => { output += chunk; });
+  t.after(async () => {
+    if (edge.exitCode === null) edge.kill('SIGTERM');
+    if (edge.exitCode === null) await once(edge, 'exit');
+  });
+  const baseUrl = `http://127.0.0.1:${port}`;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (edge.exitCode !== null) throw new Error(`native edge exited during startup (${edge.exitCode}): ${output}`);
+    try {
+      const response = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(250) });
+      if (response.ok) return baseUrl;
+    } catch {}
+    await delay(25);
+  }
+  throw new Error(`native edge did not become healthy: ${output}`);
+}
 
 // Import the sibling's real HTTP implementation, never a copied Cloud API fixture.
 const cloudRoot = path.resolve(process.env.MULTIVIBE_CLOUD_DIR ?? '../multivibe-cloud');
@@ -22,6 +70,7 @@ const { serviceKeyDigest } = await cloudImport('src/crypto.ts');
 const { isOidcRedirectUriAllowed } = await cloudImport('src/core-oidc-redirect.ts');
 
 test('Core connects to Cloud, discovers its catalog and invokes its models over HTTP', { timeout: 30000 }, async (t) => {
+  const coreRoot = path.resolve('.');
   const dir = await mkdtemp(path.join(tmpdir(), 'cloud-core-integration-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const store = new AccountStore(path.join(dir, 'accounts.json'));
@@ -97,20 +146,6 @@ test('Core connects to Cloud, discovers its catalog and invokes its models over 
       req.end(init?.body?.toString());
     }),
   });
-  const app = express();
-  app.use(express.json());
-  app.use('/v1', createProxyRouter({ store,
-    traceManager: { recordTrace() {}, async beginTrace() { return 'integration-trace'; }, async completeTrace() {} },
-    openaiBaseUrl: remote.baseUrl, mistralBaseUrl: remote.baseUrl, zaiBaseUrl: remote.baseUrl,
-    mistralUpstreamPath: '/v1/responses', mistralCompactUpstreamPath: '/v1/responses/compact',
-    zaiUpstreamPath: '/v1/chat/completions', zaiCompactUpstreamPath: '/v1/chat/completions', oauthConfig: {},
-  }));
-  const server = app.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  t.after(() => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
-  const base = `http://127.0.0.1:${server.address().port}`;
-  const request = (route, init) => fetch(`${base}${route}`, { ...init, signal: AbortSignal.timeout(8000) });
-
   await t.test('failed token exchange leaves Core disconnected', async () => {
     const flow = await cloud.startConnection();
     authorize = new URL(flow.authorizeUrl);
@@ -139,6 +174,17 @@ test('Core connects to Cloud, discovers its catalog and invokes its models over 
     assert.equal(keyCreates, 1);
     await assert.rejects(cloud.completeConnection(flow.flowId, 'integration-authorization-code'));
     assert.equal(keyCreates, 1);
+  });
+  const base = await startNativeEdge(
+    t,
+    coreRoot,
+    path.join(dir, 'accounts.json'),
+    path.join(dir, 'v1-edge-jobs.json'),
+  );
+  const request = (route, init = {}) => fetch(`${base}${route}`, {
+    ...init,
+    headers: { authorization: `Bearer ${edgeApiKey}`, ...init.headers },
+    signal: AbortSignal.timeout(8000),
   });
   await t.test('Core exposes only models available through the Cloud catalog', async () => {
     const response = await request('/v1/models');

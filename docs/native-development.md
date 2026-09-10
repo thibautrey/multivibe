@@ -12,10 +12,9 @@ exits. Docker and packaged Host installations use their existing supervisors.
 
 Public Responses, Chat Completions, realtime, WebSockets and inference jobs
 belong to Rust. There is no JavaScript inference launch mode. Node retains
-admin business logic and the authenticated internal AI SDK adapter. Historical
-TypeScript conversion modules remain as test/reference code; they are not
-registered as public inference handlers. Removing those reference modules is
-separate from switching runtime ownership.
+admin business logic and the authenticated internal AI SDK adapter. The legacy
+TypeScript public proxy has been removed; Node cannot fall back to JavaScript
+inference if the native edge is unavailable.
 
 The Chat Completions bridge supports function tools. Unsupported tool dialects
 receive `unsupported_tool_contract` rather than being silently discarded.

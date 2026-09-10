@@ -36,7 +36,9 @@ Worktree: source review and `git diff --check` passed. Dependency-backed validat
 Local `main`:
 
 - `node --import tsx --test src/quota.test.ts src/quota-blocks.test.ts src/usage-refresh.test.ts src/usage-refresh-monitor.test.ts`: 49 passed.
-- `node --import tsx --test src/routes/proxy/account-rotation.test.ts src/routes/proxy/native-stream-account-rotation.test.ts`: 4 passed.
+- Historical TypeScript proxy rotation coverage passed before the public proxy was
+  removed. Current routing and rotation coverage lives in the native
+  `multivibe-v1-edge` Rust test suite.
 - `npm run build:api` and `npm run build:web`: passed. Vite emitted its bundle-size advisory.
 - `CARGO_TARGET_DIR=/tmp/multivibe-quota-cargo-target /home/codex/.cargo/bin/cargo test -p multivibe-v1-edge account_selection --lib --locked`: 2 passed. Native routing now consumes subscription credits and avoids exhausted quotas when alternatives have headroom.
 
