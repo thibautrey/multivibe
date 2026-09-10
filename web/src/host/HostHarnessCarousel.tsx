@@ -47,6 +47,7 @@ const HARNESS_LOGO_DOMAINS: Record<string, string> = {
   "kilo-code": "kilocode.ai",
   "roo-code": "roocode.com",
   continue: "continue.dev",
+  "mini-swe-agent": "mini-swe-agent.com",
   "open-interpreter": "openinterpreter.com",
   "swe-agent": "swe-agent.com",
   autocoderover: "autocoderover.dev",

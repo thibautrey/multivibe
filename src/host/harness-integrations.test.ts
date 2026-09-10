@@ -17,7 +17,7 @@ const requestedNames = [
   "Claude Code", "OpenAI Codex", "OpenCode", "OpenClaw", "Hermes Agent", "Pi", "Goose",
   "OpenHands", "Cline", "Aider", "Qwen Code", "Gemini CLI", "Google Antigravity",
   "GitHub Copilot CLI / Coding Agent", "Kiro / Kiro CLI", "Warp Agent", "Amp", "Crush",
-  "Kilo Code", "Roo Code", "Continue", "Open Interpreter", "SWE-agent", "AutoCodeRover",
+  "Kilo Code", "Roo Code", "Continue", "mini-SWE-agent", "Open Interpreter", "SWE-agent", "AutoCodeRover",
   "Mentat", "GPT-Pilot", "Plandex", "Cursor Agent", "Windsurf Cascade", "Devin", "Pythagora",
   "Agent Zero", "OpenManus", "Manus", "AutoGen", "CrewAI", "LangGraph", "smolagents",
   "Letta", "AutoGPT", "BabyAGI", "MetaGPT", "SuperAGI", "AgentGPT", "CAMEL", "PydanticAI",
@@ -175,7 +175,7 @@ test("all model-aware harnesses synchronize the live MultiVibe catalog", async (
   const catalogHarnesses = new Set(["openclaw", "pi", "crush", "continue"]);
   const harnessIds = [
     "openclaw", "pi", "crush", "continue", "hermes-agent", "goose", "openhands",
-    "aider", "open-interpreter", "agent-zero", "autogpt",
+    "aider", "mini-swe-agent", "open-interpreter", "agent-zero", "autogpt",
   ];
   const originalFetch = globalThis.fetch;
   t.after(() => {
@@ -220,6 +220,51 @@ test("all model-aware harnesses synchronize the live MultiVibe catalog", async (
       for (const model of modelIds) assert.match(configured, new RegExp(model.replace("/", "\\/")));
     }
   }
+});
+
+test("mini-SWE-agent uses its platform config and preserves unrelated dotenv settings", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-mini-swe-agent-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const home = path.join(root, "home");
+  const bin = path.join(home, "bin");
+  const definition = HOST_HARNESS_DEFINITIONS.find((entry) => entry.id === "mini-swe-agent")!;
+  const configPath = path.join(home, definition.configuration!.relativePath);
+  const original = 'MSWEA_GLOBAL_CALL_LIMIT="25"\n';
+  await fs.mkdir(bin, { recursive: true });
+  await fs.mkdir(path.dirname(configPath), { recursive: true });
+  await fs.writeFile(path.join(bin, "mini"), "binary", { mode: 0o755 });
+  await fs.writeFile(configPath, original);
+
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = async () => Response.json({ data: [{ id: "gpt-5.6-luna" }, { id: "gpt-5.5" }] });
+
+  const manager = new HostHarnessIntegrationManager({
+    homeDirectory: home,
+    statePath: path.join(home, ".multivibe", "harnesses.json"),
+    baseUrl: "http://127.0.0.1:1455",
+    definitions: [definition],
+    executableDirectories: [bin],
+  });
+  assert.equal((await manager.get("mini-swe-agent")).detectedBy.includes("command:mini"), true);
+
+  const installed = await manager.install("mini-swe-agent", {
+    apiKeyId: "key-mini-swe-agent",
+    apiKey: "mv_mini_swe_agent",
+    application: "harness-mini-swe-agent",
+  });
+  assert.equal(installed.configured, true);
+  assert.equal(installed.configPath, `~/${definition.configuration!.relativePath}`);
+  const configured = await fs.readFile(configPath, "utf8");
+  assert.match(configured, /MSWEA_GLOBAL_CALL_LIMIT="25"/);
+  assert.match(configured, /MSWEA_MODEL_NAME="openai\/gpt-5\.5"/);
+  assert.match(configured, /OPENAI_API_KEY="mv_mini_swe_agent"/);
+  assert.match(configured, /OPENAI_API_BASE="http:\/\/127\.0\.0\.1:1455\/v1"/);
+  assert.match(configured, /OPENAI_BASE_URL="http:\/\/127\.0\.0\.1:1455\/v1"/);
+  assert.match(configured, /MSWEA_COST_TRACKING="ignore_errors"/);
+
+  await manager.uninstall("mini-swe-agent");
+  assert.equal(await fs.readFile(configPath, "utf8"), original);
 });
 
 test("marks old OpenCode installations for repair and refreshes their model catalog", async (t) => {
