@@ -406,13 +406,14 @@ export default function App() {
     [traces],
   );
   useEffect(() => {
+    if (!baseLoaded) return;
     const u = new URL(window.location.href);
     u.searchParams.set("tab", tab);
     if (tab === "tracing" && activityView !== "overview") u.searchParams.set("view", activityView);
     else u.searchParams.delete("view");
     window.history.replaceState({}, "", u.toString());
     setLocationSearch(u.search);
-  }, [activityView, tab]);
+  }, [activityView, tab, baseLoaded]);
 
   useEffect(() => {
     const onPopstate = () => {
@@ -1143,7 +1144,7 @@ export default function App() {
               <span className="sidebar-nav-label">{workspaceLabel(teamWorkspace)}</span>
               {visibleTabItems.map((item, index) => (
                 <React.Fragment key={item.id}>
-                {(index === 0 || visibleTabItems[index - 1].group !== item.group) && <span className="sidebar-nav-label">{item.group}</span>}
+                {(index === 0 || visibleTabItems[index - 1].group !== item.group) && <span className="sidebar-nav-label">{canManage ? item.group : "Workspace"}</span>}
                 <button
                   type="button"
                   className={tab === item.id ? "nav-tab active" : "nav-tab"}
@@ -1154,7 +1155,7 @@ export default function App() {
                   <span className="nav-tab-icon"><TabIcon tab={item.id} /></span>
                   <span className="nav-tab-copy">
                     <span className="nav-tab-label">{item.label}</span>
-                    <span className="nav-tab-description">{item.description}</span>
+                    {canManage && <span className="nav-tab-description">{item.description}</span>}
                   </span>
                 </button>
                 </React.Fragment>
@@ -1174,7 +1175,7 @@ export default function App() {
                 <span className="status-dot" />
                 <span>
                   <strong>{demo ? "Demo instance" : sanitized ? "Sanitized view" : "System online"}</strong>
-                  <small>{accounts.length} accounts · {models.length} models</small>
+                  <small>{canManage ? `${accounts.length} accounts · ` : ""}{models.length} models</small>
                 </span>
               </div>
               <ThemeSwitcher value={themeMode} onChange={setThemeMode} />
@@ -1232,7 +1233,7 @@ export default function App() {
             <nav className="mobile-navigation-list" aria-label="Mobile primary navigation">
               {visibleTabItems.map((item, index) => (
                 <React.Fragment key={item.id}>
-                {(index === 0 || visibleTabItems[index - 1].group !== item.group) && <span className="mobile-navigation-group">{item.group}</span>}
+                {(index === 0 || visibleTabItems[index - 1].group !== item.group) && <span className="mobile-navigation-group">{canManage ? item.group : "Workspace"}</span>}
                 <button
                   type="button"
                   className={tab === item.id ? "mobile-navigation-item active" : "mobile-navigation-item"}
@@ -1245,7 +1246,7 @@ export default function App() {
                   <span className="mobile-navigation-item-icon"><TabIcon tab={item.id} /></span>
                   <span className="mobile-navigation-item-copy">
                     <strong>{item.label}</strong>
-                    <small>{item.description}</small>
+                    {canManage && <small>{item.description}</small>}
                   </span>
                   {tab === item.id && <span className="mobile-navigation-active-label">Current</span>}
                 </button>
@@ -1266,7 +1267,7 @@ export default function App() {
                 <span className="status-dot" />
                 <span>
                   <strong>{demo ? "Demo instance" : sanitized ? "Sanitized view" : "System online"}</strong>
-                  <small>{accounts.length} accounts · {models.length} models</small>
+                  <small>{canManage ? `${accounts.length} accounts · ` : ""}{models.length} models</small>
                 </span>
               </div>
               <ThemeSwitcher value={themeMode} onChange={setThemeMode} />
