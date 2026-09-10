@@ -688,70 +688,10 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     return res.json({ inferencePluginsSupported: !MULTIVIBE_CONTROL_PLANE, modules: moduleManager.list(), marketplace: moduleManager.marketplaceList() });
   });
 
-  router.get("/provider-agent/local-worker", async (_req, res) => {
+  // Public workers are retired. Team sharing has its own signed entitlement projection.
+  router.get("/provider-agent/local-worker", (_req, res) => {
     res.setHeader("cache-control", "no-store");
-    if (!options.hostApplication || !options.providerAgent?.enabled) {
-      return res.json({ localWorker: null });
-    }
-    try {
-      const capability = await options.providerAgent.getCapability();
-      const eligible = capability.supported &&
-        ((capability.profile === "apple-silicon" && capability.accelerator === "metal") ||
-         ((capability.profile === "linux-nvidia" || capability.profile === "windows-nvidia")
-           && capability.accelerator === "cuda"));
-      if (!eligible) return res.json({ localWorker: null });
-
-      const selectedGPU = capability.accelerator === "cuda"
-        ? capability.gpus?.[capability.cuda_device ?? 0]
-        : undefined;
-      const optionalLocalState = async <Value>(read: () => Promise<Value>): Promise<Value | null> => {
-        try {
-          return await read();
-        } catch (error) {
-          if (error instanceof ProviderAgentControlRequestError && error.status === 404) return null;
-          throw error;
-        }
-      };
-      const [enrollment, capacityPolicy, estimate] = await Promise.all([
-        optionalLocalState(() => options.providerAgent!.getCloudEnrollment()),
-        optionalLocalState(() => options.providerAgent!.getCapacityPolicy()),
-        options.providerWorkerEstimateClient
-          ? options.providerWorkerEstimateClient.estimate(capability).catch(() => unavailableProviderWorkerEstimate())
-          : Promise.resolve(unavailableProviderWorkerEstimate()),
-      ]);
-      const capacityState = !capacityPolicy
-        ? "not_configured"
-        : !capacityPolicy.allow_cloud_workloads
-          ? "disabled"
-          : capacityPolicy.paused
-            ? "paused"
-            : "enabled";
-      return res.json({
-        localWorker: {
-          id: "multivibe-worker-local",
-          kind: "system-local-worker",
-          name: "MultiVibe Worker",
-          location: "local",
-          enrollment_state: enrollment ? "enrolled" : "not_enrolled",
-          capacity_state: capacityState,
-          cloud_runtime: "managed-ollama",
-          trust_tier: "community",
-          removable: false,
-          routing_eligible: false,
-          compensation_eligible: false,
-          capability: {
-            profile: capability.profile,
-            accelerator: capability.accelerator,
-            hardware: capability.hardware_model ?? selectedGPU?.name ?? capability.profile,
-            accelerator_memory_bytes: capability.accelerator_memory_bytes ?? 0,
-          },
-          estimated_monthly_earnings: estimate,
-          connect_url: "https://app.multivibe.cloud/earnings",
-        },
-      });
-    } catch {
-      return res.status(503).json({ error: "provider_agent_unavailable" });
-    }
+    return res.json({ localWorker: null });
   });
 
   router.post("/modules/submit", async (req, res) => {

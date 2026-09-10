@@ -98,103 +98,12 @@ const appleCapability = (): ProviderHostCapability => ({
   accelerator_memory_bytes: 32 * 1024 ** 3,
 });
 
-test("Host projects a supported local worker as an unconfigured non-removable provider", async () => {
-  const control = providerAgentControl({
-    getCapability: async () => appleCapability(),
-    getCloudEnrollment: async () => { throw new ProviderAgentControlRequestError(404); },
-    getCapacityPolicy: async () => { throw new ProviderAgentControlRequestError(404); },
-  });
+test("Host never advertises a public worker by default", async () => {
+  const control = providerAgentControl({ getCapability: async () => { throw new Error("Public capability must not be fetched"); } });
   await withAdminServer(control, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/admin/provider-agent/local-worker`);
     assert.equal(response.status, 200);
-    assert.equal(response.headers.get("cache-control"), "no-store");
-    const payload = await response.json() as { localWorker: Record<string, any> };
-    assert.equal(payload.localWorker.name, "MultiVibe Worker");
-    assert.equal(payload.localWorker.enrollment_state, "not_enrolled");
-    assert.equal(payload.localWorker.capacity_state, "not_configured");
-    assert.equal(payload.localWorker.cloud_runtime, "managed-ollama");
-    assert.equal(payload.localWorker.trust_tier, "community");
-    assert.equal(payload.localWorker.removable, false);
-    assert.equal(payload.localWorker.routing_eligible, false);
-    assert.equal(payload.localWorker.compensation_eligible, false);
-    assert.equal(payload.localWorker.capability.hardware, "Apple M4 Max");
-    assert.equal(payload.localWorker.estimated_monthly_earnings.amount, "184.25");
-    assert.equal(payload.localWorker.estimated_monthly_earnings.basis, "same_chip");
-    assert.equal(payload.localWorker.connect_url, "https://app.multivibe.cloud/earnings");
-  }, {
-    hostApplication: true,
-    providerWorkerEstimateClient: {
-      async estimate(capability) {
-        assert.equal(capability.hardware_model, "Apple M4 Max");
-        return {
-          currency: "USD", period: "month", amount: "184.25", basis: "same_chip",
-          sample_count: 12, as_of_date: "2026-09-02", disclaimer: "Advisory and not payable.",
-        };
-      },
-    },
-  });
-});
-
-test("Host projects a supported Windows NVIDIA worker", async () => {
-  const control = providerAgentControl({
-    getCapability: async () => ({
-      schema_version: "multivibe-host-capability-v1",
-      agent_version: "test",
-      supported: true,
-      profile: "windows-nvidia",
-      os: "windows",
-      architecture: "amd64",
-      accelerator: "cuda",
-      accelerator_memory_bytes: 24 * 1024 ** 3,
-      cuda_device: 1,
-      gpus: [
-        { name: "Tesla P100", memory_mib: 16280, compute_capability: 6 },
-        { name: "NVIDIA GeForce RTX 4090", memory_mib: 24576, compute_capability: 8.9 },
-      ],
-    }),
-    getCloudEnrollment: async () => { throw new ProviderAgentControlRequestError(404); },
-    getCapacityPolicy: async () => { throw new ProviderAgentControlRequestError(404); },
-  });
-  await withAdminServer(control, async (baseUrl) => {
-    const response = await fetch(`${baseUrl}/admin/provider-agent/local-worker`);
-    const payload = await response.json() as { localWorker: Record<string, any> };
-    assert.equal(payload.localWorker.capability.hardware, "NVIDIA GeForce RTX 4090");
-    assert.equal(payload.localWorker.capability.profile, "windows-nvidia");
-  }, { hostApplication: true });
-});
-
-test("Host projects enrollment and capacity as independent machine-level states", async () => {
-  const control = providerAgentControl({
-    getCapability: async () => appleCapability(),
-    getCloudEnrollment: async () => ({
-      schema_version: "provider-cloud-enrollment-v1",
-      revision: 1,
-      state: "submitted",
-      provider_id: "10000000-0000-4000-8000-000000000001",
-      node_id: "20000000-0000-4000-8000-000000000002",
-      device_key_id: `ed25519:${"b".repeat(43)}`,
-      credential_epoch: 1,
-      manifest_digest: "c".repeat(64),
-      runtime_family: "cloud-managed",
-      declared_max_concurrency: 1,
-      cloud_api_origin: "https://auth.multivibe.cloud",
-      submitted_at: "2026-09-07T18:00:00.000Z",
-      routing_eligible: false,
-      compensation_eligible: false,
-      safety_profile: "shadow_only_no_routing_no_compensation",
-    }),
-    getCapacityPolicy: async () => ({
-      ...capacityPolicy(),
-      paused: true,
-      allow_cloud_workloads: true,
-    }),
-  });
-  await withAdminServer(control, async (baseUrl) => {
-    const response = await fetch(`${baseUrl}/admin/provider-agent/local-worker`);
-    assert.equal(response.status, 200);
-    const payload = await response.json() as { localWorker: Record<string, any> };
-    assert.equal(payload.localWorker.enrollment_state, "enrolled");
-    assert.equal(payload.localWorker.capacity_state, "paused");
+    assert.deepEqual(await response.json(), { localWorker: null });
   }, { hostApplication: true });
 });
 

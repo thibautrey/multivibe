@@ -1,3 +1,4 @@
+import { TeamMachineSharing } from "./team-machine-sharing.js";
 import { getHostMenuProviderActivity } from "./host/menu-bar.js";
 import { automaticRouterManifest, createAutomaticRouter } from "./automatic-router.js";
 import { createAuthRateLimiter } from "./auth-rate-limit.js";
@@ -203,6 +204,9 @@ const dataDir = path.dirname(STORE_PATH);
 await cleanupOrphanedTmpFiles(dataDir);
 
 const store = new AccountStore(STORE_PATH);
+const teamMachineSharing = new TeamMachineSharing(store, path.join(dataDir, "team-machine-sharing.json"), JSON.parse(process.env.MULTIVIBE_TEAM_MACHINE_TRUSTED_KEYS ?? "{}"));
+await teamMachineSharing.initialize();
+app.use("/team-machine", teamMachineSharing.inferenceRouter());
 const hostHarnessIntegrations = MULTIVIBE_HOST_APPLICATION
   ? new HostHarnessIntegrationManager({
       homeDirectory: HOST_HARNESS_HOME_DIRECTORY,
@@ -700,6 +704,7 @@ if (!MULTIVIBE_CONTROL_PLANE) {
   });
 }
 
+app.use("/admin/team-machine", adminGuard, teamMachineSharing.adminRouter());
 app.use("/admin", adminGuard, adminRouter);
 
 // Public inference, realtime, and WebSocket routes are owned by the Rust edge.
