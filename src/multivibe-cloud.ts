@@ -511,13 +511,14 @@ export class MultivibeCloudService {
       this.machineRelayRunning++;
       const accessToken=connection.accessToken;
       void (async()=>{
-        let release=()=>{};
+        let release=()=>{};const controller=new AbortController();
         try {
-          const run=await sharing.execute(job.token,'cloud_relay',job.path,job.body,AbortSignal.timeout(300000));release=run.release;
-          await this.fetchImpl(this.apiBaseUrl+base+'/relay/results/'+encodeURIComponent(job.id),{method:'POST',headers:{authorization:'Bearer '+accessToken,'content-type':run.response.headers.get('content-type')??'application/json','x-team-response-status':String(run.response.status)},body:run.response.body,duplex:'half',signal:AbortSignal.timeout(300000)} as RequestInit);
+          const run=await sharing.execute(job.token,'cloud_relay',job.path,job.body,AbortSignal.any([controller.signal,AbortSignal.timeout(300000)]));release=run.release;
+          const uploaded=await this.fetchImpl(this.apiBaseUrl+base+'/relay/results/'+encodeURIComponent(job.id),{method:'POST',headers:{authorization:'Bearer '+accessToken,'content-type':run.response.headers.get('content-type')??'application/json','x-team-response-status':String(run.response.status)},body:run.response.body,duplex:'half',signal:AbortSignal.any([controller.signal,AbortSignal.timeout(300000)])} as RequestInit);
+          if(!uploaded.ok)throw new Error('team_relay_upload_rejected');
         }catch {
           await this.fetchImpl(this.apiBaseUrl+base+'/relay/results/'+encodeURIComponent(job.id),{method:'POST',headers:{authorization:'Bearer '+accessToken,'content-type':'application/json','x-team-response-status':'503'},body:'{"error":"team_machine_unavailable"}',signal:AbortSignal.timeout(10000)}).catch(()=>undefined);
-        }finally{release();this.machineRelayRunning--;}
+        }finally{controller.abort();release();this.machineRelayRunning--;}
       })();
     }catch(error){if(error instanceof CloudHttpError && error.status===403)await sharing.revokeConsent();throw error;}finally{this.machineSyncRunning=false;}
   }
