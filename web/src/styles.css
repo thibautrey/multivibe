@@ -5445,3 +5445,5 @@ body:has(> .modal-backdrop) {
 .trace-custom-range > small {
   flex-basis: 100%;
 }
+
+.workspace-chat-link{margin-bottom:12px;text-decoration:none;justify-content:center}.team-workspace-home{max-width:960px}.team-workspace-home>p{max-width:640px;color:var(--muted);line-height:1.7}.team-workspace-actions{display:flex;flex-wrap:wrap;gap:12px;margin:24px 0}.team-workspace-home>.panel{margin-top:20px}.core-mobile-chat{display:none}@media(max-width:900px){.core-mobile-chat{display:inline-flex;margin-bottom:18px;text-decoration:none}}

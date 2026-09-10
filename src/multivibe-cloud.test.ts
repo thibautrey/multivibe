@@ -400,3 +400,25 @@ test("Cloud disconnect clears credentials and managed account, preserving other 
   await cloud.disconnect();
   assert.deepEqual(stores.accounts, [other]);
 });
+
+for (const role of ["owner", "admin", "member", "billing"] as const) {
+  test(`Team workspace uses the verified ${role} role without returning credentials`, async () => {
+    const stores = fakeStores({ settings: { multivibeCloud: { accessToken: "private-token", expiresAt: Date.now()+3600000 } } });
+    const cloud = service(stores, (async () => response({role, subscription:{state:"active"}})) as typeof fetch);
+    assert.deepEqual(await cloud.teamWorkspace(), {state:"team",role});
+  });
+}
+test("personal workspace does not require a Cloud request", async () => {
+  const cloud = service(fakeStores(), (async () => { throw new Error("unexpected request"); }) as typeof fetch);
+  assert.deepEqual(await cloud.teamWorkspace(), {state:"personal",role:null});
+});
+test("enrollment does not imply admin privileges when role lookup fails", async () => {
+  const stores = fakeStores({settings:{multivibeTeam:{enabled:true,instanceId:projectId,instanceName:"Work Mac",syncCursor:0},multivibeCloud:{accessToken:"private-token",expiresAt:Date.now()+3600000}}});
+  const cloud = service(stores, (async () => response({},503)) as typeof fetch);
+  assert.deepEqual(await cloud.teamWorkspace(), {state:"team",role:null});
+});
+test("inactive personal subscriptions do not enable Team UI", async () => {
+  const stores = fakeStores({settings:{multivibeCloud:{accessToken:"private-token",expiresAt:Date.now()+3600000}}});
+  const cloud = service(stores, (async () => response({role:"owner",subscription:{state:"inactive"}})) as typeof fetch);
+  assert.deepEqual(await cloud.teamWorkspace(), {state:"personal",role:null});
+});
