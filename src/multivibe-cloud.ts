@@ -539,7 +539,7 @@ export class MultivibeCloudService {
       const role = overview?.role;
       if (role !== "owner" && role !== "admin" && role !== "billing" && role !== "member") throw new Error("team_role_unavailable");
       const subscription = recordValue(overview?.subscription);
-      if (!enrolled && subscription?.state === "inactive") return { state: "personal", role: null };
+      if (!enrolled && role === "owner" && subscription?.state === "inactive") return { state: "personal", role: null };
       return { state: "team", role };
     } catch {
       return { state: enrolled ? "team" : "unavailable", role: null };
