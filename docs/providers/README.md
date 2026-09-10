@@ -8,6 +8,7 @@ Add connections through **Accounts → Add provider**. API-key providers use fix
 | [GitHub Copilot](github-copilot.md) | Existing GitHub device sign-in | Premium request and monthly chat quotas when GitHub supplies them |
 | [MiniMax](minimax.md) | PAYG API key or separate Token Plan Subscription Key | Token Plan five-hour and weekly windows |
 | [OpenRouter](openrouter.md) | Existing API-key provider | Explicit per-key spending cap; not total account credit |
+| [DeepSeek](deepseek.md) | Existing DeepSeek API key | Spendable API balance, including granted and topped-up credit; not subscription windows |
 | [Abacus.AI](abacus.md) | RouteLLM API key | Request usage; subscription balance requires separate browser cookies |
 | [Manus](manus.md) | Manus API key; private text-agent tasks | Spendable credit balance and informational subscription allowance |
 | [Kimi](kimi.md) | Global API key or separate Kimi Code key | Kimi Code five-hour and weekly windows |

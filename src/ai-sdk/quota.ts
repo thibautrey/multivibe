@@ -7,6 +7,7 @@ import { fetchOpenRouterUsage } from "./openrouter-quota.js";
 import { fetchManusUsage } from "./manus-provider.js";
 import { fetchMammouthUsage } from "./mammouth-quota.js";
 import { fetchQwenUsage } from "./qwen-quota.js";
+import { fetchDeepSeekUsage } from "./deepseek-quota.js";
 
 const UNSUPPORTED_MESSAGES: Record<string, string> = {
   abacus: "Abacus subscription credit checks require a separate browser session. This RouteLLM API key cannot retrieve them.",
@@ -25,6 +26,7 @@ export async function fetchSdkUsage(account: Account, signal: AbortSignal): Prom
     case "manus": return fetchManusUsage(account.accessToken, signal);
     case "mammouth": return fetchMammouthUsage(account.accessToken, signal);
     case "qwen-coding": return fetchQwenUsage(account.accessToken, signal);
+    case "deepseek": return fetchDeepSeekUsage(account, signal);
     default: return { fetchedAt: Date.now(), quotaStatus: "unsupported",
       quotaMessage: UNSUPPORTED_MESSAGES[account.sdkProvider ?? ""] ??
         "This API connection does not expose subscription quota windows. Request token usage is tracked separately." };
