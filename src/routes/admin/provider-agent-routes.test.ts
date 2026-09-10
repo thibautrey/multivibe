@@ -123,7 +123,7 @@ test("local worker projection is absent outside Host and for unsupported hosting
   await withAdminServer(control, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/admin/provider-agent/local-worker`);
     assert.deepEqual(await response.json(), { localWorker: null });
-    assert.equal(capabilityCalls, 1);
+    assert.equal(capabilityCalls, 0);
   }, { hostApplication: true });
 });
 

@@ -126,7 +126,7 @@ export class TeamMachineSharing {
         res.status(upstream.status);res.setHeader('content-type',upstream.headers.get('content-type') ?? 'application/json');res.setHeader('cache-control','no-store');
         if (upstream.body) await pipeline(Readable.fromWeb(upstream.body as any),res);
         else res.end();
-      } catch { if (!res.headersSent) res.status(403).json({error:'machine_sharing_unavailable'}); else res.destroy(); }
+      } catch(error) { if (!res.headersSent) res.status(error instanceof Error && error.message==='machine_capacity_exhausted'?429:error instanceof Error && error.message.includes('runtime')?503:403).json({error:'machine_sharing_unavailable'}); else res.destroy(); }
 
     }); return router;
   }
