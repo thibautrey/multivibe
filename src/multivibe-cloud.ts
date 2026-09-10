@@ -1,3 +1,5 @@
+import type { TeamMachineSharing } from "./team-machine-sharing.js";
+import type { SignedMachinePolicy } from "./team-machine-protocol.js";
 import { readCloudModelCatalog } from "./cloud-model-catalog.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
@@ -455,6 +457,49 @@ export class MultivibeCloudService {
       ? expiresAtFromApiKey((apiKey as Record<string, unknown>).expiresAt, expiresAt)
       : expiresAt;
     return { secret, expiresAt: actualExpiresAt };
+  }
+
+  private machineRefreshAt = 0;
+  private machineSyncRunning = false;
+  private machineRelayRunning = 0;
+  async machineConnection():Promise<{organizationId:string}> {
+    let connection=currentCloudConnection(await this.store.getSettings());
+    if(!connection)throw new Error('team_connection_required');
+    connection=await this.refreshConnectionIfNeeded(connection);
+    const context=await this.requestJson('/client/v1/team-machines/context',connection.accessToken);
+    if(typeof context.organizationId!=='string')throw new Error('team_context_invalid');
+    return {organizationId:context.organizationId};
+  }
+  async syncMachine(sharing:TeamMachineSharing):Promise<void> {
+    if(this.machineSyncRunning)return;
+    const state=sharing.status();const reportIdentity=sharing.reportIdentity();if(!reportIdentity)return;
+    this.machineSyncRunning=true;
+    try {
+      let connection=currentCloudConnection(await this.store.getSettings());if(!connection)return;
+      connection=await this.refreshConnectionIfNeeded(connection);
+      const base='/client/v1/team-machines/'+encodeURIComponent(reportIdentity.instanceId);
+      if(!state.consent){await this.requestJson(base+'/report',connection.accessToken,{method:'POST',body:{consentId:null,inventory:[]}});await sharing.acknowledgeRevocation();return;}
+      if(Date.now()-this.machineRefreshAt>=30000){
+        await this.requestJson(base+'/report',connection.accessToken,{method:'POST',body:{consentId:state.consent.id,inventory:await sharing.inventory()}});
+        const result=await this.requestJson(base+'/policy',connection.accessToken);
+        if(result.envelope){const ack=await sharing.apply(result.envelope as SignedMachinePolicy);await this.requestJson(base+'/acknowledgement',connection.accessToken,{method:'POST',body:ack});}
+        this.machineRefreshAt=Date.now();
+      }
+      if(sharing.status().sharing?.transport!=='cloud_relay'||this.machineRelayRunning>=2)return;
+      const response=await this.requestJson(base+'/relay/poll',connection.accessToken);
+      const job=response.job as {id:string;token:string;path:string;body:unknown}|null;if(!job)return;
+      this.machineRelayRunning++;
+      const accessToken=connection.accessToken;
+      void (async()=>{
+        let release=()=>{};
+        try {
+          const run=await sharing.execute(job.token,'cloud_relay',job.path,job.body,AbortSignal.timeout(300000));release=run.release;
+          await this.fetchImpl(this.apiBaseUrl+base+'/relay/results/'+encodeURIComponent(job.id),{method:'POST',headers:{authorization:'Bearer '+accessToken,'content-type':run.response.headers.get('content-type')??'application/json','x-team-response-status':String(run.response.status)},body:run.response.body,duplex:'half',signal:AbortSignal.timeout(300000)} as RequestInit);
+        }catch {
+          await this.fetchImpl(this.apiBaseUrl+base+'/relay/results/'+encodeURIComponent(job.id),{method:'POST',headers:{authorization:'Bearer '+accessToken,'content-type':'application/json','x-team-response-status':'503'},body:'{"error":"team_machine_unavailable"}',signal:AbortSignal.timeout(10000)}).catch(()=>undefined);
+        }finally{release();this.machineRelayRunning--;}
+      })();
+    }finally{this.machineSyncRunning=false;}
   }
 
   private async requestJson(path: string, accessToken: string, options: {

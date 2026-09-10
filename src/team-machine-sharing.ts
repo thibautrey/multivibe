@@ -9,7 +9,7 @@ import { isDiscoveredLocalRuntimeAccount, isConfiguredNvidiaPairAccount, authori
 import { verifyMachinePolicy, type SignedMachinePolicy, type MachinePolicy } from './team-machine-protocol.js';
 
 type Consent = { organizationId: string; instanceId: string; id: string };
-type State = { consent: Consent | null; envelope: SignedMachinePolicy | null; stopped: boolean; lastClock: number };
+type State = { consent: Consent | null; envelope: SignedMachinePolicy | null; stopped: boolean; lastClock: number; revokedConsent?: Consent };
 export class TeamMachineSharing {
   private state: State = { consent: null, envelope: null, stopped: false, lastClock: 0 };
   private active = 0;
@@ -42,9 +42,11 @@ export class TeamMachineSharing {
     const uuid = /^[0-9a-f-]{36}$/i;
     if (!uuid.test(organizationId) || !uuid.test(instanceId)) throw new Error('machine_identity_invalid');
     this.state = { consent: { organizationId, instanceId, id: randomUUID() }, envelope: null, stopped: false, lastClock: this.clock() };
-    await this.save(); return this.state.consent;
+    await this.save(); return this.state.consent!;
   }
-  async revokeConsent() { this.state.consent = null; this.state.envelope = null; this.state.stopped = true; await this.save(); }
+  async revokeConsent() { if(this.state.consent)this.state.revokedConsent=this.state.consent; this.state.consent = null; this.state.envelope = null; this.state.stopped = true; await this.save(); }
+  reportIdentity() { return this.state.consent ?? this.state.revokedConsent ?? null; }
+  async acknowledgeRevocation() { delete this.state.revokedConsent; await this.save(); }
   async stop() { this.state.stopped = true; await this.save(); }
   async inventory() {
     return (await this.store.listAccounts()).filter(a => a.enabled && (isDiscoveredLocalRuntimeAccount(a) || isConfiguredNvidiaPairAccount(a))).map(a => ({
@@ -121,13 +123,16 @@ export class TeamMachineSharing {
 
     }); return router;
   }
-  adminRouter() {
+  adminRouter(connection?: () => Promise<{organizationId:string;instanceId:string}>) {
     const router = Router();
     router.get('/',(_req,res)=>res.json(this.status()));
+    router.get('/connection',async(_req,res)=>{try{if(!connection)throw new Error();res.json(await connection());}catch{res.status(403).json({error:'active_team_required'});}});
     router.get('/runtimes',async(_req,res)=>res.json({runtimes:await this.inventory()}));
     router.post('/consent',async(req,res)=>{try {
       if(req.body?.authorizeRemoteManagement!==true) return res.status(400).json({error:'explicit_consent_required'});
-      return res.json(await this.consent(req.body.organizationId,req.body.instanceId));
+      if(!connection)throw new Error();
+      const identity=await connection();
+      return res.json(await this.consent(identity.organizationId,identity.instanceId));
     }catch{return res.status(400).json({error:'invalid_machine_consent'});}});
     router.delete('/consent',async(_req,res)=>{await this.revokeConsent();res.sendStatus(204);});
     router.post('/stop',async(_req,res)=>{await this.stop();res.sendStatus(204);});
