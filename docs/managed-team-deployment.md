@@ -97,8 +97,10 @@ milliseconds. This example contains placeholders, not usable credentials:
 
 ## Deployment sequence
 
-1. In the Team dashboard, select an active employee and generate a managed
-   enrollment for either the device or user channel. Download the profile once.
+1. Through the Team administration API, select an active employee and generate
+   a managed enrollment for either the device or user channel. Save the
+   creation response as the one-use profile; it cannot be recovered from the
+   redacted inventory endpoint.
 2. Assign the signed MultiVibe Host release and that profile to the same single
    target in the MDM. Treat the profile as a secret and suppress script output.
 3. Run the platform installer in the target employee's context with
