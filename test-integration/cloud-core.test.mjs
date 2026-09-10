@@ -26,6 +26,21 @@ async function availablePort() {
 
 async function startNativeEdge(t, root, storePath, jobsPath) {
   const port = await availablePort();
+  const controlPlane = http.createServer((req, res) => {
+    if (req.url === '/health') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  controlPlane.listen(0, '127.0.0.1');
+  await once(controlPlane, 'listening');
+  const controlPlaneAddress = controlPlane.address();
+  assert.ok(controlPlaneAddress && typeof controlPlaneAddress !== 'string');
+  t.after(() => new Promise((resolve, reject) =>
+    controlPlane.close(error => error ? reject(error) : resolve())));
   const edge = spawn(path.join(root, 'target', 'debug', 'multivibe-v1-edge'), [], {
     cwd: root,
     env: {
@@ -35,7 +50,7 @@ async function startNativeEdge(t, root, storePath, jobsPath) {
       V1_EDGE_STORE_PATH: storePath,
       V1_EDGE_JOBS_PATH: jobsPath,
       V1_EDGE_INTERNAL_JOB_TOKEN: 'integration-internal-token',
-      NODE_CONTROL_PLANE_URL: 'http://127.0.0.1:9',
+      NODE_CONTROL_PLANE_URL: `http://127.0.0.1:${controlPlaneAddress.port}`,
       PROXY_API_KEY: edgeApiKey,
       MODELS_CACHE_MS: '1000',
     },
