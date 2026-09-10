@@ -1,3 +1,4 @@
+import { teamMachineTrustedKeys } from "./team-machine-trust.js";
 import { createServer as createTeamHttpsServer } from "node:https";
 import { TeamMachineDirectory } from "./team-machine-directory.js";
 import { readFile as readTeamIdentity } from "node:fs/promises";
@@ -209,9 +210,9 @@ const dataDir = path.dirname(STORE_PATH);
 await cleanupOrphanedTmpFiles(dataDir);
 
 const store = new AccountStore(STORE_PATH);
-const teamMachineSharing = new TeamMachineSharing(store, path.join(dataDir, "team-machine-sharing.json"), JSON.parse(process.env.MULTIVIBE_TEAM_MACHINE_TRUSTED_KEYS ?? "{}"));
+const teamMachineSharing = new TeamMachineSharing(store, path.join(dataDir, "team-machine-sharing.json"), teamMachineTrustedKeys(process.env.MULTIVIBE_TEAM_MACHINE_TRUSTED_KEYS));
 await teamMachineSharing.initialize();
-const teamMachineDirectory=new TeamMachineDirectory(path.join(dataDir,"team-machine-directory.json"),JSON.parse(process.env.MULTIVIBE_TEAM_MACHINE_TRUSTED_KEYS ?? "{}"));
+const teamMachineDirectory=new TeamMachineDirectory(path.join(dataDir,"team-machine-directory.json"),teamMachineTrustedKeys(process.env.MULTIVIBE_TEAM_MACHINE_TRUSTED_KEYS));
 await teamMachineDirectory.initialize();
 app.use("/v1",teamMachineDirectory.router());
 app.use("/team-machine", teamMachineSharing.inferenceRouter());
