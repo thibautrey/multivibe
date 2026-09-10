@@ -1,8 +1,7 @@
 # MultiVibe GitHub Actions workers on Unraid
 
-The public repository must not send pull-request code to these runners. The
-workflow labels in this directory are used only by trusted release-tag and
-manual-release jobs:
+Do not send untrusted pull-request code to these runners. The workflow labels
+in this directory are used only by trusted release-tag and manual-release jobs:
 
 - `multivibe-linux`: amd64 jobs without Docker access.
 - `multivibe-docker`: amd64 jobs that build or inspect container images.
@@ -15,9 +14,14 @@ Build this image on the Unraid host from the checked-out repository:
 
 ```sh
 docker build \
-  --tag multivibe/github-actions-runner:2.336.0 \
+  --tag multivibe/github-actions-runner:2.336.0-deploy \
   packaging/unraid/github-actions-runner
 ```
+
+The `2.336.0-deploy` image includes the pinned Kubernetes client used by the
+landing and Cloud deployment workflows. Actions such as `setup-node` and the
+Cosign installer continue to install the workflow-pinned Node and Cosign
+versions at job runtime.
 
 Use a separate persistent directory for each runner. The registration token is
 short-lived and must not be committed. The entrypoint accepts it from a file so
@@ -65,7 +69,7 @@ docker run -d \
   --env RUNNER_NAME=multivibe-unraid-docker-1 \
   --env RUNNER_LABELS=multivibe-docker \
   --env RUNNER_TOKEN_FILE=/run/multivibe-runner-token \
-  multivibe/github-actions-runner:2.336.0
+  multivibe/github-actions-runner:2.336.0-deploy
 ```
 
 The Linux worker uses the same command without the Docker socket and with
