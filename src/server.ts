@@ -1,3 +1,4 @@
+import { createServer as createTeamHttpsServer } from "node:https";
 import { TeamMachineDirectory } from "./team-machine-directory.js";
 import { readFile as readTeamIdentity } from "node:fs/promises";
 import { TeamMachineSharing } from "./team-machine-sharing.js";
@@ -213,6 +214,13 @@ const teamMachineDirectory=new TeamMachineDirectory(path.join(dataDir,"team-mach
 await teamMachineDirectory.initialize();
 app.use("/v1",teamMachineDirectory.router());
 app.use("/team-machine", teamMachineSharing.inferenceRouter());
+// Optional dedicated private-network TLS listener. No listener is exposed without operator-provided certificates.
+if(process.env.MULTIVIBE_TEAM_MACHINE_TLS_CERT_PATH && process.env.MULTIVIBE_TEAM_MACHINE_TLS_KEY_PATH){
+  const privateApp=express();privateApp.use(express.json({limit:REQUEST_BODY_LIMIT}));privateApp.use("/team-machine",teamMachineSharing.inferenceRouter());
+  const tlsServer=createTeamHttpsServer({cert:await readTeamIdentity(process.env.MULTIVIBE_TEAM_MACHINE_TLS_CERT_PATH),key:await readTeamIdentity(process.env.MULTIVIBE_TEAM_MACHINE_TLS_KEY_PATH)},privateApp);
+  tlsServer.listen(Number(process.env.MULTIVIBE_TEAM_MACHINE_TLS_PORT ?? "1456"),process.env.MULTIVIBE_TEAM_MACHINE_BIND ?? "127.0.0.1");
+}
+
 const teamSync = new MultivibeTeamSyncService(store, `${STORE_PATH}.team-instance.json`);
 teamMachineSharing.setUsageRecorder((trace,memberId)=>teamSync.recordTrace(trace,{type:"member",id:memberId}));
 const hostHarnessIntegrations = MULTIVIBE_HOST_APPLICATION
