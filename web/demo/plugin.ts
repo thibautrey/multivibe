@@ -7,7 +7,9 @@ export function demoApiPlugin(): Plugin {
     name: "multivibe-demo-api",
     apply: "serve",
     configureServer(server) {
-      const respond = createDemoApi();
+      const role = process.env.MULTIVIBE_DEMO_WORKSPACE ?? "personal";
+      if (!["personal", "owner", "admin", "member", "billing"].includes(role)) throw new Error("Invalid demo workspace");
+      const respond = createDemoApi(Date.now(), role as "personal" | "owner" | "admin" | "member" | "billing");
       server.middlewares.use((req, res, next) => {
         const path = new URL(req.url ?? "/", "http://demo.invalid").pathname;
         if (!/^\/(admin|v1|auth)(\/|$)/.test(path) && path !== "/health") return next();
