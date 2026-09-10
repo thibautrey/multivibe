@@ -90,10 +90,13 @@ export class TeamMachineSharing {
     if(this.active>=p.maxConcurrent)throw new Error('machine_capacity_exhausted');
     const account=(await this.store.listAccounts()).find(a=>a.id===p.runtimeId&&a.enabled);
     if(!account||(!isDiscoveredLocalRuntimeAccount(account)&&!isConfiguredNvidiaPairAccount(account)))throw new Error('machine_runtime_unavailable');
+    if(!account.localRuntime!.confirmedModelIds.includes(body.model))throw new Error('machine_runtime_model_unavailable');
     const endpoint=new URL(account.localRuntime!.endpoint);
     if(!['127.0.0.1','[::1]'].includes(endpoint.hostname))throw new Error('machine_runtime_boundary');
     const target=new URL(requestPath,endpoint).href;
     const authorization=authorizationForAccountRequest(account,target);
+    const latest=this.authorize(secret,transport).policy;
+    if(latest.revision!==p.revision||latest.runtimeId!==p.runtimeId)throw new Error('machine_policy_changed');
     // Recheck after asynchronous account lookup before reserving the slot.
     if(this.active>=p.maxConcurrent)throw new Error('machine_capacity_exhausted');
     this.active++;
