@@ -787,6 +787,7 @@ Sentry.setupExpressErrorHandler(app);
 const server = http.createServer(app);
 server.listen(nodeHost ? { port: nodePort, host: nodeHost } : { port: nodePort }, () => {
   smartRouting.startHealthMonitoring();
+  hostHarnessIntegrations?.startCatalogSynchronization();
   console.log(
     `multivibe control plane listening on ${nodeHost ?? "all interfaces"}:${nodePort}`,
   );
@@ -800,6 +801,7 @@ async function shutdown(signal: NodeJS.Signals) {
   if (shuttingDown) return;
   shuttingDown = true;
   smartRouting.stopHealthMonitoring();
+  hostHarnessIntegrations?.stopCatalogSynchronization();
   usageRefreshMonitor.stop();
   anonymousUsageSharing.stop();
   await providerAgent.stop();

@@ -879,6 +879,8 @@ export class HostHarnessIntegrationManager {
   private readonly executableDirectories: string[];
   private readonly projectRegistrationToken: string;
   private operation = Promise.resolve();
+  private catalogSynchronizationTimer: NodeJS.Timeout | undefined;
+  private catalogSynchronizationRunning = false;
 
   constructor(options: HostHarnessManagerOptions) {
     if (!path.isAbsolute(options.homeDirectory)) {
@@ -905,6 +907,86 @@ export class HostHarnessIntegrationManager {
   async get(id: string): Promise<HostHarnessView> {
     const definition = this.definition(id);
     return this.view(definition, await this.readState());
+  }
+
+  startCatalogSynchronization(intervalMs = 2_000) {
+    if (this.catalogSynchronizationTimer) return;
+    const synchronize = () => {
+      if (this.catalogSynchronizationRunning) return;
+      this.catalogSynchronizationRunning = true;
+      void this.synchronizeCodexModelCatalog()
+        .catch((error) => {
+          console.warn("Codex model catalog synchronization failed", error instanceof Error ? error.message : String(error));
+        })
+        .finally(() => { this.catalogSynchronizationRunning = false; });
+    };
+    synchronize();
+    this.catalogSynchronizationTimer = setInterval(synchronize, Math.max(250, intervalMs));
+    this.catalogSynchronizationTimer.unref?.();
+  }
+
+  stopCatalogSynchronization() {
+    if (this.catalogSynchronizationTimer) clearInterval(this.catalogSynchronizationTimer);
+    this.catalogSynchronizationTimer = undefined;
+  }
+
+  async synchronizeCodexModelCatalog(): Promise<boolean> {
+    return this.serial(async () => {
+      const definition = this.definitions.find((entry) => entry.id === "openai-codex");
+      if (!definition?.configuration?.auxiliaryFiles) return false;
+      const state = await this.readState();
+      const installation = state.installations[definition.id];
+      if (!installation?.auxiliaryFiles?.length) return false;
+      const configPath = await this.safeConfigPath(definition.configuration.relativePath);
+      const config = await readBounded(configPath);
+      if (!config || sha256(config.content) !== installation.installedSha256) return false;
+      const apiKey = this.apiKeyForId(installation.apiKeyId);
+      if (!apiKey) return false;
+      const context: HarnessContext = { baseUrl: this.baseUrl, apiKey, homeDirectory: this.homeDirectory };
+      const preparedContext = definition.configuration.prepare
+        ? { ...context, ...(await definition.configuration.prepare(context)) }
+        : context;
+      const files = definition.configuration.auxiliaryFiles(preparedContext);
+      const updates: Array<{
+        path: string;
+        content: string;
+        mode: number;
+        previousContent: string;
+        saved: ManagedFileState;
+      }> = [];
+      for (const file of files) {
+        const filePath = await this.safeConfigPath(file.relativePath);
+        const saved = installation.auxiliaryFiles.find((entry) => entry.path === filePath);
+        if (!saved) return false;
+        const current = await readBounded(filePath);
+        if (!current || sha256(current.content) !== saved.installedSha256) return false;
+        if (current.content === file.content) continue;
+        updates.push({
+          path: filePath,
+          content: file.content,
+          mode: file.mode ?? current.mode,
+          previousContent: current.content,
+          saved,
+        });
+      }
+      if (!updates.length) return false;
+      try {
+        for (const update of updates) {
+          await writeAtomic(update.path, update.content, update.mode);
+          update.saved.installedSha256 = sha256(update.content);
+        }
+        // Codex loads model_catalog_json on startup. Replacing the unchanged config
+        // also emits the normal config-file event used by clients that support live reload.
+        await writeAtomic(configPath, config.content, config.mode);
+        await this.writeState(state);
+      } catch (error) {
+        for (const update of [...updates].reverse()) {
+          await writeAtomic(update.path, update.previousContent, update.mode).catch(() => undefined);
+        }
+        throw error;
+      }
+      return true;
+    });
   }
 
   async enableProjectTracking(id: string): Promise<HostHarnessView> {

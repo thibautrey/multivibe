@@ -9,7 +9,7 @@ Detection is not a claim that a real task has completed through that harness. Au
 
 ## OpenAI Codex
 
-MultiVibe keeps Codex on its built-in `openai` provider. It writes `openai_base_url` and `model_catalog_json` at the user level in `~/.codex/config.toml`, and maintains the discovered catalog in `~/.codex/multivibe-models.json`. This leaves OpenAI workspace authentication and unrelated Codex settings intact. “Repair connection” migrates legacy MultiVibe provider blocks to this mode, refreshes the catalog, and keeps exact restore metadata for disconnect.
+MultiVibe keeps Codex on its built-in `openai` provider. It writes `openai_base_url` and `model_catalog_json` at the user level in `~/.codex/config.toml`, and maintains the discovered catalog in `~/.codex/multivibe-models.json`. While Host is running, it polls the authoritative MultiVibe catalog and atomically refreshes this managed file when providers or models change; clients that watch `config.toml` also receive a reload event, while the documented fallback remains starting a new Codex process. This leaves OpenAI workspace authentication and unrelated Codex settings intact. “Repair connection” migrates legacy MultiVibe provider blocks to this mode, refreshes the catalog, and keeps exact restore metadata for disconnect.
 
 ## September 2026 expansion
 

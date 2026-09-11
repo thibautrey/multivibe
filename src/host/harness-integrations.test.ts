@@ -470,6 +470,66 @@ test("Codex installation uses the built-in OpenAI provider catalog and restores 
   await assert.rejects(fs.readFile(path.join(home, ".codex", "multivibe-models.json"), "utf8"), /ENOENT/);
 });
 
+test("Codex synchronizes its managed catalog when MultiVibe models change at runtime", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-live-catalog-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const home = path.join(root, "home");
+  const bin = path.join(home, "bin");
+  await fs.mkdir(path.join(home, ".codex"), { recursive: true });
+  await fs.mkdir(bin, { recursive: true });
+  await fs.writeFile(path.join(bin, "codex"), "binary", { mode: 0o755 });
+  let modelIds = ["model-a"];
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = async () => Response.json({ data: modelIds.map((id) => ({ id })) });
+  const manager = new HostHarnessIntegrationManager({
+    homeDirectory: home,
+    statePath: path.join(home, ".multivibe", "harnesses.json"),
+    baseUrl: "http://127.0.0.1:1455",
+    apiKeyForId: (id) => id === "key-live" ? "mv_live" : undefined,
+    definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
+    executableDirectories: [bin],
+  });
+  await manager.install("openai-codex", { apiKeyId: "key-live", apiKey: "mv_live", application: "harness-openai-codex" });
+  const catalogPath = path.join(home, ".codex", "multivibe-models.json");
+  assert.equal(await manager.synchronizeCodexModelCatalog(), false);
+
+  modelIds = ["model-a", "new-provider/model-b"];
+  assert.equal(await manager.synchronizeCodexModelCatalog(), true);
+  const catalog = JSON.parse(await fs.readFile(catalogPath, "utf8"));
+  assert.deepEqual(catalog.models.map((model: any) => model.slug), modelIds);
+  assert.equal((await manager.get("openai-codex")).drifted, false);
+  assert.equal((await manager.uninstall("openai-codex")).apiKeyId, "key-live");
+});
+
+test("Codex live synchronization never overwrites a user-modified catalog", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-live-catalog-drift-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const home = path.join(root, "home");
+  const bin = path.join(home, "bin");
+  await fs.mkdir(path.join(home, ".codex"), { recursive: true });
+  await fs.mkdir(bin, { recursive: true });
+  await fs.writeFile(path.join(bin, "codex"), "binary", { mode: 0o755 });
+  let modelIds = ["model-a"];
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = async () => Response.json({ data: modelIds.map((id) => ({ id })) });
+  const manager = new HostHarnessIntegrationManager({
+    homeDirectory: home,
+    statePath: path.join(home, ".multivibe", "harnesses.json"),
+    baseUrl: "http://127.0.0.1:1455",
+    apiKeyForId: () => "mv_live",
+    definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
+    executableDirectories: [bin],
+  });
+  await manager.install("openai-codex", { apiKeyId: "key-live", apiKey: "mv_live", application: "harness-openai-codex" });
+  const catalogPath = path.join(home, ".codex", "multivibe-models.json");
+  await fs.writeFile(catalogPath, '{"models":[{"slug":"user-model"}]}\n');
+  modelIds = ["model-a", "model-b"];
+  assert.equal(await manager.synchronizeCodexModelCatalog(), false);
+  assert.match(await fs.readFile(catalogPath, "utf8"), /user-model/);
+});
+
 test("Codex repair refreshes a drifted MultiVibe catalog", async (t) => {
   mockCodexModelCatalog(t);
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-static-catalog-"));
