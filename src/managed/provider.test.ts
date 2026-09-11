@@ -19,12 +19,19 @@ test("discovery and execution use the same fixed provider corridor with one cred
   assert.deepEqual(calls, ["https://api.mistral.ai/v1/models", "https://api.mistral.ai/v1/chat/completions"]);
   assert.equal(reads, 2);
 });
-test("upstream errors do not trigger retries or expose response bodies", async () => {
-  let calls = 0;
-  const account = createManagedProviderAccount({ providerId: "mistral", credentialRef: "account-1", models: new Set(),
-    readCredential: async () => "fixture-key", fetchViaEgress: (async () => { calls++; return new Response("secret diagnostic", { status: 401 }); }) as typeof fetch });
-  await assert.rejects(account.discoverModels(AbortSignal.timeout(1000)), /^Error: provider_discovery_unavailable$/);
-  assert.equal(calls, 1);
+test("upstream errors expose only bounded status classes and never retry", async () => {
+  for (const [status, failure] of [[401, "authentication_rejected"], [403, "authentication_rejected"],
+    [404, "endpoint_unavailable"], [429, "rate_limited"], [500, "upstream_unavailable"],
+    [418, "unavailable"]] as const) {
+    let calls = 0;
+    const account = createManagedProviderAccount({ providerId: "mistral", credentialRef: "account-1", models: new Set(),
+      readCredential: async () => "fixture-key", fetchViaEgress: (async () => {
+        calls++; return new Response("secret diagnostic", { status });
+      }) as typeof fetch });
+    await assert.rejects(account.discoverModels(AbortSignal.timeout(1000)),
+      new RegExp(`^Error: provider_discovery_${failure}$`));
+    assert.equal(calls, 1);
+  }
 });
 
 test("native discovery follows bounded Anthropic cursors and deduplicates complete inventory",async()=>{

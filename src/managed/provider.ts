@@ -46,7 +46,16 @@ export function createManagedProviderAccount(options: {
       let path = "/models", size = 0, modelCount = 0;
       for (let page = 0; page < 100; page++) {
       const response = await request(path, "GET", signal);
-      if (!response.ok) { await response.body?.cancel(); throw Error("provider_discovery_unavailable"); }
+      if (!response.ok) {
+        await response.body?.cancel();
+        if (response.status === 401 || response.status === 403) {
+          throw Error("provider_discovery_authentication_rejected");
+        }
+        if (response.status === 404) throw Error("provider_discovery_endpoint_unavailable");
+        if (response.status === 429) throw Error("provider_discovery_rate_limited");
+        if (response.status >= 500) throw Error("provider_discovery_upstream_unavailable");
+        throw Error("provider_discovery_unavailable");
+      }
       const reader = response.body?.getReader();
       if (!reader) throw Error("provider_discovery_invalid");
       const chunks: Uint8Array[] = [];
