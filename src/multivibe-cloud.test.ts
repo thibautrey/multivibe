@@ -412,6 +412,11 @@ test("personal workspace does not require a Cloud request", async () => {
   const cloud = service(fakeStores(), (async () => { throw new Error("unexpected request"); }) as typeof fetch);
   assert.deepEqual(await cloud.teamWorkspace(), {state:"personal",role:null});
 });
+test("a failed optional Team lookup keeps a Cloud-connected personal workspace accessible", async () => {
+  const stores = fakeStores({settings:{multivibeCloud:{accessToken:"private-token",expiresAt:Date.now()+3600000}}});
+  const cloud = service(stores, (async () => response({},503)) as typeof fetch);
+  assert.deepEqual(await cloud.teamWorkspace(), {state:"personal",role:null});
+});
 test("enrollment does not imply admin privileges when role lookup fails", async () => {
   const stores = fakeStores({settings:{multivibeTeam:{enabled:true,instanceId:projectId,instanceName:"Work Mac",syncCursor:0},multivibeCloud:{accessToken:"private-token",expiresAt:Date.now()+3600000}}});
   const cloud = service(stores, (async () => response({},503)) as typeof fetch);
