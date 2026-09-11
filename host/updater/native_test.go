@@ -41,6 +41,25 @@ func TestResolveHostControlPlanePort(t *testing.T) {
 	}
 }
 
+func TestHostCredentialsAcceptApplicationCredentialSchema(t *testing.T) {
+	data := []byte(`{"schema_version":"multivibe-host-credentials-v1","admin_token":"admin","proxy_api_key":"proxy"}`)
+	var credentials hostCredentials
+	if err := decodeStrictJSON(data, &credentials); err != nil {
+		t.Fatalf("current application credentials were rejected: %v", err)
+	}
+	if credentials.SchemaVersion != "multivibe-host-credentials-v1" || credentials.AdminToken != "admin" || credentials.ProxyAPIKey != "proxy" {
+		t.Fatalf("credentials were decoded incorrectly: %#v", credentials)
+	}
+}
+
+func TestHostCredentialsRejectUnknownFields(t *testing.T) {
+	data := []byte(`{"schema_version":"multivibe-host-credentials-v1","admin_token":"admin","proxy_api_key":"proxy","unexpected":"value"}`)
+	var credentials hostCredentials
+	if err := decodeStrictJSON(data, &credentials); err == nil {
+		t.Fatal("unknown credential field was accepted")
+	}
+}
+
 func writeTarFixture(t *testing.T, name string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fixture.tar.gz")
