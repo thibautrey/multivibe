@@ -189,3 +189,8 @@
 .providers-list-panel .provider-card-content .reset-quota-actions { justify-content: flex-start; }
 .providers-list-panel .provider-card-content .mono { font-family: var(--sans); font-size: 11px; overflow-wrap: anywhere; }
 @media(max-width: 550px) { .providers-list-panel { padding: 12px; } .providers-list-panel .provider-quota-grid { grid-template-columns: 1fr; gap: 14px; } }
+
+.providers-list-panel .provider-card-account-name { font-size: 13px; }
+.providers-list-panel .provider-card-usage { font-family: var(--sans); font-size: 10px; }
+.providers-list-panel .provider-card-status, .providers-list-panel .provider-card-location { font-size: 10px; border: 0; background: transparent; padding: 2px 4px; }
+.providers-list-panel .provider-card-identity { gap: 9px; }

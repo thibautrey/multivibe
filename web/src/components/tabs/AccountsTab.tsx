@@ -2174,7 +2174,7 @@ export function AccountsTab(props: Props) {
                     </div>
                   </div>
                 ) : <div className="provider-card-content">
-                  <details className="provider-card-details provider-connection-details"><summary>{a.state?.scheduledWeeklyReset?.lastError ? "Settings · auto-reset failed" : a.state?.scheduledWeeklyReset ? "Settings · auto-reset scheduled" : "Connection settings"}</summary>
+                  {(a.baseUrl || a.upstreamMode || a.capacityProfile || isOpenAiAccount(a) || (a.provider === "opencode" && a.opencodeOrgName)) && <details className="provider-card-details provider-connection-details"><summary>{a.state?.scheduledWeeklyReset?.lastError ? "Settings · auto-reset failed" : a.state?.scheduledWeeklyReset ? "Settings · auto-reset scheduled" : "Connection settings"}</summary>
                     {(a.baseUrl || a.upstreamMode || (a.provider === "opencode" && a.opencodeOrgName)) && (
                       <div className="provider-card-endpoint">
                         {a.baseUrl && <span className="mono muted">{a.baseUrl}</span>}
@@ -2225,7 +2225,7 @@ export function AccountsTab(props: Props) {
                         )}
                       </div>
                     )}
-                  </details>
+                  </details>}
                   {tracksSubscriptionQuota(a) && (
                     <>
                       <div className="provider-quota-grid" aria-label="Quota usage">
