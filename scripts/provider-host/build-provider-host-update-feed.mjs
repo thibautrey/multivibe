@@ -126,6 +126,16 @@ async function main() {
   }
   const published = new Date();
   const expires = new Date(published.getTime() + 180 * 24 * 60 * 60 * 1000);
+  const targets = {};
+  for (const [platform, architecture, extension] of [
+    ["darwin", "arm64", "dmg"], ["darwin", "amd64", "dmg"], ["linux", "amd64", "tar.gz"], ["windows", "amd64", "zip"],
+  ]) {
+    const name = `multivibe-host_${version}_${platform}_${architecture}.${extension}`;
+    // Absent targets are deliberately omitted; present checksums still require complete artifacts.
+    if (checksums.has(name)) targets[`${platform}-${architecture}`] = await archiveTarget(directory, checksums, version, platform, architecture, extension);
+  }
+  if (!Object.keys(targets).length) throw new Error("update feed requires at least one native archive");
+  targets["docker-linux-amd64"] = { kind: "container", image: canonicalImage, digest: container.digest, immutable_reference: container.immutableReference };
   const signed = {
     schema_version: schemaVersion,
     channel: options["--channel"],
@@ -136,18 +146,7 @@ async function main() {
     minimum_version: "0.2.0",
     rollout_percent: 100,
     critical: false,
-    targets: {
-      "darwin-arm64": await archiveTarget(directory, checksums, version, "darwin", "arm64", "dmg"),
-      "darwin-amd64": await archiveTarget(directory, checksums, version, "darwin", "amd64", "dmg"),
-      "linux-amd64": await archiveTarget(directory, checksums, version, "linux", "amd64", "tar.gz"),
-      "windows-amd64": await archiveTarget(directory, checksums, version, "windows", "amd64", "zip"),
-      "docker-linux-amd64": {
-        kind: "container",
-        image: canonicalImage,
-        digest: container.digest,
-        immutable_reference: container.immutableReference,
-      },
-    },
+    targets,
   };
   const signedBytes = Buffer.from(JSON.stringify(signed));
   const signature = sign(null, signedBytes, privateKey);

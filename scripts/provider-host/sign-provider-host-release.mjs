@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { validateReleaseArchives, validateMacVerification } from "./release-archive-policy.mjs";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
@@ -94,18 +95,31 @@ async function main() {
     .filter((entry) => entry.isFile() && /^multivibe-host_[0-9A-Za-z._-]+\.(?:dmg|tar\.gz|zip)$/u.test(entry.name))
     .map((entry) => entry.name)
     .sort();
-  if (entries.length !== 4 || !entries.some((name) => name.includes("darwin_arm64")) ||
-    !entries.some((name) => name.includes("darwin_amd64")) || !entries.some((name) => name.includes("linux_amd64")) ||
-    !entries.some((name) => name.includes("windows_amd64"))) {
-    throw new Error("release directory must contain exactly one Apple Silicon, one Intel macOS, one Linux and one Windows provider-host archive");
-  }
+  validateReleaseArchives(entries);
   const reports = [];
   for (const name of entries) {
-    const output = await command(process.execPath, [path.join(repositoryRoot, "scripts", "provider-host", "verify-provider-host.mjs"), path.join(directory, name)], {
-      capture: true,
-      captureLimit: 64 * 1024,
-    });
-    const report = JSON.parse(output);
+    let report;
+    if (name.endsWith(".dmg") && process.platform !== "darwin") {
+      // DMGs must be verified on macOS. Trust only its attested verifier result bound to this archive and commit.
+      const reportPath = path.join(directory, `${name}.verification.json`);
+      const info = await lstat(reportPath);
+      if (!info.isFile() || info.isSymbolicLink() || info.size > 64 * 1024) throw new Error("invalid macOS verification report");
+      const bytes = await readFile(reportPath);
+      await command("gh", ["attestation", "verify", reportPath, "--repo", "thibautrey/multivibe",
+        "--source-digest", process.env.GITHUB_SHA ?? "",
+        "--signer-workflow", "thibautrey/multivibe/.github/workflows/provider-host-release.yml"]);
+      if (!(await readFile(reportPath)).equals(bytes)) throw new Error("macOS verification report changed during attestation verification");
+      report = validateMacVerification(JSON.parse(bytes.toString("utf8")), name,
+        await sha256(path.join(directory, name)), process.env.GITHUB_SHA);
+      report.archive = path.join(directory, name);
+    } else {
+      const output = await command(process.execPath, [path.join(repositoryRoot, "scripts", "provider-host", "verify-provider-host.mjs"), path.join(directory, name)], {
+        capture: true,
+        captureLimit: 64 * 1024,
+      });
+      report = JSON.parse(output);
+    }
+    if (process.env.GITHUB_SHA && report.sourceCommit !== process.env.GITHUB_SHA) throw new Error("archive source does not match release commit");
     if (report.verified !== true || report.releaseReady !== true || report.sourceTreeDirty !== false || report.runtimeChecked !== false) {
       throw new Error(`release archive is not eligible for signing: ${name}`);
     }
@@ -176,13 +190,14 @@ async function main() {
   // checked by the Windows job. Include it in the same signed checksum ledger.
   const installers = directoryEntries.filter((entry) => entry.isFile() && entry.name.endsWith("_setup.exe")).map((entry) => entry.name);
   const expectedInstaller = `multivibe-host_${reports[0].version}_windows_amd64_setup.exe`;
-  if (installers.length > 1 || installers.some((name) => name !== expectedInstaller)) throw new Error("unexpected Windows setup artifact");
+  if (installers.length > 1 || installers.some((name) => name !== expectedInstaller) || (installers.length && !reports.some(report => report.platform === "windows"))) throw new Error("unexpected Windows setup artifact");
   for (const name of installers) {
     await command("gh", ["attestation", "verify", path.join(directory, name),
       "--repo", "thibautrey/multivibe", "--source-digest", reports[0].sourceCommit,
       "--signer-workflow", "thibautrey/multivibe/.github/workflows/provider-host-release.yml"]);
   }
-  const signedArtifacts = [...releaseArchives, ...sboms, ...installers].sort();
+  const verificationReports = reports.filter(report => report.platform === "darwin" && regularFiles.has(`${path.basename(report.archive)}.verification.json`)).map(report => `${path.basename(report.archive)}.verification.json`);
+  const signedArtifacts = [...releaseArchives, ...sboms, ...installers, ...verificationReports].sort();
   for (const name of signedArtifacts) {
     const file = path.join(directory, name);
     const info = await stat(file);

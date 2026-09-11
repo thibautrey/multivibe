@@ -187,7 +187,7 @@ func (update *updater) check(ctx context.Context, state *updaterState, force boo
 	if err != nil {
 		return setFailure(update.store, state, "platform_unsupported", err)
 	}
-	target := document.Targets[name]
+	target, targetAvailable := document.Targets[name]
 	comparison, err := compareVersions(document.Version, state.CurrentVersion)
 	if err != nil {
 		return setFailure(update.store, state, "version_invalid", err)
@@ -211,7 +211,7 @@ func (update *updater) check(ctx context.Context, state *updaterState, force boo
 	state.Target = nil
 	state.DownloadedPath = ""
 	state.DownloadedSHA256 = ""
-	if comparison <= 0 {
+	if comparison <= 0 || !targetAvailable {
 		state.DownloadRequested = false
 		state.InstallRequested = false
 		state.Status = "current"

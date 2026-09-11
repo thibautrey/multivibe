@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, createHash, createPublicKey } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -73,4 +73,22 @@ test("builds an Ed25519-signed stable update feed for every Host target", async 
   ], { MULTIVIBE_UPDATE_SIGNING_KEY_BASE64: encodedPrivateKey });
   assert.notEqual(mismatch.code, 0);
   assert.match(mismatch.stderr, /does not match the updater trust root/u);
+
+  const linuxName = `multivibe-host_${version}_linux_amd64.tar.gz`;
+  for (const target of ['darwin_arm64.dmg', 'darwin_amd64.dmg', 'windows_amd64.zip']) await rm(path.join(directory, `multivibe-host_${version}_${target}`));
+  await writeFile(path.join(directory, "SHA256SUMS"), checksums.find(line => line.endsWith(linuxName)) + "\n");
+  const partialOutput = path.join(directory, "partial-feed.json");
+  const partialArgs = ["--version", version, "--commit", commit, "--channel", "stable", "--release-dir", directory,
+    "--container-metadata", containerPath, "--output", partialOutput,
+    "--trusted-key-id", keyId, "--trusted-public-key-base64", publicRaw.toString("base64")];
+  const partial = await run(partialArgs, { MULTIVIBE_UPDATE_SIGNING_KEY_BASE64: encodedPrivateKey });
+  assert.equal(partial.code, 0, partial.stderr);
+  const partialEnvelope = JSON.parse(await readFile(partialOutput, "utf8"));
+  const partialSigned = JSON.parse(Buffer.from(partialEnvelope.signed, "base64url"));
+  assert.deepEqual(Object.keys(partialSigned.targets), ["linux-amd64", "docker-linux-amd64"]);
+  await rm(partialOutput);
+  await rm(path.join(directory, linuxName));
+  const incomplete = await run(partialArgs, { MULTIVIBE_UPDATE_SIGNING_KEY_BASE64: encodedPrivateKey });
+  assert.notEqual(incomplete.code, 0, "A listed but missing archive must not be silently omitted");
+
 });

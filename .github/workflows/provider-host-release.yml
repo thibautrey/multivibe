@@ -5,6 +5,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      self_hosted_only:
+        description: Build only the self-hosted Linux and container release
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -158,6 +163,9 @@ jobs:
           compression-level: 0
 
   build-macos:
+    if: ${{ vars.HOSTED_RELEASE_BUILDS_ENABLED != 'false' && !inputs.self_hosted_only }}
+    # A later evidence gate accepts only pre-start quota failures; real build failures still block publishing.
+    continue-on-error: true
     needs: [validate-tag, validate-catalog]
     name: build-macos-${{ matrix.architecture }}
     strategy:
@@ -282,7 +290,7 @@ jobs:
         run: |
           set -euo pipefail
           archive="release-macos-${{ matrix.architecture }}/multivibe-host_${{ needs.validate-tag.outputs.version }}_darwin_${{ matrix.architecture }}.dmg"
-          npm run verify:provider-host -- "$archive"
+          node scripts/provider-host/verify-provider-host.mjs "$archive" > "$archive.verification.json"
       - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
       - name: Generate the macOS CycloneDX SBOM
         shell: bash
@@ -299,7 +307,9 @@ jobs:
           syft scan "dir:$scan_root" -o "cyclonedx-json=release-macos-${{ matrix.architecture }}/multivibe-host_${{ needs.validate-tag.outputs.version }}_darwin_${{ matrix.architecture }}.cdx.json"
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
-          subject-path: release-macos-${{ matrix.architecture }}/multivibe-host_${{ needs.validate-tag.outputs.version }}_darwin_${{ matrix.architecture }}.dmg
+          subject-path: |
+            release-macos-${{ matrix.architecture }}/multivibe-host_${{ needs.validate-tag.outputs.version }}_darwin_${{ matrix.architecture }}.dmg
+            release-macos-${{ matrix.architecture }}/multivibe-host_${{ needs.validate-tag.outputs.version }}_darwin_${{ matrix.architecture }}.dmg.verification.json
       - uses: actions/attest-sbom@bd218ad0dbcb3e146bd073d1d9c6d78e08aa8a0b # v2.4.0
         with:
           subject-path: release-macos-${{ matrix.architecture }}/multivibe-host_${{ needs.validate-tag.outputs.version }}_darwin_${{ matrix.architecture }}.dmg
@@ -312,6 +322,8 @@ jobs:
           compression-level: 0
 
   build-windows:
+    if: ${{ vars.HOSTED_RELEASE_BUILDS_ENABLED != 'false' && !inputs.self_hosted_only }}
+    continue-on-error: true
     needs: [validate-tag, validate-catalog]
     # node-gyp bundled with the pinned npm supports Visual Studio 2022.
     runs-on: windows-2022
@@ -435,9 +447,40 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
-  sign-release:
+  select-artifacts:
     needs: [validate-tag, build-linux, build-macos, build-windows]
-    runs-on: macos-14
+    if: ${{ !cancelled() && needs.validate-tag.result == 'success' && needs.build-linux.result == 'success' }}
+    runs-on: multivibe-linux
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    outputs:
+      artifact_ids: ${{ steps.select.outputs.artifact_ids }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Select successful builds or identify runner quota exclusions
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOSTED_DISABLED: ${{ vars.HOSTED_RELEASE_BUILDS_ENABLED == 'false' || inputs.self_hosted_only }}
+        run: node scripts/provider-host/select-release-artifacts.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-platform-selection
+          path: release-platforms.md
+          if-no-files-found: error
+
+  sign-release:
+    needs: [validate-tag, select-artifacts]
+    if: ${{ !cancelled() && needs.validate-tag.result == 'success' && needs.select-artifacts.result == 'success' }}
+    runs-on: multivibe-linux
     timeout-minutes: 45
     permissions:
       contents: read
@@ -453,13 +496,13 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: provider-host-*
+          artifact-ids: ${{ needs.select-artifacts.outputs.artifact_ids }}
           path: release
           merge-multiple: true
       - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
       - name: Ensure GPG is available
         shell: bash
-        run: command -v gpg >/dev/null 2>&1 || brew install gnupg
+        run: command -v gpg && command -v gh
       - name: Import the GPG release key and sign the artifacts
         shell: bash
         env:
@@ -496,6 +539,7 @@ jobs:
 
   publish-container:
     needs: [validate-tag, build-linux, sign-release]
+    if: ${{ !cancelled() && needs.build-linux.result == 'success' && needs.sign-release.result == 'success' }}
     runs-on: multivibe-docker
     timeout-minutes: 45
     permissions:
@@ -600,7 +644,8 @@ jobs:
           compression-level: 0
 
   publish-release:
-    needs: [validate-tag, sign-release, publish-container, build-windows]
+    needs: [validate-tag, sign-release, publish-container]
+    if: ${{ !cancelled() && needs.sign-release.result == 'success' && needs.publish-container.result == 'success' }}
     runs-on: multivibe-linux
     timeout-minutes: 15
     permissions:
@@ -621,6 +666,10 @@ jobs:
         with:
           name: provider-host-container-release
           path: container-release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-platform-selection
+          path: release-info
       - name: Generate versioned distribution packages
         if: ${{ !contains(needs.validate-tag.outputs.version, '-') }}
         run: |
@@ -680,6 +729,14 @@ jobs:
           else
             echo "::warning::Optional release notes generation failed; using the original release notes."
             notes_args=(--notes "$(<container-release/container-release-notes.md)" --generate-notes)
+          fi
+          # Always append deterministic availability after optional generated prose.
+          if [[ "$RELEASE_NOTES_OUTCOME" == success && -s release-notes.md ]]; then
+            printf '\n' >> release-notes.md
+            cat release-info/release-platforms.md >> release-notes.md
+          else
+            cat container-release/container-release-notes.md release-info/release-platforms.md > release-notes.md
+            notes_args=(--notes-file release-notes.md --generate-notes)
           fi
           gh release create "$GITHUB_REF_NAME" release/* container-release/container-release.json \
             --verify-tag \
