@@ -303,8 +303,8 @@ jobs:
             echo "::error::Apple Developer ID G2 certificate fingerprint verification failed."
             exit 1
           }
-          security import "$developer_id_legacy_ca" -k "$keychain"
-          security import "$developer_id_ca" -k "$keychain"
+          security add-trusted-cert -r trustAsRoot -k "$keychain" "$developer_id_legacy_ca"
+          security add-trusted-cert -r trustAsRoot -k "$keychain" "$developer_id_ca"
           security import "$certificate" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
           security list-keychains -d user -s \
