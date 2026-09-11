@@ -550,7 +550,9 @@ export class MultivibeCloudService {
       if (!enrolled && role === "owner" && subscription?.state === "inactive") return { state: "personal", role: null };
       return { state: "team", role };
     } catch {
-      return { state: enrolled ? "team" : "unavailable", role: null };
+      // A Cloud account is not necessarily a Team account. Keep the local
+      // workspace personal unless this machine has explicit Team enrollment.
+      return { state: enrolled ? "team" : "personal", role: null };
     }
   }
 
