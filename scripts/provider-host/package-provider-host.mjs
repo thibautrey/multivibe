@@ -36,7 +36,6 @@ const maximumOllamaExtractedBytes = 12 * 1024 * 1024 * 1024;
 const betterSQLiteSmokeTest = "const Database=require('better-sqlite3');const database=new Database(':memory:');try{const row=database.prepare('SELECT 1 AS value').get();if(row?.value!==1)throw new Error('better-sqlite3 smoke test failed')}finally{database.close()}";
 const macOSMinimumVersion = "13.0";
 const macOSDiskImageBackground = "dmg-background.png";
-const macOSDiskImageWindow = { width: 720, height: 473 };
 
 export function argumentsFrom(argv) {
   const options = { allowDirty: false, allowUnsigned: false };
@@ -791,7 +790,6 @@ export async function archiveBundle(bundle, options, selectedTarget) {
   if (selectedTarget.archive === "dmg") {
     const diskImageRoot = path.join(path.dirname(bundle.root), "dmg-root");
     const backgroundDirectory = path.join(diskImageRoot, ".background");
-    const readWriteImage = path.join(path.dirname(bundle.root), "multivibe-host-read-write.dmg");
     await mkdir(backgroundDirectory, { recursive: true, mode: 0o755 });
     await command("ditto", [path.join(bundle.root, "MultiVibe Host.app"), path.join(diskImageRoot, "MultiVibe Host.app")]);
     await symlink("/Applications", path.join(diskImageRoot, "Applications"));
@@ -801,59 +799,8 @@ export async function archiveBundle(bundle, options, selectedTarget) {
     );
     await command("hdiutil", [
       "create", "-quiet", "-volname", "MultiVibe Host", "-srcfolder", diskImageRoot,
-      "-format", "UDRW", "-fs", "HFS+", readWriteImage,
+      "-format", "UDZO", "-imagekey", "zlib-level=9", "-fs", "HFS+", destination,
     ]);
-    let mounted = false;
-    let mount = null;
-    try {
-      const attachOutput = await command("hdiutil", [
-        "attach", "-readwrite", "-noverify", "-noautoopen", readWriteImage,
-      ], { capture: true });
-      mount = attachOutput.split("\n").map((line) => line.split("\t").at(-1)?.trim())
-        .findLast((field) => field?.startsWith("/Volumes/"));
-      if (!mount) throw new Error("hdiutil did not report the disk image mount point");
-      mounted = true;
-      const finderLayout = `
-on run argv
-  set mountPath to item 1 of argv
-  set installerRoot to POSIX file mountPath as alias
-  set volumeName to name of (info for installerRoot)
-  set backgroundImage to POSIX file (mountPath & "/.background/${macOSDiskImageBackground}") as alias
-  tell application "Finder"
-    tell disk volumeName
-      open
-      tell container window
-        set current view to icon view
-        set toolbar visible to false
-        set statusbar visible to false
-        set pathbar visible to false
-        set bounds to {100, 100, ${100 + macOSDiskImageWindow.width}, ${100 + macOSDiskImageWindow.height}}
-        tell its icon view options
-          set arrangement to not arranged
-          set icon size to 112
-          set text size to 14
-          set background picture to backgroundImage
-        end tell
-      end tell
-      set position of item "MultiVibe Host.app" to {180, 220}
-      set position of item "Applications" to {540, 220}
-      delay 3
-      close container window
-    end tell
-  end tell
-end run`;
-      await command("osascript", ["-e", finderLayout, mount]);
-      await command("sync", []);
-    } finally {
-      if (mounted) await command("hdiutil", ["detach", "-quiet", mount]);
-    }
-    try {
-      await command("hdiutil", [
-        "convert", "-quiet", readWriteImage, "-format", "UDZO", "-imagekey", "zlib-level=9", "-o", destination,
-      ]);
-    } finally {
-      await rm(readWriteImage, { force: true });
-    }
     if (options.signIdentity) {
       await command("codesign", ["--force", "--sign", options.signIdentity, "--timestamp", destination]);
     }

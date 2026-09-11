@@ -20,7 +20,7 @@ test("the macOS status item uses a transparent high-resolution template image", 
   assert.ok(hasAlphaChannel || hasTransparentPaletteEntry);
 });
 
-test("the macOS disk image uses a branded Finder drag-to-install layout", async () => {
+test("the macOS disk image uses a non-interactive drag-to-install layout", async () => {
   const [image, packager, verifier] = await Promise.all([
     readFile(path.join(root, "packaging", "macos", "dmg-background.png")),
     read("scripts/provider-host/package-provider-host.mjs"),
@@ -29,13 +29,9 @@ test("the macOS disk image uses a branded Finder drag-to-install layout", async 
   assert.deepEqual(image.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
   assert.equal(image.readUInt32BE(16), 720);
   assert.equal(image.readUInt32BE(20), 440);
-  assert.match(packager, /position of item "MultiVibe Host\.app" to \{180, 220\}/u);
-  assert.match(packager, /position of item "Applications" to \{540, 220\}/u);
-  assert.match(packager, /set background picture to backgroundImage/u);
-  assert.doesNotMatch(packager, /update without registering applications/u);
-  assert.match(packager, /"-format", "UDRW"/u);
-  assert.match(packager, /"convert", "-quiet", readWriteImage, "-format", "UDZO"/u);
-  assert.match(verifier, /Finder layout metadata is invalid/u);
+  assert.doesNotMatch(packager, /osascript/u);
+  assert.match(packager, /"create", "-quiet", "-volname", "MultiVibe Host", "-srcfolder", diskImageRoot/u);
+  assert.match(packager, /"-format", "UDZO"/u);
   assert.match(verifier, /disk image background is invalid/u);
 });
 

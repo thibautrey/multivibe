@@ -1486,10 +1486,6 @@ async function validateMacDiskImage(diskImage, work, options) {
     if (await readlink(path.join(mount, "Applications")) !== "/Applications") {
       throw new Error("provider-host disk image Applications shortcut is invalid");
     }
-    const finderMetadata = await lstat(path.join(mount, ".DS_Store"));
-    if (!finderMetadata.isFile() || finderMetadata.isSymbolicLink() || finderMetadata.size < 1 || finderMetadata.size > 1024 * 1024) {
-      throw new Error("provider-host disk image Finder layout metadata is invalid");
-    }
     const backgroundPath = path.join(mount, ".background", "dmg-background.png");
     const backgroundInfo = await lstat(backgroundPath);
     const background = await readFile(backgroundPath);
