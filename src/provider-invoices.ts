@@ -8,7 +8,7 @@ const portal = (name: string, url: string, instruction = "Open billing to view a
 
 /** Fixed public destinations, never derived from account endpoints or credentials. See docs/providers/invoices.md. */
 export const INVOICE_PORTALS: Record<string, Portal> = {
-  openai: portal("ChatGPT", "https://chatgpt.com/#settings/Account", "Payment → Manage → Invoice history. App Store purchases use Apple or Google receipts."),
+  openai: portal("ChatGPT", "https://chatgpt.com/#settings/Billing", "Manage → Invoice history. App Store purchases use Apple or Google receipts."),
   "github-copilot": portal("GitHub Copilot", "https://github.com/settings/billing/payment_information", "Payment history. For an organization subscription, open its billing settings."),
   xai: portal("Grok Build", "https://grok.com", "Settings → Subscription → Manage. X Premium+ and mobile purchases use the original store’s receipts."),
   opencode: portal("OpenCode Zen / Go", "https://opencode.ai/auth", "Choose your workspace, then Billing."),
