@@ -9,7 +9,6 @@
 .brand-copy strong { font-size: 19px; letter-spacing: -.7px; }
 .brand-subtitle { display: block; font-size: 10px; color: var(--muted); margin-top: 4px; }
 .sidebar .brand-mark { width: 32px; height: 32px; }
-.sidebar-workspace-name { padding: 15px 10px 7px; font-size: 11px; color: var(--muted); border-bottom: 1px solid var(--line); margin-bottom: 8px; }
 .sidebar-nav-label { font-size: 9px; letter-spacing: 1.5px; padding-left: 12px; }
 .nav-tab { min-height: 41px; padding: 5px 10px; gap: 8px; border-radius: 8px; border: 1px solid transparent; }
 .nav-tab.active { background: var(--primary-soft); color: var(--primary); border-color: transparent; box-shadow: none; }
