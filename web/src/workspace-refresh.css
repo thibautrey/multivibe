@@ -95,3 +95,30 @@
 @media (forced-colors: active) {
   .sidebar-scroll-area { scrollbar-color: auto; }
 }
+
+/* Coding tools: one status and a primary action, with secondary controls on demand. */
+.harness-section-heading { display: flex; align-items: baseline; gap: 14px; margin-bottom: 14px; flex-wrap: wrap; }
+.harness-section-heading h2 { margin: 0; font-size: 16px; }
+.harness-section-heading span { font-size: 11px; }
+.host-harness-rail { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; overflow: visible; }
+.host-harness-card.harness-compact { min-width: 0; width: auto; padding: 18px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); box-shadow: none; display: block; }
+.harness-summary { display: flex; flex-direction: column; gap: 18px; }
+.harness-compact .host-harness-identity { min-width: 0; gap: 12px; }
+.harness-compact h3 { font-size: 14px; margin: 0 0 5px; }
+.harness-compact .host-harness-logo { width: 36px; height: 36px; flex: 0 0 36px; border-radius: 9px; }
+.harness-status { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.harness-status::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.harness-status.connected { color: var(--success); }
+.harness-status.needs-repair { color: var(--warning); }
+.harness-summary-actions { display: flex; align-items: center; gap: 8px; }
+.harness-summary-actions .btn { min-height: 32px; padding: 6px 12px; font-size: 11px; }
+.harness-summary-actions .harness-options { margin-left: auto; color: var(--muted); }
+.harness-options-panel { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 16px; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.harness-options-panel p { font-size: 12px; }
+.harness-option-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.harness-option-actions .btn { font-size: 11px; }
+@media (max-width: 800px) {
+ .host-harness-rail { grid-template-columns: 1fr; }
+ .harness-summary { flex-direction: row; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+ .harness-summary-actions { margin-left: auto; }
+}
