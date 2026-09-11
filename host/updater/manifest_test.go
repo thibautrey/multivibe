@@ -91,9 +91,15 @@ func TestPartialUpdateTargets(t *testing.T) {
 	now := time.Now().UTC()
 	document := validDocument(now)
 	document.Targets = map[string]updateTarget{"linux-amd64": document.Targets["linux-amd64"]}
-	if _, err := verifyUpdateEnvelope(signedFixture(t, document), now, "stable"); err != nil { t.Fatal(err) }
+	if _, err := verifyUpdateEnvelope(signedFixture(t, document), now, "stable"); err != nil {
+		t.Fatal(err)
+	}
 	document.Targets["unknown-target"] = document.Targets["linux-amd64"]
-	if err := validateUpdateDocument(document, now, "stable"); err == nil { t.Fatal("unknown target accepted") }
+	if err := validateUpdateDocument(document, now, "stable"); err == nil {
+		t.Fatal("unknown target accepted")
+	}
 	document.Targets = map[string]updateTarget{}
-	if err := validateUpdateDocument(document, now, "stable"); err == nil { t.Fatal("empty targets accepted") }
+	if err := validateUpdateDocument(document, now, "stable"); err == nil {
+		t.Fatal("empty targets accepted")
+	}
 }

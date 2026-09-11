@@ -2,8 +2,8 @@ package main
 
 import (
 	"bytes"
-	"io"
 	"context"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -137,11 +137,15 @@ func TestPartialReleaseWithoutCurrentPlatformClearsUnavailableUpdate(t *testing.
 	now := time.Now().UTC()
 	document := validDocument(now)
 	name, err := targetName(false)
-	if err != nil { t.Skip(err) }
+	if err != nil {
+		t.Skip(err)
+	}
 	delete(document.Targets, name)
 	payload := signedFixture(t, document)
 	state, err := defaultState("1.0.0")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	state.AvailableVersion = "1.1.0"
 	state.DownloadRequested = true
 	state.InstallRequested = true
@@ -150,7 +154,9 @@ func TestPartialReleaseWithoutCurrentPlatformClearsUnavailableUpdate(t *testing.
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(payload))}, nil
 	})}
 	update := updater{store: testStore(t), httpClient: client, now: func() time.Time { return now }}
-	if err := update.check(context.Background(), &state, true); err != nil { t.Fatal(err) }
+	if err := update.check(context.Background(), &state, true); err != nil {
+		t.Fatal(err)
+	}
 	if state.Status != "current" || state.AvailableVersion != "" || state.Target != nil || state.DownloadRequested || state.InstallRequested {
 		t.Fatalf("absent platform retained an update: %#v", state)
 	}
