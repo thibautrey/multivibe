@@ -1,3 +1,5 @@
+import { configuredInvoiceProviders } from "../../src/provider-invoices";
+import type { Account } from "../../src/types";
 import { sdkProviderCatalog } from "../../src/ai-sdk/catalog";
 import { buildTraceStats } from "../../src/traces";
 import { aggregateProjectUsage } from "../../src/project-usage";
@@ -20,6 +22,7 @@ export function createDemoApi(now = Date.now(), workspace: "personal" | "owner" 
       "/admin/session": { authenticated: true },
       "/admin/provider-catalog": sdkProviderCatalog(),
       "/admin/accounts": { accounts: fixtures.accounts },
+      "/admin/invoices": { providers: workspace === "member" ? [] : configuredInvoiceProviders(fixtures.accounts as Account[]), cloudUnavailable: false },
       "/admin/provider-agent/local-worker": { localWorker: null },
       "/admin/cloud/models": { models: [{ id: "hf:demo/cloud-model", name: "Demo Cloud model", aliases: [], availability: "unknown", network: false }] },
       "/admin/cloud": { status: "disconnected", topupUrl: "https://app.multivibe.cloud/billing" },

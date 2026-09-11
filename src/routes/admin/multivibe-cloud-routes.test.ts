@@ -9,7 +9,7 @@ import type { ManagedTeamEnrollmentService } from "../../managed-team-enrollment
 const flowId = "00000000-0000-4000-8000-000000000001";
 type CloudRoutesStub = Pick<
   MultivibeCloudService,
-  "getStatus" | "startConnection" | "completeConnection" | "failConnection" | "disconnect"
+  "getInvoices" | "teamWorkspace" | "getStatus" | "startConnection" | "completeConnection" | "failConnection" | "disconnect"
 >;
 
 function options(multivibeCloud: Partial<CloudRoutesStub>): AdminRoutesOptions {
@@ -146,4 +146,24 @@ test("managed Team enrollment status is exposed only through its redacted projec
     assert.equal(response.status, 200);assert.equal(response.headers.get("cache-control"), "no-store");
     const text = await response.text();assert.equal(text.includes("mvmb_"), false);assert.equal(text.includes("mvir_"), false);assert.equal(text.includes("instanceAccessToken"), false);
   } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
+});
+
+
+test("invoice route allows personal and billing roles, rejects members and unverified roles", async () => {
+  for (const context of [
+    {state: "personal", role: null}, {state: "team", role: "owner"}, {state: "team", role: "admin"},
+    {state: "team", role: "billing"}, {state: "team", role: "member"}, {state: "team", role: null}, {state: "unavailable", role: null},
+  ] as const) {
+    const allowed = context.state === "personal" || ["owner", "admin", "billing"].includes(context.role ?? "");
+    let invoiceReads = 0;
+    await withServer({ teamWorkspace: async () => context, getInvoices: async () => { invoiceReads++; return []; } }, async baseUrl => {
+      const result = await fetch(`${baseUrl}/admin/invoices`);
+      assert.equal(result.status, allowed ? 200 : 403);
+      assert.equal(invoiceReads, allowed ? 1 : 0);
+      if (allowed) {
+        assert.equal(result.headers.get("cache-control"), "no-store");
+        assert.deepEqual(await result.json(), {providers: [], cloudUnavailable: false});
+      }
+    }, { getSettings: async () => ({}), listAccounts: async () => [] } as unknown as AdminRoutesOptions["store"]);
+  }
 });

@@ -1,3 +1,5 @@
+import { InvoicesTab } from "./components/tabs/InvoicesTab";
+import { configuredInvoiceProviders, type InvoiceOverview } from "../../src/provider-invoices";
 import { canManageWorkspace, workspaceLabel, type TeamWorkspace } from "./lib/teamWorkspace";
 import { TeamMachineConsent } from "./components/TeamMachineConsent";
 import { TeamMachineCard } from "./components/TeamMachineCard";
@@ -66,6 +68,7 @@ const TAB_ITEMS: Array<{ id: Tab; label: string; description: string; group: "Op
   { id: "overview", label: "Overview", description: "System status and next steps", group: "Operate" },
   { id: "models", label: "Models", description: "Explore providers, local models, and MultiVibe Cloud", group: "Operate" },
   { id: "accounts", label: "Providers", description: "Accounts, models and quotas", group: "Operate" },
+  { id: "invoices", label: "Invoices", description: "Subscriptions and API purchases", group: "Operate" },
   { id: "aliases", label: "Routing", description: "Rules and fallbacks", group: "Operate" },
   { id: "tracing", label: "Activity", description: "Requests, performance and cost", group: "Operate" },
   { id: "api-keys", label: "API access", description: "Application keys and webhooks", group: "Build" },
@@ -208,10 +211,37 @@ export default function App() {
   const localRuntimeDiscoveryGenerationRef = useRef(0);
   const mobileNavigationRef = useRef<HTMLDialogElement>(null);
   const mobileNavigationTriggerRef = useRef<HTMLButtonElement>(null);
+  const [invoiceData, setInvoiceData] = useState<InvoiceOverview>({ providers: [], cloudUnavailable: false });
+  const [invoicesLoading, setInvoicesLoading] = useState(true);
+  const [invoicesError, setInvoicesError] = useState("");
+  const [invoiceRefresh, setInvoiceRefresh] = useState(0);
   const canManage = canManageWorkspace(teamWorkspace);
+  const canViewInvoices = canManage || (teamWorkspace.state === "team" && teamWorkspace.role === "billing");
+  const invoiceAccountSignature = JSON.stringify(accounts.map(account => [account.id, account.provider, account.sdkProvider, account.email, account.multivibeCloud]));
+  useEffect(() => {
+    if (!baseLoaded || !authenticated) return;
+    if (!canViewInvoices) { setInvoiceData({ providers: [], cloudUnavailable: false }); setInvoicesLoading(false); return; }
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 20000);
+    let active = true;
+    setInvoicesLoading(true);
+    setInvoicesError("");
+    // Keep configured portal links usable during failures; remove sources for disconnected accounts.
+    setInvoiceData({ providers: configuredInvoiceProviders(accounts), cloudUnavailable: false });
+    api("/admin/invoices", { signal: controller.signal }).then(data => {
+      if (active) setInvoiceData(data as InvoiceOverview);
+    }).catch(() => {
+      if (active) setInvoicesError("Invoices could not be loaded. Try refreshing.");
+    }).finally(() => {
+      window.clearTimeout(timeout);
+      if (active) setInvoicesLoading(false);
+    });
+    return () => { active = false; window.clearTimeout(timeout); controller.abort(); };
+  }, [baseLoaded, authenticated, canViewInvoices, invoiceAccountSignature, multivibeCloud.status, invoiceRefresh]);
   const visibleTabItems = TAB_ITEMS.filter(item => (hostApplication || item.id !== "updates") &&
-    (canManage || ["overview", "models", "updates"].includes(item.id)));
-  const tab = visibleTabItems.some(item => item.id === requestedTab) ? requestedTab : "overview";
+    (item.id !== "invoices" || (canViewInvoices && invoiceData.providers.length > 0)) &&
+    (canManage || (item.id === "invoices" && canViewInvoices) || ["overview", "models", "updates"].includes(item.id)));
+  const tab = requestedTab === "invoices" && canViewInvoices && (invoicesLoading || invoicesError) ? "invoices" : visibleTabItems.some(item => item.id === requestedTab) ? requestedTab : "overview";
   const activeTabItem = visibleTabItems.find((item) => item.id === tab) ?? visibleTabItems[0];
   const sanitized = useMemo(() => {
     const params = new URLSearchParams(locationSearch);
@@ -416,14 +446,14 @@ export default function App() {
     [traces],
   );
   useEffect(() => {
-    if (!baseLoaded) return;
+    if (!baseLoaded || (requestedTab === "invoices" && invoicesLoading)) return;
     const u = new URL(window.location.href);
     u.searchParams.set("tab", tab);
     if (tab === "tracing" && activityView !== "overview") u.searchParams.set("view", activityView);
     else u.searchParams.delete("view");
     window.history.replaceState({}, "", u.toString());
     setLocationSearch(u.search);
-  }, [activityView, tab, baseLoaded]);
+  }, [activityView, tab, baseLoaded, requestedTab, invoicesLoading]);
 
   useEffect(() => {
     const onPopstate = () => {
@@ -1400,6 +1430,8 @@ export default function App() {
             setProviderSetupRequest(value => value + 1);
             setTab("accounts");
           }} />}
+
+        {tab === "invoices" && <InvoicesTab sanitized={sanitized} overview={invoiceData} loading={invoicesLoading} error={invoicesError} onRefresh={() => setInvoiceRefresh(value => value + 1)} />}
 
         {tab === "accounts" && (
           <AccountsTab
