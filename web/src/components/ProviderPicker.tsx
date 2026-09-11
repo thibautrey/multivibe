@@ -49,19 +49,9 @@ export const ProviderPicker = memo(function ProviderPicker({ value, sdkProvider,
     `${item.name} ${item.description} ${item.method}`.toLocaleLowerCase().includes(normalized));
   return <div className="provider-setup-picker">
     <label className="provider-setup-search">Search providers
-      <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name or connection type…" />
+      <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a provider…" />
     </label>
-    <div className="provider-access-filters" role="group" aria-label="Filter providers by pricing">
-      {(["Paid", "Free", "Freemium"] as const).map((filter) => <button key={filter} type="button"
-        className={`provider-access-badge${accessFilter === filter ? " selected" : ""}`}
-        aria-pressed={accessFilter === filter}
-        onClick={() => setAccessFilter((current) => current === filter ? null : filter)}>{filter}</button>)}
-      {accessFilter && <button type="button" className="provider-access-clear" onClick={() => setAccessFilter(null)}>Clear filter</button>}
-    </div>
-    <p className="muted provider-access-help">{accessFilter === "Free" ? "Free models or allowances, including freemium providers. Limits and eligibility apply; trials excluded."
-      : accessFilter === "Paid" ? "Providers with paid access, including freemium providers."
-      : accessFilter === "Freemium" ? "Providers offering both free models or allowances and paid access. Limits and eligibility apply."
-      : "Free includes limited free tiers. Freemium offers both free and paid access. Endpoint costs depend on your server."}</p>
+    <div className="provider-picker-toolbar"><label className="provider-pricing-select">Pricing<select value={accessFilter ?? "all"} onChange={event => setAccessFilter(event.target.value === "all" ? null : event.target.value as AccessFilter)}><option value="all">All pricing</option><option value="Paid">Paid</option><option value="Free">Free tier available</option><option value="Freemium">Free & paid</option></select></label><span className="muted">Free tiers may have limits.</span></div>
     <p className="muted provider-setup-results" role="status">{matches.length} provider{matches.length === 1 ? "" : "s"}{normalized || accessFilter ? " found" : " available"}</p>
     {error && <p className="provider-setup-error" role="alert">{error}</p>}
     {!cloudProviders.length && !error && <p className="muted" role="status">Loading cloud providers…</p>}
@@ -72,11 +62,15 @@ export const ProviderPicker = memo(function ProviderPicker({ value, sdkProvider,
         const selected = value === item.id && (item.id !== "ai-sdk" || sdkProvider === cloudId);
         return <button key={cloudId ?? item.id} type="button" className={`provider-setup-card${selected ? " selected" : ""}`} aria-pressed={selected} onClick={() => onChange(item.id, cloudId)}>
           <ProviderMark provider={item.id} sdkProvider={cloudId} />
-          <span className="provider-setup-card-copy"><strong>{item.name}</strong><span>{item.description}</span><small>{item.method}</small><span className="provider-access-label" title={access?.note}>{access ? access.free ? access.paid ? "Freemium" : "Free" : "Paid" : "Depends on endpoint"}</span></span>
+          <span className="provider-setup-card-copy"><strong>{item.name}</strong><small>{item.method}</small><span className="provider-access-label" title={access?.note}>{access ? access.free ? access.paid ? "Free & paid" : "Free tier" : "Paid" : "Depends on endpoint"}</span></span>
           <span className="provider-setup-check" aria-hidden="true">{selected ? "✓" : ""}</span>
         </button>;
       })}
     </div>
+    {(() => {
+      const selected = providers.find(item => item.id === value && (item.id !== "ai-sdk" || ("sdkProvider" in item && item.sdkProvider === sdkProvider)));
+      return selected ? <div className="provider-selection-summary"><strong>{selected.name}</strong><span>{selected.description}</span></div> : null;
+    })()}
     {!matches.length && <p className="provider-setup-empty">No providers match{query.trim() ? ` “${query}”` : ""}{accessFilter ? ` with the ${accessFilter} filter` : ""}. Try another search or clear the filter.</p>}
   </div>;
 });

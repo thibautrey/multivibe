@@ -2910,7 +2910,7 @@ export function AccountsTab(props: Props) {
             }
           }}>
             <div className="inline wrap row-between">
-              <span className="eyebrow">NEW CONNECTION</span>
+              <span className="provider-setup-heading">{providerStep === 0 ? "Add a provider" : "Connect your provider"}</span>
               <div className="inline wrap">
                 {onboardingProviderSetup && (
                   <button className="btn ghost" disabled={isSubmitting} onClick={() => {
