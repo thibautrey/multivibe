@@ -1,3 +1,4 @@
+import { takeDeviceSignIn } from "./host/device-signin.js";
 import { teamMachineTrustedKeys } from "./team-machine-trust.js";
 import { createServer as createTeamHttpsServer } from "node:https";
 import { TeamMachineDirectory } from "./team-machine-directory.js";
@@ -624,7 +625,7 @@ if (!MULTIVIBE_CONTROL_PLANE) {
 
 app.get("/admin/host/menu-bar/activity", adminGuard, (_req, res) => {
   res.setHeader("cache-control", "no-store");
-  res.json({ activity: getHostMenuProviderActivity() ?? null });
+  res.json({ activity: getHostMenuProviderActivity() ?? null, ...(MULTIVIBE_HOST_APPLICATION ? { deviceSignIn: takeDeviceSignIn() ?? null } : {}) });
 });
 
 app.get("/admin/host/menu-bar", adminGuard, async (req, res) => {

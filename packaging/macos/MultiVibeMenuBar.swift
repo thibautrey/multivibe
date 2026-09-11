@@ -1430,16 +1430,38 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         }
     }
 
+    private struct DeviceSignIn: Decodable {
+        let id: String
+        let provider: String
+        let code: String
+        let expiresAt: Double
+    }
+
+    private func receiveDeviceSignIn(_ event: DeviceSignIn) {
+        guard event.expiresAt > Date().timeIntervalSince1970 * 1000,
+              !event.code.isEmpty, event.code.count <= 64 else { return }
+        NSPasteboard.general.clearContents()
+        let copied = NSPasteboard.general.setString(event.code, forType: .string)
+        let provider = ["openai": "ChatGPT", "github-copilot": "GitHub Copilot", "opencode": "OpenCode", "xai": "Grok"][event.provider] ?? "Provider"
+        enqueue(MenuBarNotification(
+            id: "device-signin:" + event.id, kind: "device-signin", priority: 100, repeatMode: "edge",
+            message: copied ? "\(provider) sign-in code copied. Paste it on the provider’s sign-in page." : "Could not copy the \(provider) sign-in code. Copy it from the dashboard.",
+            actionTitle: nil, actionURL: nil, actionPath: nil, confirmationMessage: nil, confirmationTitle: nil
+        ))
+        presentNextNotificationIfNeeded()
+    }
+
     private func pollProviderActivity() {
         guard operational, !pollingActivity, let request = authorizedRequest(path: "/admin/host/menu-bar/activity") else { return }
         pollingActivity = true
         URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
-            struct Response: Decodable { let activity: ProviderActivity? }
-            let activity = (response as? HTTPURLResponse)?.statusCode == 200
-                ? data.flatMap { try? JSONDecoder().decode(Response.self, from: $0) }?.activity : nil
+            struct Response: Decodable { let activity: ProviderActivity?; let deviceSignIn: DeviceSignIn? }
+            let decoded = (response as? HTTPURLResponse)?.statusCode == 200
+                ? data.flatMap { try? JSONDecoder().decode(Response.self, from: $0) } : nil
             DispatchQueue.main.async {
                 self?.pollingActivity = false
-                self?.providerActivity = activity
+                self?.providerActivity = decoded?.activity
+                if let event = decoded?.deviceSignIn { self?.receiveDeviceSignIn(event) }
                 self?.renderQuota()
             }
         }.resume()
@@ -1746,7 +1768,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         }
         guard let next = pendingNotifications.first else { return }
         let urgent = next.priority >= 80
-        let isBriefNotification = next.kind == "provider-quota-limit"
+        let isBriefNotification = next.kind == "device-signin" || next.kind == "provider-quota-limit"
             || next.kind == "reset-credit-increased"
         let spacing = next.kind == "github-star" || isBriefNotification
             ? 0
