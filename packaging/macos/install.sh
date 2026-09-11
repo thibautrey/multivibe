@@ -91,6 +91,7 @@ while [ "$#" -gt 0 ]; do
     -h|--help) usage; exit 0 ;;
     *) usage >&2; fail "unknown option: $1" ;;
   esac
+  shift
 done
 
 [ "$(uname -s)" = "Darwin" ] || fail "this installer supports macOS only"

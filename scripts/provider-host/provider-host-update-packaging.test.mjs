@@ -84,6 +84,7 @@ test("native packages include the updater and platform schedulers", async () => 
     /Contents\/Helpers\/multivibe-host-updater<\/string>[\s\S]*<key>RunAtLoad<\/key>/u,
   );
   assert.match(macos, /UPDATE_SERVICE_KEPT_LOADED/u);
+  assert.match(macos, /esac\s+shift\s+done/u);
   assert.match(macos, /body\.version!==process\.argv\[1\]/u);
   assert.match(verifier, /multivibe-host-updater/u);
   assert.match(verifier, /multivibe-v1-edge/u);
