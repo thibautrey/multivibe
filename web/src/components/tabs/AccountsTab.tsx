@@ -1785,10 +1785,11 @@ export function AccountsTab(props: Props) {
         </>
       )}
 
-      <section className={hasAnyProvider ? "panel" : "panel providers-empty-state"}>
+      <section className={hasAnyProvider ? "panel providers-list-panel" : "panel providers-empty-state"}>
         <div className="section-split-header">
           <h2>{accounts.length ? "Connected providers" : "Providers"}</h2>
           <div className="inline wrap">
+            <details className="provider-list-summary"><summary>{accounts.length} connections</summary><div className="inline wrap">
             {openAiCount > 0 && (
               <span className="badge">{openAiCount} OpenAI</span>
             )}
@@ -1830,6 +1831,7 @@ export function AccountsTab(props: Props) {
                 {usageRefreshPendingCount} refresh pending
               </span>
             )}
+            </div></details>
             {hasAnyProvider && <button className="btn" onClick={() => setShowAddAccount(true)}>Add provider</button>}
           </div>
         </div>
@@ -2172,7 +2174,7 @@ export function AccountsTab(props: Props) {
                     </div>
                   </div>
                 ) : <div className="provider-card-content">
-                  <div className="provider-card-details">
+                  <details className="provider-card-details provider-connection-details"><summary>{a.state?.scheduledWeeklyReset?.lastError ? "Settings · auto-reset failed" : a.state?.scheduledWeeklyReset ? "Settings · auto-reset scheduled" : "Connection settings"}</summary>
                     {(a.baseUrl || a.upstreamMode || (a.provider === "opencode" && a.opencodeOrgName)) && (
                       <div className="provider-card-endpoint">
                         {a.baseUrl && <span className="mono muted">{a.baseUrl}</span>}
@@ -2223,23 +2225,23 @@ export function AccountsTab(props: Props) {
                         )}
                       </div>
                     )}
-                  </div>
+                  </details>
                   {tracksSubscriptionQuota(a) && (
                     <>
                       <div className="provider-quota-grid" aria-label="Quota usage">
-                        {shouldDisplayOptionalQuotaWindow(a, "primary") && (
+                        {a.usage?.quotaStatus !== "unsupported" && shouldDisplayOptionalQuotaWindow(a, "primary") && (
                           <div className="provider-quota-item">
                             <span className="provider-quota-label">5h quota</span>
                             {renderUsageCell(a.usage?.primary?.usedPercent, a.usage?.primary?.resetAt, a.usage?.quotaStatus === "unsupported", a.usage?.quotaStatus === "error")}
                           </div>
                         )}
-                        {shouldDisplayOptionalQuotaWindow(a, "secondary") && (
+                        {a.usage?.quotaStatus !== "unsupported" && shouldDisplayOptionalQuotaWindow(a, "secondary") && (
                           <div className="provider-quota-item">
                             <span className="provider-quota-label">Weekly quota</span>
                             {renderUsageCell(a.usage?.secondary?.usedPercent, a.usage?.secondary?.resetAt, a.usage?.quotaStatus === "unsupported", a.usage?.quotaStatus === "error")}
                           </div>
                         )}
-                        {shouldDisplayOptionalQuotaWindow(a, "monthly") && (
+                        {a.usage?.quotaStatus !== "unsupported" && shouldDisplayOptionalQuotaWindow(a, "monthly") && (
                           <div className="provider-quota-item">
                             <span className="provider-quota-label">{a.usage?.monthly?.label ?? "Monthly quota"}</span>
                             {renderUsageCell(a.usage?.monthly?.usedPercent, a.usage?.monthly?.resetAt, a.usage?.quotaStatus === "unsupported", a.usage?.quotaStatus === "error")}

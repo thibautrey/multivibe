@@ -165,3 +165,27 @@
 .widget-board.widget-board-editing .widget-gallery-item { border-radius: 7px; padding: 10px 12px; }
 .widget-board.widget-board-editing .widget-gallery-caption { margin: 0; gap: 16px; }
 @media(max-width: 550px) { .widget-board.widget-board-editing .widget-edit-header { flex-basis: 100%; } .widget-board.widget-board-editing .widget-edit-footer { width: 100%; justify-content: space-between; padding-top: 0; } }
+
+/* Provider list: clear identity, useful quota data, secondary configuration on demand. */
+.providers-list-panel { padding: 20px; }
+.provider-list-summary { position: relative; font-size: 11px; color: var(--muted); }
+.provider-list-summary summary { cursor: pointer; padding: 8px; }
+.provider-list-summary > div { position: absolute; right: 0; top: 100%; z-index: 5; padding: 12px; width: 260px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); box-shadow: var(--shadow-sm); }
+.providers-list-panel .multivibe-cloud-provider { padding: 14px 18px; border-radius: 10px; background: var(--surface-muted); grid-template-columns: minmax(0, 1fr) auto; }
+.providers-list-panel .multivibe-cloud-provider .btn { width: auto; min-width: 90px; font-size: 12px; }
+.providers-list-panel .local-worker-provider-icon { width: 32px; height: 32px; }
+.providers-list-panel .local-worker-provider-identity h3 { font-size: 14px; }
+.providers-list-panel .provider-card { border-radius: 10px; box-shadow: none; border-color: var(--line); }
+.providers-list-panel .provider-card-header { background: transparent; padding: 14px 16px; }
+.providers-list-panel .provider-card-content { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; }
+.provider-connection-details { order: 2; font-size: 11px; color: var(--muted); }
+.provider-connection-details summary { cursor: pointer; padding: 4px 0; width: fit-content; }
+.provider-connection-details[open] > :not(summary) { margin-top: 12px; }
+.providers-list-panel .provider-quota-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 20px; width: 100%; }
+.providers-list-panel .provider-quota-grid:empty { display: none; }
+.providers-list-panel .provider-quota-item { padding: 0; border: 0; border-radius: 0; background: transparent; }
+.providers-list-panel .provider-quota-label { font-size: 10px; letter-spacing: .5px; }
+.providers-list-panel .provider-card-content > p { font-size: 12px; margin: 0; }
+.providers-list-panel .provider-card-content .reset-quota-actions { justify-content: flex-start; }
+.providers-list-panel .provider-card-content .mono { font-family: var(--sans); font-size: 11px; overflow-wrap: anywhere; }
+@media(max-width: 550px) { .providers-list-panel { padding: 12px; } .providers-list-panel .provider-quota-grid { grid-template-columns: 1fr; gap: 14px; } }
