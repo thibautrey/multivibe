@@ -146,6 +146,7 @@ func extractLinuxArchive(archive, destination string) (string, error) {
 type hostCredentials struct {
 	SchemaVersion string `json:"schema_version"`
 	AdminToken    string `json:"admin_token"`
+	ProxyAPIKey   string `json:"proxy_api_key"`
 }
 
 func resolveHostControlPlanePort(goos, controlPlanePort, hostPort string) (string, error) {
