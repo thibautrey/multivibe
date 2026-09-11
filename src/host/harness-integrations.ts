@@ -11,7 +11,8 @@ const CODEX_ROOT_BLOCK_START = "# >>> MultiVibe Host Codex root >>>";
 const CODEX_ROOT_BLOCK_END = "# <<< MultiVibe Host Codex root <<<";
 const CODEX_PROVIDER_BLOCK_START = "# >>> MultiVibe Host Codex provider >>>";
 const CODEX_PROVIDER_BLOCK_END = "# <<< MultiVibe Host Codex provider <<<";
-const MODEL_CATALOG_CONFIGURATION_REVISION = 1;
+const CODEX_MODEL_CATALOG_RELATIVE_PATH = ".codex/multivibe-models.json";
+const MODEL_CATALOG_CONFIGURATION_REVISION = 2;
 
 export type HostHarnessCategory = "cli" | "editor" | "agent" | "framework" | "service";
 
@@ -39,6 +40,7 @@ export type HarnessContext = {
   baseUrl: string;
   apiKey: string;
   modelIds?: readonly string[];
+  homeDirectory?: string;
 };
 
 type HarnessInspection = {
@@ -55,8 +57,9 @@ export type HarnessConfiguration = {
   driftScope?: "file" | "managed";
   render: (current: string | null, context: HarnessContext) => string;
   prepare?: (context: HarnessContext) => Promise<Partial<HarnessContext>>;
+  auxiliaryFiles?: (context: HarnessContext) => Array<{ relativePath: string; content: string; mode?: number }>;
   isConfigured: (current: string, baseUrl: string) => boolean;
-  inspect?: (current: string, baseUrl: string, expectedApiKey?: string) => HarnessInspection;
+  inspect?: (current: string, baseUrl: string, expectedApiKey?: string, homeDirectory?: string) => HarnessInspection;
 };
 
 export type HostHarnessDefinition = {
@@ -78,6 +81,14 @@ type InstallationState = {
   application: string;
   installedAt: number;
   configurationRevision?: number;
+  auxiliaryFiles?: ManagedFileState[];
+};
+
+type ManagedFileState = {
+  path: string;
+  originalContentBase64: string | null;
+  originalMode: number | null;
+  installedSha256: string;
 };
 
 type HarnessState = {
@@ -314,6 +325,7 @@ function matchTomlTableHeader(line: string): string | undefined {
 function parseCodexToml(current: string, expectedBaseUrl: string, expectedApiKey?: string): CodexTomlInspection {
   let table = "";
   let rootProvider: string | undefined;
+  let openaiBaseUrl: string | undefined;
   let providerBaseUrl: string | undefined;
   let providerBearerToken: string | undefined;
   let providerWireApi: string | undefined;
@@ -342,6 +354,10 @@ function parseCodexToml(current: string, expectedBaseUrl: string, expectedApiKey
       if (seen.has("root.model_provider")) errors.push("duplicate root model_provider");
       seen.add("root.model_provider");
       rootProvider = value;
+    } else if (table === "" && key === "openai_base_url") {
+      if (seen.has("root.openai_base_url")) errors.push("duplicate root openai_base_url");
+      seen.add("root.openai_base_url");
+      openaiBaseUrl = value;
     } else if (table === "" && key === "model_catalog_json") {
       if (seen.has("root.model_catalog_json")) errors.push("duplicate root model_catalog_json");
       seen.add("root.model_catalog_json");
@@ -371,9 +387,6 @@ function parseCodexToml(current: string, expectedBaseUrl: string, expectedApiKey
     .filter(([, provider]) => provider !== "multivibe")
     .map(([profile, provider]) => `${profile}=${provider}`);
   const configurationIssues = [
-    ...(rootModelCatalogJson !== undefined
-      ? ["Codex model_catalog_json overrides MultiVibe model discovery"]
-      : []),
     ...(profileOverrides.length > 0
       ? [`Codex profiles override MultiVibe: ${profileOverrides.join(", ")}`]
       : []),
@@ -382,25 +395,26 @@ function parseCodexToml(current: string, expectedBaseUrl: string, expectedApiKey
     ? configurationIssues.join("; ")
     : undefined;
   return {
-    configured: rootProvider === "multivibe" &&
-      providerBaseUrl === expectedBaseUrl &&
-      (expectedApiKey ? providerBearerToken === expectedApiKey : Boolean(providerBearerToken)) &&
-      providerWireApi === "responses" &&
-      rootModelCatalogJson === undefined,
+    configured: (rootProvider === undefined || rootProvider === "openai") &&
+      openaiBaseUrl === expectedBaseUrl && Boolean(rootModelCatalogJson),
     repairable: errors.length === 0,
     configurationIssue: errors.length > 0 ? errors.join("; ") : configurationIssue,
-    effectiveProvider: rootProvider,
-    effectiveBaseUrl: providerBaseUrl,
+    effectiveProvider: rootProvider ?? "openai",
+    effectiveBaseUrl: openaiBaseUrl ?? providerBaseUrl,
     profileProviders,
     rootModelCatalogJson,
   };
 }
 
-function inspectCodexToml(current: string, baseUrl: string, expectedApiKey?: string): HarnessInspection {
-  const parsed = parseCodexToml(current, `${baseUrl}/v1`, expectedApiKey);
+function inspectCodexToml(current: string, baseUrl: string, _expectedApiKey?: string, homeDirectory?: string): HarnessInspection {
+  const parsed = parseCodexToml(current, `${baseUrl}/v1`);
+  const expectedCatalog = homeDirectory ? path.join(homeDirectory, CODEX_MODEL_CATALOG_RELATIVE_PATH) : undefined;
   return {
     ...parsed,
-    configured: parsed.configured,
+    configured: parsed.configured && (!expectedCatalog || parsed.rootModelCatalogJson === expectedCatalog),
+    ...(expectedCatalog && parsed.rootModelCatalogJson !== expectedCatalog
+      ? { configurationIssue: "Codex model_catalog_json does not point to the MultiVibe catalog" }
+      : {}),
   };
 }
 
@@ -439,8 +453,9 @@ function stripCodexManagedContent(value: string): string {
       if (skippingProvider) continue;
     }
     if (skippingProvider) continue;
-    if (table === "" && /^\s*(?:model_provider|model_catalog_json)\s*=/.test(line)) continue;
-    if (insideManagedBlock && /^\s*(?:model_provider|model_catalog_json)\s*=/.test(line)) continue;
+    if (table === "" && /^\s*model_provider\s*=\s*"multivibe"/.test(line)) continue;
+    if (table === "" && /^\s*(?:model_catalog_json|openai_base_url)\s*=/.test(line)) continue;
+    if (insideManagedBlock && /^\s*(?:model_provider|model_catalog_json|openai_base_url)\s*=/.test(line)) continue;
     output.push(line);
   }
   if (insideManagedBlock) {
@@ -451,14 +466,47 @@ function stripCodexManagedContent(value: string): string {
 
 function renderCodexToml(current: string | null, context: HarnessContext): string {
   const value = stripCodexManagedContent(current ?? "").trim();
-  const rootBlock = `${CODEX_ROOT_BLOCK_START}\nmodel_provider = "multivibe"\n${CODEX_ROOT_BLOCK_END}`;
-  const providerBlock = `${CODEX_PROVIDER_BLOCK_START}\n[model_providers.multivibe]\nname = "MultiVibe Host"\nbase_url = ${jsonString(`${context.baseUrl}/v1`)}\nexperimental_bearer_token = ${jsonString(context.apiKey)}\nwire_api = "responses"\n${CODEX_PROVIDER_BLOCK_END}`;
-  return `${rootBlock}\n\n${value ? `${value}\n\n` : ""}${providerBlock}\n`;
+  if (!context.homeDirectory) throw new HostHarnessIntegrationError("Codex home directory is unavailable", 500);
+  const catalogPath = path.join(context.homeDirectory, CODEX_MODEL_CATALOG_RELATIVE_PATH);
+  const rootBlock = `${CODEX_ROOT_BLOCK_START}\nopenai_base_url = ${jsonString(`${context.baseUrl}/v1`)}\nmodel_catalog_json = ${jsonString(catalogPath)}\n${CODEX_ROOT_BLOCK_END}`;
+  return `${rootBlock}\n\n${value ? `${value}\n` : ""}`;
+}
+
+function renderCodexModelCatalog(context: HarnessContext): string {
+  const models = requireModelIds(context).map((id, index) => ({
+    slug: id,
+    display_name: id,
+    description: "Available through MultiVibe Host.",
+    default_reasoning_level: "medium",
+    supported_reasoning_levels: [
+      { effort: "low", description: "Fast responses with lighter reasoning" },
+      { effort: "medium", description: "Balances speed and reasoning depth" },
+      { effort: "high", description: "Greater reasoning depth for complex tasks" },
+      { effort: "xhigh", description: "Extra reasoning depth for demanding tasks" },
+    ],
+    shell_type: "shell_command",
+    visibility: "list",
+    supported_in_api: true,
+    priority: index,
+    context_window: 128000,
+    max_context_window: 128000,
+    supports_parallel_tool_calls: true,
+    input_modalities: ["text"],
+    experimental_supported_tools: [],
+  }));
+  return `${JSON.stringify({ models }, null, 2)}\n`;
 }
 
 const codexConfiguration: HarnessConfiguration = {
   relativePath: ".codex/config.toml",
+  revision: 2,
   driftScope: "managed",
+  prepare: prepareModelCatalog,
+  auxiliaryFiles: (context) => [{
+    relativePath: CODEX_MODEL_CATALOG_RELATIVE_PATH,
+    content: renderCodexModelCatalog(context),
+    mode: 0o600,
+  }],
   render: renderCodexToml,
   isConfigured: (current, baseUrl) => inspectCodexToml(current, baseUrl).configured,
   inspect: inspectCodexToml,
@@ -963,12 +1011,19 @@ export class HostHarnessIntegrationManager {
       const context: HarnessContext = {
         baseUrl: this.baseUrl,
         apiKey: credential.apiKey,
+        homeDirectory: this.homeDirectory,
       };
       const preparedContext = definition.configuration.prepare
         ? { ...context, ...(await definition.configuration.prepare(context)) }
         : context;
       const installed = definition.configuration.render(original?.content ?? null, preparedContext);
-      await writeAtomic(configPath, installed, 0o600);
+      const auxiliary = await this.writeAuxiliaryFiles(definition.configuration, preparedContext);
+      try {
+        await writeAtomic(configPath, installed, 0o600);
+      } catch (error) {
+        await auxiliary.restore();
+        throw error;
+      }
       state.installations[id] = {
         configPath,
         originalContentBase64: original ? Buffer.from(original.content).toString("base64") : null,
@@ -980,6 +1035,7 @@ export class HostHarnessIntegrationManager {
         ...(definition.configuration.revision
           ? { configurationRevision: definition.configuration.revision }
           : {}),
+        ...(auxiliary.states.length ? { auxiliaryFiles: auxiliary.states } : {}),
       };
       let restoreTracking: (() => Promise<void>) | undefined;
       try {
@@ -989,6 +1045,7 @@ export class HostHarnessIntegrationManager {
         await restoreTracking?.();
         if (original) await writeAtomic(configPath, original.content, original.mode);
         else await fs.unlink(configPath).catch(() => undefined);
+        await auxiliary.restore();
         throw error;
       }
       return this.view(definition, state);
@@ -1008,7 +1065,7 @@ export class HostHarnessIntegrationManager {
       const current = await readBounded(configPath);
       if (!current) throw new HostHarnessIntegrationError(`~/${definition.configuration.relativePath} is missing`, 409);
       const inspection = definition.configuration.inspect
-        ? definition.configuration.inspect(current.content, this.baseUrl)
+        ? definition.configuration.inspect(current.content, this.baseUrl, undefined, this.homeDirectory)
         : { configured: false, repairable: true };
       if (!inspection.repairable) {
         throw new HostHarnessIntegrationError(inspection.configurationIssue ?? `~/${definition.configuration.relativePath} cannot be repaired safely`, 409);
@@ -1016,12 +1073,23 @@ export class HostHarnessIntegrationManager {
       const context: HarnessContext = {
         baseUrl: this.baseUrl,
         apiKey: credential.apiKey,
+        homeDirectory: this.homeDirectory,
       };
       const preparedContext = definition.configuration.prepare
         ? { ...context, ...(await definition.configuration.prepare(context)) }
         : context;
       const repaired = definition.configuration.render(current.content, preparedContext);
-      await writeAtomic(configPath, repaired, current.mode);
+      const auxiliary = await this.writeAuxiliaryFiles(
+        definition.configuration,
+        preparedContext,
+        installation.auxiliaryFiles,
+      );
+      try {
+        await writeAtomic(configPath, repaired, current.mode);
+      } catch (error) {
+        await auxiliary.restore();
+        throw error;
+      }
       let restoreTracking: (() => Promise<void>) | undefined;
       try {
         if (id === "openai-codex" && this.projectRegistrationToken) restoreTracking = await this.writeProjectTracking();
@@ -1034,11 +1102,13 @@ export class HostHarnessIntegrationManager {
           ...(definition.configuration.revision
             ? { configurationRevision: definition.configuration.revision }
             : {}),
+          ...(auxiliary.states.length ? { auxiliaryFiles: auxiliary.states } : {}),
         };
         await this.writeState(state);
       } catch (error) {
         await restoreTracking?.();
         await writeAtomic(configPath, current.content, current.mode);
+        await auxiliary.restore();
         throw error;
       }
       return this.view(definition, state);
@@ -1061,6 +1131,12 @@ export class HostHarnessIntegrationManager {
       if (!current || sha256(current.content) !== installation.installedSha256) {
         throw new HostHarnessIntegrationError(`~/${definition.configuration!.relativePath} changed after MultiVibe was installed; it was left untouched`, 409);
       }
+      for (const auxiliary of installation.auxiliaryFiles ?? []) {
+        const currentAuxiliary = await readBounded(auxiliary.path);
+        if (!currentAuxiliary || sha256(currentAuxiliary.content) !== auxiliary.installedSha256) {
+          throw new HostHarnessIntegrationError(`${auxiliary.path} changed after MultiVibe was installed; it was left untouched`, 409);
+        }
+      }
       const restoreTracking = id === "openai-codex" ? await this.writeProjectTracking(true) : undefined;
       try {
         if (installation.originalContentBase64 === null) {
@@ -1068,6 +1144,14 @@ export class HostHarnessIntegrationManager {
         } else {
           const original = Buffer.from(installation.originalContentBase64, "base64").toString("utf8");
           await writeAtomic(configPath, original, installation.originalMode ?? 0o600);
+        }
+        for (const auxiliary of installation.auxiliaryFiles ?? []) {
+          if (auxiliary.originalContentBase64 === null) await fs.unlink(auxiliary.path).catch(() => undefined);
+          else await writeAtomic(
+            auxiliary.path,
+            Buffer.from(auxiliary.originalContentBase64, "base64").toString("utf8"),
+            auxiliary.originalMode ?? 0o600,
+          );
         }
         delete state.installations[id];
         await this.writeState(state);
@@ -1118,9 +1202,10 @@ export class HostHarnessIntegrationManager {
         if (current) {
           const inspection = definition.configuration.inspect
             ? definition.configuration.inspect(
-                current.content,
-                this.baseUrl,
-                installation ? this.apiKeyForId(installation.apiKeyId) : undefined,
+              current.content,
+              this.baseUrl,
+              installation ? this.apiKeyForId(installation.apiKeyId) : undefined,
+              this.homeDirectory,
               )
             : {
                 configured: definition.configuration.isConfigured(current.content, this.baseUrl),
@@ -1135,6 +1220,14 @@ export class HostHarnessIntegrationManager {
         configurationFileChanged = Boolean(
           installation && (!current || sha256(current.content) !== installation.installedSha256),
         );
+        if (installation?.auxiliaryFiles?.length) {
+          const auxiliaryChanged = (await Promise.all(installation.auxiliaryFiles.map(async (file) => {
+            const currentAuxiliary = await readBounded(file.path);
+            return !currentAuxiliary || sha256(currentAuxiliary.content) !== file.installedSha256;
+          }))).some(Boolean);
+          configurationFileChanged ||= auxiliaryChanged;
+          configured &&= !auxiliaryChanged;
+        }
         configurationRevisionChanged = Boolean(
           installation &&
             definition.configuration.revision !== undefined &&
@@ -1198,6 +1291,41 @@ export class HostHarnessIntegrationManager {
       }
     }
     return candidate;
+  }
+
+  private async writeAuxiliaryFiles(
+    configuration: HarnessConfiguration,
+    context: HarnessContext,
+    preserved?: ManagedFileState[],
+  ): Promise<{ states: ManagedFileState[]; restore: () => Promise<void> }> {
+    const definitions = configuration.auxiliaryFiles?.(context) ?? [];
+    const writes: Array<{ path: string; before: Awaited<ReturnType<typeof readBounded>> }> = [];
+    const states: ManagedFileState[] = [];
+    const restore = async () => {
+      for (const write of [...writes].reverse()) {
+        if (write.before) await writeAtomic(write.path, write.before.content, write.before.mode);
+        else await fs.unlink(write.path).catch(() => undefined);
+      }
+    };
+    try {
+      for (const definition of definitions) {
+        const filePath = await this.safeConfigPath(definition.relativePath);
+        const before = await readBounded(filePath);
+        writes.push({ path: filePath, before });
+        await writeAtomic(filePath, definition.content, definition.mode ?? 0o600);
+        const saved = preserved?.find((entry) => entry.path === filePath);
+        states.push({
+          path: filePath,
+          originalContentBase64: saved?.originalContentBase64 ?? (before ? Buffer.from(before.content).toString("base64") : null),
+          originalMode: saved?.originalMode ?? before?.mode ?? null,
+          installedSha256: sha256(definition.content),
+        });
+      }
+    } catch (error) {
+      await restore();
+      throw error;
+    }
+    return { states, restore };
   }
 
   private async readState(): Promise<HarnessState> {

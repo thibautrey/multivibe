@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import type { TestContext } from "node:test";
 import { exec } from "node:child_process";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -77,6 +78,12 @@ async function fixture() {
     executableDirectories: [bin],
   });
   return { root, home, manager };
+}
+
+function mockCodexModelCatalog(t: TestContext, modelIds = ["model-a", "gpt-5.5"]) {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = async () => Response.json({ data: modelIds.map((id) => ({ id })) });
 }
 
 test("detects without executing, installs privately, and restores the exact previous file", async (t) => {
@@ -425,7 +432,8 @@ test("uninstall refuses to overwrite user changes made after installation", asyn
   assert.equal((await manager.get("example")).drifted, true);
 });
 
-test("Codex installation preserves unrelated TOML and restores the original provider", async (t) => {
+test("Codex installation uses the built-in OpenAI provider catalog and restores the original workspace", async (t) => {
+  mockCodexModelCatalog(t);
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-harness-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const home = path.join(root, "home");
@@ -446,19 +454,24 @@ test("Codex installation preserves unrelated TOML and restores the original prov
 
   await manager.install("openai-codex", { apiKeyId: "key-3", apiKey: "mv_codex", application: "harness-openai-codex" });
   const configured = await fs.readFile(configPath, "utf8");
-  assert.match(configured, /model_provider = "multivibe"/);
-  assert.match(configured, /experimental_bearer_token = "mv_codex"/);
+  assert.match(configured, /model_provider = "openai"/);
+  assert.match(configured, /openai_base_url = "http:\/\/127\.0\.0\.1:1455\/v1"/);
   assert.match(configured, /approval_policy = "on-request"/);
-  assert.doesNotMatch(configured, /model_catalog_json/);
+  assert.match(configured, /model_catalog_json = /);
+  assert.doesNotMatch(configured, /model_providers\.multivibe|experimental_bearer_token/);
   const firstTable = configured.search(/^\[/m);
-  const rootProvider = configured.indexOf('model_provider = "multivibe"');
+  const rootProvider = configured.indexOf('model_provider = "openai"');
   assert.ok(rootProvider >= 0 && rootProvider < firstTable, "Codex provider must remain at the TOML root");
   assert.equal((configured.match(/^model_provider\s*=/gm) ?? []).length, 1);
+  const catalog = JSON.parse(await fs.readFile(path.join(home, ".codex", "multivibe-models.json"), "utf8"));
+  assert.deepEqual(catalog.models.map((model: any) => model.slug), ["model-a", "gpt-5.5"]);
   await manager.uninstall("openai-codex");
   assert.equal(await fs.readFile(configPath, "utf8"), original);
+  await assert.rejects(fs.readFile(path.join(home, ".codex", "multivibe-models.json"), "utf8"), /ENOENT/);
 });
 
-test("Codex detects and repairs a static catalog that masks MultiVibe models", async (t) => {
+test("Codex repair refreshes a drifted MultiVibe catalog", async (t) => {
+  mockCodexModelCatalog(t);
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-static-catalog-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const home = path.join(root, "home");
@@ -478,8 +491,8 @@ test("Codex detects and repairs a static catalog that masks MultiVibe models", a
   const credential = { apiKeyId: "key-static-catalog", apiKey: "mv_static", application: "harness-openai-codex" };
   await manager.install("openai-codex", credential);
   const changed = (await fs.readFile(configPath, "utf8")).replace(
-    "# <<< MultiVibe Host Codex root <<<\n",
-    "# <<< MultiVibe Host Codex root <<<\nmodel_catalog_json = \"/tmp/static-models.json\"\n",
+    "model_catalog_json = ",
+    "model_catalog_json = \"/tmp/static-models.json\" # replaced ",
   );
   await fs.writeFile(configPath, changed);
 
@@ -487,15 +500,16 @@ test("Codex detects and repairs a static catalog that masks MultiVibe models", a
   assert.equal(drifted.configured, false);
   assert.equal(drifted.drifted, true);
   assert.equal(drifted.repairable, true);
-  assert.match(drifted.configurationIssue ?? "", /model_catalog_json overrides MultiVibe model discovery/);
+  assert.match(drifted.configurationIssue ?? "", /does not point to the MultiVibe catalog/);
 
   const repaired = await manager.repair("openai-codex", credential);
   assert.equal(repaired.configured, true);
   assert.equal(repaired.drifted, false);
-  assert.doesNotMatch(await fs.readFile(configPath, "utf8"), /model_catalog_json/);
+  assert.match(await fs.readFile(configPath, "utf8"), /model_catalog_json = .*multivibe-models\.json/);
 });
 
 test("Codex repair preserves a table inserted inside the legacy managed block", async (t) => {
+  mockCodexModelCatalog(t);
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-repair-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const home = path.join(root, "home");
@@ -539,6 +553,7 @@ test("Codex repair preserves a table inserted inside the legacy managed block", 
 });
 
 test("Codex ignores unrelated configuration changes when evaluating connection health", async (t) => {
+  mockCodexModelCatalog(t);
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-reconcile-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const home = path.join(root, "home");
@@ -566,6 +581,7 @@ test("Codex ignores unrelated configuration changes when evaluating connection h
 });
 
 test("Codex repairs managed configuration drift without removing unrelated changes", async (t) => {
+  mockCodexModelCatalog(t);
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-managed-drift-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const home = path.join(root, "home");
@@ -585,7 +601,7 @@ test("Codex repairs managed configuration drift without removing unrelated chang
   const credential = { apiKeyId: "key-managed-drift", apiKey: "mv_managed_drift", application: "harness-openai-codex" };
   await manager.install("openai-codex", credential);
   const changed = (await fs.readFile(configPath, "utf8"))
-    .replace('base_url = "http://127.0.0.1:1455/v1"', 'base_url = "http://127.0.0.1:9999/v1"');
+    .replace('openai_base_url = "http://127.0.0.1:1455/v1"', 'openai_base_url = "http://127.0.0.1:9999/v1"');
   await fs.writeFile(configPath, `${changed}\n[plugins.\"sites@openai-bundled\"]\nenabled = true\n`);
   const drifted = await manager.get("openai-codex");
   assert.equal(drifted.configured, false);
@@ -600,7 +616,8 @@ test("Codex repairs managed configuration drift without removing unrelated chang
   assert.match(await fs.readFile(configPath, "utf8"), /\[plugins\.\"sites@openai-bundled\"\]/);
 });
 
-test("Codex detects a changed managed credential when the installed key is available", async (t) => {
+test("Codex detects a changed managed model catalog", async (t) => {
+  mockCodexModelCatalog(t);
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-credential-drift-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const home = path.join(root, "home");
@@ -614,15 +631,13 @@ test("Codex detects a changed managed credential when the installed key is avail
     homeDirectory: home,
     statePath: path.join(home, ".multivibe", "harnesses.json"),
     baseUrl: "http://127.0.0.1:1455",
-    apiKeyForId: (id) => id === "key-credential-drift" ? "mv_expected" : undefined,
     definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
     executableDirectories: [bin],
   });
   const credential = { apiKeyId: "key-credential-drift", apiKey: "mv_expected", application: "harness-openai-codex" };
   await manager.install("openai-codex", credential);
-  const changed = (await fs.readFile(configPath, "utf8"))
-    .replace('experimental_bearer_token = "mv_expected"', 'experimental_bearer_token = "mv_replaced"');
-  await fs.writeFile(configPath, changed);
+  const catalogPath = path.join(home, ".codex", "multivibe-models.json");
+  await fs.writeFile(catalogPath, '{"models":[]}\n');
 
   const drifted = await manager.get("openai-codex");
   assert.equal(drifted.configured, false);
@@ -632,6 +647,7 @@ test("Codex detects a changed managed credential when the installed key is avail
 });
 
 test("Codex accepts brackets inside quoted TOML table keys", async (t) => {
+  mockCodexModelCatalog(t);
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-quoted-header-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const home = path.join(root, "home");
@@ -661,6 +677,7 @@ test("Codex accepts brackets inside quoted TOML table keys", async (t) => {
 });
 
 test("Codex reports profile overrides without hiding a correct default provider", async (t) => {
+  mockCodexModelCatalog(t);
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-profile-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const home = path.join(root, "home");
