@@ -9,6 +9,7 @@ import ModalPortal from "./components/ModalPortal";
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import "./styles.css";
 import "./host/styles.css";
+import "./workspace-refresh.css";
 import { estimateCostUsd } from "./model-pricing";
 import { ApiError, api } from "./lib/api";
 import {
@@ -62,13 +63,13 @@ import {
 } from "./release-announcement";
 
 const TAB_ITEMS: Array<{ id: Tab; label: string; description: string; group: "Operate" | "Build" | "Advanced" }> = [
-  { id: "overview", label: "Home", description: "System status and next steps", group: "Operate" },
+  { id: "overview", label: "Overview", description: "System status and next steps", group: "Operate" },
   { id: "models", label: "Models", description: "Explore providers, local models, and MultiVibe Cloud", group: "Operate" },
   { id: "accounts", label: "Providers", description: "Accounts, models and quotas", group: "Operate" },
   { id: "aliases", label: "Routing", description: "Rules and fallbacks", group: "Operate" },
   { id: "tracing", label: "Activity", description: "Requests, performance and cost", group: "Operate" },
   { id: "api-keys", label: "API access", description: "Application keys and webhooks", group: "Build" },
-  { id: "docs", label: "API workspace", description: "Quick start and full reference", group: "Build" },
+  { id: "docs", label: "Playground & docs", description: "Quick start and full reference", group: "Build" },
   { id: "plugins", label: "Extensions", description: "Optional lifecycle modules", group: "Advanced" },
   { id: "updates", label: "Host updates", description: "Verified releases and update policy", group: "Advanced" },
 ];
@@ -1113,7 +1114,7 @@ export default function App() {
           <div className="sidebar-brand">
             <img className="brand-mark" src="/assets/brand/multivibe-app-icon.svg" alt="" />
             <div className="brand-copy">
-              <strong>MultiVibe.cloud</strong>
+              <strong>MultiVibe</strong><small className="brand-subtitle">Your AI workspace</small>
             </div>
           </div>
 
@@ -1141,7 +1142,7 @@ export default function App() {
           <div className="sidebar-scroll-area">
             <nav className="sidebar-nav" aria-label="Primary navigation">
               <a className="btn workspace-chat-link" href="https://chat.multivibe.cloud">Open chat →</a>
-              <span className="sidebar-nav-label">{workspaceLabel(teamWorkspace)}</span>
+              <span className="sidebar-workspace-name">{workspaceLabel(teamWorkspace)}</span>
               {visibleTabItems.map((item, index) => (
                 <React.Fragment key={item.id}>
                 {(index === 0 || visibleTabItems[index - 1].group !== item.group) && <span className="sidebar-nav-label">{canManage ? item.group : "Workspace"}</span>}
@@ -1155,7 +1156,7 @@ export default function App() {
                   <span className="nav-tab-icon"><TabIcon tab={item.id} /></span>
                   <span className="nav-tab-copy">
                     <span className="nav-tab-label">{item.label}</span>
-                    {canManage && <span className="nav-tab-description">{item.description}</span>}
+
                   </span>
                 </button>
                 </React.Fragment>
@@ -1341,6 +1342,7 @@ export default function App() {
 
           {error && <div className="panel error workspace-error">{error}</div>}
 
+          <header className="workspace-topbar"><span>Workspace <span aria-hidden="true">/</span> <strong>{activeTabItem.label}</strong></span><a href={GITHUB_REPOSITORY_URL} target="_blank" rel="noreferrer">Help & feedback ↗</a></header>
           <main className={`workspace-content workspace-${tab}`}>
 
         {tab === "overview" && teamWorkspace.state !== "personal" && (
