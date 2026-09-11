@@ -50,3 +50,12 @@ test('Mac verification must bind readiness, source commit, target and exact arch
   assert.equal(validateMacVerification(report,name,digest,commit), report);
   for (const patch of [{sourceCommit:'c'.repeat(40)}, {archiveSha256:'c'.repeat(64)}, {releaseReady:false}, {sourceTreeDirty:true}, {platform:'linux'}, {architecture:'amd64'}]) assert.throws(() => validateMacVerification({...report,...patch},name,digest,commit));
 });
+
+
+test('self-hosted-only releases retain registered native Macs and require their builds to succeed', () => {
+  const selected = selectArtifacts(jobs, artifacts, {}, true, ['build-macos-arm64', 'build-macos-amd64']);
+  assert.equal(selected.selected.length, 3);
+  assert.equal(selected.omitted.length, 1);
+  const failed = jobs.map(job => job.name === 'build-macos-arm64' ? {...job,conclusion:'failure',steps:[]} : job);
+  assert.throws(() => selectArtifacts(failed, artifacts.filter(a => a.name !== 'provider-host-macos-arm64'), {2:[quota]}, true, ['build-macos-arm64']), /build-macos-arm64/);
+});

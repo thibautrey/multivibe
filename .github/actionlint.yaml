@@ -2,5 +2,7 @@ self-hosted-runner:
   labels:
     - multivibe-linux
     - multivibe-docker
+    - multivibe-macos-arm64
+    - multivibe-macos-amd64
 
 config-variables: null

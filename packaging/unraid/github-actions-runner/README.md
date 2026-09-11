@@ -6,7 +6,7 @@ in this directory are used only by trusted release-tag and manual-release jobs:
 - `multivibe-linux`: amd64 jobs without Docker access.
 - `multivibe-docker`: amd64 jobs that build or inspect container images.
 
-The ARM64 Umbrel matrix entry and all macOS/Windows jobs remain GitHub-hosted.
+The ARM64 Umbrel matrix entry and Windows jobs remain GitHub-hosted. Native Mac runners can be selected using the variables below.
 
 ## Build the image
 
@@ -131,3 +131,34 @@ Scope: `provider-host-release.yml`. The separate immutable `source-v*` workflow
 keeps its GitHub-hosted attestation requirement because Cloud verifies it with
 `--deny-self-hosted-runners`. The manually triggered Umbrel multiarchitecture
 pipeline has a separate manifest contract and is unchanged.
+
+
+## Native macOS runners
+
+`scripts/runners/install-macos-runner.py` installs the SHA-256-pinned official
+2.337.0 runner as a LaunchDaemon running under the requested normal account.
+It does not broaden SSH access or run builds as root. Runner automatic updates
+remain enabled. Initial installation requires macOS administrator authentication.
+The GitHub registration token is supplied in a mode-0600 temporary file, passed
+to runner configuration through its environment, then removed.
+
+After a runner is verified online, select it with these repository variables:
+
+| Architecture | Variable | Runner name / label |
+| --- | --- | --- |
+| Apple Silicon | `MACOS_ARM64_RUNNER` | `multivibe-macos-arm64` |
+| Intel | `MACOS_AMD64_RUNNER` | `multivibe-macos-amd64` |
+
+Without a variable, that platform keeps its existing GitHub-hosted runner.
+`self_hosted_only` and `HOSTED_RELEASE_BUILDS_ENABLED=false` retain configured
+native Mac runners while omitting GitHub-hosted platforms. A failed native Mac
+build is a release blocker, never classified as a GitHub minutes shortage.
+Only trusted release-tag/manual release jobs use these labels.
+
+Installed paths are `/Users/<account>/actions-runner-<label>` and
+`/Library/LaunchDaemons/solutions.pleiades.github-runner.<label>.plist`.
+Service diagnostics are in the runner's `_diag/service.log`; treat all runner
+configuration and diagnostics as private. Apple release credentials use the
+existing ephemeral keychain, with the account's original keychain settings
+restored at the end of the job. GitHub and Apple secrets are not embedded in
+this installer or stored in repository variables.

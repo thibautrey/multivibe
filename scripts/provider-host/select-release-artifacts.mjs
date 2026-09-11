@@ -16,17 +16,17 @@ export function quotaBlocked(job, annotations) {
     /(?:spending limit|(?:included|actions|runner|billable|free).*minutes.*(?:exhausted|exceeded|used|limit)|(?:exhausted|exceeded).*minutes|billing.*(?:quota|budget)|budget.*(?:exhausted|exceeded))/i.test(annotation.message ?? ''));
 }
 
-export function selectArtifacts(jobs, artifacts, annotations = {}, hostedDisabled = false) {
+export function selectArtifacts(jobs, artifacts, annotations = {}, hostedDisabled = false, nativeMacJobs = []) {
   const selected = [], omitted = [];
   for (const build of builds) {
-    if (!build.required && hostedDisabled) { omitted.push(`${build.label}: GitHub-hosted builds disabled`); continue; }
+    if (!build.required && hostedDisabled && !nativeMacJobs.includes(build.job)) { omitted.push(`${build.label}: GitHub-hosted builds disabled`); continue; }
     const job = jobs.find(job => job.name === build.job);
     const matches = artifacts.filter(artifact => artifact.name === build.artifact && !artifact.expired);
     if (matches.length > 1) throw new Error(`Ambiguous release artifacts: ${build.artifact}`);
     const artifact = matches[0];
     const failedStep = job?.steps?.some(step => ['failure', 'cancelled', 'timed_out'].includes(step.conclusion));
     if (job?.conclusion === 'success' && !failedStep && artifact) { selected.push(artifact); continue; }
-    if (!build.required && quotaBlocked(job, annotations[job?.id] ?? [])) {
+    if (!build.required && !nativeMacJobs.includes(build.job) && quotaBlocked(job, annotations[job?.id] ?? [])) {
       if (artifact) throw new Error(`Unexpected artifact from quota-blocked job: ${build.job}`);
       omitted.push(`${build.label}: GitHub Actions runner quota / spending limit`);
       continue;
@@ -64,7 +64,8 @@ async function main() {
     const match = /^https:\/\/api\.github\.com\/repos\/thibautrey\/multivibe\/check-runs\/(\d+)$/.exec(job.check_run_url ?? '');
     if (match) annotations[job.id] = await pages(`check-runs/${match[1]}/annotations`);
   }
-  const result = selectArtifacts(jobs, artifacts, annotations, process.env.HOSTED_DISABLED === 'true');
+  const nativeMacJobs = ['arm64', 'amd64'].filter(arch => process.env[`MACOS_${arch.toUpperCase()}_RUNNER`] === `multivibe-macos-${arch}`).map(arch => `build-macos-${arch}`);
+  const result = selectArtifacts(jobs, artifacts, annotations, process.env.HOSTED_DISABLED === 'true', nativeMacJobs);
   const report = `## Platform availability\n\nBuilt: ${result.selected.map(a => builds.find(b => b.artifact === a.name).label).join(', ')}.\n\n${result.omitted.length ? `Not produced for this version:\n${result.omitted.map(reason => `- ${reason}`).join('\n')}\n` : 'All native platforms were built.\n'}`;
   const compatibility = result.omitted.length ? '\nOlder Hosts whose updater requires every platform target need a manual installation of this release. The updated updater supports partial releases.\n' : '';
   await writeFile('release-platforms.md', report + compatibility);
