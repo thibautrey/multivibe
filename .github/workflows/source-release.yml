@@ -50,7 +50,8 @@ jobs:
           sbom: true
   release:
     needs: [managed-validation, managed-images]
-    runs-on: multivibe-linux
+    # Cloud verifies this attestation with --deny-self-hosted-runners.
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
