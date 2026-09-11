@@ -837,8 +837,7 @@ on run argv
       end tell
       set position of item "MultiVibe Host.app" to {180, 220}
       set position of item "Applications" to {540, 220}
-      update without registering applications
-      delay 2
+      delay 3
       close container window
     end tell
   end tell

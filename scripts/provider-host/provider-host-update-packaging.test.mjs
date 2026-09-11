@@ -32,6 +32,7 @@ test("the macOS disk image uses a branded Finder drag-to-install layout", async 
   assert.match(packager, /position of item "MultiVibe Host\.app" to \{180, 220\}/u);
   assert.match(packager, /position of item "Applications" to \{540, 220\}/u);
   assert.match(packager, /set background picture to backgroundImage/u);
+  assert.doesNotMatch(packager, /update without registering applications/u);
   assert.match(packager, /"-format", "UDRW"/u);
   assert.match(packager, /"convert", "-quiet", readWriteImage, "-format", "UDZO"/u);
   assert.match(verifier, /Finder layout metadata is invalid/u);
