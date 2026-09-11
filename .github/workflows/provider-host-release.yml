@@ -289,7 +289,9 @@ jobs:
           openssl pkcs12 -legacy -in "$certificate" -nocerts -nodes \
             -passin env:CERTIFICATE_PASSWORD -out "$private_key_pem"
           export MODERN_P12_PASSWORD="$keychain_password"
-          openssl pkcs12 -export -in "$certificate_pem" -inkey "$private_key_pem" \
+          openssl pkcs12 -legacy -export -macalg sha1 \
+            -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES \
+            -in "$certificate_pem" -inkey "$private_key_pem" \
             -passout env:MODERN_P12_PASSWORD -out "$modern_certificate"
           chmod 600 "$private_key_pem" "$modern_certificate"
           rm -f "$private_key_pem"
