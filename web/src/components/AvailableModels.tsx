@@ -2,7 +2,7 @@ import React, { useMemo, useState } from "react";
 import type { ExposedModel, ProviderId } from "../types";
 import { ProviderMark, SETUP_PROVIDERS } from "./ProviderPicker";
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 5;
 const providerName = (id: ProviderId) => SETUP_PROVIDERS.find((provider) => provider.id === id)?.name ?? "AI SDK";
 const modelProviders = (model: ExposedModel): ProviderId[] =>
   model.metadata?.provider_candidates?.length
