@@ -7,7 +7,7 @@ private enum MenuBarPalette {
             calibratedRed: CGFloat((hex >> 16) & 0xff) / 255,
             green: CGFloat((hex >> 8) & 0xff) / 255,
             blue: CGFloat(hex & 0xff) / 255,
-            alpha: 1,
+            alpha: 1
         )
     }
 
@@ -686,8 +686,8 @@ private final class HostPopoverController: NSViewController {
                 quotaCell(
                     title: "5 hours",
                     value: quota?.fiveHourRemainingPercent,
-                    detail: accountCount(quota?.fiveHourAccountCount ?? 0),
-                ),
+                    detail: accountCount(quota?.fiveHourAccountCount ?? 0)
+                )
             )
         }
         quotaCells.append(weekly)
