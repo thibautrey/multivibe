@@ -1,3 +1,4 @@
+import { ChatGPTDeviceGuide } from "../ChatGPTDeviceGuide";
 import { TeamMachineConsent } from "../TeamMachineConsent";
 import { TeamMachineCard } from "../TeamMachineCard";
 import type { ModelRoute } from "../../lib/modelCatalog";
@@ -577,9 +578,9 @@ export function AccountsTab(props: Props) {
     "" | "responses" | "chat/completions"
   >("");
   const [manualOAuthMethod, setManualOAuthMethod] =
-    useState<OAuthMethod>("browser");
+    useState<OAuthMethod>("device");
   const [editOAuthMethod, setEditOAuthMethod] =
-    useState<OAuthMethod>("browser");
+    useState<OAuthMethod>("device");
   const [manualPriority, setManualPriority] = useState("0");
   const [manualEnabled, setManualEnabled] = useState(true);
   const [manualLocation, setManualLocation] = useState<"" | "local" | "personal-cluster" | "cloud">("");
@@ -1178,7 +1179,7 @@ export function AccountsTab(props: Props) {
     setManualAccessToken("");
     setManualRefreshToken("");
     setManualBaseUrl("");
-    setManualOAuthMethod((next === "xai" || next === "github-copilot") ? "device" : "browser");
+    setManualOAuthMethod("device");
     setProviderError("");
   }, [provider, sdkProvider]);
   const selectedProviderName = provider === "ai-sdk"
@@ -1219,7 +1220,7 @@ export function AccountsTab(props: Props) {
     setManualChatgptAccountId("");
     setManualBaseUrl("");
     setManualUpstreamMode("");
-    setManualOAuthMethod("browser");
+    setManualOAuthMethod("device");
     setManualPriority("0");
     setManualEnabled(true);
     setManualLocation("");
@@ -1236,7 +1237,7 @@ export function AccountsTab(props: Props) {
 
   const closeEditModal = () => {
     setEditingAccount(null);
-    setEditOAuthMethod("browser");
+    setEditOAuthMethod("device");
     setIsSavingEdit(false);
   };
 
@@ -1402,7 +1403,7 @@ export function AccountsTab(props: Props) {
       healthUrl: account.capacityProfile?.healthUrl ?? "",
       metricsUrl: account.capacityProfile?.metricsUrl ?? "",
     });
-    setEditOAuthMethod((nextProvider === "xai" || nextProvider === "github-copilot") ? "device" : "browser");
+    setEditOAuthMethod("device");
   };
 
   const saveEditedAccount = async () => {
@@ -1513,7 +1514,7 @@ export function AccountsTab(props: Props) {
     try {
         await openOAuthDialog({
           email: account.email.trim(),
-          method: "browser",
+          method: "device",
           provider: "openai",
         mode: "reauth",
         accountId: account.id,
@@ -2932,6 +2933,7 @@ export function AccountsTab(props: Props) {
               <div><h2 id="provider-setup-title">{providerStep === 1 ? `Connect ${selectedProviderName}` : "Ready to connect?"}</h2>
               <p className="muted">{providerStep === 1 ? "Enter your connection details to continue." : "Check your connection and customize routing if needed."}</p></div>
             </div>}
+            {providerStep === 1 && provider === "openai" && manualOAuthMethod === "device" && <ChatGPTDeviceGuide />}
             {providerStep === 0 && <ProviderPicker value={provider} sdkProvider={sdkProvider} cloudProviders={sdkProviders} error={sdkCatalogError} onChange={selectProvider} />}
             {providerStep === 1 && <div className="grid modal-grid provider-setup-fields">
 
@@ -2956,7 +2958,7 @@ export function AccountsTab(props: Props) {
                     {provider === "openai" && (
                       <option value="browser">Browser callback</option>
                     )}
-                    <option value="device">Device code</option>
+                    <option value="device">Device code (recommended)</option>
                   </select>
                 </label>
               )}
@@ -3010,7 +3012,7 @@ export function AccountsTab(props: Props) {
                     ? "Sign in on GitHub with a one-time device code. Models depend on your Copilot plan and organization policy. Premium request and chat quotas are refreshed when GitHub exposes them."
                     : provider === "xai"
                     ? "Grok Build uses xAI device OAuth and the SuperGrok / X Premium+ subscription quota."
-                    : "OpenAI onboarding uses OAuth. Browser callback opens the login page and asks for the callback URL. Device code shows a one-time code and completes automatically after approval."}
+                    : "Approve a one-time code on OpenAI’s sign-in page. MultiVibe finishes connecting automatically. Browser callback is available as a fallback."}
                 </div>
               )}
               {provider === "opencode" && (
@@ -3175,7 +3177,7 @@ export function AccountsTab(props: Props) {
                     {editingAccount.provider === "openai" && (
                       <option value="browser">Browser callback</option>
                     )}
-                    <option value="device">Device code</option>
+                    <option value="device">Device code (recommended)</option>
                   </select>
                 </label>
               )}
@@ -3268,7 +3270,7 @@ export function AccountsTab(props: Props) {
                     ? "Sign in again on GitHub and approve the one-time device code."
                     : editingAccount.provider === "xai"
                     ? "Grok Build reauth uses xAI device OAuth. Save changes, then approve the one-time code."
-                    : "OpenAI reauth uses OAuth. Save changes to open the login flow, then paste the full callback URL instead of editing tokens manually."}
+                    : "Save changes to start sign-in. Approve the one-time code, or paste the callback URL if you chose browser callback."}
                 </div>
               )}
               <label>
@@ -3362,6 +3364,7 @@ export function AccountsTab(props: Props) {
                 Email {oauthDialog.provider !== "openai" ? "(from provider after approval)" : ""}
                 <input value={oauthDialog.email} disabled />
               </label>
+              {oauthDialog.provider === "openai" && oauthDialog.method === "device" && <ChatGPTDeviceGuide />}
               {oauthDialog.method === "device" ? (
                 <>
                   <label>

@@ -5,7 +5,7 @@ import { PROVIDER_ACCESS, matchesAccessFilter, type AccessFilter } from "../lib/
 
 export type SetupProvider = ProviderId | "nvidia-pair";
 export const SETUP_PROVIDERS: { id: SetupProvider; name: string; description: string; method: string; icon?: string }[] = [
-  { id: "openai", name: "OpenAI", description: "Connect your ChatGPT account with OAuth.", method: "Account sign-in", icon: "openai" },
+  { id: "openai", name: "OpenAI", description: "Connect your ChatGPT account with a one-time device code.", method: "Device sign-in", icon: "openai" },
   { id: "github-copilot", name: "GitHub Copilot", description: "Connect your GitHub account to use Copilot models.", method: "Device sign-in" },
   { id: "xai", name: "Grok Build", description: "Use your SuperGrok or X Premium+ subscription.", method: "Device sign-in", icon: "xai" },
   { id: "opencode", name: "OpenCode Zen / Go", description: "Connect with an API key or your Console account.", method: "API key or sign-in", icon: "opencode" },
