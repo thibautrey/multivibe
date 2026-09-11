@@ -8,9 +8,9 @@ import { winget } from './winget.mjs';
 import { createContainerReleaseMetadata } from '../provider-host/provider-host-container-release.mjs';
 const metadata = createContainerReleaseMetadata('ghcr.io/thibautrey/multivibe-host','1.2.3',`sha256:${'a'.repeat(64)}`,'b'.repeat(40));
 const sums = `${'c'.repeat(64)}  multivibe-host_1.2.3_darwin_arm64.dmg\n${'d'.repeat(64)}  multivibe-host_1.2.3_darwin_amd64.dmg\n`;
-test('release input rejects duplicates, missing architectures, prereleases and mismatched image identity', () => {
+test('release input rejects duplicates, prereleases and mismatched image identity', () => {
   assert.throws(() => checksums(sums+sums), /duplicate/);
-  assert.throws(() => releaseInputs(metadata,sums.split('\n')[0]), /Missing amd64/);
+  assert.equal(releaseInputs(metadata,sums.split('\n')[0]).size, 1);
   assert.throws(() => releaseInputs({...metadata,immutableReference:'docker.io/other/app:latest'},sums));
   const beta = createContainerReleaseMetadata(metadata.image,'1.2.3-beta.1',metadata.digest,metadata.sourceCommit);
   assert.throws(() => releaseInputs(beta,sums), /stable/);
@@ -48,4 +48,15 @@ test('WinGet binds one stable version to the complete installer bytes and user s
   assert.match(installer.Installers[0].InstallerUrl,/v1\.2\.3\/multivibe-host_1\.2\.3_windows_amd64_setup\.exe$/);
   assert.throws(()=>winget('1.2.3-beta','e'.repeat(64)), /stable/);
   assert.throws(()=>winget('1.2.3','bad'), /SHA-256/);
+});
+
+
+test('partial releases generate container packages without publishing a broken Homebrew cask', async () => {
+  const folder = await mkdtemp(path.join(os.tmpdir(),'multivibe-partial-distribution-test-'));
+  try {
+    const files = await generate(metadata, `${'e'.repeat(64)}  multivibe-host_1.2.3_linux_amd64.tar.gz\n`, folder);
+    assert.ok(files.every(name => !name.includes('homebrew')));
+    assert.ok(files.some(name => name.includes('truenas')));
+    await assert.rejects(readFile(path.join(folder, 'homebrew/Casks/multivibe-host.rb')), {code: 'ENOENT'});
+  } finally { await rm(folder,{recursive:true,force:true}); }
 });

@@ -142,14 +142,13 @@ func validateUpdateDocument(document updateDocument, now time.Time, channel stri
 	if err != nil || !expires.After(now) || !expires.After(published) || expires.Sub(published) > 366*24*time.Hour {
 		return errors.New("update feed is expired or has an invalid lifetime")
 	}
-	requiredTargets := []string{"darwin-arm64", "darwin-amd64", "linux-amd64", "windows-amd64", "docker-linux-amd64"}
-	if len(document.Targets) != len(requiredTargets) {
+	allowedTargets := map[string]bool{"darwin-arm64": true, "darwin-amd64": true, "linux-amd64": true, "windows-amd64": true, "docker-linux-amd64": true}
+	if len(document.Targets) < 1 || len(document.Targets) > len(allowedTargets) {
 		return errors.New("update feed target set is invalid")
 	}
-	for _, name := range requiredTargets {
-		target, exists := document.Targets[name]
-		if !exists {
-			return fmt.Errorf("update feed target is missing: %s", name)
+	for name, target := range document.Targets {
+		if !allowedTargets[name] {
+			return fmt.Errorf("update feed target is unsupported: %s", name)
 		}
 		if err := validateTarget(name, target); err != nil {
 			return err
