@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       self_hosted_only:
-        description: Build only the self-hosted Linux and container release
+        description: Build only configured self-hosted platforms
         type: boolean
         default: false
 
@@ -27,6 +27,8 @@ jobs:
     permissions: {}
     outputs:
       version: ${{ steps.version.outputs.value }}
+      macos_matrix: ${{ steps.macos.outputs.matrix }}
+      macos_enabled: ${{ steps.macos.outputs.enabled }}
     steps:
       - name: Require a release tag
         id: version
@@ -43,6 +45,27 @@ jobs:
             exit 1
           fi
           printf 'value=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      - name: Select native Mac runners when configured
+        id: macos
+        env:
+          ARM_RUNNER: ${{ vars.MACOS_ARM64_RUNNER || 'macos-15' }}
+          INTEL_RUNNER: ${{ vars.MACOS_AMD64_RUNNER || 'macos-15-intel' }}
+          HOSTED_DISABLED: ${{ vars.HOSTED_RELEASE_BUILDS_ENABLED == 'false' || inputs.self_hosted_only }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os
+          entries = []
+          for arch, machine, key, hosted in [('arm64', 'arm64', 'ARM_RUNNER', 'macos-15'), ('amd64', 'x86_64', 'INTEL_RUNNER', 'macos-15-intel')]:
+              runner = os.environ[key]
+              native = 'multivibe-macos-' + arch
+              if runner not in [native, hosted]: raise SystemExit('Unsupported Mac runner label')
+              if runner == native or os.environ['HOSTED_DISABLED'] != 'true':
+                  entries.append(dict(architecture=arch, machine=machine, runner=runner))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write('enabled=' + str(bool(entries)).lower() + '\n')
+              out.write('matrix=' + json.dumps({'include': entries}) + '\n')
+          PYTHON
 
   validate-catalog:
     uses: ./.github/workflows/catalog-validation.yml
@@ -163,21 +186,14 @@ jobs:
           compression-level: 0
 
   build-macos:
-    if: ${{ vars.HOSTED_RELEASE_BUILDS_ENABLED != 'false' && !inputs.self_hosted_only }}
+    if: ${{ needs.validate-tag.outputs.macos_enabled == 'true' }}
     # A later evidence gate accepts only pre-start quota failures; real build failures still block publishing.
     continue-on-error: true
     needs: [validate-tag, validate-catalog]
     name: build-macos-${{ matrix.architecture }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - architecture: arm64
-            machine: arm64
-            runner: macos-15
-          - architecture: amd64
-            machine: x86_64
-            runner: macos-15-intel
+      matrix: ${{ fromJSON(needs.validate-tag.outputs.macos_matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 150
     permissions:
@@ -255,6 +271,8 @@ jobs:
           printf '%s' "$CERTIFICATE_P12" | base64 --decode > "$certificate"
           printf '%s' "$APPLE_API_KEY" | base64 --decode > "$api_key"
           chmod 600 "$certificate" "$api_key"
+          security list-keychains -d user > "$RUNNER_TEMP/multivibe-original-keychains.txt"
+          security default-keychain -d user > "$RUNNER_TEMP/multivibe-original-default-keychain.txt"
           security create-keychain -p "$keychain_password" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
@@ -283,6 +301,16 @@ jobs:
         if: always()
         shell: bash
         run: |
+          python3 - <<'PYTHON'
+          import os, pathlib, shlex, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          for name, command in [('multivibe-original-keychains.txt', 'list-keychains'), ('multivibe-original-default-keychain.txt', 'default-keychain')]:
+              file = root / name
+              if file.exists():
+                  paths = shlex.split(file.read_text())
+                  if paths: subprocess.run(['security', command, '-d', 'user', '-s', *paths], check=True)
+                  file.unlink()
+          PYTHON
           security delete-keychain "$RUNNER_TEMP/multivibe-signing.keychain-db" >/dev/null 2>&1 || true
           rm -f "$RUNNER_TEMP/multivibe-signing.p12" "$RUNNER_TEMP/AuthKey.p8"
       - name: Verify the signed macOS archive
@@ -470,6 +498,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           HOSTED_DISABLED: ${{ vars.HOSTED_RELEASE_BUILDS_ENABLED == 'false' || inputs.self_hosted_only }}
+          MACOS_ARM64_RUNNER: ${{ vars.MACOS_ARM64_RUNNER }}
+          MACOS_AMD64_RUNNER: ${{ vars.MACOS_AMD64_RUNNER }}
         run: node scripts/provider-host/select-release-artifacts.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
