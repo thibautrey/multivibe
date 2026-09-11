@@ -144,3 +144,24 @@
 .provider-selection-summary span { color: var(--muted); line-height: 1.5; }
 .provider-setup-footer { padding-top: 16px; margin-top: 16px; }
 @media (max-width: 550px) { .provider-setup-card { min-height: 70px; } }
+
+/* Widget editing uses a compact ordered list instead of oversized metric previews. */
+.widget-board-editing { padding: 20px; border-radius: 12px; box-shadow: none; }
+.widget-board-editing .widget-toolbar .eyebrow { font-family: var(--sans); font-size: 16px; color: var(--text); letter-spacing: 0; text-transform: none; font-weight: 600; }
+.widget-board-editing .widget-toolbar p { font-size: 11px; }
+.widget-board-editing .widget-toolbar-actions .btn { min-height: 34px; padding: 7px 12px; font-size: 11px; }
+.widget-board-editing .widget-grid { display: flex; flex-direction: column; gap: 8px; }
+.widget-board-editing .widget-tile { display: flex; flex-direction: row; align-items: center; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.widget-board-editing .widget-edit-header { flex: 1 1 220px; padding: 10px; gap: 10px; }
+.widget-edit-title { flex: 1; font-size: 12px; }
+.widget-board-editing .widget-remove { width: auto; height: auto; font-size: 11px; background: transparent; color: var(--muted); padding: 5px 8px; border-radius: 5px; }
+.widget-board-editing .widget-required { font-size: 10px; border: 0; padding: 5px 8px; }
+.widget-board-editing .widget-edit-footer { border: 0; padding: 10px; gap: 20px; }
+.widget-size-select { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
+.widget-size-select select { font-size: 11px; border-radius: 6px; min-height: 30px; padding: 4px 26px 4px 8px; }
+.widget-board-editing .widget-gallery { margin-top: 18px; padding-top: 16px; }
+.widget-board-editing .widget-gallery h3 { margin: 0 0 10px; font-size: 13px; letter-spacing: 0; }
+.widget-board-editing .widget-gallery-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; }
+.widget-board-editing .widget-gallery-item { border-radius: 7px; padding: 10px 12px; }
+.widget-board-editing .widget-gallery-caption { margin: 0; gap: 16px; }
+@media(max-width: 550px) { .widget-board-editing .widget-edit-header { flex-basis: 100%; } .widget-board-editing .widget-edit-footer { width: 100%; justify-content: space-between; padding-top: 0; } }
