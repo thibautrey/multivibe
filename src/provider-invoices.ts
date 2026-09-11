@@ -127,10 +127,11 @@ export async function invoiceOverview(accounts: readonly Account[], cloud?: { ge
     // Independent account reads, bounded concurrency. One denied key must not hide another account's invoices.
     const candidates = accounts.filter(account => account.provider === "ai-sdk" && account.sdkProvider === "deepinfra" && !account.multivibeCloud && !account.localRuntime && account.location !== "local");
     const rows = new Map<string, Invoice>();
+    const signal = AbortSignal.timeout(8000);
     for (let offset = 0; offset < candidates.length; offset += 3) {
       await Promise.all(candidates.slice(offset, offset + 3).map(async account => {
         try {
-          const result = await deepinfraInvoices(account.accessToken);
+          const result = await deepinfraInvoices(account.accessToken, fetch, signal);
           for (const invoice of result.invoices) rows.set(invoice.id, invoice);
           deepinfra.limited ||= result.limited;
         } catch { deepinfra.status = "unavailable"; }
@@ -152,11 +153,10 @@ export async function invoiceOverview(accounts: readonly Account[], cloud?: { ge
 }
 
 /** DeepInfra documents invoice totals without a currency/unit contract. Keep document links, never guess a price. */
-export async function deepinfraInvoices(token: string, fetchImpl: typeof fetch = fetch): Promise<{ invoices: Invoice[]; limited: boolean }> {
+export async function deepinfraInvoices(token: string, fetchImpl: typeof fetch = fetch, signal = AbortSignal.timeout(8000)): Promise<{ invoices: Invoice[]; limited: boolean }> {
   const invoices: Invoice[] = [];
   const seen = new Set<string>();
   let cursor: string | undefined;
-  const signal = AbortSignal.timeout(8000);
   for (let page = 0; page < 4; page++) {
     const response = await fetchImpl(`https://api.deepinfra.com/payment/invoices?limit=50${cursor ? `&starting_after=${encodeURIComponent(cursor)}` : ""}`, {
       headers: { authorization: `Bearer ${token}`, accept: "application/json" }, redirect: "error", signal,

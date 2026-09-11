@@ -47,3 +47,13 @@ test("demo rejects writes, OAuth, inference, and exports without changing fixtur
   assert.deepEqual(api("POST", "/admin/usage/refresh-stale").body, original);
   assert.equal(read("/admin/settings").settings.anonymousUsageSharingEnabled, false);
 });
+
+
+test("demo invoice sources match configured billable providers and enforce the billing role", () => {
+  const overview = read("/admin/invoices");
+  assert.deepEqual(overview.providers.map((provider: any) => provider.id), ["openai", "mistral"]);
+  assert.equal(overview.providers[0].accounts.length, 2);
+  assert.ok(overview.providers.every((provider: any) => provider.invoices.length === 0));
+  assert.equal(createDemoApi(now, "member")("GET", "/admin/invoices").status, 403);
+  assert.equal(createDemoApi(now, "billing")("GET", "/admin/invoices").status, 200);
+});
