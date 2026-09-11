@@ -286,7 +286,7 @@ export type TraceRangePreset = "24h" | "7d" | "30d" | "all";
 
 export type ActivityView = "overview" | "performance" | "usage" | "requests";
 
-export type Tab =
+export type Tab = "invoices" |
   | "models"
   | "overview"
   | "accounts"

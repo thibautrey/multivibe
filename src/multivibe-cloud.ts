@@ -1,3 +1,4 @@
+import { normalizeCloudInvoices, type Invoice } from "./provider-invoices.js";
 import type { TeamMachineDirectory } from "./team-machine-directory.js";
 import type { TeamMachineSharing } from "./team-machine-sharing.js";
 import type { SignedMachinePolicy } from "./team-machine-protocol.js";
@@ -328,6 +329,13 @@ export class MultivibeCloudService {
     await this.store.flushIfDirty();
   }
 
+  async getInvoices(): Promise<Invoice[]> {
+    let connection = currentCloudConnection(await this.store.getSettings());
+    if (!connection) return [];
+    connection = await this.refreshConnectionIfNeeded(connection);
+    return normalizeCloudInvoices(await this.requestJson("/client/v1/billing/invoices?limit=100", connection.accessToken, { signal: AbortSignal.timeout(8000) }));
+  }
+
   async getStatus(): Promise<MultivibeCloudStatus> {
     const settings = await this.store.getSettings();
     let connection = currentCloudConnection(settings);
@@ -592,6 +600,7 @@ export class MultivibeCloudService {
     method?: string;
     body?: unknown;
     idempotencyKey?: string;
+    signal?: AbortSignal;
   } = {}): Promise<unknown> {
     const headers: Record<string, string> = {
       accept: "application/json",
@@ -603,6 +612,7 @@ export class MultivibeCloudService {
     }
     const response = await this.fetchImpl(`${this.apiBaseUrl}${path}`, {
       method: options.method ?? "GET",
+      signal: options.signal,
       headers,
       ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
     });

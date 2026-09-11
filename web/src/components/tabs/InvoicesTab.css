@@ -1,0 +1,27 @@
+.invoices-page { max-width: 1050px; margin: 0 auto; display: grid; gap: 18px; }
+.invoices-heading,.invoice-provider-heading { display:flex; align-items:center; gap:14px; }
+.invoices-heading { justify-content:space-between; margin-bottom:4px; }
+.invoices-heading h1 { font-size:26px; letter-spacing:-.7px; margin:0 0 5px; }
+.invoices-heading p,.invoice-provider-title p,.invoice-instruction,.invoice-footer { color:var(--muted); font-size:13px; margin:0; line-height:1.5; }
+.invoice-provider { border:1px solid var(--border); border-radius:16px; background:var(--panel); padding:20px; min-width:0; }
+.invoice-provider-title { flex:1; min-width:0; }
+.invoice-provider-title h2 { font-size:16px; margin:0 0 4px; }
+.invoice-provider-title p { overflow-wrap:anywhere; }
+.invoice-provider-heading .btn { flex-shrink:0; }
+.invoice-provider-heading .provider-setup-mark { width:42px; height:42px; flex-shrink:0; }
+.invoice-instruction { margin-top:13px; }
+.invoice-table-scroll { overflow-x:auto; margin-top:18px; }
+.invoice-table { width:100%; border-collapse:collapse; text-align:left; font-size:13px; }
+.invoice-table th { color:var(--muted); font-size:11px; font-weight:600; }
+.invoice-table td,.invoice-table th { padding:13px 10px; border-bottom:1px solid var(--border); white-space:nowrap; }
+.invoice-table td:first-child,.invoice-table th:first-child { padding-left:0; }
+.invoice-table td:last-child,.invoice-table th:last-child { padding-right:0; text-align:right; }
+.invoice-table tbody tr:last-child td { border-bottom:0; }
+.invoice-reference { display:block; max-width:200px; overflow:hidden; text-overflow:ellipsis; }
+.invoice-amount { font-variant-numeric:tabular-nums; font-weight:600; }
+.invoice-muted { color:var(--muted); font-weight:400; }
+.invoice-status { text-transform:capitalize; font-size:12px; }
+.invoice-status.is-paid { color:var(--primary); }
+.invoice-notice { border:1px solid var(--border); border-radius:10px; padding:12px; color:var(--muted); font-size:13px; line-height:1.5; }
+.invoice-footer { text-align:center; margin-top:2px; }
+@media(max-width:600px) { .invoice-provider { padding:15px; } .invoice-provider-heading { flex-wrap:wrap; gap:10px; } .invoice-provider-heading .btn { margin-left:52px; } .invoice-reference { max-width:125px; } }

@@ -422,3 +422,17 @@ test("inactive personal subscriptions do not enable Team UI", async () => {
   const cloud = service(stores, (async () => response({role:"owner",subscription:{state:"inactive"}})) as typeof fetch);
   assert.deepEqual(await cloud.teamWorkspace(), {state:"personal",role:null});
 });
+
+test("invoice retrieval uses the Cloud access token with a bounded request and keeps it server-side", async () => {
+  const stores = fakeStores({ settings: { multivibeCloud: { accessToken: "cloud-secret", expiresAt: Date.now() + 3600000 } } });
+  const cloud = service(stores, async (url, init) => {
+    assert.equal(String(url), "https://app.example.test/client/v1/billing/invoices?limit=100");
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer cloud-secret");
+    assert.ok(init?.signal);
+    return response({ environment: "live", financialEnvironment: "live", data: [{ invoiceId: "in_real", amountDueMinor: "1000", currency: "USD", paid: true }] });
+  });
+  const invoices = await cloud.getInvoices();
+  assert.equal(invoices[0].amountMinor, "1000");
+  assert.ok(!JSON.stringify(invoices).includes("cloud-secret"));
+  assert.deepEqual(await service(fakeStores(), async () => { throw new Error("must not fetch"); }).getInvoices(), []);
+});
