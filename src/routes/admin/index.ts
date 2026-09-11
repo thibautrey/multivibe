@@ -1,3 +1,4 @@
+import { publishDeviceSignIn } from "../../host/device-signin.js";
 import { COPILOT_BASE_URL, requestCopilotDeviceCode, pollCopilotDeviceCode, accountFromCopilotOAuth, trustedCopilotBaseUrl } from "../../github-copilot.js";
 import { withVirtualModels } from "../../module-virtual-models.js";
 import { MULTIVIBE_CONTROL_PLANE } from "../../config.js";
@@ -2245,6 +2246,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
             intervalSeconds: device.intervalSeconds,
             expiresAt: device.expiresAt,
           });
+          if (options.hostApplication) publishDeviceSignIn({ id: flow.id, provider, code: device.userCode, expiresAt: device.expiresAt });
           return res.json({
             ok: true,
             flowId: flow.id,
@@ -2267,6 +2269,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
             intervalSeconds: device.intervalSeconds,
             expiresAt: device.expiresAt,
           });
+          if (options.hostApplication) publishDeviceSignIn({ id: flow.id, provider, code: device.userCode, expiresAt: device.expiresAt });
           return res.json({
             ok: true,
             flowId: flow.id,
@@ -2293,6 +2296,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
           intervalSeconds,
           expiresAt,
         });
+        if (options.hostApplication) publishDeviceSignIn({ id: flow.id, provider, code: device.user_code, expiresAt });
         return res.json({
           ok: true,
           flowId: flow.id,
