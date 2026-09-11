@@ -314,6 +314,8 @@ jobs:
             /System/Library/Keychains/SystemRootCertificates.keychain
           security default-keychain -d user -s "$keychain"
           security find-identity -v -p codesigning | grep -F -- "$certificate_fingerprint" >/dev/null || {
+            security find-identity -p codesigning || true
+            security verify-cert -c "$certificate_pem" -p codeSign || true
             echo "::error::The imported Developer ID Application certificate is not a valid code-signing identity."
             exit 1
           }
