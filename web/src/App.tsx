@@ -1342,7 +1342,6 @@ export default function App() {
 
           {error && <div className="panel error workspace-error">{error}</div>}
 
-          <header className="workspace-topbar"><span>Workspace <span aria-hidden="true">/</span> <strong>{activeTabItem.label}</strong></span><a href={GITHUB_REPOSITORY_URL} target="_blank" rel="noreferrer">Help & feedback ↗</a></header>
           <main className={`workspace-content workspace-${tab}`}>
 
         {tab === "overview" && teamWorkspace.state !== "personal" && (

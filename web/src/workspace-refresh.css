@@ -18,12 +18,8 @@
 .sidebar-nav .workspace-chat-link { background: var(--text); color: var(--panel); border: 0; border-radius: 8px; margin: 0 4px 8px; min-height: 39px; font-size: 12px; }
 .sidebar-status { background: transparent; border: 0; padding-inline: 8px; }
 .workspace { max-width: 1600px; padding: 0 42px 40px; margin: 0 auto; box-sizing: border-box; gap: 0; }
-.workspace-topbar { min-height: 70px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); font-size: 11px; color: var(--muted); margin-bottom: 32px; }
-.workspace-topbar strong { font-weight: 500; color: var(--text); }
-.workspace-topbar span span { padding: 0 14px; opacity: .5; }
-.workspace-topbar a { color: var(--muted); text-decoration: none; }
 .demo-notice { order: -1; margin: 12px 0 0; padding: 8px 12px; border-radius: 7px; font-size: 10px; background: var(--surface-muted); border-color: var(--line); }
-.workspace-content { gap: 24px; }
+.workspace-content { gap: 24px; padding-top: 24px; }
 .panel { border-radius: 12px; box-shadow: none; border-color: var(--line); }
 .btn { border-radius: 8px; box-shadow: none; font-weight: 600; }
 .btn:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
@@ -82,7 +78,6 @@
  .sidebar { position: static; height: auto; padding: 12px 20px; border-bottom: 1px solid var(--line); border-right: 0; }
  .sidebar-brand { padding: 0; }
  .workspace { padding: 0 24px 32px; }
- .workspace-topbar { min-height: 55px; margin-bottom: 22px; }
 }
 @media (max-width: 700px) {
  .workspace { padding: 0 16px 24px; }
@@ -95,7 +90,5 @@
  .overview-metrics .metric { min-height: 120px; padding: 16px; }
  .overview-detail-grid { grid-template-columns: 1fr; }
  .workspace-content { gap: 20px; }
- .workspace-topbar span span { padding: 0 6px; }
- .workspace-topbar a { font-size: 10px; }
  .demo-notice { flex-wrap: wrap; }
 }
