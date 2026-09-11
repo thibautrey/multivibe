@@ -1,0 +1,72 @@
+name: Bootstrap macOS Intel GUI runner
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  bootstrap:
+    runs-on: multivibe-macos-amd64
+    timeout-minutes: 15
+    steps:
+      - name: Install the GUI-session runner
+        env:
+          REGISTRATION_TOKEN: ${{ secrets.MACOS_GUI_RUNNER_REGISTRATION_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$(uname -s)" == Darwin && "$(uname -m)" == x86_64 ]]
+          [[ -n "${REGISTRATION_TOKEN:-}" ]]
+          [[ "$(stat -f '%Su' /dev/console)" == "$(id -un)" ]] || {
+            echo "::error::The Intel runner service user is not the logged-in console user."
+            exit 1
+          }
+
+          install_dir="$HOME/actions-runner-multivibe-macos-amd64-gui"
+          [[ ! -e "$install_dir" ]] || {
+            echo "::error::The GUI runner directory already exists: $install_dir"
+            exit 1
+          }
+          archive="$RUNNER_TEMP/actions-runner-osx-x64-2.337.0.tar.gz"
+          curl --fail --location \
+            https://github.com/actions/runner/releases/download/v2.337.0/actions-runner-osx-x64-2.337.0.tar.gz \
+            --output "$archive"
+          [[ "$(shasum -a 256 "$archive" | awk '{print $1}')" == "d383f505d7ed041b1873ab68c35dd766fc093f2252330f95bb427be8f2c6dcfc" ]]
+          mkdir "$install_dir"
+          tar -xzf "$archive" -C "$install_dir"
+          rm -f "$archive"
+          "$install_dir/config.sh" --unattended \
+            --url https://github.com/thibautrey/multivibe \
+            --token "$REGISTRATION_TOKEN" \
+            --name multivibe-macos-amd64-gui \
+            --labels multivibe-macos-amd64-gui \
+            --work _work
+
+          launch_agents="$HOME/Library/LaunchAgents"
+          plist="$launch_agents/solutions.pleiades.github-runner.multivibe-macos-amd64-gui.plist"
+          mkdir -p "$launch_agents"
+          cat > "$plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>Label</key><string>solutions.pleiades.github-runner.multivibe-macos-amd64-gui</string>
+            <key>ProgramArguments</key><array><string>/bin/bash</string><string>$install_dir/run.sh</string></array>
+            <key>WorkingDirectory</key><string>$install_dir</string>
+            <key>EnvironmentVariables</key><dict>
+              <key>HOME</key><string>$HOME</string>
+              <key>PATH</key><string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+            </dict>
+            <key>RunAtLoad</key><true/>
+            <key>KeepAlive</key><true/>
+            <key>ThrottleInterval</key><integer>15</integer>
+            <key>StandardOutPath</key><string>$install_dir/_diag/launchagent.log</string>
+            <key>StandardErrorPath</key><string>$install_dir/_diag/launchagent.log</string>
+          </dict></plist>
+          PLIST
+          plutil -lint "$plist"
+          uid="$(id -u)"
+          launchctl bootstrap "gui/$uid" "$plist"
+          launchctl enable "gui/$uid/solutions.pleiades.github-runner.multivibe-macos-amd64-gui"
+          launchctl kickstart -k "gui/$uid/solutions.pleiades.github-runner.multivibe-macos-amd64-gui"

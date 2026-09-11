@@ -59,8 +59,9 @@ jobs:
           for arch, machine, key, hosted in [('arm64', 'arm64', 'ARM_RUNNER', 'macos-15'), ('amd64', 'x86_64', 'INTEL_RUNNER', 'macos-15-intel')]:
               runner = os.environ[key]
               native = 'multivibe-macos-' + arch
-              if runner not in [native, hosted]: raise SystemExit('Unsupported Mac runner label')
-              if runner == native or os.environ['HOSTED_DISABLED'] != 'true':
+              gui = native + '-gui'
+              if runner not in [native, gui, hosted]: raise SystemExit('Unsupported Mac runner label')
+              if runner in [native, gui] or os.environ['HOSTED_DISABLED'] != 'true':
                   entries.append(dict(architecture=arch, machine=machine, runner=runner))
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
               out.write('enabled=' + str(bool(entries)).lower() + '\n')
