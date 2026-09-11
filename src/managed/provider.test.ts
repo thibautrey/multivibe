@@ -68,7 +68,7 @@ test("discovery refuses page/model ceilings and a failed later page",async()=>{
    const data=Array.from({length:scenario==="models"?6000:1},(_,i)=>({id:`model-${calls}-${i}`}));
    return Response.json({data,has_more:true,last_id:data.at(-1)!.id});
   }});
-  await assert.rejects(account.discoverModels(AbortSignal.timeout(3000)),/provider_discovery_(incomplete|too_large|unavailable)/);
+  await assert.rejects(account.discoverModels(AbortSignal.timeout(3000)),/provider_discovery_(incomplete|too_large|upstream_unavailable)/);
   assert.equal(calls,scenario==="pages"?100:2);
  }
 });
