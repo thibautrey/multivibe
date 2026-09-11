@@ -215,6 +215,7 @@ export default function App() {
   const [invoicesLoading, setInvoicesLoading] = useState(true);
   const [invoicesError, setInvoicesError] = useState("");
   const [invoiceRefresh, setInvoiceRefresh] = useState(0);
+  const cloudConnected = multivibeCloud.status === "connected";
   const canManage = canManageWorkspace(teamWorkspace);
   const canViewInvoices = canManage || (teamWorkspace.state === "team" && teamWorkspace.role === "billing");
   const invoiceAccountSignature = JSON.stringify(accounts.map(account => [account.id, account.provider, account.sdkProvider, account.email, account.multivibeCloud]));
@@ -1185,7 +1186,7 @@ export default function App() {
             onFocusCapture={revealSidebarScrollbar}
           >
             <nav className="sidebar-nav" aria-label="Primary navigation">
-              <a className="btn workspace-chat-link" href="https://chat.multivibe.cloud">Open chat →</a>
+              {cloudConnected && <a className="btn workspace-chat-link" href="https://chat.multivibe.cloud">Open chat →</a>}
               {visibleTabItems.map((item, index) => (
                 <React.Fragment key={item.id}>
                 {(index === 0 || visibleTabItems[index - 1].group !== item.group) && <span className="sidebar-nav-label">{canManage ? item.group : "Workspace"}</span>}
@@ -1379,7 +1380,7 @@ export default function App() {
         )}
 
         <div className="workspace">
-          <a className="btn core-mobile-chat" href="https://chat.multivibe.cloud">Open chat →</a>
+          {cloudConnected && <a className="btn core-mobile-chat" href="https://chat.multivibe.cloud">Open chat →</a>}
 
           {demo && <div className="demo-notice" role="note"><strong>Demo instance</strong><span>Fictional data · Read-only · No providers connected</span></div>}
 
@@ -1393,7 +1394,7 @@ export default function App() {
             <h1>{canManage ? "Your team, in one place" : "Ready when you are"}</h1>
             <p>{teamWorkspace.state === "unavailable" ? "Team access could not be verified. Retry to restore your workspace controls." : canManage ? "Manage shared resources in Cloud, or configure this instance using the navigation." : "Start a conversation or explore the models available to this machine. Your team manages shared providers and configuration."}</p>
             <div className="team-workspace-actions">
-              <a className="btn" href="https://chat.multivibe.cloud">Open chat →</a>
+              {cloudConnected && <a className="btn" href="https://chat.multivibe.cloud">Open chat →</a>}
               <button className="btn secondary" onClick={() => setTab("models")}>Browse models</button>
               <a className="btn secondary" href="https://app.multivibe.cloud/team">{canManage ? "Manage team" : "View my team"}</a>
               {teamWorkspace.role === "billing" && <a className="btn secondary" href="https://app.multivibe.cloud/billing">Team billing</a>}
@@ -1420,7 +1421,7 @@ export default function App() {
         )}
 
         {tab === "models" && <ModelsTab canConfigure={canManage} models={models} accounts={accounts}
-          cloudConnected={multivibeCloud.status === "connected"} onUse={canManage ? openModelInDocs : () => window.location.assign("https://chat.multivibe.cloud")}
+          cloudConnected={cloudConnected} onUse={canManage ? openModelInDocs : () => { if (cloudConnected) window.location.assign("https://chat.multivibe.cloud"); }}
           onConnectCloud={connectMultivibeCloud} onConfigure={(route) => {
             if (route.source === "cloud") {
               window.location.assign(`https://app.multivibe.cloud/models/${encodeURIComponent(route.modelId)}`);
