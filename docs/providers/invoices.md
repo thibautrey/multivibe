@@ -20,7 +20,7 @@ Public destination checks followed login redirects, without signing in. A 200/lo
 
 | Provider | Invoice/billing route or audit reference |
 | --- | --- |
-| ChatGPT (`openai`) | ChatGPT Settings → Account → Payment → Manage → Invoice history. Consumer subscription, not OpenAI API billing. Mobile purchases use original-store receipts. |
+| ChatGPT (`openai`) | ChatGPT Settings → Billing → Manage → Invoice history. Consumer subscription, not OpenAI API billing. Mobile purchases use original-store receipts. |
 | GitHub Copilot | Personal billing/payment information; organizations use their own billing account. |
 | Grok Build (`xai`) | Grok subscription settings; X Premium+ or mobile purchases use their original billing store. Never the unrelated xAI API console. |
 | OpenCode Zen / Go | OpenCode Console workspace → Billing; [Zen docs](https://opencode.ai/docs/zen/). |
