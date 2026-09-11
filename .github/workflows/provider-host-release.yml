@@ -252,13 +252,12 @@ jobs:
         env:
           CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: |
           set -euo pipefail
-          for variable in CERTIFICATE_P12 CERTIFICATE_PASSWORD SIGN_IDENTITY APPLE_API_KEY APPLE_API_KEY_ID APPLE_API_ISSUER_ID; do
+          for variable in CERTIFICATE_P12 CERTIFICATE_PASSWORD APPLE_API_KEY APPLE_API_KEY_ID APPLE_API_ISSUER_ID; do
             if [[ -z "${!variable:-}" ]]; then
               echo "::error::Missing required Apple release credential: $variable"
               exit 1
@@ -271,6 +270,16 @@ jobs:
           printf '%s' "$CERTIFICATE_P12" | base64 --decode > "$certificate"
           printf '%s' "$APPLE_API_KEY" | base64 --decode > "$api_key"
           chmod 600 "$certificate" "$api_key"
+          certificate_pem="$RUNNER_TEMP/multivibe-signing.pem"
+          openssl pkcs12 -in "$certificate" -clcerts -nokeys \
+            -passin env:CERTIFICATE_PASSWORD -out "$certificate_pem"
+          certificate_subject="$(openssl x509 -in "$certificate_pem" -noout -subject -nameopt RFC2253)"
+          [[ "$certificate_subject" == *"CN=Developer ID Application:"* ]] || {
+            echo "::error::The imported certificate is not a Developer ID Application certificate."
+            exit 1
+          }
+          certificate_fingerprint="$(openssl x509 -in "$certificate_pem" -noout -fingerprint -sha1 | cut -d= -f2 | tr -d :)"
+          rm -f "$certificate_pem"
           security list-keychains -d user > "$RUNNER_TEMP/multivibe-original-keychains.txt"
           security default-keychain -d user > "$RUNNER_TEMP/multivibe-original-default-keychain.txt"
           security create-keychain -p "$keychain_password" "$keychain"
@@ -280,16 +289,15 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
           security list-keychains -d user -s "$keychain"
           security default-keychain -d user -s "$keychain"
-          security find-identity -v -p codesigning "$keychain" | grep -F -- "$SIGN_IDENTITY" >/dev/null || {
-            echo "::error::The requested Developer ID Application identity was not imported."
+          security find-identity -v -p codesigning "$keychain" | grep -F -- "$certificate_fingerprint" >/dev/null || {
+            echo "::error::The imported Developer ID Application certificate is not a valid code-signing identity."
             exit 1
           }
+          printf 'SIGN_IDENTITY=%s\n' "$certificate_fingerprint" >> "$GITHUB_ENV"
           xcrun notarytool store-credentials multivibe-release \
             --key "$api_key" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" --keychain "$keychain"
           rm -f "$certificate" "$api_key"
       - name: Build, sign and notarize the macOS archive
-        env:
-          SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
         run: >-
           npm run package:provider-host --
           --version "${{ needs.validate-tag.outputs.version }}"
