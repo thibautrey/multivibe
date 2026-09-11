@@ -5,7 +5,7 @@ import { createDemoFixtures } from "./fixtures";
 
 export const DEMO_READ_ONLY = "Demo instance is read-only. Provider connections, configuration changes, exports, and inference are unavailable.";
 
-export function createDemoApi(now = Date.now(), workspace: "personal" | "owner" | "admin" | "member" | "billing" = "personal") {
+export function createDemoApi(now = Date.now(), workspace: "personal" | "owner" | "admin" | "member" | "billing" = "personal", hostApplication = false) {
   const fixtures = createDemoFixtures(now);
   const json = (body: unknown, status = 200) => ({ status, body });
   return (method: string, input: string) => {
@@ -23,17 +23,27 @@ export function createDemoApi(now = Date.now(), workspace: "personal" | "owner" 
       "/admin/provider-agent/local-worker": { localWorker: null },
       "/admin/cloud/models": { models: [{ id: "hf:demo/cloud-model", name: "Demo Cloud model", aliases: [], availability: "unknown", network: false }] },
       "/admin/cloud": { status: "disconnected", topupUrl: "https://app.multivibe.cloud/billing" },
-      "/admin/config": { hostApplication: false, usageCacheTtlMs: 86400000, oauthRedirectUri: "http://localhost:4173/auth/callback" },
+      "/admin/config": { hostApplication, usageCacheTtlMs: 86400000, oauthRedirectUri: "http://localhost:4173/auth/callback" },
       "/v1/models": { object: "list", data: fixtures.models },
       "/admin/model-aliases": { modelAliases: fixtures.aliases },
       "/admin/settings": { settings: { anonymousUsageSharingEnabled: false, defaultPassthroughAccountId: fixtures.accounts[0].id } },
       "/admin/proxy-api-keys": { proxyApiKeys: fixtures.apiKeys },
       "/admin/application-policies": { applicationPolicies: fixtures.apiKeys.map((key) => ({ application: key.application, fairnessWeight: key.application === "Documentation bot" ? 1 : 3, webhooks: [] })) },
       "/admin/modules": { modules: fixtures.modules, marketplace: fixtures.modules.map((module) => ({ ...module, submittedAt: new Date(now).toISOString() })) },
-      "/admin/host-harnesses": { hostApplication: false, harnesses: [] },
+      "/admin/host-harnesses": { hostApplication, harnesses: hostApplication ? [
+        { id: "openai-codex", name: "Codex", category: "cli", detected: true, detectedBy: ["command:codex"], configured: true, managed: true, drifted: false, canInstall: true, repairable: false, canUninstall: true, projectTracking: "not-installed" },
+        { id: "claude-code", name: "Claude Code", category: "cli", detected: true, detectedBy: ["command:claude"], configured: false, managed: false, drifted: false, canInstall: true, repairable: false, canUninstall: false },
+        { id: "opencode", name: "OpenCode", category: "cli", detected: true, detectedBy: ["command:opencode"], configured: true, managed: true, drifted: true, canInstall: true, repairable: true, canUninstall: true },
+      ] : [] },
       "/admin/quota-reset-forecast": { forecast: { score: 18, state: "low", horizonHours: 24 } },
       "/health": { status: "ok", demo: true },
     };
+    if (hostApplication && path === "/admin/host-update") return json({
+      schema_version: "multivibe-host-updater-state-v1", mode: "notify", channel: "stable", current_version: "0.2.0-demo", status: "current",
+      last_checked_at: new Date(now).toISOString(), next_check_at: new Date(now + 3600000).toISOString(), available_version: null,
+      available_critical: false, rollout_eligible: false, downloaded: false, download_requested: false, install_requested: false,
+      last_installed_at: null, last_error_code: null, last_error: null, container_managed: false,
+    });
     if (Object.hasOwn(reads, path)) return json(reads[path]);
     if (path === "/admin/traces/export.zip") return json({ error: DEMO_READ_ONLY }, 403);
     if (path.startsWith("/admin/traces/")) {
