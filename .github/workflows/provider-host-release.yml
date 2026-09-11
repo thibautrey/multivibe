@@ -271,7 +271,7 @@ jobs:
           printf '%s' "$APPLE_API_KEY" | base64 --decode > "$api_key"
           chmod 600 "$certificate" "$api_key"
           certificate_pem="$RUNNER_TEMP/multivibe-signing.pem"
-          openssl pkcs12 -in "$certificate" -clcerts -nokeys \
+          openssl pkcs12 -legacy -in "$certificate" -clcerts -nokeys \
             -passin env:CERTIFICATE_PASSWORD -out "$certificate_pem"
           certificate_subject="$(openssl x509 -in "$certificate_pem" -noout -subject -nameopt RFC2253)"
           [[ "$certificate_subject" == *"CN=Developer ID Application:"* ]] || {
