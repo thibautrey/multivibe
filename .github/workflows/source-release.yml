@@ -17,6 +17,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        env:
+          RUNNER_TOOL_CACHE: ${{ runner.temp }}/toolcache
         with:
           node-version: 22
       - run: npm ci --ignore-scripts
@@ -61,6 +63,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        env:
+          RUNNER_TOOL_CACHE: ${{ runner.temp }}/toolcache
         with:
           node-version: 22
       - name: Require immutable annotated source tag
