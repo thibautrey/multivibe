@@ -993,6 +993,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
   router.get("/provider-catalog", (_req, res) => res.json(sdkProviderCatalog()));
 
   router.get("/invoices", async (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
     // A local admin session alone must not expose a Team's financial documents to members.
     const settings = await store.getSettings();
     const context = options.multivibeCloud ? await options.multivibeCloud.teamWorkspace() :
@@ -1000,7 +1001,6 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     if (context.state !== "personal" && !(context.state === "team" && ["owner", "admin", "billing"].includes(context.role ?? ""))) {
       return res.status(403).json({ error: "Billing access is unavailable for this workspace." });
     }
-    res.setHeader("Cache-Control", "no-store");
     return res.json(await invoiceOverview(await store.listAccounts(), options.multivibeCloud));
   });
 
