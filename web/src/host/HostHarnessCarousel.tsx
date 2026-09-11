@@ -249,7 +249,7 @@ export function HostHarnessCards({ onApiKeysChanged, variant = "default" }: Prop
               </div>
               <div className="harness-summary-actions">
                 {!connected && harness.canInstall && <button className="btn" type="button" disabled={busyId === harness.id} onClick={() => void connect(harness)}>{busyId === harness.id ? "Connecting…" : "Connect"}</button>}
-                {harness.managed && harness.drifted && harness.repairable && <button className="btn secondary" type="button" disabled={busyId === harness.id} onClick={() => void repair(harness)}>{busyId === harness.id ? "Repairing…" : "Repair"}</button>}
+                {harness.managed && harness.drifted && harness.repairable && <button className="btn secondary" type="button" disabled={busyId === harness.id} onClick={() => void repair(harness)}>{busyId === harness.id ? "Repairing…" : "Repair connection"}</button>}
                 <button className="btn ghost harness-options" type="button" aria-label={`${expanded ? "Close" : "Open"} ${harness.name} options`} aria-controls={detailsId} aria-expanded={expanded} onClick={() => toggleDetails(harness.id)}>{expanded ? "Close" : "Options"}<span aria-hidden="true">{expanded ? " −" : " +"}</span></button>
               </div>
             </div>
