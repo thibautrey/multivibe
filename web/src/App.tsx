@@ -138,6 +138,15 @@ function activeModelBlockCount(account: Account) {
 }
 
 export default function App() {
+  const [sidebarScrolling, setSidebarScrolling] = useState(false);
+  const sidebarScrollTimer = useRef<ReturnType<typeof setTimeout>>();
+  const revealSidebarScrollbar = () => {
+    setSidebarScrolling(true);
+    clearTimeout(sidebarScrollTimer.current);
+    sidebarScrollTimer.current = setTimeout(() => setSidebarScrolling(false), 1200);
+  };
+  useEffect(() => () => clearTimeout(sidebarScrollTimer.current), []);
+
   const [githubPromotion] = useState(() => readGitHubPromotionState(localStorage));
   const [requestedTab, setTab] = useState<Tab>(initialTab);
   const [activityView, setActivityView] = useState<ActivityView>(initialActivityView);
@@ -1139,7 +1148,12 @@ export default function App() {
             </span>
           </button>
 
-          <div className="sidebar-scroll-area">
+          <div
+            className={`sidebar-scroll-area${sidebarScrolling ? " is-scrolling" : ""}`}
+            onScroll={revealSidebarScrollbar}
+            onPointerEnter={revealSidebarScrollbar}
+            onFocusCapture={revealSidebarScrollbar}
+          >
             <nav className="sidebar-nav" aria-label="Primary navigation">
               <a className="btn workspace-chat-link" href="https://chat.multivibe.cloud">Open chat →</a>
               <span className="sidebar-workspace-name">{workspaceLabel(teamWorkspace)}</span>

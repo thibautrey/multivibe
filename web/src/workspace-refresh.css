@@ -92,3 +92,14 @@
  .workspace-content { gap: 20px; }
  .demo-notice { flex-wrap: wrap; }
 }
+
+/* Keep the gutter stable while hiding the thumb between interactions. */
+.sidebar-scroll-area { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+.sidebar-scroll-area.is-scrolling { scrollbar-color: var(--sidebar-muted) transparent; }
+.sidebar-scroll-area::-webkit-scrollbar { width: 6px; }
+.sidebar-scroll-area::-webkit-scrollbar-track { background: transparent; }
+.sidebar-scroll-area::-webkit-scrollbar-thumb { background: transparent; border-radius: 6px; }
+.sidebar-scroll-area.is-scrolling::-webkit-scrollbar-thumb { background: var(--sidebar-muted); }
+@media (forced-colors: active) {
+  .sidebar-scroll-area { scrollbar-color: auto; }
+}
