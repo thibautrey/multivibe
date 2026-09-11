@@ -3,7 +3,6 @@ import { Metric } from "../Metric";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import { ProgressStat } from "../ProgressStat";
 import { HostHarnessCards } from "../../host/HostHarnessCarousel";
-import { usd } from "../../lib/ui";
 import { AvailableModels } from "../AvailableModels";
 import type { ActivityView, ExposedModel, TraceStats } from "../../types";
 
@@ -58,7 +57,7 @@ export function OverviewTab({
   return (
     <>
       <header className="overview-heading">
-        <div><span className="eyebrow">YOUR WORKSPACE, AT A GLANCE</span><h1>A little clarity. More possibility.</h1><p className="muted">Connect your models, build something great, and keep an eye on what matters.</p></div>
+        <div><span className="eyebrow">YOUR WORKSPACE, AT A GLANCE</span><h1>Your AI workspace. Simplified.</h1><p className="muted">Connect your models, build something great, and keep an eye on what matters.</p></div>
         <button className="btn" onClick={() => navigate("docs")}>Open playground <span aria-hidden="true">↗</span></button>
       </header>
       <section className="workspace-welcome">
@@ -71,7 +70,7 @@ export function OverviewTab({
         <Metric title="Connected providers" value={`${stats.enabled}`} detail={`${stats.total} total · ${stats.blocked} need attention`} onClick={() => navigate("accounts")} />
         <Metric title="Available models" value={`${models.length}`} detail="Ready to explore and use" onClick={() => navigate("models")} />
         <Metric title="Requests" value={traceStats.totals.requests.toLocaleString()} detail="In the activity date range" onClick={() => navigate("tracing", "performance")} />
-        <Metric title="Estimated cost" value={usd(traceStats.totals.costUsd)} detail="In the activity date range" onClick={() => navigate("tracing", "usage")} />
+        <Metric title="Estimated cost" value={new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(traceStats.totals.costUsd)} detail="In the activity date range" onClick={() => navigate("tracing", "usage")} />
       </div>
 
       {showHostHarnesses && !isEverythingRunning ? (
