@@ -307,10 +307,13 @@ jobs:
           security import "$developer_id_ca" -k "$keychain"
           security import "$certificate" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
-          security list-keychains -d user -s "$keychain"
+          security list-keychains -d user -s \
+            "$keychain" \
+            /Library/Keychains/System.keychain \
+            /System/Library/Keychains/SystemRootCertificates.keychain
           security default-keychain -d user -s "$keychain"
-          security find-certificate -a -Z "$keychain" | grep -F -- "$certificate_fingerprint" >/dev/null || {
-            echo "::error::The imported Developer ID Application certificate fingerprint was not found."
+          security find-identity -v -p codesigning | grep -F -- "$certificate_fingerprint" >/dev/null || {
+            echo "::error::The imported Developer ID Application certificate is not a valid code-signing identity."
             exit 1
           }
           printf 'SIGN_IDENTITY=%s\n' "$certificate_fingerprint" >> "$GITHUB_ENV"
