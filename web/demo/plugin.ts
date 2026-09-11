@@ -9,7 +9,7 @@ export function demoApiPlugin(): Plugin {
     configureServer(server) {
       const role = process.env.MULTIVIBE_DEMO_WORKSPACE ?? "personal";
       if (!["personal", "owner", "admin", "member", "billing"].includes(role)) throw new Error("Invalid demo workspace");
-      const respond = createDemoApi(Date.now(), role as "personal" | "owner" | "admin" | "member" | "billing");
+      const respond = createDemoApi(Date.now(), role as "personal" | "owner" | "admin" | "member" | "billing", process.env.MULTIVIBE_DEMO_HOST === "1");
       server.middlewares.use((req, res, next) => {
         const path = new URL(req.url ?? "/", "http://demo.invalid").pathname;
         if (!/^\/(admin|v1|auth)(\/|$)/.test(path) && path !== "/health") return next();
