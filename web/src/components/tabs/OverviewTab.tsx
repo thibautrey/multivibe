@@ -56,14 +56,11 @@ export function OverviewTab({
 
   return (
     <>
-      <header className="overview-heading">
-        <div><span className="eyebrow">YOUR WORKSPACE, AT A GLANCE</span><h1>Your AI workspace. Simplified.</h1><p className="muted">Connect your models, build something great, and keep an eye on what matters.</p></div>
-        <button className="btn" onClick={() => navigate("docs")}>Open playground <span aria-hidden="true">↗</span></button>
-      </header>
+      <h1 className="sr-only">Workspace overview</h1>
       <section className="workspace-welcome">
         <div><span className="welcome-status">{isEverythingRunning ? "Ready for your next idea" : stats.blocked ? "Some providers need attention" : isReady ? "Your workspace is ready" : "Let’s get you connected"}</span>
         <h2>All your AI. One place to build.</h2><p>Use your favorite models through one API. Bring a provider, explore what’s available, and make your first request.</p>
-        <div className="welcome-actions"><button className="btn" onClick={() => navigate("models")}>Explore models <span aria-hidden="true">→</span></button><button className="welcome-secondary" onClick={() => navigate("accounts")}>Manage providers ↗</button></div></div>
+        <div className="welcome-actions"><button className="welcome-secondary" onClick={() => navigate("docs")}>Open playground ↗</button><button className="btn" onClick={() => navigate("models")}>Explore models <span aria-hidden="true">→</span></button><button className="welcome-secondary" onClick={() => navigate("accounts")}>Manage providers ↗</button></div></div>
         <div className="welcome-orbit" aria-hidden="true"><div className="orbit-ring orbit-one"/><div className="orbit-ring orbit-two"/><span className="orbit-node orbit-node-a">AI</span><span className="orbit-node orbit-node-b">⌘</span><span className="orbit-node orbit-node-c">✳</span><img src="/assets/brand/multivibe-app-icon.svg" alt="" /></div>
       </section>
       <div className="overview-metrics" aria-label="Workspace summary">

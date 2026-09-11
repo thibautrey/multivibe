@@ -23,11 +23,6 @@
 .panel { border-radius: 12px; box-shadow: none; border-color: var(--line); }
 .btn { border-radius: 8px; box-shadow: none; font-weight: 600; }
 .btn:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
-.overview-heading { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
-.overview-heading .eyebrow { font-size: 9px; letter-spacing: 1.6px; color: var(--muted); }
-.overview-heading h1 { font-size: clamp(24px, 2.4vw, 34px); letter-spacing: -1.2px; line-height: 1.25; margin: 10px 0; font-weight: 600; }
-.overview-heading p { font-size: 12px; margin: 0; line-height: 1.7; }
-.overview-heading > .btn { white-space: nowrap; background: var(--panel); color: var(--text); border: 1px solid var(--line); min-height: 39px; font-size: 11px; }
 .workspace-welcome { position: relative; overflow: hidden; display: grid; grid-template-columns: 1fr 240px; gap: 20px; padding: 32px; border-radius: 14px; background: #eaf1ed; color: #253e33; border: 1px solid #dae6df; }
 .welcome-status { display: inline-flex; align-items: center; gap: 7px; font-size: 10px; color: #416553; }
 .welcome-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: #508a68; }
@@ -81,8 +76,6 @@
 }
 @media (max-width: 700px) {
  .workspace { padding: 0 16px 24px; }
- .overview-heading { align-items: flex-start; flex-direction: column; gap: 16px; }
- .overview-heading h1 { font-size: 26px; }
  .workspace-welcome { grid-template-columns: 1fr; padding: 24px; }
  .workspace-welcome h2 { color: #253e33; font-size: 24px; }
  .welcome-orbit { display: none; }
