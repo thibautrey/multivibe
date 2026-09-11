@@ -1156,7 +1156,6 @@ export default function App() {
           >
             <nav className="sidebar-nav" aria-label="Primary navigation">
               <a className="btn workspace-chat-link" href="https://chat.multivibe.cloud">Open chat →</a>
-              <span className="sidebar-workspace-name">{workspaceLabel(teamWorkspace)}</span>
               {visibleTabItems.map((item, index) => (
                 <React.Fragment key={item.id}>
                 {(index === 0 || visibleTabItems[index - 1].group !== item.group) && <span className="sidebar-nav-label">{canManage ? item.group : "Workspace"}</span>}
