@@ -227,71 +227,46 @@ export function HostHarnessCards({ onApiKeysChanged, variant = "default" }: Prop
       className={`host-harness-browser host-harness-${variant}`}
       aria-label={variant === "default" ? "Coding agents" : variant === "onboarding" ? "Detected coding tools" : undefined}
     >
+      {variant === "default" && (harnesses.length > 0 || !loaded) && <header className="harness-section-heading"><h2>Coding tools</h2><span className="muted">Use your tools with MultiVibe</span></header>}
       {loaded && harnesses.length === 0 && variant === "onboarding" && (
         <div className="compact-empty-state">
-          <strong>No supported harness detected</strong>
+          <strong>No coding tools found</strong>
           <span>You can continue and connect one later.</span>
         </div>
       )}
       {!loaded && variant === "onboarding" && <p className="muted">Looking for coding tools…</p>}
-      {harnesses.length > 0 && <div className="host-harness-rail" aria-label="Detected harnesses" aria-live="polite">
+      {harnesses.length > 0 && <div className="host-harness-rail" aria-label="Detected coding tools" aria-live="polite">
         {harnesses.map((harness) => {
           const connected = harness.configured || harness.managed;
-          const statusLabel = harness.drifted ? "Needs attention" : connected ? "Connected to MultiVibe" : "Ready to connect";
+          const statusLabel = harness.drifted ? "Needs repair" : connected ? "Connected" : harness.canInstall ? "Not connected" : "Manual setup";
           const expanded = expandedHarnesses.has(harness.id);
-          const detailsId = `host-harness-details-${harness.id}`;
-          const hasDetails = Boolean(harness.detectedBy.length || harness.configPath || harness.unavailableReason || harness.drifted);
-          return <article className={`host-harness-card${expanded ? " is-expanded" : ""}`} key={harness.id}>
-            <div className="host-harness-card-main">
+          const detailsId = `host-harness-details-${variant}-${harness.id}`;
+          return <article className={`host-harness-card harness-compact${expanded ? " is-expanded" : ""}`} key={harness.id}>
+            <div className="harness-summary">
               <div className="host-harness-identity">
                 <HarnessLogo harness={harness} />
-                <div>
-                  <h3>{harness.name}</h3>
-                  <p className="muted">{statusLabel}</p>
-                </div>
+                <div><h3>{harness.name}</h3><span className={`harness-status ${harness.drifted ? "needs-repair" : connected ? "connected" : ""}`}>{statusLabel}</span></div>
               </div>
-              <div className="host-harness-card-status">
-                {connected && !harness.drifted && <span className="badge badge-live">Connected</span>}
-                {harness.drifted && <span className="badge badge-warn">Configuration changed</span>}
+              <div className="harness-summary-actions">
+                {!connected && harness.canInstall && <button className="btn" type="button" disabled={busyId === harness.id} onClick={() => void connect(harness)}>{busyId === harness.id ? "Connecting…" : "Connect"}</button>}
+                {harness.managed && harness.drifted && harness.repairable && <button className="btn secondary" type="button" disabled={busyId === harness.id} onClick={() => void repair(harness)}>{busyId === harness.id ? "Repairing…" : "Repair"}</button>}
+                <button className="btn ghost harness-options" type="button" aria-label={`${expanded ? "Close" : "Open"} ${harness.name} options`} aria-controls={detailsId} aria-expanded={expanded} onClick={() => toggleDetails(harness.id)}>{expanded ? "Close" : "Options"}<span aria-hidden="true">{expanded ? " −" : " +"}</span></button>
               </div>
             </div>
-
-            {hasDetails && <div
-              className={`host-harness-details${expanded ? " is-open" : ""}`}
-              id={detailsId}
-              aria-hidden={!expanded}
-            >
-              <div className="host-harness-details-inner">
-                <div className="host-harness-detail-meta">
-                  <span className="badge">{harness.category}</span>
-                  <p className="muted">{detectionLabel(harness)}</p>
-                </div>
-                {harness.configPath && <code className="host-harness-path">{harness.configPath}</code>}
-                {!harness.canInstall && !connected && harness.unavailableReason && <p className="host-harness-note">{harness.unavailableReason}</p>}
-                {harness.configurationIssue && <p className="host-harness-note">{harness.configurationIssue}</p>}
-                {harness.drifted && !harness.repairable && <p className="host-harness-note">MultiVibe cannot repair this file safely. Restore the installed version or remove the integration manually.</p>}
+            {expanded && <div className="harness-options-panel" id={detailsId}>
+              <p className="muted">{detectionLabel(harness)}</p>
+              {harness.configPath && <code className="host-harness-path">{harness.configPath}</code>}
+              {!harness.canInstall && !connected && harness.unavailableReason && <p>{harness.unavailableReason}</p>}
+              {harness.configurationIssue && <p>{harness.configurationIssue}</p>}
+              {harness.drifted && !harness.repairable && <p>Automatic repair isn’t available. Restore the configuration or disconnect this tool.</p>}
+              {connected && !harness.managed && <p>Connected outside MultiVibe.</p>}
+              {harness.projectTracking === "installed" && <p>Project tracking installed. In Codex, open /hooks and trust the MultiVibe SessionStart hook, then start or resume a session.</p>}
+              {harness.projectTracking === "unavailable" && <p>Project tracking is disabled for this instance.</p>}
+              <div className="harness-option-actions">
+                {harness.projectTracking === "not-installed" && <button className="btn secondary" type="button" disabled={busyId === harness.id} onClick={() => void enableProjectTracking(harness)}>{busyId === harness.id ? "Configuring…" : "Enable project tracking"}</button>}
+                {harness.managed && <button className="btn secondary" type="button" disabled={busyId === harness.id || !harness.canUninstall} onClick={() => void disconnect(harness)}>{busyId === harness.id ? "Restoring…" : "Disconnect & restore settings"}</button>}
               </div>
             </div>}
-
-            {harness.projectTracking === "installed" && <p className="host-harness-note">Project tracking installed. In Codex on this computer, open /hooks and trust the MultiVibe SessionStart hook, then start or resume a session.</p>}
-            {harness.projectTracking === "unavailable" && <p className="host-harness-note">Project tracking is unavailable because project registration is disabled.</p>}
-            <div className="host-harness-actions">
-              {harness.projectTracking === "not-installed" && <button className="btn secondary" type="button" disabled={busyId === harness.id} onClick={() => void enableProjectTracking(harness)}>{busyId === harness.id ? "Configuring…" : "Set up project tracking"}</button>}
-              {!connected && harness.canInstall && <button className="btn host-harness-primary-action" type="button" disabled={busyId === harness.id} onClick={() => void connect(harness)}>{busyId === harness.id ? "Connecting…" : "Connect automatically"}</button>}
-              {harness.managed && harness.drifted && harness.repairable && <button className="btn secondary host-harness-primary-action" type="button" disabled={busyId === harness.id} onClick={() => void repair(harness)}>{busyId === harness.id ? "Repairing…" : "Repair connection"}</button>}
-              {harness.managed && <button className="btn secondary host-harness-primary-action" type="button" disabled={busyId === harness.id || !harness.canUninstall} onClick={() => void disconnect(harness)}>{busyId === harness.id ? "Restoring…" : "Disconnect and restore"}</button>}
-              {connected && !harness.managed && <span className="muted">Already configured outside MultiVibe.</span>}
-              {!harness.canInstall && !connected && <span className="muted">Manual setup required</span>}
-              {hasDetails && <button
-                className="btn ghost host-harness-details-toggle"
-                type="button"
-                aria-controls={detailsId}
-                aria-expanded={expanded}
-                onClick={() => toggleDetails(harness.id)}
-              >
-                {expanded ? "Hide details" : "View details"}
-              </button>}
-            </div>
           </article>;
         })}
       </div>}
