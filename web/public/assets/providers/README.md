@@ -3,3 +3,5 @@ Provider icons are vendored from @lobehub/icons-static-svg (https://github.com/l
 Cloud provider icons were added from @lobehub/icons-static-svg 1.95.0 (Google Gemini uses gemini.svg; Together AI uses together.svg).
 
 Mammouth AI icon is sourced from https://info.mammouth.ai/img/mammouth/logo.svg. The mark belongs to Mammouth AI.
+
+Additional setup logos are vendored from @lobehub/icons-static-svg 1.95.0. Plan variants reuse their provider mark. Providers without a verified bundled mark use initials; custom endpoints retain a server icon.

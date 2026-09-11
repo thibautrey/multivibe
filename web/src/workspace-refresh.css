@@ -209,3 +209,5 @@
 .device-guide-toggle::after { content: ''; position: absolute; right: 2px; top: 2px; width: 14px; height: 14px; background: white; border-radius: 50%; }
 .device-guide .device-guide-note { margin: 12px 0 6px; font-size: 10px; }
 @media (max-width: 600px) { .device-guide-steps { grid-template-columns: 1fr; } }
+
+.provider-initials { font-family: var(--sans); font-size: 12px; font-weight: 700; color: var(--muted-strong); }
