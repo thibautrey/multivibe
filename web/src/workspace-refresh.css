@@ -122,3 +122,25 @@
  .harness-summary { flex-direction: row; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
  .harness-summary-actions { margin-left: auto; }
 }
+
+/* Compact provider selection, with guidance shown once for the selected provider. */
+.provider-setup-heading { font-size: 20px; font-weight: 600; letter-spacing: -.5px; }
+.provider-setup-picker { gap: 12px; }
+.provider-setup-search { font-size: 11px; gap: 6px; }
+.provider-setup-search input { min-height: 40px; font-size: 13px; border-radius: 8px; }
+.provider-picker-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.provider-pricing-select { display: flex; align-items: center; gap: 10px; font-size: 11px; }
+.provider-pricing-select select { min-height: 32px; font-size: 11px; border-radius: 7px; padding-block: 5px; }
+.provider-picker-toolbar > span { font-size: 10px; }
+.provider-setup-results { font-size: 11px; margin: 0; }
+.provider-setup-picker .provider-setup-cards { gap: 8px; max-height: min(43vh, 400px); align-content: start; }
+.provider-setup-card { align-items: center; padding: 12px; gap: 10px; border-radius: 9px; min-height: 78px; }
+.provider-setup-card .provider-setup-mark { width: 32px; height: 32px; flex: 0 0 32px; border-radius: 8px; }
+.provider-setup-card-copy { gap: 3px; padding-right: 10px; }
+.provider-setup-card-copy strong { font-size: 12px; }
+.provider-setup-card-copy small { font-size: 10px; font-weight: 500; color: var(--muted); }
+.provider-setup-card-copy .provider-access-label { font-size: 9px; }
+.provider-selection-summary { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border-radius: 8px; background: var(--surface-muted); font-size: 11px; }
+.provider-selection-summary span { color: var(--muted); line-height: 1.5; }
+.provider-setup-footer { padding-top: 16px; margin-top: 16px; }
+@media (max-width: 550px) { .provider-setup-card { min-height: 70px; } }
