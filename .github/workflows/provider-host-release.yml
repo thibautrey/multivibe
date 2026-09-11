@@ -263,7 +263,9 @@ jobs:
               exit 1
             fi
           done
-          keychain="$RUNNER_TEMP/multivibe-signing.keychain-db"
+          keychain="$HOME/Library/Keychains/multivibe-signing-${GITHUB_RUN_ID}.keychain-db"
+          mkdir -p "$(dirname "$keychain")"
+          printf 'SIGNING_KEYCHAIN=%s\n' "$keychain" >> "$GITHUB_ENV"
           keychain_password="$(openssl rand -hex 32)"
           certificate="$RUNNER_TEMP/multivibe-signing.p12"
           developer_id_legacy_ca="$RUNNER_TEMP/DeveloperIDCA.cer"
@@ -349,8 +351,10 @@ jobs:
                   if paths: subprocess.run(['security', command, '-d', 'user', '-s', *paths], check=True)
                   file.unlink()
           PYTHON
-          security delete-keychain "$RUNNER_TEMP/multivibe-signing.keychain-db" >/dev/null 2>&1 || true
-          rm -f "$RUNNER_TEMP/multivibe-signing.p12" "$RUNNER_TEMP/AuthKey.p8"
+          if [[ -n "${SIGNING_KEYCHAIN:-}" ]]; then
+            security delete-keychain "$SIGNING_KEYCHAIN" >/dev/null 2>&1 || true
+          fi
+          rm -f "$RUNNER_TEMP/multivibe-signing.p12" "$RUNNER_TEMP/multivibe-signing.pem" "$RUNNER_TEMP/AuthKey.p8"
       - name: Verify the signed macOS archive
         shell: bash
         run: |
