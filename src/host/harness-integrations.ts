@@ -488,6 +488,10 @@ function renderCodexModelCatalog(context: HarnessContext): string {
     visibility: "list",
     supported_in_api: true,
     priority: index,
+    // Required by Codex's ModelInfo deserializer, even without model-specific metadata.
+    base_instructions: "",
+    support_verbosity: false,
+    truncation_policy: { mode: "tokens", limit: 10000 },
     context_window: 128000,
     max_context_window: 128000,
     supports_parallel_tool_calls: true,

@@ -465,6 +465,12 @@ test("Codex installation uses the built-in OpenAI provider catalog and restores 
   assert.equal((configured.match(/^model_provider\s*=/gm) ?? []).length, 1);
   const catalog = JSON.parse(await fs.readFile(path.join(home, ".codex", "multivibe-models.json"), "utf8"));
   assert.deepEqual(catalog.models.map((model: any) => model.slug), ["model-a", "gpt-5.5"]);
+  for (const model of catalog.models) {
+    // Codex requires these fields when deserializing model_catalog_json.
+    assert.equal(typeof model.base_instructions, "string");
+    assert.equal(model.support_verbosity, false);
+    assert.deepEqual(model.truncation_policy, { mode: "tokens", limit: 10000 });
+  }
   await manager.uninstall("openai-codex");
   assert.equal(await fs.readFile(configPath, "utf8"), original);
   await assert.rejects(fs.readFile(path.join(home, ".codex", "multivibe-models.json"), "utf8"), /ENOENT/);
@@ -498,6 +504,11 @@ test("Codex synchronizes its managed catalog when MultiVibe models change at run
   assert.equal(await manager.synchronizeCodexModelCatalog(), true);
   const catalog = JSON.parse(await fs.readFile(catalogPath, "utf8"));
   assert.deepEqual(catalog.models.map((model: any) => model.slug), modelIds);
+  for (const model of catalog.models) {
+    assert.equal(typeof model.base_instructions, "string");
+    assert.equal(model.support_verbosity, false);
+    assert.deepEqual(model.truncation_policy, { mode: "tokens", limit: 10000 });
+  }
   assert.equal((await manager.get("openai-codex")).drifted, false);
   assert.equal((await manager.uninstall("openai-codex")).apiKeyId, "key-live");
 });
