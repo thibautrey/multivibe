@@ -276,3 +276,19 @@ extension AccountHistorySnapshot {
         else { conversations.append(.object(item)) }
     }
 }
+
+/// Same pre-normalization UTF-8 limits as the Cloud email/password identity service.
+/// Never trim or normalize the submitted secret in the native client.
+enum NativePasswordPolicy {
+    static func accepts(_ password: String) -> Bool {
+        let length = password.utf8.count
+        return (12...256).contains(length) && password.unicodeScalars.contains { scalar in
+            // ECMAScript WhiteSpace + LineTerminator, matching the server's \S.
+            switch scalar.value {
+            case 0x0009...0x000D, 0x0020, 0x00A0, 0x1680, 0x2000...0x200A,
+                 0x2028, 0x2029, 0x202F, 0x205F, 0x3000, 0xFEFF: false
+            default: true
+            }
+        }
+    }
+}
