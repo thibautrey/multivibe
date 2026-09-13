@@ -193,3 +193,22 @@ This source is integrated into local main, without a push. It is not release-rea
 - Added persistent XCTest coverage. These additions await the next simulator run;
   existing run 23784 is still alive in post-test finalization and must not be
   replaced merely because output has paused. No additional Apple build started.
+
+## 2026-09-13 — Explicit native history synchronization
+
+- Native menu now offers an explicitly confirmed account sync. Local history is
+  uploaded only after confirmation; the notice states server storage is not E2EE.
+- Persistent local cache retains the server revision, last synchronized baseline,
+  raw branches and ID mappings. Concurrent remote/local edits stop without a
+  last-write-wins overwrite. Conflict resolution UI remains to implement.
+- New/changed native messages append graph nodes rather than altering original
+  nodes used by web branches. Folders, drafts and unknown fields are retained.
+- Unsigned main simulator build succeeded at `f03cf42`:
+  `/tmp/multivibe-ios-history-build.log`; exact DerivedData was removed by trap.
+  Subsequent small guards block send/retry during sync and reject duplicate
+  remote conversation IDs; these need the next validation run.
+- Previous retry test process 23784 finally exited 0 with TEST SUCCEEDED (23 tests).
+  Diagnostic collection timed out after 600 seconds, not tests. Its DerivedData
+  `/private/tmp/multivibe-ios-20260913.NwED3H` was confirmed absent.
+- Live two-device synchronization is not proven; native endpoints are not deployed.
+  Deterministic synchronization manager tests and conflict resolution remain.

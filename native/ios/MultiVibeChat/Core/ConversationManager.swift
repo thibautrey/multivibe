@@ -208,7 +208,7 @@ import CryptoKit
     }
     @discardableResult func send(_ text: String) -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isStreaming else { return false }
+        guard !text.isEmpty, !isStreaming, !isSynchronizing else { return false }
         guard session != nil else { error = APIError.authenticationRequired.localizedDescription; return false }
         guard !selectedModel.isEmpty else { error = APIError.noModel.localizedDescription; return false }
         if current == nil { newConversation() }
@@ -220,7 +220,7 @@ import CryptoKit
     }
     /// Retry only the current tail, never truncate later turns or duplicate the prompt.
     @discardableResult func retry(conversation id: UUID, message: UUID) -> Bool {
-        guard !isStreaming, session != nil, selection == id,
+        guard !isStreaming, !isSynchronizing, session != nil, selection == id,
               let index = conversations.firstIndex(where: { $0.id == id }),
               let last = conversations[index].messages.last, last.id == message, last.canRetry,
               conversations[index].messages.dropLast().last?.role == "user",
@@ -370,8 +370,9 @@ import CryptoKit
                 }
             }
             var projected: [Conversation] = []
+            var remoteIDs = Set<String>()
             for index in merged.conversations.indices {
-                guard let key = merged.conversations[index].object?["id"]?.string else { throw APIError.invalidResponse }
+                guard let key = merged.conversations[index].object?["id"]?.string, remoteIDs.insert(key).inserted else { throw APIError.invalidResponse }
                 let id = conversationIDs[key] ?? UUID()
                 conversationIDs[key] = id
                 projected.append(try merged.projectedConversation(at: index, id: id, messageIDs: &messageIDs))
