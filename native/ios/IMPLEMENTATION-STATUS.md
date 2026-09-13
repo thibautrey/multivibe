@@ -412,3 +412,17 @@ lifecycle integration remain outstanding.
   iPhone media-server crash or prove microphone recovery on hardware.
 - Sequential builds only (about 35 GiB free). Task DerivedData and disposable
   simulators removed on exit. No push, provisioning or deployment.
+
+### Apple grant database binding validation — September 13, 2026
+
+- Backend `d8945b66`: new unapplied migration 0158 enforces Apple/client/subject
+  binding, immutable grant association and ciphertext, one-way revocation states,
+  and a deferred check against the OAuth completion's final credential association.
+- TypeScript build and disposable PostgreSQL integration passed on local main.
+  Coverage now includes linked identity retention, explicit pending/revoked
+  transitions, rejection of binding/ciphertext mutation and revoked-row reopening,
+  plus a wrong-client completion that rolls back without inserting a grant or
+  completing the authorization. Existing concurrency and retry checks still pass.
+- No live account, Apple exchange, production migration or deployment was involved.
+  This is database protection for the future lifecycle integration, not a completed
+  account-deletion feature. Native code and its 45-test simulator proof are unchanged.
