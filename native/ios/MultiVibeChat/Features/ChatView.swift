@@ -4,7 +4,7 @@ import SwiftUI
 struct ChatView: View {
     @Environment(ConversationManager.self) private var manager
     @Environment(\.scenePhase) private var scenePhase
-    @State private var voice = VoiceController()
+    private var voice: VoiceController { manager.voice }
     @State private var text = ""
     @State private var search = ""
     var body: some View {
@@ -39,6 +39,9 @@ struct ChatView: View {
                         }.padding()
                     }
                 }
+                if voice.speaking {
+                    Button("Arrêter la lecture", systemImage: "stop.circle") { voice.silence() }.padding(.horizontal)
+                }
                 if let error = voice.error { Text(error).font(.callout).foregroundStyle(.red).padding() }
                 if let error = manager.error { Text(error).font(.callout).foregroundStyle(.red).padding() }
                 HStack(alignment: .bottom) {
@@ -47,7 +50,7 @@ struct ChatView: View {
                     }
                     TextField("Message", text: $text, axis: .vertical).lineLimit(1...8).textFieldStyle(.roundedBorder)
                     if manager.isStreaming { Button("Arrêter", systemImage: "stop.circle.fill") { manager.stop() } }
-                    else { Button("Envoyer", systemImage: "arrow.up.circle.fill") { manager.send(text); text = "" }.disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+                    else { Button("Envoyer", systemImage: "arrow.up.circle.fill") { manager.send(text); text = "" }.disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || manager.selectedModel.isEmpty) }
                 }.padding()
             }
             .navigationTitle(manager.current?.title ?? "Chat")

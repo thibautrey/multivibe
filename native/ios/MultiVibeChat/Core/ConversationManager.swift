@@ -11,6 +11,7 @@ import CryptoKit
     var selectedModel = ""
     var error: String?
     var isStreaming = false
+    let voice = VoiceController()
     var wantsVoice = false
     var pendingDraft: String?
     private var generation: Task<Void, Never>?
@@ -132,6 +133,7 @@ import CryptoKit
         conversations.removeAll { $0.id == id }; persist()
     }
     func logout() async {
+        voice.silence()
         let previous = session
         let inFlightRefresh = refreshTask
         stop()
