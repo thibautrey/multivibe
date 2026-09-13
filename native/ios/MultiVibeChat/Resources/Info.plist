@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleDisplayName</key><string>MultiVibe</string>
+<key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+<key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+<key>CFBundleName</key><string>$(PRODUCT_NAME)</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
+<key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
+<key>UILaunchScreen</key><dict/>
+<key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
+<key>NSMicrophoneUsageDescription</key><string>MultiVibe utilise le micro uniquement pendant votre conversation vocale.</string>
+<key>NSSpeechRecognitionUsageDescription</key><string>Transcrire votre voix pour préparer votre message. Selon votre appareil, Apple peut traiter la transcription.</string>
+<key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>cloud.multivibe.chat</string><key>CFBundleURLSchemes</key><array><string>multivibe-chat</string></array></dict></array>
+</dict></plist>
