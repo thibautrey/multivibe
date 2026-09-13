@@ -10,6 +10,9 @@ import CryptoKit
     var clear: () -> Void = { SecureStore.clear() }
     var refresh: @MainActor (NativeSession) async throws -> NativeSession = { try await ChatAPI.shared.refresh($0) }
     var revoke: @MainActor (String) async throws -> Void = { try await ChatAPI.shared.revoke(token: $0) }
+    var stream: @MainActor (String, [ChatMessage], String, @Sendable (String) async -> Void) async throws -> Void = {
+        try await ChatAPI.shared.stream(model: $0, messages: $1, token: $2, onDelta: $3)
+    }
     var models: @MainActor (String) async throws -> [ModelOption] = { try await ChatAPI.shared.models(token: $0) }
 }
 
@@ -49,6 +52,7 @@ import CryptoKit
     var wantsVoiceConversation = false
     var pendingDraft: String?
     var passwordRecovery: PasswordRecoveryRequest?
+    private var activeReply: (conversation: UUID, message: UUID)?
     private var generation: Task<Void, Never>?
     private var refreshTask: Task<NativeSession, Error>?
     private var refreshRevision = UUID()
@@ -68,6 +72,12 @@ import CryptoKit
             guard sessionRevision == revision else { return }
             if let data = try? Data(contentsOf: historyURL(session.accountId)) {
                 conversations = try JSONDecoder().decode([Conversation].self, from: data)
+                // A persisted in-flight response cannot still be running after launch.
+                for i in conversations.indices {
+                    for j in conversations[i].messages.indices where conversations[i].messages[j].completion == .streaming {
+                        conversations[i].messages[j].completion = .stopped
+                    }
+                }
             }
             let availableModels = try await services.models(session.accessToken)
             guard sessionRevision == revision else { return }
@@ -181,9 +191,25 @@ import CryptoKit
         conversations[index].model = selectedModel
         conversations[index].messages.append(ChatMessage(role: "user", content: text))
         if conversations[index].messages.count == 1 { conversations[index].title = String(text.prefix(70)) }
+        return startReply(conversation: id, index: index)
+    }
+    /// Retry only the current tail, never truncate later turns or duplicate the prompt.
+    @discardableResult func retry(conversation id: UUID, message: UUID) -> Bool {
+        guard !isStreaming, session != nil, selection == id,
+              let index = conversations.firstIndex(where: { $0.id == id }),
+              let last = conversations[index].messages.last, last.id == message, last.canRetry,
+              conversations[index].messages.dropLast().last?.role == "user",
+              models.contains(where: { $0.id == conversations[index].model }) else { return false }
+        selectedModel = conversations[index].model
+        voice.silence()
+        conversations[index].messages.removeLast()
+        return startReply(conversation: id, index: index)
+    }
+    private func startReply(conversation id: UUID, index: Int) -> Bool {
         let input = conversations[index].messages
-        let reply = ChatMessage(role: "assistant", content: "")
+        let reply = ChatMessage(role: "assistant", content: "", completion: .streaming)
         conversations[index].messages.append(reply)
+        activeReply = (id, reply.id)
         completedReply = nil
         isStreaming = true; error = nil; persist()
         let revision = generationRevision
@@ -192,22 +218,28 @@ import CryptoKit
         generation = Task {
             defer {
                 if generationRevision == revision && sessionRevision == accountRevision {
-                    isStreaming = false; generation = nil; persist()
+                    isStreaming = false; generation = nil; activeReply = nil; persist()
                 }
             }
             do {
                 let session = try await validSession()
                 try Task.checkCancellation()
                 guard generationRevision == revision && sessionRevision == accountRevision else { return }
-                try await ChatAPI.shared.stream(model: model, messages: input, token: session.accessToken) { delta in
+                try await services.stream(model, input, session.accessToken) { delta in
                     await self.append(delta, conversation: id, message: reply.id, generation: revision, account: accountRevision)
                 }
                 try Task.checkCancellation()
                 guard generationRevision == revision && sessionRevision == accountRevision else { return }
                 // Only a successfully terminated stream authorizes automatic playback.
+                setReplyCompletion(.completed)
                 completedReply = reply.id
-            } catch is CancellationError {} catch {
-                if generationRevision == revision && sessionRevision == accountRevision { self.error = error.localizedDescription }
+            } catch is CancellationError {
+                if generationRevision == revision && sessionRevision == accountRevision { setReplyCompletion(.stopped) }
+            } catch {
+                if generationRevision == revision && sessionRevision == accountRevision {
+                    setReplyCompletion(.failed)
+                    self.error = error.localizedDescription
+                }
             }
         }
         return true
@@ -219,7 +251,16 @@ import CryptoKit
         conversations[i].messages[j].content += delta
         conversations[i].updatedAt = Date()
     }
+    private func setReplyCompletion(_ completion: ChatMessage.Completion) {
+        guard let activeReply,
+              let i = conversations.firstIndex(where: { $0.id == activeReply.conversation }),
+              let j = conversations[i].messages.firstIndex(where: { $0.id == activeReply.message }) else { return }
+        conversations[i].messages[j].completion = completion
+        conversations[i].updatedAt = Date()
+    }
     func stop() {
+        if isStreaming { setReplyCompletion(.stopped) }
+        activeReply = nil
         completedReply = nil
         generationRevision = UUID()
         generation?.cancel(); generation = nil

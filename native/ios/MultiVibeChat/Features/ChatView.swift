@@ -8,6 +8,8 @@ struct ChatView: View {
     @State private var text = ""
     @State private var search = ""
     @State private var conversationToDelete: Conversation?
+    @State private var retryTarget: RetryTarget?
+    private struct RetryTarget { let conversation: UUID; let message: UUID }
     @State private var voicePresented = false
     @State private var followsLatest = true
     @State private var userScrolling = false
@@ -44,6 +46,17 @@ struct ChatView: View {
                                 VStack(alignment: .leading, spacing: 6) {
                                     Text(message.role == "user" ? "Vous" : "MultiVibe").font(.caption.bold()).foregroundStyle(.secondary)
                                     Text(message.content.isEmpty ? "…" : message.content).textSelection(.enabled)
+                                    if let completion = message.completion {
+                                        Text(completion == .streaming ? "Réponse en cours" : completion == .completed ? "Réponse terminée" : completion == .stopped ? "Réponse arrêtée" : "Réponse interrompue par une erreur")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    if message.canRetry && manager.current?.messages.last?.id == message.id {
+                                        Button("Réessayer", systemImage: "arrow.clockwise") {
+                                            if let conversation = manager.selection {
+                                                retryTarget = RetryTarget(conversation: conversation, message: message.id)
+                                            }
+                                        }.disabled(manager.isStreaming)
+                                    }
                                     if !message.content.isEmpty { Button("Lire à voix haute", systemImage: "speaker.wave.2") { voice.speak(message.content) }; ShareLink(item: message.content) { Image(systemName: "square.and.arrow.up") }.accessibilityLabel("Partager le message") }
                                 }.frame(maxWidth: .infinity, alignment: .leading)
                             }
@@ -118,6 +131,17 @@ struct ChatView: View {
             Button("Annuler", role: .cancel) { conversationToDelete = nil }
         } message: { conversation in
             Text("« \(conversation.title) » sera supprimée de cet appareil. Cette action est irréversible.")
+        }
+        .confirmationDialog("Remplacer cette réponse ?", isPresented: Binding(
+            get: { retryTarget != nil }, set: { if !$0 { retryTarget = nil } }
+        ), titleVisibility: .visible) {
+            Button("Remplacer et réessayer", role: .destructive) {
+                if let target = retryTarget { _ = manager.retry(conversation: target.conversation, message: target.message) }
+                retryTarget = nil
+            }
+            Button("Annuler", role: .cancel) { retryTarget = nil }
+        } message: {
+            Text("La réponse partielle sera remplacée. Votre message ne sera pas ajouté une seconde fois. Cette nouvelle demande peut consommer des crédits.")
         }
         .sheet(isPresented: $voicePresented) { VoiceConversationView() }
         .onChange(of: manager.selection) { _, _ in text = "" }
