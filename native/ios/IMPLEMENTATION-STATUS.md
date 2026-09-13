@@ -35,9 +35,9 @@ in older entries are superseded by this summary and subsequent validation entrie
 
 ### Latest completed validation
 
-- Local main at `46ade05`: unsigned iPhone 17 / iOS 27 simulator build and **42
+- Local main at `c464ad3`: unsigned iPhone 17 / iOS 27 simulator build and **42
   XCTest tests passed**, zero failures, terminal `TEST SUCCEEDED` / exit 0.
-  Log: `/tmp/multivibe-ios-audio-events-tests.log`. Exact DerivedData and
+  Log: `/tmp/multivibe-ios-privacy-tests.log`. Exact DerivedData and
   disposable simulator were removed. No live authentication or two-device proof.
 - Earlier main builds validated French App Intents metadata packaging and the
   optional assistant macro; these are not signed-device Siri invocation tests.
@@ -58,7 +58,7 @@ in older entries are superseded by this summary and subsequent validation entrie
    token; logout is not account deletion. No destructive account operation exists
    in the native app yet.
 2. Finish truthful privacy collection declarations and verify legal disclosures.
-   The existing privacy manifest remains provisional, not submission evidence.
+   The collection manifest and native disclosure sheet now reflect source-evidenced flows; production processing and submission declarations remain unverified.
 3. Complete Cloud realtime audio/session/metering/cancellation transport if pursuing
    the reference's full-duplex assistant experience; never bypass Cloud using
    provider credentials in the app.
@@ -342,3 +342,12 @@ in older entries are superseded by this summary and subsequent validation entrie
 - `46ade05`, integrated into local main: observe audio interruption start and lost/unsuitable route notifications. Active dictation/playback stops without automatic restart, preserving the transcript and showing an actionable explanation. Ignore our own category changes, newly available devices, interruption end, and idle events.
 - Three regression tests cover notification decoding and idle transcript preservation. Main unsigned sequential simulator suite: **42 tests passed, zero failures**, exit 0. Log `/tmp/multivibe-ios-audio-events-tests.log`. This proves compilation and policy behavior, not a physical phone call/headset-disconnection scenario.
 - Worktree diff check passed; no dependency installation there. Exact DerivedData `/private/tmp/multivibe-ios-20260913.lOAEX9` and disposable simulator removed by trap. No push or deployment. Media-services reset recovery and physical-device interruption validation remain outstanding.
+
+### 2026-09-13 — Native privacy disclosures
+
+- `c464ad3`: native disclosure sheet is available before login and from chat. It explains account credentials, transmitted conversation context, optional history sync, on-device dictation, explicit sending, system sharing, and the difference between local conversation removal and account deletion. Official legal URLs come from validated backend configuration, not guessed addresses.
+- Replaced empty collection declaration with linked, non-tracking email address, user ID, other user content (AI conversation payload/history), and product interaction (account usage), for app functionality. Removed unsupported UserDefaults required-reason entry: no UserDefaults/AppStorage/SceneStorage usage found in native source. No third-party app SDK dependencies.
+- Apple documentation JSON for collected-data-type and purpose keys fetched and checked on this date; all declared identifiers occur in the official schema documentation. Worktree `plutil -lint` and `git diff --check` passed.
+- This is a source-evidenced baseline, not an approved App Store privacy label or exhaustive production processor/retention audit. Provider-side collection, SSO profile attributes, operational logging and legal retention still require verification before release. No no-collection/no-logging claim is made.
+
+- Main validation at `c464ad3`: unsigned iPhone 17 / iOS 27 simulator suite passed **42 tests, zero failures**, terminal exit 0. Log `/tmp/multivibe-ios-privacy-tests.log`. Exact disposable simulator and DerivedData removed. This is not a visual review of the new sheet or a verification of live legal-document availability.
