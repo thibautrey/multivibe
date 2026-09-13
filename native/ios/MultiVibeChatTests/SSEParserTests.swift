@@ -244,3 +244,65 @@ final class PasswordResetLinkTests: XCTestCase {
         }
     }
 }
+
+@MainActor final class ReplyRetryTests: XCTestCase {
+    func testFailedTailRetryDoesNotDuplicatePrompt() async throws {
+        let session = NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: "retry-fixture")
+        var inputs: [[ChatMessage]] = []
+        let services = SessionServices(writeHistory: { _, _ in }, load: { session }, stream: { _, messages, _, delta in
+            inputs.append(messages)
+            await delta(inputs.count == 1 ? "partial" : "complete")
+            if inputs.count == 1 { throw APIError.invalidResponse }
+        })
+        let manager = ConversationManager(services: services)
+        manager.models = [ModelOption(id: "fixture")]; manager.selectedModel = "fixture"
+        XCTAssertTrue(manager.send("hello"))
+        for _ in 0..<1000 { if !manager.isStreaming { break }; await Task.yield() }
+        XCTAssertFalse(manager.isStreaming)
+        let conversation = try XCTUnwrap(manager.current)
+        let failed = try XCTUnwrap(conversation.messages.last)
+        XCTAssertEqual(failed.completion, .failed)
+        XCTAssertEqual(failed.content, "partial")
+        XCTAssertTrue(manager.retry(conversation: conversation.id, message: failed.id))
+        XCTAssertFalse(manager.retry(conversation: conversation.id, message: failed.id))
+        for _ in 0..<1000 { if !manager.isStreaming { break }; await Task.yield() }
+        XCTAssertFalse(manager.isStreaming)
+        XCTAssertEqual(inputs.count, 2)
+        XCTAssertEqual(inputs.first, inputs.last)
+        XCTAssertEqual(manager.current?.messages.count, 2)
+        XCTAssertEqual(manager.current?.messages.last?.completion, .completed)
+        XCTAssertEqual(manager.current?.messages.last?.content, "complete")
+        XCTAssertFalse(manager.retry(conversation: conversation.id, message: failed.id))
+    }
+    func testStopRejectsLateDeltasAndMarksOriginalConversation() async throws {
+        let session = NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: "stop-fixture")
+        var resume: CheckedContinuation<Void, Never>?
+        let services = SessionServices(writeHistory: { _, _ in }, load: { session }, stream: { _, _, _, delta in
+            await delta("partial")
+            await withCheckedContinuation { resume = $0 }
+            await delta("must not appear")
+        })
+        let manager = ConversationManager(services: services)
+        manager.models = [ModelOption(id: "fixture")]; manager.selectedModel = "fixture"
+        XCTAssertTrue(manager.send("hello"))
+        for _ in 0..<1000 { if resume != nil { break }; await Task.yield() }
+        let continuation = try XCTUnwrap(resume)
+        let original = try XCTUnwrap(manager.selection)
+        manager.newConversation()
+        continuation.resume()
+        for _ in 0..<20 { await Task.yield() }
+        let message = manager.conversations.first { $0.id == original }?.messages.last
+        XCTAssertEqual(message?.completion, .stopped)
+        XCTAssertEqual(message?.content, "partial")
+        XCTAssertNil(manager.completedReply)
+        XCTAssertFalse(manager.isStreaming)
+        XCTAssertFalse(manager.retry(conversation: original, message: try XCTUnwrap(message?.id)))
+    }
+    func testLegacyMessageDecodesWithoutInventingCompletion() throws {
+        let id = UUID()
+        let data = Data("{\"id\":\"\(id)\",\"role\":\"assistant\",\"content\":\"old\"}".utf8)
+        let message = try JSONDecoder().decode(ChatMessage.self, from: data)
+        XCTAssertNil(message.completion)
+        XCTAssertFalse(message.canRetry)
+    }
+}

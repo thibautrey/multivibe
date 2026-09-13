@@ -5,6 +5,11 @@ import CryptoKit
 /// Injectable boundary so rotation races can be exercised without real tokens,
 /// network requests, or changes to the user's Keychain.
 @MainActor struct SessionServices {
+    var writeHistory: (Data, URL) throws -> Void = { data, url in
+        try data.write(to: url, options: [.atomic, .completeFileProtection])
+        var values = URLResourceValues(); values.isExcludedFromBackup = true
+        var file = url; try file.setResourceValues(values)
+    }
     var load: () -> NativeSession? = { SecureStore.load() }
     var save: (NativeSession) throws -> Void = { try SecureStore.save($0) }
     var clear: () -> Void = { SecureStore.clear() }
@@ -305,9 +310,7 @@ import CryptoKit
         guard let session else { return }
         do {
             let url = try historyURL(session.accountId)
-            try JSONEncoder().encode(conversations).write(to: url, options: [.atomic, .completeFileProtection])
-            var values = URLResourceValues(); values.isExcludedFromBackup = true
-            var file = url; try file.setResourceValues(values)
+            try services.writeHistory(JSONEncoder().encode(conversations), url)
         } catch { self.error = "Impossible d’enregistrer les conversations sur cet appareil." }
     }
 }
