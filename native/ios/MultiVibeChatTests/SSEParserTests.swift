@@ -225,3 +225,20 @@ final class NativeTransportTests: XCTestCase {
         XCTAssertEqual(revoked, ["renewed"])
     }
 }
+
+
+final class PasswordResetLinkTests: XCTestCase {
+    func testAcceptsOnlyExactRecoveryOriginAndSingleOpaqueToken() {
+        let token = String(repeating: "a", count: 43)
+        let link = "https://auth.multivibe.cloud/password/reset#token=\(token)"
+        XCTAssertEqual(PasswordResetLink.token(from: link), token)
+        for invalid in [link.replacingOccurrences(of: "https:", with: "http:"),
+                        link.replacingOccurrences(of: "auth.multivibe.cloud", with: "evil.example"),
+                        link.replacingOccurrences(of: "auth.multivibe.cloud", with: "user@auth.multivibe.cloud"),
+                        link.replacingOccurrences(of: "auth.multivibe.cloud", with: "auth.multivibe.cloud:443"),
+                        link.replacingOccurrences(of: "#", with: "?x=1#"),
+                        link + "&token=other", link + "a", link + "%00", String(repeating: "x", count: 513)] {
+            XCTAssertNil(PasswordResetLink.token(from: invalid))
+        }
+    }
+}
