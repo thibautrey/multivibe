@@ -35,9 +35,9 @@ in older entries are superseded by this summary and subsequent validation entrie
 
 ### Latest completed validation
 
-- Local main at `c464ad3`: unsigned iPhone 17 / iOS 27 simulator build and **42
+- Local main at `2c78a0a`: unsigned iPhone 17 / iOS 27 simulator build and **45
   XCTest tests passed**, zero failures, terminal `TEST SUCCEEDED` / exit 0.
-  Log: `/tmp/multivibe-ios-privacy-tests.log`. Exact DerivedData and
+  Log: `/tmp/multivibe-ios-reset-final-tests.log`. Exact DerivedData and
   disposable simulator were removed. No live authentication or two-device proof.
 - Earlier main builds validated French App Intents metadata packaging and the
   optional assistant macro; these are not signed-device Siri invocation tests.
@@ -398,3 +398,17 @@ transport diagnostic ignored. No provider credentials, live accounts or network
 revocation were used. This is not account deletion: encrypted provider-token
 retention, durable retry handling, fresh authorization and transactional account
 lifecycle integration remain outstanding.
+
+### Media-services reset recovery — September 13, 2026
+
+- `bf502f4` and `2c78a0a`, integrated locally: handle lost/reset audio services,
+  invalidate in-flight permissions and recognition callbacks, discard orphaned audio
+  objects and rebuild engine/synthesizer after reset. Preserve the draft; no automatic
+  microphone or playback restart. A pending spoken reply is cancelled on reset/lost
+  service or route loss, without cancelling the textual server response.
+- Main simulator test at `2c78a0a`: 45 XCTest passed, zero failures, exit 0.
+  Added tests cover notification decoding, transcript/state preservation, and
+  playback rejection while services are unavailable. They do not simulate a real
+  iPhone media-server crash or prove microphone recovery on hardware.
+- Sequential builds only (about 35 GiB free). Task DerivedData and disposable
+  simulators removed on exit. No push, provisioning or deployment.
