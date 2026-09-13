@@ -503,3 +503,21 @@ final class VoiceAudioSessionOwnershipTests: XCTestCase {
         XCTAssertNil(ownership.use)
     }
 }
+
+final class NativePasswordPolicyTests: XCTestCase {
+    func testUTF8BoundariesMatchBackend() {
+        XCTAssertFalse(NativePasswordPolicy.accepts(String(repeating: "a", count: 11)))
+        XCTAssertTrue(NativePasswordPolicy.accepts(String(repeating: "a", count: 12)))
+        XCTAssertTrue(NativePasswordPolicy.accepts(String(repeating: "a", count: 256)))
+        XCTAssertFalse(NativePasswordPolicy.accepts(String(repeating: "a", count: 257)))
+        XCTAssertTrue(NativePasswordPolicy.accepts(String(repeating: "é", count: 6)))
+        XCTAssertTrue(NativePasswordPolicy.accepts(String(repeating: "🌌", count: 64)))
+        XCTAssertFalse(NativePasswordPolicy.accepts(String(repeating: "🌌", count: 65)))
+    }
+    func testWhitespaceIsNotAcceptedAndSecretIsNotTrimmed() {
+        XCTAssertFalse(NativePasswordPolicy.accepts(String(repeating: " ", count: 12)))
+        XCTAssertFalse(NativePasswordPolicy.accepts(String(repeating: "\u{FEFF}", count: 4)))
+        XCTAssertTrue(NativePasswordPolicy.accepts("           a"))
+        XCTAssertTrue(NativePasswordPolicy.accepts(String(repeating: "\u{0085}", count: 6)))
+    }
+}

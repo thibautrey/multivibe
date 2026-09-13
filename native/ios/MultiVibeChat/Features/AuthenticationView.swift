@@ -10,11 +10,21 @@ struct AuthenticationView: View {
     @State private var authConfiguration: NativeAuthConfiguration?
     @State private var email = ""
     @State private var password = ""
+    @State private var confirmPassword = ""
+    @FocusState private var focusedField: Field?
+    private enum Field: Hashable { case email, password, confirmation, code }
     @State private var terms = false
     @State private var challenge: String?
     @State private var code = ""
     @State private var busy = false
     @State private var error: String?
+    private var canSubmit: Bool {
+        guard !busy else { return false }
+        if challenge != nil { return code.utf8.count == 6 && code.utf8.allSatisfy { (48...57).contains($0) } }
+        return !email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !password.isEmpty
+            && (!signup || (NativePasswordPolicy.accepts(password) && password == confirmPassword
+                && terms && authConfiguration?.signupEnabled == true))
+    }
     var body: some View {
         NavigationStack {
             Form {
@@ -26,25 +36,37 @@ struct AuthenticationView: View {
                 Section(signup ? "Créer un compte" : "Connexion") {
                     if challenge != nil {
                         TextField("Code à six chiffres", text: $code).textContentType(.oneTimeCode).keyboardType(.numberPad)
+                            .focused($focusedField, equals: .code).disabled(busy)
                     } else {
                     TextField("Adresse e-mail", text: $email).textContentType(.emailAddress)
                         .keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .focused($focusedField, equals: .email).submitLabel(.next)
+                        .onSubmit { focusedField = .password }.disabled(busy)
                     SecureField("Mot de passe", text: $password).textContentType(signup ? .newPassword : .password)
+                        .focused($focusedField, equals: .password).submitLabel(signup ? .next : .go)
+                        .onSubmit { if signup { focusedField = .confirmation } else { authenticate() } }
+                        .disabled(busy)
                     if signup {
-                        Text("Au moins 12 caractères.").font(.caption).foregroundStyle(.secondary)
+                        SecureField("Confirmer le mot de passe", text: $confirmPassword).textContentType(.newPassword)
+                            .focused($focusedField, equals: .confirmation).submitLabel(.done)
+                            .onSubmit { focusedField = nil }.disabled(busy)
+                        Text("Conseil : utilisez une phrase de passe d’au moins 12 caractères.").font(.caption).foregroundStyle(.secondary)
+                        if !confirmPassword.isEmpty && password != confirmPassword {
+                            Text("Les mots de passe ne correspondent pas.").font(.caption).foregroundStyle(.red)
+                        }
                         if let config = authConfiguration, config.signupEnabled,
                            let termsUrl = config.termsUrl, let privacyUrl = config.privacyUrl {
                             Link("Conditions d’utilisation", destination: termsUrl)
                             Link("Politique de confidentialité", destination: privacyUrl)
-                            Toggle("J’accepte les conditions d’utilisation", isOn: $terms)
+                            Toggle("J’accepte les conditions d’utilisation", isOn: $terms).disabled(busy)
                         } else {
                             Text("L’inscription est indisponible tant que les documents légaux ne sont pas chargés.")
-                            Button("Recharger les conditions") { Task { await loadConfiguration() } }
+                            Button("Recharger les conditions") { Task { await loadConfiguration() } }.disabled(busy)
                         }
                     }
                     }
                     Button(challenge != nil ? "Vérifier le code" : signup ? "Créer mon compte" : "Se connecter") { authenticate() }
-                        .disabled(busy || (challenge != nil ? code.count != 6 : email.isEmpty || password.isEmpty || (signup && (!terms || authConfiguration?.signupEnabled != true))))
+                        .disabled(!canSubmit)
                     if busy { ProgressView() }
                 }
                 if challenge == nil {
@@ -58,7 +80,7 @@ struct AuthenticationView: View {
                     if challenge != nil {
                         Button("Recommencer la connexion") { challenge = nil; code = ""; password = ""; error = nil }
                     } else {
-                        Button(signup ? "J’ai déjà un compte" : "Créer un compte") { signup.toggle(); error = nil }
+                        Button(signup ? "J’ai déjà un compte" : "Créer un compte") { signup.toggle(); error = nil; password = ""; confirmPassword = ""; terms = false; focusedField = .email }
                         if !signup { Button("Mot de passe oublié ?") { manager.passwordRecovery = PasswordRecoveryRequest(email: email) } }
                     }
                 }.disabled(busy)
@@ -91,14 +113,16 @@ struct AuthenticationView: View {
         }
     }
     private func authenticate() {
+        guard canSubmit else { return }
+        focusedField = nil
         busy = true; error = nil
         Task {
             defer { busy = false }
             do {
                 let fields = challenge.map { ["challenge": $0, "code": code] } ?? ["email": email, "password": password, "termsAccepted": terms ? "true" : "false", "termsVersion": authConfiguration?.termsVersion ?? ""]
                 let reply = try await ChatAPI.shared.authenticate(mode: challenge != nil ? "otp" : signup ? "signup" : "login", fields: fields)
-                if reply.status == "mfa_required", let challenge = reply.challenge { self.challenge = challenge; password = ""; return }
-                try await manager.accept(reply.session()); password = ""
+                if reply.status == "mfa_required", let challenge = reply.challenge { self.challenge = challenge; password = ""; confirmPassword = ""; focusedField = .code; return }
+                try await manager.accept(reply.session()); password = ""; confirmPassword = ""
             } catch APIError.server(409, "signup_terms_changed") {
                 await loadConfiguration()
                 self.error = "Les conditions ont changé. Consultez-les et acceptez-les avant de réessayer."
@@ -146,9 +170,9 @@ struct PasswordRecoveryView: View {
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                     SecureField("Nouveau mot de passe", text: $newPassword).textContentType(.newPassword)
                     SecureField("Confirmer le mot de passe", text: $confirmPassword).textContentType(.newPassword)
-                    Text("Au moins 12 caractères.").font(.caption).foregroundStyle(.secondary)
+                    Text("Conseil : utilisez une phrase de passe d’au moins 12 caractères.").font(.caption).foregroundStyle(.secondary)
                     Button("Changer mon mot de passe") { completeReset() }
-                        .disabled(busy || PasswordResetLink.token(from: resetLink) == nil || newPassword.count < 12 || newPassword != confirmPassword)
+                        .disabled(busy || PasswordResetLink.token(from: resetLink) == nil || !NativePasswordPolicy.accepts(newPassword) || newPassword != confirmPassword)
                 }
                 }
                 if busy { ProgressView() }
