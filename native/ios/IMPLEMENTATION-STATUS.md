@@ -41,11 +41,14 @@ in older entries are superseded by this summary and subsequent validation entrie
   disposable simulator were removed. No live authentication or two-device proof.
 - Earlier main builds validated French App Intents metadata packaging and the
   optional assistant macro; these are not signed-device Siri invocation tests.
-- Backend main at `7d69e269`: TypeScript build passed; targeted Apple OAuth
-  suite passed **9 tests**; isolated Rust OAuth broker passed **18 tests**, with
-  one unchanged live transport diagnostic ignored. No live Apple authorization
-  or revocation was performed. Earlier native-auth and history results do not
-  implicitly validate unrelated later main changes.
+- Backend main at `cc672565`: TypeScript build and **51 targeted tests passed**.
+  A disposable PostgreSQL 16 integration test applied migrations and verified actual
+  unlinked grant persistence, concurrent drain exclusion, acknowledgement-only
+  ciphertext removal and delayed retry after broker failure. It found and fixed
+  an invalid PostgreSQL regex repetition in migration 0157. The container was removed.
+  This uses a mock broker, not live Apple. Previous Rust validation at `bb3889d0`
+  passed **20 tests**, with one unchanged live transport diagnostic ignored;
+  Rust source has not changed since that validation.
 - Audio-ownership fix `b66230c`: worktree `git diff --check` passed, committed and
   fast-forwarded to main. All three ownership regression tests passed in the
   33-test audio suite and the later 35-test suite. These are state-machine tests, not microphone
@@ -55,9 +58,10 @@ in older entries are superseded by this summary and subsequent validation entrie
 
 1. Implement actual account deletion with fresh authorization, ownership and
    retained-record handling, session revocation and Apple authorization revocation.
-   Investigation found Apple token exchange currently does not retain a revocation
-   token; logout is not account deletion. No destructive account operation exists
-   in the native app yet.
+   Encrypted Apple grant retention and a retryable server-only drain now exist,
+   but retention is OFF by default and the drain is not scheduled or wired into
+   account lifecycle. Exchange-to-database/lost-broker-response recovery remains
+   incomplete. Logout is not deletion; no native destructive account operation exists.
 2. Finish truthful privacy collection declarations and verify legal disclosures.
    The collection manifest and native disclosure sheet now reflect source-evidenced flows; production processing and submission declarations remain unverified.
 3. Complete Cloud realtime audio/session/metering/cancellation transport if pursuing
@@ -73,6 +77,17 @@ in older entries are superseded by this summary and subsequent validation entrie
 6. Apply authorized migrations/deployment separately; no push or deployment has
    occurred. Preserve other tasks' main-branch work. Remove this task's worktrees
    when implementation is actually finished.
+
+### Apple revocation follow-through
+
+- Backend `cc672565` adds a staged one-row drain with PostgreSQL row locks,
+  retry scheduling and token-free errors. Upstream failure retains ciphertext;
+  database failure rolls back. Commit loss can cause a repeated provider call.
+- Operational activation/key-rotation requirements are in backend
+  `docs/apple-oauth-grant-retention.md`. No production migration or configuration
+  was changed. All dependency-backed tests ran from local main, not worktrees.
+- Native Swift source and the latest 42-XCTest simulator proof are unchanged in
+  this step. Real account lifecycle, live Apple and signed-device proof remain open.
 
 ## Historical implementation journal
 
