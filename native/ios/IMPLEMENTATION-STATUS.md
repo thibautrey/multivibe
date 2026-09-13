@@ -212,3 +212,18 @@ This source is integrated into local main, without a push. It is not release-rea
   `/private/tmp/multivibe-ios-20260913.NwED3H` was confirmed absent.
 - Live two-device synchronization is not proven; native endpoints are not deployed.
   Deterministic synchronization manager tests and conflict resolution remain.
+
+## 2026-09-13 — History save race hardening
+
+- Commit `4448108` validates downloaded projections before POST and records a
+  confirmed save as the baseline while reapplying edits/deletions created during
+  the request. A change of account still prevents applying its response.
+- Assistant nodes with changed completion state get a new branch node, retaining
+  the original branch rather than silently keeping an obsolete completion status.
+- Main unsigned simulator build passed in
+  `/tmp/multivibe-ios-history-race-build.log`; task DerivedData was cleaned.
+  Main model typecheck and diff whitespace checks passed.
+- Added deterministic manager coverage for mutation during save and malformed
+  remote data, plus completion branch reuse coverage. Execution is recorded below
+  when available; this is not proof of deployed or physical-device sync.
+- Conflict resolution and uncertain POST-result reconciliation remain unfinished.

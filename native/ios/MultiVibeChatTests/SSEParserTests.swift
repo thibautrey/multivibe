@@ -346,3 +346,56 @@ final class SharedHistoryStatusTests: XCTestCase {
         XCTAssertEqual(snapshot.conversations[0].object?["repository"]?.object?["messages"]?.array?.count, 2)
     }
 }
+
+@MainActor final class SharedHistorySynchronizationTests: XCTestCase {
+    func testCommittedSaveRebasesEditsMadeDuringRequest() async throws {
+        let session = NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: UUID().uuidString)
+        var remote = AccountHistorySnapshot(accountId: session.accountId, revision: 0, conversations: [])
+        var resume: CheckedContinuation<Void, Never>?
+        var writes = 0
+        let services = SessionServices(writeHistory: { _, _ in }, load: { session },
+            readHistory: { _ in remote }, saveHistory: { snapshot, _ in
+                writes += 1
+                if writes == 1 { await withCheckedContinuation { resume = $0 } }
+                remote = snapshot; remote.revision += 1
+                return remote
+            }, models: { _ in [ModelOption(id: "fixture")] })
+        let manager = ConversationManager(services: services)
+        await manager.restore()
+        manager.newConversation()
+        let original = try XCTUnwrap(manager.current)
+        let operation = Task { await manager.synchronizeHistory() }
+        for _ in 0..<1000 { if resume != nil { break }; await Task.yield() }
+        guard let continuation = resume else { operation.cancel(); XCTFail("Save did not begin"); return }
+        // Both a deletion and a newly created chat must survive the saved snapshot.
+        manager.delete(original.id)
+        manager.newConversation()
+        let replacement = try XCTUnwrap(manager.current)
+        continuation.resume()
+        await operation.value
+        XCTAssertEqual(manager.conversations.map(\.id), [replacement.id])
+        XCTAssertEqual(remote.conversations.count, 1)
+        await manager.synchronizeHistory()
+        XCTAssertEqual(writes, 2, "Confirmed first save must become the next revision baseline")
+        XCTAssertEqual(remote.conversations.count, 1)
+        XCTAssertEqual(remote.conversations.first?.object?["id"]?.string, replacement.id.uuidString)
+        XCTAssertEqual(manager.historyStatus, "Historique synchronisé avec votre compte.")
+    }
+
+    func testInvalidRemoteProjectionNeverTriggersSave() async {
+        let session = NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: UUID().uuidString)
+        var writes = 0
+        let services = SessionServices(writeHistory: { _, _ in }, load: { session },
+            readHistory: { _ in AccountHistorySnapshot(accountId: session.accountId, revision: 0,
+                conversations: [.object(["id": .string("malformed")])]) },
+            saveHistory: { snapshot, _ in writes += 1; return snapshot }, models: { _ in [] })
+        let manager = ConversationManager(services: services)
+        await manager.restore()
+        manager.newConversation()
+        let before = manager.conversations
+        await manager.synchronizeHistory()
+        XCTAssertEqual(writes, 0)
+        XCTAssertEqual(manager.conversations, before)
+        XCTAssertTrue(manager.historyStatus?.contains("conservées") == true)
+    }
+}
