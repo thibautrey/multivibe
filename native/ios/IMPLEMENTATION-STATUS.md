@@ -107,3 +107,9 @@ This source is integrated into local main, without a push. It is not release-rea
 - If persistence of a rotated token fails, the app clears the stale local session and pending intents, stops chat/audio, and attempts revocation of the rotated token. A failed remote revocation is explicitly reported; it is not presented as confirmed logout on the server.
 - A rotation finishing after an account revision no longer silently leaves its new token orphaned: it attempts revocation without replacing the newer account's session or Keychain entry.
 - Local main simulator XCTest execution: 17 tests, zero failures, including three new rotation tests (`/tmp/multivibe-ios-rotation-tests.log`). These are injected service tests, not actual Keychain-failure injection or production token lifecycle proof.
+
+### Dictation disclosure and final test process status
+
+- Permission copy now describes mandatory on-device dictation and explicit text sending. A denied Speech permission no longer triggers an unnecessary microphone permission request. Recognition failure preserves the editable transcript and displays an interruption warning.
+- Plist validation and a fresh unsigned simulator build from main succeeded (`/tmp/multivibe-ios-dictation-build.log`); this does not verify physical-device permission/audio behavior.
+- The preceding 17-test run ultimately exited successfully with `TEST SUCCEEDED`. The long post-test wait was Xcode's `simctl diagnose`, which timed out at 600 seconds; diagnostic collection failed, not the XCTest suite. The disposable simulator and exact DerivedData directory were removed, and no second build ran concurrently.
