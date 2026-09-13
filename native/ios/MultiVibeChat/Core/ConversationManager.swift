@@ -13,6 +13,7 @@ import CryptoKit
     var isStreaming = false
     let voice = VoiceController()
     var wantsVoice = false
+    var wantsVoiceConversation = false
     var pendingDraft: String?
     private var generation: Task<Void, Never>?
     private var refreshTask: Task<NativeSession, Error>?
@@ -80,13 +81,13 @@ import CryptoKit
         let conversation = Conversation(model: selectedModel)
         conversations.insert(conversation, at: 0); selection = conversation.id
     }
-    func send(_ text: String) {
+    @discardableResult func send(_ text: String) -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isStreaming else { return }
-        guard session != nil else { error = APIError.authenticationRequired.localizedDescription; return }
-        guard !selectedModel.isEmpty else { error = APIError.noModel.localizedDescription; return }
+        guard !text.isEmpty, !isStreaming else { return false }
+        guard session != nil else { error = APIError.authenticationRequired.localizedDescription; return false }
+        guard !selectedModel.isEmpty else { error = APIError.noModel.localizedDescription; return false }
         if current == nil { newConversation() }
-        guard let id = selection, let index = conversations.firstIndex(where: { $0.id == id }) else { return }
+        guard let id = selection, let index = conversations.firstIndex(where: { $0.id == id }) else { return false }
         conversations[index].model = selectedModel
         conversations[index].messages.append(ChatMessage(role: "user", content: text))
         if conversations[index].messages.count == 1 { conversations[index].title = String(text.prefix(70)) }
@@ -114,6 +115,7 @@ import CryptoKit
                 if generationRevision == revision && sessionRevision == accountRevision { self.error = error.localizedDescription }
             }
         }
+        return true
     }
     private func append(_ delta: String, conversation: UUID, message: UUID, generation: UUID, account: UUID) {
         guard generationRevision == generation, sessionRevision == account else { return }
@@ -142,7 +144,7 @@ import CryptoKit
         sessionRevision = UUID()
         let revision = sessionRevision
         SecureStore.clear(); session = nil; conversations = []; selection = nil
-        models = []; selectedModel = ""; wantsVoice = false; pendingDraft = nil; error = nil
+        models = []; selectedModel = ""; wantsVoice = false; wantsVoiceConversation = false; pendingDraft = nil; error = nil
         if let previous {
             do {
                 // Do not cancel a possibly committed server rotation. Await it and
