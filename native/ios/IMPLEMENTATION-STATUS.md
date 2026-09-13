@@ -179,3 +179,17 @@ This source is integrated into local main, without a push. It is not release-rea
   `/tmp/multivibe-ios-retry-tests.log`). No second test run should be started.
 - Simulator emitted an AVAudioSession synchronous-deactivation responsiveness
   warning; inspect audio lifecycle separately. No physical-device claim.
+
+## 2026-09-13 — Shared-history codec groundwork
+
+- Added native GET/POST history transport and a lossless JSON snapshot envelope.
+  Selected-branch projection preserves raw web IDs, alternative branches, drafts,
+  folders and unknown fields in the retained envelope; it is not yet wired into
+  ConversationManager and does not activate background synchronization.
+- Main `swiftc -typecheck native/ios/MultiVibeChat/Core/Models.swift` passed.
+  Direct macOS Swift assertions passed for JSON roundtrip, selected branch,
+  stable local IDs, timestamp/status mapping, cycles and missing heads. This is
+  codec evidence, not iOS simulator or live synchronization evidence.
+- Added persistent XCTest coverage. These additions await the next simulator run;
+  existing run 23784 is still alive in post-test finalization and must not be
+  replaced merely because output has paused. No additional Apple build started.

@@ -306,3 +306,23 @@ final class PasswordResetLinkTests: XCTestCase {
         XCTAssertFalse(message.canRetry)
     }
 }
+
+final class SharedHistoryProjectionTests: XCTestCase {
+    func testUnknownFieldsAndAlternativeBranchesSurviveRoundtrip() throws {
+        let fixture = #"{"accountId":"account","revision":4,"folders":[{"id":"folder","title":"Folder","future":true}],"conversations":[{"id":"web-id-not-uuid","title":"Branch","updatedAt":1000,"model":"model","draft":"unsent","future":{"retain":true},"repository":{"headId":"selected","messages":[{"parentId":null,"message":{"id":"user","role":"user","content":[{"type":"text","text":"hello"}]}},{"parentId":"user","message":{"id":"other","role":"assistant","content":[{"type":"text","text":"alternative"}]}},{"parentId":"user","message":{"id":"selected","role":"assistant","status":{"type":"complete"},"content":[{"type":"text","text":"answer"}]}}]}}]}"#
+        let data = Data(fixture.utf8)
+        let snapshot = try JSONDecoder().decode(AccountHistorySnapshot.self, from: data)
+        XCTAssertEqual(try JSONDecoder().decode(HistoryJSON.self, from: JSONEncoder().encode(snapshot)),
+                       try JSONDecoder().decode(HistoryJSON.self, from: data))
+        var ids: [String: UUID] = [:]
+        let id = UUID()
+        let chat = try snapshot.projectedConversation(at: 0, id: id, messageIDs: &ids)
+        XCTAssertEqual(chat.messages.map(\.content), ["hello", "answer"])
+        XCTAssertEqual(chat.messages.last?.completion, .completed)
+        XCTAssertEqual(chat.updatedAt, Date(timeIntervalSince1970: 1))
+        XCTAssertEqual(chat, try snapshot.projectedConversation(at: 0, id: id, messageIDs: &ids))
+        let invalid = fixture.replacingOccurrences(of: "\"headId\":\"selected\"", with: "\"headId\":\"missing\"")
+        let bad = try JSONDecoder().decode(AccountHistorySnapshot.self, from: Data(invalid.utf8))
+        XCTAssertThrowsError(try bad.projectedConversation(at: 0, id: id, messageIDs: &ids))
+    }
+}
