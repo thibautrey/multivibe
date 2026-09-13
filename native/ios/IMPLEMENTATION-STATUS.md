@@ -35,6 +35,14 @@ in older entries are superseded by this summary and subsequent validation entrie
 
 ### Latest completed validation
 
+- September 13 follow-up at `1aaea67`: fresh unsigned simulator build and
+  launch succeeded on iPhone 17 / iOS 27. Light and dark login screenshots were
+  captured. OCR confirms the native email/password, SSO, signup and recovery
+  controls appear in both captures. Image inspection was unavailable to the
+  assistant, so this is launch/render-content evidence, not a visual layout or
+  contrast approval. No login or account creation was performed. Build log:
+  `/tmp/multivibe-ios-visual-build.log`. The disposable simulator and exact
+  DerivedData directory were removed by the successful command's exit trap.
 - Backend source at `b497e351` (documentation at `75a3f9a3`): TypeScript
   build, 12 revocation unit tests and one disposable PostgreSQL integration test
   passed. The finite revocation batch CLI is implemented but not scheduled or
