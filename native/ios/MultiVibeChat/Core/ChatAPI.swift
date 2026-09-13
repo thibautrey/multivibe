@@ -170,8 +170,10 @@ struct NativeAuthConfiguration: Decodable {
     let privacyUrl: URL?
     var hasValidDocuments: Bool {
         guard let termsVersion, !termsVersion.isEmpty, let termsUrl, let privacyUrl else { return false }
-        return [termsUrl, privacyUrl].allSatisfy {
-            $0.scheme == "https" && $0.host != nil && $0.user == nil && $0.password == nil
-        }
+        return Self.isSecureDocument(termsUrl) && Self.isSecureDocument(privacyUrl)
+    }
+    private static func isSecureDocument(_ url: URL) -> Bool {
+        guard url.scheme == "https", url.host != nil else { return false }
+        return url.user == nil && url.password == nil
     }
 }
