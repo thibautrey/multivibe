@@ -71,7 +71,7 @@ This source is integrated into local main, without a push. It is not release-rea
   Team ID plus cloud.multivibe.chat under webcredentials.apps. Do not invent a Team ID.
 - No AASA file has been published and no physical-device HTTPS callback has been
   proven. The generic SSO button intentionally does not claim Apple availability.
-- SSU metadata archival still emits a nonfatal error and requires separate repair.
+- SSU metadata archival was repaired by declaring the French development locale in both the project and Info.plist; see validation below.
 
 ### Transport and SSO lifecycle hardening
 
@@ -86,3 +86,10 @@ This source is integrated into local main, without a push. It is not release-rea
 - Switching conversations cancels the previous stream and audio, restores the conversation's model only if available, and requires explicit model selection when it is no longer available. Draft text is cleared when switching conversations. Reselecting the same conversation does not cancel it.
 - Backend main: TypeScript build and 24 HTTP tests passed (`/tmp/multivibe-native-legal-tests.log`).
 - iOS main: 11 XCTest tests executed with zero failures on a disposable iPhone 17 / iOS 27 simulator, covering SSE parsing, redirect rejection and conversation selection (`/tmp/multivibe-ios-selection-tests.log`). This is not evidence of production authentication or physical-device voice/Siri behavior.
+
+### Shortcut restoration and French Siri metadata
+
+- Pending shortcuts no longer mutate history before authentication/history restoration. Only the latest prepared action survives, and drafting never sends a message. The root view gates chat behind restoration completion.
+- Local main: 14 XCTest tests passed on iPhone 17 / iOS 27 simulator (`/tmp/multivibe-ios-intents-tests.log`), including three shortcut preparation tests. These tests do not execute Siri or a production login.
+- Declared `developmentLanguage: fr` and `CFBundleDevelopmentRegion=$(DEVELOPMENT_LANGUAGE)`. A fresh unsigned simulator build now explicitly trains all four phrases for `fr`, archives the locale to 100%, and packages `Metadata.appintents/nlu/nlu.lzfse` without the previous SSU error (`/tmp/multivibe-ios-locale-build.log`).
+- This establishes local metadata packaging, not signed-device Siri discovery or invocation. Temporary DerivedData was removed after inspecting output.
