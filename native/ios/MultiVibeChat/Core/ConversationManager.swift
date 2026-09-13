@@ -71,6 +71,7 @@ import CryptoKit
     private var historyMessageIDs: [String: UUID] = [:]
     private(set) var isSynchronizing = false
     var historyStatus: String?
+    private(set) var hasHistoryConflict = false
     var passwordRecovery: PasswordRecoveryRequest?
     private var activeReply: (conversation: UUID, message: UUID)?
     private var generation: Task<Void, Never>?
@@ -324,11 +325,11 @@ import CryptoKit
     }
     private func resetHistorySync() {
         historySnapshot = nil; historyBaseline = []; historyConversationIDs = [:]; historyMessageIDs = [:]
-        historyStatus = nil
+        historyStatus = nil; hasHistoryConflict = false
     }
     /// Explicit synchronization: no upload of legacy local history without a tap.
     /// Never resolve concurrent edits by silently choosing one device's snapshot.
-    func synchronizeHistory() async {
+    func synchronizeHistory(keepingBothVersions: Bool = false) async {
         guard !isSynchronizing, !isStreaming, !isRestoring, session != nil else { return }
         isSynchronizing = true
         defer { isSynchronizing = false }
@@ -347,7 +348,9 @@ import CryptoKit
                       validatedKeys.insert(key).inserted else { throw APIError.invalidResponse }
                 _ = try remote.projectedConversation(at: index, id: UUID(), messageIDs: &validationIDs)
             }
-            if let previous = historySnapshot, previous.revision != remote.revision, local != historyBaseline {
+            let conflict = historySnapshot.map { $0.revision != remote.revision && local != historyBaseline } ?? false
+            if conflict && !keepingBothVersions {
+                hasHistoryConflict = true
                 historyStatus = "Des modifications existent sur cet appareil et sur un autre. Rien n’a été écrasé. La résolution du conflit est nécessaire."
                 return
             }
@@ -356,12 +359,20 @@ import CryptoKit
             var messageIDs = historyMessageIDs
             if historySnapshot == nil || local != historyBaseline {
                 let localIDs = Set(local.map(\.id))
-                let deleted = Set(historyBaseline.map(\.id)).subtracting(localIDs)
+                let deleted = conflict ? Set<UUID>() : Set(historyBaseline.map(\.id)).subtracting(localIDs)
                 merged.conversations.removeAll { item in
                     guard let key = item.object?["id"]?.string, let id = conversationIDs[key] else { return false }
                     return deleted.contains(id)
                 }
-                for conversation in local {
+                for original in local {
+                    var conversation = original
+                    if conflict {
+                        // Preserve the server version, including remotely deleted chats.
+                        // Only dirty local chats become explicitly labelled copies.
+                        guard historyBaseline.first(where: { $0.id == original.id }) != original else { continue }
+                        conversation.id = UUID()
+                        conversation.title = String((original.title + " — copie locale").prefix(120))
+                    }
                     let key = conversationIDs.first { $0.value == conversation.id }?.key ?? conversation.id.uuidString
                     // On first import, retain any independently existing server chat.
                     if historySnapshot == nil, merged.conversations.contains(where: { $0.object?["id"]?.string == key }) {
@@ -383,6 +394,7 @@ import CryptoKit
                 conversationIDs[key] = id
                 projected.append(try merged.projectedConversation(at: index, id: id, messageIDs: &messageIDs))
             }
+            hasHistoryConflict = false
             historySnapshot = merged; historyConversationIDs = conversationIDs; historyMessageIDs = messageIDs
             historyBaseline = projected.sorted { $0.updatedAt > $1.updatedAt }
             // Reapply only edits made since the request began, including deletion.
