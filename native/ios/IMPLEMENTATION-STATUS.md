@@ -241,3 +241,16 @@ This source is integrated into local main, without a push. It is not release-rea
   server revision/payload. Later divergent revisions require explicit conflict
   resolution instead of guessing success. Local persistence failure blocks POST.
   This patch and its lost-response test require subsequent build/test validation.
+
+## 2026-09-13 — Local storage failure handling
+
+- `254097b` prevents a successful-sync banner when final local persistence fails,
+  and clears synchronization metadata if a rotated session cannot be saved.
+- Added a deterministic test asserting that failure to persist the recovery
+  snapshot blocks the remote POST and preserves local conversations.
+- The simulator process 45669 was verified still running (Xcode PID 45577,
+  DerivedData `/private/tmp/multivibe-ios-20260913.kn637v`, disposable simulator
+  `BD2EDA7A-6A48-426A-B0A4-D75F9A8E601A`). Its 28 tests passed at `2e23d65`;
+  final diagnostic collection has not yet returned. Do not start another Apple
+  build until it terminates. Subsequent commits `cf90ca6` and `254097b` still
+  require dependency-backed validation from main.
