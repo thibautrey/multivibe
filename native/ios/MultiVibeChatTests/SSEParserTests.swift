@@ -139,3 +139,62 @@ final class NativeTransportTests: XCTestCase {
         XCTAssertFalse(manager.isStreaming)
     }
 }
+
+@MainActor final class SessionRotationTests: XCTestCase {
+    private func session(_ token: String, account: String = "rotation-test", expired: Bool = false) -> NativeSession {
+        NativeSession(accessToken: "access-" + token, refreshToken: token,
+                      expiresAt: Date().addingTimeInterval(expired ? -60 : 3600), accountId: account)
+    }
+
+    func testPersistenceFailureClosesSessionAndRevokesRotatedToken() async {
+        let old = session("old", expired: true), renewed = session("renewed")
+        var cleared = false
+        var revoked: [String] = []
+        let services = SessionServices(load: { old }, save: { _ in throw APIError.invalidResponse },
+            clear: { cleared = true }, refresh: { _ in renewed }, revoke: { revoked.append($0) }, models: { _ in [] })
+        let manager = ConversationManager(services: services)
+        manager.prepareShortcut(.draft("must not survive"))
+        do { _ = try await manager.validSession(); XCTFail("Persistence failure must require login") }
+        catch {}
+        XCTAssertNil(manager.session)
+        XCTAssertNil(manager.pendingDraft)
+        XCTAssertTrue(cleared)
+        XCTAssertEqual(revoked, ["renewed"])
+        XCTAssertNotNil(manager.error)
+    }
+
+    func testConcurrentRefreshPersistsOnlyOnce() async throws {
+        let old = session("old", expired: true), renewed = session("renewed")
+        var saves = 0, refreshes = 0
+        let services = SessionServices(load: { old }, save: { _ in saves += 1 }, clear: {},
+            refresh: { _ in refreshes += 1; await Task.yield(); return renewed }, revoke: { _ in }, models: { _ in [] })
+        let manager = ConversationManager(services: services)
+        let first = Task { try await manager.validSession() }
+        let second = Task { try await manager.validSession() }
+        let a = try await first.value, b = try await second.value
+        XCTAssertEqual(a.refreshToken, "renewed")
+        XCTAssertEqual(b.refreshToken, "renewed")
+        XCTAssertEqual(saves, 1)
+        XCTAssertEqual(refreshes, 1)
+    }
+
+    func testAccountSwitchRevokesOldRotationWithoutReplacingNewAccount() async throws {
+        let old = session("old", expired: true), renewed = session("renewed")
+        let newAccount = session("new-account", account: "different-test-account")
+        var continuation: CheckedContinuation<NativeSession, Never>?
+        var saved: [String] = [], revoked: [String] = []
+        let services = SessionServices(load: { old }, save: { saved.append($0.refreshToken) }, clear: {},
+            refresh: { _ in await withCheckedContinuation { continuation = $0 } },
+            revoke: { revoked.append($0) }, models: { _ in [] })
+        let manager = ConversationManager(services: services)
+        let refresh = Task { try await manager.validSession() }
+        while continuation == nil { await Task.yield() }
+        try await manager.accept(newAccount)
+        continuation?.resume(returning: renewed)
+        do { _ = try await refresh.value; XCTFail("Old account caller must be cancelled") }
+        catch is CancellationError {} catch { XCTFail("Unexpected error: \(error)") }
+        XCTAssertEqual(manager.session?.accountId, newAccount.accountId)
+        XCTAssertEqual(saved, ["new-account"])
+        XCTAssertEqual(revoked, ["renewed"])
+    }
+}
