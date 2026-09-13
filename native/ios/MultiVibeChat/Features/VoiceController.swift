@@ -24,14 +24,16 @@ import Observation
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        Task { @MainActor [weak self] in self?.finishSpeaking(utterance) }
+        let identity = ObjectIdentifier(utterance)
+        Task { @MainActor [weak self] in self?.finishSpeaking(identity) }
     }
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        Task { @MainActor [weak self] in self?.finishSpeaking(utterance) }
+        let identity = ObjectIdentifier(utterance)
+        Task { @MainActor [weak self] in self?.finishSpeaking(identity) }
     }
-    private func finishSpeaking(_ utterance: AVSpeechUtterance) {
-        guard currentUtterance === utterance else { return }
-        currentUtterance = nil; speaking = false
+    private func finishSpeaking(_ identity: ObjectIdentifier) {
+        guard let currentUtterance, ObjectIdentifier(currentUtterance) == identity else { return }
+        self.currentUtterance = nil; speaking = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
