@@ -111,3 +111,36 @@ actor ChatAPI {
         throw APIError.invalidResponse // Do not silently accept a truncated stream.
     }
 }
+
+/// OAuth transport remains on fixed first-party hosts; account identity is
+/// resolved by the backend rather than trusting a locally decoded ID token.
+extension ChatAPI {
+    func exchangeAuthorizationCode(_ code: String, verifier: String) async throws -> NativeSession {
+        var request = URLRequest(url: URL(string: "https://auth.multivibe.cloud/oauth/token")!)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        var form = URLComponents()
+        form.queryItems = [URLQueryItem(name: "client_id", value: "multivibe-ios"),
+            URLQueryItem(name: "grant_type", value: "authorization_code"),
+            URLQueryItem(name: "redirect_uri", value: "https://auth.multivibe.cloud/oauth/callback/ios"),
+            URLQueryItem(name: "code", value: code), URLQueryItem(name: "code_verifier", value: verifier)]
+        request.httpBody = form.percentEncodedQuery?.data(using: .utf8)
+        let (data, response) = try await session.data(for: request)
+        try validate(response, data: data)
+        struct Tokens: Decodable { let access_token: String; let refresh_token: String; let expires_in: Int }
+        let tokens = try decoder.decode(Tokens.self, from: data)
+        guard !tokens.access_token.isEmpty, !tokens.refresh_token.isEmpty, tokens.expires_in > 0 else { throw APIError.invalidResponse }
+        do {
+            let (accountData, accountResponse) = try await session.data(for: self.request("auth/session", token: tokens.access_token))
+            try validate(accountResponse, data: accountData)
+            struct Account: Decodable { let accountId: String }
+            let account = try decoder.decode(Account.self, from: accountData)
+            guard !account.accountId.isEmpty else { throw APIError.invalidResponse }
+            return NativeSession(accessToken: tokens.access_token, refreshToken: tokens.refresh_token,
+                expiresAt: Date().addingTimeInterval(TimeInterval(tokens.expires_in)), accountId: account.accountId)
+        } catch {
+            try? await revoke(token: tokens.refresh_token)
+            throw error
+        }
+    }
+}
