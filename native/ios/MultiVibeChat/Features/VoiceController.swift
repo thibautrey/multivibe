@@ -4,9 +4,10 @@ import Observation
 
 /// Dictation is explicit and foreground-only. The transcript stays editable;
 /// only the Send action transmits it to MultiVibe.
-@MainActor @Observable final class VoiceController {
+@MainActor @Observable final class VoiceController: NSObject, AVSpeechSynthesizerDelegate {
     var transcript = ""
     var recording = false
+    var speaking = false
     var error: String?
     private let engine = AVAudioEngine()
     private let synthesizer = AVSpeechSynthesizer()
@@ -15,6 +16,25 @@ import Observation
     private var tapInstalled = false
     private var activation = UUID()
     private var starting = false
+    private var currentUtterance: AVSpeechUtterance?
+
+    override init() {
+        super.init()
+        synthesizer.delegate = self
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        Task { @MainActor [weak self] in self?.finishSpeaking(utterance) }
+    }
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        Task { @MainActor [weak self] in self?.finishSpeaking(utterance) }
+    }
+    private func finishSpeaking(_ utterance: AVSpeechUtterance) {
+        guard currentUtterance === utterance else { return }
+        currentUtterance = nil; speaking = false
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
 
     func start() async {
         guard !recording, !starting else { return }
@@ -32,6 +52,7 @@ import Observation
             error = "La dictée est indisponible pour le moment."; return
         }
         do {
+            currentUtterance = nil; speaking = false
             synthesizer.stopSpeaking(at: .immediate)
             let audio = AVAudioSession.sharedInstance()
             try audio.setCategory(.record, mode: .measurement, options: .duckOthers)
@@ -69,14 +90,15 @@ import Observation
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
     func speak(_ text: String) {
-        stop()
+        silence()
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: .duckOthers)
             try AVAudioSession.sharedInstance().setActive(true)
             let utterance = AVSpeechUtterance(string: text)
             utterance.voice = AVSpeechSynthesisVoice(language: Locale.current.identifier)
+            currentUtterance = utterance; speaking = true
             synthesizer.speak(utterance)
         } catch { self.error = error.localizedDescription }
     }
-    func silence() { synthesizer.stopSpeaking(at: .immediate); stop() }
+    func silence() { currentUtterance = nil; speaking = false; synthesizer.stopSpeaking(at: .immediate); stop() }
 }
