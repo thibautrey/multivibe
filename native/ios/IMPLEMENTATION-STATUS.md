@@ -100,3 +100,10 @@ This source is integrated into local main, without a push. It is not release-rea
 - A fresh unsigned simulator build from local main succeeded (`/tmp/multivibe-ios-scroll-build.log`). Temporary DerivedData was removed. Gesture behavior, Dynamic Type and VoiceOver still require interactive validation; compilation alone does not prove them.
 - Backend local main now includes optional Apple SSO / iOS association components and bounded admission-source changes (through `6ec05d78`). Two offline composition/static tests passed across all four component combinations, plus validation of 155 Kubernetes manifests. These are not CEL execution tests or live cluster admission proof.
 - No overlay enables these components, no production rules or hashes were changed, and Apple credentials / signed application identity remain unprovisioned. The earlier production limitation remains true for the installed policy, not for the updated local source.
+
+### Refresh persistence failure and account-switch races
+
+- Session services are injectable for deterministic tests without production credentials or Keychain writes. Concurrent callers still share one rotation and one persistence operation.
+- If persistence of a rotated token fails, the app clears the stale local session and pending intents, stops chat/audio, and attempts revocation of the rotated token. A failed remote revocation is explicitly reported; it is not presented as confirmed logout on the server.
+- A rotation finishing after an account revision no longer silently leaves its new token orphaned: it attempts revocation without replacing the newer account's session or Keychain entry.
+- Local main simulator XCTest execution: 17 tests, zero failures, including three new rotation tests (`/tmp/multivibe-ios-rotation-tests.log`). These are injected service tests, not actual Keychain-failure injection or production token lifecycle proof.
