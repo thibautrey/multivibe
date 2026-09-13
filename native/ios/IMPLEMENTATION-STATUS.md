@@ -72,3 +72,10 @@ This source is integrated into local main, without a push. It is not release-rea
 - No AASA file has been published and no physical-device HTTPS callback has been
   proven. The generic SSO button intentionally does not claim Apple availability.
 - SSU metadata archival still emits a nonfatal error and requires separate repair.
+
+### Transport and SSO lifecycle hardening
+
+- All native API calls use an ephemeral URLSession delegate which rejects HTTP redirects, including same-host redirects. Sensitive POST bodies and bearer tokens are never intentionally forwarded to a redirected endpoint; 3xx remains an API failure.
+- SSO tasks cancel when the authentication view disappears. Task cancellation resumes the browser continuation; callbacks are scoped to a unique attempt so a late callback cannot complete a newer attempt. A token issued after cancellation is revoked in a separate cleanup task before returning.
+- Local main simulator build passed (`/tmp/multivibe-ios-transport-build.log`). A local synthetic HTTP 307 probe checks actual Foundation redirect behavior independently of production.
+- Production inspection: admission manifests still authorize only Google/GitHub broker credentials. Apple client ID/secret opt-in, public iOS application association configuration, matching guardrail hashes and egress rules remain deployment work. No credentials were provisioned and no production policy was changed.
