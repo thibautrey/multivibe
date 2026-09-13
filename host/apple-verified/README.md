@@ -6,9 +6,9 @@ This Apache-2.0 source implements a separate `apple_host_verified` native runtim
 
 ## What the code does
 
-- `Sources/AppleVerifiedCore/Envelope.swift`: authenticates and decrypts X25519/HKDF-SHA256/AES-256-GCM request envelopes, binds model digest, release, host, connection and expiry, rejects replays, and encrypts each response using a separately derived key. `modelDigest` is mandatory. Requests expire within 120 seconds and never outlive the admitted lease.
+- `Sources/AppleVerifiedCore/Envelope.swift`: authenticates and decrypts X25519/HKDF-SHA256/AES-256-GCM request envelopes, binds model digest, release, host, connection and expiry, rejects replays, and encrypts each response using a separately derived key. `modelDigest` is mandatory. Requests expire within 60 seconds and never outlive the admitted lease.
 - `Sources/AppleVerifiedCore/AppleChallenge.swift`: owns the process X25519 key, decrypts the APNs challenge and signs its exact transcript with a device-bound Secure Enclave P-256 key. Admission compares the full binding and accepts at most a five-minute lease.
-- `Sources/MultiVibeVerifiedHost/App.swift`: receives challenges exclusively through the native APNs callback and returns proof over the same outbound TLS WebSocket. Disconnect, protocol error or rejection closes the key/session and exits. There is no local plaintext inference HTTP port.
+- `Sources/MultiVibeVerifiedHost/App.swift`: receives challenges exclusively through the native APNs callback and returns proof over the same outbound TLS WebSocket. The receive loop continues during generation; revocation, disconnect, protocol error or rejection cancels generation, closes the key/session and exits. Cancellation of GPU work is cooperative, and memory zeroization is not guaranteed. There is no local plaintext inference HTTP port.
 - `Sources/MultiVibeVerifiedHost/MLXRuntime.swift`: verifies an explicit model file manifest before and after loading, then runs a bounded text-only request inside this process through pinned MLX Swift dependencies. It cannot invoke tools or external model servers.
 - `Sources/CHardening/Hardening.c`: denies debugger attachment, rejects an already traced process, disables core dumps, and discards stdout/stderr before inference to prevent dependency output from logging prompts.
 

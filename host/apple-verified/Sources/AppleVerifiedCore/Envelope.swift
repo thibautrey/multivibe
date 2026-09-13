@@ -150,7 +150,7 @@ public actor InferenceSession {
     public func open(_ envelope: RequestEnvelope, now: Int64) throws -> OpenedRequest {
         guard let privateKey else { throw VerifiedHostError.unavailable }
         guard now < expiresAt, envelope.expiresAt > now,
-              envelope.expiresAt <= expiresAt, envelope.expiresAt - now <= 120_000
+              envelope.expiresAt <= expiresAt, envelope.expiresAt - now <= 60_000
         else { throw VerifiedHostError.expired }
         guard envelope.version == Wire.version, UUID(uuidString: envelope.requestId) != nil,
               envelope.hostId == hostId, envelope.sessionId == sessionId,

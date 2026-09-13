@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var apnsToken: String?
     private var sessionId: String?
     private var receiveTask: Task<Void, Never>?
+    private var generationTask: Task<Void, Never>?
     private var manifest: ModelManifest?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -146,12 +147,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let lease = try Wire.decode(AppleVerificationLease.self, from: body)
             self.inference = try await identity.admit(model: manifest.model, lease: lease, now: Self.now)
         case "request":
-            guard let inference, let runtime else { throw VerifiedHostError.runtimeNotQualified }
+            guard generationTask == nil, let inference, let runtime
+            else { throw VerifiedHostError.runtimeNotQualified }
             let request = try RequestEnvelope.parse(body)
-            let opened = try await inference.open(request, now: Self.now)
-            let output = try await runtime.execute(opened.plaintext)
-            guard connection === socket, Self.now < request.expiresAt else { throw VerifiedHostError.expired }
-            try await send("response", payload: opened.seal(response: output), on: socket)
+            // Keep receiving while MLX works so revoke/disconnect cancels promptly.
+            // Set the task before returning to bound this connection to one request.
+            generationTask = Task {
+                do {
+                    try Task.checkCancellation()
+                    let opened = try await inference.open(request, now: Self.now)
+                    try Task.checkCancellation()
+                    let output = try await runtime.execute(opened.plaintext)
+                    try Task.checkCancellation()
+                    guard connection === socket, Self.now < request.expiresAt
+                    else { throw VerifiedHostError.expired }
+                    try await send("response", payload: opened.seal(response: output), on: socket)
+                    generationTask = nil
+                } catch {
+                    await stop(); NSApplication.shared.terminate(nil)
+                }
+            }
         case "revoke":
             throw VerifiedHostError.unavailable
         default: throw VerifiedHostError.invalidEnvelope
@@ -166,9 +181,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func stop() async {
         let socket = connection; connection = nil
         socket?.cancel(with: .goingAway, reason: nil)
-        await inference?.close(); await identity?.close()
-        inference = nil; identity = nil; runtime = nil
+        generationTask?.cancel(); generationTask = nil
         receiveTask?.cancel(); receiveTask = nil
+        let activeInference = inference; let activeIdentity = identity
+        inference = nil; identity = nil; runtime = nil
+        await activeInference?.close(); await activeIdentity?.close()
     }
 
     private func connectionCredential(hostId: String) throws -> String {
