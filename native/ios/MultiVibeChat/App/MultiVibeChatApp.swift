@@ -12,6 +12,17 @@ import SwiftUI
             .environment(manager)
             .tint(MultiVibeTheme.accent)
             .task { await manager.restore() }
+            .onOpenURL { url in
+                guard let request = PasswordRecoveryRequest(url: url) else { return }
+                manager.voice.silence()
+                // Do not replace a form while the user is entering a password
+                // or while a reset request may be in flight.
+                guard manager.passwordRecovery == nil else { return }
+                manager.passwordRecovery = request
+            }
+            .sheet(item: Binding(get: { manager.passwordRecovery }, set: { manager.passwordRecovery = $0 })) { request in
+                PasswordRecoveryView(initialEmail: request.email, initialLink: request.link)
+            }
         }
     }
 }

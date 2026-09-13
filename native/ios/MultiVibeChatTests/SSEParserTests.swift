@@ -232,6 +232,8 @@ final class PasswordResetLinkTests: XCTestCase {
         let token = String(repeating: "a", count: 43)
         let link = "https://auth.multivibe.cloud/password/reset#token=\(token)"
         XCTAssertEqual(PasswordResetLink.token(from: link), token)
+        XCTAssertEqual(PasswordRecoveryRequest(url: URL(string: link)!)?.link, link)
+        XCTAssertNil(PasswordRecoveryRequest(url: URL(string: "https://auth.multivibe.cloud/oauth/callback/ios?code=fixture")!))
         for invalid in [link.replacingOccurrences(of: "https:", with: "http:"),
                         link.replacingOccurrences(of: "auth.multivibe.cloud", with: "evil.example"),
                         link.replacingOccurrences(of: "auth.multivibe.cloud", with: "user@auth.multivibe.cloud"),

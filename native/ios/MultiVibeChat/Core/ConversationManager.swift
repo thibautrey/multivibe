@@ -48,6 +48,7 @@ import CryptoKit
     var wantsImmediateVoiceCapture = false
     var wantsVoiceConversation = false
     var pendingDraft: String?
+    var passwordRecovery: PasswordRecoveryRequest?
     private var generation: Task<Void, Never>?
     private var refreshTask: Task<NativeSession, Error>?
     private var refreshRevision = UUID()

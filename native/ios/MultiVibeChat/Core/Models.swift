@@ -131,3 +131,15 @@ enum PasswordResetLink {
         return token
     }
 }
+
+struct PasswordRecoveryRequest: Identifiable {
+    let id = UUID()
+    let link: String
+    let email: String
+    init(email: String) { self.email = email; link = "" }
+    init?(url: URL) {
+        guard PasswordResetLink.token(from: url.absoluteString) != nil else { return nil }
+        link = url.absoluteString
+        email = ""
+    }
+}
