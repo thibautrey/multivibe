@@ -11,7 +11,7 @@
 <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
 <key>UILaunchScreen</key><dict/>
 <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
-<key>NSMicrophoneUsageDescription</key><string>MultiVibe utilise le micro uniquement pendant votre conversation vocale.</string>
-<key>NSSpeechRecognitionUsageDescription</key><string>Transcrire votre voix pour préparer votre message. Selon votre appareil, Apple peut traiter la transcription.</string>
+<key>NSMicrophoneUsageDescription</key><string>MultiVibe utilise le micro lorsque vous démarrez une dictée. Vous vérifiez le texte avant de l’envoyer.</string>
+<key>NSSpeechRecognitionUsageDescription</key><string>MultiVibe transcrit votre voix sur cet appareil pour préparer un message modifiable. Le texte est transmis au modèle uniquement lorsque vous touchez Envoyer.</string>
 <key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>cloud.multivibe.chat</string><key>CFBundleURLSchemes</key><array><string>multivibe-chat</string></array></dict></array>
 </dict></plist>
