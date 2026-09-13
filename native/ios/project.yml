@@ -1,0 +1,36 @@
+name: MultiVibeChat
+options:
+  bundleIdPrefix: cloud.multivibe
+  deploymentTarget:
+    iOS: '18.0'
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    TARGETED_DEVICE_FAMILY: '1,2'
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    SWIFT_STRICT_CONCURRENCY: complete
+    MARKETING_VERSION: 1.0.0
+    CURRENT_PROJECT_VERSION: 1
+    DEVELOPMENT_TEAM: ''
+targets:
+  MultiVibeChat:
+    type: application
+    platform: iOS
+    sources: [MultiVibeChat]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: cloud.multivibe.chat
+        INFOPLIST_FILE: MultiVibeChat/Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: MultiVibeChat/Resources/MultiVibeChat.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+    scheme:
+      testTargets: [MultiVibeChatTests]
+  MultiVibeChatTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [MultiVibeChatTests]
+    dependencies:
+      - target: MultiVibeChat
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
