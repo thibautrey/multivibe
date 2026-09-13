@@ -119,3 +119,8 @@ This source is integrated into local main, without a push. It is not release-rea
 - A rejected session persistence operation now attempts to revoke the newly issued refresh token while preserving the previously active account. This handling is shared by native authentication and SSO; cancellation before acceptance retains its separate cleanup path.
 - Authentication displays manager-level session warnings as well as view-local errors. Cleanup uses best-effort revocation and does not establish remote success.
 - September 13, 2026: local main simulator test command completed with exit 0 and `TEST SUCCEEDED`: 18 tests, zero failures (`/tmp/multivibe-ios-accept-tests.log`). The new injected persistence-failure test verifies incoming-token revocation and preservation of the current account. Actual Keychain failures and production revocation remain unverified.
+
+### Local history deletion confirmation
+
+- Conversation swipe actions no longer allow full-swipe deletion. A native alert names the selected conversation and explicitly explains irreversible removal from this device; cancellation leaves history unchanged.
+- Fresh unsigned simulator build on local main passed (`/tmp/multivibe-ios-delete-build.log`, exit 0, `BUILD SUCCEEDED`). Temporary DerivedData was removed. This is compile validation, not an interactive alert/gesture test.
