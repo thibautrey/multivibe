@@ -191,11 +191,11 @@
 				};
 			};
 			buildConfigurationList = 9B4F3B7FF37AACF77048EF2B /* Build configuration list for PBXProject "MultiVibeChat" */;
-			developmentRegion = en;
+			developmentRegion = fr;
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				Base,
-				en,
+				fr,
 			);
 			mainGroup = 5C147FEBCFDA6C8DE43FC6FE;
 			minimizedProjectReferenceProxies = 1;
