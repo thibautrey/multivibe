@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 @testable import MultiVibeChat
 
 final class SSEParserTests: XCTestCase {
@@ -586,5 +587,34 @@ final class NativePasswordPolicyTests: XCTestCase {
         flow.cancel(); pending?.resume()
         for _ in 0..<20 { await Task.yield() }
         XCTAssertFalse(flow.busy)
+    }
+}
+
+final class VoiceSystemEventTests: XCTestCase {
+    func testOnlyInterruptionStartStopsAudio() {
+        XCTAssertEqual(VoiceSystemEvent.decode(Notification(name: AVAudioSession.interruptionNotification,
+            userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue])), .interruptionBegan)
+        XCTAssertNil(VoiceSystemEvent.decode(Notification(name: AVAudioSession.interruptionNotification,
+            userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue])))
+        XCTAssertNil(VoiceSystemEvent.decode(Notification(name: AVAudioSession.interruptionNotification)))
+    }
+    func testRouteLossButNotOwnCategoryChangeStopsAudio() {
+        for reason in [AVAudioSession.RouteChangeReason.oldDeviceUnavailable, .noSuitableRouteForCategory] {
+            XCTAssertEqual(VoiceSystemEvent.decode(Notification(name: AVAudioSession.routeChangeNotification,
+                userInfo: [AVAudioSessionRouteChangeReasonKey: reason.rawValue])), .routeLost)
+        }
+        for reason in [AVAudioSession.RouteChangeReason.categoryChange, .newDeviceAvailable, .override] {
+            XCTAssertNil(VoiceSystemEvent.decode(Notification(name: AVAudioSession.routeChangeNotification,
+                userInfo: [AVAudioSessionRouteChangeReasonKey: reason.rawValue])))
+        }
+    }
+    @MainActor func testIdleEventDoesNotEraseTranscriptOrCreateError() {
+        let voice = VoiceController()
+        voice.transcript = "Texte conservé"
+        voice.handleSystemEvent(.routeLost)
+        XCTAssertEqual(voice.transcript, "Texte conservé")
+        XCTAssertNil(voice.error)
+        XCTAssertFalse(voice.recording)
+        XCTAssertFalse(voice.speaking)
     }
 }
