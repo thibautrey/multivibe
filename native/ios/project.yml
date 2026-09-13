@@ -25,7 +25,7 @@ targets:
         CODE_SIGN_ENTITLEMENTS: MultiVibeChat/Resources/MultiVibeChat.entitlements
         GENERATE_INFOPLIST_FILE: NO
     scheme:
-      testTargets: [MultiVibeChatTests]
+      testTargets: [MultiVibeChatTests, MultiVibeChatUITests]
   MultiVibeChatTests:
     type: bundle.unit-test
     platform: iOS
@@ -35,3 +35,13 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+  MultiVibeChatUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [MultiVibeChatUITests]
+    dependencies:
+      - target: MultiVibeChat
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: MultiVibeChat

@@ -14,6 +14,7 @@
 		726A7A3E670153E53166E796 /* SSEParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42EEE3F6ED3F93F3854EAC51 /* SSEParserTests.swift */; };
 		77407A84E21962A60F63DC56 /* MultiVibeChatApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00217B9D7702B72A5569309F /* MultiVibeChatApp.swift */; };
 		8FD1D22653DBCCB2B45A4CEA /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B36277A8CFF4EC17A06D2FC /* Models.swift */; };
+		91ABE914998A0252BC864813 /* AuthenticationUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73484D90F6B8C690FC806EBB /* AuthenticationUITests.swift */; };
 		92079D5C291F20B604251334 /* ConversationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED63046FBAF333333E159086 /* ConversationManager.swift */; };
 		C74FEFADAC73275DB726E5A6 /* AuthenticationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA4393E98F397246F4A41196 /* AuthenticationView.swift */; };
 		EDD89E16CC7EEE5F49D07739 /* ChatIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 626C77A820035BB712EF6520 /* ChatIntents.swift */; };
@@ -21,6 +22,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		1081D506940149DD59EEBD2F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E52D4EB5FB0629151209900A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D823DF267AB00046A3ED4807;
+			remoteInfo = MultiVibeChat;
+		};
 		2C69B18F72E64D7E3F81C3D3 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = E52D4EB5FB0629151209900A /* Project object */;
@@ -37,10 +45,12 @@
 		4D23AAC6A6C06292DD31EC37 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		4EC3EFFD60CE2939BD5BCD88 /* ChatAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatAPI.swift; sourceTree = "<group>"; };
 		626C77A820035BB712EF6520 /* ChatIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatIntents.swift; sourceTree = "<group>"; };
+		73484D90F6B8C690FC806EBB /* AuthenticationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticationUITests.swift; sourceTree = "<group>"; };
 		82F71476C40CB1762E352DF5 /* VoiceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceController.swift; sourceTree = "<group>"; };
 		9A8B15C5C36771B67C287720 /* MultiVibeChat.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MultiVibeChat.entitlements; sourceTree = "<group>"; };
 		9B36277A8CFF4EC17A06D2FC /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		A69AFB0001BDEA3472C4FE21 /* MultiVibeChatTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = MultiVibeChatTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C40B5C17410BA2068BAC1E38 /* MultiVibeChatUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = MultiVibeChatUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		CA4393E98F397246F4A41196 /* AuthenticationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticationView.swift; sourceTree = "<group>"; };
 		D7577716199F102273754156 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		DD2222EAEE8931D5CFBC41BA /* SecureStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureStore.swift; sourceTree = "<group>"; };
@@ -82,6 +92,7 @@
 			children = (
 				9F736F9E06A57D5336B5EF56 /* MultiVibeChat */,
 				EB53AE013465F9A3A0975BF0 /* MultiVibeChatTests */,
+				AEF795B841217F91E11BECAB /* MultiVibeChatUITests */,
 				E74BA307CA304FB896B611C5 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -117,11 +128,20 @@
 			path = Core;
 			sourceTree = "<group>";
 		};
+		AEF795B841217F91E11BECAB /* MultiVibeChatUITests */ = {
+			isa = PBXGroup;
+			children = (
+				73484D90F6B8C690FC806EBB /* AuthenticationUITests.swift */,
+			);
+			path = MultiVibeChatUITests;
+			sourceTree = "<group>";
+		};
 		E74BA307CA304FB896B611C5 /* Products */ = {
 			isa = PBXGroup;
 			children = (
 				26BC4D73E9F06A51A165F8E9 /* MultiVibeChat.app */,
 				A69AFB0001BDEA3472C4FE21 /* MultiVibeChatTests.xctest */,
+				C40B5C17410BA2068BAC1E38 /* MultiVibeChatUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -155,6 +175,24 @@
 			productReference = A69AFB0001BDEA3472C4FE21 /* MultiVibeChatTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		166FBE78ECDABB967CC778B0 /* MultiVibeChatUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 88D95E16424675C4D296896F /* Build configuration list for PBXNativeTarget "MultiVibeChatUITests" */;
+			buildPhases = (
+				CB6562891200DB52479A4384 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				9BCD3C45974DDA73A850623F /* PBXTargetDependency */,
+			);
+			name = MultiVibeChatUITests;
+			packageProductDependencies = (
+			);
+			productName = MultiVibeChatUITests;
+			productReference = C40B5C17410BA2068BAC1E38 /* MultiVibeChatUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		D823DF267AB00046A3ED4807 /* MultiVibeChat */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 7A8AE9A3B7EEA451E1849277 /* Build configuration list for PBXNativeTarget "MultiVibeChat" */;
@@ -185,6 +223,10 @@
 					09219E21BBB094474B51D932 = {
 						DevelopmentTeam = "";
 					};
+					166FBE78ECDABB967CC778B0 = {
+						DevelopmentTeam = "";
+						TestTargetID = D823DF267AB00046A3ED4807;
+					};
 					D823DF267AB00046A3ED4807 = {
 						DevelopmentTeam = "";
 					};
@@ -206,6 +248,7 @@
 			targets = (
 				D823DF267AB00046A3ED4807 /* MultiVibeChat */,
 				09219E21BBB094474B51D932 /* MultiVibeChatTests */,
+				166FBE78ECDABB967CC778B0 /* MultiVibeChatUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -246,6 +289,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		CB6562891200DB52479A4384 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				91ABE914998A0252BC864813 /* AuthenticationUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -254,9 +305,31 @@
 			target = D823DF267AB00046A3ED4807 /* MultiVibeChat */;
 			targetProxy = 2C69B18F72E64D7E3F81C3D3 /* PBXContainerItemProxy */;
 		};
+		9BCD3C45974DDA73A850623F /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D823DF267AB00046A3ED4807 /* MultiVibeChat */;
+			targetProxy = 1081D506940149DD59EEBD2F /* PBXContainerItemProxy */;
+		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		1AEEA522BA640FE5C007E2B3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = cloud.multivibe.MultiVibeChatUITests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = MultiVibeChat;
+			};
+			name = Debug;
+		};
 		625D874EDD03458AA4AFD6B4 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -350,6 +423,23 @@
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		87755962CEABABB5573C2744 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = cloud.multivibe.MultiVibeChatUITests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = MultiVibeChat;
 			};
 			name = Release;
 		};
@@ -466,6 +556,15 @@
 			buildConfigurations = (
 				C9669EC1E0F06EFF39552B7E /* Debug */,
 				B778F51862E9747047829ECD /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		88D95E16424675C4D296896F /* Build configuration list for PBXNativeTarget "MultiVibeChatUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1AEEA522BA640FE5C007E2B3 /* Debug */,
+				87755962CEABABB5573C2744 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
