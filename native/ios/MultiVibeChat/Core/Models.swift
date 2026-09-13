@@ -292,3 +292,70 @@ enum NativePasswordPolicy {
         }
     }
 }
+
+/// A deliberately small block subset; unsupported Markdown remains readable text.
+/// Fences are recognized even before their closing delimiter arrives in a stream.
+enum MessageBlock: Equatable {
+    case prose(String)
+    case heading(String, Int)
+    case bullet(String)
+    case code(String, String)
+
+    static func parse(_ source: String) -> [MessageBlock] {
+        var result: [MessageBlock] = []
+        var prose: [String] = []
+        var code: [String] = []
+        var fence: Character?
+        var fenceLength = 0
+        var language = ""
+        func flushProse() {
+            if !prose.isEmpty { result.append(.prose(prose.joined(separator: "\n"))); prose = [] }
+        }
+        for line in source.components(separatedBy: "\n") {
+            let leading = line.prefix(while: { $0 == " " }).count
+            let candidate = line.dropFirst(min(leading, 3))
+            let delimiter = candidate.first
+            let length = candidate.prefix(while: { $0 == delimiter }).count
+            if let open = fence {
+                if leading <= 3, delimiter == open, length >= fenceLength,
+                   candidate.dropFirst(length).trimmingCharacters(in: .whitespaces).isEmpty {
+                    result.append(.code(code.joined(separator: "\n"), language))
+                    code = []; fence = nil
+                } else { code.append(line) }
+                continue
+            }
+            if leading <= 3, let delimiter, delimiter == "`" || delimiter == "~", length >= 3 {
+                let info = String(candidate.dropFirst(length)).trimmingCharacters(in: .whitespaces)
+                if delimiter != "`" || !info.contains("`") {
+                    flushProse(); fence = delimiter; fenceLength = length; language = String(info.prefix(80))
+                    continue
+                }
+            }
+            let hashes = candidate.prefix(while: { $0 == "#" }).count
+            if leading <= 3, (1...6).contains(hashes), candidate.dropFirst(hashes).first == " " {
+                flushProse(); result.append(.heading(String(candidate.dropFirst(hashes + 1)), hashes))
+            } else if leading <= 3, ["- ", "* ", "+ "].contains(where: { candidate.hasPrefix($0) }) {
+                flushProse(); result.append(.bullet(String(candidate.dropFirst(2))))
+            } else if line.isEmpty {
+                flushProse()
+            } else { prose.append(line) }
+        }
+        if fence != nil { result.append(.code(code.joined(separator: "\n"), language)) }
+        flushProse()
+        return result
+    }
+
+    /// Model text may propose links, but must not launch app/deep-link schemes.
+    static func inline(_ text: String) -> AttributedString {
+        var value = (try? AttributedString(markdown: text, options: .init(
+            interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
+        let unsafeRanges = value.runs.compactMap { run -> Range<AttributedString.Index>? in
+            guard let link = run.link else { return nil }
+            guard ["https", "http"].contains(link.scheme?.lowercased() ?? ""),
+                  link.host != nil, link.user == nil, link.password == nil else { return run.range }
+            return nil
+        }
+        for range in unsafeRanges { value[range].link = nil }
+        return value
+    }
+}

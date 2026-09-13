@@ -648,3 +648,29 @@ final class VoiceSystemEventTests: XCTestCase {
         XCTAssertFalse(voice.speaking)
     }
 }
+
+final class MessageMarkdownTests: XCTestCase {
+    func testNativeBlocks() {
+        XCTAssertEqual(MessageBlock.parse("# Titre\nBonjour **vous**\n\n- Premier\n+ Second"),
+                       [.heading("Titre", 1), .prose("Bonjour **vous**"), .bullet("Premier"), .bullet("Second")])
+    }
+    func testStreamingCodePreservesWhitespace() {
+        XCTAssertEqual(MessageBlock.parse("```swift\n  let n = 1\n"), [.code("  let n = 1\n", "swift")])
+        XCTAssertEqual(MessageBlock.parse("```swift\n  let n = 1\n```\nSuite"),
+                       [.code("  let n = 1", "swift"), .prose("Suite")])
+    }
+    func testFenceLengthAndDelimiter() {
+        XCTAssertEqual(MessageBlock.parse("````\n```\n~~~~\n````"), [.code("```\n~~~~", "")])
+        XCTAssertEqual(MessageBlock.parse("~~~txt\n# literal\n~~~"), [.code("# literal", "txt")])
+    }
+    func testUnsupportedAndIndentedSyntaxIsNotDiscarded() {
+        XCTAssertEqual(MessageBlock.parse("    ```\n####### sept\n#sans espace"),
+                       [.prose("    ```\n####### sept\n#sans espace")])
+    }
+    func testUntrustedSchemesCannotBecomeActionLinks() {
+        for destination in ["multivibe-chat://new", "javascript:alert(1)", "file:///tmp/test", "https://user:pass@example.com"] {
+            XCTAssertTrue(MessageBlock.inline("[Lien](\(destination))").runs.allSatisfy { $0.link == nil })
+        }
+        XCTAssertEqual(MessageBlock.inline("[Site](https://example.com)").runs.first?.link?.host, "example.com")
+    }
+}
