@@ -16,6 +16,8 @@ struct ChatView: View {
                         .swipeActions { Button("Supprimer", role: .destructive) { manager.delete(conversation.id) } }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(MultiVibeTheme.background)
             .searchable(text: $search, prompt: "Conversations sur cet appareil")
             .navigationTitle("MultiVibe")
             .toolbar {
@@ -53,6 +55,7 @@ struct ChatView: View {
                     else { Button("Envoyer", systemImage: "arrow.up.circle.fill") { manager.send(text); text = "" }.disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || manager.selectedModel.isEmpty) }
                 }.padding()
             }
+            .background(MultiVibeTheme.background)
             .navigationTitle(manager.current?.title ?? "Chat")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
