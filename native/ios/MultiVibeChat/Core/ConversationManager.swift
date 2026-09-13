@@ -6,7 +6,18 @@ import CryptoKit
     static let shared = ConversationManager()
     var session: NativeSession? = SecureStore.load()
     var conversations: [Conversation] = []
-    var selection: UUID?
+    var selection: UUID? {
+        didSet {
+            guard selection != oldValue else { return }
+            stop()
+            voice.silence()
+            error = nil
+            if let current {
+                // Do not silently substitute a different model for an existing chat.
+                selectedModel = models.contains(where: { $0.id == current.model }) ? current.model : ""
+            }
+        }
+    }
     var models: [ModelOption] = []
     var selectedModel = ""
     var error: String?
@@ -35,7 +46,9 @@ import CryptoKit
             let availableModels = try await ChatAPI.shared.models(token: session.accessToken)
             guard sessionRevision == revision else { return }
             models = availableModels
-            selectedModel = models.first?.id ?? ""
+            if let current {
+                selectedModel = models.contains(where: { $0.id == current.model }) ? current.model : ""
+            } else { selectedModel = models.first?.id ?? "" }
         } catch { if sessionRevision == revision { self.error = error.localizedDescription } }
     }
     private func validSession() async throws -> NativeSession {

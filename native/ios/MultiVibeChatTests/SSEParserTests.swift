@@ -68,3 +68,40 @@ final class NativeTransportTests: XCTestCase {
         }
     }
 }
+
+@MainActor final class ConversationSelectionTests: XCTestCase {
+    func testSelectionRestoresModelAndStopsGeneration() {
+        let manager = ConversationManager()
+        manager.session = nil // Never persist to a real account in this test.
+        let first = Conversation(model: "first")
+        let second = Conversation(model: "second")
+        manager.models = [ModelOption(id: "first"), ModelOption(id: "second")]
+        manager.conversations = [first, second]
+        manager.selection = first.id
+        XCTAssertEqual(manager.selectedModel, "first")
+        manager.isStreaming = true
+        manager.selection = second.id
+        XCTAssertFalse(manager.isStreaming)
+        XCTAssertEqual(manager.selectedModel, "second")
+    }
+    func testUnavailableModelRequiresExplicitReplacement() {
+        let manager = ConversationManager()
+        manager.session = nil
+        let conversation = Conversation(model: "removed")
+        manager.models = [ModelOption(id: "available")]
+        manager.selectedModel = "available"
+        manager.conversations = [conversation]
+        manager.selection = conversation.id
+        XCTAssertEqual(manager.selectedModel, "")
+    }
+    func testReselectingSameConversationDoesNotStopGeneration() {
+        let manager = ConversationManager()
+        manager.session = nil
+        let conversation = Conversation(model: "first")
+        manager.conversations = [conversation]
+        manager.selection = conversation.id
+        manager.isStreaming = true
+        manager.selection = conversation.id
+        XCTAssertTrue(manager.isStreaming)
+    }
+}
