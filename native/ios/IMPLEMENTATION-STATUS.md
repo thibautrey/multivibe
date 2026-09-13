@@ -35,6 +35,12 @@ in older entries are superseded by this summary and subsequent validation entrie
 
 ### Latest completed validation
 
+- Backend source at `b497e351` (documentation at `75a3f9a3`): TypeScript
+  build, 12 revocation unit tests and one disposable PostgreSQL integration test
+  passed. The finite revocation batch CLI is implemented but not scheduled or
+  deployed. Running it without configuration exited 1 with a sanitized error,
+  confirming the default-disabled guard. These tests do not establish live Apple
+  revocation, account deletion, or durable recovery after provider exchange loss.
 - Local main at `b290052`: unsigned iPhone 17 / iOS 27 simulator build and **54
   XCTest tests passed**, zero failures, terminal `TEST SUCCEEDED` / exit 0.
   Log: `/tmp/multivibe-ios-model-recovery-tests.log`. Exact DerivedData and
