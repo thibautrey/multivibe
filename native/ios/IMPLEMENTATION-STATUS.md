@@ -351,3 +351,10 @@ in older entries are superseded by this summary and subsequent validation entrie
 - This is a source-evidenced baseline, not an approved App Store privacy label or exhaustive production processor/retention audit. Provider-side collection, SSO profile attributes, operational logging and legal retention still require verification before release. No no-collection/no-logging claim is made.
 
 - Main validation at `c464ad3`: unsigned iPhone 17 / iOS 27 simulator suite passed **42 tests, zero failures**, terminal exit 0. Log `/tmp/multivibe-ios-privacy-tests.log`. Exact disposable simulator and DerivedData removed. This is not a visual review of the new sheet or a verification of live legal-document availability.
+
+### 2026-09-13 — Apple revocation server primitive
+
+- Backend local main `62727503` adds `AppleOidcAdapter.revoke`: fixed Apple HTTPS endpoint, form-encoded server credentials/token, 5-second abort signal, redirect rejection, bounded input and token-free errors. A 200 response is accepted, including already-invalidated tokens; other statuses fail. Response streams are cancelled without buffering untrusted bodies.
+- Apple's official `Token revocation` documentation was retrieved on this date and specifies access/refresh token support, POST `/auth/revoke`, and 200 for newly or previously invalidated tokens.
+- Backend worktree `git diff --check` passed; integrated into main before `npm run build` and `node --test dist/test/apple-oauth.test.js`: TypeScript build passed, **8 tests passed**, zero failures. Four new tests cover body encoding/endpoint/options, pre-network input validation, safe errors and stream cancellation. Only injected fetch fixtures, no real Apple credential used.
+- This is deliberately not an account-deletion implementation or live revocation proof. Encrypted token retention, isolated Rust broker command, transactional deletion/revocation-job lifecycle, fresh authentication, and native deletion UI remain required. No provider token is added to native responses. No push/deployment/migration occurred.
