@@ -328,3 +328,10 @@ in older entries are superseded by this summary and subsequent validation entrie
 - No real account creation, password reset, Apple authorization or deployment
   was performed. Current native password authentication still uses an untracked
   Task unlike SSO; lifecycle cancellation and late-session cleanup need review.
+
+### 2026-09-13 — Native credential lifecycle verified
+
+- `087c72f` integrated into local main: closing authentication invalidates adoption without cancelling an already issued HTTP exchange; late refresh tokens are best-effort revoked. Old completions cannot clear a newer attempt's busy state. Inconsistent MFA/token envelopes are rejected and their refresh token is best-effort revoked. A terms reload checks attempt identity after suspension.
+- Worktree: `git diff --check` passed; no dependency installation or build there.
+- Main: unsigned sequential iPhone 17 / iOS 27 simulator `xcodebuild test` passed **39 tests, zero failures**, including four new credential-lifecycle tests. Log: `/tmp/multivibe-ios-credential-lifecycle-tests.log`.
+- Exact temporary DerivedData and disposable simulator cleaned by exit trap. No push, deployment, provisioning, or real-account verification. This supersedes the earlier outstanding native credential task-lifecycle item, not the other release requirements. Remote revocation success is not guaranteed when the network fails.
