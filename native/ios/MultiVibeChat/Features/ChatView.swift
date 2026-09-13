@@ -9,6 +9,7 @@ struct ChatView: View {
     @State private var search = ""
     @State private var conversationToDelete: Conversation?
     @State private var confirmHistorySync = false
+    @State private var confirmHistoryConflict = false
     @State private var retryTarget: RetryTarget?
     private struct RetryTarget { let conversation: UUID; let message: UUID }
     @State private var voicePresented = false
@@ -32,7 +33,13 @@ struct ChatView: View {
             .searchable(text: $search, prompt: "Conversations sur cet appareil")
             .navigationTitle("MultiVibe")
             .safeAreaInset(edge: .bottom) {
-                if let status = manager.historyStatus { Text(status).font(.caption).padding().background(.regularMaterial) }
+                VStack {
+                    if let status = manager.historyStatus { Text(status).font(.caption) }
+                    if manager.hasHistoryConflict {
+                        Button("Conserver les deux versions") { confirmHistoryConflict = true }
+                            .disabled(manager.isSynchronizing || manager.isStreaming || manager.isRestoring)
+                    }
+                }.padding().background(.regularMaterial)
             }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) { Button("Nouvelle conversation", systemImage: "square.and.pencil") { manager.newConversation() } }
@@ -113,7 +120,7 @@ struct ChatView: View {
                     }
                     TextField("Message", text: $text, axis: .vertical).lineLimit(1...8).textFieldStyle(.roundedBorder)
                     if manager.isStreaming { Button("Arrêter", systemImage: "stop.circle.fill") { manager.stop() } }
-                    else { Button("Envoyer", systemImage: "arrow.up.circle.fill") { if manager.send(text) { text = "" } }.disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || manager.selectedModel.isEmpty) }
+                    else { Button("Envoyer", systemImage: "arrow.up.circle.fill") { if manager.send(text) { text = "" } }.disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || manager.selectedModel.isEmpty || manager.isSynchronizing) }
                 }.padding()
             }
             .background(MultiVibeTheme.background)
@@ -156,6 +163,12 @@ struct ChatView: View {
             Button("Annuler", role: .cancel) {}
         } message: {
             Text("Les conversations de cet appareil seront envoyées à MultiVibe et celles de votre compte seront téléchargées. Elles ne sont pas chiffrées de bout en bout. Les modifications concurrentes ne seront pas écrasées automatiquement.")
+        }
+        .confirmationDialog("Conserver les versions du compte et les copies locales ?", isPresented: $confirmHistoryConflict, titleVisibility: .visible) {
+            Button("Conserver les deux versions") { Task { await manager.synchronizeHistory(keepingBothVersions: true) } }
+            Button("Annuler", role: .cancel) {}
+        } message: {
+            Text("Les conversations modifiées sur cet appareil seront ajoutées comme copies locales. Les versions du compte seront conservées ; les suppressions locales ne seront pas appliquées au compte pendant cette résolution.")
         }
         .sheet(isPresented: $voicePresented) { VoiceConversationView() }
         .onChange(of: manager.selection) { _, _ in text = "" }
