@@ -112,3 +112,22 @@ struct CompletionDelta: Decodable {
     }
     var choices: [Choice]
 }
+
+/// Parse only the exact first-party recovery URL. Never navigate to a pasted
+/// URL or send its fragment to a destination chosen by the clipboard content.
+enum PasswordResetLink {
+    static func token(from raw: String) -> String? {
+        guard raw.utf8.count <= 512,
+              let url = URLComponents(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+              url.scheme == "https", url.host == "auth.multivibe.cloud",
+              url.user == nil, url.password == nil, url.port == nil,
+              url.path == "/password/reset", url.query == nil,
+              let fragment = url.percentEncodedFragment,
+              fragment.hasPrefix("token=") else { return nil }
+        let token = String(fragment.dropFirst(6))
+        guard token.utf8.count == 43, token.utf8.allSatisfy({
+            (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 45 || $0 == 95
+        }) else { return nil }
+        return token
+    }
+}

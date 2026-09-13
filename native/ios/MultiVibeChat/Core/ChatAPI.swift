@@ -58,6 +58,14 @@ actor ChatAPI {
         struct Reply: Decodable { let accepted: Bool }
         guard try decoder.decode(Reply.self, from: data).accepted else { throw APIError.invalidResponse }
     }
+    func completePasswordReset(link: String, password: String) async throws {
+        guard let token = PasswordResetLink.token(from: link) else { throw APIError.invalidResponse }
+        let body = try JSONSerialization.data(withJSONObject: ["token": token, "password": password])
+        let (data, response) = try await session.data(for: request("auth/reset/complete", body: body))
+        try validate(response, data: data)
+        struct Reply: Decodable { let changed: Bool }
+        guard try decoder.decode(Reply.self, from: data).changed else { throw APIError.invalidResponse }
+    }
     func models(token: String) async throws -> [ModelOption] {
         let (data, response) = try await session.data(for: request("models", token: token))
         try validate(response, data: data)
