@@ -163,6 +163,20 @@ final class NativeTransportTests: XCTestCase {
         XCTAssertNotNil(manager.error)
     }
 
+    func testRejectedSignInPersistenceRevokesNewSessionAndPreservesCurrentAccount() async {
+        let current = session("current"), incoming = session("incoming", account: "other")
+        var revoked: [String] = []
+        let services = SessionServices(load: { current }, save: { _ in throw APIError.invalidResponse },
+            clear: { XCTFail("Existing session must not be erased") },
+            refresh: { _ in XCTFail("No refresh expected"); return current },
+            revoke: { revoked.append($0) }, models: { _ in XCTFail("No model request expected"); return [] })
+        let manager = ConversationManager(services: services)
+        do { try await manager.accept(incoming); XCTFail("Failed persistence must reject sign-in") }
+        catch {}
+        XCTAssertEqual(manager.session?.refreshToken, "current")
+        XCTAssertEqual(revoked, ["incoming"])
+    }
+
     func testConcurrentRefreshPersistsOnlyOnce() async throws {
         let old = session("old", expired: true), renewed = session("renewed")
         var saves = 0, refreshes = 0

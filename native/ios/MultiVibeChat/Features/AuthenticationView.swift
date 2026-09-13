@@ -55,7 +55,7 @@ struct AuthenticationView: View {
                         Text("Choisissez votre fournisseur dans la fenêtre sécurisée. Les conditions et la double authentification y sont conservées.").font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                if let error { Section { Text(error).foregroundStyle(.red) } }
+                if let message = error ?? manager.error { Section { Text(message).foregroundStyle(.red) } }
                 Section {
                     if challenge != nil {
                         Button("Recommencer la connexion") { challenge = nil; code = ""; password = ""; error = nil }
@@ -101,8 +101,9 @@ struct AuthenticationView: View {
             defer { busy = false; ssoTask = nil }
             do {
                 let session = try await sso.signIn()
-                do { try Task.checkCancellation(); try await manager.accept(session); password = "" }
+                do { try Task.checkCancellation() }
                 catch { try? await ChatAPI.shared.revoke(token: session.refreshToken); throw error }
+                try await manager.accept(session); password = ""
             } catch is CancellationError {
             } catch let failure as ASWebAuthenticationSessionError where failure.code == .canceledLogin {
             } catch { self.error = error.localizedDescription }

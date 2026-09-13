@@ -131,7 +131,14 @@ import CryptoKit
         return renewed
     }
     func accept(_ session: NativeSession) async throws {
-        try services.save(session)
+        do { try services.save(session) }
+        catch {
+            // All sign-in paths issue a real server session before persistence.
+            // A failed Keychain write must not leave that session orphaned.
+            let persistenceError = error
+            try? await services.revoke(session.refreshToken)
+            throw persistenceError
+        }
         stop()
         refreshRevision = UUID()
         refreshTask = nil
