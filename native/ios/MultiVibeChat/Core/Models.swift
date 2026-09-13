@@ -147,3 +147,76 @@ struct PasswordRecoveryRequest: Identifiable {
         email = ""
     }
 }
+
+/// Retain unknown web fields and off-screen branches instead of flattening the
+/// server snapshot on the next native save.
+indirect enum HistoryJSON: Codable, Equatable, Sendable {
+    case object([String: HistoryJSON]), array([HistoryJSON]), string(String), number(Double), bool(Bool), null
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer()
+        if value.decodeNil() { self = .null }
+        else if let bool = try? value.decode(Bool.self) { self = .bool(bool) }
+        else if let number = try? value.decode(Double.self) { self = .number(number) }
+        else if let string = try? value.decode(String.self) { self = .string(string) }
+        else if let array = try? value.decode([HistoryJSON].self) { self = .array(array) }
+        else { self = .object(try value.decode([String: HistoryJSON].self)) }
+    }
+    func encode(to encoder: Encoder) throws {
+        var value = encoder.singleValueContainer()
+        switch self {
+        case .object(let object): try value.encode(object)
+        case .array(let array): try value.encode(array)
+        case .string(let string): try value.encode(string)
+        case .number(let number): try value.encode(number)
+        case .bool(let bool): try value.encode(bool)
+        case .null: try value.encodeNil()
+        }
+    }
+    var object: [String: HistoryJSON]? { if case .object(let value) = self { value } else { nil } }
+    var array: [HistoryJSON]? { if case .array(let value) = self { value } else { nil } }
+    var string: String? { if case .string(let value) = self { value } else { nil } }
+    var number: Double? { if case .number(let value) = self { value } else { nil } }
+}
+
+struct AccountHistorySnapshot: Codable, Sendable {
+    var accountId: String
+    var revision: Int
+    var conversations: [HistoryJSON]
+    var folders: [HistoryJSON]?
+
+    /// Display only the selected branch. Keep the raw snapshot alongside this
+    /// projection: web identifiers need not be UUIDs and must never be rewritten.
+    func projectedConversation(at index: Int, id: UUID, messageIDs: inout [String: UUID]) throws -> Conversation {
+        guard conversations.indices.contains(index), let item = conversations[index].object,
+              let title = item["title"]?.string, let timestamp = item["updatedAt"]?.number,
+              let repository = item["repository"]?.object, let entries = repository["messages"]?.array else {
+            throw APIError.invalidResponse
+        }
+        var nodes: [String: [String: HistoryJSON]] = [:]
+        for entry in entries {
+            guard let node = entry.object, let message = node["message"]?.object,
+                  let key = message["id"]?.string, nodes[key] == nil else { throw APIError.invalidResponse }
+            nodes[key] = node
+        }
+        var cursor = repository["headId"]?.string
+        var visited = Set<String>(), messages: [ChatMessage] = []
+        while let key = cursor {
+            guard visited.insert(key).inserted, let node = nodes[key],
+                  let message = node["message"]?.object, let role = message["role"]?.string,
+                  ["user", "assistant", "system"].contains(role), let parts = message["content"]?.array else { throw APIError.invalidResponse }
+            let text = try parts.map { part -> String in
+                guard let object = part.object, object["type"]?.string == "text", let text = object["text"]?.string else { throw APIError.invalidResponse }
+                return text
+            }.joined(separator: "\n")
+            let localID = messageIDs[key] ?? UUID()
+            messageIDs[key] = localID
+            let status = message["status"]?.object?["type"]?.string
+            let completion: ChatMessage.Completion? = role != "assistant" ? nil : status == "complete" ? .completed : status == "incomplete" ? .stopped : nil
+            messages.append(ChatMessage(id: localID, role: role, content: text, completion: completion))
+            if node["parentId"] == .null { cursor = nil }
+            else if let parent = node["parentId"]?.string { cursor = parent }
+            else { throw APIError.invalidResponse }
+        }
+        return Conversation(id: id, title: title, model: item["model"]?.string ?? "", messages: messages.reversed(), updatedAt: Date(timeIntervalSince1970: timestamp / 1000))
+    }
+}

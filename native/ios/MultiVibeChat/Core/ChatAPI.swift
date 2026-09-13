@@ -38,6 +38,24 @@ actor ChatAPI {
             throw APIError.server(http.statusCode, code)
         }
     }
+    func history(token: String) async throws -> AccountHistorySnapshot {
+        let (data, response) = try await session.data(for: request("history", token: token))
+        try validate(response, data: data)
+        guard data.count <= 2_097_152 else { throw APIError.invalidResponse }
+        let snapshot = try JSONDecoder().decode(AccountHistorySnapshot.self, from: data)
+        guard snapshot.revision >= 0, snapshot.conversations.count <= 500,
+              (snapshot.folders?.count ?? 0) <= 100 else { throw APIError.invalidResponse }
+        return snapshot
+    }
+    func saveHistory(_ snapshot: AccountHistorySnapshot, token: String) async throws -> AccountHistorySnapshot {
+        let body = try JSONEncoder().encode(snapshot)
+        guard body.count <= 1_048_576 else { throw APIError.server(413, "history_too_large") }
+        let (data, response) = try await session.data(for: request("history", body: body, token: token))
+        try validate(response, data: data)
+        let saved = try JSONDecoder().decode(AccountHistorySnapshot.self, from: data)
+        guard saved.accountId == snapshot.accountId, saved.revision == snapshot.revision + 1 else { throw APIError.invalidResponse }
+        return saved
+    }
     func authenticationConfiguration() async throws -> NativeAuthConfiguration {
         let (data, response) = try await session.data(for: request("auth/config"))
         try validate(response, data: data)
