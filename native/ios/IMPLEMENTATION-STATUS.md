@@ -113,3 +113,9 @@ This source is integrated into local main, without a push. It is not release-rea
 - Permission copy now describes mandatory on-device dictation and explicit text sending. A denied Speech permission no longer triggers an unnecessary microphone permission request. Recognition failure preserves the editable transcript and displays an interruption warning.
 - Plist validation and a fresh unsigned simulator build from main succeeded (`/tmp/multivibe-ios-dictation-build.log`); this does not verify physical-device permission/audio behavior.
 - The preceding 17-test run ultimately exited successfully with `TEST SUCCEEDED`. The long post-test wait was Xcode's `simctl diagnose`, which timed out at 600 seconds; diagnostic collection failed, not the XCTest suite. The disposable simulator and exact DerivedData directory were removed, and no second build ran concurrently.
+
+### Sign-in persistence failure cleanup
+
+- A rejected session persistence operation now attempts to revoke the newly issued refresh token while preserving the previously active account. This handling is shared by native authentication and SSO; cancellation before acceptance retains its separate cleanup path.
+- Authentication displays manager-level session warnings as well as view-local errors. Cleanup uses best-effort revocation and does not establish remote success.
+- September 13, 2026: local main simulator test command completed with exit 0 and `TEST SUCCEEDED`: 18 tests, zero failures (`/tmp/multivibe-ios-accept-tests.log`). The new injected persistence-failure test verifies incoming-token revocation and preservation of the current account. Actual Keychain failures and production revocation remain unverified.
