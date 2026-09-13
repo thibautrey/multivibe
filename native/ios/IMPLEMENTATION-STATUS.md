@@ -35,10 +35,11 @@ in older entries are superseded by this summary and subsequent validation entrie
 
 ### Latest completed validation
 
-- Local main at `2c78a0a`: unsigned iPhone 17 / iOS 27 simulator build and **45
+- Local main at `a62fcae`: unsigned iPhone 17 / iOS 27 simulator build and **50
   XCTest tests passed**, zero failures, terminal `TEST SUCCEEDED` / exit 0.
-  Log: `/tmp/multivibe-ios-reset-final-tests.log`. Exact DerivedData and
-  disposable simulator were removed. No live authentication or two-device proof.
+  Log: `/tmp/multivibe-ios-markdown-tests.log`. Exact DerivedData and disposable
+  simulator were removed. Includes five Markdown parser/link tests; no visual
+  layout, live authentication or two-device proof.
 - Earlier main builds validated French App Intents metadata packaging and the
   optional assistant macro; these are not signed-device Siri invocation tests.
 - Backend main at `cc672565`: TypeScript build and **51 targeted tests passed**.
@@ -426,3 +427,19 @@ lifecycle integration remain outstanding.
 - No live account, Apple exchange, production migration or deployment was involved.
   This is database protection for the future lifecycle integration, not a completed
   account-deletion feature. Native code and its 45-test simulator proof are unchanged.
+
+### Native message formatting (September 13, 2026)
+
+- Assistant messages now use native SwiftUI text for inline Markdown, headings
+  and bullet lists. Fenced code has horizontal scrolling, a monospace system font
+  and an explicit copy action using a device-local pasteboard with five-minute
+  expiration. User messages remain literal text.
+- Unclosed streaming fences retain their code content; closing delimiters must
+  match the opener character and length. Unsupported block syntax remains text.
+  This is a limited Markdown subset, not a full CommonMark renderer.
+- No WebView, HTML execution or remote-image loading. Inline links retain only
+  HTTP(S) destinations with a host and without embedded credentials.
+- Worktree `git diff --check` passed; commit `a62fcae` fast-forwarded into local
+  main before dependency-backed validation. The entire simulator suite passed:
+  50 tests, including five new block/fence/link tests. This does not establish
+  visual accessibility or real-device interaction behavior.
