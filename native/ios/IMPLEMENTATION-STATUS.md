@@ -93,3 +93,10 @@ This source is integrated into local main, without a push. It is not release-rea
 - Local main: 14 XCTest tests passed on iPhone 17 / iOS 27 simulator (`/tmp/multivibe-ios-intents-tests.log`), including three shortcut preparation tests. These tests do not execute Siri or a production login.
 - Declared `developmentLanguage: fr` and `CFBundleDevelopmentRegion=$(DEVELOPMENT_LANGUAGE)`. A fresh unsigned simulator build now explicitly trains all four phrases for `fr`, archives the locale to 100%, and packages `Metadata.appintents/nlu/nlu.lzfse` without the previous SSU error (`/tmp/multivibe-ios-locale-build.log`).
 - This establishes local metadata packaging, not signed-device Siri discovery or invocation. Temporary DerivedData was removed after inspecting output.
+
+### Streaming viewport and staged deployment configuration
+
+- The native chat initially anchors to its latest message and follows streamed text while the reader remains at the bottom. User scrolling suspends programmatic scrolling; reading earlier messages exposes an explicit native “Dernier message” button. Conversation changes restore following.
+- A fresh unsigned simulator build from local main succeeded (`/tmp/multivibe-ios-scroll-build.log`). Temporary DerivedData was removed. Gesture behavior, Dynamic Type and VoiceOver still require interactive validation; compilation alone does not prove them.
+- Backend local main now includes optional Apple SSO / iOS association components and bounded admission-source changes (through `6ec05d78`). Two offline composition/static tests passed across all four component combinations, plus validation of 155 Kubernetes manifests. These are not CEL execution tests or live cluster admission proof.
+- No overlay enables these components, no production rules or hashes were changed, and Apple credentials / signed application identity remain unprovisioned. The earlier production limitation remains true for the installed policy, not for the updated local source.
