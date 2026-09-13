@@ -435,6 +435,23 @@ final class SharedHistoryStatusTests: XCTestCase {
         XCTAssertEqual(manager.historyStatus, "Historique synchronisé avec votre compte.")
     }
 
+    func testLocalPersistenceFailurePreventsRemoteWrite() async {
+        let session = NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: UUID().uuidString)
+        var writes = 0
+        let services = SessionServices(writeHistory: { _, _ in throw APIError.invalidResponse }, load: { session },
+            readHistory: { _ in AccountHistorySnapshot(accountId: session.accountId, revision: 0, conversations: []) },
+            saveHistory: { snapshot, _ in writes += 1; return snapshot }, models: { _ in [] })
+        let manager = ConversationManager(services: services)
+        await manager.restore()
+        manager.newConversation()
+        let before = manager.conversations
+        await manager.synchronizeHistory()
+        XCTAssertEqual(writes, 0)
+        XCTAssertEqual(manager.conversations, before)
+        XCTAssertNotNil(manager.error)
+        XCTAssertTrue(manager.historyStatus?.contains("non terminée") == true)
+    }
+
     func testInvalidRemoteProjectionNeverTriggersSave() async {
         let session = NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: UUID().uuidString)
         var writes = 0

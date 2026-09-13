@@ -150,6 +150,7 @@ import CryptoKit
                     services.clear()
                     session = nil
                     conversations = []; selection = nil
+                    resetHistorySync()
                     models = []; selectedModel = ""
                     wantsNewConversation = false; wantsVoice = false
                     wantsVoiceConversation = false; wantsImmediateVoiceCapture = false; pendingDraft = nil
@@ -436,7 +437,10 @@ import CryptoKit
             }
             conversations = projected.sorted { $0.updatedAt > $1.updatedAt }
             if let selection, !conversations.contains(where: { $0.id == selection }) { self.selection = nil }
-            persist()
+            guard persist() else {
+                historyStatus = "Copie distante reçue, mais l’enregistrement sur cet appareil a échoué. Réessayez la synchronisation."
+                return
+            }
             historyStatus = conversations == historyBaseline
                 ? "Historique synchronisé avec votre compte."
                 : "Copie distante enregistrée ; de nouvelles modifications locales restent à synchroniser."
