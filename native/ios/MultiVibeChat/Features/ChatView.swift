@@ -144,6 +144,7 @@ struct VoiceConversationView: View {
             guard !streaming, awaitingReply else { return }
             awaitingReply = false
             guard scenePhase == .active, manager.error == nil,
+                  let replyMessage, manager.completedReply == replyMessage,
                   let conversation = manager.conversations.first(where: { $0.id == replyConversation }),
                   let reply = conversation.messages.first(where: { $0.id == replyMessage }),
                   !reply.content.isEmpty else { return }

@@ -14,7 +14,8 @@ This source is integrated into local main, without a push. It is not release-rea
   exclusion. No cloud-history synchronization is implemented yet.
 - Session/generation revision checks reject stale streaming and model-list callbacks.
 - Foreground, device-authenticated App Intents: new conversation, dictation,
-  prepare a draft. They are discoverable in Shortcuts and can be assigned through
+  prepare a draft, and open the voice conversation sheet. Metadata is extracted;
+  actual discovery and invocation still require verification through
   supported system shortcut surfaces. Draft preparation never sends a message.
 - Pending microphone permission callbacks are invalidated on stop/background.
 
@@ -31,7 +32,7 @@ This source is integrated into local main, without a push. It is not release-rea
 - App Intents extraction emitted a nonfatal SSU archival error: metadata packaging
   and Siri/Shortcuts invocation still need validation.
 - Backend main: TypeScript build passed, 12 native-auth/Apple/browser-chat tests
-  passed; Rust broker suite passed 16 tests with one external diagnostic ignored.
+  passed; Rust broker suite passed 17 tests with one external diagnostic ignored.
   No database migration application, deployment or real Apple login is proven.
 
 ## Required before completion
@@ -45,7 +46,11 @@ This source is integrated into local main, without a push. It is not release-rea
   voice interruption/permission lifecycle, and supported App Intents metadata.
 - Add account deletion, actual privacy collection declarations and verified legal
   URLs before any App Store submission. The current privacy manifest is provisional.
-- Cloud history integration and a true conversational voice mode remain outstanding.
+- A native push-to-talk sheet shares dictation and speech synthesis with shortcuts.
+  Sending remains explicit, and only successfully completed replies authorize
+  automatic readout; cancellation never authorizes partial-response playback.
+  Hands-free microphone restart is deliberately not implemented.
+- Cloud history integration remains outstanding.
 - Configure signing, Apple identifiers/keys and provisioning separately. No private
   credentials belong in this repository. No side-button entitlement is enabled;
   region-limited system-assistant activation must not be promised to all users.

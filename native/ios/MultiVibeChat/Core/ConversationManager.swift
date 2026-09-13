@@ -11,6 +11,7 @@ import CryptoKit
     var selectedModel = ""
     var error: String?
     var isStreaming = false
+    private(set) var completedReply: UUID?
     let voice = VoiceController()
     var wantsVoice = false
     var wantsVoiceConversation = false
@@ -94,6 +95,7 @@ import CryptoKit
         let input = conversations[index].messages
         let reply = ChatMessage(role: "assistant", content: "")
         conversations[index].messages.append(reply)
+        completedReply = nil
         isStreaming = true; error = nil; persist()
         let revision = generationRevision
         let accountRevision = sessionRevision
@@ -111,6 +113,10 @@ import CryptoKit
                 try await ChatAPI.shared.stream(model: model, messages: input, token: session.accessToken) { delta in
                     await self.append(delta, conversation: id, message: reply.id, generation: revision, account: accountRevision)
                 }
+                try Task.checkCancellation()
+                guard generationRevision == revision && sessionRevision == accountRevision else { return }
+                // Only a successfully terminated stream authorizes automatic playback.
+                completedReply = reply.id
             } catch is CancellationError {} catch {
                 if generationRevision == revision && sessionRevision == accountRevision { self.error = error.localizedDescription }
             }
@@ -125,6 +131,7 @@ import CryptoKit
         conversations[i].updatedAt = Date()
     }
     func stop() {
+        completedReply = nil
         generationRevision = UUID()
         generation?.cancel(); generation = nil
         isStreaming = false
