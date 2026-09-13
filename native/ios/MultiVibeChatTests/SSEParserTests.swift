@@ -591,6 +591,36 @@ final class NativePasswordPolicyTests: XCTestCase {
 }
 
 final class VoiceSystemEventTests: XCTestCase {
+    func testMediaServiceNotificationsDecodeWithoutPayload() {
+        XCTAssertEqual(VoiceSystemEvent.decode(Notification(name: AVAudioSession.mediaServicesWereLostNotification)), .servicesLost)
+        XCTAssertEqual(VoiceSystemEvent.decode(Notification(name: AVAudioSession.mediaServicesWereResetNotification)), .servicesReset)
+    }
+    @MainActor func testResetPreservesTranscriptAndNeverRestartsActiveAudio() {
+        let voice = VoiceController()
+        voice.transcript = "Brouillon conservé"
+        voice.recording = true
+        voice.handleSystemEvent(.servicesReset)
+        XCTAssertEqual(voice.transcript, "Brouillon conservé")
+        XCTAssertFalse(voice.recording); XCTAssertFalse(voice.speaking)
+        XCTAssertNotNil(voice.error)
+        voice.silence()
+    }
+    @MainActor func testLostServiceBlocksNewPlaybackAndIdleResetIsQuiet() {
+        let voice = VoiceController()
+        voice.transcript = "Brouillon"
+        voice.handleSystemEvent(.servicesLost)
+        XCTAssertNil(voice.error)
+        voice.speak("Ne pas lire")
+        XCTAssertFalse(voice.speaking)
+        XCTAssertNotNil(voice.error)
+        voice.silence()
+        voice.error = nil
+        voice.handleSystemEvent(.servicesReset)
+        XCTAssertNil(voice.error)
+        XCTAssertEqual(voice.transcript, "Brouillon")
+        XCTAssertFalse(voice.recording); XCTAssertFalse(voice.speaking)
+    }
+
     func testOnlyInterruptionStartStopsAudio() {
         XCTAssertEqual(VoiceSystemEvent.decode(Notification(name: AVAudioSession.interruptionNotification,
             userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue])), .interruptionBegan)
