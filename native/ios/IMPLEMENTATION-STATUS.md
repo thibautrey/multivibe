@@ -79,3 +79,10 @@ This source is integrated into local main, without a push. It is not release-rea
 - SSO tasks cancel when the authentication view disappears. Task cancellation resumes the browser continuation; callbacks are scoped to a unique attempt so a late callback cannot complete a newer attempt. A token issued after cancellation is revoked in a separate cleanup task before returning.
 - Local main simulator build passed (`/tmp/multivibe-ios-transport-build.log`). A local synthetic HTTP 307 probe checks actual Foundation redirect behavior independently of production.
 - Production inspection: admission manifests still authorize only Google/GitHub broker credentials. Apple client ID/secret opt-in, public iOS application association configuration, matching guardrail hashes and egress rules remain deployment work. No credentials were provisioned and no production policy was changed.
+
+### Native signup configuration and conversation selection
+
+- Native signup now reads `/native/v1/auth/config`; legal links are no longer hardcoded. The server rejects disabled signup, absent configuration and stale `termsVersion` before invoking account creation. The app resets acceptance when reloading changed terms.
+- Switching conversations cancels the previous stream and audio, restores the conversation's model only if available, and requires explicit model selection when it is no longer available. Draft text is cleared when switching conversations. Reselecting the same conversation does not cancel it.
+- Backend main: TypeScript build and 24 HTTP tests passed (`/tmp/multivibe-native-legal-tests.log`).
+- iOS main: 11 XCTest tests executed with zero failures on a disposable iPhone 17 / iOS 27 simulator, covering SSE parsing, redirect rejection and conversation selection (`/tmp/multivibe-ios-selection-tests.log`). This is not evidence of production authentication or physical-device voice/Siri behavior.
