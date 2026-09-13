@@ -50,6 +50,17 @@
                ReferencedContainer = "container:MultiVibeChat.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "166FBE78ECDABB967CC778B0"
+               BuildableName = "MultiVibeChatUITests.xctest"
+               BlueprintName = "MultiVibeChatUITests"
+               ReferencedContainer = "container:MultiVibeChat.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
       <CommandLineArguments>
       </CommandLineArguments>
