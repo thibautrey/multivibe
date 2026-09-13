@@ -15,12 +15,6 @@ struct AuthenticationView: View {
     @State private var code = ""
     @State private var busy = false
     @State private var error: String?
-    @State private var resetPresented = false
-    @State private var resetSent = false
-    @State private var resetLink = ""
-    @State private var newPassword = ""
-    @State private var confirmPassword = ""
-    @State private var resetCompleted = false
     var body: some View {
         NavigationStack {
             Form {
@@ -65,46 +59,14 @@ struct AuthenticationView: View {
                         Button("Recommencer la connexion") { challenge = nil; code = ""; password = ""; error = nil }
                     } else {
                         Button(signup ? "J’ai déjà un compte" : "Créer un compte") { signup.toggle(); error = nil }
-                        if !signup { Button("Mot de passe oublié ?") { resetSent = false; resetCompleted = false; resetLink = ""; newPassword = ""; confirmPassword = ""; error = nil; resetPresented = true } }
+                        if !signup { Button("Mot de passe oublié ?") { manager.passwordRecovery = PasswordRecoveryRequest(email: email) } }
                     }
                 }.disabled(busy)
             }
             .scrollContentBackground(.hidden)
             .background(MultiVibeTheme.background)
             .navigationTitle(challenge != nil ? "Double authentification" : signup ? "Bienvenue" : "MultiVibe Chat")
-            .sheet(isPresented: $resetPresented) {
-                NavigationStack {
-                    Form {
-                        if resetCompleted {
-                            Text("Votre mot de passe a été modifié. Reconnectez-vous avec votre nouveau mot de passe et votre double authentification éventuelle.")
-                        } else {
-                        if resetSent {
-                            Text("Si un compte correspond à cette adresse, vous recevrez un lien pour choisir un nouveau mot de passe.")
-                        } else {
-                            TextField("Adresse e-mail", text: $email).textContentType(.emailAddress)
-                                .keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
-                            Button("Envoyer le lien") { requestReset() }.disabled(busy || email.isEmpty)
-                        }
-                        Section("J’ai reçu le lien") {
-                            Text("Copiez le lien de réinitialisation reçu par e-mail et collez-le ici. Il reste confidentiel et n’est envoyé qu’à MultiVibe.")
-                            SecureField("Lien de réinitialisation", text: $resetLink)
-                                .textInputAutocapitalization(.never).autocorrectionDisabled()
-                            SecureField("Nouveau mot de passe", text: $newPassword).textContentType(.newPassword)
-                            SecureField("Confirmer le mot de passe", text: $confirmPassword).textContentType(.newPassword)
-                            Text("Au moins 12 caractères.").font(.caption).foregroundStyle(.secondary)
-                            Button("Changer mon mot de passe") { completeReset() }
-                                .disabled(busy || PasswordResetLink.token(from: resetLink) == nil || newPassword.count < 12 || newPassword != confirmPassword)
-                        }
-                        }
-                        if busy { ProgressView() }
-                        if let error { Text(error).foregroundStyle(.red) }
-                    }
-                    .navigationTitle("Réinitialiser le mot de passe")
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Terminé") { resetPresented = false }.disabled(busy) } }
-                    .interactiveDismissDisabled(busy)
-                    .onDisappear { resetLink = ""; newPassword = ""; confirmPassword = "" }
-                }
-            }
+
         }
         .task { await loadConfiguration() }
         .onDisappear { ssoTask?.cancel(); sso.cancel() }
@@ -128,26 +90,6 @@ struct AuthenticationView: View {
             } catch { self.error = error.localizedDescription }
         }
     }
-    private func completeReset() {
-        busy = true; error = nil
-        Task {
-            defer { busy = false }
-            do {
-                try await ChatAPI.shared.completePasswordReset(link: resetLink, password: newPassword)
-                resetCompleted = true; resetLink = ""; newPassword = ""; confirmPassword = ""; password = ""
-            } catch APIError.server(400, "password_reset_invalid") {
-                error = "Ce lien est invalide, expiré ou déjà utilisé, ou le mot de passe est refusé. Demandez un nouveau lien et vérifiez votre mot de passe."
-            } catch { self.error = error.localizedDescription }
-        }
-    }
-    private func requestReset() {
-        busy = true; error = nil
-        Task {
-            defer { busy = false }
-            do { try await ChatAPI.shared.requestPasswordReset(email: email); resetSent = true }
-            catch { self.error = error.localizedDescription }
-        }
-    }
     private func authenticate() {
         busy = true; error = nil
         Task {
@@ -161,6 +103,81 @@ struct AuthenticationView: View {
                 await loadConfiguration()
                 self.error = "Les conditions ont changé. Consultez-les et acceptez-les avant de réessayer."
             } catch { self.error = error.localizedDescription }
+        }
+    }
+}
+
+
+/// Shared recovery form for an email universal link or manual recovery. The
+/// incoming token is retained only in view state, never persisted or redeemed
+/// until the user explicitly submits a confirmed new password.
+struct PasswordRecoveryView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var email: String
+    @State private var resetLink: String
+    @State private var newPassword = ""
+    @State private var confirmPassword = ""
+    @State private var resetSent = false
+    @State private var resetCompleted = false
+    @State private var busy = false
+    @State private var error: String?
+    init(initialEmail: String = "", initialLink: String = "") {
+        _email = State(initialValue: initialEmail)
+        _resetLink = State(initialValue: initialLink)
+    }
+    var body: some View {
+        NavigationStack {
+            Form {
+                if resetCompleted {
+                    Text("Votre mot de passe a été modifié. Reconnectez-vous avec votre nouveau mot de passe et votre double authentification éventuelle.")
+                } else {
+                if resetSent {
+                    Text("Si un compte correspond à cette adresse, vous recevrez un lien pour choisir un nouveau mot de passe.")
+                } else {
+                    TextField("Adresse e-mail", text: $email).textContentType(.emailAddress)
+                        .keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    Button("Envoyer le lien") { requestReset() }.disabled(busy || email.isEmpty)
+                }
+                Section("J’ai reçu le lien") {
+                    Text(PasswordResetLink.token(from: resetLink) == nil
+                            ? "Copiez le lien de réinitialisation reçu par e-mail et collez-le ici."
+                            : "Lien reçu. Choisissez un nouveau mot de passe pour le compte concerné. Le lien ne sera utilisé qu’après votre confirmation.")
+                    SecureField("Lien de réinitialisation", text: $resetLink)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    SecureField("Nouveau mot de passe", text: $newPassword).textContentType(.newPassword)
+                    SecureField("Confirmer le mot de passe", text: $confirmPassword).textContentType(.newPassword)
+                    Text("Au moins 12 caractères.").font(.caption).foregroundStyle(.secondary)
+                    Button("Changer mon mot de passe") { completeReset() }
+                        .disabled(busy || PasswordResetLink.token(from: resetLink) == nil || newPassword.count < 12 || newPassword != confirmPassword)
+                }
+                }
+                if busy { ProgressView() }
+                if let error { Text(error).foregroundStyle(.red) }
+            }
+            .navigationTitle("Réinitialiser le mot de passe")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Terminé") { dismiss() }.disabled(busy) } }
+            .interactiveDismissDisabled(busy)
+            .onDisappear { resetLink = ""; newPassword = ""; confirmPassword = "" }
+        }
+    }
+    private func completeReset() {
+        busy = true; error = nil
+        Task {
+            defer { busy = false }
+            do {
+                try await ChatAPI.shared.completePasswordReset(link: resetLink, password: newPassword)
+                resetCompleted = true; resetLink = ""; newPassword = ""; confirmPassword = ""
+            } catch APIError.server(400, "password_reset_invalid") {
+                error = "Ce lien est invalide, expiré ou déjà utilisé, ou le mot de passe est refusé. Demandez un nouveau lien et vérifiez votre mot de passe."
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+    private func requestReset() {
+        busy = true; error = nil
+        Task {
+            defer { busy = false }
+            do { try await ChatAPI.shared.requestPasswordReset(email: email); resetSent = true }
+            catch { self.error = error.localizedDescription }
         }
     }
 }
