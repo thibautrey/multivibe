@@ -71,4 +71,5 @@ struct ActivateMultiVibeAssistantIntent {
         ConversationManager.shared.prepareShortcut(.assistantVoiceConversation)
         return .result()
     }
+}
 #endif
