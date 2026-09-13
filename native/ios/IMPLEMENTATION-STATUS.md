@@ -41,10 +41,11 @@ in older entries are superseded by this summary and subsequent validation entrie
   disposable simulator were removed. No live authentication or two-device proof.
 - Earlier main builds validated French App Intents metadata packaging and the
   optional assistant macro; these are not signed-device Siri invocation tests.
-- Backend main previously passed TypeScript build and targeted native-auth,
-  provider and history tests; Rust broker suite passed 17 with one diagnostic
-  ignored. See backend status for exact source scope; unrelated later main
-  commits are not implicitly validated by those older results.
+- Backend main at `7d69e269`: TypeScript build passed; targeted Apple OAuth
+  suite passed **9 tests**; isolated Rust OAuth broker passed **18 tests**, with
+  one unchanged live transport diagnostic ignored. No live Apple authorization
+  or revocation was performed. Earlier native-auth and history results do not
+  implicitly validate unrelated later main changes.
 - Audio-ownership fix `b66230c`: worktree `git diff --check` passed, committed and
   fast-forwarded to main. All three ownership regression tests passed in the
   33-test audio suite and the later 35-test suite. These are state-machine tests, not microphone
@@ -358,3 +359,27 @@ in older entries are superseded by this summary and subsequent validation entrie
 - Apple's official `Token revocation` documentation was retrieved on this date and specifies access/refresh token support, POST `/auth/revoke`, and 200 for newly or previously invalidated tokens.
 - Backend worktree `git diff --check` passed; integrated into main before `npm run build` and `node --test dist/test/apple-oauth.test.js`: TypeScript build passed, **8 tests passed**, zero failures. Four new tests cover body encoding/endpoint/options, pre-network input validation, safe errors and stream cancellation. Only injected fetch fixtures, no real Apple credential used.
 - This is deliberately not an account-deletion implementation or live revocation proof. Encrypted token retention, isolated Rust broker command, transactional deletion/revocation-job lifecycle, fresh authentication, and native deletion UI remain required. No provider token is added to native responses. No push/deployment/migration occurred.
+
+## Isolated Apple revocation broker — September 13, 2026
+
+Backend commit `7d69e269` integrates the server-only revocation primitive with
+the isolated OAuth broker. Its authenticated internal `/v1/apple/revoke` route
+accepts bounded printable-ASCII tokens and access/refresh token hints, sends a
+form-encoded request only to Apple's fixed HTTPS revocation endpoint, and accepts
+HTTP 200 only. The remote adapter requires exactly `{revoked: true}` and normalizes
+failures without returning provider tokens or secrets. No native/public revocation
+route was added.
+
+Validation on backend main (terminal exit 0):
+
+```sh
+npm run build
+node --test dist/test/apple-oauth.test.js
+cargo test --manifest-path rust/federated-oauth-broker/Cargo.toml --offline
+```
+
+Results: 9 Apple TypeScript tests passed; 18 Rust tests passed, one unchanged live
+transport diagnostic ignored. No provider credentials, live accounts or network
+revocation were used. This is not account deletion: encrypted provider-token
+retention, durable retry handling, fresh authorization and transactional account
+lifecycle integration remain outstanding.
