@@ -220,3 +220,55 @@ struct AccountHistorySnapshot: Codable, Sendable {
         return Conversation(id: id, title: title, model: item["model"]?.string ?? "", messages: messages.reversed(), updatedAt: Date(timeIntervalSince1970: timestamp / 1000))
     }
 }
+
+extension AccountHistorySnapshot {
+    /// Replace the selected branch projection, retaining all original graph nodes
+    /// and metadata. Changed native nodes receive new IDs, so alternate web
+    /// branches that reference the originals remain untouched.
+    mutating func store(_ conversation: Conversation, serverID: String,
+                        messageIDs: inout [String: UUID]) throws {
+        let index = conversations.firstIndex { $0.object?["id"]?.string == serverID }
+        var item = index.flatMap { conversations[$0].object } ?? [:]
+        var repository = item["repository"]?.object ?? [:]
+        var entries = repository["messages"]?.array ?? []
+        var nodes: [String: HistoryJSON] = [:]
+        for entry in entries {
+            guard let id = entry.object?["message"]?.object?["id"]?.string,
+                  nodes.updateValue(entry, forKey: id) == nil else { throw APIError.invalidResponse }
+        }
+        var parent: HistoryJSON = .null
+        for message in conversation.messages {
+            let candidates = messageIDs.filter { $0.value == message.id }.map(\.key).sorted()
+            let matching = candidates.first { id in
+                guard let entry = nodes[id]?.object, entry["parentId"] == parent,
+                      let original = entry["message"]?.object, original["role"]?.string == message.role,
+                      let parts = original["content"]?.array else { return false }
+                return parts.compactMap { $0.object?["text"]?.string }.joined(separator: "\n") == message.content
+            }
+            if let matching { parent = .string(matching); continue }
+            let id = UUID().uuidString
+            var node: [String: HistoryJSON] = [
+                "id": .string(id), "role": .string(message.role),
+                "createdAt": .string(ISO8601DateFormatter().string(from: conversation.updatedAt)),
+                "content": .array([.object(["type": .string("text"), "text": .string(message.content)])])
+            ]
+            if message.role == "assistant" {
+                let complete = message.completion == .completed
+                node["status"] = .object(["type": .string(complete ? "complete" : "incomplete"),
+                                          "reason": .string(complete ? "stop" : "cancelled")])
+            }
+            let entry = HistoryJSON.object(["parentId": parent, "message": .object(node)])
+            entries.append(entry); nodes[id] = entry; messageIDs[id] = message.id
+            parent = .string(id)
+        }
+        repository["messages"] = .array(entries); repository["headId"] = parent
+        item["id"] = .string(serverID); item["title"] = .string(conversation.title)
+        item["updatedAt"] = .number(conversation.updatedAt.timeIntervalSince1970 * 1000)
+        item["model"] = .string(conversation.model)
+        if item["renamed"] == nil { item["renamed"] = .bool(false) }
+        if item["draft"] == nil { item["draft"] = .string("") }
+        item["repository"] = .object(repository)
+        if let index { conversations[index] = .object(item) }
+        else { conversations.append(.object(item)) }
+    }
+}

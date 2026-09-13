@@ -8,6 +8,7 @@ struct ChatView: View {
     @State private var text = ""
     @State private var search = ""
     @State private var conversationToDelete: Conversation?
+    @State private var confirmHistorySync = false
     @State private var retryTarget: RetryTarget?
     private struct RetryTarget { let conversation: UUID; let message: UUID }
     @State private var voicePresented = false
@@ -30,8 +31,15 @@ struct ChatView: View {
             .background(MultiVibeTheme.background)
             .searchable(text: $search, prompt: "Conversations sur cet appareil")
             .navigationTitle("MultiVibe")
+            .safeAreaInset(edge: .bottom) {
+                if let status = manager.historyStatus { Text(status).font(.caption).padding().background(.regularMaterial) }
+            }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) { Button("Nouvelle conversation", systemImage: "square.and.pencil") { manager.newConversation() } }
+                ToolbarItem(placement: .secondaryAction) {
+                    Button("Synchroniser l’historique", systemImage: "arrow.triangle.2.circlepath") { confirmHistorySync = true }
+                        .disabled(manager.isSynchronizing || manager.isStreaming || manager.isRestoring)
+                }
                 ToolbarItem(placement: .bottomBar) { Button("Déconnexion") { Task { await manager.logout() } } }
             }
         } detail: {
@@ -142,6 +150,12 @@ struct ChatView: View {
             Button("Annuler", role: .cancel) { retryTarget = nil }
         } message: {
             Text("La réponse partielle sera remplacée. Votre message ne sera pas ajouté une seconde fois. Cette nouvelle demande peut consommer des crédits.")
+        }
+        .confirmationDialog("Synchroniser avec votre compte ?", isPresented: $confirmHistorySync, titleVisibility: .visible) {
+            Button("Synchroniser") { Task { await manager.synchronizeHistory() } }
+            Button("Annuler", role: .cancel) {}
+        } message: {
+            Text("Les conversations de cet appareil seront envoyées à MultiVibe et celles de votre compte seront téléchargées. Elles ne sont pas chiffrées de bout en bout. Les modifications concurrentes ne seront pas écrasées automatiquement.")
         }
         .sheet(isPresented: $voicePresented) { VoiceConversationView() }
         .onChange(of: manager.selection) { _, _ in text = "" }
