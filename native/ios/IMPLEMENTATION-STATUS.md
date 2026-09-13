@@ -35,6 +35,15 @@ in older entries are superseded by this summary and subsequent validation entrie
 
 ### Latest completed validation
 
+- Main at `1467a2e`: the new native UI test target passed both login/signup
+  navigation and password-recovery sheet tests on a disposable iPhone 17 / iOS 27
+  simulator, alongside the 54 existing unit tests. The UI tests exercise actual
+  controls, secure-field presence, disabled empty submissions, and return navigation.
+  They never submit credentials, launch SSO, or request recovery emails. This is
+  not proof of a successful authenticated server transaction. Full command exited
+  0 with `TEST SUCCEEDED`; log `/tmp/multivibe-ios-auth-ui-tests.log`. Temporary
+  simulator and DerivedData were cleaned up. Worktree diff checks passed before
+  integration; dependency-backed validation ran only on local main.
 - September 13 follow-up at `1aaea67`: fresh unsigned simulator build and
   launch succeeded on iPhone 17 / iOS 27. Light and dark login screenshots were
   captured. OCR confirms the native email/password, SSO, signup and recovery
