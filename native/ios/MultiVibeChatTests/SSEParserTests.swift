@@ -326,3 +326,23 @@ final class SharedHistoryProjectionTests: XCTestCase {
         XCTAssertThrowsError(try bad.projectedConversation(at: 0, id: id, messageIDs: &ids))
     }
 }
+
+final class SharedHistoryStatusTests: XCTestCase {
+    func testCompletionChangeRetainsOldBranchInsteadOfReusingWrongStatus() throws {
+        var snapshot = AccountHistorySnapshot(accountId: "fixture", revision: 0, conversations: [])
+        var ids: [String: UUID] = [:]
+        var conversation = Conversation(model: "fixture")
+        conversation.messages = [ChatMessage(role: "assistant", content: "same text", completion: .stopped)]
+        try snapshot.store(conversation, serverID: "chat", messageIDs: &ids)
+        let oldHead = snapshot.conversations[0].object?["repository"]?.object?["headId"]
+        conversation.messages[0].completion = .completed
+        try snapshot.store(conversation, serverID: "chat", messageIDs: &ids)
+        let repository = try XCTUnwrap(snapshot.conversations[0].object?["repository"]?.object)
+        XCTAssertNotEqual(repository["headId"], oldHead)
+        XCTAssertEqual(repository["messages"]?.array?.count, 2)
+        let projected = try snapshot.projectedConversation(at: 0, id: conversation.id, messageIDs: &ids)
+        XCTAssertEqual(projected.messages.last?.completion, .completed)
+        try snapshot.store(conversation, serverID: "chat", messageIDs: &ids)
+        XCTAssertEqual(snapshot.conversations[0].object?["repository"]?.object?["messages"]?.array?.count, 2)
+    }
+}

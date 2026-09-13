@@ -339,6 +339,14 @@ import CryptoKit
             let remote = try await services.readHistory(session.accessToken)
             guard sessionRevision == accountRevision, !isStreaming, conversations == local else { return }
             guard remote.accountId == session.accountId else { throw APIError.invalidResponse }
+            // Validate the downloaded projection before any mutating request.
+            var validationIDs: [String: UUID] = [:]
+            var validatedKeys = Set<String>()
+            for index in remote.conversations.indices {
+                guard let key = remote.conversations[index].object?["id"]?.string,
+                      validatedKeys.insert(key).inserted else { throw APIError.invalidResponse }
+                _ = try remote.projectedConversation(at: index, id: UUID(), messageIDs: &validationIDs)
+            }
             if let previous = historySnapshot, previous.revision != remote.revision, local != historyBaseline {
                 historyStatus = "Des modifications existent sur cet appareil et sur un autre. Rien n’a été écrasé. La résolution du conflit est nécessaire."
                 return
@@ -363,11 +371,9 @@ import CryptoKit
                     try merged.store(conversation, serverID: key, messageIDs: &messageIDs)
                 }
                 merged = try await services.saveHistory(merged, session.accessToken)
-                guard sessionRevision == accountRevision, !isStreaming, conversations == local else {
-                    // Server save may have committed, but never replace subsequent local work.
-                    if sessionRevision == accountRevision { historyStatus = "Copie distante enregistrée ; de nouvelles modifications locales restent à synchroniser." }
-                    return
-                }
+                // A confirmed save is a new baseline even if the user edited locally
+                // while it was in flight. Never apply it to a different account.
+                guard sessionRevision == accountRevision else { return }
             }
             var projected: [Conversation] = []
             var remoteIDs = Set<String>()
@@ -378,10 +384,23 @@ import CryptoKit
                 projected.append(try merged.projectedConversation(at: index, id: id, messageIDs: &messageIDs))
             }
             historySnapshot = merged; historyConversationIDs = conversationIDs; historyMessageIDs = messageIDs
-            conversations = projected.sorted { $0.updatedAt > $1.updatedAt }; historyBaseline = conversations
+            historyBaseline = projected.sorted { $0.updatedAt > $1.updatedAt }
+            // Reapply only edits made since the request began, including deletion.
+            // Imported remote conversations were not in `local` and remain intact.
+            let captured = Dictionary(uniqueKeysWithValues: local.map { ($0.id, $0) })
+            let current = Dictionary(uniqueKeysWithValues: conversations.map { ($0.id, $0) })
+            let removed = Set(captured.keys).subtracting(current.keys)
+            projected.removeAll { removed.contains($0.id) }
+            for conversation in conversations where captured[conversation.id] != conversation {
+                projected.removeAll { $0.id == conversation.id }
+                projected.append(conversation)
+            }
+            conversations = projected.sorted { $0.updatedAt > $1.updatedAt }
             if let selection, !conversations.contains(where: { $0.id == selection }) { self.selection = nil }
             persist()
-            historyStatus = "Historique synchronisé avec votre compte."
+            historyStatus = conversations == historyBaseline
+                ? "Historique synchronisé avec votre compte."
+                : "Copie distante enregistrée ; de nouvelles modifications locales restent à synchroniser."
         } catch {
             if sessionRevision == accountRevision { historyStatus = "Synchronisation non terminée. Vos conversations locales sont conservées. " + error.localizedDescription }
         }
