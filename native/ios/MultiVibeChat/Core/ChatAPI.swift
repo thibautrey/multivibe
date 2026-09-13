@@ -11,7 +11,7 @@ actor ChatAPI {
         configuration.httpCookieStorage = nil
         configuration.timeoutIntervalForRequest = 60
         configuration.timeoutIntervalForResource = 300
-        session = URLSession(configuration: configuration)
+        session = URLSession(configuration: configuration, delegate: NativeTransportDelegate(), delegateQueue: nil)
         decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let raw = try decoder.singleValueContainer().decode(String.self)
@@ -142,5 +142,16 @@ extension ChatAPI {
             try? await revoke(token: tokens.refresh_token)
             throw error
         }
+    }
+}
+
+/// API routes are exact endpoints, not navigation. Never forward passwords,
+/// refresh tokens, authorization codes or chat bodies through an HTTP redirect.
+final class NativeTransportDelegate: NSObject, URLSessionTaskDelegate, Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+        completionHandler(nil)
     }
 }

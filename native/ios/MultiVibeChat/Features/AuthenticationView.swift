@@ -5,6 +5,7 @@ import CryptoKit
 struct AuthenticationView: View {
     @Environment(ConversationManager.self) private var manager
     @State private var sso = NativeSSOController()
+    @State private var ssoTask: Task<Void, Never>?
     @State private var signup = false
     @State private var email = ""
     @State private var password = ""
@@ -78,14 +79,15 @@ struct AuthenticationView: View {
                 }
             }
         }
+        .onDisappear { ssoTask?.cancel(); sso.cancel() }
     }
     private func authenticateSSO() {
         busy = true; error = nil
-        Task {
-            defer { busy = false }
+        ssoTask = Task {
+            defer { busy = false; ssoTask = nil }
             do {
                 let session = try await sso.signIn()
-                do { try await manager.accept(session); password = "" }
+                do { try Task.checkCancellation(); try await manager.accept(session); password = "" }
                 catch { try? await ChatAPI.shared.revoke(token: session.refreshToken); throw error }
             } catch is CancellationError {
             } catch let failure as ASWebAuthenticationSessionError where failure.code == .canceledLogin {
@@ -120,14 +122,19 @@ struct AuthenticationView: View {
     private var authentication: ASWebAuthenticationSession?
     private var window: UIWindow?
     private var continuation: CheckedContinuation<URL, Error>?
+    private var attempt: UUID?
 
     func signIn() async throws -> NativeSession {
-        guard authentication == nil else { throw APIError.invalidResponse }
+        try Task.checkCancellation()
+        guard attempt == nil else { throw APIError.invalidResponse }
         guard let window = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene })
             .filter({ $0.activationState == .foregroundActive }).flatMap(\.windows).first(where: \.isKeyWindow) else {
             throw APIError.invalidResponse
         }
+        let id = UUID()
+        attempt = id
         self.window = window
+        defer { authentication = nil; self.window = nil; attempt = nil }
         let verifier = try randomToken()
         let state = try randomToken()
         let challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64URL
@@ -137,11 +144,13 @@ struct AuthenticationView: View {
             URLQueryItem(name: "response_type", value: "code"), URLQueryItem(name: "scope", value: "openid profile projects:read"),
             URLQueryItem(name: "code_challenge", value: challenge), URLQueryItem(name: "code_challenge_method", value: "S256"),
             URLQueryItem(name: "state", value: state)]
-        defer { authentication = nil; self.window = nil }
-        let callback = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+        let callback = try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
             self.continuation = continuation
             let session = ASWebAuthenticationSession(url: url.url!, callback: .https(host: "auth.multivibe.cloud", path: "/oauth/callback/ios")) { callback, error in
                 Task { @MainActor in
+                    guard self.attempt == id else { return }
                     if let callback { self.finish(.success(callback)) }
                     else { self.finish(.failure(error ?? APIError.invalidResponse)) }
                 }
@@ -151,6 +160,13 @@ struct AuthenticationView: View {
             authentication = session
             if !session.start() { finish(.failure(APIError.invalidResponse)) }
         }
+        } onCancel: {
+            Task { @MainActor in
+                guard self.attempt == id else { return }
+                self.cancel()
+            }
+        }
+        try Task.checkCancellation()
         guard let parsed = URLComponents(url: callback, resolvingAgainstBaseURL: false),
               parsed.scheme == "https", parsed.host == "auth.multivibe.cloud", parsed.port == nil,
               parsed.user == nil, parsed.password == nil, parsed.path == "/oauth/callback/ios", parsed.fragment == nil else {
@@ -163,7 +179,13 @@ struct AuthenticationView: View {
               !fields.contains(where: { $0.name == "error" }),
               let code = fields.first(where: { $0.name == "code" })?.value,
               code.range(of: "^[A-Za-z0-9_-]{43}$", options: .regularExpression) != nil else { throw APIError.invalidResponse }
-        return try await ChatAPI.shared.exchangeAuthorizationCode(code, verifier: verifier)
+        let issued = try await ChatAPI.shared.exchangeAuthorizationCode(code, verifier: verifier)
+        if Task.isCancelled {
+            // Cleanup must not inherit cancellation from the sign-in task.
+            _ = await Task.detached { try? await ChatAPI.shared.revoke(token: issued.refreshToken) }.value
+            throw CancellationError()
+        }
+        return issued
     }
     func cancel() {
         authentication?.cancel()
