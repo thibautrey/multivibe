@@ -83,7 +83,7 @@ struct ChatView: View {
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in voice.silence() }
     }
     private func consumeIntent() {
-        guard scenePhase == .active, manager.session != nil else { return }
+        guard scenePhase == .active, manager.session != nil, !manager.isRestoring else { return }
         if manager.wantsNewConversation {
             manager.wantsNewConversation = false
             manager.newConversation()

@@ -5,6 +5,8 @@ import CryptoKit
 @MainActor @Observable final class ConversationManager {
     static let shared = ConversationManager()
     var session: NativeSession? = SecureStore.load()
+    private(set) var isRestoring = true
+    private var restorationRevision = UUID()
     var conversations: [Conversation] = []
     var selection: UUID? {
         didSet {
@@ -37,6 +39,10 @@ import CryptoKit
     var current: Conversation? { conversations.first { $0.id == selection } }
 
     func restore() async {
+        let restoration = UUID()
+        restorationRevision = restoration
+        isRestoring = true
+        defer { if restorationRevision == restoration { isRestoring = false } }
         guard session != nil else { return }
         let revision = sessionRevision
         do {
@@ -87,6 +93,7 @@ import CryptoKit
         refreshRevision = UUID()
         refreshTask = nil
         sessionRevision = UUID()
+        isRestoring = true
         self.session = session
         error = nil; models = []; selectedModel = ""
         conversations = []; selection = nil

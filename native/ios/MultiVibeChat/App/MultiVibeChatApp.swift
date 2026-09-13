@@ -5,7 +5,8 @@ import SwiftUI
     var body: some Scene {
         WindowGroup {
             Group {
-                if manager.session == nil { AuthenticationView() }
+                if manager.isRestoring { ProgressView("Restauration…") }
+                else if manager.session == nil { AuthenticationView() }
                 else { ChatView() }
             }
             .environment(manager)
