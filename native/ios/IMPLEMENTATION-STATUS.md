@@ -35,9 +35,9 @@ in older entries are superseded by this summary and subsequent validation entrie
 
 ### Latest completed validation
 
-- Local main at `70f0a1d`: unsigned iPhone 17 / iOS 27 simulator build and **35
+- Local main at `46ade05`: unsigned iPhone 17 / iOS 27 simulator build and **42
   XCTest tests passed**, zero failures, terminal `TEST SUCCEEDED` / exit 0.
-  Log: `/tmp/multivibe-ios-credential-tests.log`. Exact DerivedData and
+  Log: `/tmp/multivibe-ios-audio-events-tests.log`. Exact DerivedData and
   disposable simulator were removed. No live authentication or two-device proof.
 - Earlier main builds validated French App Intents metadata packaging and the
   optional assistant macro; these are not signed-device Siri invocation tests.
@@ -335,3 +335,10 @@ in older entries are superseded by this summary and subsequent validation entrie
 - Worktree: `git diff --check` passed; no dependency installation or build there.
 - Main: unsigned sequential iPhone 17 / iOS 27 simulator `xcodebuild test` passed **39 tests, zero failures**, including four new credential-lifecycle tests. Log: `/tmp/multivibe-ios-credential-lifecycle-tests.log`.
 - Exact temporary DerivedData and disposable simulator cleaned by exit trap. No push, deployment, provisioning, or real-account verification. This supersedes the earlier outstanding native credential task-lifecycle item, not the other release requirements. Remote revocation success is not guaranteed when the network fails.
+
+
+### 2026-09-13 — System audio events
+
+- `46ade05`, integrated into local main: observe audio interruption start and lost/unsuitable route notifications. Active dictation/playback stops without automatic restart, preserving the transcript and showing an actionable explanation. Ignore our own category changes, newly available devices, interruption end, and idle events.
+- Three regression tests cover notification decoding and idle transcript preservation. Main unsigned sequential simulator suite: **42 tests passed, zero failures**, exit 0. Log `/tmp/multivibe-ios-audio-events-tests.log`. This proves compilation and policy behavior, not a physical phone call/headset-disconnection scenario.
+- Worktree diff check passed; no dependency installation there. Exact DerivedData `/private/tmp/multivibe-ios-20260913.lOAEX9` and disposable simulator removed by trap. No push or deployment. Media-services reset recovery and physical-device interruption validation remain outstanding.
