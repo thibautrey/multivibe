@@ -15,6 +15,8 @@ import CryptoKit
     var clear: () -> Void = { SecureStore.clear() }
     var refresh: @MainActor (NativeSession) async throws -> NativeSession = { try await ChatAPI.shared.refresh($0) }
     var revoke: @MainActor (String) async throws -> Void = { try await ChatAPI.shared.revoke(token: $0) }
+    var readHistory: @MainActor (String) async throws -> AccountHistorySnapshot = { try await ChatAPI.shared.history(token: $0) }
+    var saveHistory: @MainActor (AccountHistorySnapshot, String) async throws -> AccountHistorySnapshot = { try await ChatAPI.shared.saveHistory($0, token: $1) }
     var stream: @MainActor (String, [ChatMessage], String, @Sendable (String) async -> Void) async throws -> Void = {
         try await ChatAPI.shared.stream(model: $0, messages: $1, token: $2, onDelta: $3)
     }
@@ -56,6 +58,19 @@ import CryptoKit
     var wantsImmediateVoiceCapture = false
     var wantsVoiceConversation = false
     var pendingDraft: String?
+    private struct HistoryCache: Codable {
+        var conversations: [Conversation]
+        var snapshot: AccountHistorySnapshot?
+        var baseline: [Conversation]
+        var conversationIDs: [String: UUID]
+        var messageIDs: [String: UUID]
+    }
+    private var historySnapshot: AccountHistorySnapshot?
+    private var historyBaseline: [Conversation] = []
+    private var historyConversationIDs: [String: UUID] = [:]
+    private var historyMessageIDs: [String: UUID] = [:]
+    private(set) var isSynchronizing = false
+    var historyStatus: String?
     var passwordRecovery: PasswordRecoveryRequest?
     private var activeReply: (conversation: UUID, message: UUID)?
     private var generation: Task<Void, Never>?
@@ -76,7 +91,11 @@ import CryptoKit
             let session = try await validSession()
             guard sessionRevision == revision else { return }
             if let data = try? Data(contentsOf: historyURL(session.accountId)) {
-                conversations = try JSONDecoder().decode([Conversation].self, from: data)
+                if let cache = try? JSONDecoder().decode(HistoryCache.self, from: data) {
+                    conversations = cache.conversations
+                    historySnapshot = cache.snapshot; historyBaseline = cache.baseline
+                    historyConversationIDs = cache.conversationIDs; historyMessageIDs = cache.messageIDs
+                } else { conversations = try JSONDecoder().decode([Conversation].self, from: data) }
                 // A persisted in-flight response cannot still be running after launch.
                 for i in conversations.indices {
                     for j in conversations[i].messages.indices where conversations[i].messages[j].completion == .streaming {
@@ -161,6 +180,7 @@ import CryptoKit
         refreshTask = nil
         sessionRevision = UUID()
         isRestoring = true
+        resetHistorySync()
         self.session = session
         error = nil; models = []; selectedModel = ""
         conversations = []; selection = nil
@@ -285,6 +305,7 @@ import CryptoKit
         refreshTask = nil
         sessionRevision = UUID()
         let revision = sessionRevision
+        resetHistorySync()
         services.clear(); session = nil; conversations = []; selection = nil
         models = []; selectedModel = ""; wantsNewConversation = false; wantsVoice = false; wantsVoiceConversation = false; wantsImmediateVoiceCapture = false; pendingDraft = nil; error = nil
         if let previous {
@@ -301,6 +322,69 @@ import CryptoKit
             }
         }
     }
+    private func resetHistorySync() {
+        historySnapshot = nil; historyBaseline = []; historyConversationIDs = [:]; historyMessageIDs = [:]
+        historyStatus = nil
+    }
+    /// Explicit synchronization: no upload of legacy local history without a tap.
+    /// Never resolve concurrent edits by silently choosing one device's snapshot.
+    func synchronizeHistory() async {
+        guard !isSynchronizing, !isStreaming, !isRestoring, session != nil else { return }
+        isSynchronizing = true
+        defer { isSynchronizing = false }
+        let accountRevision = sessionRevision
+        let local = conversations
+        do {
+            let session = try await validSession()
+            let remote = try await services.readHistory(session.accessToken)
+            guard sessionRevision == accountRevision, !isStreaming, conversations == local else { return }
+            guard remote.accountId == session.accountId else { throw APIError.invalidResponse }
+            if let previous = historySnapshot, previous.revision != remote.revision, local != historyBaseline {
+                historyStatus = "Des modifications existent sur cet appareil et sur un autre. Rien n’a été écrasé. La résolution du conflit est nécessaire."
+                return
+            }
+            var merged = remote
+            var conversationIDs = historyConversationIDs
+            var messageIDs = historyMessageIDs
+            if historySnapshot == nil || local != historyBaseline {
+                let localIDs = Set(local.map(\.id))
+                let deleted = Set(historyBaseline.map(\.id)).subtracting(localIDs)
+                merged.conversations.removeAll { item in
+                    guard let key = item.object?["id"]?.string, let id = conversationIDs[key] else { return false }
+                    return deleted.contains(id)
+                }
+                for conversation in local {
+                    let key = conversationIDs.first { $0.value == conversation.id }?.key ?? conversation.id.uuidString
+                    // On first import, retain any independently existing server chat.
+                    if historySnapshot == nil, merged.conversations.contains(where: { $0.object?["id"]?.string == key }) {
+                        throw APIError.server(409, "history_import_collision")
+                    }
+                    conversationIDs[key] = conversation.id
+                    try merged.store(conversation, serverID: key, messageIDs: &messageIDs)
+                }
+                merged = try await services.saveHistory(merged, session.accessToken)
+                guard sessionRevision == accountRevision, !isStreaming, conversations == local else {
+                    // Server save may have committed, but never replace subsequent local work.
+                    if sessionRevision == accountRevision { historyStatus = "Copie distante enregistrée ; de nouvelles modifications locales restent à synchroniser." }
+                    return
+                }
+            }
+            var projected: [Conversation] = []
+            for index in merged.conversations.indices {
+                guard let key = merged.conversations[index].object?["id"]?.string else { throw APIError.invalidResponse }
+                let id = conversationIDs[key] ?? UUID()
+                conversationIDs[key] = id
+                projected.append(try merged.projectedConversation(at: index, id: id, messageIDs: &messageIDs))
+            }
+            historySnapshot = merged; historyConversationIDs = conversationIDs; historyMessageIDs = messageIDs
+            conversations = projected.sorted { $0.updatedAt > $1.updatedAt }; historyBaseline = conversations
+            if let selection, !conversations.contains(where: { $0.id == selection }) { self.selection = nil }
+            persist()
+            historyStatus = "Historique synchronisé avec votre compte."
+        } catch {
+            if sessionRevision == accountRevision { historyStatus = "Synchronisation non terminée. Vos conversations locales sont conservées. " + error.localizedDescription }
+        }
+    }
     private func historyURL(_ account: String) throws -> URL {
         // Hash account identifiers rather than accepting path components from a server.
         let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
@@ -310,7 +394,9 @@ import CryptoKit
         guard let session else { return }
         do {
             let url = try historyURL(session.accountId)
-            try services.writeHistory(JSONEncoder().encode(conversations), url)
+            try services.writeHistory(JSONEncoder().encode(HistoryCache(conversations: conversations,
+                snapshot: historySnapshot, baseline: historyBaseline,
+                conversationIDs: historyConversationIDs, messageIDs: historyMessageIDs)), url)
         } catch { self.error = "Impossible d’enregistrer les conversations sur cet appareil." }
     }
 }
