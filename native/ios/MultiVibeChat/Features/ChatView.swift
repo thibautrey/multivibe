@@ -8,6 +8,10 @@ struct ChatView: View {
     @State private var text = ""
     @State private var search = ""
     @State private var voicePresented = false
+    @State private var followsLatest = true
+    @State private var userScrolling = false
+    private let latestMessageAnchor = "latest-message"
+
     var body: some View {
         @Bindable var manager = manager
         NavigationSplitView {
@@ -30,6 +34,7 @@ struct ChatView: View {
                 if manager.current == nil {
                     ContentUnavailableView("Une nouvelle idée ?", systemImage: "sparkles", description: Text("Choisissez un modèle et commencez une conversation."))
                 } else {
+                    ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 20) {
                             ForEach(manager.current?.messages ?? []) { message in
@@ -39,7 +44,38 @@ struct ChatView: View {
                                     if !message.content.isEmpty { Button("Lire à voix haute", systemImage: "speaker.wave.2") { voice.speak(message.content) }; ShareLink(item: message.content) { Image(systemName: "square.and.arrow.up") }.accessibilityLabel("Partager le message") }
                                 }.frame(maxWidth: .infinity, alignment: .leading)
                             }
+                            Color.clear.frame(height: 1).id(latestMessageAnchor)
                         }.padding()
+                    }
+                    .defaultScrollAnchor(.bottom)
+                    .onScrollPhaseChange { _, phase in
+                        userScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
+                    }
+                    .onScrollGeometryChange(for: Bool.self) { geometry in
+                        geometry.contentSize.height + geometry.contentInsets.bottom -
+                            geometry.contentOffset.y - geometry.containerSize.height < 80
+                    } action: { _, nearBottom in
+                        if userScrolling { followsLatest = nearBottom }
+                    }
+                    .onChange(of: manager.current?.messages.last?.content) { _, _ in
+                        if followsLatest && !userScrolling { proxy.scrollTo(latestMessageAnchor, anchor: .bottom) }
+                    }
+                    .onChange(of: manager.current?.messages.count) { _, _ in
+                        if followsLatest && !userScrolling { proxy.scrollTo(latestMessageAnchor, anchor: .bottom) }
+                    }
+                    .onChange(of: manager.selection) { _, _ in
+                        followsLatest = true
+                        proxy.scrollTo(latestMessageAnchor, anchor: .bottom)
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        if !followsLatest {
+                            Button("Dernier message", systemImage: "arrow.down") {
+                                followsLatest = true
+                                withAnimation { proxy.scrollTo(latestMessageAnchor, anchor: .bottom) }
+                            }
+                            .buttonStyle(.borderedProminent).padding()
+                        }
+                    }
                     }
                 }
                 if voice.speaking {
