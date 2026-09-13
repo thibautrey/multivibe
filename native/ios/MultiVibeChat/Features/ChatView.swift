@@ -62,12 +62,14 @@ struct ChatView: View {
                 ToolbarItem(placement: .secondaryAction) { Button("Conversation vocale", systemImage: "waveform") { voice.silence(); voicePresented = true } }
                 ToolbarItem(placement: .primaryAction) {
                     Picker("Modèle", selection: $manager.selectedModel) {
+                        Text("Choisir un modèle").tag("")
                         ForEach(manager.models) { model in Text(model.displayName).tag(model.id) }
                     }.disabled(manager.isStreaming)
                 }
             }
         }
         .sheet(isPresented: $voicePresented) { VoiceConversationView() }
+        .onChange(of: manager.selection) { _, _ in text = "" }
         .onChange(of: voice.transcript) { _, value in if !voicePresented { text = value } }
         .onChange(of: manager.wantsVoiceConversation) { _, _ in consumeIntent() }
         .onChange(of: scenePhase) { _, phase in
