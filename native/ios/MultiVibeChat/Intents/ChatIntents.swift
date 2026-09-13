@@ -6,7 +6,7 @@ struct NewConversationIntent: AppIntent {
     static let openAppWhenRun = true
     static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
     @MainActor func perform() async throws -> some IntentResult {
-        ConversationManager.shared.newConversation()
+        ConversationManager.shared.prepareShortcut(.newConversation)
         return .result()
     }
 }
@@ -18,7 +18,7 @@ struct DictateInMultiVibeIntent: AppIntent {
     static let openAppWhenRun = true
     static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
     @MainActor func perform() async throws -> some IntentResult {
-        ConversationManager.shared.wantsVoice = true
+        ConversationManager.shared.prepareShortcut(.dictation)
         return .result()
     }
 }
@@ -30,7 +30,7 @@ struct PrepareMultiVibeMessageIntent: AppIntent {
     static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
     @Parameter(title: "Message") var message: String
     @MainActor func perform() async throws -> some IntentResult {
-        ConversationManager.shared.pendingDraft = String(message.prefix(32_000))
+        ConversationManager.shared.prepareShortcut(.draft(message))
         return .result()
     }
 }
@@ -43,7 +43,7 @@ struct VoiceConversationIntent: AppIntent {
     static let openAppWhenRun = true
     static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
     @MainActor func perform() async throws -> some IntentResult {
-        ConversationManager.shared.wantsVoiceConversation = true
+        ConversationManager.shared.prepareShortcut(.voiceConversation)
         return .result()
     }
 }

@@ -105,3 +105,37 @@ final class NativeTransportTests: XCTestCase {
         XCTAssertTrue(manager.isStreaming)
     }
 }
+
+@MainActor final class ShortcutPreparationTests: XCTestCase {
+    func testNewConversationWaitsForForegroundConsumption() {
+        let manager = ConversationManager()
+        manager.session = nil
+        manager.prepareShortcut(.newConversation)
+        XCTAssertTrue(manager.wantsNewConversation)
+        XCTAssertTrue(manager.conversations.isEmpty)
+        XCTAssertNil(manager.selection)
+        XCTAssertFalse(manager.isStreaming)
+    }
+    func testLatestShortcutReplacesEarlierPendingActions() {
+        let manager = ConversationManager()
+        manager.session = nil
+        manager.prepareShortcut(.dictation)
+        manager.prepareShortcut(.voiceConversation)
+        XCTAssertFalse(manager.wantsVoice)
+        XCTAssertTrue(manager.wantsVoiceConversation)
+        manager.prepareShortcut(.draft("Bonjour"))
+        XCTAssertFalse(manager.wantsVoiceConversation)
+        XCTAssertEqual(manager.pendingDraft, "Bonjour")
+        manager.prepareShortcut(.newConversation)
+        XCTAssertNil(manager.pendingDraft)
+        XCTAssertTrue(manager.wantsNewConversation)
+    }
+    func testShortcutDraftIsBoundedAndNeverSentAutomatically() {
+        let manager = ConversationManager()
+        manager.session = nil
+        manager.prepareShortcut(.draft(String(repeating: "é", count: 40_000)))
+        XCTAssertEqual(manager.pendingDraft?.count, 32_000)
+        XCTAssertTrue(manager.conversations.isEmpty)
+        XCTAssertFalse(manager.isStreaming)
+    }
+}
