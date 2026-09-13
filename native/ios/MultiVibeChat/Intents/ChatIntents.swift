@@ -35,8 +35,22 @@ struct PrepareMultiVibeMessageIntent: AppIntent {
     }
 }
 
+/// All entry points use the app's shared conversation and audio controllers.
+/// A shortcut opens the native voice interface; it never sends dictated content.
+struct VoiceConversationIntent: AppIntent {
+    static let title: LocalizedStringResource = "Conversation vocale MultiVibe"
+    static let description = IntentDescription("Ouvre le mode vocal. Dictez localement, puis confirmez l’envoi pour entendre la réponse.")
+    static let openAppWhenRun = true
+    static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
+    @MainActor func perform() async throws -> some IntentResult {
+        ConversationManager.shared.wantsVoiceConversation = true
+        return .result()
+    }
+}
+
 struct MultiVibeShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
+        AppShortcut(intent: VoiceConversationIntent(), phrases: ["Parler avec \(.applicationName)"], shortTitle: "Conversation vocale", systemImageName: "waveform")
         AppShortcut(intent: NewConversationIntent(), phrases: ["Nouvelle conversation dans \(.applicationName)"], shortTitle: "Nouvelle conversation", systemImageName: "bubble.left.and.bubble.right")
         AppShortcut(intent: DictateInMultiVibeIntent(), phrases: ["Dicter dans \(.applicationName)"], shortTitle: "Dicter un message", systemImageName: "mic")
         AppShortcut(intent: PrepareMultiVibeMessageIntent(), phrases: ["Préparer un message dans \(.applicationName)"], shortTitle: "Préparer un message", systemImageName: "square.and.pencil")
