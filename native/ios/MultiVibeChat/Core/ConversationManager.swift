@@ -42,9 +42,10 @@ import CryptoKit
     var isStreaming = false
     private(set) var completedReply: UUID?
     let voice = VoiceController()
-    enum ShortcutRequest { case newConversation, dictation, draft(String), voiceConversation }
+    enum ShortcutRequest { case newConversation, dictation, draft(String), voiceConversation, assistantVoiceConversation }
     var wantsNewConversation = false
     var wantsVoice = false
+    var wantsImmediateVoiceCapture = false
     var wantsVoiceConversation = false
     var pendingDraft: String?
     private var generation: Task<Void, Never>?
@@ -106,7 +107,7 @@ import CryptoKit
                     conversations = []; selection = nil
                     models = []; selectedModel = ""
                     wantsNewConversation = false; wantsVoice = false
-                    wantsVoiceConversation = false; pendingDraft = nil
+                    wantsVoiceConversation = false; wantsImmediateVoiceCapture = false; pendingDraft = nil
                     self.error = "Impossible de sauvegarder la session dans le Trousseau. Reconnectez-vous."
                     do { try await services.revoke(renewed.refreshToken) }
                     catch {
@@ -153,12 +154,15 @@ import CryptoKit
     /// Preparing an intent never edits history or starts microphone/network work.
     func prepareShortcut(_ request: ShortcutRequest) {
         wantsNewConversation = false; wantsVoice = false
-        wantsVoiceConversation = false; pendingDraft = nil
+        wantsVoiceConversation = false; wantsImmediateVoiceCapture = false; pendingDraft = nil
         switch request {
         case .newConversation: wantsNewConversation = true
         case .dictation: wantsVoice = true
         case .draft(let text): pendingDraft = String(text.prefix(32_000))
         case .voiceConversation: wantsVoiceConversation = true
+        case .assistantVoiceConversation:
+            wantsVoiceConversation = true
+            wantsImmediateVoiceCapture = true
         }
     }
     func newConversation() {
@@ -235,7 +239,7 @@ import CryptoKit
         sessionRevision = UUID()
         let revision = sessionRevision
         services.clear(); session = nil; conversations = []; selection = nil
-        models = []; selectedModel = ""; wantsNewConversation = false; wantsVoice = false; wantsVoiceConversation = false; pendingDraft = nil; error = nil
+        models = []; selectedModel = ""; wantsNewConversation = false; wantsVoice = false; wantsVoiceConversation = false; wantsImmediateVoiceCapture = false; pendingDraft = nil; error = nil
         if let previous {
             do {
                 // Do not cancel a possibly committed server rotation. Await it and
