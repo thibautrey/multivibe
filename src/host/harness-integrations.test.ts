@@ -432,7 +432,7 @@ test("uninstall refuses to overwrite user changes made after installation", asyn
   assert.equal((await manager.get("example")).drifted, true);
 });
 
-test("Codex installation uses the built-in OpenAI provider catalog and restores the original workspace", async (t) => {
+test("Codex installation authenticates its provider with the proxy key and restores the original workspace", async (t) => {
   mockCodexModelCatalog(t);
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-harness-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -454,13 +454,14 @@ test("Codex installation uses the built-in OpenAI provider catalog and restores 
 
   await manager.install("openai-codex", { apiKeyId: "key-3", apiKey: "mv_codex", application: "harness-openai-codex" });
   const configured = await fs.readFile(configPath, "utf8");
-  assert.match(configured, /model_provider = "openai"/);
-  assert.match(configured, /openai_base_url = "http:\/\/127\.0\.0\.1:1455\/v1"/);
+  assert.match(configured, /model_provider = "multivibe"/);
+  assert.match(configured, /base_url = "http:\/\/127\.0\.0\.1:1455\/v1"/);
   assert.match(configured, /approval_policy = "on-request"/);
   assert.match(configured, /model_catalog_json = /);
-  assert.doesNotMatch(configured, /model_providers\.multivibe|experimental_bearer_token/);
+  assert.match(configured, /\[model_providers\.multivibe\]\nname = "MultiVibe Host"\nbase_url = "http:\/\/127\.0\.0\.1:1455\/v1"\nwire_api = "responses"\nexperimental_bearer_token = "mv_codex"/);
+  assert.doesNotMatch(configured, /openai_base_url/);
   const firstTable = configured.search(/^\[/m);
-  const rootProvider = configured.indexOf('model_provider = "openai"');
+  const rootProvider = configured.indexOf('model_provider = "multivibe"');
   assert.ok(rootProvider >= 0 && rootProvider < firstTable, "Codex provider must remain at the TOML root");
   assert.equal((configured.match(/^model_provider\s*=/gm) ?? []).length, 1);
   const catalog = JSON.parse(await fs.readFile(path.join(home, ".codex", "multivibe-models.json"), "utf8"));
@@ -474,6 +475,48 @@ test("Codex installation uses the built-in OpenAI provider catalog and restores 
   await manager.uninstall("openai-codex");
   assert.equal(await fs.readFile(configPath, "utf8"), original);
   await assert.rejects(fs.readFile(path.join(home, ".codex", "multivibe-models.json"), "utf8"), /ENOENT/);
+});
+
+test("Codex detects missing or stale proxy credentials and repairs the URL-only migration", async (t) => {
+  mockCodexModelCatalog(t);
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-auth-repair-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const home = path.join(root, "home");
+  await fs.mkdir(path.join(home, ".codex"), { recursive: true });
+  const configPath = path.join(home, ".codex", "config.toml");
+  const authPath = path.join(home, ".codex", "auth.json");
+  const originalAuth = '{"tokens":{"access_token":"existing-openai-login"}}\n';
+  await fs.writeFile(authPath, originalAuth);
+  const manager = new HostHarnessIntegrationManager({
+    homeDirectory: home,
+    statePath: path.join(home, ".multivibe", "harnesses.json"),
+    baseUrl: "http://127.0.0.1:1455",
+    apiKeyForId: () => "mv_expected",
+    definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
+    executableDirectories: [],
+  });
+  const credential = { apiKeyId: "key-auth", apiKey: "mv_expected", application: "harness-openai-codex" };
+  await manager.install("openai-codex", credential);
+  const installed = await fs.readFile(configPath, "utf8");
+  for (const changed of [
+    installed.replace('experimental_bearer_token = "mv_expected"', ""),
+    installed.replace('experimental_bearer_token = "mv_expected"', 'experimental_bearer_token = "mv_stale"'),
+    `openai_base_url = "http://127.0.0.1:1455/v1"\nmodel_catalog_json = ${JSON.stringify(path.join(home, ".codex", "multivibe-models.json"))}\n`,
+  ]) {
+    await fs.writeFile(configPath, changed);
+    const view = await manager.get("openai-codex");
+    assert.equal(view.configured, false);
+    assert.equal(view.drifted, true);
+    assert.equal(view.repairable, true);
+    assert.match(view.configurationIssue ?? "", /proxy API key/);
+    assert.doesNotMatch(view.configurationIssue ?? "", /mv_expected|mv_stale/);
+    const repaired = await manager.repair("openai-codex", credential);
+    assert.equal(repaired.configured, true);
+    assert.equal(repaired.drifted, false);
+    assert.match(await fs.readFile(configPath, "utf8"), /experimental_bearer_token = "mv_expected"/);
+    assert.equal((await fs.stat(configPath)).mode & 0o777, 0o600);
+    assert.equal(await fs.readFile(authPath, "utf8"), originalAuth);
+  }
 });
 
 test("Codex synchronizes its managed catalog when MultiVibe models change at runtime", async (t) => {
@@ -672,7 +715,7 @@ test("Codex repairs managed configuration drift without removing unrelated chang
   const credential = { apiKeyId: "key-managed-drift", apiKey: "mv_managed_drift", application: "harness-openai-codex" };
   await manager.install("openai-codex", credential);
   const changed = (await fs.readFile(configPath, "utf8"))
-    .replace('openai_base_url = "http://127.0.0.1:1455/v1"', 'openai_base_url = "http://127.0.0.1:9999/v1"');
+    .replace('base_url = "http://127.0.0.1:1455/v1"', 'base_url = "http://127.0.0.1:9999/v1"');
   await fs.writeFile(configPath, `${changed}\n[plugins.\"sites@openai-bundled\"]\nenabled = true\n`);
   const drifted = await manager.get("openai-codex");
   assert.equal(drifted.configured, false);

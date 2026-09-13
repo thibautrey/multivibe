@@ -387,6 +387,9 @@ function parseCodexToml(current: string, expectedBaseUrl: string, expectedApiKey
     .filter(([, provider]) => provider !== "multivibe")
     .map(([profile, provider]) => `${profile}=${provider}`);
   const configurationIssues = [
+    ...(!providerBearerToken || (expectedApiKey !== undefined && providerBearerToken !== expectedApiKey)
+      ? ["Codex MultiVibe proxy API key is missing or does not match the managed credential"]
+      : []),
     ...(profileOverrides.length > 0
       ? [`Codex profiles override MultiVibe: ${profileOverrides.join(", ")}`]
       : []),
@@ -395,19 +398,21 @@ function parseCodexToml(current: string, expectedBaseUrl: string, expectedApiKey
     ? configurationIssues.join("; ")
     : undefined;
   return {
-    configured: (rootProvider === undefined || rootProvider === "openai") &&
-      openaiBaseUrl === expectedBaseUrl && Boolean(rootModelCatalogJson),
+    configured: errors.length === 0 && rootProvider === "multivibe" &&
+      providerBaseUrl === expectedBaseUrl && providerWireApi === "responses" &&
+      Boolean(providerBearerToken) && (expectedApiKey === undefined || providerBearerToken === expectedApiKey) &&
+      Boolean(rootModelCatalogJson),
     repairable: errors.length === 0,
     configurationIssue: errors.length > 0 ? errors.join("; ") : configurationIssue,
     effectiveProvider: rootProvider ?? "openai",
-    effectiveBaseUrl: openaiBaseUrl ?? providerBaseUrl,
+    effectiveBaseUrl: rootProvider === "multivibe" ? providerBaseUrl : openaiBaseUrl,
     profileProviders,
     rootModelCatalogJson,
   };
 }
 
-function inspectCodexToml(current: string, baseUrl: string, _expectedApiKey?: string, homeDirectory?: string): HarnessInspection {
-  const parsed = parseCodexToml(current, `${baseUrl}/v1`);
+function inspectCodexToml(current: string, baseUrl: string, expectedApiKey?: string, homeDirectory?: string): HarnessInspection {
+  const parsed = parseCodexToml(current, `${baseUrl}/v1`, expectedApiKey);
   const expectedCatalog = homeDirectory ? path.join(homeDirectory, CODEX_MODEL_CATALOG_RELATIVE_PATH) : undefined;
   return {
     ...parsed,
@@ -453,7 +458,7 @@ function stripCodexManagedContent(value: string): string {
       if (skippingProvider) continue;
     }
     if (skippingProvider) continue;
-    if (table === "" && /^\s*model_provider\s*=\s*"multivibe"/.test(line)) continue;
+    if (table === "" && /^\s*model_provider\s*=/.test(line)) continue;
     if (table === "" && /^\s*(?:model_catalog_json|openai_base_url)\s*=/.test(line)) continue;
     if (insideManagedBlock && /^\s*(?:model_provider|model_catalog_json|openai_base_url)\s*=/.test(line)) continue;
     output.push(line);
@@ -468,8 +473,10 @@ function renderCodexToml(current: string | null, context: HarnessContext): strin
   const value = stripCodexManagedContent(current ?? "").trim();
   if (!context.homeDirectory) throw new HostHarnessIntegrationError("Codex home directory is unavailable", 500);
   const catalogPath = path.join(context.homeDirectory, CODEX_MODEL_CATALOG_RELATIVE_PATH);
-  const rootBlock = `${CODEX_ROOT_BLOCK_START}\nopenai_base_url = ${jsonString(`${context.baseUrl}/v1`)}\nmodel_catalog_json = ${jsonString(catalogPath)}\n${CODEX_ROOT_BLOCK_END}`;
-  return `${rootBlock}\n\n${value ? `${value}\n` : ""}`;
+  const rootBlock = `${CODEX_ROOT_BLOCK_START}\nmodel_provider = "multivibe"\nmodel_catalog_json = ${jsonString(catalogPath)}\n${CODEX_ROOT_BLOCK_END}`;
+  // The built-in OpenAI provider uses OpenAI login credentials, not the proxy key.
+  const providerBlock = `${CODEX_PROVIDER_BLOCK_START}\n[model_providers.multivibe]\nname = "MultiVibe Host"\nbase_url = ${jsonString(`${context.baseUrl}/v1`)}\nwire_api = "responses"\nexperimental_bearer_token = ${jsonString(context.apiKey)}\n${CODEX_PROVIDER_BLOCK_END}`;
+  return `${rootBlock}\n\n${value ? `${value}\n\n` : ""}${providerBlock}\n`;
 }
 
 function renderCodexModelCatalog(context: HarnessContext): string {
@@ -503,7 +510,7 @@ function renderCodexModelCatalog(context: HarnessContext): string {
 
 const codexConfiguration: HarnessConfiguration = {
   relativePath: ".codex/config.toml",
-  revision: 2,
+  revision: 3,
   driftScope: "managed",
   prepare: prepareModelCatalog,
   auxiliaryFiles: (context) => [{
