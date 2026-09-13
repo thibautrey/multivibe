@@ -47,9 +47,12 @@ import Observation
             SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0 == .authorized) }
         }
         guard self.activation == activation, !Task.isCancelled else { return }
+        guard speech else {
+            error = "Autorisez la reconnaissance vocale dans Réglages pour dicter un message."; return
+        }
         let microphone = await AVAudioApplication.requestRecordPermission()
         guard self.activation == activation, !Task.isCancelled else { return }
-        guard speech && microphone else { error = "Autorisez le micro et la reconnaissance vocale dans Réglages."; return }
+        guard microphone else { error = "Autorisez le microphone dans Réglages pour dicter un message."; return }
         guard let recognizer = SFSpeechRecognizer(locale: .current), recognizer.isAvailable else {
             error = "La dictée est indisponible pour le moment."; return
         }
@@ -61,7 +64,7 @@ import Observation
             try audio.setActive(true)
             let request = SFSpeechAudioBufferRecognitionRequest()
             request.shouldReportPartialResults = true
-            // Prefer on-device recognition. Refuse a silent fallback to Apple's servers.
+            // Require on-device recognition; never fall back to Apple's servers.
             guard recognizer.supportsOnDeviceRecognition else {
                 try? audio.setActive(false); error = "La dictée sur l’appareil n’est pas disponible dans cette langue."; return
             }
@@ -73,11 +76,17 @@ import Observation
             tapInstalled = true
             recognition = recognizer.recognitionTask(with: request) { [weak self] result, failure in
                 let text = result?.bestTranscription.formattedString
-                let finished = result?.isFinal == true || failure != nil
+                let failed = failure != nil
+                let finished = result?.isFinal == true || failed
                 Task { @MainActor [weak self] in
                     guard let self, self.activation == activation else { return }
                     if let text { self.transcript = text }
-                    if finished { self.stop() }
+                    if finished {
+                        self.stop()
+                        if failed {
+                            self.error = "La dictée a été interrompue. Vérifiez le texte conservé avant de l’envoyer, ou recommencez."
+                        }
+                    }
                 }
             }
             engine.prepare(); try engine.start(); recording = true
