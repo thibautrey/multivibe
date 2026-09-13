@@ -254,3 +254,19 @@ This source is integrated into local main, without a push. It is not release-rea
   final diagnostic collection has not yet returned. Do not start another Apple
   build until it terminates. Subsequent commits `cf90ca6` and `254097b` still
   require dependency-backed validation from main.
+
+## 2026-09-13 — History recovery validation complete
+
+- Previous process 45669 terminated with exit 0 and TEST SUCCEEDED (28 tests).
+  Its 600-second diagnostic-collection timeout was not a test failure; its
+  exact DerivedData directory was verified removed.
+- Main at `1e1d66c` compiled and passed all 30 simulator tests, zero failures,
+  including exact-payload lost-response recovery and persistence-failure guards.
+  Log: `/tmp/multivibe-ios-history-recovery-tests.log`; process 5964 exited 0.
+- Used the locally documented `xcodebuild -collect-test-diagnostics never`
+  option to avoid the separate simulator sysdiagnose stall. Tests still ran;
+  this does not skip assertions or change application behavior.
+- Recovery run DerivedData `/private/tmp/multivibe-ios-20260913.BHp72R` was
+  verified removed; the dedicated test simulators were removed by the trap.
+- This is deterministic simulator proof only. Live two-device history, physical
+  voice/shortcuts, Apple SSO provisioning, and backend deployment remain unproven.
