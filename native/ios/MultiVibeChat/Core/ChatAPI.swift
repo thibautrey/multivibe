@@ -98,10 +98,10 @@ actor ChatAPI {
         guard (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "content-type")?.hasPrefix("text/event-stream") == true else {
             throw APIError.invalidResponse
         }
-        var parser = SSEParser()
-        for try await line in bytes.lines {
+        var parser = SSEByteParser()
+        for try await byte in bytes {
             try Task.checkCancellation()
-            guard let event = parser.consume(line) else { continue }
+            guard let event = try parser.consume(byte) else { continue }
             if event == "[DONE]" { return }
             guard let delta = try? decoder.decode(CompletionDelta.self, from: Data(event.utf8)) else {
                 throw APIError.invalidResponse
