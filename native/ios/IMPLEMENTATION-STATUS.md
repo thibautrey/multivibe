@@ -35,9 +35,9 @@ in older entries are superseded by this summary and subsequent validation entrie
 
 ### Latest completed validation
 
-- Local main at `1e1d66c`: unsigned iPhone 17 / iOS 27 simulator build and **30
+- Local main at `76c13df`: unsigned iPhone 17 / iOS 27 simulator build and **33
   XCTest tests passed**, zero failures, terminal `TEST SUCCEEDED` / exit 0.
-  Log: `/tmp/multivibe-ios-history-recovery-tests.log`. Exact DerivedData and
+  Log: `/tmp/multivibe-ios-audio-ownership-retry-tests.log`. Exact DerivedData and
   disposable simulator were removed. No live authentication or two-device proof.
 - Earlier main builds validated French App Intents metadata packaging and the
   optional assistant macro; these are not signed-device Siri invocation tests.
@@ -46,8 +46,9 @@ in older entries are superseded by this summary and subsequent validation entrie
   ignored. See backend status for exact source scope; unrelated later main
   commits are not implicitly validated by those older results.
 - Audio-ownership fix `b66230c`: worktree `git diff --check` passed, committed and
-  fast-forwarded to main. Main simulator validation is running separately; do not
-  count the three new tests as passed until terminal results are recorded.
+  fast-forwarded to main. All three ownership regression tests passed in the
+  33-test simulator suite above. These are state-machine tests, not microphone
+  or physical-device playback verification.
 
 ### Required before completion / release
 
@@ -287,3 +288,17 @@ in older entries are superseded by this summary and subsequent validation entrie
   verified removed; the dedicated test simulators were removed by the trap.
 - This is deterministic simulator proof only. Live two-device history, physical
   voice/shortcuts, Apple SSO provisioning, and backend deployment remain unproven.
+
+## 2026-09-13 — Audio ownership and simulator recovery
+
+- `b66230c` tracks recorder/playback ownership before deactivation. Idle recorder
+  stop no longer releases playback; silence still releases both uses. Recognition
+  language support is checked before activating audio. Synchronous AVAudioSession
+  calls remain; this is not a complete audio responsiveness/interruption solution.
+- First main test attempt compiled but exited 65 before tests: simulator launch
+  failed with "No such process". Log `/tmp/multivibe-ios-audio-ownership-tests.log`.
+- Retried sequentially on a new simulator after explicit `simctl bootstatus -b`.
+  Main at `76c13df`: 33 tests, zero failures, terminal TEST SUCCEEDED / exit 0.
+  Log `/tmp/multivibe-ios-audio-ownership-retry-tests.log`.
+- Both exact task DerivedData directories and dedicated simulators were removed.
+  No production change, signing or physical audio/Siri validation performed.
