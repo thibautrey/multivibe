@@ -35,9 +35,9 @@ in older entries are superseded by this summary and subsequent validation entrie
 
 ### Latest completed validation
 
-- Local main at `76c13df`: unsigned iPhone 17 / iOS 27 simulator build and **33
+- Local main at `70f0a1d`: unsigned iPhone 17 / iOS 27 simulator build and **35
   XCTest tests passed**, zero failures, terminal `TEST SUCCEEDED` / exit 0.
-  Log: `/tmp/multivibe-ios-audio-ownership-retry-tests.log`. Exact DerivedData and
+  Log: `/tmp/multivibe-ios-credential-tests.log`. Exact DerivedData and
   disposable simulator were removed. No live authentication or two-device proof.
 - Earlier main builds validated French App Intents metadata packaging and the
   optional assistant macro; these are not signed-device Siri invocation tests.
@@ -47,7 +47,7 @@ in older entries are superseded by this summary and subsequent validation entrie
   commits are not implicitly validated by those older results.
 - Audio-ownership fix `b66230c`: worktree `git diff --check` passed, committed and
   fast-forwarded to main. All three ownership regression tests passed in the
-  33-test simulator suite above. These are state-machine tests, not microphone
+  33-test audio suite and the later 35-test suite. These are state-machine tests, not microphone
   or physical-device playback verification.
 
 ### Required before completion / release
@@ -302,3 +302,29 @@ in older entries are superseded by this summary and subsequent validation entrie
   Log `/tmp/multivibe-ios-audio-ownership-retry-tests.log`.
 - Both exact task DerivedData directories and dedicated simulators were removed.
   No production change, signing or physical audio/Siri validation performed.
+
+## 2026-09-13 — Native credential forms and screenshot evidence
+
+- `70f0a1d`: signup confirms passwords before submission; native keyboard submit
+  actions move from email to password to confirmation. Credential fields cannot
+  change during a request, and mode switches clear password/confirmation/consent.
+  MFA submission accepts six ASCII digits rather than any six characters.
+- Signup and password recovery share pre-normalization UTF-8 password bounds
+  (12–256 bytes) and ECMAScript whitespace handling with Cloud. No client trimming
+  or normalization alters the secret; existing-password login is not constrained
+  by the new-password UI policy. Two boundary/Unicode test methods were added.
+- Worktree diff checks passed; committed and integrated to local main before
+  dependency-backed validation. Main model typecheck passed. Main simulator
+  suite passed 35 tests, zero failures, terminal TEST SUCCEEDED and exit 0.
+  Log `/tmp/multivibe-ios-credential-tests.log`. Exact DerivedData and simulator
+  removed; no parallel build was run with only 36 GiB available.
+- Before the form change, main `381cd61` compiled, installed and launched on a
+  disposable iPhone 17 simulator. Captures: `/tmp/multivibe-ios-signin-light.png`
+  and `/tmp/multivibe-ios-signin-dark.png`. OCR recovered login/password/SSO/
+  signup/recovery labels at distinct visible positions in both appearances.
+  Image viewing returned "not allowed because you do not support image inputs".
+  Consequently this is capture/OCR evidence, NOT completed visual UX review,
+  signup interaction testing, or evidence of the newly changed form's rendering.
+- No real account creation, password reset, Apple authorization or deployment
+  was performed. Current native password authentication still uses an untracked
+  Task unlike SSO; lifecycle cancellation and late-session cleanup need review.
