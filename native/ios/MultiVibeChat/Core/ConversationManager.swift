@@ -8,9 +8,9 @@ import CryptoKit
     var load: () -> NativeSession? = { SecureStore.load() }
     var save: (NativeSession) throws -> Void = { try SecureStore.save($0) }
     var clear: () -> Void = { SecureStore.clear() }
-    var refresh: (NativeSession) async throws -> NativeSession = { try await ChatAPI.shared.refresh($0) }
-    var revoke: (String) async throws -> Void = { try await ChatAPI.shared.revoke(token: $0) }
-    var models: (String) async throws -> [ModelOption] = { try await ChatAPI.shared.models(token: $0) }
+    var refresh: @MainActor (NativeSession) async throws -> NativeSession = { try await ChatAPI.shared.refresh($0) }
+    var revoke: @MainActor (String) async throws -> Void = { try await ChatAPI.shared.revoke(token: $0) }
+    var models: @MainActor (String) async throws -> [ModelOption] = { try await ChatAPI.shared.models(token: $0) }
 }
 
 @MainActor @Observable final class ConversationManager {
