@@ -227,3 +227,17 @@ This source is integrated into local main, without a push. It is not release-rea
   remote data, plus completion branch reuse coverage. Execution is recorded below
   when available; this is not proof of deployed or physical-device sync.
 - Conflict resolution and uncertain POST-result reconciliation remain unfinished.
+
+## 2026-09-13 — Explicit conflict recovery and ambiguous saves
+
+- Native conflict action now offers explicit keep-both resolution: remote chats
+  remain intact, locally edited chats become labelled copies, local deletions are
+  not propagated during resolution. Subsequent sync does not duplicate copies.
+- Simulator run at `2e23d65` reports 28 tests passed, zero failures, including
+  conflict consent, save-time edits/deletions and malformed remote rejection.
+  Process 45669 is still finalizing; do not claim terminal Xcode success yet.
+- Subsequent recovery patch persists the exact outgoing snapshot and ID mappings
+  before POST. A lost response can be reconciled only against the exact next
+  server revision/payload. Later divergent revisions require explicit conflict
+  resolution instead of guessing success. Local persistence failure blocks POST.
+  This patch and its lost-response test require subsequent build/test validation.

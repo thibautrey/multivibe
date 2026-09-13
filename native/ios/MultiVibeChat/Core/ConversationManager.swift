@@ -58,9 +58,17 @@ import CryptoKit
     var wantsImmediateVoiceCapture = false
     var wantsVoiceConversation = false
     var pendingDraft: String?
+    private struct PendingHistorySave: Codable {
+        var snapshot: AccountHistorySnapshot
+        var local: [Conversation]
+        var conversationIDs: [String: UUID]
+        var messageIDs: [String: UUID]
+    }
+    private var pendingHistorySave: PendingHistorySave?
     private struct HistoryCache: Codable {
         var conversations: [Conversation]
         var snapshot: AccountHistorySnapshot?
+        var pending: PendingHistorySave?
         var baseline: [Conversation]
         var conversationIDs: [String: UUID]
         var messageIDs: [String: UUID]
@@ -94,6 +102,7 @@ import CryptoKit
             if let data = try? Data(contentsOf: historyURL(session.accountId)) {
                 if let cache = try? JSONDecoder().decode(HistoryCache.self, from: data) {
                     conversations = cache.conversations
+                    pendingHistorySave = cache.pending
                     historySnapshot = cache.snapshot; historyBaseline = cache.baseline
                     historyConversationIDs = cache.conversationIDs; historyMessageIDs = cache.messageIDs
                 } else { conversations = try JSONDecoder().decode([Conversation].self, from: data) }
@@ -324,6 +333,7 @@ import CryptoKit
         }
     }
     private func resetHistorySync() {
+        pendingHistorySave = nil
         historySnapshot = nil; historyBaseline = []; historyConversationIDs = [:]; historyMessageIDs = [:]
         historyStatus = nil; hasHistoryConflict = false
     }
@@ -348,7 +358,20 @@ import CryptoKit
                       validatedKeys.insert(key).inserted else { throw APIError.invalidResponse }
                 _ = try remote.projectedConversation(at: index, id: UUID(), messageIDs: &validationIDs)
             }
-            let conflict = historySnapshot.map { $0.revision != remote.revision && local != historyBaseline } ?? false
+            // Reconcile a lost POST response using the exact persisted payload,
+            // never just a colliding conversation ID or an assumed success.
+            if let pending = pendingHistorySave,
+               remote.revision == pending.snapshot.revision + 1,
+               remote.accountId == pending.snapshot.accountId,
+               remote.conversations == pending.snapshot.conversations,
+               remote.folders == pending.snapshot.folders {
+                historySnapshot = remote; historyBaseline = pending.local
+                historyConversationIDs = pending.conversationIDs; historyMessageIDs = pending.messageIDs
+                pendingHistorySave = nil
+                guard persist() else { throw APIError.server(0, "history_cache_write_failed") }
+            }
+            let uncertainSave = pendingHistorySave.map { remote.revision > $0.snapshot.revision } ?? false
+            let conflict = uncertainSave || (historySnapshot.map { $0.revision != remote.revision && local != historyBaseline } ?? false)
             if conflict && !keepingBothVersions {
                 hasHistoryConflict = true
                 historyStatus = "Des modifications existent sur cet appareil et sur un autre. Rien n’a été écrasé. La résolution du conflit est nécessaire."
@@ -381,6 +404,10 @@ import CryptoKit
                     conversationIDs[key] = conversation.id
                     try merged.store(conversation, serverID: key, messageIDs: &messageIDs)
                 }
+                pendingHistorySave = PendingHistorySave(snapshot: merged, local: local,
+                    conversationIDs: conversationIDs, messageIDs: messageIDs)
+                // Persist recovery evidence before making the consequential request.
+                guard persist() else { throw APIError.server(0, "history_cache_write_failed") }
                 merged = try await services.saveHistory(merged, session.accessToken)
                 // A confirmed save is a new baseline even if the user edited locally
                 // while it was in flight. Never apply it to a different account.
@@ -394,7 +421,7 @@ import CryptoKit
                 conversationIDs[key] = id
                 projected.append(try merged.projectedConversation(at: index, id: id, messageIDs: &messageIDs))
             }
-            hasHistoryConflict = false
+            hasHistoryConflict = false; pendingHistorySave = nil
             historySnapshot = merged; historyConversationIDs = conversationIDs; historyMessageIDs = messageIDs
             historyBaseline = projected.sorted { $0.updatedAt > $1.updatedAt }
             // Reapply only edits made since the request began, including deletion.
@@ -422,13 +449,17 @@ import CryptoKit
         let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         return directory.appendingPathComponent("history-" + SHA256.hash(data: Data(account.utf8)).map { String(format: "%02x", $0) }.joined() + ".json")
     }
-    private func persist() {
-        guard let session else { return }
+    @discardableResult private func persist() -> Bool {
+        guard let session else { return false }
         do {
             let url = try historyURL(session.accountId)
             try services.writeHistory(JSONEncoder().encode(HistoryCache(conversations: conversations,
-                snapshot: historySnapshot, baseline: historyBaseline,
+                snapshot: historySnapshot, pending: pendingHistorySave, baseline: historyBaseline,
                 conversationIDs: historyConversationIDs, messageIDs: historyMessageIDs)), url)
-        } catch { self.error = "Impossible d’enregistrer les conversations sur cet appareil." }
+            return true
+        } catch {
+            self.error = "Impossible d’enregistrer les conversations sur cet appareil."
+            return false
+        }
     }
 }

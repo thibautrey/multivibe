@@ -411,6 +411,30 @@ final class SharedHistoryStatusTests: XCTestCase {
         XCTAssertEqual(writes, 2, "A resolved conflict must not duplicate copies on the next sync")
     }
 
+    func testLostSaveResponseReconcilesExactPayloadWithoutDuplicateImport() async {
+        let session = NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: UUID().uuidString)
+        var remote = AccountHistorySnapshot(accountId: session.accountId, revision: 0, conversations: [])
+        var writes = 0
+        let services = SessionServices(writeHistory: { _, _ in }, load: { session },
+            readHistory: { _ in remote }, saveHistory: { snapshot, _ in
+                writes += 1; remote = snapshot; remote.revision += 1
+                throw APIError.invalidResponse
+            }, models: { _ in [] })
+        let manager = ConversationManager(services: services)
+        await manager.restore()
+        manager.newConversation()
+        let original = manager.conversations
+        await manager.synchronizeHistory()
+        XCTAssertEqual(writes, 1)
+        XCTAssertEqual(manager.conversations, original)
+        await manager.synchronizeHistory()
+        XCTAssertEqual(writes, 1)
+        XCTAssertEqual(manager.conversations.count, 1)
+        XCTAssertEqual(manager.conversations.first?.id, original.first?.id)
+        XCTAssertFalse(manager.hasHistoryConflict)
+        XCTAssertEqual(manager.historyStatus, "Historique synchronisé avec votre compte.")
+    }
+
     func testInvalidRemoteProjectionNeverTriggersSave() async {
         let session = NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: UUID().uuidString)
         var writes = 0
