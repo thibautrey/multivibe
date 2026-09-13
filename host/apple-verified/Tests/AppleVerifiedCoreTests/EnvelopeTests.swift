@@ -13,7 +13,7 @@ final class EnvelopeTests: XCTestCase {
             model: "model", releaseDigest: digest, modelDigest: digest, expiresAt: 100_000)
         let nonce = AES.GCM.Nonce()
         let base = RequestEnvelope(requestId: UUID().uuidString.lowercased(), hostId: "host", sessionId: "session",
-            model: "model", releaseDigest: digest, modelDigest: digest, expiresAt: 90_000,
+            model: "model", releaseDigest: digest, modelDigest: digest, expiresAt: 50_000,
             ephemeralPublicKey: Wire.base64(client.publicKey.rawRepresentation), nonce: Wire.base64(Data(nonce)), ciphertext: "", tag: "")
         let secret = try client.sharedSecretFromKeyAgreement(with: host.publicKey)
         let aad = try base.authenticatedData()
