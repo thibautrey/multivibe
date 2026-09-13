@@ -56,3 +56,19 @@ This source is integrated into local main, without a push. It is not release-rea
   region-limited system-assistant activation must not be promised to all users.
 - Integrate commits into local main without pushing; validate sequentially there;
   remove task worktrees after the implementation task is finished.
+
+## System SSO handoff (September 13, 2026)
+
+- The native sign-in screen now starts ASWebAuthenticationSession with an exact
+  HTTPS callback, ephemeral browser session, random state and PKCE S256. It uses
+  the existing provider chooser, consent and MFA flow, not client-decoded Apple claims.
+- Authorization-code exchange uses fixed first-party endpoints. A separate
+  authenticated iOS-only endpoint resolves the account identifier. Failed account
+  lookup attempts revocation of the newly issued refresh token.
+- Simulator compilation succeeded. This is not a verified Apple login: the
+  Apple provider still needs production configuration, and the associated domain
+  requires a deployed apple-app-site-association file naming the actual signed
+  Team ID plus cloud.multivibe.chat under webcredentials.apps. Do not invent a Team ID.
+- No AASA file has been published and no physical-device HTTPS callback has been
+  proven. The generic SSO button intentionally does not claim Apple availability.
+- SSU metadata archival still emits a nonfatal error and requires separate repair.
