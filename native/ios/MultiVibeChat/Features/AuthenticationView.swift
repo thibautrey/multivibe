@@ -1,7 +1,10 @@
 import SwiftUI
+import AuthenticationServices
+import CryptoKit
 
 struct AuthenticationView: View {
     @Environment(ConversationManager.self) private var manager
+    @State private var sso = NativeSSOController()
     @State private var signup = false
     @State private var email = ""
     @State private var password = ""
@@ -37,6 +40,12 @@ struct AuthenticationView: View {
                         .disabled(busy || (challenge != nil ? code.count != 6 : email.isEmpty || password.isEmpty || (signup && !terms)))
                     if busy { ProgressView() }
                 }
+                if challenge == nil {
+                    Section {
+                        Button("Continuer avec le SSO", systemImage: "person.badge.key.fill") { authenticateSSO() }.disabled(busy)
+                        Text("Choisissez votre fournisseur dans la fenêtre sécurisée. Les conditions et la double authentification y sont conservées.").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 if let error { Section { Text(error).foregroundStyle(.red) } }
                 Section {
                     if challenge != nil {
@@ -70,6 +79,19 @@ struct AuthenticationView: View {
             }
         }
     }
+    private func authenticateSSO() {
+        busy = true; error = nil
+        Task {
+            defer { busy = false }
+            do {
+                let session = try await sso.signIn()
+                do { try await manager.accept(session); password = "" }
+                catch { try? await ChatAPI.shared.revoke(token: session.refreshToken); throw error }
+            } catch is CancellationError {
+            } catch let failure as ASWebAuthenticationSessionError where failure.code == .canceledLogin {
+            } catch { self.error = error.localizedDescription }
+        }
+    }
     private func requestReset() {
         busy = true; error = nil
         Task {
@@ -90,4 +112,79 @@ struct AuthenticationView: View {
             } catch { self.error = error.localizedDescription }
         }
     }
+}
+
+/// The system owns the provider UI and cookies. Only the one-time first-party
+/// authorization code returns to the app; provider tokens never enter it.
+@MainActor @Observable final class NativeSSOController: NSObject, ASWebAuthenticationPresentationContextProviding {
+    private var authentication: ASWebAuthenticationSession?
+    private var window: UIWindow?
+    private var continuation: CheckedContinuation<URL, Error>?
+
+    func signIn() async throws -> NativeSession {
+        guard authentication == nil else { throw APIError.invalidResponse }
+        guard let window = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene })
+            .filter({ $0.activationState == .foregroundActive }).flatMap(\.windows).first(where: \.isKeyWindow) else {
+            throw APIError.invalidResponse
+        }
+        self.window = window
+        let verifier = try randomToken()
+        let state = try randomToken()
+        let challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64URL
+        var url = URLComponents(string: "https://auth.multivibe.cloud/oauth/authorize")!
+        url.queryItems = [URLQueryItem(name: "client_id", value: "multivibe-ios"),
+            URLQueryItem(name: "redirect_uri", value: "https://auth.multivibe.cloud/oauth/callback/ios"),
+            URLQueryItem(name: "response_type", value: "code"), URLQueryItem(name: "scope", value: "openid profile projects:read"),
+            URLQueryItem(name: "code_challenge", value: challenge), URLQueryItem(name: "code_challenge_method", value: "S256"),
+            URLQueryItem(name: "state", value: state)]
+        defer { authentication = nil; self.window = nil }
+        let callback = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+            self.continuation = continuation
+            let session = ASWebAuthenticationSession(url: url.url!, callback: .https(host: "auth.multivibe.cloud", path: "/oauth/callback/ios")) { callback, error in
+                Task { @MainActor in
+                    if let callback { self.finish(.success(callback)) }
+                    else { self.finish(.failure(error ?? APIError.invalidResponse)) }
+                }
+            }
+            session.presentationContextProvider = self
+            session.prefersEphemeralWebBrowserSession = true
+            authentication = session
+            if !session.start() { finish(.failure(APIError.invalidResponse)) }
+        }
+        guard let parsed = URLComponents(url: callback, resolvingAgainstBaseURL: false),
+              parsed.scheme == "https", parsed.host == "auth.multivibe.cloud", parsed.port == nil,
+              parsed.user == nil, parsed.password == nil, parsed.path == "/oauth/callback/ios", parsed.fragment == nil else {
+            throw APIError.invalidResponse
+        }
+        let fields = parsed.queryItems ?? []
+        guard fields.filter({ $0.name == "state" }).count == 1,
+              fields.first(where: { $0.name == "state" })?.value == state,
+              fields.filter({ $0.name == "code" }).count == 1,
+              !fields.contains(where: { $0.name == "error" }),
+              let code = fields.first(where: { $0.name == "code" })?.value,
+              code.range(of: "^[A-Za-z0-9_-]{43}$", options: .regularExpression) != nil else { throw APIError.invalidResponse }
+        return try await ChatAPI.shared.exchangeAuthorizationCode(code, verifier: verifier)
+    }
+    func cancel() {
+        authentication?.cancel()
+        finish(.failure(CancellationError()))
+    }
+    private func finish(_ result: Result<URL, Error>) {
+        let pending = continuation
+        continuation = nil
+        pending?.resume(with: result)
+    }
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        // The foreground window is captured before the session can start.
+        window!
+    }
+    private func randomToken() throws -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { throw APIError.invalidResponse }
+        return Data(bytes).base64URL
+    }
+}
+
+private extension Data {
+    var base64URL: String { base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "") }
 }
