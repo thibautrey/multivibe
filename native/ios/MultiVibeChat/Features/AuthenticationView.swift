@@ -68,6 +68,7 @@ struct AuthenticationView: View {
     @State private var ssoTask: Task<Void, Never>?
     @State private var credentials = NativeCredentialFlow()
     @State private var signup = false
+    @State private var privacyPresented = false
     @State private var authConfiguration: NativeAuthConfiguration?
     @State private var email = ""
     @State private var password = ""
@@ -146,12 +147,14 @@ struct AuthenticationView: View {
                         if !signup { Button("Mot de passe oublié ?") { manager.passwordRecovery = PasswordRecoveryRequest(email: email) } }
                     }
                 }.disabled(busy)
+                Section { Button("Confidentialité et données", systemImage: "hand.raised") { privacyPresented = true } }
             }
             .scrollContentBackground(.hidden)
             .background(MultiVibeTheme.background)
             .navigationTitle(challenge != nil ? "Double authentification" : signup ? "Bienvenue" : "MultiVibe Chat")
 
         }
+        .sheet(isPresented: $privacyPresented) { NativePrivacyView() }
         .task { await loadConfiguration() }
         .onDisappear { credentials.cancel(); ssoTask?.cancel(); sso.cancel(); password = ""; confirmPassword = ""; code = ""; challenge = nil }
     }

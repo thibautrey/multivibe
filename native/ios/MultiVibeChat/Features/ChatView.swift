@@ -13,6 +13,7 @@ struct ChatView: View {
     @State private var retryTarget: RetryTarget?
     private struct RetryTarget { let conversation: UUID; let message: UUID }
     @State private var voicePresented = false
+    @State private var privacyPresented = false
     @State private var followsLatest = true
     @State private var userScrolling = false
     private let latestMessageAnchor = "latest-message"
@@ -47,6 +48,7 @@ struct ChatView: View {
                     Button("Synchroniser l’historique", systemImage: "arrow.triangle.2.circlepath") { confirmHistorySync = true }
                         .disabled(manager.isSynchronizing || manager.isStreaming || manager.isRestoring)
                 }
+                ToolbarItem(placement: .secondaryAction) { Button("Confidentialité et données", systemImage: "hand.raised") { privacyPresented = true } }
                 ToolbarItem(placement: .bottomBar) { Button("Déconnexion") { Task { await manager.logout() } } }
             }
         } detail: {
@@ -170,6 +172,7 @@ struct ChatView: View {
         } message: {
             Text("Les conversations modifiées sur cet appareil seront ajoutées comme copies locales. Les versions du compte seront conservées ; les suppressions locales ne seront pas appliquées au compte pendant cette résolution.")
         }
+        .sheet(isPresented: $privacyPresented) { NativePrivacyView() }
         .sheet(isPresented: $voicePresented) { VoiceConversationView() }
         .onChange(of: manager.selection) { _, _ in text = "" }
         .onChange(of: voice.transcript) { _, value in if !voicePresented { text = value } }
@@ -281,5 +284,55 @@ struct VoiceConversationView: View {
         if manager.isStreaming { return "Réponse en cours" }
         if voice.speaking { return "MultiVibe vous répond" }
         return "Prêt à discuter"
+    }
+}
+
+
+struct NativePrivacyView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var configuration: NativeAuthConfiguration?
+    @State private var loading = false
+    @State private var failed = false
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Compte et messages envoyés") {
+                    Text("Votre adresse e-mail et vos identifiants sont transmis pour créer votre compte ou vous connecter. Les jetons de connexion sont conservés dans le trousseau de cet appareil.")
+                    Text("Envoyer un message transmet son contenu et le contexte de la conversation à MultiVibe pour obtenir la réponse du modèle choisi. L’utilisation du service peut consommer les crédits de votre compte.")
+                }
+                Section("Historique") {
+                    Text("L’app conserve une copie des conversations sur cet appareil. La synchronisation avec votre compte nécessite votre confirmation ; elle envoie les conversations locales et télécharge celles du compte. Ce stockage n’est pas chiffré de bout en bout.")
+                    Text("Supprimer une conversation dans l’app retire sa copie locale. Cela ne constitue pas une suppression de compte ni une demande d’effacement de toutes les données détenues par le service.")
+                }
+                Section("Dictée, lecture et raccourcis") {
+                    Text("La dictée exige la reconnaissance sur l’appareil : l’app ne transmet pas l’enregistrement audio à MultiVibe. Vérifiez le texte avant d’appuyer sur Envoyer. La lecture vocale utilise la synthèse vocale du système.")
+                    Text("Les raccourcis préparent une action dans l’app au premier plan. Ils n’envoient pas automatiquement votre brouillon. Partager un message utilise la feuille de partage iOS ; vous choisissez sa destination.")
+                }
+                Section("Documents du service") {
+                    if let configuration, configuration.hasValidDocuments,
+                       let privacy = configuration.privacyUrl, let terms = configuration.termsUrl {
+                        Link("Politique de confidentialité", destination: privacy)
+                        Link("Conditions d’utilisation", destination: terms)
+                    } else {
+                        Text(failed ? "Les documents sont indisponibles. Réessayez avec une connexion réseau." : "Chargement des liens officiels du service…")
+                        if loading { ProgressView() }
+                        Button("Réessayer") { Task { await load() } }.disabled(loading)
+                    }
+                }
+            }
+            .navigationTitle("Confidentialité")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Terminé") { dismiss() } } }
+            .task { await load() }
+        }
+    }
+    private func load() async {
+        guard !loading else { return }
+        loading = true; failed = false
+        defer { loading = false }
+        do {
+            let value = try await ChatAPI.shared.authenticationConfiguration()
+            guard !Task.isCancelled else { return }
+            configuration = value; failed = !value.hasValidDocuments
+        } catch { if !Task.isCancelled { failed = true } }
     }
 }
