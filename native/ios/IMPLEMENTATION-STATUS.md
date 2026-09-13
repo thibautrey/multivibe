@@ -124,3 +124,12 @@ This source is integrated into local main, without a push. It is not release-rea
 
 - Conversation swipe actions no longer allow full-swipe deletion. A native alert names the selected conversation and explicitly explains irreversible removal from this device; cancellation leaves history unchanged.
 - Fresh unsigned simulator build on local main passed (`/tmp/multivibe-ios-delete-build.log`, exit 0, `BUILD SUCCEEDED`). Temporary DerivedData was removed. This is compile validation, not an interactive alert/gesture test.
+
+### Reference recovered and opt-in system assistant adapter
+
+- September 13, 2026: the supplied ChatGPT conversation loaded in the internal browser. Its final exchanges explicitly recommend an availability/feature-gated `.assistant.activate` adapter and a shared voice engine. Prior notes saying the reference was inaccessible describe earlier attempts, not current evidence.
+- Added `ActivateMultiVibeAssistantIntent` behind the Swift compilation condition `MULTIVIBE_SIDE_BUTTON_ASSISTANT`, unavailable before iOS 26.2. Default builds do not compile this schema; no entitlement was added. To compile-check the opt-in adapter, pass `SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) MULTIVIBE_SIDE_BUTTON_ASSISTANT'` to xcodebuild.
+- The adapter prepares the same native voice interface, with local dictation beginning only after authenticated foreground presentation and existing Speech/microphone permission handling. Recognition never automatically transmits a message. Pending immediate capture is cleared when another shortcut replaces it or session cleanup runs.
+- Verified against the installed SDK and Apple's article at https://developer.apple.com/documentation/appintents/launching-your-voice-based-conversational-app-from-the-side-button-of-iphone : production eligibility requires Japan account/physical location and the side-button entitlement. Do not promise automatic future EU enablement.
+- The first opt-in build found a missing closing brace; fixed immediately. Fresh main unsigned simulator build with the opt-in compilation condition then passed (`/tmp/multivibe-ios-assistant-build.log`, exit 0). This verifies macro compilation, not eligible-device invocation or signing. Added a preparation-state regression test; execution remains pending.
+- Remaining reference gap: this app still uses local push-to-talk recognition plus explicit send and TTS, not full-duplex realtime voice. Do not describe it as the complete realtime assistant envisioned in the reference.
