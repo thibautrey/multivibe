@@ -162,3 +162,20 @@ This source is integrated into local main, without a push. It is not release-rea
 - Verified against Apple's `supporting-associated-domains` documentation: matching entitlement and published AASA are required. This local source change does not prove installed-app association or universal-link delivery; signing, deployment and real-device testing remain outstanding.
 - September 13, 2026: main unsigned simulator build passed (`/tmp/multivibe-ios-recovery-links-build.log`), entitlement plist lint passed, and exact DerivedData was removed. Backend TypeScript build and 29 native-auth/identity HTTP tests passed (`/tmp/multivibe-recovery-links-backend-tests.log`), including exact association JSON.
 - Parser and recovery-request assertions passed against the current Models source using macOS Foundation (`/tmp/multivibe-recovery-parser-assertions.log`), including rejection of OAuth callbacks. A direct Swift-script XCTest attempt failed because XCTest was not on that script's module search path; this was not an app/test-target build failure. Simulator XCTest execution of these new cases remains outstanding.
+
+## 2026-09-13 — Interrupted-response retry
+
+- `02e35e1` and `dd3852e`: optional backward-compatible completion states,
+  restored in-flight messages become stopped, explicit confirmation before replacing
+  only the current interrupted tail, preserved original prompt/model, late-delta
+  isolation after stop/selection changes. No automatic or hidden billable retry.
+- Streaming and history writes are injectable for tests; production still uses the
+  existing authenticated endpoint and device-protected local history.
+- Main unsigned simulator build succeeded (`/tmp/multivibe-ios-retry-build.log`).
+- Simulator suite reports **23 tests, zero failures**, including three new retry/
+  cancellation/legacy-decoding cases and recovery parsing. At this checkpoint
+  xcodebuild remains in post-test finalization; its terminal status and temporary
+  simulator/DerivedData cleanup still require verification (session 23784,
+  `/tmp/multivibe-ios-retry-tests.log`). No second test run should be started.
+- Simulator emitted an AVAudioSession synchronous-deactivation responsiveness
+  warning; inspect audio lifecycle separately. No physical-device claim.
