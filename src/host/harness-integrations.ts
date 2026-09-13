@@ -40,6 +40,7 @@ export type HarnessContext = {
   baseUrl: string;
   apiKey: string;
   modelIds?: readonly string[];
+  codexModels?: readonly Record<string, unknown>[];
   homeDirectory?: string;
 };
 
@@ -172,7 +173,12 @@ function safeModelIds(value: unknown): string[] {
   return ids;
 }
 
-async function discoverMultiVibeModelIds(context: HarnessContext): Promise<string[]> {
+type DiscoveredModelCatalog = {
+  modelIds: string[];
+  codexModels: Record<string, unknown>[];
+};
+
+async function discoverMultiVibeModelCatalog(context: HarnessContext): Promise<DiscoveredModelCatalog> {
   let response: Response;
   try {
     response = await fetch(`${context.baseUrl}/v1/models`, {
@@ -202,19 +208,24 @@ async function discoverMultiVibeModelIds(context: HarnessContext): Promise<strin
   } catch {
     throw new HostHarnessIntegrationError("MultiVibe model catalog is invalid", 409);
   }
-  const modelIds = safeModelIds(
-    payload && typeof payload === "object" && !Array.isArray(payload)
-      ? (payload as { data?: unknown[] }).data?.map((entry) =>
-        entry && typeof entry === "object" && !Array.isArray(entry)
-          ? (entry as { id?: unknown }).id
-          : undefined,
-      )
+  const document = payload && typeof payload === "object" && !Array.isArray(payload)
+    ? payload as { data?: unknown[]; models?: unknown[] }
+    : {};
+  const modelIds = safeModelIds(document.data?.map((entry) =>
+    entry && typeof entry === "object" && !Array.isArray(entry)
+      ? (entry as { id?: unknown }).id
       : undefined,
-  );
+  ));
+  const exposedIds = new Set(modelIds);
+  const codexModels = (document.models ?? []).filter((entry): entry is Record<string, unknown> => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+    const slug = (entry as { slug?: unknown }).slug;
+    return typeof slug === "string" && exposedIds.has(slug);
+  });
   if (!modelIds.length) {
     throw new HostHarnessIntegrationError("MultiVibe model catalog is empty", 409);
   }
-  return modelIds;
+  return { modelIds, codexModels };
 }
 
 function requireModelIds(context: HarnessContext): string[] {
@@ -231,7 +242,7 @@ function selectDefaultModelId(context: HarnessContext): string {
 }
 
 async function prepareModelCatalog(context: HarnessContext): Promise<Partial<HarnessContext>> {
-  return { modelIds: await discoverMultiVibeModelIds(context) };
+  return discoverMultiVibeModelCatalog(context);
 }
 
 function modelAwareConfiguration(configuration: HarnessConfiguration): HarnessConfiguration {
@@ -480,7 +491,8 @@ function renderCodexToml(current: string | null, context: HarnessContext): strin
 }
 
 function renderCodexModelCatalog(context: HarnessContext): string {
-  const models = requireModelIds(context).map((id, index) => ({
+  const nativeModels = new Map((context.codexModels ?? []).map((model) => [model.slug, model]));
+  const models = requireModelIds(context).map((id, index) => nativeModels.get(id) ?? ({
     slug: id,
     display_name: id,
     description: "Available through MultiVibe Host.",
@@ -510,7 +522,7 @@ function renderCodexModelCatalog(context: HarnessContext): string {
 
 const codexConfiguration: HarnessConfiguration = {
   relativePath: ".codex/config.toml",
-  revision: 3,
+  revision: 4,
   driftScope: "managed",
   prepare: prepareModelCatalog,
   auxiliaryFiles: (context) => [{

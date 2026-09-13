@@ -80,10 +80,14 @@ async function fixture() {
   return { root, home, manager };
 }
 
-function mockCodexModelCatalog(t: TestContext, modelIds = ["model-a", "gpt-5.5"]) {
+function mockCodexModelCatalog(
+  t: TestContext,
+  modelIds = ["model-a", "gpt-5.5"],
+  models: Record<string, unknown>[] = [],
+) {
   const originalFetch = globalThis.fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
-  globalThis.fetch = async () => Response.json({ data: modelIds.map((id) => ({ id })) });
+  globalThis.fetch = async () => Response.json({ data: modelIds.map((id) => ({ id })), models });
 }
 
 test("detects without executing, installs privately, and restores the exact previous file", async (t) => {
@@ -433,7 +437,25 @@ test("uninstall refuses to overwrite user changes made after installation", asyn
 });
 
 test("Codex installation authenticates its provider with the proxy key and restores the original workspace", async (t) => {
-  mockCodexModelCatalog(t);
+  mockCodexModelCatalog(t, ["model-a", "gpt-5.5"], [{
+    slug: "gpt-5.5",
+    display_name: "GPT-5.5",
+    description: "OpenAI model",
+    default_reasoning_level: "medium",
+    supported_reasoning_levels: [],
+    shell_type: "shell_command",
+    visibility: "list",
+    supported_in_api: true,
+    priority: 1,
+    base_instructions: "",
+    support_verbosity: true,
+    truncation_policy: { mode: "tokens", limit: 10000 },
+    context_window: 400000,
+    max_context_window: 400000,
+    supports_parallel_tool_calls: true,
+    input_modalities: ["text", "image"],
+    experimental_supported_tools: [],
+  }]);
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-harness-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const home = path.join(root, "home");
@@ -469,9 +491,11 @@ test("Codex installation authenticates its provider with the proxy key and resto
   for (const model of catalog.models) {
     // Codex requires these fields when deserializing model_catalog_json.
     assert.equal(typeof model.base_instructions, "string");
-    assert.equal(model.support_verbosity, false);
     assert.deepEqual(model.truncation_policy, { mode: "tokens", limit: 10000 });
   }
+  assert.deepEqual(catalog.models.find((model: any) => model.slug === "model-a").input_modalities, ["text"]);
+  assert.deepEqual(catalog.models.find((model: any) => model.slug === "gpt-5.5").input_modalities, ["text", "image"]);
+  assert.equal(catalog.models.find((model: any) => model.slug === "gpt-5.5").support_verbosity, true);
   await manager.uninstall("openai-codex");
   assert.equal(await fs.readFile(configPath, "utf8"), original);
   await assert.rejects(fs.readFile(path.join(home, ".codex", "multivibe-models.json"), "utf8"), /ENOENT/);
