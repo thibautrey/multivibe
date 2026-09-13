@@ -2,9 +2,25 @@ import Foundation
 import Observation
 import CryptoKit
 
+/// Injectable boundary so rotation races can be exercised without real tokens,
+/// network requests, or changes to the user's Keychain.
+@MainActor struct SessionServices {
+    var load: () -> NativeSession? = { SecureStore.load() }
+    var save: (NativeSession) throws -> Void = { try SecureStore.save($0) }
+    var clear: () -> Void = { SecureStore.clear() }
+    var refresh: (NativeSession) async throws -> NativeSession = { try await ChatAPI.shared.refresh($0) }
+    var revoke: (String) async throws -> Void = { try await ChatAPI.shared.revoke(token: $0) }
+    var models: (String) async throws -> [ModelOption] = { try await ChatAPI.shared.models(token: $0) }
+}
+
 @MainActor @Observable final class ConversationManager {
     static let shared = ConversationManager()
-    var session: NativeSession? = SecureStore.load()
+    private let services: SessionServices
+    var session: NativeSession?
+    init(services: SessionServices = SessionServices()) {
+        self.services = services
+        session = services.load()
+    }
     private(set) var isRestoring = true
     private var restorationRevision = UUID()
     var conversations: [Conversation] = []
@@ -51,7 +67,7 @@ import CryptoKit
             if let data = try? Data(contentsOf: historyURL(session.accountId)) {
                 conversations = try JSONDecoder().decode([Conversation].self, from: data)
             }
-            let availableModels = try await ChatAPI.shared.models(token: session.accessToken)
+            let availableModels = try await services.models(session.accessToken)
             guard sessionRevision == revision else { return }
             models = availableModels
             if let current {
@@ -59,7 +75,7 @@ import CryptoKit
             } else { selectedModel = models.first?.id ?? "" }
         } catch { if sessionRevision == revision { self.error = error.localizedDescription } }
     }
-    private func validSession() async throws -> NativeSession {
+    func validSession() async throws -> NativeSession {
         guard let previous = session else { throw APIError.authenticationRequired }
         if previous.expiresAt > Date().addingTimeInterval(60) { return previous }
         let revision = sessionRevision
@@ -73,10 +89,37 @@ import CryptoKit
         // One owner persists the rotated token; concurrent callers only await it.
         let task = Task { @MainActor in
             defer { if refreshRevision == flight { refreshTask = nil } }
-            let renewed = try await ChatAPI.shared.refresh(previous)
+            let renewed = try await services.refresh(previous)
             if sessionRevision == revision {
-                try SecureStore.save(renewed)
-                session = renewed
+                do {
+                    try services.save(renewed)
+                    session = renewed
+                } catch {
+                    // The previous refresh token may already be consumed. Never
+                    // keep it as an apparently usable local session after failure.
+                    stop()
+                    voice.silence()
+                    sessionRevision = UUID()
+                    let failedRevision = sessionRevision
+                    services.clear()
+                    session = nil
+                    conversations = []; selection = nil
+                    models = []; selectedModel = ""
+                    wantsNewConversation = false; wantsVoice = false
+                    wantsVoiceConversation = false; pendingDraft = nil
+                    self.error = "Impossible de sauvegarder la session dans le Trousseau. Reconnectez-vous."
+                    do { try await services.revoke(renewed.refreshToken) }
+                    catch {
+                        if sessionRevision == failedRevision {
+                            self.error = "Session locale fermée. La révocation distante n’a pas pu être confirmée. Reconnectez-vous."
+                        }
+                    }
+                    throw APIError.authenticationRequired
+                }
+            } else {
+                // An account switch can orphan a rotation even without logout.
+                // Revoke only the old account's token, never touch the new session.
+                try? await services.revoke(renewed.refreshToken)
             }
             // Logout may need this rotated token for revocation even after the UI
             // session was cleared. Never restore UI state across account revisions.
@@ -88,7 +131,7 @@ import CryptoKit
         return renewed
     }
     func accept(_ session: NativeSession) async throws {
-        try SecureStore.save(session)
+        try services.save(session)
         stop()
         refreshRevision = UUID()
         refreshTask = nil
@@ -184,14 +227,14 @@ import CryptoKit
         refreshTask = nil
         sessionRevision = UUID()
         let revision = sessionRevision
-        SecureStore.clear(); session = nil; conversations = []; selection = nil
+        services.clear(); session = nil; conversations = []; selection = nil
         models = []; selectedModel = ""; wantsNewConversation = false; wantsVoice = false; wantsVoiceConversation = false; pendingDraft = nil; error = nil
         if let previous {
             do {
                 // Do not cancel a possibly committed server rotation. Await it and
                 // revoke its result; otherwise revoke the last known family token.
                 let rotated = try? await inFlightRefresh?.value
-                try await ChatAPI.shared.revoke(token: rotated?.refreshToken ?? previous.refreshToken)
+                try await services.revoke(rotated?.refreshToken ?? previous.refreshToken)
             }
             catch {
                 if sessionRevision == revision {
