@@ -63,7 +63,7 @@ actor MLXRuntime {
     func execute(_ plaintext: Data) async throws -> Data {
         guard !executing, plaintext.count <= 256 * 1024 else { throw VerifiedHostError.unavailable }
         executing = true
-        defer { executing = false; Memory.clearCache() }
+        defer { executing = false; GPU.clearCache() }
         let input = try Wire.decode(ChatInput.self, from: plaintext)
         guard !input.messages.isEmpty, input.messages.count <= 128,
               (1...2048).contains(input.maxTokens), input.messages.allSatisfy({
