@@ -469,3 +469,37 @@ final class SharedHistoryStatusTests: XCTestCase {
         XCTAssertTrue(manager.historyStatus?.contains("conservées") == true)
     }
 }
+
+final class VoiceAudioSessionOwnershipTests: XCTestCase {
+    func testIdleStopDoesNotDeactivatePlayback() throws {
+        var ownership = VoiceAudioSessionOwnership()
+        var deactivations = 0
+        try ownership.release(.recording) { deactivations += 1 }
+        ownership.acquired(.playback)
+        try ownership.release(.recording) { deactivations += 1 }
+        XCTAssertEqual(deactivations, 0)
+        XCTAssertEqual(ownership.use, .playback)
+        try ownership.release(.playback) { deactivations += 1 }
+        try ownership.release(.playback) { deactivations += 1 }
+        XCTAssertEqual(deactivations, 1)
+        XCTAssertNil(ownership.use)
+    }
+    func testOldPlaybackCompletionDoesNotReleaseRecording() throws {
+        var ownership = VoiceAudioSessionOwnership()
+        ownership.acquired(.playback)
+        ownership.acquired(.recording)
+        try ownership.release(.playback) { XCTFail("Must preserve the recorder") }
+        XCTAssertEqual(ownership.use, .recording)
+        try ownership.release(.recording) {}
+        XCTAssertNil(ownership.use)
+    }
+    func testFailedDeactivationRemainsRetryable() throws {
+        enum Failure: Error { case busy }
+        var ownership = VoiceAudioSessionOwnership()
+        ownership.acquired(.recording)
+        XCTAssertThrowsError(try ownership.release(.recording) { throw Failure.busy })
+        XCTAssertEqual(ownership.use, .recording)
+        try ownership.release(.recording) {}
+        XCTAssertNil(ownership.use)
+    }
+}

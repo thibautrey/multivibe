@@ -2,6 +2,20 @@ import AVFoundation
 import Speech
 import Observation
 
+/// Tracks this controller's active use of the shared audio session. Releasing an
+/// idle recorder must not deactivate speech playback (or another app's audio).
+struct VoiceAudioSessionOwnership {
+    enum Use: Equatable { case recording, playback }
+    private(set) var use: Use?
+
+    mutating func acquired(_ use: Use) { self.use = use }
+    mutating func release(_ expected: Use, deactivate: () throws -> Void) throws {
+        guard use == expected else { return }
+        try deactivate()
+        use = nil
+    }
+}
+
 /// Dictation is explicit and foreground-only. The transcript stays editable;
 /// only the Send action transmits it to MultiVibe.
 @MainActor @Observable final class VoiceController: NSObject, AVSpeechSynthesizerDelegate {
@@ -17,6 +31,7 @@ import Observation
     private var activation = UUID()
     private var starting = false
     private var currentUtterance: AVSpeechUtterance?
+    private var audioOwnership = VoiceAudioSessionOwnership()
 
     override init() {
         super.init()
@@ -34,7 +49,13 @@ import Observation
     private func finishSpeaking(_ identity: ObjectIdentifier) {
         guard let currentUtterance, ObjectIdentifier(currentUtterance) == identity else { return }
         self.currentUtterance = nil; speaking = false
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        releaseAudio(.playback)
+    }
+
+    private func releaseAudio(_ use: VoiceAudioSessionOwnership.Use) {
+        try? audioOwnership.release(use) {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
     }
 
 
@@ -56,18 +77,20 @@ import Observation
         guard let recognizer = SFSpeechRecognizer(locale: .current), recognizer.isAvailable else {
             error = "La dictée est indisponible pour le moment."; return
         }
+        guard recognizer.supportsOnDeviceRecognition else {
+            error = "La dictée sur l’appareil n’est pas disponible dans cette langue."; return
+        }
         do {
             currentUtterance = nil; speaking = false
             synthesizer.stopSpeaking(at: .immediate)
+            releaseAudio(.playback)
             let audio = AVAudioSession.sharedInstance()
             try audio.setCategory(.record, mode: .measurement, options: .duckOthers)
             try audio.setActive(true)
+            audioOwnership.acquired(.recording)
             let request = SFSpeechAudioBufferRecognitionRequest()
             request.shouldReportPartialResults = true
             // Require on-device recognition; never fall back to Apple's servers.
-            guard recognizer.supportsOnDeviceRecognition else {
-                try? audio.setActive(false); error = "La dictée sur l’appareil n’est pas disponible dans cette langue."; return
-            }
             request.requiresOnDeviceRecognition = true
             self.request = request
             transcript = ""; error = nil
@@ -94,22 +117,28 @@ import Observation
     }
     func stop() {
         activation = UUID(); starting = false
-        engine.stop()
+        if engine.isRunning { engine.stop() }
         if tapInstalled { engine.inputNode.removeTap(onBus: 0); tapInstalled = false }
         request?.endAudio(); recognition?.cancel(); recognition = nil; request = nil
         recording = false
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        releaseAudio(.recording)
     }
     func speak(_ text: String) {
         silence()
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: .duckOthers)
             try AVAudioSession.sharedInstance().setActive(true)
+            audioOwnership.acquired(.playback)
             let utterance = AVSpeechUtterance(string: text)
             utterance.voice = AVSpeechSynthesisVoice(language: Locale.current.identifier)
             currentUtterance = utterance; speaking = true
             synthesizer.speak(utterance)
         } catch { self.error = error.localizedDescription }
     }
-    func silence() { currentUtterance = nil; speaking = false; synthesizer.stopSpeaking(at: .immediate); stop() }
+    func silence() {
+        currentUtterance = nil; speaking = false
+        synthesizer.stopSpeaking(at: .immediate)
+        stop()
+        releaseAudio(.playback)
+    }
 }
