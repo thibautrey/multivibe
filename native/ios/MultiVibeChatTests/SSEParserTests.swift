@@ -382,6 +382,35 @@ final class SharedHistoryStatusTests: XCTestCase {
         XCTAssertEqual(manager.historyStatus, "Historique synchronisé avec votre compte.")
     }
 
+    func testConflictRequiresConsentAndPreservesRemoteVersion() async throws {
+        let session = NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: UUID().uuidString)
+        var remote = AccountHistorySnapshot(accountId: session.accountId, revision: 0, conversations: [])
+        var writes = 0
+        let services = SessionServices(writeHistory: { _, _ in }, load: { session },
+            readHistory: { _ in remote }, saveHistory: { snapshot, _ in
+                writes += 1; remote = snapshot; remote.revision += 1; return remote
+            }, models: { _ in [ModelOption(id: "fixture")] })
+        let manager = ConversationManager(services: services)
+        await manager.restore()
+        manager.newConversation()
+        await manager.synchronizeHistory()
+        manager.conversations[0].title = "Local edit"
+        var item = try XCTUnwrap(remote.conversations[0].object)
+        item["title"] = .string("Remote edit")
+        remote.conversations[0] = .object(item); remote.revision += 1
+        await manager.synchronizeHistory()
+        XCTAssertTrue(manager.hasHistoryConflict)
+        XCTAssertEqual(writes, 1)
+        XCTAssertEqual(manager.conversations.first?.title, "Local edit")
+        await manager.synchronizeHistory(keepingBothVersions: true)
+        XCTAssertFalse(manager.hasHistoryConflict)
+        XCTAssertEqual(writes, 2)
+        XCTAssertEqual(Set(manager.conversations.map(\.title)), ["Remote edit", "Local edit — copie locale"])
+        XCTAssertEqual(Set(manager.conversations.map(\.id)).count, 2)
+        await manager.synchronizeHistory()
+        XCTAssertEqual(writes, 2, "A resolved conflict must not duplicate copies on the next sync")
+    }
+
     func testInvalidRemoteProjectionNeverTriggersSave() async {
         let session = NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: UUID().uuidString)
         var writes = 0
