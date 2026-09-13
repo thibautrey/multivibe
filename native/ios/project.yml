@@ -1,5 +1,6 @@
 name: MultiVibeChat
 options:
+  developmentLanguage: fr
   bundleIdPrefix: cloud.multivibe
   deploymentTarget:
     iOS: '18.0'
