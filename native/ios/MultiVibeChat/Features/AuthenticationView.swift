@@ -17,7 +17,7 @@ struct AuthenticationView: View {
             Form {
                 Section {
                     Label("MultiVibe", systemImage: "bubble.left.and.bubble.right.fill")
-                        .font(.largeTitle.bold()).padding(.vertical)
+                        .font(.largeTitle.bold()).foregroundStyle(MultiVibeTheme.accent).padding(.vertical)
                     Text("Vos modèles, vos conversations.").foregroundStyle(.secondary)
                 }
                 Section(signup ? "Créer un compte" : "Connexion") {
@@ -47,6 +47,8 @@ struct AuthenticationView: View {
                     }
                 }.disabled(busy)
             }
+            .scrollContentBackground(.hidden)
+            .background(MultiVibeTheme.background)
             .navigationTitle(challenge != nil ? "Double authentification" : signup ? "Bienvenue" : "MultiVibe Chat")
             .sheet(isPresented: $resetPresented) {
                 NavigationStack {
