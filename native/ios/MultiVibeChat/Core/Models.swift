@@ -4,6 +4,10 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     var id: UUID = UUID()
     var role: String
     var content: String
+    enum Completion: String, Codable, Sendable { case streaming, completed, stopped, failed }
+    // Optional for compatibility with conversations saved before completion tracking.
+    var completion: Completion?
+    var canRetry: Bool { role == "assistant" && (completion == .stopped || completion == .failed) }
 }
 struct Conversation: Codable, Identifiable, Equatable, Sendable {
     var id: UUID = UUID()
