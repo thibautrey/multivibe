@@ -674,3 +674,65 @@ final class MessageMarkdownTests: XCTestCase {
         XCTAssertEqual(MessageBlock.inline("[Site](https://example.com)").runs.first?.link?.host, "example.com")
     }
 }
+
+@MainActor final class ModelRecoveryTests: XCTestCase {
+    private func session(_ name: String = "models-fixture") -> NativeSession {
+        NativeSession(accessToken: name, refreshToken: name, expiresAt: .distantFuture, accountId: name)
+    }
+    func testRetryAfterOfflinePreservesConversation() async {
+        let credentials = session()
+        var calls = 0
+        let manager = ConversationManager(services: SessionServices(load: { credentials }, models: { _ in
+            calls += 1
+            if calls == 1 { throw APIError.invalidResponse }
+            return [ModelOption(id: "chosen")]
+        }))
+        let conversation = Conversation(model: "chosen", messages: [ChatMessage(role: "user", content: "Keep me")])
+        manager.conversations = [conversation]; manager.selection = conversation.id
+        await manager.reloadModels()
+        XCTAssertNotNil(manager.modelsError)
+        XCTAssertFalse(manager.isLoadingModels)
+        await manager.reloadModels()
+        XCTAssertNil(manager.modelsError)
+        XCTAssertEqual(manager.selectedModel, "chosen")
+        XCTAssertEqual(manager.conversations, [conversation])
+    }
+    func testRemovedModelRequiresUserSelection() async {
+        let credentials = session()
+        let manager = ConversationManager(services: SessionServices(load: { credentials }, models: { _ in [ModelOption(id: "new")] }))
+        let conversation = Conversation(model: "old")
+        manager.conversations = [conversation]; manager.selection = conversation.id
+        manager.selectedModel = "old"
+        await manager.reloadModels()
+        XCTAssertEqual(manager.selectedModel, "")
+        XCTAssertEqual(manager.current?.model, "old")
+    }
+    func testEmptyCatalogHasRetryableExplanation() async {
+        let credentials = session()
+        let manager = ConversationManager(services: SessionServices(load: { credentials }, models: { _ in [] }))
+        await manager.reloadModels()
+        XCTAssertNotNil(manager.modelsError)
+        XCTAssertTrue(manager.models.isEmpty)
+    }
+    func testLateCatalogCannotRestoreLoggedOutAccount() async throws {
+        let credentials = session()
+        var pending: CheckedContinuation<[ModelOption], Never>?
+        var calls = 0
+        let manager = ConversationManager(services: SessionServices(load: { credentials }, clear: {}, revoke: { _ in }, models: { _ in
+            calls += 1
+            return await withCheckedContinuation { pending = $0 }
+        }))
+        let task = Task { await manager.reloadModels() }
+        for _ in 0..<1000 { if pending != nil { break }; await Task.yield() }
+        let continuation = try XCTUnwrap(pending)
+        await manager.reloadModels()
+        XCTAssertEqual(calls, 1)
+        await manager.logout()
+        continuation.resume(returning: [ModelOption(id: "stale")])
+        await task.value
+        XCTAssertNil(manager.session)
+        XCTAssertTrue(manager.models.isEmpty)
+        XCTAssertNil(manager.modelsError)
+        XCTAssertFalse(manager.isLoadingModels)
+    }
+}

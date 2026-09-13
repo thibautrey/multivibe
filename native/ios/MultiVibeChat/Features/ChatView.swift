@@ -120,6 +120,15 @@ struct ChatView: View {
                 }
                 if let error = voice.error { Text(error).font(.callout).foregroundStyle(.red).padding() }
                 if let error = manager.error { Text(error).font(.callout).foregroundStyle(.red).padding() }
+                if let error = manager.modelsError {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(error).font(.callout)
+                        Button("Réessayer le chargement des modèles", systemImage: "arrow.clockwise") {
+                            Task { await manager.reloadModels() }
+                        }.disabled(manager.isLoadingModels || manager.isStreaming)
+                    }.padding(.horizontal)
+                }
+                if manager.isLoadingModels { ProgressView("Chargement des modèles…").padding(.horizontal) }
                 HStack(alignment: .bottom) {
                     Button(voice.recording ? "Terminer la dictée" : "Dicter sur cet appareil", systemImage: voice.recording ? "mic.fill" : "mic") {
                         if voice.recording { voice.stop() } else { Task { await voice.start() } }
@@ -133,6 +142,11 @@ struct ChatView: View {
             .navigationTitle(manager.current?.title ?? "Chat")
             .toolbar {
                 ToolbarItem(placement: .secondaryAction) { Button("Conversation vocale", systemImage: "waveform") { voice.silence(); voicePresented = true } }
+                ToolbarItem(placement: .secondaryAction) {
+                    Button("Actualiser les modèles", systemImage: "arrow.clockwise") {
+                        Task { await manager.reloadModels() }
+                    }.disabled(manager.isLoadingModels || manager.isStreaming)
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Picker("Modèle", selection: $manager.selectedModel) {
                         Text("Choisir un modèle").tag("")

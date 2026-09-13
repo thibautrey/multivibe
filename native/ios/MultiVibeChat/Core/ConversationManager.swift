@@ -47,6 +47,9 @@ import CryptoKit
         }
     }
     var models: [ModelOption] = []
+    private(set) var isLoadingModels = false
+    private(set) var modelsError: String?
+    private var modelLoadRevision = UUID()
     var selectedModel = ""
     var error: String?
     var isStreaming = false
@@ -113,13 +116,41 @@ import CryptoKit
                     }
                 }
             }
-            let availableModels = try await services.models(session.accessToken)
-            guard sessionRevision == revision else { return }
-            models = availableModels
-            if let current {
-                selectedModel = models.contains(where: { $0.id == current.model }) ? current.model : ""
-            } else { selectedModel = models.first?.id ?? "" }
+            await reloadModels()
         } catch { if sessionRevision == revision { self.error = error.localizedDescription } }
+    }
+    /// Explicit network recovery without re-reading or replacing local history.
+    func reloadModels() async {
+        guard session != nil, !isLoadingModels, !isStreaming else { return }
+        let accountRevision = sessionRevision
+        let loadRevision = UUID()
+        modelLoadRevision = loadRevision
+        isLoadingModels = true
+        modelsError = nil
+        defer { if modelLoadRevision == loadRevision { isLoadingModels = false } }
+        do {
+            let credentials = try await validSession()
+            let available = try await services.models(credentials.accessToken)
+            guard sessionRevision == accountRevision, modelLoadRevision == loadRevision else { return }
+            // Sending can begin while this request is in flight; never switch its model.
+            guard !isStreaming else { return }
+            models = available
+            if !selectedModel.isEmpty {
+                if !available.contains(where: { $0.id == selectedModel }) { selectedModel = "" }
+            } else if let current {
+                selectedModel = available.contains(where: { $0.id == current.model }) ? current.model : ""
+            } else { selectedModel = available.first?.id ?? "" }
+            if available.isEmpty { modelsError = "Aucun modèle disponible pour ce compte. Vous pouvez réessayer." }
+        } catch {
+            if sessionRevision == accountRevision, modelLoadRevision == loadRevision {
+                modelsError = "Impossible de charger les modèles. Vérifiez votre connexion puis réessayez."
+            }
+        }
+    }
+    private func resetModelLoading() {
+        modelLoadRevision = UUID()
+        isLoadingModels = false
+        modelsError = nil
     }
     func validSession() async throws -> NativeSession {
         guard let previous = session else { throw APIError.authenticationRequired }
@@ -146,6 +177,7 @@ import CryptoKit
                     stop()
                     voice.silence()
                     sessionRevision = UUID()
+                    resetModelLoading()
                     let failedRevision = sessionRevision
                     services.clear()
                     session = nil
@@ -190,6 +222,7 @@ import CryptoKit
         refreshRevision = UUID()
         refreshTask = nil
         sessionRevision = UUID()
+        resetModelLoading()
         isRestoring = true
         resetHistorySync()
         self.session = session
@@ -315,6 +348,7 @@ import CryptoKit
         refreshRevision = UUID()
         refreshTask = nil
         sessionRevision = UUID()
+        resetModelLoading()
         let revision = sessionRevision
         resetHistorySync()
         services.clear(); session = nil; conversations = []; selection = nil
