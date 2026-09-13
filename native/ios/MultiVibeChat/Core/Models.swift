@@ -243,6 +243,10 @@ extension AccountHistorySnapshot {
                 guard let entry = nodes[id]?.object, entry["parentId"] == parent,
                       let original = entry["message"]?.object, original["role"]?.string == message.role,
                       let parts = original["content"]?.array else { return false }
+                if message.role == "assistant" {
+                    let expected = message.completion == .completed ? "complete" : "incomplete"
+                    guard original["status"]?.object?["type"]?.string == expected else { return false }
+                }
                 return parts.compactMap { $0.object?["text"]?.string }.joined(separator: "\n") == message.content
             }
             if let matching { parent = .string(matching); continue }
