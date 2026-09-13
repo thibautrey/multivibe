@@ -197,11 +197,14 @@ struct VoiceConversationView: View {
             .navigationTitle("Conversation vocale")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { voice.silence(); dismiss() } } }
         }
-        .task {
-            guard manager.wantsImmediateVoiceCapture else { return }
-            manager.wantsImmediateVoiceCapture = false
-            guard scenePhase == .active, manager.session != nil, !manager.isRestoring else { return }
+        .task(id: canStartAssistantCapture) {
+            guard canStartAssistantCapture else { return }
             await voice.start()
+            // Keep a deferred request while inactive or restoring. Consume only
+            // after permission handling, so changing this task's identity cannot
+            // cancel its own microphone activation before it has completed.
+            guard !Task.isCancelled else { return }
+            manager.wantsImmediateVoiceCapture = false
         }
         .onChange(of: voice.transcript) { _, value in draft = value }
         .onChange(of: manager.isStreaming) { _, streaming in
@@ -217,6 +220,10 @@ struct VoiceConversationView: View {
         .onChange(of: scenePhase) { _, phase in if phase != .active { awaitingReply = false; voice.silence() } }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in awaitingReply = false; voice.silence() }
         .onDisappear { awaitingReply = false; voice.silence() }
+    }
+    private var canStartAssistantCapture: Bool {
+        manager.wantsImmediateVoiceCapture && scenePhase == .active &&
+            manager.session != nil && !manager.isRestoring && !manager.isStreaming
     }
     private var status: String {
         if voice.recording { return "À votre écoute" }
