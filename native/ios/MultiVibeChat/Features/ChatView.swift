@@ -7,6 +7,7 @@ struct ChatView: View {
     private var voice: VoiceController { manager.voice }
     @State private var text = ""
     @State private var search = ""
+    @State private var conversationToDelete: Conversation?
     @State private var voicePresented = false
     @State private var followsLatest = true
     @State private var userScrolling = false
@@ -18,7 +19,9 @@ struct ChatView: View {
             List(selection: $manager.selection) {
                 ForEach(manager.conversations.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }) { conversation in
                     Label(conversation.title, systemImage: "bubble.left").tag(conversation.id)
-                        .swipeActions { Button("Supprimer", role: .destructive) { manager.delete(conversation.id) } }
+                        .swipeActions(allowsFullSwipe: false) {
+                            Button("Supprimer", role: .destructive) { conversationToDelete = conversation }
+                        }
                 }
             }
             .scrollContentBackground(.hidden)
@@ -103,6 +106,18 @@ struct ChatView: View {
                     }.disabled(manager.isStreaming)
                 }
             }
+        }
+        .alert("Supprimer cette conversation ?", isPresented: Binding(
+            get: { conversationToDelete != nil },
+            set: { if !$0 { conversationToDelete = nil } }
+        ), presenting: conversationToDelete) { conversation in
+            Button("Supprimer", role: .destructive) {
+                manager.delete(conversation.id)
+                conversationToDelete = nil
+            }
+            Button("Annuler", role: .cancel) { conversationToDelete = nil }
+        } message: { conversation in
+            Text("« \(conversation.title) » sera supprimée de cet appareil. Cette action est irréversible.")
         }
         .sheet(isPresented: $voicePresented) { VoiceConversationView() }
         .onChange(of: manager.selection) { _, _ in text = "" }
