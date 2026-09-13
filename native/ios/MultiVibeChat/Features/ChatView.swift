@@ -71,6 +71,7 @@ struct ChatView: View {
         .sheet(isPresented: $voicePresented) { VoiceConversationView() }
         .onChange(of: manager.selection) { _, _ in text = "" }
         .onChange(of: voice.transcript) { _, value in if !voicePresented { text = value } }
+        .onChange(of: manager.wantsNewConversation) { _, _ in consumeIntent() }
         .onChange(of: manager.wantsVoiceConversation) { _, _ in consumeIntent() }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { voice.silence() } else { consumeIntent() }
@@ -83,6 +84,10 @@ struct ChatView: View {
     }
     private func consumeIntent() {
         guard scenePhase == .active, manager.session != nil else { return }
+        if manager.wantsNewConversation {
+            manager.wantsNewConversation = false
+            manager.newConversation()
+        }
         if manager.wantsVoiceConversation {
             manager.wantsVoiceConversation = false; voice.silence(); voicePresented = true
         }

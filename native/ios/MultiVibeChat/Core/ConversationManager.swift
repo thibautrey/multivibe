@@ -24,6 +24,8 @@ import CryptoKit
     var isStreaming = false
     private(set) var completedReply: UUID?
     let voice = VoiceController()
+    enum ShortcutRequest { case newConversation, dictation, draft(String), voiceConversation }
+    var wantsNewConversation = false
     var wantsVoice = false
     var wantsVoiceConversation = false
     var pendingDraft: String?
@@ -89,6 +91,18 @@ import CryptoKit
         error = nil; models = []; selectedModel = ""
         conversations = []; selection = nil
         await restore()
+    }
+    /// Keep only the latest foreground request while authentication restores.
+    /// Preparing an intent never edits history or starts microphone/network work.
+    func prepareShortcut(_ request: ShortcutRequest) {
+        wantsNewConversation = false; wantsVoice = false
+        wantsVoiceConversation = false; pendingDraft = nil
+        switch request {
+        case .newConversation: wantsNewConversation = true
+        case .dictation: wantsVoice = true
+        case .draft(let text): pendingDraft = String(text.prefix(32_000))
+        case .voiceConversation: wantsVoiceConversation = true
+        }
     }
     func newConversation() {
         stop()
@@ -164,7 +178,7 @@ import CryptoKit
         sessionRevision = UUID()
         let revision = sessionRevision
         SecureStore.clear(); session = nil; conversations = []; selection = nil
-        models = []; selectedModel = ""; wantsVoice = false; wantsVoiceConversation = false; pendingDraft = nil; error = nil
+        models = []; selectedModel = ""; wantsNewConversation = false; wantsVoice = false; wantsVoiceConversation = false; pendingDraft = nil; error = nil
         if let previous {
             do {
                 // Do not cancel a possibly committed server rotation. Await it and
