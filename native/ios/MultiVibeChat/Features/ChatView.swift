@@ -273,6 +273,11 @@ struct VoiceConversationView: View {
         }
         .onChange(of: scenePhase) { _, phase in if phase != .active { awaitingReply = false; voice.silence() } }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in awaitingReply = false; voice.silence() }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.mediaServicesWereLostNotification)) { _ in awaitingReply = false }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.mediaServicesWereResetNotification)) { _ in awaitingReply = false }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { notification in
+            if VoiceSystemEvent.decode(notification) == .routeLost { awaitingReply = false }
+        }
         .onDisappear { awaitingReply = false; voice.silence() }
     }
     private var canStartAssistantCapture: Bool {
