@@ -35,11 +35,11 @@ in older entries are superseded by this summary and subsequent validation entrie
 
 ### Latest completed validation
 
-- Local main at `a62fcae`: unsigned iPhone 17 / iOS 27 simulator build and **50
+- Local main at `b290052`: unsigned iPhone 17 / iOS 27 simulator build and **54
   XCTest tests passed**, zero failures, terminal `TEST SUCCEEDED` / exit 0.
-  Log: `/tmp/multivibe-ios-markdown-tests.log`. Exact DerivedData and disposable
-  simulator were removed. Includes five Markdown parser/link tests; no visual
-  layout, live authentication or two-device proof.
+  Log: `/tmp/multivibe-ios-model-recovery-tests.log`. Exact DerivedData and
+  disposable simulator were removed. Includes model recovery and Markdown tests;
+  no visual layout, live authentication or two-device proof.
 - Earlier main builds validated French App Intents metadata packaging and the
   optional assistant macro; these are not signed-device Siri invocation tests.
 - Backend main at `cc672565`: TypeScript build and **51 targeted tests passed**.
@@ -443,3 +443,16 @@ lifecycle integration remain outstanding.
   main before dependency-backed validation. The entire simulator suite passed:
   50 tests, including five new block/fence/link tests. This does not establish
   visual accessibility or real-device interaction behavior.
+
+### Model catalog network recovery (September 13, 2026)
+
+- Added explicit model reload and retry controls with loading/empty/error states.
+  Retry does not reload history or require logout. Failed reload keeps the previous
+  catalog, and removed model selections are cleared rather than substituted.
+- Concurrent requests are suppressed; account changes invalidate late results.
+  Loading cannot start during generation, and a result arriving after generation
+  starts does not alter the active model. Errors are separate from chat errors.
+- Commit `b290052` integrated into local main after worktree diff checks, then
+  unsigned simulator build and all 54 XCTest tests passed. Four new tests cover
+  offline retry/history preservation, removed models, empty catalog, duplicate
+  reload and post-logout stale results. No production endpoint was exercised.
