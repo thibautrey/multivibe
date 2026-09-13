@@ -125,6 +125,9 @@ struct AuthenticationView: View {
                 let reply = try await ChatAPI.shared.authenticate(mode: challenge != nil ? "otp" : signup ? "signup" : "login", fields: fields)
                 if reply.status == "mfa_required", let challenge = reply.challenge { self.challenge = challenge; password = ""; return }
                 try await manager.accept(reply.session()); password = ""
+            } catch APIError.server(409, "signup_terms_changed") {
+                await loadConfiguration()
+                self.error = "Les conditions ont changé. Consultez-les et acceptez-les avant de réessayer."
             } catch { self.error = error.localizedDescription }
         }
     }
