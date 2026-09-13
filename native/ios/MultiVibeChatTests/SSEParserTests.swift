@@ -521,3 +521,70 @@ final class NativePasswordPolicyTests: XCTestCase {
         XCTAssertTrue(NativePasswordPolicy.accepts(String(repeating: "\u{0085}", count: 6)))
     }
 }
+
+@MainActor final class NativeCredentialFlowTests: XCTestCase {
+    private func reply(_ token: String) -> AuthReply {
+        AuthReply(accessToken: token, refreshToken: token, expiresAt: .distantFuture, accountId: "fixture")
+    }
+    func testLateReplyRevokedWithoutAffectingNewAttempt() async {
+        var pending: [CheckedContinuation<AuthReply, Never>] = []
+        var revoked: [String] = [], accepted: [String] = []
+        let flow = NativeCredentialFlow(services: .init(issue: { _, _ in
+            await withCheckedContinuation { pending.append($0) }
+        }, revoke: { revoked.append($0) }))
+        func submit() {
+            flow.submit(mode: "login", fields: [:], accept: { accepted.append($0.refreshToken) },
+                        challenge: { _ in XCTFail("Unexpected challenge") }, failure: { _, _ in XCTFail("Unexpected error") })
+        }
+        submit()
+        while pending.count < 1 { await Task.yield() }
+        flow.cancel(); submit()
+        while pending.count < 2 { await Task.yield() }
+        pending[0].resume(returning: reply("old"))
+        while revoked.isEmpty { await Task.yield() }
+        XCTAssertTrue(flow.busy); XCTAssertTrue(accepted.isEmpty)
+        pending[1].resume(returning: reply("new"))
+        while flow.busy { await Task.yield() }
+        XCTAssertEqual(revoked, ["old"]); XCTAssertEqual(accepted, ["new"])
+    }
+    func testMalformedLateReplyStillRevoked() async {
+        var pending: CheckedContinuation<AuthReply, Never>?
+        var revoked: [String] = []
+        let flow = NativeCredentialFlow(services: .init(issue: { _, _ in
+            await withCheckedContinuation { pending = $0 }
+        }, revoke: { revoked.append($0) }))
+        flow.submit(mode: "login", fields: [:], accept: { _ in XCTFail() },
+                    challenge: { _ in XCTFail() }, failure: { _, _ in XCTFail() })
+        while pending == nil { await Task.yield() }
+        flow.cancel(); pending?.resume(returning: AuthReply(refreshToken: "orphan"))
+        while revoked.isEmpty { await Task.yield() }
+        XCTAssertEqual(revoked, ["orphan"]); XCTAssertFalse(flow.busy)
+    }
+    func testMFAAndInconsistentEnvelope() async {
+        var response = AuthReply(challenge: "challenge", status: "mfa_required")
+        var challenges: [String] = [], revoked: [String] = [], errors = 0
+        let flow = NativeCredentialFlow(services: .init(issue: { _, _ in response }, revoke: { revoked.append($0) }))
+        func submit() {
+            flow.submit(mode: "login", fields: [:], accept: { _ in XCTFail("MFA must not accept session") },
+                        challenge: { challenges.append($0) }, failure: { _, _ in errors += 1 })
+        }
+        submit(); while flow.busy { await Task.yield() }
+        XCTAssertEqual(challenges, ["challenge"]); XCTAssertEqual(errors, 0)
+        response = reply("inconsistent"); response.status = "mfa_required"
+        submit(); while flow.busy { await Task.yield() }
+        XCTAssertEqual(errors, 1); XCTAssertEqual(revoked, ["inconsistent"])
+    }
+    func testInvalidatedFailureCannotUpdateUI() async {
+        var pending: CheckedContinuation<Void, Never>?
+        let flow = NativeCredentialFlow(services: .init(issue: { _, _ in
+            await withCheckedContinuation { pending = $0 }
+            throw APIError.invalidResponse
+        }, revoke: { _ in XCTFail() }))
+        flow.submit(mode: "login", fields: [:], accept: { _ in XCTFail() },
+                    challenge: { _ in XCTFail() }, failure: { _, _ in XCTFail() })
+        while pending == nil { await Task.yield() }
+        flow.cancel(); pending?.resume()
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertFalse(flow.busy)
+    }
+}

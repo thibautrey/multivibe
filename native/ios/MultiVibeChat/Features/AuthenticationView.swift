@@ -2,10 +2,71 @@ import SwiftUI
 import AuthenticationServices
 import CryptoKit
 
+/// Invalidation stops UI/session adoption, not the bounded HTTP exchange: cancelling
+/// URLSession immediately could discard tokens already issued by the server.
+@MainActor @Observable final class NativeCredentialFlow {
+    struct Services {
+        var issue: @MainActor (String, [String: String]) async throws -> AuthReply = {
+            try await ChatAPI.shared.authenticate(mode: $0, fields: $1)
+        }
+        var revoke: @MainActor (String) async throws -> Void = { try await ChatAPI.shared.revoke(token: $0) }
+    }
+    private let services: Services
+    private var current: UUID?
+    private var tasks: [UUID: Task<Void, Never>] = [:]
+    private(set) var busy = false
+    init(services: Services = Services()) { self.services = services }
+
+    func cancel() { current = nil; busy = false }
+
+    func submit(mode: String, fields: [String: String],
+                accept: @escaping @MainActor (NativeSession) async throws -> Void,
+                challenge: @escaping @MainActor (String) -> Void,
+                failure: @escaping @MainActor (Error, @escaping @MainActor () -> Bool) async -> Void) {
+        guard !busy else { return }
+        let id = UUID(); current = id; busy = true
+        tasks[id] = Task {
+            defer {
+                tasks[id] = nil
+                if current == id { current = nil; busy = false }
+            }
+            do {
+                let reply = try await services.issue(mode, fields)
+                guard current == id else {
+                    // Revoke even a partially malformed reply if it contains a token.
+                    if let token = reply.refreshToken { try? await services.revoke(token) }
+                    return
+                }
+                if reply.status == "mfa_required", let value = reply.challenge,
+                   !value.isEmpty, reply.refreshToken == nil, reply.accessToken == nil {
+                    challenge(value)
+                    return
+                }
+                let session: NativeSession
+                do {
+                    guard reply.status != "mfa_required", reply.challenge == nil else { throw APIError.invalidResponse }
+                    session = try reply.session()
+                }
+                catch {
+                    if let token = reply.refreshToken { try? await services.revoke(token) }
+                    throw error
+                }
+                // No suspension between the identity check and starting acceptance.
+                // The manager persists synchronously before restoration can suspend.
+                try await accept(session)
+            } catch {
+                guard current == id else { return }
+                await failure(error, { self.current == id })
+            }
+        }
+    }
+}
+
 struct AuthenticationView: View {
     @Environment(ConversationManager.self) private var manager
     @State private var sso = NativeSSOController()
     @State private var ssoTask: Task<Void, Never>?
+    @State private var credentials = NativeCredentialFlow()
     @State private var signup = false
     @State private var authConfiguration: NativeAuthConfiguration?
     @State private var email = ""
@@ -16,7 +77,8 @@ struct AuthenticationView: View {
     @State private var terms = false
     @State private var challenge: String?
     @State private var code = ""
-    @State private var busy = false
+    @State private var ssoBusy = false
+    private var busy: Bool { ssoBusy || credentials.busy }
     @State private var error: String?
     private var canSubmit: Bool {
         guard !busy else { return false }
@@ -91,7 +153,7 @@ struct AuthenticationView: View {
 
         }
         .task { await loadConfiguration() }
-        .onDisappear { ssoTask?.cancel(); sso.cancel() }
+        .onDisappear { credentials.cancel(); ssoTask?.cancel(); sso.cancel(); password = ""; confirmPassword = ""; code = ""; challenge = nil }
     }
     private func loadConfiguration() async {
         terms = false
@@ -99,9 +161,10 @@ struct AuthenticationView: View {
         catch { authConfiguration = nil; self.error = error.localizedDescription }
     }
     private func authenticateSSO() {
-        busy = true; error = nil
+        guard !busy else { return }
+        ssoBusy = true; error = nil
         ssoTask = Task {
-            defer { busy = false; ssoTask = nil }
+            defer { ssoBusy = false; ssoTask = nil }
             do {
                 let session = try await sso.signIn()
                 do { try Task.checkCancellation() }
@@ -114,20 +177,24 @@ struct AuthenticationView: View {
     }
     private func authenticate() {
         guard canSubmit else { return }
-        focusedField = nil
-        busy = true; error = nil
-        Task {
-            defer { busy = false }
-            do {
-                let fields = challenge.map { ["challenge": $0, "code": code] } ?? ["email": email, "password": password, "termsAccepted": terms ? "true" : "false", "termsVersion": authConfiguration?.termsVersion ?? ""]
-                let reply = try await ChatAPI.shared.authenticate(mode: challenge != nil ? "otp" : signup ? "signup" : "login", fields: fields)
-                if reply.status == "mfa_required", let challenge = reply.challenge { self.challenge = challenge; password = ""; confirmPassword = ""; focusedField = .code; return }
-                try await manager.accept(reply.session()); password = ""; confirmPassword = ""
-            } catch APIError.server(409, "signup_terms_changed") {
-                await loadConfiguration()
-                self.error = "Les conditions ont changé. Consultez-les et acceptez-les avant de réessayer."
-            } catch { self.error = error.localizedDescription }
-        }
+        focusedField = nil; error = nil
+        let mode = challenge != nil ? "otp" : signup ? "signup" : "login"
+        let fields = challenge.map { ["challenge": $0, "code": code] }
+            ?? ["email": email, "password": password, "termsAccepted": terms ? "true" : "false",
+                "termsVersion": authConfiguration?.termsVersion ?? ""]
+        credentials.submit(mode: mode, fields: fields, accept: { session in
+            try await manager.accept(session)
+            password = ""; confirmPassword = ""
+        }, challenge: { value in
+            challenge = value; password = ""; confirmPassword = ""; focusedField = .code
+        }, failure: { failure, isCurrent in
+            if case APIError.server(409, "signup_terms_changed") = failure {
+                let refreshed = try? await ChatAPI.shared.authenticationConfiguration()
+                guard isCurrent() else { return }
+                terms = false; authConfiguration = refreshed
+                error = "Les conditions ont changé. Consultez-les et acceptez-les avant de réessayer."
+            } else { error = failure.localizedDescription }
+        })
     }
 }
 
