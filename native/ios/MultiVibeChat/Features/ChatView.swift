@@ -197,6 +197,12 @@ struct VoiceConversationView: View {
             .navigationTitle("Conversation vocale")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { voice.silence(); dismiss() } } }
         }
+        .task {
+            guard manager.wantsImmediateVoiceCapture else { return }
+            manager.wantsImmediateVoiceCapture = false
+            guard scenePhase == .active, manager.session != nil, !manager.isRestoring else { return }
+            await voice.start()
+        }
         .onChange(of: voice.transcript) { _, value in draft = value }
         .onChange(of: manager.isStreaming) { _, streaming in
             guard !streaming, awaitingReply else { return }

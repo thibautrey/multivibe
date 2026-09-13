@@ -130,6 +130,19 @@ final class NativeTransportTests: XCTestCase {
         XCTAssertNil(manager.pendingDraft)
         XCTAssertTrue(manager.wantsNewConversation)
     }
+    func testAssistantActivationWaitsForAuthenticatedVoicePresentation() {
+        let manager = ConversationManager()
+        manager.session = nil
+        manager.prepareShortcut(.assistantVoiceConversation)
+        XCTAssertTrue(manager.wantsVoiceConversation)
+        XCTAssertTrue(manager.wantsImmediateVoiceCapture)
+        XCTAssertFalse(manager.voice.recording)
+        XCTAssertFalse(manager.isStreaming)
+        XCTAssertTrue(manager.conversations.isEmpty)
+        manager.prepareShortcut(.draft("Replacement"))
+        XCTAssertFalse(manager.wantsVoiceConversation)
+        XCTAssertFalse(manager.wantsImmediateVoiceCapture)
+    }
     func testShortcutDraftIsBoundedAndNeverSentAutomatically() {
         let manager = ConversationManager()
         manager.session = nil

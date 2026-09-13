@@ -56,3 +56,19 @@ struct MultiVibeShortcuts: AppShortcutsProvider {
         AppShortcut(intent: PrepareMultiVibeMessageIntent(), phrases: ["Préparer un message dans \(.applicationName)"], shortTitle: "Préparer un message", systemImageName: "square.and.pencil")
     }
 }
+
+// Opt-in compilation only. Enabling this flag is NOT entitlement approval or
+// evidence of regional eligibility. Keep the default app free of this schema
+// until signing and eligible-device validation are arranged.
+#if MULTIVIBE_SIDE_BUTTON_ASSISTANT
+@available(iOS 26.2, *)
+@AppIntent(schema: .assistant.activate)
+struct ActivateMultiVibeAssistantIntent {
+    static let supportedModes: IntentModes = .foreground
+    static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
+
+    @MainActor func perform() async throws -> some IntentResult {
+        ConversationManager.shared.prepareShortcut(.assistantVoiceConversation)
+        return .result()
+    }
+#endif
