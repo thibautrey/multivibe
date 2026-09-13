@@ -1,61 +1,78 @@
 # Native iOS chat — implementation in progress
 
-This source is integrated into local main, without a push. It is not release-ready.
+## Current authoritative status — September 13, 2026
 
-## Implemented source
+Source is integrated into local `main`, without a push. **Not release-ready.**
+The historical journal below records intermediate observations; outstanding items
+in older entries are superseded by this summary and subsequent validation entries.
 
-- SwiftUI iPhone/iPad app, native split navigation, model selection, streamed chat,
-  local search, message sharing, explicit on-device dictation and speech playback.
-- Email/password registration and login, consent input, TOTP challenge UI and
-  non-enumerating password reset request.
-- Device-only unlocked Keychain sessions, rotated refresh tokens using the existing
-  OAuth endpoint, remote refresh-family revocation on logout.
-- Per-account SHA-256-named local history with complete file protection and backup
-  exclusion. No cloud-history synchronization is implemented yet.
-- Session/generation revision checks reject stale streaming and model-list callbacks.
-- Foreground, device-authenticated App Intents: new conversation, dictation,
-  prepare a draft, and open the voice conversation sheet. Metadata is extracted;
-  actual discovery and invocation still require verification through
-  supported system shortcut surfaces. Draft preparation never sends a message.
-- Pending microphone permission callbacks are invalidated on stop/background.
+### Implemented locally
 
-## Validation so far
+- Native SwiftUI iPhone/iPad application (iOS 18+), split navigation, MultiVibe
+  colors, model selection, bounded streamed responses, local search/sharing,
+  interrupted-response retry with explicit confirmation, and scroll-follow control.
+- Native email/password signup/login, legal configuration fetched from the backend,
+  TOTP challenge, password reset request/completion and exact recovery universal
+  link handling. Opening a reset link does not redeem it or change accounts.
+- System-browser SSO handoff with PKCE/state and exact HTTPS callback, backed by
+  staged Apple provider support. No unverified Apple claims or automatic email
+  linking. The generic SSO button does not claim Apple is configured in production.
+- Device-only Keychain credentials, single-flight refresh rotation, stale-session
+  race protection, best-effort remote token cleanup and visible persistence errors.
+- Protected, backup-excluded per-account history plus explicitly confirmed cloud
+  synchronization through the shared web-history schema. Raw branches, arbitrary
+  IDs, folders and unknown fields are retained. Revision conflicts require explicit
+  keep-both consent; exact pending writes are persisted before POST for lost-response
+  recovery. No automatic upload, last-write-wins overwrite, or E2EE claim.
+- Foreground device-authenticated App Intents: new conversation, dictation, draft,
+  and voice sheet. Drafting never sends a message. Optional compile-gated
+  `.assistant.activate` adapter; no side-button entitlement enabled.
+- Mandatory on-device dictation, editable transcript, explicit Send and local speech
+  playback. This is push-to-talk, **not full-duplex realtime voice**.
+- Backend native auth/history/recovery routes, Apple OIDC adapter/broker source,
+  migration files and optional deployment configuration are present locally.
+  They have not been migrated, provisioned or deployed by this task.
 
-- September 13, 2026: Xcode 27 beta simulator build passed from local main.
-- iPhone 17 Pro / iOS 26.5 simulator: seven SSE tests passed (zero failures).
-  Includes LF/CR/CRLF, Unicode/BOM, empty/multiline events, truncation, invalid
-  UTF-8 and bounded event buffering. Streaming uses byte framing rather than a
-  line sequence that might normalize empty delimiters.
-- App process launched successfully on that simulator; screenshot captured.
-  Visual inspection was unavailable, so this is not visual UX verification.
-- Temporary simulator and exact task DerivedData directory removed after testing.
-- App Intents extraction emitted a nonfatal SSU archival error: metadata packaging
-  and Siri/Shortcuts invocation still need validation.
-- Backend main: TypeScript build passed, 12 native-auth/Apple/browser-chat tests
-  passed; Rust broker suite passed 17 tests with one external diagnostic ignored.
-  No database migration application, deployment or real Apple login is proven.
+### Latest completed validation
 
-## Required before completion
+- Local main at `1e1d66c`: unsigned iPhone 17 / iOS 27 simulator build and **30
+  XCTest tests passed**, zero failures, terminal `TEST SUCCEEDED` / exit 0.
+  Log: `/tmp/multivibe-ios-history-recovery-tests.log`. Exact DerivedData and
+  disposable simulator were removed. No live authentication or two-device proof.
+- Earlier main builds validated French App Intents metadata packaging and the
+  optional assistant macro; these are not signed-device Siri invocation tests.
+- Backend main previously passed TypeScript build and targeted native-auth,
+  provider and history tests; Rust broker suite passed 17 with one diagnostic
+  ignored. See backend status for exact source scope; unrelated later main
+  commits are not implicitly validated by those older results.
+- Audio-ownership fix `b66230c`: worktree `git diff --check` passed, committed and
+  fast-forwarded to main. Main simulator validation is running separately; do not
+  count the three new tests as passed until terminal results are recorded.
 
-- Complete Apple SSO backend routes, database constraints, broker configuration,
-  native authentication handoff and tests. Apple capability alone does not provide SSO.
-- Verify password recovery end-to-end and finish authentication error/retry UX.
-- Validate refresh rotation against live backend semantics, including logout racing
-  a refresh, connectivity failure after rotation, and revoked account behavior.
-- Verify SSE framing against URLSession.AsyncBytes, strict Swift 6 concurrency,
-  voice interruption/permission lifecycle, and supported App Intents metadata.
-- Add account deletion, actual privacy collection declarations and verified legal
-  URLs before any App Store submission. The current privacy manifest is provisional.
-- A native push-to-talk sheet shares dictation and speech synthesis with shortcuts.
-  Sending remains explicit, and only successfully completed replies authorize
-  automatic readout; cancellation never authorizes partial-response playback.
-  Hands-free microphone restart is deliberately not implemented.
-- Cloud history integration remains outstanding.
-- Configure signing, Apple identifiers/keys and provisioning separately. No private
-  credentials belong in this repository. No side-button entitlement is enabled;
-  region-limited system-assistant activation must not be promised to all users.
-- Integrate commits into local main without pushing; validate sequentially there;
-  remove task worktrees after the implementation task is finished.
+### Required before completion / release
+
+1. Implement actual account deletion with fresh authorization, ownership and
+   retained-record handling, session revocation and Apple authorization revocation.
+   Investigation found Apple token exchange currently does not retain a revocation
+   token; logout is not account deletion. No destructive account operation exists
+   in the native app yet.
+2. Finish truthful privacy collection declarations and verify legal disclosures.
+   The existing privacy manifest remains provisional, not submission evidence.
+3. Complete Cloud realtime audio/session/metering/cancellation transport if pursuing
+   the reference's full-duplex assistant experience; never bypass Cloud using
+   provider credentials in the app.
+4. Verify physical-device audio/permissions/interruption handling, Siri/Shortcuts,
+   accessibility, visual layout and signed universal-link routing. Audio session
+   activation/deactivation still runs synchronously; the scoped ownership fix
+   avoids redundant idle deactivation, not every responsiveness concern.
+5. Configure real Apple identifiers, key rotation, signing/provisioning and deployed
+   AASA. Validate signup/login/MFA/password recovery/chat/Apple SSO against the
+   intended backend and verify two-device history behavior. No keys were created.
+6. Apply authorized migrations/deployment separately; no push or deployment has
+   occurred. Preserve other tasks' main-branch work. Remove this task's worktrees
+   when implementation is actually finished.
+
+## Historical implementation journal
 
 ## System SSO handoff (September 13, 2026)
 
