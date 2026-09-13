@@ -62,7 +62,11 @@ struct ChatView: View {
                             ForEach(manager.current?.messages ?? []) { message in
                                 VStack(alignment: .leading, spacing: 6) {
                                     Text(message.role == "user" ? "Vous" : "MultiVibe").font(.caption.bold()).foregroundStyle(.secondary)
-                                    Text(message.content.isEmpty ? "…" : message.content).textSelection(.enabled)
+                                    if message.role == "assistant" && !message.content.isEmpty {
+                                        NativeMessageContent(content: message.content)
+                                    } else {
+                                        Text(message.content.isEmpty ? "…" : message.content).textSelection(.enabled)
+                                    }
                                     if let completion = message.completion {
                                         Text(completion == .streaming ? "Réponse en cours" : completion == .completed ? "Réponse terminée" : completion == .stopped ? "Réponse arrêtée" : "Réponse interrompue par une erreur")
                                             .font(.caption).foregroundStyle(.secondary)
@@ -339,5 +343,45 @@ struct NativePrivacyView: View {
             guard !Task.isCancelled else { return }
             configuration = value; failed = !value.hasValidDocuments
         } catch { if !Task.isCancelled { failed = true } }
+    }
+}
+
+
+/// System text and controls only: no HTML, remote images or embedded browser.
+private struct NativeMessageContent: View {
+    let content: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(Array(MessageBlock.parse(content).enumerated()), id: \.offset) { _, block in
+                switch block {
+                case .prose(let text):
+                    Text(MessageBlock.inline(text)).textSelection(.enabled)
+                case .heading(let text, let level):
+                    Text(MessageBlock.inline(text))
+                        .font(level <= 2 ? .title3 : .headline)
+                        .accessibilityAddTraits(.isHeader).textSelection(.enabled)
+                case .bullet(let text):
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("•").accessibilityHidden(true)
+                        Text(MessageBlock.inline(text)).textSelection(.enabled)
+                    }
+                case .code(let text, let language):
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(language.isEmpty ? "Code" : language).font(.caption)
+                            Spacer()
+                            Button("Copier le code", systemImage: "doc.on.doc") {
+                                UIPasteboard.general.setItems([["public.utf8-plain-text": text]],
+                                    options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(300)])
+                            }.font(.caption)
+                        }
+                        ScrollView(.horizontal) {
+                            Text(verbatim: text).font(.system(.body, design: .monospaced))
+                                .textSelection(.enabled).fixedSize(horizontal: true, vertical: false)
+                        }
+                    }.padding().background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
+        }
     }
 }
