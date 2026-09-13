@@ -7,6 +7,7 @@ struct AuthenticationView: View {
     @State private var sso = NativeSSOController()
     @State private var ssoTask: Task<Void, Never>?
     @State private var signup = false
+    @State private var authConfiguration: NativeAuthConfiguration?
     @State private var email = ""
     @State private var password = ""
     @State private var terms = false
@@ -33,12 +34,19 @@ struct AuthenticationView: View {
                     SecureField("Mot de passe", text: $password).textContentType(signup ? .newPassword : .password)
                     if signup {
                         Text("Au moins 12 caractères.").font(.caption).foregroundStyle(.secondary)
-                        Toggle("J’accepte les conditions d’utilisation", isOn: $terms)
-                        Link("Lire les conditions", destination: URL(string: "https://multivibe.cloud/terms")!)
+                        if let config = authConfiguration, config.signupEnabled,
+                           let termsUrl = config.termsUrl, let privacyUrl = config.privacyUrl {
+                            Link("Conditions d’utilisation", destination: termsUrl)
+                            Link("Politique de confidentialité", destination: privacyUrl)
+                            Toggle("J’accepte les conditions d’utilisation", isOn: $terms)
+                        } else {
+                            Text("L’inscription est indisponible tant que les documents légaux ne sont pas chargés.")
+                            Button("Recharger les conditions") { Task { await loadConfiguration() } }
+                        }
                     }
                     }
                     Button(challenge != nil ? "Vérifier le code" : signup ? "Créer mon compte" : "Se connecter") { authenticate() }
-                        .disabled(busy || (challenge != nil ? code.count != 6 : email.isEmpty || password.isEmpty || (signup && !terms)))
+                        .disabled(busy || (challenge != nil ? code.count != 6 : email.isEmpty || password.isEmpty || (signup && (!terms || authConfiguration?.signupEnabled != true))))
                     if busy { ProgressView() }
                 }
                 if challenge == nil {
@@ -79,7 +87,13 @@ struct AuthenticationView: View {
                 }
             }
         }
+        .task { await loadConfiguration() }
         .onDisappear { ssoTask?.cancel(); sso.cancel() }
+    }
+    private func loadConfiguration() async {
+        terms = false
+        do { authConfiguration = try await ChatAPI.shared.authenticationConfiguration() }
+        catch { authConfiguration = nil; self.error = error.localizedDescription }
     }
     private func authenticateSSO() {
         busy = true; error = nil
@@ -107,7 +121,7 @@ struct AuthenticationView: View {
         Task {
             defer { busy = false }
             do {
-                let fields = challenge.map { ["challenge": $0, "code": code] } ?? ["email": email, "password": password, "termsAccepted": terms ? "true" : "false"]
+                let fields = challenge.map { ["challenge": $0, "code": code] } ?? ["email": email, "password": password, "termsAccepted": terms ? "true" : "false", "termsVersion": authConfiguration?.termsVersion ?? ""]
                 let reply = try await ChatAPI.shared.authenticate(mode: challenge != nil ? "otp" : signup ? "signup" : "login", fields: fields)
                 if reply.status == "mfa_required", let challenge = reply.challenge { self.challenge = challenge; password = ""; return }
                 try await manager.accept(reply.session()); password = ""

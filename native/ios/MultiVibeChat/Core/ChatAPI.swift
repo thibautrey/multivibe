@@ -38,6 +38,13 @@ actor ChatAPI {
             throw APIError.server(http.statusCode, code)
         }
     }
+    func authenticationConfiguration() async throws -> NativeAuthConfiguration {
+        let (data, response) = try await session.data(for: request("auth/config"))
+        try validate(response, data: data)
+        let configuration = try decoder.decode(NativeAuthConfiguration.self, from: data)
+        guard !configuration.signupEnabled || configuration.hasValidDocuments else { throw APIError.invalidResponse }
+        return configuration
+    }
     func authenticate(mode: String, fields: [String: String]) async throws -> AuthReply {
         let body = try JSONSerialization.data(withJSONObject: fields)
         let (data, response) = try await session.data(for: request("auth/\(mode)", body: body))
@@ -153,5 +160,18 @@ final class NativeTransportDelegate: NSObject, URLSessionTaskDelegate, Sendable 
                     newRequest request: URLRequest,
                     completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
         completionHandler(nil)
+    }
+}
+
+struct NativeAuthConfiguration: Decodable {
+    let signupEnabled: Bool
+    let termsVersion: String?
+    let termsUrl: URL?
+    let privacyUrl: URL?
+    var hasValidDocuments: Bool {
+        guard let termsVersion, !termsVersion.isEmpty, let termsUrl, let privacyUrl else { return false }
+        return [termsUrl, privacyUrl].allSatisfy {
+            $0.scheme == "https" && $0.host != nil && $0.user == nil && $0.password == nil
+        }
     }
 }
