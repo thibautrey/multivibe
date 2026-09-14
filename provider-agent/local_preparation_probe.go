@@ -67,3 +67,42 @@ func probeLocalPreparationRuntime(ctx context.Context, client *http.Client, orig
 	}
 	return output, nil
 }
+
+func (controller *managedProviderController) testLocalPreparationRuntime(ctx context.Context, expected *capacityPolicyStateDocument, model string) (string, error) {
+	var output string
+	err := controller.withLocalPreparationRuntime(ctx, expected, false, "local-test", func(ctx context.Context, document *capacityPolicyStateDocument) error {
+		backend, ok := controller.runtime.(*ollamaRuntimeBackend)
+		if !ok {
+			return errRuntimeBackendIncompatible
+		}
+		manager, ok := backend.pinnedRuntime.(*managedOllama)
+		if !ok {
+			return errRuntimeBackendIncompatible
+		}
+		manager.pullMu.Lock()
+		defer manager.pullMu.Unlock()
+		if _, err := manager.authorizePolicy(document, false); err != nil {
+			return err
+		}
+		manager.mu.Lock()
+		running := manager.process != nil
+		manager.mu.Unlock()
+		if !running {
+			return errManagedOllamaRuntimeMissing
+		}
+		if _, _, err := manager.installedRuntime(); err != nil {
+			return err
+		}
+		var err error
+		output, err = probeLocalPreparationRuntime(ctx, manager.httpClient, manager.executionOrigin(), model)
+		if err != nil {
+			return err
+		}
+		_, err = manager.authorizePolicy(document, false)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return output, nil
+}
