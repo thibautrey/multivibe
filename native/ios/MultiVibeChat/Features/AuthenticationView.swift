@@ -310,15 +310,18 @@ struct AuthenticationView: View {
         catch { authConfiguration = nil; self.error = error.localizedDescription }
     }
     private func authenticateSSO(provider: String? = nil) {
+        print("SSODIAG tap busy=\(busy)")
         guard !busy else { return }
         if let provider {
             guard authConfiguration?.canStartSSO(provider: provider, acceptedTerms: terms) == true else { return }
         }
+        print("SSODIAG guards passed")
         let selectedProvider = provider.flatMap { authConfiguration?.directSSOProvider($0) }
         ssoBusy = true; error = nil
         ssoTask = Task {
             defer { ssoBusy = false; ssoTask = nil }
             do {
+                print("SSODIAG task starting")
                 let session = try await sso.signIn(provider: selectedProvider, termsVersion: terms ? authConfiguration?.termsVersion : nil)
                 do { try Task.checkCancellation() }
                 catch { try? await ChatAPI.shared.revoke(token: session.refreshToken); throw error }
@@ -491,7 +494,9 @@ struct PasswordRecoveryView: View {
             session.presentationContextProvider = self
             session.prefersEphemeralWebBrowserSession = true
             authentication = session
-            if !session.start() { finish(.failure(APIError.invalidResponse)) }
+            let started = session.start()
+            print("SSODIAG started=\(started)")
+            if !started { finish(.failure(APIError.invalidResponse)) }
         }
         } onCancel: {
             Task { @MainActor in
@@ -521,10 +526,12 @@ struct PasswordRecoveryView: View {
         return issued
     }
     func cancel() {
+        print("SSODIAG cancel")
         authentication?.cancel()
         finish(.failure(CancellationError()))
     }
     private func finish(_ result: Result<URL, Error>) {
+        print("SSODIAG finish")
         let pending = continuation
         continuation = nil
         pending?.resume(with: result)
