@@ -182,6 +182,7 @@ export type ProviderDemandPlan = {
 };
 
 export type LocalPreparationResources = {
+  free_runtime_storage_bytes?: number | null;
   observed_at: string;
   policy_revision: number;
   free_host_memory_bytes: number | null;

@@ -900,6 +900,11 @@ func (manager *managedOllama) downloadDependency(ctx context.Context, artifact m
 }
 
 func (manager *managedOllama) extractRuntime(ctx context.Context, policyState *capacityPolicyStateDocument, archivePath string, artifact managedOllamaDependencyArtifact) error {
+	if artifact.Archive == "tar-gzip" {
+		if err := validateManagedOllamaGzipSize(ctx, archivePath); err != nil {
+			return err
+		}
+	}
 	runtimeParent := filepath.Join(manager.root, "runtime")
 	staging, err := os.MkdirTemp(runtimeParent, ".ollama-staging-*")
 	if err != nil {
