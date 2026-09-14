@@ -8,7 +8,7 @@ import type { ProviderAgentControl, ProviderCapacityPolicy } from './provider-ag
 
 /** Private, evidence-backed preflight result. This is never accepted from HTTP input.
  * Runtime archive consent must be enforced by the installer, not inferred from the
- * model's byte count. Until that contract exists, only an installed runtime is safe.
+ * model's byte count. Missing runtimes require their own exact archive quote.
  */
 export type ResolvedPreparationPlan = {
   quote: PreparationQuote;
@@ -71,19 +71,23 @@ export class HostLocalPreparationDriver implements LocalPreparationDriver {
       !/^[a-f0-9]{40}$/.test(artifact.revision) || !/^[a-f0-9]{64}$/.test(artifact.sha256) ||
       !artifact.model_id || !artifact.filename || !Number.isSafeInteger(artifact.bytes) || artifact.bytes < 1 ||
       quote.artifactDigest !== `sha256:${artifact.sha256}` || quote.variant !== artifact.filename ||
-      quote.downloadBytes !== artifact.bytes || quote.policyRevision !== policy.revision ||
+      quote.downloadBytes !== artifact.bytes + (quote.runtimeDownload?.bytes ?? 0) || quote.policyRevision !== policy.revision ||
       !quote.runtimeVersion || !quote.hostId || !quote.modelId ||
       !Number.isSafeInteger(quote.requiredDiskBytes) || quote.requiredDiskBytes < artifact.bytes ||
       !Number.isSafeInteger(quote.availableDiskBytes) || !Number.isSafeInteger(quote.reserveDiskBytes) ||
       quote.reserveDiskBytes < 0 || quote.requiredDiskBytes > quote.availableDiskBytes - quote.reserveDiskBytes) {
       throw Error('invalid_preflight');
     }
-    const key = hash({ host: quote.hostId, model: quote.modelId, artifact, contextTokens, runtime: quote.runtime, version: quote.runtimeVersion, policy });
+    const archive = quote.runtimeDownload;
+    if (archive && (archive.version !== quote.runtimeVersion || !archive.platform || !/^[a-f0-9]{64}$/.test(archive.sha256) ||
+      !Number.isSafeInteger(archive.bytes) || archive.bytes < 1 || archive.bytes > 4 * 1024 ** 3 ||
+      quote.requiredDiskBytes < quote.downloadBytes)) throw Error('invalid_preflight');
+    const key = hash({ host: quote.hostId, model: quote.modelId, artifact, contextTokens, runtime: quote.runtime, version: quote.runtimeVersion, policy, runtimeDownload: quote.runtimeDownload });
     if (quote.configurationKey !== key) throw Error('invalid_preflight');
   }
-  static configurationKey(plan: Omit<ResolvedPreparationPlan, 'quote'> & { quote: Pick<PreparationQuote, 'hostId'|'modelId'|'runtime'|'runtimeVersion'> }) {
+  static configurationKey(plan: Omit<ResolvedPreparationPlan, 'quote'> & { quote: Pick<PreparationQuote, 'hostId'|'modelId'|'runtime'|'runtimeVersion'|'runtimeDownload'> }) {
     return hash({ host: plan.quote.hostId, model: plan.quote.modelId, artifact: plan.artifact, contextTokens: plan.contextTokens,
-      runtime: plan.quote.runtime, version: plan.quote.runtimeVersion, policy: plan.policy });
+      runtime: plan.quote.runtime, version: plan.quote.runtimeVersion, policy: plan.policy, runtimeDownload: plan.quote.runtimeDownload });
   }
   async preflight(modelId: string): Promise<PreparationQuote> {
     await this.initialize();
@@ -117,7 +121,7 @@ export class HostLocalPreparationDriver implements LocalPreparationDriver {
     const { runtime } = await host.getManagedOllamaStatus();
     if (runtime.version !== plan.quote.runtimeVersion) throw Error('new_preflight_required');
     // Do not call the unbounded archive installer against a model-only consent.
-    if (!runtime.runtime_installed) throw Error('runtime_download_quote_required');
+    if (!runtime.runtime_installed && !plan.quote.runtimeDownload) throw Error('runtime_download_quote_required');
   }
   async validate(quote: PreparationQuote) { await this.checkHost(await this.plan(quote)); }
   private async run(quote: PreparationQuote, operation: HostPreparationOperation['operation'], signal: AbortSignal,
@@ -126,16 +130,26 @@ export class HostLocalPreparationDriver implements LocalPreparationDriver {
     signal.throwIfAborted(); await this.checkHost(plan); signal.throwIfAborted();
     const result = await this.dependencies.host.runLocalPreparationOperation!({ operation,
       policy_revision: plan.policy.revision, artifact: plan.artifact, context_tokens: plan.contextTokens,
+      ...(operation === 'install' ? { runtime_quote: plan.quote.runtimeDownload } : {}),
       ...(operation === 'test' ? { runtime_model: plan.runtimeModel } : {}),
     }, signal, progress);
     signal.throwIfAborted(); await this.checkHost(plan); signal.throwIfAborted();
     return result;
   }
   async install(quote: PreparationQuote, signal: AbortSignal) {
-    // Preflight requires the attested installed version. Start reuses that runtime;
-    // calling install here could fetch an archive after a concurrent removal.
+    const plan = await this.plan(quote);
+    await this.checkHost(plan);
+    const { runtime } = await this.dependencies.host.getManagedOllamaStatus();
+    if (!runtime.runtime_installed) {
+      if (!quote.runtimeDownload) throw Error('runtime_download_quote_required');
+      await this.run(quote, 'install', signal);
+      const installed = await this.dependencies.host.getManagedOllamaStatus();
+      if (!installed.runtime.runtime_installed) throw Error('local_preparation_failed');
+    }
+    // Start never falls back to installing an absent runtime.
     await this.run(quote, 'start', signal);
   }
+
   async download(quote: PreparationQuote, signal: AbortSignal, progress: (completed: number, total: number) => Promise<void>) {
     await this.run(quote, 'download', signal, progress);
   }

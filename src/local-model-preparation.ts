@@ -9,6 +9,7 @@ export type PreparationQuote = {
   artifactDigest: string; downloadBytes: number; requiredDiskBytes: number;
   availableDiskBytes: number; reserveDiskBytes: number;
   compatibility: 'estimated-fit'; configurationKey: string;
+  runtimeDownload?: {version:string;platform:string;sha256:string;bytes:number};
 };
 export type PreparationJob = {
   id: string; quote: PreparationQuote; consentDigest: string; stage: PreparationStage;
