@@ -1,3 +1,4 @@
+import {managedModelAllowed, type ManagedModelPolicy} from "./model-policy.js";
 import {createAnthropicCodec} from "../ai-sdk/anthropic-model.js";
 import {sdkCallOptions,chatResult,chatStream} from "../ai-sdk/protocol.js";
 import type {LanguageModelV4Usage} from "@ai-sdk/provider";
@@ -30,15 +31,16 @@ export function nativeAnthropicUsageEligible(usage:LanguageModelV4Usage):boolean
  * not activate a route or grant authority: the injector must authorize and fence
  * the original Cloud request before invoking it. No desktop router is imported. */
 export function createManagedAnthropicAccount(options:{
- credentialRef:string;models:ReadonlySet<string>;maximumResponseBytes:number;
+ credentialRef:string;models:ReadonlySet<string>;modelPolicy?:ManagedModelPolicy;maximumResponseBytes:number;
  readCredential:()=>Promise<string>;fetchViaEgress:typeof fetch;
 }):ManagedProviderAccount {
  const models=new Set(options.models);
+ const modelPolicy=options.modelPolicy;
  if(!options.credentialRef||models.size>10000||!Number.isSafeInteger(options.maximumResponseBytes)||options.maximumResponseBytes<1)throw Error("invalid_managed_account");
- return {providerId:"anthropic",credentialRef:options.credentialRef,models,
+ return {providerId:"anthropic",credentialRef:options.credentialRef,models,modelPolicy,
  async chatCompletions(bytes,signal,authorization){
   const body=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes));
-  if(!models.has(body.model)||!Number.isSafeInteger(body.max_tokens)||body.max_tokens<1
+  if(!managedModelAllowed({models,modelPolicy},body.model)||!Number.isSafeInteger(body.max_tokens)||body.max_tokens<1
    ||(body.n!==undefined&&body.n!==1)||(body.stream!==undefined&&typeof body.stream!=="boolean"))throw Error("invalid_native_managed_request");
   // These options can introduce separately priced operations or provider-owned
   // execution. Enable them only with matching grant and price semantics.

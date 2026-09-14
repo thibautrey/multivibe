@@ -1,3 +1,4 @@
+import {parseManagedModelPolicy, type ManagedModelPolicy} from "./model-policy.js";
 import type { ManagedProviderAccount } from "./executor.js";
 
 import {createManagedAnthropicAccount} from "./native-anthropic.js";
@@ -16,10 +17,12 @@ export function createManagedProviderAccount(options: {
   providerId: ManagedCompatibleProvider;
   credentialRef: string;
   models: ReadonlySet<string>;
+  modelPolicy?: ManagedModelPolicy;
   maximumResponseBytes?: number;
   readCredential: () => Promise<string>;
   fetchViaEgress: typeof fetch;
 }): ManagedProviderAccount & { discoverModels(signal: AbortSignal): Promise<readonly string[]> } {
+  const modelPolicy = parseManagedModelPolicy(options.modelPolicy);
   const base = compatibleProviders[options.providerId];
   if (!base || !options.credentialRef || options.models.size > 10000) throw Error("invalid_managed_account");
   async function request(path: string, method: "GET" | "POST", signal: AbortSignal, body?: Uint8Array, beforeDispatch?: () => Promise<void>) {
@@ -36,7 +39,7 @@ export function createManagedProviderAccount(options: {
     });
   }
   return {
-    providerId: options.providerId, credentialRef: options.credentialRef, models: new Set(options.models),
+    providerId: options.providerId, credentialRef: options.credentialRef, modelPolicy, models: new Set(options.models),
     chatCompletions: options.providerId === "anthropic"
       ? createManagedAnthropicAccount({...options,maximumResponseBytes:options.maximumResponseBytes ?? 8*1024*1024}).chatCompletions
       : (body, signal, authorization) => request("/chat/completions", "POST", signal, body, authorization.beforeDispatch),

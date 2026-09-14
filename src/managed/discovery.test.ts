@@ -21,3 +21,8 @@ test("discovery proves the execution account, deduplicates concurrent probes and
   assert.equal(result.accounts[2]?.failureCode,"provider_discovery_unavailable");
   assert.doesNotMatch(JSON.stringify(result),/secret provider response/);
 });
+test("Cloud-authorized account discovers new executable IDs without changing deployment",async()=>{
+ const discovery=new ManagedDiscovery([{providerId:"mistral",credentialRef:"account",models:new Set(),modelPolicy:"cloud_authorized",
+  async chatCompletions(){throw Error("discovery must not infer")},async discoverModels(){return ["new-model"]}}],()=>1000);
+ assert.deepEqual((await discovery.read() as {accounts:{executableModels:string[]}[]}).accounts[0].executableModels,["new-model"]);
+});

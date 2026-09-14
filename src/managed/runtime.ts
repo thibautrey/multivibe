@@ -1,3 +1,4 @@
+import {parseManagedModelPolicy} from "./model-policy.js";
 import { readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { createPublicKey } from "node:crypto";
@@ -68,14 +69,14 @@ export async function createManagedRuntime(config: ManagedRuntimeConfig) {
   const coordination=new ManagedCoordinationClient(config.coordinationUrl,tls,Math.min(config.executionTimeoutMs,30000));
   const refs = new Set<string>();
   const accounts: ManagedProviderAccount[] = manifest.accounts.map((account: Record<string, unknown>): ManagedProviderAccount => {
-    if (!account || Object.keys(account).sort().join() !== "credentialRef,models,providerId"
+    if (!account || Object.keys(account).filter(key=>key!=="modelPolicy").sort().join() !== "credentialRef,models,providerId"
       || !["mistral", "openai", "xai", "deepseek", "anthropic"].includes(String(account.providerId))
       || typeof account.credentialRef !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$/.test(account.credentialRef)
       || refs.has(account.credentialRef)
       || !Array.isArray(account.models) || account.models.length > 10000
       || account.models.some(id => typeof id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$/.test(id))) throw Error("invalid_managed_account");
     refs.add(account.credentialRef);
-    return {providerId:account.providerId as string,credentialRef:account.credentialRef,models:new Set<string>(account.models),
+    return {providerId:account.providerId as string,credentialRef:account.credentialRef,models:new Set<string>(account.models),modelPolicy:parseManagedModelPolicy(account.modelPolicy),
       chatCompletions:(body,signal,authorization)=>injector.execute(body,signal,authorization)};
   });
   const key = createPublicKey(await readFile(config.cloudVerificationKeyFile));
