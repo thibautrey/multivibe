@@ -1792,7 +1792,13 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
            let score = summary?.forecast?.score, score.isFinite, score >= 0, score <= 100 {
             UserDefaults.standard.set(score, forKey: Self.notificationLastForecastScoreKey)
         }
-        if next.kind == "github-star" { githubStarPromptPresented = true }
+        if next.kind == "github-star" {
+            githubStarPromptPresented = true
+            // Showing the invitation is enough: dismissal must survive a relaunch,
+            // without requiring the user to open GitHub.
+            githubStarPromptAcknowledged = true
+            UserDefaults.standard.set(true, forKey: Self.githubStarPromptAcknowledgedKey)
+        }
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: spacingKey)
 
         notificationPopup.configure(.init(
