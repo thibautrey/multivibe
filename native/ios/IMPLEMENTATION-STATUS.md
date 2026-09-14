@@ -547,3 +547,9 @@ lifecycle integration remain outstanding.
   modified in this fix. UI regression checks explicitly distinguish opening the
   browser from displaying the known association failure; neither diagnostic
   tests nor a successful build establish end-to-end provider sign-in.
+- Validation from local main: 63 unit tests and 7 UI tests passed. After moving
+  feedback directly beneath provider buttons, the three provider-tap tests passed
+  again, including a visibility assertion. The Google screenshot was inspected:
+  it shows the association diagnostic, not a browser or successful sign-in.
+  Worktree checks: `git diff --check` passed; no dependency-backed builds were run
+  in the worktree. No push was performed.
