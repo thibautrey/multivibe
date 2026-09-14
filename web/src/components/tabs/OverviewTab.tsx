@@ -10,6 +10,8 @@ type Props = {
   stats: { total: number; enabled: number; blocked: number };
   usageStats: { primaryAvg: number; secondaryAvg: number; primaryCount: number; secondaryCount: number };
   traceStats: TraceStats;
+  traceStatsLoading: boolean;
+  traceStatsLoaded: boolean;
   models: ExposedModel[];
   openModelInDocs: (modelId: string) => void;
   navigate: (tab: "accounts" | "docs" | "tracing" | "models", activityView?: ActivityView) => void;
@@ -21,6 +23,8 @@ export function OverviewTab({
   stats,
   usageStats,
   traceStats,
+  traceStatsLoading,
+  traceStatsLoaded,
   models,
   openModelInDocs,
   navigate,
@@ -66,8 +70,8 @@ export function OverviewTab({
       <div className="overview-metrics" aria-label="Workspace summary">
         <Metric title="Connected providers" value={`${stats.enabled}`} detail={`${stats.total} total · ${stats.blocked} need attention`} onClick={() => navigate("accounts")} />
         <Metric title="Available models" value={`${models.length}`} detail="Ready to explore and use" onClick={() => navigate("models")} />
-        <Metric title="Requests" value={traceStats.totals.requests.toLocaleString()} detail="In the activity date range" onClick={() => navigate("tracing", "performance")} />
-        <Metric title="Estimated cost" value={new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(traceStats.totals.costUsd)} detail="In the activity date range" onClick={() => navigate("tracing", "usage")} />
+        <Metric loading={traceStatsLoading} preserveValueWhileLoading={traceStatsLoaded} title="Requests" value={traceStats.totals.requests.toLocaleString()} detail="In the activity date range" onClick={() => navigate("tracing", "performance")} />
+        <Metric loading={traceStatsLoading} preserveValueWhileLoading={traceStatsLoaded} title="Estimated cost" value={new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(traceStats.totals.costUsd)} detail="In the activity date range" onClick={() => navigate("tracing", "usage")} />
       </div>
 
       {showHostHarnesses && !isEverythingRunning ? (
