@@ -172,3 +172,30 @@ test('failed detach persistence rejects and retries without losing distributed c
  assert.equal(disk.accounts.length,1);assert.equal(disk.accounts[0].accessToken,'fixture-only');
  assert.equal(disk.accounts[0].multivibeTeam,undefined);
 });
+
+
+test('Team analytics count distributed cloud-provider calls, not Cloud proxy calls',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'team-distributed-analytics-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const store=new AccountStore(path.join(root,'accounts.json'));await store.init();
+ const sync=new MultivibeTeamSyncService(store,path.join(root,'identity.json'));await sync.initialize();
+ const team={providerId:'123e4567-e89b-42d3-a456-426614174000',models:['fixture'],deliveryMode:'distributed' as const,revision:1,readOnly:true as const};
+ await store.addOrUpdate({id:'team-distributed',provider:'openai',accessToken:'fixture-secret',enabled:true,multivibeTeam:team});
+ // A synchronized account may retain a pre-existing id; prefixes are not an authority.
+ await store.addOrUpdate({id:'custom-proxy-id',provider:'openai',accessToken:'',enabled:true,multivibeTeam:{...team,deliveryMode:'cloud_proxy'}});
+ const trace={id:'trace',at:Date.now(),route:'/responses',clientRequestId:'request',traceKind:'upstream-attempt' as const,provider:'openai' as const,model:'fixture',executionLocation:'cloud' as const,status:200,isError:false,stream:false,latencyMs:100,tokensInput:2,tokensOutput:3,costUsd:0.01,usageStatus:'measured' as const,lifecycleState:'completed' as const};
+ const principal={type:'member' as const,id:'member'};
+ await sync.recordTrace({...trace,accountId:'team-distributed'},principal);
+ await sync.recordTrace({...trace,id:'failed',accountId:'team-distributed',isError:true,status:500,tokensInput:0,tokensOutput:0,costUsd:0},principal);
+ for(const executionLocation of ['cloud','local',undefined] as const){
+  await sync.recordTrace({...trace,accountId:'custom-proxy-id',executionLocation},principal);
+  await sync.recordTrace({...trace,accountId:'multivibe-cloud',executionLocation},principal);
+ }
+ await sync.recordTrace({...trace,accountId:'team-distributed',traceKind:'client-request'},principal);
+ await sync.recordTrace({...trace,accountId:'team-distributed',lifecycleState:'started'},principal);
+ const buckets=sync.analyticsBatch().buckets;assert.equal(buckets.length,1);
+ assert.equal(buckets[0].requests,2);assert.equal(buckets[0].succeeded,1);assert.equal(buckets[0].failed,1);
+ assert.equal(buckets[0].inputTokens,2);assert.equal(buckets[0].outputTokens,3);assert.equal(buckets[0].estimatedCostUsd,0.01);
+ assert.equal(buckets[0].executionLocation,'cloud');assert.doesNotMatch(JSON.stringify(buckets),/fixture-secret|accessToken/);
+ const recovered=new MultivibeTeamSyncService(store,path.join(root,'identity.json'));await recovered.initialize();
+ assert.deepEqual(recovered.analyticsBatch(),sync.analyticsBatch());
+});
