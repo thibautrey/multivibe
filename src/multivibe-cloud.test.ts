@@ -441,3 +441,37 @@ test("invoice retrieval uses the Cloud access token with a bounded request and k
   assert.ok(!JSON.stringify(invoices).includes("cloud-secret"));
   assert.deepEqual(await service(fakeStores(), async () => { throw new Error("must not fetch"); }).getInvoices(), []);
 });
+
+test('authenticated catalog uses only inference credentials and returns IDs, not upstream secrets', async () => {
+  const stores = fakeStores({ accounts: [{ id: 'multivibe-cloud', multivibeCloud: true, enabled: true, accessToken: 'private-inference-token', provider: 'openai-compatible' }] });
+  const cloud = service(stores, (async (url, init) => {
+    assert.equal(String(url), 'https://api.example.test/v1/models');
+    assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer private-inference-token');
+    assert.equal(init?.redirect, 'error');
+    return response({ data: [{ id: 'actual-model', secret: 'do-not-expose' }, { id: 'actual-model' }] });
+  }) as typeof fetch);
+  const result = await cloud.getAccessibleModels();
+  assert.equal(result.status, 'available'); assert.deepEqual(result.modelIds, ['actual-model']);
+  assert.ok(result.checkedAt); assert.equal(JSON.stringify(result).includes('do-not-expose'), false);
+});
+
+test('authenticated catalog distinguishes no connection, denied, empty, malformed and network errors', async () => {
+  const account: Account = { id: 'multivibe-cloud', multivibeCloud: true, enabled: true, accessToken: 'secret', provider: 'openai-compatible' };
+  let calls = 0;
+  const untouched = (async () => { calls++; throw new Error('must not fetch'); }) as typeof fetch;
+  assert.equal((await service(fakeStores(), untouched).getAccessibleModels()).status, 'disconnected');
+  for (const patch of [{ enabled: false }, { expiresAt: 1 }, { state: { needsTokenRefresh: true } }]) {
+    assert.equal((await service(fakeStores({ accounts: [{ ...account, ...patch }] }), untouched).getAccessibleModels()).status, 'access_denied');
+  }
+  assert.equal(calls, 0);
+  for (const status of [401, 403, 500]) {
+    const result = await service(fakeStores({ accounts: [account] }), (async () => response({ secret: 'hidden' }, status)) as typeof fetch).getAccessibleModels();
+    assert.equal(result.status, status === 500 ? 'unavailable' : 'access_denied'); assert.deepEqual(result.modelIds, []);
+  }
+  const empty = await service(fakeStores({ accounts: [account] }), (async () => response({ data: [] })) as typeof fetch).getAccessibleModels();
+  assert.equal(empty.status, 'available'); assert.deepEqual(empty.modelIds, []);
+  for (const body of [{}, { data: [{ name: 'invented' }] }, { data: [{ id: '' }] }]) {
+    assert.equal((await service(fakeStores({ accounts: [account] }), (async () => response(body)) as typeof fetch).getAccessibleModels()).status, 'unavailable');
+  }
+  assert.equal((await service(fakeStores({ accounts: [account] }), untouched).getAccessibleModels()).status, 'unavailable');
+});

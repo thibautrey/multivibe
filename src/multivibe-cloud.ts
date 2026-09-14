@@ -212,6 +212,30 @@ export class MultivibeCloudService {
     this.managedTeamIdentity = options.managedTeamIdentity;
   }
 
+  // Read the account's inference catalog, never the public discovery catalog.
+  // Only IDs leave this service; upstream errors/bodies and credentials stay private.
+  async getAccessibleModels(): Promise<{ status: 'available' | 'disconnected' | 'access_denied' | 'unavailable'; modelIds: string[]; checkedAt: string }> {
+    const checkedAt = new Date().toISOString();
+    const result = (status: 'available' | 'disconnected' | 'access_denied' | 'unavailable', modelIds: string[] = []) => ({ status, modelIds, checkedAt });
+    const account = existingCloudAccount(await this.store.listAccounts());
+    if (!account) return result('disconnected');
+    if (!account.enabled || !account.accessToken || account.state?.needsTokenRefresh
+      || (account.expiresAt != null && account.expiresAt <= Date.now())
+      || Number(account.state?.authBlockedUntil) > Date.now()) return result('access_denied');
+    try {
+      const response = await this.fetchImpl(`${this.inferenceBaseUrl}/v1/models`, {
+        headers: { authorization: `Bearer ${account.accessToken}`, accept: 'application/json' },
+        redirect: 'error', signal: AbortSignal.timeout(10_000),
+      });
+      if (response.status === 401 || response.status === 403) return result('access_denied');
+      if (!response.ok) return result('unavailable');
+      const body = await response.json();
+      if (!Array.isArray(body?.data) || body.data.length > 10000
+        || body.data.some((item: any) => typeof item?.id !== 'string' || !item.id || item.id.length > 512)) return result('unavailable');
+      return result('available', [...new Set<string>(body.data.map((item: { id: string }) => item.id))]);
+    } catch { return result('unavailable'); }
+  }
+
   async getModelCatalog() {
     return { models: await readCloudModelCatalog(this.apiBaseUrl, this.fetchImpl) };
   }
