@@ -5,9 +5,11 @@
 import { accountFromCopilotOAuth, pollCopilotDeviceCode, requestCopilotDeviceCode } from './github-copilot.js';
 import { accountFromXaiOAuth, pollXaiDeviceCode, requestXaiDeviceCode } from './xai.js';
 import {accountFromOpenCodeOAuth, pollOpenCodeDeviceCode, requestOpenCodeDeviceCode} from './opencode.js';
+import {requestTeamOpenAiDeviceCode, pollTeamOpenAiDeviceCode} from './team-openai-device.js';
+import {accountFromOAuth} from './oauth.js';
 import type { Account, OAuthFlowState } from './types.js';
 
-export type TeamDeviceProvider = 'github-copilot' | 'xai' | 'opencode';
+export type TeamDeviceProvider = 'github-copilot' | 'xai' | 'opencode' | 'openai';
 export type TeamDeviceChallenge = Readonly<{
   provider: TeamDeviceProvider;
   userCode: string;
@@ -23,26 +25,33 @@ export type TeamDeviceSession = {
 
 /** Requires an injected egress transport: there is deliberately no direct-fetch fallback. */
 export async function startTeamDeviceAuth(provider: TeamDeviceProvider, transport: typeof fetch): Promise<TeamDeviceSession> {
-  if (provider !== 'github-copilot' && provider !== 'xai' && provider !== 'opencode') throw new Error('Unsupported Team device provider');
+  if (provider !== 'github-copilot' && provider !== 'xai' && provider !== 'opencode' && provider !== 'openai') throw new Error('Unsupported Team device provider');
   const controller = new AbortController();
-  const fetchImpl: typeof fetch = (input, init) => transport(input, {
+  let transportDeadline = Infinity;
+  const fetchImpl: typeof fetch = (input, init) => {
+    if (Date.now() >= transportDeadline) controller.abort();
+    controller.signal.throwIfAborted();
+    return transport(input, {
     ...init,
     body: init?.body instanceof URLSearchParams ? init.body.toString() : init?.body,
     redirect: 'error',
     signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000), ...(init?.signal ? [init.signal] : [])]),
-  });
+    });
+  };
   let result;
   try {
-    result = provider === 'github-copilot'
+    result = provider === 'openai' ? await requestTeamOpenAiDeviceCode(fetchImpl) : provider === 'github-copilot'
       ? await requestCopilotDeviceCode(fetchImpl)
       : provider === 'opencode' ? await requestOpenCodeDeviceCode(fetchImpl) : await requestXaiDeviceCode(fetchImpl);
   } catch {
+    controller.abort();
     throw new Error('Team device authorization could not be started');
   }
   if (!Number.isFinite(result.expiresAt) || result.expiresAt <= Date.now() ||
       !Number.isFinite(result.intervalSeconds) || result.intervalSeconds <= 0) {
     throw new Error('Invalid Team device authorization lifetime');
   }
+  transportDeadline = result.expiresAt;
   let deviceCode = result.deviceCode;
   let intervalSeconds = Math.max(5, result.intervalSeconds);
   let nextPollAt = Date.now() + intervalSeconds * 1000;
@@ -63,7 +72,7 @@ export async function startTeamDeviceAuth(provider: TeamDeviceProvider, transpor
       busy = true;
       try {
         const flow: OAuthFlowState = { id: '', email: '', codeVerifier: '', createdAt: Date.now(), method: 'device', provider, status: 'pending' };
-        const polled = provider === 'github-copilot'
+        const polled = provider === 'openai' ? await pollTeamOpenAiDeviceCode(deviceCode,challenge.userCode,intervalSeconds,fetchImpl) : provider === 'github-copilot'
           ? await pollCopilotDeviceCode(deviceCode, intervalSeconds, fetchImpl)
           : provider === 'opencode' ? await pollOpenCodeDeviceCode(deviceCode, intervalSeconds, fetchImpl) : await pollXaiDeviceCode(deviceCode, intervalSeconds, fetchImpl);
         if (closed || Date.now() >= challenge.expiresAt) throw new Error('Expired');
@@ -75,7 +84,7 @@ export async function startTeamDeviceAuth(provider: TeamDeviceProvider, transpor
         // Preserve Core's complete account context, not only the access token.
         const account = 'githubToken' in polled
           ? await accountFromCopilotOAuth(flow, polled.githubToken, undefined, fetchImpl)
-          : 'accessToken' in polled.token ? await accountFromOpenCodeOAuth(flow, polled.token, undefined, fetchImpl) : accountFromXaiOAuth(flow, polled.token);
+          : 'chatgptToken' in polled ? {...accountFromOAuth(flow,polled.chatgptToken),provider:'openai' as const} : 'accessToken' in polled.token ? await accountFromOpenCodeOAuth(flow, polled.token, undefined, fetchImpl) : accountFromXaiOAuth(flow, polled.token);
         if (closed || Date.now() >= challenge.expiresAt) throw new Error('Expired');
         cancel();
         return { status: 'success', account };
