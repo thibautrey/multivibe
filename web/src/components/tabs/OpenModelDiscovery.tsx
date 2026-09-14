@@ -1,3 +1,4 @@
+import { LocalPreparationPanel } from './LocalPreparationPanel';
 import publisherIcons from './publisher-icons.json';
 import { useEffect, useState } from 'react';
 import { relevantChoices, type GuidanceEntry } from '../../../../src/model-guidance';
@@ -12,6 +13,7 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
   const [sort,setSort] = useState<CatalogSort>(()=>{const v=saved('multivibe.models.sort.v1','recommended');return Object.prototype.hasOwnProperty.call(sortLabels,v)?v as CatalogSort:'recommended';});
   const [result,setResult] = useState<Result>(); const [error,setError] = useState(false);
   const [request,setRequest] = useState(0); const [query,setQuery] = useState(''); const [limit,setLimit] = useState(compact ? 12 : 24);
+  const [preparing,setPreparing] = useState<string|null>(null);
   const [fitOnly,setFitOnly] = useState(false);
   useEffect(()=>{try {localStorage.setItem('multivibe.models.sort.v1',sort);localStorage.setItem('multivibe.models.need.v1',effectiveNeed);} catch {/* Optional browser storage. */}},[sort,effectiveNeed]);
   useEffect(()=>{
@@ -35,11 +37,13 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
     {(error || result?.catalog.stale) && <p role="status">{result?'Showing the last catalog. Refresh is unavailable or in progress.':'The catalog is unavailable.'} <button className="btn ghost" onClick={()=>setRequest(n=>n+1)}>Retry</button></p>}
     {sort==='community' && <p className="muted">Anonymous reported output volume · Last 30 completed days · Not verified users or quality.</p>}
     {sort==='community' && result?.catalog.communityStatus !== 'available' && result && <p role="status">Anonymous activity ranking is unavailable. External popularity is not substituted.</p>}
+    <LocalPreparationPanel modelId={preparing} onClose={()=>setPreparing(null)} onUse={onUse} onChanged={()=>setRequest(n=>n+1)} />
     <div className="models-choice-grid">{models.slice(0,limit).map(row=><article className="models-choice" key={row.model.id}>
       <span className="models-choice-badge">{row.compatibility==='compatible'?'Estimated fit':row.compatibility==='insufficient'?'Not compatible':'Host check needed'}</span>
       <h3>{(publisherIcons as Record<string,string>)[row.model.id.split('/')[0].toLowerCase()] && <img src={(publisherIcons as Record<string,string>)[row.model.id.split('/')[0].toLowerCase()]} alt="" width="28" height="28" loading="lazy" referrerPolicy="no-referrer" onError={event=>{event.currentTarget.hidden=true;}} style={{objectFit:'contain',verticalAlign:'middle',marginRight:8}} />}{row.model.id}</h3><p>{row.reason}</p>
       <dl><div><dt>Cost</dt><dd>{readyFor(row.model.id)?.cost.label ?? 'Hardware and electricity'}</dd></div><div><dt>Data</dt><dd>{readyFor(row.model.id)?.data ?? 'On Host if run locally'}</dd></div><div><dt>Speed</dt><dd>Not measured</dd></div><div><dt>Dependency</dt><dd>{readyFor(row.model.id)?.dependency ?? 'Host required · Network for download'}</dd></div></dl>
       {onUse && readyFor(row.model.id) && <button className="btn primary" onClick={()=>onUse(readyFor(row.model.id)!.model.id)}>Chat</button>}
+      {result?.host?.supported && row.access!=='restricted' && !readyFor(row.model.id) && <button className="btn ghost" onClick={()=>setPreparing(row.model.id)}>Check local preparation</button>}
       <a className="btn ghost" href={row.model.url} target="_blank" rel="noreferrer">{row.access==='restricted'?'Review access requirements':'View model details'} ↗</a>
       <details><summary>Why this model?</summary><p>{row.model.downloads===null?'Downloads unknown':`${row.model.downloads.toLocaleString('en-US')} downloads · Source reporting window`}. Popularity is not quality or a user count.</p>
         {row.model.communityUsage && <p>Anonymous activity rank #{row.model.communityUsage.rank} · {row.model.communityUsage.periodStart.slice(0,10)} to {row.model.communityUsage.periodEnd.slice(0,10)} (end exclusive). Based on reported output tokens, not people. Minimum 20 contributions across 7 days; these are not distinct users.</p>}
