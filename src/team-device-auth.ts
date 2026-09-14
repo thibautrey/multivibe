@@ -88,3 +88,5 @@ export async function startTeamDeviceAuth(provider: TeamDeviceProvider, transpor
 }
 
 export {encodeTeamDeviceCredential} from './team-provider-credential.js';
+
+export {discoverTeamDeviceAccount} from "./team-device-catalog.js";
