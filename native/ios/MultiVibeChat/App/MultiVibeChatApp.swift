@@ -55,10 +55,6 @@ struct ChatEntryView: View {
         .sheet(isPresented: $authenticationPresented) {
             AuthenticationView()
                 .presentationDragIndicator(.visible)
-                .overlay(alignment: .topTrailing) {
-                    Button("Fermer la connexion", systemImage: "xmark.circle.fill") { authenticationPresented = false }
-                        .labelStyle(.iconOnly).font(.title2).padding(16)
-                }
                 .sheet(item: recoveryRequest) { request in
                     PasswordRecoveryView(initialEmail: request.email, initialLink: request.link)
                 }
