@@ -14,8 +14,11 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
   onUse: (id: string) => void; onConfigure: (route: ModelRoute) => void; onConnectCloud: () => Promise<void>;
 }) {
   const [cloud, setCloud] = useState<CloudModel[]>([]);
+  const [showDiscovery, setShowDiscovery] = useState(false);
+  const [catalogError, setCatalogError] = useState('');
+  const [catalogRequest, setCatalogRequest] = useState(0);
   const [providers, setProviders] = useState<CloudProvider[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [connectionError, setConnectionError] = useState('');
   const [query, setQuery] = useState('');
   const [source, setSource] = useState('all');
@@ -32,15 +35,18 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
   const [connecting, setConnecting] = useState(false);
   useEffect(() => {
     let active = true;
+    if (!canConfigure || !showDiscovery) { setLoading(false); return; }
     setLoading(true);
+    setCatalogError('');
     void Promise.allSettled([api('/admin/cloud/models'), api('/admin/provider-catalog')]).then(([cloudResult, providerResult]) => {
       if (!active) return;
       if (cloudResult.status === 'fulfilled') setCloud(cloudResult.value.models);
       if (providerResult.status === 'fulfilled') setProviders(providerResult.value.providers);
+      setCatalogError([cloudResult.status === 'rejected' ? 'MultiVibe Cloud discovery catalog could not be loaded.' : '', providerResult.status === 'rejected' ? 'Provider discovery catalog could not be loaded.' : ''].filter(Boolean).join(' '));
       setLoading(false);
     });
     return () => { active = false; };
-  }, []);
+  }, [canConfigure, showDiscovery, catalogRequest]);
   useEffect(() => {
     setCompatibility(undefined);
     setEstimateError('');
@@ -58,7 +64,7 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
     return () => { active = false; controller.abort(); };
   }, [contextTokens, estimateRequest]);
   const currentCompatibility = compatibility?.context_tokens === contextTokens ? compatibility : undefined;
-  const catalog = useMemo(() => aggregateModels(models, accounts, canConfigure ? cloud : [], canConfigure ? providers : []), [models, accounts, cloud, providers, canConfigure]);
+  const catalog = useMemo(() => aggregateModels(models, accounts, canConfigure && showDiscovery ? cloud : [], canConfigure && showDiscovery ? providers : []), [models, accounts, cloud, providers, canConfigure, showDiscovery]);
   const providerOptions = useMemo(() => [...new Set(catalog.flatMap(model => model.routes.filter(route => source === 'all' || route.source === source).map(route => route.label)))].sort((a, b) => a.localeCompare(b)), [catalog, source]);
   const filtered = useMemo(() => filterCatalog(catalog, { query, source, provider, readyOnly, sort }).filter(model => hardware === 'all' || (compatibilityFor(model, currentCompatibility)?.state ?? 'unknown') === hardware), [catalog, query, source, provider, readyOnly, sort, hardware, currentCompatibility]);
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
@@ -98,6 +104,9 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
         <div className="models-cloud-card"><strong>MultiVibe Cloud</strong><p className="muted">Cloud access depends on your plan and available capacity.</p>{!cloudConnected && <button className="btn ghost" disabled={connecting} onClick={() => void connect()}>{connecting ? 'Connecting…' : 'Connect Cloud'}</button>}</div>
       </aside>
       <div className="models-results" aria-busy={loading}>
+        {canConfigure && <label className="models-ready"><input type="checkbox" checked={showDiscovery} onChange={event => { setShowDiscovery(event.target.checked); reset(); }} /> Explore unconnected catalogs</label>}
+        <p className="muted">{showDiscovery ? 'Includes reference catalogs, not a guarantee of access through your accounts or MultiVibe Cloud.' : 'Models exposed by your configured connections and detected local runtimes.'}</p>
+        {showDiscovery && catalogError && <p className="models-error" role="alert">{catalogError} <button className="btn ghost" disabled={loading} onClick={() => setCatalogRequest(value => value + 1)}>Retry catalogs</button></p>}
         <div className="models-toolbar"><label className="models-search"><span className="sr-only">Search models</span><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg><input type="search" value={query} placeholder="Search models or providers…" onChange={event => { setQuery(event.target.value); setPage(0); }} /></label><select aria-label="Sort models" value={sort} onChange={event => { setSort(event.target.value); setPage(0); }}><option value="ready">Ready to use first</option><option value="name">Name: A–Z</option><option value="name-desc">Name: Z–A</option></select></div>
         {connectionError && <p className="models-error" role="alert">{connectionError}</p>}
         <div className="models-result-bar"><span role="status"><strong>{filtered.length.toLocaleString('en-US')}</strong> models{loading ? ' · Updating catalogs…' : filtered.length ? ` · Showing ${currentPage * PAGE_SIZE + 1}–${Math.min((currentPage + 1) * PAGE_SIZE, filtered.length)}` : ''}</span>{activeFilters && <button className="models-text-button" onClick={reset}>Clear filters</button>}</div>
