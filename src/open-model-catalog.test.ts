@@ -106,3 +106,42 @@ test('multimodal conversational models remain discoverable without name rules', 
  assert.equal(rankOpenModels({models:rows,checkedAt:new Date().toISOString(),stale:false,source:'test',version:'4'},'writing','recommended').length,1);
  assert.equal(parseOpenModels([{...model,pipeline_tag:'image-text-to-text',tags:['license:apache-2.0']}])[0].needs.length,0);
 });
+
+test('a failed task feed does not prevent new models from healthy feeds appearing', async () => {
+ let partial = false;
+ const load = createOpenModelCatalog((async input => {
+  const url = new URL(String(input));
+  if (url.pathname !== '/api/models') return new Response('{}', {status:404});
+  if (partial && url.searchParams.get('pipeline_tag') === 'translation') return new Response('', {status:503});
+  return new Response(JSON.stringify([{...model,id:partial ? 'publisher/newly-discovered' : 'publisher/previous'}]));
+ }) as typeof fetch);
+ assert.equal((await load()).stale,false);
+ const updated=await load.refresh();
+ assert.equal(updated.stale,true);
+ assert.equal(updated.failedFeeds,3);
+ assert.deepEqual(updated.models.map(m=>m.id).sort(),['publisher/newly-discovered','publisher/previous']);
+ assert.equal(updated.models.find(m=>m.id==='publisher/previous')?.trendingRank,null);
+});
+
+test('partial catalog survives restart and recovery removes old retained records', async () => {
+ const dir=await mkdtemp(path.join(os.tmpdir(),'partial-catalog-'));
+ try {
+  const file=path.join(dir,'catalog.json'); let partial=true; let calls=0;
+  const fetcher=(async input=>{
+   calls++; const url=new URL(String(input));
+   if(url.pathname !== '/api/models') return new Response('{}',{status:404});
+   if(partial && url.searchParams.get('pipeline_tag')==='translation') throw Error('network');
+   return new Response(JSON.stringify([{...model,id:partial?'publisher/old':'publisher/current'}]));
+  }) as typeof fetch;
+  const load=createOpenModelCatalog(fetcher,Date.now,file);
+  assert.equal((await load()).stale,true);
+  const before=calls; await load(); assert.equal(calls,before,'stale reads must back off');
+  const offline=createOpenModelCatalog((async()=>{throw Error('offline');}) as typeof fetch,Date.now,file);
+  assert.equal((await offline()).models[0].id,'publisher/old');
+  await offline.refresh();
+  partial=false;
+  const recovered=await load.refresh();
+  assert.equal(recovered.stale,false);assert.equal(recovered.failedFeeds,0);
+  assert.deepEqual(recovered.models.map(m=>m.id),['publisher/current']);
+ } finally {await rm(dir,{recursive:true,force:true});}
+});

@@ -34,7 +34,7 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
     </div>
     {result && <p className="muted">{result.host ? `Target: ${result.host.name}${result.host.supported?'':' · Unsupported platform'}` : 'Connect Host to check compatibility. Showing popularity for your task.'}</p>}
     {!result && !error && <p role="status">Finding models…</p>}
-    {(error || result?.catalog.stale) && <p role="status">{result?'Showing the last catalog. Refresh is unavailable or in progress.':'The catalog is unavailable.'} <button className="btn ghost" onClick={()=>setRequest(n=>n+1)}>Retry</button></p>}
+    {(error || result?.catalog.stale) && <p role="status">{result ? result.catalog.failedFeeds ? 'Some catalog sources are unavailable. Showing new results and last-known models.' : 'Showing the last catalog. Refresh is unavailable or in progress.' : 'The catalog is unavailable.'} <button className="btn ghost" onClick={()=>setRequest(n=>n+1)}>Retry</button></p>}
     {sort==='community' && <p className="muted">Anonymous reported output volume · Last 30 completed days · Not verified users or quality.</p>}
     {sort==='community' && result?.catalog.communityStatus !== 'available' && result && <p role="status">Anonymous activity ranking is unavailable. External popularity is not substituted.</p>}
     <LocalPreparationPanel modelId={preparing} onClose={()=>setPreparing(null)} onUse={onUse} onChanged={()=>setRequest(n=>n+1)} />

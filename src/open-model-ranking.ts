@@ -12,7 +12,7 @@ export type OpenModel = {
   relation: string | null; formats: string[]; files: { name: string; bytes: number | null; sha256?: string | null }[];
   architecture: string | null; context: number | null; trendingRank: number | null;
 };
-export type OpenModelCatalog = { models: OpenModel[]; checkedAt: string; stale: boolean; source: string; version: string; communityStatus?: 'available' | 'unavailable' };
+export type OpenModelCatalog = { failedFeeds?: number; models: OpenModel[]; checkedAt: string; stale: boolean; source: string; version: string; communityStatus?: 'available' | 'unavailable' };
 export type RuntimeEstimate = { model_id: string; aliases: string[]; variant: string; state: 'compatible' | 'insufficient' | 'unknown'; reason: string };
 export function groupModels(models: OpenModel[]) {
   const byId = new Map(models.map(m => [m.id, m]));
