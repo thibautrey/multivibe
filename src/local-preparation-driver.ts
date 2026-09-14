@@ -15,6 +15,7 @@ export type ResolvedPreparationPlan = {
   artifact: HostPreparationOperation['artifact'];
   contextTokens: number;
   policy: ProviderCapacityPolicy;
+  memoryEvidence?: { estimator: string; configDigest: string; requiredBytes: number };
 };
 type StoredPlan = ResolvedPreparationPlan & { importStarted?: boolean; runtimeModel?: string };
 type Dependencies = {
@@ -82,11 +83,13 @@ export class HostLocalPreparationDriver implements LocalPreparationDriver {
     if (archive && (archive.version !== quote.runtimeVersion || !archive.platform || !/^[a-f0-9]{64}$/.test(archive.sha256) ||
       !Number.isSafeInteger(archive.bytes) || archive.bytes < 1 || archive.bytes > 4 * 1024 ** 3 ||
       quote.requiredDiskBytes < quote.downloadBytes)) throw Error('invalid_preflight');
-    const key = hash({ host: quote.hostId, model: quote.modelId, artifact, contextTokens, runtime: quote.runtime, version: quote.runtimeVersion, policy, runtimeDownload: quote.runtimeDownload });
+    if (plan.memoryEvidence && (!plan.memoryEvidence.estimator || !/^[a-f0-9]{64}$/.test(plan.memoryEvidence.configDigest) ||
+      !Number.isSafeInteger(plan.memoryEvidence.requiredBytes) || plan.memoryEvidence.requiredBytes < 1)) throw Error('invalid_preflight');
+    const key = hash({ memoryEvidence: plan.memoryEvidence, host: quote.hostId, model: quote.modelId, artifact, contextTokens, runtime: quote.runtime, version: quote.runtimeVersion, policy, runtimeDownload: quote.runtimeDownload });
     if (quote.configurationKey !== key) throw Error('invalid_preflight');
   }
   static configurationKey(plan: Omit<ResolvedPreparationPlan, 'quote'> & { quote: Pick<PreparationQuote, 'hostId'|'modelId'|'runtime'|'runtimeVersion'|'runtimeDownload'> }) {
-    return hash({ host: plan.quote.hostId, model: plan.quote.modelId, artifact: plan.artifact, contextTokens: plan.contextTokens,
+    return hash({ memoryEvidence: plan.memoryEvidence, host: plan.quote.hostId, model: plan.quote.modelId, artifact: plan.artifact, contextTokens: plan.contextTokens,
       runtime: plan.quote.runtime, version: plan.quote.runtimeVersion, policy: plan.policy, runtimeDownload: plan.quote.runtimeDownload });
   }
   async preflight(modelId: string): Promise<PreparationQuote> {
@@ -123,7 +126,30 @@ export class HostLocalPreparationDriver implements LocalPreparationDriver {
     // Do not call the unbounded archive installer against a model-only consent.
     if (!runtime.runtime_installed && !plan.quote.runtimeDownload) throw Error('runtime_download_quote_required');
   }
-  async validate(quote: PreparationQuote) { await this.checkHost(await this.plan(quote)); }
+  private async checkResources(plan: StoredPlan) {
+    // Only check before starting work: testing a loaded model consumes the very
+    // memory reserved here, so post-inference free memory is not a fit test.
+    if (!plan.memoryEvidence) return;
+    const { host } = this.dependencies;
+    if (!host.getLocalPreparationResources) throw Error('resources_unknown');
+    const [resources, capability, manifest] = await Promise.all([
+      host.getLocalPreparationResources(), host.getCapability(), host.getManifest()]);
+    if (manifest.device_key_id !== plan.quote.hostId || resources.policy_revision !== plan.policy.revision) throw Error('new_preflight_required');
+    const values = [resources.free_host_memory_bytes, resources.free_accelerator_memory_bytes,
+      capability.accelerator_memory_bytes, resources.free_storage_bytes, resources.occupied_storage_bytes];
+    if (resources.storage_error || values.some(value => !Number.isSafeInteger(value) || Number(value) < 0) ||
+      !Number.isFinite(Date.parse(resources.observed_at)) || Math.abs(Date.now() - Date.parse(resources.observed_at)) > 60000) throw Error('resources_unknown');
+    const limit = Math.min(resources.free_host_memory_bytes!, resources.free_accelerator_memory_bytes!,
+      capability.accelerator_memory_bytes! * plan.policy.policy.gpu_vram_percent / 100);
+    if (plan.memoryEvidence.requiredBytes > limit) throw Error('insufficient_memory');
+    if (plan.quote.requiredDiskBytes > resources.free_storage_bytes! - plan.policy.policy.reserve_free_disk_bytes ||
+      plan.quote.requiredDiskBytes + resources.occupied_storage_bytes! > plan.policy.policy.max_disk_bytes) throw Error('insufficient_disk');
+  }
+  async validate(quote: PreparationQuote) {
+    const plan = await this.plan(quote);
+    await this.checkHost(plan);
+    await this.checkResources(plan);
+  }
   private async run(quote: PreparationQuote, operation: HostPreparationOperation['operation'], signal: AbortSignal,
     progress: (completed: number, total: number) => Promise<void> = async () => {}) {
     const plan = await this.plan(quote);
@@ -139,6 +165,7 @@ export class HostLocalPreparationDriver implements LocalPreparationDriver {
   async install(quote: PreparationQuote, signal: AbortSignal) {
     const plan = await this.plan(quote);
     await this.checkHost(plan);
+    await this.checkResources(plan);
     const { runtime } = await this.dependencies.host.getManagedOllamaStatus();
     if (!runtime.runtime_installed) {
       if (!quote.runtimeDownload) throw Error('runtime_download_quote_required');

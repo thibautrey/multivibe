@@ -1,7 +1,8 @@
+import { createHash } from 'node:crypto';
 import type { ProviderAgentControl } from './provider-agent-supervisor.js';
 import { HostLocalPreparationDriver, type ResolvedPreparationPlan } from './local-preparation-driver.js';
 import { parseOpenModels } from './open-model-catalog.js';
-import { estimatePreparationMemory } from './local-preparation-memory.js';
+import { estimatePreparationMemory, PREPARATION_MEMORY_VERSION } from './local-preparation-memory.js';
 const hub = 'https://huggingface.co';
 const safeId = /^[\w.-]+\/[\w.-]+$/;
 /** Metadata-only, bounded preflight. Never follows model-card URLs or reads weights. */
@@ -57,6 +58,7 @@ export function createLocalPreparationResolver(host: ProviderAgentControl, fetch
           requiredDiskBytes+resources.occupied_storage_bytes! > policy.policy.max_disk_bytes) throw Error('insufficient_disk');
       if (file.bytes! > policy.policy.max_download_bytes_per_day) throw Error('download_budget_exceeded');
       const plan: ResolvedPreparationPlan = {artifact:{model_id:variant.id,revision:variant.revision,filename:file.name,bytes:file.bytes!,sha256:file.sha256!}, contextTokens, policy,
+        memoryEvidence: { estimator: PREPARATION_MEMORY_VERSION, configDigest: createHash('sha256').update(JSON.stringify(config)).digest('hex'), requiredBytes: memory },
         quote:{hostId:manifest.device_key_id,hostName:capability.hardware_model || 'This Host',modelId,variant:file.name,runtime:'ollama',runtimeVersion:status.runtime.version,policyRevision:policy.revision,
           artifactDigest:`sha256:${file.sha256}`,downloadBytes:file.bytes!,requiredDiskBytes,availableDiskBytes:resources.free_storage_bytes!,reserveDiskBytes:policy.policy.reserve_free_disk_bytes,
           compatibility:'estimated-fit',configurationKey:''}};
