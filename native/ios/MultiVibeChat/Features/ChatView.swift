@@ -33,7 +33,7 @@ struct ChatView: View {
             .scrollContentBackground(.hidden)
             .background(MultiVibeTheme.background)
             .searchable(text: $search, prompt: "Conversations sur cet appareil")
-            .navigationTitle("MultiVibe")
+            .navigationTitle("")
             .safeAreaInset(edge: .bottom) {
                 VStack {
                     if let status = manager.historyStatus { Text(status).font(.caption) }
@@ -141,7 +141,7 @@ struct ChatView: View {
             }
             .safeAreaInset(edge: .bottom, spacing: 0) { composer }
             .background(MultiVibeTheme.background)
-            .navigationTitle("MultiVibe")
+            .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
