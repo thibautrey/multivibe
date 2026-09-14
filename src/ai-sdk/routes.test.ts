@@ -6,13 +6,13 @@ import type { LanguageModelV4 } from "@ai-sdk/provider";
 import { createSdkAdapterRouter } from "./routes.js";
 import type { Account } from "../types.js";
 
-async function server(run: (url: string, account: Account, calls: () => number) => Promise<void>, fail = false) {
+async function server(run: (url: string, account: Account, calls: () => number) => Promise<void>, failure?: unknown) {
   const account: Account = {id: "account", provider: "ai-sdk", sdkProvider: "anthropic", sdkModels: ["test"], accessToken: "provider-secret", enabled: true};
   let calls = 0;
   const app = express(); app.use(express.json());
   app.use("/internal/ai-sdk", createSdkAdapterRouter({store: {listAccounts: async () => [account]}, internalToken: "internal-secret", createModel: () => ({
     doGenerate: async () => { calls++; return {content: [{type: "text", text: "Hi"}], finishReason: {unified: "stop"}, usage: {inputTokens: {total: 1}, outputTokens: {total: 2}}, warnings: []}; },
-    doStream: async () => {calls++; if (fail) throw Object.assign(new Error("private provider error"), {statusCode: 429}); return {stream: new ReadableStream({start(controller) {
+    doStream: async () => {calls++; if (failure) throw failure; return {stream: new ReadableStream({start(controller) {
       controller.enqueue({type: "text-delta", id: "text", delta: "Hi"});
       controller.enqueue({type: "finish", usage: {inputTokens: {total: 1}, outputTokens: {total: 2}}, finishReason: {unified: "stop"}}); controller.close();
     }})};},
@@ -43,7 +43,22 @@ test("SDK streaming errors preserve HTTP status before headers are committed", a
     const response = await fetch(`${url}/chat/completions`, {method: "POST", headers: auth, body: JSON.stringify({model: "anthropic/test", messages: [{role: "user", content: "Hi"}], stream: true})});
     assert.equal(response.status, 429);
     assert.equal((await response.text()).includes("private provider error"), false);
-  }, true);
+  }, Object.assign(new Error("private provider error"), {statusCode: 429}));
+});
+
+
+test("SDK adapter surfaces safe provider error messages", async () => {
+  await server(async (url) => {
+    const response = await fetch(`${url}/chat/completions`, {method: "POST", headers: auth, body: JSON.stringify({model: "anthropic/test", messages: [{role: "user", content: "Hi"}], stream: true})});
+    assert.equal(response.status, 400);
+    const body = await response.json() as any;
+    assert.equal(body.error.message, "Invalid tool message sequence");
+    assert.doesNotMatch(JSON.stringify(body), /provider-secret|authorization/i);
+  }, Object.assign(new Error("request failed"), {
+    statusCode: 400,
+    responseBody: JSON.stringify({error: {message: "Invalid tool message sequence", type: "invalid_request_error"}}),
+    responseHeaders: {authorization: "Bearer provider-secret"},
+  }));
 });
 
 test("SDK adapter returns a complete incremental chat stream", async () => {
