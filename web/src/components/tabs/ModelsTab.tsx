@@ -5,6 +5,8 @@ import { aggregateModels, filterCatalog, type CloudModel, type ModelRoute } from
 import type { CloudProvider } from '../ProviderPicker';
 import { compatibilityFor, compatibilityLabels, compatibilityDetail, type CompatibilityReport } from '../../lib/modelCompatibility';
 import './ModelsTab.css';
+import { ModelGuidance } from './ModelGuidance';
+import { MODEL_VIEW_KEY, modelView, verifiedCloudCatalog, type CloudAccess, type ModelView } from '../../lib/modelGuidance';
 
 const sources = [{ id: 'all', label: 'All sources' }, { id: 'provider', label: 'Providers' }, { id: 'local', label: 'Local models' }, { id: 'cloud', label: 'MultiVibe Cloud' }];
 const PAGE_SIZE = 20;
@@ -13,6 +15,19 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
   canConfigure?: boolean; models: ExposedModel[]; accounts: Account[]; cloudConnected: boolean;
   onUse: (id: string) => void; onConfigure: (route: ModelRoute) => void; onConnectCloud: () => Promise<void>;
 }) {
+  const [view, setView] = useState<ModelView>(() => { try { return modelView(localStorage.getItem(MODEL_VIEW_KEY)); } catch { return 'guided'; } });
+  const changeView = (value: ModelView) => { setView(value); try { localStorage.setItem(MODEL_VIEW_KEY, value); } catch { /* Storage can be disabled. */ } };
+  const [cloudAccess, setCloudAccess] = useState<CloudAccess>();
+  const [accessRequest, setAccessRequest] = useState(0);
+  useEffect(() => {
+    setCloudAccess(undefined);
+    if (!cloudConnected || !canConfigure) return;
+    const controller = new AbortController();
+    void api('/admin/cloud/accessible-models', { signal: controller.signal }).then((result: CloudAccess) => {
+      if (!controller.signal.aborted) setCloudAccess(result);
+    }).catch(() => { if (!controller.signal.aborted) setCloudAccess({ status: 'unavailable', modelIds: [], checkedAt: '' }); });
+    return () => controller.abort();
+  }, [cloudConnected, canConfigure, accessRequest]);
   const [cloud, setCloud] = useState<CloudModel[]>([]);
   const [showDiscovery, setShowDiscovery] = useState(false);
   const [catalogError, setCatalogError] = useState('');
@@ -35,7 +50,7 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
   const [connecting, setConnecting] = useState(false);
   useEffect(() => {
     let active = true;
-    if (!canConfigure || !showDiscovery) { setLoading(false); return; }
+    if (!canConfigure || !showDiscovery || view !== 'expert') { setLoading(false); return; }
     setLoading(true);
     setCatalogError('');
     void Promise.allSettled([api('/admin/cloud/models'), api('/admin/provider-catalog')]).then(([cloudResult, providerResult]) => {
@@ -46,7 +61,7 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
       setLoading(false);
     });
     return () => { active = false; };
-  }, [canConfigure, showDiscovery, catalogRequest]);
+  }, [canConfigure, showDiscovery, catalogRequest, view]);
   useEffect(() => {
     setCompatibility(undefined);
     setEstimateError('');
@@ -64,7 +79,8 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
     return () => { active = false; controller.abort(); };
   }, [contextTokens, estimateRequest]);
   const currentCompatibility = compatibility?.context_tokens === contextTokens ? compatibility : undefined;
-  const catalog = useMemo(() => aggregateModels(models, accounts, canConfigure && showDiscovery ? cloud : [], canConfigure && showDiscovery ? providers : []), [models, accounts, cloud, providers, canConfigure, showDiscovery]);
+  const rawCatalog = useMemo(() => aggregateModels(models, accounts, canConfigure && showDiscovery ? cloud : [], canConfigure && showDiscovery ? providers : []), [models, accounts, cloud, providers, canConfigure, showDiscovery]);
+  const catalog = useMemo(() => canConfigure ? verifiedCloudCatalog(rawCatalog, cloudAccess, cloudConnected) : rawCatalog, [rawCatalog, cloudAccess, cloudConnected, canConfigure]);
   const providerOptions = useMemo(() => [...new Set(catalog.flatMap(model => model.routes.filter(route => source === 'all' || route.source === source).map(route => route.label)))].sort((a, b) => a.localeCompare(b)), [catalog, source]);
   const filtered = useMemo(() => filterCatalog(catalog, { query, source, provider, readyOnly, sort }).filter(model => hardware === 'all' || (compatibilityFor(model, currentCompatibility)?.state ?? 'unknown') === hardware), [catalog, query, source, provider, readyOnly, sort, hardware, currentCompatibility]);
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
@@ -85,7 +101,16 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
     else onConfigure(route);
   };
   const actionLabel = (route: ModelRoute) => route.ready ? canConfigure ? 'Use model' : 'Open chat' : !canConfigure ? 'Ask your admin' : route.source === 'cloud' ? cloudConnected ? 'View access' : 'Connect Cloud' : 'Set up';
-  return <section className="panel models-catalog" aria-label="Model library">
+  return <section className="panel models-catalog" aria-label="Modèles">
+    <nav className="models-view-switch" aria-label="Affichage des modèles">{([['guided', 'Guidé'], ['compare', 'Comparer'], ['expert', 'Expert']] as const).map(([value, label]) => <button key={value} className="btn ghost" aria-pressed={view === value} onClick={() => changeView(value)}>{label}</button>)}</nav>
+    {cloudConnected && canConfigure && <div className="models-access-notice" role="status">
+      {!cloudAccess ? 'Vérification de votre accès Cloud…' : cloudAccess.status === 'available'
+        ? !cloudAccess.modelIds.length ? 'Aucun modèle exposé pour votre compte Cloud.'
+          : !catalog.some(model => model.routes.some(route => route.source === 'cloud' && route.ready)) ? 'Le Cloud expose des modèles, mais aucune route de chat correspondante n’est disponible ici.' : 'Catalogue Cloud vérifié pour votre compte.'
+        : cloudAccess.status === 'access_denied' ? 'Accès Cloud refusé ou expiré. Vérifiez votre connexion.' : cloudAccess.status === 'disconnected' ? 'Compte Cloud déconnecté.' : 'Impossible de vérifier votre accès Cloud.'}
+      <button className="models-text-button" disabled={!cloudAccess} onClick={() => { setCloudAccess(undefined); setAccessRequest(value => value + 1); }}>Revérifier</button>
+    </div>}
+    {view !== 'expert' ? <ModelGuidance view={view} catalog={catalog} canConfigure={canConfigure} cloudConnected={cloudConnected} onUse={onUse} onConnectCloud={connect} connecting={connecting} connectionError={connectionError} onExpert={() => changeView('expert')} /> : <>
     <div className="models-layout">
       <aside className="models-sidebar" aria-label="Model filters">
         <div className="models-filter-heading"><strong>Filters</strong>{activeFilters && <button className="models-text-button" onClick={reset}>Reset</button>}</div>
@@ -124,5 +149,6 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
         {pages > 1 && <nav className="models-pagination" aria-label="Model pages"><button className="btn ghost" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>← Previous</button><label>Page<select aria-label="Go to page" value={currentPage} onChange={event => setPage(Number(event.target.value))}>{Array.from({ length: pages }, (_, index) => <option key={index} value={index}>{index + 1}</option>)}</select>of {pages}</label><button className="btn ghost" disabled={currentPage + 1 === pages} onClick={() => setPage(currentPage + 1)}>Next →</button></nav>}
       </div>
     </div>
+    </>}
   </section>;
 }

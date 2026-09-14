@@ -1,3 +1,4 @@
+import { GUIDANCE_VERSION, modelNeeds, relevantChoices, recommendedChoices, verifiedCloudCatalog, type GuidanceEntry, type ModelNeed } from '../../model-guidance.js';
 import { invoiceOverview } from "../../provider-invoices.js";
 import { publishDeviceSignIn } from "../../host/device-signin.js";
 import { COPILOT_BASE_URL, requestCopilotDeviceCode, pollCopilotDeviceCode, accountFromCopilotOAuth, trustedCopilotBaseUrl } from "../../github-copilot.js";
@@ -683,6 +684,33 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     if (!moduleManager) return res.status(503).json({ error: "Module manager is unavailable" });
     try { return res.json(moduleManager.analytics(req.params.id)); }
     catch (error) { return res.status(404).json({ error: error instanceof Error ? error.message : String(error) }); }
+  });
+
+  router.get("/models/recommendations", async (req, res) => {
+    res.setHeader("cache-control", "no-store");
+    const need = req.query.need ?? 'writing';
+    if (!modelNeeds.some(item => item.id === need)) return res.status(400).json({ error: 'Unknown model need' });
+    try {
+      const [models, accounts, cloudAccess] = await Promise.all([
+        discoverModels(store, openaiBaseUrl, mistralBaseUrl, zaiBaseUrl), store.listAccounts(),
+        options.multivibeCloud?.getAccessibleModels(),
+      ]);
+      const now = Date.now();
+      // Only authoritative model/account associations grant access. No credentials
+      // or complete account objects are included in the response.
+      const catalog: GuidanceEntry[] = models.filter(model => !model.metadata?.is_alias && !model.metadata?.is_virtual).map(model => ({
+        id: model.id, name: model.id,
+        routes: accounts.filter(account => model.metadata?.account_ids?.includes(account.id)).map(account => ({
+          source: account.multivibeCloud ? 'cloud' as const : account.localRuntime || account.location === 'local' ? 'local' as const : 'provider' as const,
+          label: account.multivibeCloud ? 'MultiVibe Cloud' : account.localRuntime?.adapter ?? account.sdkProvider ?? account.provider ?? 'Service',
+          modelId: model.id, accountId: account.id,
+          ready: account.enabled && !account.state?.needsTokenRefresh && !(Number(account.expiresAt) <= now)
+            && !(Number(account.state?.authBlockedUntil) > now) && !(Number(account.state?.modelBlocks?.[model.id]?.until) > now),
+        })),
+      }));
+      const choices = relevantChoices(verifiedCloudCatalog(catalog, cloudAccess, cloudAccess?.status === 'available'), need as ModelNeed);
+      return res.json({ version: GUIDANCE_VERSION, need, choices, recommended: recommendedChoices(choices), cloudAccess });
+    } catch { return res.status(503).json({ error: 'Recommendations could not be verified' }); }
   });
 
   router.get("/modules/models", async (_req, res) => {
@@ -1499,6 +1527,13 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
     const { multivibeCloud: _privateCloud, ...publicSettings } = settings;
     res.json({ ok: true, settings: publicSettings });
+  });
+
+  router.get("/cloud/accessible-models", async (_req, res) => {
+    res.setHeader("cache-control", "no-store");
+    if (!options.multivibeCloud) return res.status(503).json({ error: "MultiVibe Cloud is unavailable" });
+    try { return res.json(await options.multivibeCloud.getAccessibleModels()); }
+    catch { return res.status(502).json({ error: "Cloud access could not be checked" }); }
   });
 
   router.get("/cloud/models", async (_req, res) => {
