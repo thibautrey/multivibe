@@ -171,6 +171,7 @@ export default function App() {
   const [providerSetupActive, setProviderSetupActive] = useState(false);
   const [traces, setTraces] = useState<Trace[]>([]);
   const [traceStatsLoading, setTraceStatsLoading] = useState(true);
+  const [traceStatsLoaded, setTraceStatsLoaded] = useState(false);
   const traceStatsPendingRef = useRef(0);
   const [traceStats, setTraceStats] = useState<TraceStats>(EMPTY_TRACE_STATS);
   const [projectUsageStats, setProjectUsageStats] = useState<ProjectUsageStats>({
@@ -614,6 +615,7 @@ export default function App() {
         api(`/admin/stats/usage?${params}`),
       ]);
       setTraceStats((statsRes.stats ?? EMPTY_TRACE_STATS) as TraceStats);
+      setTraceStatsLoaded(true);
       setProjectUsageStats({ byProject: usageRes.byProject ?? [] });
     } finally {
       traceStatsPendingRef.current -= 1;
@@ -640,6 +642,7 @@ export default function App() {
       ]);
       setTraces((tr.traces ?? []) as Trace[]);
       setTraceStats((statsRes.stats ?? tr.stats ?? EMPTY_TRACE_STATS) as TraceStats);
+      setTraceStatsLoaded(true);
       setProjectUsageStats({ byProject: usageRes.byProject ?? [] });
       setTracePagination((tr.pagination ?? { ...EMPTY_TRACE_PAGINATION, page: safePage }) as TracePagination);
       if (!background) {
@@ -1412,6 +1415,8 @@ export default function App() {
             stats={stats}
             usageStats={usageStats}
             traceStats={filteredTraceStats}
+            traceStatsLoading={traceStatsLoading}
+            traceStatsLoaded={traceStatsLoaded}
             models={models}
             openModelInDocs={openModelInDocs}
             navigate={(nextTab, nextActivityView) => {

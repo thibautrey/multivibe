@@ -6,6 +6,7 @@ type Props = {
   title: string;
   value: string;
   loading?: boolean;
+  preserveValueWhileLoading?: boolean;
   detail?: string;
   action?: { href: string; label: string };
   onClick?: () => void;
@@ -13,12 +14,14 @@ type Props = {
   tone?: "default" | "success" | "warning" | "danger";
 };
 
-export function Metric({ title, value, detail, action, onClick, ariaLabel, loading = false, tone = "default" }: Props) {
-  const interactive = Boolean(onClick) && !loading;
+export function Metric({ title, value, detail, action, onClick, ariaLabel, loading = false, preserveValueWhileLoading = false, tone = "default" }: Props) {
+  const refreshing = loading && preserveValueWhileLoading;
+  const showSkeleton = loading && !preserveValueWhileLoading;
+  const interactive = Boolean(onClick) && !showSkeleton;
 
   return (
     <div
-      className={`panel metric metric-${loading ? "default" : tone}${interactive ? " metric-interactive" : ""}`}
+      className={`panel metric metric-${showSkeleton ? "default" : tone}${interactive ? " metric-interactive" : ""}${refreshing ? " metric-refreshing" : ""}`}
       aria-busy={loading}
       aria-label={interactive ? ariaLabel ?? `Open ${title}` : undefined}
       role={interactive ? "button" : undefined}
@@ -31,12 +34,15 @@ export function Metric({ title, value, detail, action, onClick, ariaLabel, loadi
         }
       } : undefined}
     >
-      <div className="muted metric-title">{title}</div>
-      <div className="value" aria-label={loading ? `Loading ${title}` : undefined}>
-        {loading ? <span className="metric-skeleton metric-skeleton-value" aria-hidden="true" /> : value}
+      <div className="metric-heading">
+        <div className="muted metric-title">{title}</div>
+        {refreshing && <span className="metric-updating" role="status">Updating</span>}
+      </div>
+      <div className="value" aria-label={showSkeleton ? `Loading ${title}` : undefined}>
+        {showSkeleton ? <span className="metric-skeleton metric-skeleton-value" aria-hidden="true" /> : value}
       </div>
       {detail && <div className="metric-detail">
-        {loading ? <span className="metric-skeleton metric-skeleton-detail" aria-hidden="true" /> : detail}
+        {showSkeleton ? <span className="metric-skeleton metric-skeleton-detail" aria-hidden="true" /> : detail}
       </div>}
       {action && <a className="metric-action" href={action.href} target="_blank" rel="noopener noreferrer">
         {action.label} <span aria-hidden="true">↗</span>

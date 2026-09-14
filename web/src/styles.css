@@ -5149,6 +5149,38 @@ body:has(> .modal-backdrop) {
   margin: 0;
 }
 
+.metric-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.metric-updating {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.metric-updating::before {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+  content: "";
+  opacity: 0.55;
+  animation: metric-skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+.metric-refreshing .value,
+.metric-refreshing .metric-detail {
+  opacity: 0.72;
+}
+
 .metric-skeleton {
   display: block;
   border-radius: 6px;
@@ -5172,7 +5204,7 @@ body:has(> .modal-backdrop) {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .metric-skeleton { animation: none; }
+  .metric-skeleton, .metric-updating::before { animation: none; }
 }
 
 /* TTFT comparisons share the selected bucket, model order, and latency scale. */
