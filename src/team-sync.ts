@@ -85,7 +85,7 @@ export class MultivibeTeamSyncService {
     for(const item of manifest.providers){
       if(!item||!UUID.test(item.id)||providerIds.has(item.id)||!Number.isSafeInteger(item.revision)||item.revision<1||item.revision>manifest.cursor) throw new Error('Team provider manifest is invalid');
       providerIds.add(item.id);
-      if(!['distributed','cloud_proxy'].includes(item.deliveryMode)||typeof item.enabled!=='boolean'||!Array.isArray(item.models)||item.models.some(model=>typeof model!=='string'||!model.trim()))throw new Error('Team provider manifest is invalid');
+      if(!['distributed','cloud_proxy'].includes(item.deliveryMode)||typeof item.enabled!=='boolean'||!Array.isArray(item.models)||item.models.some((model:unknown)=>typeof model!=='string'||!model.trim()))throw new Error('Team provider manifest is invalid');
       if(item.deliveryMode==='distributed'&&!item.sealedCredential) throw new Error('Distributed Team provider credential is unavailable');
       if(item.deliveryMode==='cloud_proxy'&&item.sealedCredential) throw new Error('Cloud proxy manifest exposed a provider credential');
       const existing=accounts.find(account=>account.multivibeTeam?.providerId===item.id);
