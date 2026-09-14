@@ -125,3 +125,46 @@ func (controller *managedProviderController) downloadLocalPreparationModel(ctx c
 	}
 	return result, nil
 }
+
+// Dynamic artifact preparation reuses the same policy fence, disk accounting,
+// daily budget and managed downloader. It does not modify the Cloud catalog.
+func (controller *managedProviderController) downloadLocalPreparationArtifact(ctx context.Context, expected *capacityPolicyStateDocument, artifact localPreparationArtifact, progress managedModelDownloadProgress) (string, error) {
+	var path string
+	err := controller.withLocalPreparationRuntime(ctx, expected, true, "local-artifact-download", func(ctx context.Context, document *capacityPolicyStateDocument) error {
+		if _, err := artifact.sourceURL(); err != nil || progress == nil {
+			return errLocalPreparationArtifact
+		}
+		backend, ok := controller.runtime.(*ollamaRuntimeBackend)
+		if !ok {
+			return errRuntimeBackendIncompatible
+		}
+		manager, ok := backend.pinnedRuntime.(*managedOllama)
+		if !ok {
+			return errRuntimeBackendIncompatible
+		}
+		policy, err := validateCapacityPolicy(document.Policy)
+		if err != nil {
+			return err
+		}
+		occupied, err := localPreparationStorageBytes(ctx, policy.modelStoragePath)
+		if err != nil {
+			return err
+		}
+		free, err := providerFreeDiskBytes(policy.modelStoragePath)
+		if err != nil {
+			return errLocalPreparationStorage
+		}
+		if occupied > policy.maxDiskBytes || artifact.Bytes > policy.maxDiskBytes-occupied || free < policy.reserveFreeDiskBytes || artifact.Bytes > free-policy.reserveFreeDiskBytes {
+			return errLocalPreparationDisk
+		}
+		if err = controller.plannerState.reserveDownload(plannedModelDownload{ModelID: artifact.ModelID, Bytes: artifact.Bytes}, controller.now().UTC(), policy.maxDownloadBytesPerDay); err != nil {
+			return err
+		}
+		path, err = manager.downloadLocalArtifact(ctx, policy.modelStoragePath, artifact, progress)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return path, nil
+}
