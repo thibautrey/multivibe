@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -19,6 +20,7 @@ type localPreparationOperation struct {
 	PolicyRevision uint64                   `json:"policy_revision"`
 	Artifact       localPreparationArtifact `json:"artifact"`
 	ContextTokens  uint64                   `json:"context_tokens"`
+	RuntimeModel   string                   `json:"runtime_model,omitempty"`
 }
 type localPreparationEvent struct {
 	Type           string `json:"type"`
@@ -26,6 +28,7 @@ type localPreparationEvent struct {
 	TotalBytes     uint64 `json:"total_bytes,omitempty"`
 	RuntimeModel   string `json:"runtime_model,omitempty"`
 	Error          string `json:"error,omitempty"`
+	Output         string `json:"output,omitempty"`
 }
 type localPreparationExecute func(context.Context, localPreparationOperation, managedModelDownloadProgress) (string, error)
 
@@ -48,6 +51,8 @@ func localPreparationControlHandler(controller *managedProviderController, token
 			return "", err
 		case "import":
 			return controller.importLocalPreparationArtifact(ctx, expected, input.Artifact, input.ContextTokens)
+		case "test":
+			return controller.testLocalPreparationRuntime(ctx, expected, input.RuntimeModel)
 		}
 		return "", errLocalPreparationArtifact
 	})
@@ -80,9 +85,13 @@ func localPreparationOperationHandler(token string, execute localPreparationExec
 			return
 		}
 		switch input.Operation {
-		case "install", "start", "download", "import":
+		case "install", "start", "download", "import", "test":
 		default:
 			http.Error(w, "invalid operation", 400)
+			return
+		}
+		if (input.Operation == "test" && !localPreparationModelIdentity.MatchString(input.RuntimeModel)) || (input.Operation != "test" && input.RuntimeModel != "") {
+			http.Error(w, "invalid runtime identity", 400)
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Hour)
@@ -120,11 +129,21 @@ func localPreparationOperationHandler(token string, execute localPreparationExec
 			_ = emit(localPreparationEvent{Type: "error", Error: localPreparationPublicError(operationErr)})
 			return
 		}
-		_ = emit(localPreparationEvent{Type: "complete", RuntimeModel: model})
+		if input.Operation == "test" {
+			if strings.TrimSpace(model) == "" || len(model) > 4096 {
+				_ = emit(localPreparationEvent{Type: "error", Error: "local_test_failed"})
+				return
+			}
+			_ = emit(localPreparationEvent{Type: "complete", Output: model})
+		} else {
+			_ = emit(localPreparationEvent{Type: "complete", RuntimeModel: model})
+		}
 	}
 }
 func localPreparationPublicError(err error) string {
 	switch {
+	case errors.Is(err, errLocalPreparationProbe):
+		return "local_test_failed"
 	case errors.Is(err, context.Canceled):
 		return "cancelled"
 	case errors.Is(err, context.DeadlineExceeded):

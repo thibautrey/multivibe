@@ -17,3 +17,9 @@ test('import requires a private runtime identity, not an arbitrary route',async(
  const name='multivibe-local-'+ 'a'.repeat(32)+':latest';const imported={...input,operation:'import' as const};assert.deepEqual(await readHostPreparationOperation(response([{type:'complete',runtime_model:name}]),imported,new AbortController().signal,async()=>{}),{runtimeModel:name});
  await assert.rejects(readHostPreparationOperation(response([{type:'complete',runtime_model:'cloud/model'}]),imported,new AbortController().signal,async()=>{}));
 });
+test('synthetic test requires output and cannot claim a chat route',async()=>{
+ const probe={...input,operation:'test' as const,runtime_model:'multivibe-local-'+'a'.repeat(32)+':latest'};
+ assert.deepEqual(await readHostPreparationOperation(response([{type:'complete',output:'OK'}]),probe,new AbortController().signal,async()=>{}),{output:'OK'});
+ for(const event of [{type:'complete'},{type:'complete',output:' '},{type:'complete',output:'OK',runtime_model:probe.runtime_model},{type:'complete',output:'x'.repeat(4097)}]) await assert.rejects(readHostPreparationOperation(response([event]),probe,new AbortController().signal,async()=>{}));
+ await assert.rejects(readHostPreparationOperation(response([{type:'complete',output:'OK'}]),{...input,operation:'start'},new AbortController().signal,async()=>{}));
+});

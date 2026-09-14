@@ -248,7 +248,7 @@ export type ProviderAgentControl = {
   getDemandPlan(): Promise<ProviderDemandPlan>;
   submitSignedDemand(envelope: Record<string, unknown>): Promise<{ duplicate: boolean; plan: ProviderDemandPlan }>;
   estimateModelCompatibility(contextTokens: number): Promise<unknown>;
-  runLocalPreparationOperation?(input: HostPreparationOperation, signal: AbortSignal, progress: (completed:number,total:number)=>Promise<void>): Promise<{runtimeModel?:string}>;
+  runLocalPreparationOperation?(input: HostPreparationOperation, signal: AbortSignal, progress: (completed:number,total:number)=>Promise<void>): Promise<{runtimeModel?:string;output?:string}>;
   getManagedOllamaStatus(): Promise<ProviderManagedOllamaView>;
   installManagedOllama(policyRevision: number): Promise<ProviderManagedOllamaView>;
   startManagedOllama(policyRevision: number): Promise<ProviderManagedOllamaView>;
