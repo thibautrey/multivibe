@@ -27,7 +27,8 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
     <div className="models-compare-filters">
       {!selectedNeed && <label>Task<select value={need} onChange={e=>setNeed(e.target.value as CatalogNeed)}><option value="writing">Chat and write</option><option value="coding">Code</option><option value="translation">Translate</option><option value="documents">Summarize and analyze</option></select></label>}
       <label>Sort<select value={sort} onChange={e=>setSort(e.target.value as CatalogSort)}>{Object.entries(sortLabels).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
-      {!compact && <><label>Search<input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Model or publisher" /></label><label><input type="checkbox" checked={fitOnly} onChange={e=>setFitOnly(e.target.checked)} /> Estimated to fit</label></>}
+      {<label>Search<input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Model or publisher" /></label>}
+      {!compact && <><label><input type="checkbox" checked={fitOnly} onChange={e=>setFitOnly(e.target.checked)} /> Estimated to fit</label></>}
     </div>
     {result && <p className="muted">{result.host ? `Target: ${result.host.name}${result.host.supported?'':' · Unsupported platform'}` : 'Connect Host to check compatibility. Showing popularity for your task.'}</p>}
     {!result && !error && <p role="status">Finding models…</p>}
@@ -35,7 +36,7 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
     {sort==='community' && <p className="muted">Anonymous reported output volume · Last 30 completed days · Not verified users or quality.</p>}
     {sort==='community' && result?.catalog.communityStatus !== 'available' && result && <p role="status">Anonymous activity ranking is unavailable. External popularity is not substituted.</p>}
     <div className="models-choice-grid">{models.slice(0,limit).map(row=><article className="models-choice" key={row.model.id}>
-      <span className="models-choice-badge">{row.compatibility==='compatible'?'Estimated fit':row.compatibility==='insufficient'?'Not compatible':'Compatibility unknown'}</span>
+      <span className="models-choice-badge">{row.compatibility==='compatible'?'Estimated fit':row.compatibility==='insufficient'?'Not compatible':'Host check needed'}</span>
       <h3>{(publisherIcons as Record<string,string>)[row.model.id.split('/')[0].toLowerCase()] && <img src={(publisherIcons as Record<string,string>)[row.model.id.split('/')[0].toLowerCase()]} alt="" width="28" height="28" loading="lazy" referrerPolicy="no-referrer" onError={event=>{event.currentTarget.hidden=true;}} style={{objectFit:'contain',verticalAlign:'middle',marginRight:8}} />}{row.model.id}</h3><p>{row.reason}</p>
       <dl><div><dt>Cost</dt><dd>{readyFor(row.model.id)?.cost.label ?? 'Hardware and electricity'}</dd></div><div><dt>Data</dt><dd>{readyFor(row.model.id)?.data ?? 'On Host if run locally'}</dd></div><div><dt>Speed</dt><dd>Not measured</dd></div><div><dt>Dependency</dt><dd>{readyFor(row.model.id)?.dependency ?? 'Host required · Network for download'}</dd></div></dl>
       {onUse && readyFor(row.model.id) && <button className="btn primary" onClick={()=>onUse(readyFor(row.model.id)!.model.id)}>Chat</button>}
@@ -45,7 +46,7 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
         <p>License: {row.model.license}. Publisher metadata, not an independent license audit. {row.model.gated?'Access approval is required.':''}</p>
         <p>{row.model.createdAt?`Repository created ${new Date(row.model.createdAt).toLocaleDateString('en-GB')}`:'Creation date unknown'} · Not a verified release date.</p>
         <p>{row.model.metadataCheckedAt ? `Metadata checked ${new Date(row.model.metadataCheckedAt).toLocaleString('en-GB')}.` : 'List metadata only.'}</p>
-        <p>No installation or chat route is granted by discovery. A runtime estimate is not a successful test. On mobile, models run on Host, not your phone.</p>
+        <p>{row.variants.map(v=>v.reason).filter((reason,index,all)=>all.indexOf(reason)===index).join(' ')}</p><p>No installation or chat route is granted by discovery. A runtime estimate is not a successful test. On mobile, models run on Host, not your phone.</p>
         {expert && row.variants.map(v=><p key={v.model.id}>{v.model.id} · {v.model.formats.join(', ') || 'Format unknown'} · {v.reason}</p>)}
       </details>
     </article>)}</div>

@@ -98,3 +98,11 @@ test('targeted feeds populate categories outside the generic feed without model 
  const catalog=await load();
  for(const need of ['translation','documents'] as const) assert.ok(rankOpenModels(catalog,need,'recommended').length);
 });
+
+test('multimodal conversational models remain discoverable without name rules', () => {
+ const rows=parseOpenModels([{...model,id:'new-publisher/new-model',pipeline_tag:'image-text-to-text',tags:['conversational','license:apache-2.0']}]);
+ assert.equal(rows.length,1);
+ assert.deepEqual(rows[0].needs,['writing']);
+ assert.equal(rankOpenModels({models:rows,checkedAt:new Date().toISOString(),stale:false,source:'test',version:'4'},'writing','recommended').length,1);
+ assert.equal(parseOpenModels([{...model,pipeline_tag:'image-text-to-text',tags:['license:apache-2.0']}])[0].needs.length,0);
+});

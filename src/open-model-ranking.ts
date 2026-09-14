@@ -30,7 +30,7 @@ export function rankOpenModels(catalog: OpenModelCatalog, need: CatalogNeed, sor
     const variants = g.variants.map(model => {
       const matches = estimates.filter(e => [e.model_id, ...(e.aliases ?? [])].includes(model.id));
       const estimate = matches.length === 1 ? matches[0] : undefined;
-      return { model, compatibility: estimate?.state ?? 'unknown', reason: estimate?.reason ?? 'No runtime estimate for this exact variant.' };
+      return { model, compatibility: estimate?.state ?? 'unknown', reason: estimate?.reason ?? 'Host has no memory estimate for this variant. Discovery alone cannot confirm that it fits or can be installed.' };
     });
     const fit = !g.model.gated && variants.find(v => !v.model.gated && v.compatibility === 'compatible');
     return { ...g, variants, selectedVariant: fit ? fit.model.id : null,
