@@ -143,6 +143,7 @@ struct AuthenticationView: View {
                                     .overlay {
                                         RoundedRectangle(cornerRadius: 12)
                                             .strokeBorder(.primary.opacity(0.12), lineWidth: 1)
+                                            .allowsHitTesting(false)
                                     }
                                     .disabled(busy || authConfiguration?.canStartSSO(provider: provider.lowercased(), acceptedTerms: terms) != true)
                                     .accessibilityLabel("Continuer avec " + provider)
@@ -160,6 +161,7 @@ struct AuthenticationView: View {
                             .overlay {
                                 RoundedRectangle(cornerRadius: 12)
                                     .strokeBorder(.primary.opacity(0.12), lineWidth: 1)
+                                            .allowsHitTesting(false)
                             }
                             .disabled(busy || authConfiguration?.canStartSSO(provider: "apple", acceptedTerms: terms) != true)
                             .accessibilityIdentifier("signInWithApple")
