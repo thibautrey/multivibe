@@ -17,6 +17,7 @@
 		91ABE914998A0252BC864813 /* AuthenticationUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73484D90F6B8C690FC806EBB /* AuthenticationUITests.swift */; };
 		92079D5C291F20B604251334 /* ConversationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED63046FBAF333333E159086 /* ConversationManager.swift */; };
 		C74FEFADAC73275DB726E5A6 /* AuthenticationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA4393E98F397246F4A41196 /* AuthenticationView.swift */; };
+		D82AAFC3C8F507B521619C45 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B3F9F268516DD34F81AB7817 /* Assets.xcassets */; };
 		EDD89E16CC7EEE5F49D07739 /* ChatIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 626C77A820035BB712EF6520 /* ChatIntents.swift */; };
 		FE9F141E961C8316B702D426 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D23AAC6A6C06292DD31EC37 /* ChatView.swift */; };
 /* End PBXBuildFile section */
@@ -50,6 +51,7 @@
 		9A8B15C5C36771B67C287720 /* MultiVibeChat.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MultiVibeChat.entitlements; sourceTree = "<group>"; };
 		9B36277A8CFF4EC17A06D2FC /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		A69AFB0001BDEA3472C4FE21 /* MultiVibeChatTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = MultiVibeChatTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B3F9F268516DD34F81AB7817 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		C40B5C17410BA2068BAC1E38 /* MultiVibeChatUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = MultiVibeChatUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		CA4393E98F397246F4A41196 /* AuthenticationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticationView.swift; sourceTree = "<group>"; };
 		D7577716199F102273754156 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
@@ -70,6 +72,7 @@
 		0DA66C4F0BF02D9969E0A4EA /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				B3F9F268516DD34F81AB7817 /* Assets.xcassets */,
 				EE89CDEC6389DF7D57D2960C /* Info.plist */,
 				9A8B15C5C36771B67C287720 /* MultiVibeChat.entitlements */,
 				D7577716199F102273754156 /* PrivacyInfo.xcprivacy */,
@@ -258,6 +261,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D82AAFC3C8F507B521619C45 /* Assets.xcassets in Resources */,
 				5BAE03F5B75D339A9AF58336 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

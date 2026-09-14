@@ -445,8 +445,8 @@ struct ChatWelcomeView: View {
         ScrollView {
             VStack(spacing: 28) {
                 Spacer(minLength: 40)
-                Image(systemName: "bubble.left.and.bubble.right.fill")
-                    .font(.system(size: 42)).foregroundStyle(MultiVibeTheme.accent).accessibilityHidden(true)
+                Image("MultiVibeMark").renderingMode(.original).resizable().scaledToFit()
+                    .frame(width: 96, height: 96).accessibilityHidden(true)
                 Text("Comment puis-je\nvous aider ?")
                     .font(.largeTitle.bold()).multilineTextAlignment(.center)
                 Text("Une idée, une question, un premier brouillon.")
