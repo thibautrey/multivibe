@@ -26,7 +26,7 @@ test("translates tool history, images, structured output and generation controls
   assert.equal(options.responseFormat?.type, "json");
   assert.equal(options.abortSignal, signal);
   assert.equal(options.reasoning, "low");
-  for (const body of [{messages: []}, {messages: [{role: "user", content: "test"}], n: 2}, {messages: [{role: "tool", tool_call_id: "missing", content: "x"}]}]) {
+  for (const body of [{messages: []}, {messages: [{role: "user", content: "test"}], n: 2}, {messages: [{role: "assistant", content: [{type: "image_url", image_url: {url: "x"}}]}]}]) {
     assert.throws(() => sdkCallOptions(body, signal));
   }
 });
@@ -45,6 +45,29 @@ test("accepts OpenAI assistant content arrays and drops empty assistant placehol
   assert.equal((options.prompt[2].content as any[])[0].type, "tool-call");
   assert.equal(options.prompt[3].role, "tool");
   assert.throws(() => sdkCallOptions({messages: [{role: "assistant", content: [{type: "image_url", image_url: {url: "https://example.test/image.png"}}]}]}, new AbortController().signal), /Unsupported assistant content part/);
+});
+
+
+test("repairs truncated tool history for strict OpenAI-compatible providers", () => {
+  const options = sdkCallOptions({ messages: [
+    {role: "tool", tool_call_id: "orphan", content: "truncated prefix"},
+    {role: "user", content: "Start"},
+    {role: "assistant", content: null, tool_calls: [
+      {id: "call_done", type: "function", function: {name: "lookup", arguments: "{}"}},
+      {id: "call_missing", type: "function", function: {name: "lookup", arguments: "{}"}},
+    ]},
+    {role: "tool", tool_call_id: "call_done", content: "done"},
+    {role: "user", content: "Continue"},
+    {role: "assistant", content: null, tool_calls: [
+      {id: "call_not_immediate", type: "function", function: {name: "lookup", arguments: "{}"}},
+    ]},
+    {role: "user", content: "Tool output was truncated"},
+    {role: "tool", tool_call_id: "call_not_immediate", content: "late"},
+  ] }, new AbortController().signal);
+
+  assert.deepEqual(options.prompt.map((message) => message.role), ["user", "assistant", "tool", "user", "user"]);
+  const calls = (options.prompt[1].content as any[]).filter((part) => part.type === "tool-call");
+  assert.deepEqual(calls.map((call) => call.toolCallId), ["call_done"]);
 });
 
 test("streams text and function arguments incrementally without repeating completed tool calls", async () => {
