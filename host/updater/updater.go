@@ -347,12 +347,18 @@ func (update *updater) download(ctx context.Context, state *updaterState) error 
 	totalHash := sha256.New()
 	var total int64
 	for _, part := range parts {
-		partHash := sha256.New()
-		written, err := update.downloadPart(ctx, io.MultiWriter(temporary, totalHash, partHash), part)
+		partPath, err := update.cachedPart(ctx, part)
 		if err != nil {
 			return setFailure(update.store, state, "artifact_download_failed", err)
 		}
-		if written != part.Size || hex.EncodeToString(partHash.Sum(nil)) != part.SHA256 {
+		file, err := os.Open(partPath)
+		if err != nil {
+			return setFailure(update.store, state, "artifact_part_unavailable", err)
+		}
+		partHash := sha256.New()
+		written, copyErr := io.Copy(io.MultiWriter(temporary, totalHash, partHash), io.LimitReader(file, part.Size+1))
+		closeErr := file.Close()
+		if copyErr != nil || closeErr != nil || written != part.Size || hex.EncodeToString(partHash.Sum(nil)) != part.SHA256 {
 			return setFailure(update.store, state, "artifact_part_verification_failed", errors.New("an update archive part failed verification"))
 		}
 		total += written
@@ -367,6 +373,9 @@ func (update *updater) download(ctx context.Context, state *updaterState) error 
 		return setFailure(update.store, state, "artifact_commit_failed", err)
 	}
 	committed = true
+	for _, part := range parts {
+		_ = os.Remove(filepath.Join(update.store.cache, ".part-"+part.SHA256))
+	}
 	state.Status = "downloaded"
 	state.DownloadedPath = destination
 	state.DownloadedSHA256 = state.Target.SHA256
@@ -377,29 +386,6 @@ func (update *updater) download(ctx context.Context, state *updaterState) error 
 func runtimeTargetName() string {
 	name, _ := targetName(false)
 	return name
-}
-
-func (update *updater) downloadPart(ctx context.Context, writer io.Writer, part artifactPart) (int64, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, part.URL, nil)
-	if err != nil {
-		return 0, errors.New("the update archive request is invalid")
-	}
-	request.Header.Set("Accept", "application/octet-stream")
-	request.Header.Set("User-Agent", "MultiVibe-Host-Updater/"+hostUpdaterVersion)
-	response, err := update.httpClient.Do(request)
-	if err != nil {
-		return 0, errors.New("the update archive could not be downloaded")
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("the update archive returned HTTP %d", response.StatusCode)
-	}
-	limited := io.LimitReader(response.Body, part.Size+1)
-	written, err := io.Copy(writer, limited)
-	if err != nil || written > part.Size {
-		return written, errors.New("the update archive download is invalid")
-	}
-	return written, nil
 }
 
 func encodePublicStatus(state updaterState) error {
