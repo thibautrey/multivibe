@@ -479,3 +479,10 @@ lifecycle integration remain outstanding.
   unsigned simulator build and all 54 XCTest tests passed. Four new tests cover
   offline retry/history preservation, removed models, empty catalog, duplicate
   reload and post-logout stale results. No production endpoint was exercised.
+
+### 2026-09-14 — Chat-first entry before authentication
+
+- App entry now shows the shared chat welcome and editable composer even without a saved account, including during session restoration. Sign-in is an explicit native sheet; guest send and history actions open that sheet rather than making unauthenticated chat requests.
+- The guest draft remains in memory when the sheet is cancelled and is transferred to a new conversation after successful session restoration, without automatic submission. Recovery sheets are presented above authentication when it is open; deep links remain supported from chat.
+- Added a UI regression for initial chat visibility, disabled empty send, authentication on send, and draft retention on cancellation. Updated the existing authentication tests for the new entry point and distinct submit identifier.
+- No backend authentication, signing, provisioning, or deployment configuration changed by this patch.
