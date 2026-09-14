@@ -504,3 +504,139 @@ test("explicit NVIDIA PAIR rejects non-loopback and unbounded endpoints", async 
     await assert.rejects(configureNvidiaPairRuntime(store, endpoint), /loopback HTTP origin/);
   }
 });
+
+test("stopped LM Studio is discovered from its default downloaded-model directory", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-lmstudio-home-"));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  await fs.mkdir(path.join(home, ".lmstudio", "models", "bartowski", "Qwen-GGUF"), { recursive: true });
+  await fs.writeFile(path.join(home, ".lmstudio", "models", "bartowski", "Qwen-GGUF", "model.gguf"), "weight");
+
+  const [result] = await discoverLocalRuntimes({
+    adapters: [lmStudio],
+    homeDir: home,
+    platform: "darwin",
+    env: {},
+    fetchFn: async () => { throw new Error("server stopped"); },
+  });
+
+  assert.equal(result?.status, "discovered");
+  if (result?.status !== "discovered") return;
+  assert.equal(result.discoveryMethod, "filesystem");
+  assert.equal(result.endpoint, "http://127.0.0.1:1234");
+  assert.deepEqual(result.confirmedModelIds, ["bartowski/Qwen-GGUF"]);
+});
+
+test("LM Studio uses its configured absolute download folder while stopped", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-lmstudio-config-"));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const downloads = path.join(home, "shared-models");
+  await fs.mkdir(path.join(home, ".lmstudio"), { recursive: true });
+  await fs.writeFile(path.join(home, ".lmstudio", "settings.json"), JSON.stringify({ downloadsFolder: downloads }));
+  await fs.mkdir(path.join(downloads, "mlx-community", "Qwen-4bit"), { recursive: true });
+  await fs.writeFile(path.join(downloads, "mlx-community", "Qwen-4bit", "model.safetensors"), "weight");
+
+  const [result] = await discoverLocalRuntimes({
+    adapters: [lmStudio], homeDir: home, fetchFn: async () => { throw new Error("offline"); },
+  });
+  assert.equal(result?.status, "discovered");
+  if (result?.status === "discovered") {
+    assert.deepEqual(result.confirmedModelIds, ["mlx-community/Qwen-4bit"]);
+  }
+});
+
+test("stopped Ollama is discovered from default and OLLAMA_MODELS manifests", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-ollama-home-"));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const custom = path.join(home, "custom-ollama");
+  const defaultManifest = path.join(home, ".ollama", "models", "manifests", "registry.ollama.ai", "library", "qwen2.5", "latest");
+  const customManifest = path.join(custom, "manifests", "registry.example.com", "team", "coder", "7b");
+  await fs.mkdir(path.dirname(defaultManifest), { recursive: true });
+  await fs.mkdir(path.dirname(customManifest), { recursive: true });
+  await fs.writeFile(defaultManifest, "{}");
+  await fs.writeFile(customManifest, "{}");
+
+  const [result] = await discoverLocalRuntimes({
+    adapters: [ollama], homeDir: home, platform: "darwin", env: { OLLAMA_MODELS: custom },
+    fetchFn: async () => { throw new Error("offline"); },
+  });
+  assert.equal(result?.status, "discovered");
+  if (result?.status === "discovered") {
+    assert.deepEqual(result.confirmedModelIds, ["qwen2.5:latest", "team/coder:7b"]);
+  }
+});
+
+test("stopped OMLX is discovered from its standard model directory", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-omlx-home-"));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const model = path.join(home, ".omlx", "models", "mlx-community", "Qwen-4bit");
+  await fs.mkdir(model, { recursive: true });
+  await fs.writeFile(path.join(model, "config.json"), "{}");
+
+  const [result] = await discoverLocalRuntimes({
+    adapters: [omlx], homeDir: home, fetchFn: async () => { throw new Error("offline"); },
+  });
+  assert.equal(result?.status, "discovered");
+  if (result?.status === "discovered") assert.deepEqual(result.confirmedModelIds, ["mlx-community/Qwen-4bit"]);
+});
+
+test("disk discovery ignores empty, hidden, unrelated, and symlinked model folders", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-model-filter-"));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const root = path.join(home, ".lmstudio", "models", "publisher");
+  await fs.mkdir(path.join(root, "empty"), { recursive: true });
+  await fs.mkdir(path.join(root, "notes-only"), { recursive: true });
+  await fs.writeFile(path.join(root, "notes-only", "README.md"), "not a model");
+  await fs.mkdir(path.join(root, "real"), { recursive: true });
+  await fs.writeFile(path.join(root, "real", "model.gguf"), "weight");
+  await fs.symlink(path.join(root, "real"), path.join(root, "linked"));
+
+  const [result] = await discoverLocalRuntimes({
+    adapters: [lmStudio], homeDir: home, fetchFn: async () => { throw new Error("offline"); },
+  });
+  assert.equal(result?.status, "discovered");
+  if (result?.status === "discovered") assert.deepEqual(result.confirmedModelIds, ["publisher/real"]);
+});
+
+test("live runtime catalog takes precedence over the filesystem snapshot", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-live-wins-"));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const diskModel = path.join(home, ".lmstudio", "models", "publisher", "disk-model");
+  await fs.mkdir(diskModel, { recursive: true });
+  await fs.writeFile(path.join(diskModel, "model.gguf"), "weight");
+
+  const [result] = await discoverLocalRuntimes({
+    adapters: [lmStudio], homeDir: home, fetchFn: async () => modelsResponse(["publisher/live-model"]),
+  });
+  assert.equal(result?.status, "discovered");
+  if (result?.status === "discovered") {
+    assert.equal(result.discoveryMethod, "api");
+    assert.deepEqual(result.confirmedModelIds, ["publisher/live-model"]);
+  }
+});
+
+test("offline discovery persists and refreshes one deterministic account", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-offline-persist-home-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-offline-persist-store-"));
+  t.after(() => Promise.all([
+    fs.rm(home, { recursive: true, force: true }),
+    fs.rm(dataDir, { recursive: true, force: true }),
+  ]));
+  const model = path.join(home, ".lmstudio", "models", "publisher", "offline-model");
+  await fs.mkdir(model, { recursive: true });
+  await fs.writeFile(path.join(model, "model.gguf"), "weight");
+  const store = new AccountStore(path.join(dataDir, "accounts.json"));
+  await store.init();
+  const options = {
+    adapters: [lmStudio], homeDir: home,
+    fetchFn: async () => { throw new Error("offline"); },
+  };
+
+  await discoverAndPersistLocalRuntimes(store, options);
+  await discoverAndPersistLocalRuntimes(store, options);
+
+  const accounts = await store.listAccounts();
+  assert.equal(accounts.length, 1);
+  assert.equal(accounts[0]?.id, "local-runtime-lm-studio");
+  assert.equal(accounts[0]?.baseUrl, "http://127.0.0.1:1234");
+  assert.deepEqual(accounts[0]?.localRuntime?.confirmedModelIds, ["publisher/offline-model"]);
+});
