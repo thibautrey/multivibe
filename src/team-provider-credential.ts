@@ -2,7 +2,7 @@
  * opaquely; it must never spread this JSON into an account or a public response. */
 import type { Account, ProviderId, UpstreamMode } from './types.js';
 import { trustedCopilotBaseUrl } from './github-copilot.js';
-import { XAI_OAUTH_CLIENT_ID, XAI_OAUTH_ISSUER } from './config.js';
+import { OPENCODE_CONSOLE_URL, XAI_OAUTH_CLIENT_ID, XAI_OAUTH_ISSUER } from './config.js';
 
 export interface TeamProviderCredential {
   accessToken: string;
@@ -13,6 +13,7 @@ export interface TeamProviderCredential {
 const MAX_CONTEXT = 64 * 1024;
 const COMMON = ['schemaVersion', 'provider', 'baseUrl', 'upstreamMode'];
 const COPILOT = [...COMMON, 'copilotModelEndpoints'];
+const OPENCODE = [...COMMON, 'opencodeAccountId', 'opencodeOrgId', 'opencodeConsoleUrl', 'opencodeApiKey', 'opencodeHeaders'];
 const XAI = [...COMMON, 'xaiUserId', 'xaiAuthScope', 'oidcIssuer', 'oidcClientId'];
 function invalid(): never { throw new Error('Team provider credential is invalid'); }
 function object(value: unknown): Record<string, unknown> {
@@ -35,16 +36,16 @@ function canonicalEndpoint(value: unknown): string {
   } catch { return invalid(); }
 }
 /** Validate explicit allowlists; no arbitrary headers, URLs, local state or account IDs. */
-function accountContext(value: unknown): Partial<Account> & {provider: 'github-copilot' | 'xai'; baseUrl: string} {
+function accountContext(value: unknown): Partial<Account> & {provider: 'github-copilot' | 'xai' | 'opencode'; baseUrl: string} {
   const input = object(value);
-  if (input.schemaVersion !== 1 || !['github-copilot', 'xai'].includes(String(input.provider))) return invalid();
-  const provider = input.provider as 'github-copilot' | 'xai';
-  if (Object.keys(input).some(key => !(provider === 'github-copilot' ? COPILOT : XAI).includes(key))) return invalid();
+  if (input.schemaVersion !== 1 || !['github-copilot', 'xai', 'opencode'].includes(String(input.provider))) return invalid();
+  const provider = input.provider as 'github-copilot' | 'xai' | 'opencode';
+  if (Object.keys(input).some(key => !(provider === 'github-copilot' ? COPILOT : provider === 'opencode' ? OPENCODE : XAI).includes(key))) return invalid();
   const baseUrl = canonicalEndpoint(input.baseUrl);
   if (provider === 'github-copilot') {
     try { if (trustedCopilotBaseUrl(baseUrl) !== baseUrl) return invalid(); } catch { return invalid(); }
-  } else if (baseUrl !== 'https://api.x.ai/v1') return invalid();
-  const result: Partial<Account> & {provider: 'github-copilot' | 'xai'; baseUrl: string} = {provider, baseUrl};
+  } else if (provider === 'opencode' ? baseUrl !== 'https://opencode.ai/inference/openai' : baseUrl !== 'https://api.x.ai/v1') return invalid();
+  const result: Partial<Account> & {provider: 'github-copilot' | 'xai' | 'opencode'; baseUrl: string} = {provider, baseUrl};
   if (input.upstreamMode !== undefined) {
     if (!mode(input.upstreamMode)) return invalid();
     result.upstreamMode = input.upstreamMode;
@@ -58,6 +59,23 @@ function accountContext(value: unknown): Partial<Account> & {provider: 'github-c
       endpoints[id] = endpoint;
     }
     result.copilotModelEndpoints = endpoints;
+  }
+  if (provider === 'opencode') {
+    if (input.opencodeConsoleUrl !== OPENCODE_CONSOLE_URL.replace(/\/+$/, '') ||
+        !text(input.opencodeAccountId) || !token(input.opencodeOrgId) ||
+        !(input.opencodeApiKey === '{env:OPENCODE_CONSOLE_TOKEN}' || (token(input.opencodeApiKey) && !/[{}]/.test(input.opencodeApiKey)))) return invalid();
+    result.opencodeAccountId = input.opencodeAccountId;
+    result.opencodeOrgId = input.opencodeOrgId;
+    result.opencodeConsoleUrl = input.opencodeConsoleUrl as string;
+    result.opencodeApiKey = input.opencodeApiKey as string;
+    if (input.opencodeHeaders !== undefined) {
+      const headers = object(input.opencodeHeaders);
+      // The workspace header is the only currently supported Console routing header.
+      // Unknown headers must fail closed rather than silently change request semantics.
+      if (Object.keys(headers).some(key => key !== 'x-org-id') ||
+          (headers['x-org-id'] !== undefined && headers['x-org-id'] !== input.opencodeOrgId)) return invalid();
+      result.opencodeHeaders = {...headers} as Record<string,string>;
+    }
   }
   if (provider === 'xai') {
     // Pin to Core's operator-selected OAuth configuration, never to manifest input.
@@ -77,11 +95,12 @@ function accountContext(value: unknown): Partial<Account> & {provider: 'github-c
 /** Device-only serialization. Expanding supported providers requires a Core codec change. */
 export function encodeTeamDeviceCredential(account: Account): TeamProviderCredential {
   const provider = account.provider;
-  if (provider !== 'github-copilot' && provider !== 'xai') return invalid();
+  if (provider !== 'github-copilot' && provider !== 'xai' && provider !== 'opencode') return invalid();
   const context = accountContext({schemaVersion: 1, provider,
     baseUrl: account.baseUrl ?? (provider === 'xai' ? 'https://api.x.ai/v1' : undefined),
     ...(account.upstreamMode !== undefined ? {upstreamMode: account.upstreamMode} : {}),
     ...(provider === 'github-copilot' && account.copilotModelEndpoints !== undefined ? {copilotModelEndpoints: account.copilotModelEndpoints} : {}),
+    ...(provider === 'opencode' ? {opencodeAccountId:account.opencodeAccountId,opencodeOrgId:account.opencodeOrgId,opencodeConsoleUrl:account.opencodeConsoleUrl,opencodeApiKey:account.opencodeApiKey,...(account.opencodeHeaders !== undefined ? {opencodeHeaders:account.opencodeHeaders} : {})} : {}),
     ...(provider === 'xai' ? {oidcIssuer: account.oidcIssuer, oidcClientId: account.oidcClientId,
       xaiAuthScope: account.xaiAuthScope, ...(account.xaiUserId !== undefined ? {xaiUserId: account.xaiUserId} : {})} : {}),
   });
