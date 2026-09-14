@@ -16,3 +16,4 @@ data/*
 # Claude Code local settings
 .claude/
 assets/brand/.DS_Store
+native/ios/.DS_Store
