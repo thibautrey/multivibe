@@ -1912,9 +1912,23 @@ fn chat_completions_to_responses(body: &Value, session_id: Option<&str>) -> Valu
     apply_codex_parity_defaults(payload, session_id)
 }
 
+const MULTIVIBE_REASONING_PREFIX: &str = "mv-reasoning-v1:";
+
+fn encode_reasoning_content(text: &str) -> String {
+    format!("{MULTIVIBE_REASONING_PREFIX}{}", URL_SAFE_NO_PAD.encode(text.as_bytes()))
+}
+
+fn decode_reasoning_content(value: Option<&Value>) -> Option<String> {
+    let encoded = value_string(value)?;
+    let payload = encoded.strip_prefix(MULTIVIBE_REASONING_PREFIX)?;
+    let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
+    String::from_utf8(bytes).ok().filter(|text| !text.is_empty())
+}
+
 fn responses_to_chat_completions(body: &Value, client_stream: bool) -> Value {
     let object = object_value(body);
     let mut messages = Vec::new();
+    let mut pending_reasoning: Option<String> = None;
     if let Some(instructions) = value_string(object.get("instructions")) {
         messages.push(json!({"role": "system", "content": instructions}));
     }
@@ -1929,22 +1943,31 @@ fn responses_to_chat_completions(body: &Value, client_stream: bool) -> Value {
                             messages.push(json!({"role": "user", "content": [part]}));
                         }
                     }
+                    Some("reasoning") => {
+                        pending_reasoning = decode_reasoning_content(item.get("encrypted_content"));
+                    }
                     Some("function_call") => {
                         let id = value_string(item.get("call_id"))
                             .or_else(|| value_string(item.get("id")))
                             .unwrap_or_else(|| new_id("call"));
-                        messages.push(json!({
-                            "role": "assistant",
-                            "content": "",
-                            "tool_calls": [{
-                                "id": id,
-                                "type": "function",
-                                "function": {
-                                    "name": value_string(item.get("name")).unwrap_or_else(|| "unknown".to_owned()),
-                                    "arguments": item.get("arguments").map(|value| value.as_str().map(str::to_owned).unwrap_or_else(|| json_string(value))).unwrap_or_else(|| "{}".to_owned()),
-                                }
-                            }]
-                        }));
+                        let call = json!({
+                            "id": id,
+                            "type": "function",
+                            "function": {
+                                "name": value_string(item.get("name")).unwrap_or_else(|| "unknown".to_owned()),
+                                "arguments": item.get("arguments").map(|value| value.as_str().map(str::to_owned).unwrap_or_else(|| json_string(value))).unwrap_or_else(|| "{}".to_owned()),
+                            }
+                        });
+                        if let Some(previous) = messages.last_mut().and_then(Value::as_object_mut)
+                            .filter(|message| message.get("role").and_then(Value::as_str) == Some("assistant")
+                                && message.get("tool_calls").is_some_and(Value::is_array))
+                        {
+                            previous.get_mut("tool_calls").and_then(Value::as_array_mut).unwrap().push(call);
+                        } else {
+                            let mut assistant = json!({"role": "assistant", "content": "", "tool_calls": [call]});
+                            if let Some(reasoning) = pending_reasoning.take() { assistant["reasoning_content"] = Value::String(reasoning); }
+                            messages.push(assistant);
+                        }
                     }
                     Some("function_call_output") | Some("custom_tool_call_output") => {
                         messages.push(json!({
@@ -2471,6 +2494,9 @@ fn chat_to_response(value: &Value, fallback_model: &str) -> Value {
         .unwrap_or_else(|| json!({}));
     let message = choice.get("message").cloned().unwrap_or_else(|| json!({}));
     let mut output = Vec::new();
+    if let Some(reasoning) = value_string(message.get("reasoning_content")).filter(|text| !text.is_empty()) {
+        output.push(json!({"id": new_id("rs"), "type": "reasoning", "summary": [], "encrypted_content": encode_reasoning_content(&reasoning)}));
+    }
     let text = message
         .get("content")
         .map(|content| {
@@ -2701,6 +2727,7 @@ fn chat_from_sse(text: &str, model: &str) -> Value {
     let mut id = new_id("chatcmpl");
     let mut created = now_ms() / 1000;
     let mut content = String::new();
+    let mut reasoning = String::new();
     let mut usage = json!({});
     let mut finish_reason = "stop";
     let mut tool_calls: Vec<Value> = Vec::new();
@@ -2733,6 +2760,9 @@ fn chat_from_sse(text: &str, model: &str) -> Value {
                     raw_string(delta.get("content")).filter(|value| !value.is_empty())
                 {
                     content.push_str(&value);
+                }
+                if let Some(value) = raw_string(delta.get("reasoning_content")).filter(|value| !value.is_empty()) {
+                    reasoning.push_str(&value);
                 }
                 if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
                     for call in calls {
@@ -2769,6 +2799,9 @@ fn chat_from_sse(text: &str, model: &str) -> Value {
         }
     }
     let mut message = json!({"role": "assistant", "content": content});
+    if !reasoning.is_empty() {
+        message["reasoning_content"] = Value::String(reasoning);
+    }
     if !tool_calls.is_empty() {
         message["tool_calls"] = Value::Array(tool_calls);
     }
@@ -6121,6 +6154,7 @@ struct ChatResponseStreamState {
     model: String,
     created: u64,
     content: String,
+    reasoning: String,
     created_sent: bool,
     content_started: bool,
     completed_sent: bool,
@@ -6155,6 +6189,9 @@ impl ChatResponseStreamState {
         }
         self.completed_sent = true;
         let mut output = Vec::new();
+        if !self.reasoning.is_empty() {
+            output.push(json!({"id": new_id("rs"), "type": "reasoning", "summary": [], "encrypted_content": encode_reasoning_content(&self.reasoning)}));
+        }
         if !self.content.is_empty() {
             output.push(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": self.content}]}));
         }
@@ -6169,13 +6206,18 @@ impl ChatResponseStreamState {
         }
         let response = json!({"id": self.response_id, "object": "response", "created_at": self.created, "model": self.model, "status": "completed", "output": output, "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}});
         let mut out = String::new();
+        if !self.reasoning.is_empty() {
+            let item = output.first().cloned().unwrap_or_else(|| json!({}));
+            out.push_str(&sse_frame("response.output_item.added", &json!({"type": "response.output_item.added", "output_index": 0, "item": item})));
+            out.push_str(&sse_frame("response.output_item.done", &json!({"type": "response.output_item.done", "output_index": 0, "item": item})));
+        }
         if self.content_started {
-            out.push_str(&sse_frame("response.output_text.done", &json!({"type": "response.output_text.done", "item_id": self.output_item_id, "output_index": 0, "content_index": 0, "text": self.content})));
-            out.push_str(&sse_frame("response.content_part.done", &json!({"type": "response.content_part.done", "item_id": self.output_item_id, "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": self.content}})));
-            out.push_str(&sse_frame("response.output_item.done", &json!({"type": "response.output_item.done", "output_index": 0, "item": {"id": self.output_item_id, "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": self.content}]}})));
+            out.push_str(&sse_frame("response.output_text.done", &json!({"type": "response.output_text.done", "item_id": self.output_item_id, "output_index": usize::from(!self.reasoning.is_empty()), "content_index": 0, "text": self.content})));
+            out.push_str(&sse_frame("response.content_part.done", &json!({"type": "response.content_part.done", "item_id": self.output_item_id, "output_index": usize::from(!self.reasoning.is_empty()), "content_index": 0, "part": {"type": "output_text", "text": self.content}})));
+            out.push_str(&sse_frame("response.output_item.done", &json!({"type": "response.output_item.done", "output_index": usize::from(!self.reasoning.is_empty()), "item": {"id": self.output_item_id, "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": self.content}]}})));
         }
         for (index, tool) in self.tool_calls.iter().enumerate() {
-            let output_index = index + usize::from(!self.content.is_empty());
+            let output_index = index + usize::from(!self.content.is_empty()) + usize::from(!self.reasoning.is_empty());
             let custom = tool["type"] == "custom_tool_call";
             let field = if custom { "input" } else { "arguments" };
             let event = if custom { "response.custom_tool_call_input.done" } else { "response.function_call_arguments.done" };
@@ -6429,7 +6471,10 @@ impl SseStreamTransformer {
                     output.push_str(&sse_frame("response.content_part.added", &json!({"type": "response.content_part.added", "item_id": self.chat_response.output_item_id, "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": ""}})));
                 }
                 self.chat_response.content.push_str(&content);
-                output.push_str(&sse_frame("response.output_text.delta", &json!({"type": "response.output_text.delta", "item_id": self.chat_response.output_item_id, "output_index": 0, "content_index": 0, "delta": content})));
+                output.push_str(&sse_frame("response.output_text.delta", &json!({"type": "response.output_text.delta", "item_id": self.chat_response.output_item_id, "output_index": usize::from(!self.chat_response.reasoning.is_empty()), "content_index": 0, "delta": content})));
+            }
+            if let Some(reasoning) = raw_string(delta.get("reasoning_content")).filter(|text| !text.is_empty()) {
+                self.chat_response.reasoning.push_str(&reasoning);
             }
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for call in calls {
@@ -12414,6 +12459,57 @@ mod tests {
         );
         assert!(!anthropic["model"].as_str().unwrap().contains("claude"));
         assert_eq!(anthropic["instructions"], "You are helpful");
+    }
+
+    #[test]
+    fn responses_chat_bridge_round_trips_reasoning_with_parallel_tools() {
+        let chat = json!({
+            "id": "chat-1",
+            "object": "chat.completion",
+            "model": "deepseek-v4-flash",
+            "choices": [{"message": {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "opaque provider reasoning",
+                "tool_calls": [
+                    {"id": "call-1", "type": "function", "function": {"name": "first", "arguments": "{}"}},
+                    {"id": "call-2", "type": "function", "function": {"name": "second", "arguments": "{}"}}
+                ]
+            }, "finish_reason": "tool_calls"}]
+        });
+        let response = chat_to_response(&chat, "deepseek-v4-flash");
+        let reasoning = response["output"].as_array().unwrap().first().unwrap();
+        assert_eq!(reasoning["type"], "reasoning");
+        assert_ne!(reasoning["encrypted_content"], "opaque provider reasoning");
+
+        let continued = responses_to_chat_completions(&json!({
+            "model": "deepseek-v4-flash",
+            "input": [
+                reasoning,
+                response["output"][1],
+                response["output"][2],
+                {"type": "function_call_output", "call_id": "call-1", "output": "one"},
+                {"type": "function_call_output", "call_id": "call-2", "output": "two"}
+            ]
+        }), false);
+        let assistant = &continued["messages"][0];
+        assert_eq!(assistant["reasoning_content"], "opaque provider reasoning");
+        assert_eq!(assistant["tool_calls"].as_array().unwrap().len(), 2);
+        assert_eq!(continued["messages"][1]["tool_call_id"], "call-1");
+        assert_eq!(continued["messages"][2]["tool_call_id"], "call-2");
+    }
+
+    #[test]
+    fn chat_sse_to_responses_preserves_reasoning_for_continuation() {
+        let mut converter = SseStreamTransformer::new(StreamTransform::ChatToResponse, "deepseek-v4-flash");
+        let output = converter.push(br#"data: {"object":"chat.completion.chunk","choices":[{"delta":{"reasoning_content":"think"},"finish_reason":null}]}
+
+data: {"object":"chat.completion.chunk","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}
+
+"#);
+        assert!(output.contains("mv-reasoning-v1:"));
+        assert!(output.contains("\"type\":\"reasoning\""));
+        assert!(output.contains("call-1"));
     }
 
     #[test]
