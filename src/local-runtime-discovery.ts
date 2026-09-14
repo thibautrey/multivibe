@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { trustedCopilotBaseUrl } from "./github-copilot.js";
 import { sdkAdapterBaseUrl, SDK_INTERNAL_TOKEN } from "./ai-sdk/connection.js";
 import { openCodeInferenceToken } from "./opencode.js";
@@ -254,6 +257,7 @@ export type LocalRuntimeProbeSuccess = {
   displayName: string;
   endpoint: string;
   confirmedModelIds: string[];
+  discoveryMethod: "api" | "filesystem";
 };
 
 export type LocalRuntimeProbeUnavailable = {
@@ -273,6 +277,10 @@ export type LocalRuntimeDiscoveryOptions = {
   timeoutMs?: number;
   maxResponseBytes?: number;
   adapters?: readonly LocalRuntimeAdapter[];
+  homeDir?: string;
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  filesystem?: Pick<typeof fs, "readdir" | "readFile">;
 };
 
 function isAutomaticLocalRuntimeAdapterId(
@@ -658,6 +666,7 @@ export async function probeLocalRuntimeCandidate(
           displayName: adapter.displayName,
           endpoint: endpoint.origin,
           confirmedModelIds,
+          discoveryMethod: "api",
         };
       })(),
       deadline,
@@ -665,6 +674,143 @@ export async function probeLocalRuntimeCandidate(
   } finally {
     if (timeout) clearTimeout(timeout);
   }
+}
+
+
+const LOCAL_MODEL_FILE_EXTENSIONS = new Set([
+  ".gguf", ".safetensors", ".bin", ".pth", ".pt", ".onnx", ".mlx",
+]);
+
+function validDiskModelId(id: string): boolean {
+  return validConfirmedModelIds([id]) && !id.startsWith(".") && !id.includes("\\");
+}
+
+async function directoryEntries(
+  directory: string,
+  filesystem: Pick<typeof fs, "readdir" | "readFile">,
+): Promise<import("node:fs").Dirent[]> {
+  try {
+    return await filesystem.readdir(directory, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+}
+
+async function containsModelFile(
+  directory: string,
+  filesystem: Pick<typeof fs, "readdir" | "readFile">,
+  depth = 2,
+): Promise<boolean> {
+  for (const entry of await directoryEntries(directory, filesystem)) {
+    if (entry.isSymbolicLink()) continue;
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isFile() && (LOCAL_MODEL_FILE_EXTENSIONS.has(path.extname(entry.name).toLowerCase()) || entry.name === "config.json")) {
+      return true;
+    }
+    if (depth > 0 && entry.isDirectory() && await containsModelFile(entryPath, filesystem, depth - 1)) return true;
+  }
+  return false;
+}
+
+async function discoverOllamaModelsFromDisk(
+  options: LocalRuntimeDiscoveryOptions,
+): Promise<string[]> {
+  const filesystem = options.filesystem ?? fs;
+  const home = options.homeDir ?? os.homedir();
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  const roots = [
+    env.OLLAMA_MODELS,
+    path.join(home, ".ollama", "models"),
+    ...(platform === "linux" ? ["/usr/share/ollama/.ollama/models"] : []),
+  ].filter((value): value is string => Boolean(value));
+  const models = new Set<string>();
+  for (const root of new Set(roots)) {
+    const manifests = path.join(root, "manifests");
+    for (const registry of await directoryEntries(manifests, filesystem)) {
+      if (!registry.isDirectory() || registry.isSymbolicLink()) continue;
+      const registryPath = path.join(manifests, registry.name);
+      for (const namespace of await directoryEntries(registryPath, filesystem)) {
+        if (!namespace.isDirectory() || namespace.isSymbolicLink()) continue;
+        const namespacePath = path.join(registryPath, namespace.name);
+        for (const model of await directoryEntries(namespacePath, filesystem)) {
+          if (!model.isDirectory() || model.isSymbolicLink()) continue;
+          for (const tag of await directoryEntries(path.join(namespacePath, model.name), filesystem)) {
+            if (!tag.isFile() || tag.isSymbolicLink()) continue;
+            const prefix = namespace.name === "library" ? "" : `${namespace.name}/`;
+            const id = `${prefix}${model.name}:${tag.name}`;
+            if (validDiskModelId(id)) models.add(id);
+            if (models.size >= 10_000) return [...models].sort();
+          }
+        }
+      }
+    }
+  }
+  return [...models].sort();
+}
+
+async function discoverTwoLevelModelDirectory(
+  roots: readonly string[],
+  options: LocalRuntimeDiscoveryOptions,
+): Promise<string[]> {
+  const filesystem = options.filesystem ?? fs;
+  const models = new Set<string>();
+  for (const root of new Set(roots)) {
+    for (const publisher of await directoryEntries(root, filesystem)) {
+      if (!publisher.isDirectory() || publisher.isSymbolicLink() || publisher.name.startsWith(".")) continue;
+      const publisherPath = path.join(root, publisher.name);
+      for (const model of await directoryEntries(publisherPath, filesystem)) {
+        if (!model.isDirectory() || model.isSymbolicLink() || model.name.startsWith(".")) continue;
+        if (!await containsModelFile(path.join(publisherPath, model.name), filesystem)) continue;
+        const id = `${publisher.name}/${model.name}`;
+        if (validDiskModelId(id)) models.add(id);
+        if (models.size >= 10_000) return [...models].sort();
+      }
+    }
+  }
+  return [...models].sort();
+}
+
+async function lmStudioModelRoots(
+  home: string,
+  filesystem: Pick<typeof fs, "readdir" | "readFile">,
+): Promise<string[]> {
+  const roots = [path.join(home, ".lmstudio", "models")];
+  try {
+    const raw = await filesystem.readFile(path.join(home, ".lmstudio", "settings.json"), "utf8");
+    const configured = (JSON.parse(raw) as { downloadsFolder?: unknown }).downloadsFolder;
+    if (typeof configured === "string" && path.isAbsolute(configured)) roots.push(configured);
+  } catch {
+    // The default model directory remains usable when settings are absent or malformed.
+  }
+  return [...new Set(roots)];
+}
+
+async function discoverInstalledRuntime(
+  adapter: LocalRuntimeAdapter,
+  options: LocalRuntimeDiscoveryOptions,
+): Promise<LocalRuntimeProbeSuccess | undefined> {
+  if (!isAutomaticLocalRuntimeAdapterId(adapter.id) || adapter.candidates.length === 0) return undefined;
+  const home = options.homeDir ?? os.homedir();
+  let confirmedModelIds: string[] = [];
+  if (adapter.id === "ollama") {
+    confirmedModelIds = await discoverOllamaModelsFromDisk(options);
+  } else if (adapter.id === "lm-studio") {
+    confirmedModelIds = await discoverTwoLevelModelDirectory(
+      await lmStudioModelRoots(home, options.filesystem ?? fs), options,
+    );
+  } else if (adapter.id === "omlx") {
+    confirmedModelIds = await discoverTwoLevelModelDirectory([path.join(home, ".omlx", "models")], options);
+  }
+  if (confirmedModelIds.length === 0) return undefined;
+  return {
+    status: "discovered",
+    adapter: adapter.id,
+    displayName: adapter.displayName,
+    endpoint: new URL(adapter.candidates[0].endpoint).origin,
+    confirmedModelIds,
+    discoveryMethod: "filesystem",
+  };
 }
 
 export async function discoverLocalRuntimes(
@@ -689,6 +835,14 @@ export async function discoverLocalRuntimes(
       try {
         discovered = await probeLocalRuntimeCandidate(adapter, candidate, options);
         break;
+      } catch (error: any) {
+        lastError = error?.message ?? String(error);
+      }
+    }
+
+    if (!discovered) {
+      try {
+        discovered = await discoverInstalledRuntime(adapter, options);
       } catch (error: any) {
         lastError = error?.message ?? String(error);
       }
