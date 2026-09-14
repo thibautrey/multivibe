@@ -736,3 +736,26 @@ final class MessageMarkdownTests: XCTestCase {
         XCTAssertFalse(manager.isLoadingModels)
     }
 }
+
+@MainActor final class NativePasskeyOptionsTests: XCTestCase {
+    func testPasskeyChallengeAndAllowList() throws {
+        let options = NativePasskeyOptions(challenge: "YWJj", rpId: "app.multivibe.cloud",
+            allowCredentials: [.init(id: "ZGVm", type: "public-key")])
+        let request = try options.request()
+        XCTAssertEqual(request.challenge, Data("abc".utf8))
+        XCTAssertEqual(request.allowedCredentials.first?.credentialID, Data("def".utf8))
+    }
+    func testPasskeyRejectsOtherRPAndInvalidOptions() {
+        for options in [
+            NativePasskeyOptions(challenge: "YWJj", rpId: "evil.example", allowCredentials: [.init(id: "ZGVm", type: "public-key")]),
+            NativePasskeyOptions(challenge: "!", rpId: "app.multivibe.cloud", allowCredentials: [.init(id: "ZGVm", type: "public-key")]),
+            NativePasskeyOptions(challenge: "YWJj", rpId: "app.multivibe.cloud", allowCredentials: []),
+            NativePasskeyOptions(challenge: "YWJj", rpId: "app.multivibe.cloud", allowCredentials: [.init(id: "ZGVm", type: "password")])
+        ] { XCTAssertThrowsError(try options.request()) }
+    }
+    func testLegacyReplyStillSupportsOTP() throws {
+        let reply = try JSONDecoder().decode(AuthReply.self, from: Data(#"{"status":"mfa_required","challenge":"opaque"}"#.utf8))
+        XCTAssertNil(reply.passkeyOptions)
+        XCTAssertEqual(reply.challenge, "opaque")
+    }
+}

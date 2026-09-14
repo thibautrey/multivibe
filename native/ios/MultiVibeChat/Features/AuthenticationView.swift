@@ -22,7 +22,8 @@ import CryptoKit
     func submit(mode: String, fields: [String: String],
                 accept: @escaping @MainActor (NativeSession) async throws -> Void,
                 challenge: @escaping @MainActor (String) -> Void,
-                failure: @escaping @MainActor (Error, @escaping @MainActor () -> Bool) async -> Void) {
+                failure: @escaping @MainActor (Error, @escaping @MainActor () -> Bool) async -> Void,
+                passkey: @escaping @MainActor (NativePasskeyOptions?) -> Void = { _ in }) {
         guard !busy else { return }
         let id = UUID(); current = id; busy = true
         tasks[id] = Task {
@@ -39,6 +40,7 @@ import CryptoKit
                 }
                 if reply.status == "mfa_required", let value = reply.challenge,
                    !value.isEmpty, reply.refreshToken == nil, reply.accessToken == nil {
+                    passkey(reply.passkeyOptions)
                     challenge(value)
                     return
                 }
@@ -66,6 +68,8 @@ struct AuthenticationView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(ConversationManager.self) private var manager
     @State private var sso = NativeSSOController()
+    @State private var passkeyController = NativePasskeyController()
+    @State private var passkeyOptions: NativePasskeyOptions?
     @State private var ssoTask: Task<Void, Never>?
     @State private var credentials = NativeCredentialFlow()
     @State private var signup = false
@@ -121,18 +125,27 @@ struct AuthenticationView: View {
                                 Text("ou").font(.caption).foregroundStyle(.secondary)
                                 Rectangle().fill(.primary.opacity(0.12)).frame(height: 1)
                             }.accessibilityHidden(true)
-                            Button { authenticateSSO() } label: {
-                                HStack(spacing: 10) {
-                                    if ssoBusy { ProgressView() }
-                                    else { Image(systemName: "person.badge.key") }
-                                    Text("Continuer avec le SSO").fontWeight(.medium)
-                                }.frame(maxWidth: .infinity).frame(minHeight: 32)
+                            ForEach(["Google", "GitHub"], id: \.self) { provider in
+                                Button { authenticateSSO(provider: provider.lowercased()) } label: {
+                                    Text("Continuer avec \(provider)").fontWeight(.medium)
+                                        .frame(maxWidth: .infinity).frame(minHeight: 32)
+                                }
+                                .buttonStyle(.bordered).controlSize(.large)
+                                .buttonBorderShape(.roundedRectangle(radius: 16))
+                                .disabled(busy || authConfiguration?.nativeProviderSelection != true
+                                    || (authConfiguration?.signupEnabled == true && !terms))
+                                .accessibilityIdentifier("signInWith" + provider)
                             }
-                            .buttonStyle(.bordered).controlSize(.large)
-                            .buttonBorderShape(.roundedRectangle(radius: 16)).disabled(busy)
-                            Text("Choisissez votre fournisseur dans la fenêtre sécurisée.")
+                            if !signup, authConfiguration?.signupEnabled == true { signupConsent }
+                            Button("Autre fournisseur SSO") { authenticateSSO() }.disabled(busy)
+                            Text("Authentification dans une fenêtre sécurisée d’iOS.")
                                 .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                         }
+                    }
+                    if challenge != nil, passkeyOptions != nil {
+                        Button("Utiliser une passkey", systemImage: "person.badge.key") { authenticatePasskey() }
+                            .buttonStyle(.bordered).controlSize(.large).disabled(busy)
+                            .accessibilityIdentifier("verifyWithPasskey")
                     }
                     footer
                 }
@@ -155,7 +168,7 @@ struct AuthenticationView: View {
         }
         .sheet(isPresented: $privacyPresented) { NativePrivacyView() }
         .task { await loadConfiguration() }
-        .onDisappear { credentials.cancel(); ssoTask?.cancel(); sso.cancel(); password = ""; confirmPassword = ""; code = ""; challenge = nil }
+        .onDisappear { credentials.cancel(); ssoTask?.cancel(); sso.cancel(); passkeyController.cancel(); passkeyOptions = nil; password = ""; confirmPassword = ""; code = ""; challenge = nil }
     }
 
     private var header: some View {
@@ -244,7 +257,7 @@ struct AuthenticationView: View {
     private var footer: some View {
         VStack(spacing: 4) {
             if challenge != nil {
-                Button("Recommencer la connexion") { challenge = nil; code = ""; password = ""; error = nil }
+                Button("Recommencer la connexion") { challenge = nil; passkeyOptions = nil; code = ""; password = ""; error = nil }
                     .disabled(busy)
             } else {
                 Text(signup ? "Déjà membre de MultiVibe ?" : "Pas encore de compte ?").foregroundStyle(.secondary)
@@ -262,13 +275,13 @@ struct AuthenticationView: View {
         do { authConfiguration = try await ChatAPI.shared.authenticationConfiguration() }
         catch { authConfiguration = nil; self.error = error.localizedDescription }
     }
-    private func authenticateSSO() {
+    private func authenticateSSO(provider: String? = nil) {
         guard !busy else { return }
         ssoBusy = true; error = nil
         ssoTask = Task {
             defer { ssoBusy = false; ssoTask = nil }
             do {
-                let session = try await sso.signIn()
+                let session = try await sso.signIn(provider: provider, termsVersion: terms ? authConfiguration?.termsVersion : nil)
                 do { try Task.checkCancellation() }
                 catch { try? await ChatAPI.shared.revoke(token: session.refreshToken); throw error }
                 try await manager.accept(session); password = ""
@@ -277,6 +290,21 @@ struct AuthenticationView: View {
             } catch { self.error = error.localizedDescription }
         }
     }
+    private func authenticatePasskey() {
+        guard !busy, let challenge, let options = passkeyOptions else { return }
+        ssoBusy = true; error = nil; focusedField = nil
+        ssoTask = Task {
+            defer { ssoBusy = false; ssoTask = nil }
+            do {
+                let response = try await passkeyController.assertion(options: options)
+                try Task.checkCancellation()
+                submitCredentials(mode: "passkey", fields: ["challenge": challenge, "response": response])
+            } catch is CancellationError {
+            } catch let failure as ASAuthorizationError where failure.code == .canceled {
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
     private func authenticate() {
         guard canSubmit else { return }
         focusedField = nil; error = nil
@@ -284,6 +312,9 @@ struct AuthenticationView: View {
         let fields = challenge.map { ["challenge": $0, "code": code] }
             ?? ["email": email, "password": password, "termsAccepted": terms ? "true" : "false",
                 "termsVersion": authConfiguration?.termsVersion ?? ""]
+        submitCredentials(mode: mode, fields: fields)
+    }
+    private func submitCredentials(mode: String, fields: [String: String]) {
         credentials.submit(mode: mode, fields: fields, accept: { session in
             try await manager.accept(session)
             password = ""; confirmPassword = ""
@@ -296,7 +327,7 @@ struct AuthenticationView: View {
                 terms = false; authConfiguration = refreshed
                 error = "Les conditions ont changé. Consultez-les et acceptez-les avant de réessayer."
             } else { error = failure.localizedDescription }
-        })
+        }, passkey: { passkeyOptions = $0 })
     }
 }
 
@@ -383,7 +414,7 @@ struct PasswordRecoveryView: View {
     private var continuation: CheckedContinuation<URL, Error>?
     private var attempt: UUID?
 
-    func signIn() async throws -> NativeSession {
+    func signIn(provider: String? = nil, termsVersion: String? = nil) async throws -> NativeSession {
         try Task.checkCancellation()
         guard attempt == nil else { throw APIError.invalidResponse }
         guard let window = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene })
@@ -403,6 +434,11 @@ struct PasswordRecoveryView: View {
             URLQueryItem(name: "response_type", value: "code"), URLQueryItem(name: "scope", value: "openid profile projects:read"),
             URLQueryItem(name: "code_challenge", value: challenge), URLQueryItem(name: "code_challenge_method", value: "S256"),
             URLQueryItem(name: "state", value: state)]
+        if let provider {
+            guard ["google", "github"].contains(provider) else { throw APIError.invalidResponse }
+            url.queryItems?.append(URLQueryItem(name: "provider", value: provider))
+            if let termsVersion { url.queryItems?.append(URLQueryItem(name: "terms_version", value: termsVersion)) }
+        }
         let callback = try await withTaskCancellationHandler {
             try Task.checkCancellation()
             return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
@@ -468,4 +504,50 @@ struct PasswordRecoveryView: View {
 
 private extension Data {
     var base64URL: String { base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "") }
+}
+
+/// The system returns a signed WebAuthn assertion; private keys never leave the credential provider.
+@MainActor @Observable final class NativePasskeyController: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
+    private var controller: ASAuthorizationController?
+    private var pending: CheckedContinuation<String, Error>?
+    private var window: UIWindow?
+    func assertion(options: NativePasskeyOptions) async throws -> String {
+        try Task.checkCancellation()
+        guard controller == nil, let window = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene })
+            .filter({ $0.activationState == .foregroundActive }).flatMap(\.windows).first(where: \.isKeyWindow) else { throw APIError.invalidResponse }
+        let request = try options.request()
+        self.window = window
+        defer { controller = nil; self.window = nil }
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                pending = continuation
+                let controller = ASAuthorizationController(authorizationRequests: [request])
+                self.controller = controller
+                controller.delegate = self; controller.presentationContextProvider = self
+                controller.performRequests()
+            }
+        } onCancel: { Task { @MainActor in self.cancel() } }
+    }
+    func cancel() { controller?.cancel(); finish(.failure(CancellationError())) }
+    private func finish(_ result: Result<String, Error>) { let continuation = pending; pending = nil; continuation?.resume(with: result) }
+    func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor { window! }
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
+        guard self.controller === controller else { return }; finish(.failure(error))
+    }
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
+        guard self.controller === controller else { return }
+        guard let credential = authorization.credential as? ASAuthorizationPlatformPublicKeyCredentialAssertion else {
+            finish(.failure(APIError.invalidResponse)); return
+        }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: ["id": credential.credentialID.base64URL,
+                "rawId": credential.credentialID.base64URL, "type": "public-key", "clientExtensionResults": [:],
+                "response": ["clientDataJSON": credential.rawClientDataJSON.base64URL,
+                    "authenticatorData": credential.rawAuthenticatorData.base64URL,
+                    "signature": credential.signature.base64URL, "userHandle": credential.userID.base64URL]])
+            guard let response = String(data: data, encoding: .utf8) else { throw APIError.invalidResponse }
+            finish(.success(response))
+        } catch { finish(.failure(error)) }
+    }
 }
