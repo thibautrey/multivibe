@@ -45,3 +45,22 @@ test('Team removals are acknowledged again after local deletion and reject inval
  await assert.rejects(sync.applyManifest({...manifest,removedProviders:[{id,revision:10}]}),/revision/);
  await assert.rejects(sync.applyManifest({...manifest,removedProviders:[]}),/removals/);
 });
+
+test('Team manifest preflight rejects late failures without changing accounts or cursor',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'team-preflight-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const store=new AccountStore(path.join(root,'accounts.json'));await store.init();
+ const sync=new MultivibeTeamSyncService(store,path.join(root,'identity.json'));await sync.initialize();
+ const first={id:'123e4567-e89b-42d3-a456-426614174000',provider:'openai' as const,displayName:'Shared',endpoint:'https://api.openai.com/v1',models:['gpt-test'],deliveryMode:'cloud_proxy' as const,enabled:true,revision:1};
+ const second={...first,id:'123e4567-e89b-42d3-a456-426614174001',deliveryMode:'distributed' as const};
+ const manifest={schemaVersion:'multivibe-team-sync-v1' as const,cursor:1,removedProviderIds:[],providers:[first,second]};
+ await assert.rejects(sync.applyManifest(manifest),/unavailable/);
+ assert.deepEqual(await store.listAccounts(),[]);
+ assert.equal((await store.getSettings()).multivibeTeam?.syncCursor,undefined);
+ await assert.rejects(sync.applyManifest({...manifest,providers:[first,first]}),/invalid/);
+ await assert.rejects(sync.applyManifest({...manifest,providers:[first,{...second,revision:2}]}),/invalid/);
+ await assert.rejects(sync.applyManifest({...manifest,providers:[first,{...second,sealedCredential:{schemaVersion:'multivibe-team-sealed-credential-v1',algorithm:'X25519-HKDF-SHA256-AES-256-GCM',ephemeralPublicKeySpki:'invalid',nonce:'invalid',ciphertext:'invalid',tag:'invalid'}}]}));
+ assert.deepEqual(await store.listAccounts(),[]);
+ await sync.applyManifest({...manifest,providers:[first]});
+ await assert.rejects(sync.duplicateAsLocal(first.id),/cannot be copied/);
+ assert.equal((await store.listAccounts()).length,1);
+});

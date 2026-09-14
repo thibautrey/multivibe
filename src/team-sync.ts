@@ -69,26 +69,34 @@ export class MultivibeTeamSyncService {
 
   async applyManifest(manifest:TeamSyncManifest):Promise<{applied:string[];removed:string[]}> {
     if(manifest.schemaVersion!=='multivibe-team-sync-v1'||!Number.isSafeInteger(manifest.cursor)||manifest.cursor<0) throw new Error('Team Sync manifest is invalid');
+    if(!Array.isArray(manifest.providers))throw new Error('Team providers are invalid');
     if(!Array.isArray(manifest.removedProviderIds)||manifest.removedProviderIds.some(id=>!UUID.test(id)))throw new Error('Team removals are invalid');
     if(manifest.removedProviders!==undefined){
       if(!Array.isArray(manifest.removedProviders)||manifest.removedProviders.length!==manifest.removedProviderIds.length||new Set(manifest.removedProviderIds).size!==manifest.removedProviderIds.length)throw new Error('Team removals are invalid');
       const ids=new Set<string>();
       for(const removal of manifest.removedProviders){if(!UUID.test(removal.id)||ids.has(removal.id)||!manifest.removedProviderIds.includes(removal.id)||!Number.isSafeInteger(removal.revision)||removal.revision<1||removal.revision>manifest.cursor)throw new Error('Team removal revision is invalid');ids.add(removal.id);}
     }
-    if(manifest.providers.some(provider=>manifest.removedProviderIds.includes(provider.id)))throw new Error('Conflicting Team provider removal');
+    if(manifest.providers.some(provider=>provider&&manifest.removedProviderIds.includes(provider.id)))throw new Error('Conflicting Team provider removal');
     const settings=await this.store.getSettings(); const current=settings.multivibeTeam?.syncCursor??0;
     if(manifest.cursor<current) throw new Error('Team Sync manifest is stale');
     const applied:string[]=[]; const removed:string[]=[];
+    const accounts=await this.store.listAccounts();
+    const prepared:Account[]=[];const providerIds=new Set<string>();
     for(const item of manifest.providers){
-      if(!UUID.test(item.id)||!Number.isSafeInteger(item.revision)||item.revision<1) throw new Error('Team provider manifest is invalid');
+      if(!item||!UUID.test(item.id)||providerIds.has(item.id)||!Number.isSafeInteger(item.revision)||item.revision<1||item.revision>manifest.cursor) throw new Error('Team provider manifest is invalid');
+      providerIds.add(item.id);
+      if(!['distributed','cloud_proxy'].includes(item.deliveryMode)||typeof item.enabled!=='boolean'||!Array.isArray(item.models)||item.models.some(model=>typeof model!=='string'||!model.trim()))throw new Error('Team provider manifest is invalid');
       if(item.deliveryMode==='distributed'&&!item.sealedCredential) throw new Error('Distributed Team provider credential is unavailable');
       if(item.deliveryMode==='cloud_proxy'&&item.sealedCredential) throw new Error('Cloud proxy manifest exposed a provider credential');
-      const existing=(await this.store.listAccounts()).find(account=>account.multivibeTeam?.providerId===item.id);
+      const existing=accounts.find(account=>account.multivibeTeam?.providerId===item.id);
       if(existing&&existing.multivibeTeam!.revision>item.revision) throw new Error('Team provider revision is stale');
       const credential=item.sealedCredential?this.openCredential(item.id,item.revision,item.sealedCredential):undefined;
       const account:Account={...existing,id:existing?.id??`team-${item.id}`,provider:item.provider,email:item.displayName,accessToken:credential?.accessToken??'',refreshToken:credential?.refreshToken,expiresAt:credential?.expiresAt,baseUrl:item.deliveryMode==='cloud_proxy'?`https://api.multivibe.cloud/team/providers/${item.id}`:item.endpoint,enabled:item.enabled,location:'cloud',priority:existing?.priority??0,multivibeTeam:{providerId:item.id,deliveryMode:item.deliveryMode,revision:item.revision,readOnly:true}};
-      await this.store.addOrUpdate(account); applied.push(item.id);
+      prepared.push(account);
     }
+    // Validate and decrypt the entire manifest before making any local change.
+    // Storage I/O failures are still retryable, not an atomic database transaction.
+    for(const account of prepared){await this.store.addOrUpdate(account);applied.push(account.multivibeTeam!.providerId);}
     for(const providerId of manifest.removedProviderIds){const account=(await this.store.listAccounts()).find(value=>value.multivibeTeam?.providerId===providerId);if(account)await this.store.deleteAccount(account.id);removed.push(providerId);}
     await this.store.patchSettings({multivibeTeam:{...settings.multivibeTeam,enabled:true,instanceId:this.getIdentity().instanceId,instanceName:settings.multivibeTeam?.instanceName??'Multivibe instance',syncCursor:manifest.cursor,lastSuccessfulSyncAt:new Date().toISOString(),lastSuccessfulAnalyticsUploadAt:settings.multivibeTeam?.lastSuccessfulAnalyticsUploadAt}});
     return {applied,removed};
@@ -96,6 +104,7 @@ export class MultivibeTeamSyncService {
 
   async duplicateAsLocal(providerId:string):Promise<Account>{
     const source=(await this.store.listAccounts()).find(value=>value.multivibeTeam?.providerId===providerId);if(!source)throw new Error('Team provider not found');
+    if(source.multivibeTeam?.deliveryMode==='cloud_proxy')throw new Error('Cloud proxy providers cannot be copied as local credentials');
     const {multivibeTeam:_,...copy}=source;const account:Account={...copy,id:randomUUID(),email:`${copy.email??copy.provider??'Provider'} (local copy)`};await this.store.addOrUpdate(account);return account;
   }
   async detach():Promise<void>{
