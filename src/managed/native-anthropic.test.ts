@@ -15,7 +15,7 @@ test("native managed connector reuses Anthropic SDK codec with bounded credentia
  }});
  const result=await account.chatCompletions(body,AbortSignal.timeout(1000),authorization);
  const payload=await result.json();assert.equal(payload.choices[0].message.content,"Hi");assert.equal(payload.provider_metadata,undefined);
- assert.deepEqual(providerTokenUsage(payload),{inputTokens:"5",outputTokens:"2",totalTokens:"7",cachedInputTokens:"0"});
+ assert.deepEqual(providerTokenUsage(payload),{inputTokens:"5",outputTokens:"2",totalTokens:"7",cachedInputTokens:"0",cacheWriteInputTokens:"0"});
  assert.equal(calls,1);assert.equal(reads,1);
 });
 test("invalid native options never read a credential; upstream failure is not retried",async()=>{
@@ -81,4 +81,11 @@ test("native SDK response with advisor usage cannot become a priced chat complet
  })});
  const result=await (await account.chatCompletions(body,AbortSignal.timeout(1000),authorization)).json();
  assert.equal(result.choices[0].message.content,"Hi");assert.equal(result.usage,null);assert.equal(providerTokenUsage(result),null);
+});
+
+test("native cache writes require matching standard five-minute evidence",()=>{
+ const usage={inputTokens:{total:15,noCache:5,cacheRead:3,cacheWrite:7},outputTokens:{total:2,text:2,reasoning:undefined},raw:{input_tokens:5,output_tokens:2,cache_read_input_tokens:3,cache_creation_input_tokens:7,cache_creation:{ephemeral_5m_input_tokens:7,ephemeral_1h_input_tokens:0},inference_geo:"global"}};
+ assert.equal(nativeAnthropicUsageEligible(usage),true);
+ for(const extra of [{inference_geo:"us"},{cache_creation:{ephemeral_5m_input_tokens:6,ephemeral_1h_input_tokens:1}},{cache_creation:{ephemeral_5m_input_tokens:6}},{cache_creation:{ephemeral_1h_input_tokens:null}},{cache_creation:{unknown_tokens:7}}])assert.equal(nativeAnthropicUsageEligible({...usage,raw:{...usage.raw,...extra}}),false);
+ assert.equal(nativeAnthropicUsageEligible({...usage,inputTokens:{...usage.inputTokens,total:14}}),false);
 });
