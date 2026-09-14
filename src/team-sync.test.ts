@@ -97,3 +97,27 @@ test('a complete Team manifest changes accounts and cursor in one store generati
  await assert.rejects(store.commitTeamManifest([],[],0,disk.settings.multivibeTeam),/cursor changed/);
  assert.equal((await store.listAccounts()).length,2);
 });
+
+test('failed manifest persistence is not acknowledged and retries the complete generation',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'team-write-failure-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const file=path.join(root,'accounts.json'),store=new AccountStore(file);await store.init();
+ const sync=new MultivibeTeamSyncService(store,path.join(root,'identity.json'));await sync.initialize();
+ const original=await fs.readFile(file,'utf8');
+ const provider={id:'123e4567-e89b-42d3-a456-426614174000',provider:'openai' as const,displayName:'Shared',endpoint:'https://api.openai.com/v1',models:[],deliveryMode:'cloud_proxy' as const,enabled:true,revision:1};
+ const manifest={schemaVersion:'multivibe-team-sync-v1' as const,cursor:1,removedProviderIds:[],providers:[provider,{...provider,id:'123e4567-e89b-42d3-a456-426614174001'}]};
+ // A directory at the destination forces rename to fail without mocking persistence.
+ await fs.rename(file,file+'.saved');await fs.mkdir(file);
+ try {
+  await assert.rejects(sync.applyManifest(manifest));
+  assert.equal(store.getPersistenceStatus().dirty,true);
+  assert.equal((await store.listAccounts()).length,2);
+  assert.equal((await store.getSettings()).multivibeTeam?.syncCursor,1);
+  assert.equal(await fs.readFile(file+'.saved','utf8'),original);
+ } finally {
+  await fs.rmdir(file);await fs.rename(file+'.saved',file);
+ }
+ const result=await sync.applyManifest(manifest);
+ assert.equal(result.applied.length,2);assert.equal(store.getPersistenceStatus().dirty,false);
+ const disk=JSON.parse(await fs.readFile(file,'utf8'));
+ assert.equal(disk.accounts.length,2);assert.equal(disk.settings.multivibeTeam.syncCursor,1);
+});
