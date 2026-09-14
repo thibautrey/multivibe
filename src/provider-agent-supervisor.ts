@@ -181,6 +181,16 @@ export type ProviderDemandPlan = {
   };
 };
 
+export type LocalPreparationResources = {
+  observed_at: string;
+  policy_revision: number;
+  free_host_memory_bytes: number | null;
+  free_accelerator_memory_bytes: number | null;
+  free_storage_bytes: number | null;
+  occupied_storage_bytes: number | null;
+  storage_error?: "host_policy_required" | "storage_unavailable";
+};
+
 export type ProviderManagedOllamaView = {
   schema_version: "provider-managed-controller-view-v1";
   state: string;
@@ -248,6 +258,7 @@ export type ProviderAgentControl = {
   getDemandPlan(): Promise<ProviderDemandPlan>;
   submitSignedDemand(envelope: Record<string, unknown>): Promise<{ duplicate: boolean; plan: ProviderDemandPlan }>;
   estimateModelCompatibility(contextTokens: number): Promise<unknown>;
+  getLocalPreparationResources?(): Promise<LocalPreparationResources>;
   getLocalPreparationRuntimeQuote?(): Promise<{version:string;platform:string;sha256:string;bytes:number}>;
   runLocalPreparationOperation?(input: HostPreparationOperation, signal: AbortSignal, progress: (completed:number,total:number)=>Promise<void>): Promise<{runtimeModel?:string;output?:string}>;
   getManagedOllamaStatus(): Promise<ProviderManagedOllamaView>;
@@ -651,6 +662,7 @@ export function startEmbeddedProviderAgent(options: {
     getDemandPlan: unavailable,
     submitSignedDemand: unavailable,
     estimateModelCompatibility: unavailable,
+    getLocalPreparationResources: unavailable,
     getLocalPreparationRuntimeQuote: unavailable,
     runLocalPreparationOperation: unavailable,
     getManagedOllamaStatus: unavailable,
@@ -849,6 +861,8 @@ export function startEmbeddedProviderAgent(options: {
       }, [200, 201]);
       return { duplicate: result.response.status === 200, plan: result.value };
     },
+    getLocalPreparationResources: async () =>
+      (await request<LocalPreparationResources>("/v1/local-preparation/resources", {}, [200])).value,
     getLocalPreparationRuntimeQuote: async () =>
       (await request<{version:string;platform:string;sha256:string;bytes:number}>("/v1/local-preparation/runtime-quote", {}, [200])).value,
     runLocalPreparationOperation: async (input, signal, progress) => {

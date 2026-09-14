@@ -73,6 +73,8 @@ func fixedPlatformCommand(ctx context.Context, name string, arguments ...string)
 		} else {
 			candidates = []string{"/usr/bin/nvidia-smi", "/usr/local/bin/nvidia-smi", "/bin/nvidia-smi"}
 		}
+	case "vm_stat":
+		candidates = []string{"/usr/bin/vm_stat"}
 	case "sysctl":
 		candidates = []string{"/usr/sbin/sysctl"}
 	default:
