@@ -1924,7 +1924,7 @@ export function AccountsTab(props: Props) {
             return (
               <article
                 key={a.id}
-                className={`provider-card${needsReauthentication ? " provider-card-needs-reauth" : ""}`}
+                className={`provider-card${isCloud ? " provider-card-cloud" : ""}${needsReauthentication ? " provider-card-needs-reauth" : ""}`}
               >
                 {needsReauthentication && (
                   <div
@@ -2150,7 +2150,7 @@ export function AccountsTab(props: Props) {
                   </div>
                 </div>
                 {isCloud ? (
-                  <div className="provider-card-content">
+                  <div className="provider-card-content cloud-provider-content">
                     <div className="cloud-provider-balance">
                       <span className="muted">Available balance</span>
                       <strong>
@@ -2170,9 +2170,6 @@ export function AccountsTab(props: Props) {
                       {multivibeCloud.status === "disconnected" && (
                         <button className="btn secondary" type="button" onClick={() => void connectCloud()} disabled={cloudBusy}>Reconnect</button>
                       )}
-                      <button className="cloud-disconnect-link" type="button" onClick={() => void disconnectCloud()} disabled={cloudBusy}>
-                        {cloudBusy ? "Disconnecting…" : "Disconnect"}
-                      </button>
                     </div>
                   </div>
                 ) : <div className="provider-card-content">

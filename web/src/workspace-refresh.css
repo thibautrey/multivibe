@@ -212,3 +212,50 @@
 @media (max-width: 600px) { .device-guide-steps { grid-template-columns: 1fr; } }
 
 .provider-initials { font-family: var(--sans); font-size: 12px; font-weight: 700; color: var(--muted-strong); }
+
+/* Keep the Cloud account summary dense: balance and billing action share one row. */
+.providers-list-panel .provider-card-cloud .provider-card-header {
+  padding-block: 10px;
+}
+
+.providers-list-panel .cloud-provider-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding-block: 10px;
+}
+
+.providers-list-panel .cloud-provider-balance {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.providers-list-panel .cloud-provider-balance strong {
+  font-size: 1rem;
+}
+
+.providers-list-panel .cloud-provider-content .local-worker-provider-actions {
+  display: flex;
+  align-items: center;
+}
+
+.providers-list-panel .cloud-provider-content .local-worker-provider-actions .btn {
+  min-height: 34px;
+  padding: 7px 12px;
+  white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+  .providers-list-panel .cloud-provider-content {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .providers-list-panel .cloud-provider-content .local-worker-provider-actions,
+  .providers-list-panel .cloud-provider-content .local-worker-provider-actions .btn {
+    width: 100%;
+  }
+}
