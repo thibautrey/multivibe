@@ -1842,7 +1842,7 @@ export function AccountsTab(props: Props) {
               <img className="local-worker-provider-icon" src="/assets/brand/multivibe-app-icon.svg" alt="" />
               <div>
                 <h3 id="multivibe-cloud-provider-title">MultiVibe Cloud</h3>
-                {multivibeCloud.status === "unavailable" && <p className="muted">Unavailable</p>}
+                {multivibeCloud.status === "unavailable" && <p className="muted">Connection temporarily unavailable. Host will retry automatically.</p>}
                 {cloudError && <p className="account-inline-error" role="alert">{cloudError}</p>}
               </div>
             </div>
@@ -2159,6 +2159,7 @@ export function AccountsTab(props: Props) {
                           : "Balance unavailable"}
                       </strong>
                       {multivibeCloud.subscription && <span className="muted">{multivibeCloud.subscription}</span>}
+                      {multivibeCloud.status === "unavailable" && <span className="muted">Reconnecting automatically…</span>}
                       {multivibeCloud.status === "disconnected" && <span className="muted">Reconnect to refresh your Cloud session.</span>}
                       {cloudError && <p className="account-inline-error" role="alert">{cloudError}</p>}
                     </div>
