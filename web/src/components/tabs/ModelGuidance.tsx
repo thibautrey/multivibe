@@ -24,7 +24,7 @@ export function ModelGuidance({ view, catalog, cloudConnected, canConfigure, onU
       </button>)}</div>
     </fieldset>
     {connectionError && <p role="alert">{connectionError}</p>}
-    <OpenModelDiscovery compact={view === 'guided'} need={need} />
+    <OpenModelDiscovery compact={view === 'guided'} need={need} connected={catalog} onUse={onUse} />
     <div className="models-empty-actions"><button className="btn ghost" onClick={onExpert}>My connected models</button>{!cloudConnected && canConfigure && <button className="btn ghost" disabled={connecting} onClick={()=>void onConnectCloud()}>{connecting?'Connecting…':'Connect Cloud'}</button>}</div>
     <details className="models-local-help"><summary>What about my computer?</summary><p>Automatic setup with consent and a test is not available here yet. No download will start. Existing installations stay unchanged.</p><p>On mobile, the model runs on Host, not on your phone.</p></details>
   </div>;
