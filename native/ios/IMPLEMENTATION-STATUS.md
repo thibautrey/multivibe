@@ -1,6 +1,6 @@
 # Native iOS chat — implementation in progress
 
-## Current authoritative status — September 13, 2026
+## Current authoritative status — September 14, 2026
 
 Source is integrated into local `main`, without a push. **Not release-ready.**
 The historical journal below records intermediate observations; outstanding items
@@ -32,6 +32,33 @@ in older entries are superseded by this summary and subsequent validation entrie
 - Backend native auth/history/recovery routes, Apple OIDC adapter/broker source,
   migration files and optional deployment configuration are present locally.
   They have not been migrated, provisioned or deployed by this task.
+
+### Native authentication parity — September 14, 2026
+
+- Dedicated Google and GitHub buttons now start the system authentication session
+  with provider selection, PKCE/state and the existing HTTPS iOS callback. Legal
+  consent uses the server's current terms version. The generic SSO alternative
+  remains available; no embedded login webview or provider tokens in the app.
+- The six-digit code is authenticator **TOTP**, matching the web MFA flow, not an
+  emailed code. An already registered passkey is a native system-sheet alternative
+  at that MFA step, not passwordless first-factor login or in-app enrollment.
+- Native WebAuthn assertions are verified by the existing backend service with
+  RP `app.multivibe.cloud`, required user verification and a native-only challenge.
+  Browser and native challenge purposes remain isolated; consumed proofs cannot
+  be replayed. Both associated hosts expose the configured signed-app association.
+- Rollout gates: deploy the compatible backend before direct provider buttons can
+  activate (`nativeProviderSelection` capability); configure the signed Apple
+  TeamID/bundleID association and publish AASA on `app.multivibe.cloud`; retain the
+  signed `webcredentials:app.multivibe.cloud` entitlement. Real iPhone/provider,
+  authenticator and passkey authentication have not been performed by this task.
+- Guest chat, preserved draft and explicit send behavior remain unchanged.
+- Main-branch unsigned iPhone 17 / iOS 26.5 simulator validation passed **57 unit
+  tests and 4 UI tests**, zero failures (`/tmp/multivibe-auth-parity-tests.log`).
+  New passkey option parsing/validation and provider button presence are covered.
+  The light login screenshot was visually inspected; UI tests do not authenticate.
+  Disposable simulator and exact DerivedData directory were removed.
+- Backend auth regression results and any unrelated full-build limitations are
+  recorded in the task completion response. No push or deployment performed.
 
 ### Latest completed validation
 
