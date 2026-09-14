@@ -1,3 +1,4 @@
+import { loadOpenModelCatalog } from './open-model-catalog.js';
 import { takeDeviceSignIn } from "./host/device-signin.js";
 import { teamMachineTrustedKeys } from "./team-machine-trust.js";
 import { createServer as createTeamHttpsServer } from "node:https";
@@ -788,6 +789,8 @@ app.get("/{*path}", (req, res, next) => {
 Sentry.setupExpressErrorHandler(app);
 
 const server = http.createServer(app);
+const stopOpenCatalog = loadOpenModelCatalog.start();
+server.once("close", stopOpenCatalog);
 server.listen(nodeHost ? { port: nodePort, host: nodeHost } : { port: nodePort }, () => {
   smartRouting.startHealthMonitoring();
   hostHarnessIntegrations?.startCatalogSynchronization();

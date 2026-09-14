@@ -1,3 +1,4 @@
+import { rankOpenModels, catalogSorts, type CatalogNeed, type CatalogSort, type RuntimeEstimate } from '../../open-model-ranking.js';
 import { loadOpenModelCatalog } from '../../open-model-catalog.js';
 import { GUIDANCE_VERSION, modelNeeds, relevantChoices, recommendedChoices, verifiedCloudCatalog, type GuidanceEntry, type ModelNeed } from '../../model-guidance.js';
 import { invoiceOverview } from "../../provider-invoices.js";
@@ -1017,6 +1018,28 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       const status = message.includes("registration is disabled") ? 503 : 400;
       res.status(status).json({ error: message });
     }
+  });
+
+  router.get("/model-recommendations", async (req, res) => {
+    res.setHeader("cache-control", "no-store");
+    const need = String(req.query.need ?? 'writing'); const sort = String(req.query.sort ?? 'recommended');
+    if (!['writing','coding','translation','documents'].includes(need) || !catalogSorts.includes(sort as CatalogSort) || (req.query.host && req.query.host !== 'local')) return res.status(400).json({error:'Invalid recommendation query'});
+    try {
+      const catalog = await loadOpenModelCatalog();
+      let host: { name: string; supported: boolean } | null = null; let estimates: RuntimeEstimate[] = [];
+      if (options.hostApplication && options.providerAgent?.enabled) {
+        try {
+          const capability = await options.providerAgent.getCapability();
+          host = {name: capability.hardware_model ?? 'This Host', supported: capability.supported};
+          // Existing estimator is read-only and may return unknown for absent weights.
+          if (capability.supported) {
+            const report = await options.providerAgent.estimateModelCompatibility(8192) as {models?: RuntimeEstimate[]};
+            if (Array.isArray(report.models)) estimates = report.models;
+          }
+        } catch { /* Hardware uncertainty must never become a positive compatibility claim. */ }
+      }
+      res.json({catalog, host, recommendations: rankOpenModels(catalog, need as CatalogNeed, sort as CatalogSort, estimates)});
+    } catch { res.status(503).json({error:'Public catalog unavailable'}); }
   });
 
   router.get("/open-model-catalog", async (_req, res) => {

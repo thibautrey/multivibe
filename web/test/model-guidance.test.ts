@@ -1,3 +1,4 @@
+import { parseOpenModels } from '../../src/open-model-catalog.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { modelView, modelNeeds, relevantChoices, recommendedChoices } from '../src/lib/modelGuidance.js';
@@ -10,7 +11,7 @@ test('new users and invalid persisted values use guided mode', () => {
 });
 test('each need has a curated usable choice without fabricated cost or speed', () => {
   for (const need of modelNeeds) {
-    const [choice] = relevantChoices([entry([route('provider')])], need.id);
+    const [choice] = relevantChoices([entry([route('provider')])], need.id, parseOpenModels([{id:'openai/gpt-5', private:false, gated:false, pipeline_tag:'text-generation',tags:['conversational','code','translation','summarization','license:custom']}]).map(m=>({...m,id:'gpt-5'})));
     assert.equal(choice.access, 'usable'); assert.equal(choice.cost.amount, null);
     assert.equal(choice.cost.unit, null); assert.equal(choice.speed.kind, 'unknown');
     assert.ok(choice.evidence.source); assert.ok(choice.reason);

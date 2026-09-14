@@ -1,40 +1,48 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../lib/api';
-import type { OpenModelCatalog } from '../../../../src/open-model-catalog';
-
-export function OpenModelDiscovery({ compact }: { compact: boolean }) {
-  const [catalog, setCatalog] = useState<OpenModelCatalog>();
-  const [error, setError] = useState(false);
-  const [request, setRequest] = useState(0);
-  const [sort, setSort] = useState('trending');
-  const [limit, setLimit] = useState(24);
-  const [query, setQuery] = useState('');
-  useEffect(() => {
-    const controller = new AbortController();
-    const load = () => { void api('/admin/open-model-catalog', { signal: controller.signal }).then((data: OpenModelCatalog) => {
-      if (!controller.signal.aborted) { setCatalog(data); setError(false); }
-    }).catch(() => { if (!controller.signal.aborted) setError(true); }); };
-    load();
-    const interval = window.setInterval(load, 60 * 60 * 1000);
-    return () => { controller.abort(); window.clearInterval(interval); };
-  }, [request]);
-  let models = (catalog?.models ?? []).filter(model => model.id.toLowerCase().includes(query.toLowerCase()));
-  if (sort === 'newest') models = [...models].sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
+import type { OpenModelCatalog, CatalogNeed, CatalogSort, rankOpenModels } from '../../../../src/open-model-ranking';
+type Result = {catalog: OpenModelCatalog; host: {name:string; supported:boolean} | null; recommendations: ReturnType<typeof rankOpenModels>};
+const sortLabels: Record<CatalogSort,string> = {recommended:'Recommended',trending:'Trending',downloads:'Top downloaded',newest:'New',established:'Established'};
+function saved(key:string, fallback:string) { try {return localStorage.getItem(key) ?? fallback;} catch {return fallback;} }
+export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false }: { compact: boolean; need?: CatalogNeed; expert?: boolean }) {
+  const [need,setNeed] = useState<CatalogNeed>(()=>{const v=saved('multivibe.models.need.v1','writing');return ['writing','coding','translation','documents'].includes(v)?v as CatalogNeed:'writing';});
+  const effectiveNeed = selectedNeed ?? need;
+  const [sort,setSort] = useState<CatalogSort>(()=>{const v=saved('multivibe.models.sort.v1','recommended');return v in sortLabels?v as CatalogSort:'recommended';});
+  const [result,setResult] = useState<Result>(); const [error,setError] = useState(false);
+  const [request,setRequest] = useState(0); const [query,setQuery] = useState(''); const [limit,setLimit] = useState(24);
+  const [fitOnly,setFitOnly] = useState(false);
+  useEffect(()=>{try {localStorage.setItem('multivibe.models.sort.v1',sort);localStorage.setItem('multivibe.models.need.v1',effectiveNeed);} catch {/* Optional browser storage. */}},[sort,effectiveNeed]);
+  useEffect(()=>{
+    const controller=new AbortController(); setResult(undefined);setError(false);setLimit(24);
+    const load=()=>void api(`/admin/model-recommendations?need=${effectiveNeed}&sort=${sort}&host=local`,{signal:controller.signal}).then((value:Result)=>{if(!controller.signal.aborted){setResult(value);setError(false);}}).catch(()=>{if(!controller.signal.aborted)setError(true);});
+    load();const timer=setInterval(load,60000);return()=>{controller.abort();clearInterval(timer);};
+  },[effectiveNeed,sort,request]);
+  const models=(result?.recommendations ?? []).filter(row=>row.model.id.toLowerCase().includes(query.toLowerCase()) && (!fitOnly || row.compatibility==='compatible'));
   return <section className="models-open-discovery" aria-label="Open model discovery">
-    <div className="models-selection-heading"><h3>Discover open models</h3><span>Live public catalog</span></div>
-    <p className="muted">Public chat models with permissive license tags. Not installed or tested on your computer.</p>
-    {!compact && <div className="models-compare-filters"><label>Search<input value={query} onChange={event => setQuery(event.target.value)} placeholder="Model or publisher" /></label><label>Sort<select value={sort} onChange={event => setSort(event.target.value)}><option value="trending">Trending first</option><option value="newest">Newest repositories</option></select></label></div>}
-    {(!catalog && !error) && <p role="status">Loading public models…</p>}
-    {(error || catalog?.stale) && <p role="status">{catalog ? 'Showing previously fetched models. Refresh is unavailable.' : 'The public catalog could not be loaded.'} <button className="btn ghost" onClick={() => setRequest(value => value + 1)}>Retry</button></p>}
-    <div className="models-choice-grid">{models.slice(0, compact ? 3 : limit).map(model => <article className="models-choice" key={model.id}>
-      <span className="models-choice-badge">Discovery only</span><h3>{model.id}</h3>
-      <p>{model.license} · {model.createdAt ? `Added ${new Date(model.createdAt).toLocaleDateString('en-GB')}` : 'Date unknown'}</p>
-      <p className="muted">Hardware, speed and setup requirements need checking.</p>
-      <a className="btn ghost" href={model.url} target="_blank" rel="noreferrer">View model card ↗</a>
+    <div className="models-selection-heading"><h3>Find your next model</h3><span>Live catalog</span></div>
+    <div className="models-compare-filters">
+      {!selectedNeed && <label>Task<select value={need} onChange={e=>setNeed(e.target.value as CatalogNeed)}><option value="writing">Chat and write</option><option value="coding">Code</option><option value="translation">Translate</option><option value="documents">Summarize and analyze</option></select></label>}
+      <label>Sort<select value={sort} onChange={e=>setSort(e.target.value as CatalogSort)}>{Object.entries(sortLabels).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
+      {!compact && <><label>Search<input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Model or publisher" /></label><label><input type="checkbox" checked={fitOnly} onChange={e=>setFitOnly(e.target.checked)} /> Estimated to fit</label></>}
+    </div>
+    {result && <p className="muted">{result.host ? `Target: ${result.host.name}${result.host.supported?'':' · Unsupported platform'}` : 'Connect Host to check compatibility. Showing popularity for your task.'}</p>}
+    {!result && !error && <p role="status">Finding models…</p>}
+    {(error || result?.catalog.stale) && <p role="status">{result?'Showing the last catalog. Refresh is unavailable or in progress.':'The catalog is unavailable.'} <button className="btn ghost" onClick={()=>setRequest(n=>n+1)}>Retry</button></p>}
+    <div className="models-choice-grid">{models.slice(0,compact?3:limit).map(row=><article className="models-choice" key={row.model.id}>
+      <span className="models-choice-badge">{row.compatibility==='compatible'?'Estimated fit':row.compatibility==='insufficient'?'Not compatible':'Compatibility unknown'}</span>
+      <h3>{row.model.id}</h3><p>{row.reason}</p>
+      <dl><div><dt>Cost</dt><dd>Hardware and electricity</dd></div><div><dt>Data</dt><dd>On Host if run locally</dd></div><div><dt>Speed</dt><dd>Not measured</dd></div><div><dt>Dependency</dt><dd>Host required · Network for download</dd></div></dl>
+      <a className="btn ghost" href={row.model.url} target="_blank" rel="noreferrer">{row.access==='restricted'?'Review access requirements':'View model details'} ↗</a>
+      <details><summary>Why this model?</summary><p>{row.model.downloads===null?'Downloads unknown':`${row.model.downloads.toLocaleString('en-US')} downloads · Source reporting window`}. Popularity is not quality or a user count.</p>
+        <p>License: {row.model.license}. Publisher metadata, not an independent license audit. {row.model.gated?'Access approval is required.':''}</p>
+        <p>{row.model.createdAt?`Repository created ${new Date(row.model.createdAt).toLocaleDateString('en-GB')}`:'Creation date unknown'} · Not a verified release date.</p>
+        <p>No installation or chat route is granted by discovery. A runtime estimate is not a successful test. On mobile, models run on Host, not your phone.</p>
+        {expert && row.variants.map(v=><p key={v.model.id}>{v.model.id} · {v.model.formats.join(', ') || 'Format unknown'} · {v.reason}</p>)}
+      </details>
     </article>)}</div>
-    {!compact && models.length > limit && <button className="btn ghost" onClick={() => setLimit(value => value + 24)}>Show more models</button>}
-    {catalog && !models.length && <p>No models match. Try a different search or refresh later.</p>}
-    <details><summary>Where does this list come from?</summary><p>Hugging Face Hub: a bounded feed of trending and newly created chat-model repositories, refreshed hourly while this page is open. New repository dates are not release dates. Popularity is not a quality recommendation.</p><p>Only public, ungated repositories tagged MIT, Apache-2.0, BSD or ISC are included. Publisher metadata is not an independent license audit or proof of full open-source AI compliance. Review the model card before use. Opening it contacts Hugging Face; no chat content is sent by this catalog.</p></details>
-    {catalog && <p className="muted">Checked {new Date(catalog.checkedAt).toLocaleString('en-GB')} · Source: Hugging Face · No automatic downloads</p>}
+    {result && !models.length && <p>No models have sufficient task metadata for these filters. Try another task or sort.</p>}
+    {!compact && models.length>limit && <button className="btn ghost" onClick={()=>setLimit(n=>n+24)}>Show more models</button>}
+    <details><summary>Where does this list come from?</summary><p>Hugging Face: trending, downloaded and new repositories, refreshed every six hours while MultiVibe runs. Explicit quantizations are grouped; fine-tunes remain separate. Missing metadata stays unknown.</p><p>Established means at least 90 days old and in the top quarter by downloads among task-matched models with known counts. It is not a certification. New means repository creation, not release date.</p><p>Opening a model card contacts Hugging Face. No chat content or hardware profile is sent by catalog discovery. No automatic model downloads.</p></details>
+    {result && <p className="muted">Checked {new Date(result.catalog.checkedAt).toLocaleString('en-GB')} · Hugging Face</p>}
   </section>;
 }
