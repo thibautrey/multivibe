@@ -235,7 +235,7 @@ export function HostHarnessCards({ onApiKeysChanged, variant = "default" }: Prop
         </div>
       )}
       {!loaded && variant === "onboarding" && <p className="muted">Looking for coding tools…</p>}
-      {harnesses.length > 0 && <div className="host-harness-rail" aria-label="Detected coding tools" aria-live="polite">
+      {harnesses.length > 0 && <div className="host-harness-rail" role="region" tabIndex={0} aria-label="Detected coding tools" aria-live="polite">
         {harnesses.map((harness) => {
           const connected = harness.configured || harness.managed;
           const statusLabel = harness.drifted ? "Needs repair" : connected ? "Connected" : harness.canInstall ? "Not connected" : "Manual setup";

@@ -100,7 +100,9 @@
 .harness-section-heading { display: flex; align-items: baseline; gap: 14px; margin-bottom: 14px; flex-wrap: wrap; }
 .harness-section-heading h2 { margin: 0; font-size: 16px; }
 .harness-section-heading span { font-size: 11px; }
-.host-harness-rail { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; overflow: visible; }
+.host-harness-browser { min-width: 0; }
+.host-harness-rail { display: flex; flex-wrap: nowrap; min-width: 0; gap: 12px; overflow-x: auto; }
+.host-harness-rail:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .host-harness-card.harness-compact { min-width: 0; width: auto; padding: 18px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); box-shadow: none; display: block; }
 .harness-summary { display: flex; flex-direction: column; gap: 18px; }
 .harness-compact .host-harness-identity { min-width: 0; gap: 12px; }
@@ -118,7 +120,6 @@
 .harness-option-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 .harness-option-actions .btn { font-size: 11px; }
 @media (max-width: 800px) {
- .host-harness-rail { grid-template-columns: 1fr; }
  .harness-summary { flex-direction: row; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
  .harness-summary-actions { margin-left: auto; }
 }
