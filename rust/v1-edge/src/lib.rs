@@ -1255,6 +1255,7 @@ fn select_accounts(
         .filter(|account| {
             normalize_provider(account) == route.provider.as_deref().unwrap_or("")
                 && (!is_cloud_model_selector(&route.requested_model) || account.multivibe_cloud == Some(true))
+                && local_preparation_route_allowed(account, route)
                 && (route.account_ids.is_empty() || route.account_ids.contains(&account.id))
                 && account_usable(account, &route.model, blocked)
         })
@@ -1362,6 +1363,39 @@ struct RouteCandidate {
     account_ids: Vec<String>,
 }
 
+// Reserved identities imported by Host must never fall through to a remote
+// provider, an alias override, or a different runtime when discovery is stale.
+fn is_prepared_local_model(model: &str) -> bool {
+    model.starts_with("multivibe-local-")
+}
+
+fn local_preparation_route_allowed(account: &Account, route: &RouteCandidate) -> bool {
+    if !is_prepared_local_model(&route.requested_model) && !is_prepared_local_model(&route.model) {
+        return true;
+    }
+    if (is_prepared_local_model(&route.requested_model) && route.requested_model != route.model)
+        || !is_local_runtime(account)
+        || account.location.as_deref() != Some("local")
+        || account.multivibe_cloud == Some(true)
+    {
+        return false;
+    }
+    let Some(runtime) = account.local_runtime.as_ref() else { return false; };
+    if runtime.adapter.as_deref() != Some("ollama")
+        || !runtime.confirmed_model_ids.contains(&route.model)
+    {
+        return false;
+    }
+    let Some(origin) = account.base_url.as_deref().and_then(|value| reqwest::Url::parse(value).ok()) else {
+        return false;
+    };
+    origin.scheme() == "http"
+        && matches!(origin.host_str(), Some("127.0.0.1" | "[::1]"))
+        && origin.port() == Some(11434)
+        && origin.username().is_empty() && origin.password().is_none()
+        && origin.path() == "/" && origin.query().is_none() && origin.fragment().is_none()
+}
+
 fn is_cloud_model_selector(model: &str) -> bool {
     model.starts_with("multivibe/")
 }
@@ -1377,7 +1411,7 @@ fn routes_for_model(
     } else {
         model
     };
-    if is_cloud_model_selector(requested) {
+    if is_cloud_model_selector(requested) || is_prepared_local_model(requested) {
         return vec![RouteCandidate {
             requested_model: requested.to_owned(), model: requested.to_owned(),
             provider: Some("openai-compatible".to_owned()),
@@ -1460,7 +1494,7 @@ fn image_aware_routing_model(
     body: &Value,
     requested_model: &str,
 ) -> String {
-    if is_cloud_model_selector(requested_model) || !payload_has_image(body) {
+    if is_cloud_model_selector(requested_model) || is_prepared_local_model(requested_model) || !payload_has_image(body) {
         return requested_model.to_owned();
     }
     let Some(override_model) = store
@@ -11250,6 +11284,48 @@ mod tests {
             assert_eq!(accounts[0].id, "cloud");
         }
         assert_eq!(claude_code_routing_model("multivibe/secured_guaranteed/claude-model", true), "multivibe/secured_guaranteed/claude-model");
+    }
+
+    #[test]
+    fn prepared_local_routes_never_fall_back_to_cloud_or_unconfirmed_runtimes() {
+        let model = "multivibe-local-0123456789abcdef0123456789abcdef:latest";
+        let mut local = account("managed-local");
+        local.provider = Some("openai-compatible".to_owned());
+        local.access_token.clear();
+        local.location = Some("local".to_owned());
+        local.base_url = Some("http://127.0.0.1:11434".to_owned());
+        local.local_runtime = Some(LocalRuntime {
+            source: Some("multivibe-local-discovery".to_owned()),
+            adapter: Some("ollama".to_owned()),
+            authentication: Some("none".to_owned()),
+            confirmed_model_ids: vec![model.to_owned()],
+            ..Default::default()
+        });
+        let mut cloud = account("cloud");
+        cloud.provider = Some("openai-compatible".to_owned());
+        cloud.multivibe_cloud = Some(true);
+        let routes = routes_for_model(&StoreFile::default(), model, "remote-default", &[]);
+        assert_eq!(routes.len(), 1);
+        let selected = select_accounts(&[cloud.clone(), local.clone()], &routes[0], &HashMap::new(), &HashMap::new());
+        assert_eq!(selected.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), vec!["managed-local"]);
+        assert!(select_accounts(&[cloud], &routes[0], &HashMap::new(), &HashMap::new()).is_empty());
+        for origin in ["https://127.0.0.1:11434", "http://localhost:11434", "http://192.168.1.2:11434", "http://127.0.0.1:1234", "http://user:secret@127.0.0.1:11434", "http://127.0.0.1:11434/v1", "http://127.0.0.1:11434/?x=1"] {
+            let mut unsafe_account = local.clone();
+            unsafe_account.base_url = Some(origin.to_owned());
+            assert!(!local_preparation_route_allowed(&unsafe_account, &routes[0]), "{origin}");
+        }
+        let mut unconfirmed = local.clone();
+        unconfirmed.local_runtime.as_mut().unwrap().confirmed_model_ids = vec!["another-model".to_owned()];
+        assert!(!local_preparation_route_allowed(&unconfirmed, &routes[0]));
+        let mut remapped = routes[0].clone();
+        remapped.model = "remote-model".to_owned();
+        assert!(!local_preparation_route_allowed(&local, &remapped));
+        local.base_url = Some("http://[::1]:11434".to_owned());
+        assert!(local_preparation_route_allowed(&local, &routes[0]));
+        let mut store = StoreFile::default();
+        store.settings.image_request_model_override = Some("remote-image-model".to_owned());
+        let image = json!({"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/image.png"}}]}]});
+        assert_eq!(image_aware_routing_model(&store, &[], &image, model), model);
     }
 
     fn account(id: &str) -> Account {
