@@ -666,7 +666,7 @@ export async function probeLocalRuntimeCandidate(
           displayName: adapter.displayName,
           endpoint: endpoint.origin,
           confirmedModelIds,
-          discoveryMethod: "api",
+          discoveryMethod: "api" as const,
         };
       })(),
       deadline,
