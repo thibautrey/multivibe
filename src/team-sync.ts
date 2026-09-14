@@ -11,7 +11,7 @@ export type TeamProviderManifest = Readonly<{
   deliveryMode:"distributed"|"cloud_proxy"; enabled:boolean; revision:number;
   sealedCredential?:Readonly<{schemaVersion:"multivibe-team-sealed-credential-v1";algorithm:"X25519-HKDF-SHA256-AES-256-GCM";ephemeralPublicKeySpki:string;nonce:string;ciphertext:string;tag:string}>;
 }>;
-export type TeamSyncManifest = Readonly<{schemaVersion:"multivibe-team-sync-v1";cursor:number;providers:readonly TeamProviderManifest[];removedProviderIds:readonly string[]} >;
+export type TeamSyncManifest = Readonly<{schemaVersion:"multivibe-team-sync-v1";cursor:number;providers:readonly TeamProviderManifest[];removedProviderIds:readonly string[];removedProviders?:readonly {id:string;revision:number}[]} >;
 export type TeamInstanceEnrollment=Readonly<{schemaVersion:"multivibe-team-instance-enrollment-v1";id:string;name:string;publicKeySpki:string;encryptionPublicKeySpki:string;version:string}>;
 /** The one-use mvmb_ bootstrap is carried only in Authorization, never JSON. */
 export type ManagedTeamEnrollmentExchange=Readonly<{schemaVersion:"multivibe-team-managed-enrollment-v1";profileId:string;organizationId:string;membershipId:string;managementChannel:"device"|"user";instance:TeamInstanceEnrollment;deviceClaim?:Readonly<{issuer:string;subject:string;nonce:string}>}>;
@@ -69,6 +69,13 @@ export class MultivibeTeamSyncService {
 
   async applyManifest(manifest:TeamSyncManifest):Promise<{applied:string[];removed:string[]}> {
     if(manifest.schemaVersion!=='multivibe-team-sync-v1'||!Number.isSafeInteger(manifest.cursor)||manifest.cursor<0) throw new Error('Team Sync manifest is invalid');
+    if(!Array.isArray(manifest.removedProviderIds)||manifest.removedProviderIds.some(id=>!UUID.test(id)))throw new Error('Team removals are invalid');
+    if(manifest.removedProviders!==undefined){
+      if(!Array.isArray(manifest.removedProviders)||manifest.removedProviders.length!==manifest.removedProviderIds.length||new Set(manifest.removedProviderIds).size!==manifest.removedProviderIds.length)throw new Error('Team removals are invalid');
+      const ids=new Set<string>();
+      for(const removal of manifest.removedProviders){if(!UUID.test(removal.id)||ids.has(removal.id)||!manifest.removedProviderIds.includes(removal.id)||!Number.isSafeInteger(removal.revision)||removal.revision<1||removal.revision>manifest.cursor)throw new Error('Team removal revision is invalid');ids.add(removal.id);}
+    }
+    if(manifest.providers.some(provider=>manifest.removedProviderIds.includes(provider.id)))throw new Error('Conflicting Team provider removal');
     const settings=await this.store.getSettings(); const current=settings.multivibeTeam?.syncCursor??0;
     if(manifest.cursor<current) throw new Error('Team Sync manifest is stale');
     const applied:string[]=[]; const removed:string[]=[];
@@ -82,7 +89,7 @@ export class MultivibeTeamSyncService {
       const account:Account={...existing,id:existing?.id??`team-${item.id}`,provider:item.provider,email:item.displayName,accessToken:credential?.accessToken??'',refreshToken:credential?.refreshToken,expiresAt:credential?.expiresAt,baseUrl:item.deliveryMode==='cloud_proxy'?`https://api.multivibe.cloud/team/providers/${item.id}`:item.endpoint,enabled:item.enabled,location:'cloud',priority:existing?.priority??0,multivibeTeam:{providerId:item.id,deliveryMode:item.deliveryMode,revision:item.revision,readOnly:true}};
       await this.store.addOrUpdate(account); applied.push(item.id);
     }
-    for(const providerId of manifest.removedProviderIds){const account=(await this.store.listAccounts()).find(value=>value.multivibeTeam?.providerId===providerId);if(account){await this.store.deleteAccount(account.id);removed.push(providerId);}}
+    for(const providerId of manifest.removedProviderIds){const account=(await this.store.listAccounts()).find(value=>value.multivibeTeam?.providerId===providerId);if(account)await this.store.deleteAccount(account.id);removed.push(providerId);}
     await this.store.patchSettings({multivibeTeam:{...settings.multivibeTeam,enabled:true,instanceId:this.getIdentity().instanceId,instanceName:settings.multivibeTeam?.instanceName??'Multivibe instance',syncCursor:manifest.cursor,lastSuccessfulSyncAt:new Date().toISOString(),lastSuccessfulAnalyticsUploadAt:settings.multivibeTeam?.lastSuccessfulAnalyticsUploadAt}});
     return {applied,removed};
   }

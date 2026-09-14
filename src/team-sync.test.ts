@@ -33,3 +33,15 @@ test("Team synchronization preserves managed enrollment bindings",async t=>{
  await sync.applyManifest({schemaVersion:"multivibe-team-sync-v1",cursor:1,providers:[],removedProviderIds:[]});
  const settings=await store.getSettings();assert.equal(settings.multivibeTeam?.managedEnrollmentId,"30000000-0000-4000-8000-000000000003");assert.equal(settings.multivibeTeam?.membershipId,"20000000-0000-4000-8000-000000000002");assert.equal(settings.multivibeTeam?.syncCursor,1);
 });
+
+test('Team removals are acknowledged again after local deletion and reject invalid tombstones',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'team-removal-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const store=new AccountStore(path.join(root,'accounts.json'));await store.init();
+ const sync=new MultivibeTeamSyncService(store,path.join(root,'identity.json'));await sync.initialize();
+ const id='123e4567-e89b-42d3-a456-426614174000';
+ const manifest={schemaVersion:'multivibe-team-sync-v1' as const,cursor:9,providers:[],removedProviderIds:[id],removedProviders:[{id,revision:3}]};
+ assert.deepEqual((await sync.applyManifest(manifest)).removed,[id]);
+ assert.deepEqual((await sync.applyManifest(manifest)).removed,[id]);
+ await assert.rejects(sync.applyManifest({...manifest,removedProviders:[{id,revision:10}]}),/revision/);
+ await assert.rejects(sync.applyManifest({...manifest,removedProviders:[]}),/removals/);
+});
