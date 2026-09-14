@@ -9,7 +9,7 @@ final class AuthenticationUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR"]
         app.launch()
-        XCTAssertTrue(app.textFields["Message"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "Message").firstMatch.waitForExistence(timeout: 15))
         app.buttons["openAuthentication"].tap()
         XCTAssertTrue(app.textFields["Adresse e-mail"].waitForExistence(timeout: 15))
         return app
@@ -20,7 +20,7 @@ final class AuthenticationUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR"]
         app.launch()
-        let message = app.textFields["Message"]
+        let message = app.descendants(matching: .any).matching(identifier: "Message").firstMatch
         XCTAssertTrue(message.waitForExistence(timeout: 15))
         XCTAssertFalse(app.textFields["Adresse e-mail"].exists)
         XCTAssertFalse(app.buttons["guestSend"].isEnabled)
