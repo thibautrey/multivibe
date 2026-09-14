@@ -248,6 +248,7 @@ export type ProviderAgentControl = {
   getDemandPlan(): Promise<ProviderDemandPlan>;
   submitSignedDemand(envelope: Record<string, unknown>): Promise<{ duplicate: boolean; plan: ProviderDemandPlan }>;
   estimateModelCompatibility(contextTokens: number): Promise<unknown>;
+  getLocalPreparationRuntimeQuote?(): Promise<{version:string;platform:string;sha256:string;bytes:number}>;
   runLocalPreparationOperation?(input: HostPreparationOperation, signal: AbortSignal, progress: (completed:number,total:number)=>Promise<void>): Promise<{runtimeModel?:string;output?:string}>;
   getManagedOllamaStatus(): Promise<ProviderManagedOllamaView>;
   installManagedOllama(policyRevision: number): Promise<ProviderManagedOllamaView>;
@@ -650,6 +651,7 @@ export function startEmbeddedProviderAgent(options: {
     getDemandPlan: unavailable,
     submitSignedDemand: unavailable,
     estimateModelCompatibility: unavailable,
+    getLocalPreparationRuntimeQuote: unavailable,
     runLocalPreparationOperation: unavailable,
     getManagedOllamaStatus: unavailable,
     installManagedOllama: unavailable,
@@ -847,6 +849,8 @@ export function startEmbeddedProviderAgent(options: {
       }, [200, 201]);
       return { duplicate: result.response.status === 200, plan: result.value };
     },
+    getLocalPreparationRuntimeQuote: async () =>
+      (await request<{version:string;platform:string;sha256:string;bytes:number}>("/v1/local-preparation/runtime-quote", {}, [200])).value,
     runLocalPreparationOperation: async (input, signal, progress) => {
       const {baseUrl,launch}=await currentEndpoint();
       const operation=new AbortController();
