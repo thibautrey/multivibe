@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {requestOpenCodeDeviceCode,pollOpenCodeDeviceCode,accountFromOpenCodeOAuth,refreshOpenCodeAccessToken} from './opencode.js';
+import {OPENCODE_CONSOLE_URL} from './config.js';
 import type {OAuthFlowState} from './types.js';
 
 test('OpenCode complete device lifecycle uses only injected transport',async()=>{
@@ -8,7 +9,8 @@ test('OpenCode complete device lifecycle uses only injected transport',async()=>
  globalThis.fetch=async()=>{throw Error('Direct egress forbidden')};
  const requests:{path:string;init:RequestInit|undefined}[]=[];
  const transport:typeof fetch=async(input,init)=>{
-  const path=new URL(String(input)).pathname;requests.push({path,init});
+  assert.ok(String(input).startsWith(OPENCODE_CONSOLE_URL.replace(/\/+$/, '')+'/'));
+  const path=String(input).slice(OPENCODE_CONSOLE_URL.replace(/\/+$/, '').length);requests.push({path,init});
   if(path==='/auth/device/code')return Response.json({device_code:'private-code',user_code:'ABCD',verification_uri_complete:'/device?user_code=ABCD',expires_in:900,interval:5});
   if(path==='/auth/device/token')return Response.json({access_token:'private-token',refresh_token:'private-refresh',expires_in:3600});
   if(path==='/api/user')return Response.json({id:'user-one',email:'fixture@example.test'});
