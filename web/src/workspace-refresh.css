@@ -38,6 +38,13 @@
 .orbit-node-a { left: 17px; top: 15px; font-size: 12px; }
 .orbit-node-b { right: 9px; top: 53px; }
 .orbit-node-c { bottom: 0; left: 62px; }
+.workspace-welcome-compact { grid-template-columns: minmax(0, 1fr) auto; align-items: center; padding: 16px 20px; }
+.workspace-welcome-compact > div:first-child { display: flex; align-items: center; gap: 18px; min-width: 0; }
+.workspace-welcome-compact h2 { margin: 0; font-size: 18px; letter-spacing: -.45px; white-space: nowrap; }
+.workspace-welcome-compact p, .workspace-welcome-compact .welcome-orbit { display: none; }
+.workspace-welcome-compact .welcome-actions { margin: 0 0 0 auto; flex-wrap: nowrap; gap: 14px; }
+.workspace-welcome-compact .welcome-actions .btn { padding: 8px 13px; }
+.workspace-welcome-compact .welcome-secondary { padding-block: 8px; white-space: nowrap; }
 .overview-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
 .overview-metrics .metric { padding: 21px; min-height: 130px; }
 .overview-metrics .metric-title { font-size: 11px; font-weight: 500; }
@@ -77,6 +84,9 @@
  .workspace { padding: 0 16px 24px; }
  .workspace-welcome { grid-template-columns: 1fr; padding: 24px; }
  .workspace-welcome h2 { color: var(--welcome-text); font-size: 24px; }
+ .workspace-welcome-compact, .workspace-welcome-compact > div:first-child { display: block; }
+ .workspace-welcome-compact h2 { margin: 8px 0 0; font-size: 18px; white-space: normal; }
+ .workspace-welcome-compact .welcome-actions { margin-top: 14px; flex-wrap: wrap; }
  .welcome-orbit { display: none; }
  .overview-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
  .overview-metrics .metric { min-height: 120px; padding: 16px; }
