@@ -1400,7 +1400,6 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         popover.contentViewController = popoverController
         popover.delegate = self
         popoverController.openDashboard = { [weak self] in
-            self?.popover.performClose(nil)
             self?.openDashboard()
         }
         popoverController.configureWorker = { [weak self] in
@@ -1965,20 +1964,43 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
     }
 
     private func requestDashboardSession() {
-        guard var request = authorizedRequest(path: "/admin/desktop-session", method: "POST") else {
+        let canonicalURL = URL(string: "http://127.0.0.1:\(configuredHostPort)")!
+        var candidates = [dashboardURL]
+        if dashboardURL != canonicalURL { candidates.append(canonicalURL) }
+        requestDashboardSession(using: candidates)
+    }
+
+    private func requestDashboardSession(using candidates: [URL]) {
+        guard let baseURL = candidates.first else {
+            DispatchQueue.main.async { [weak self] in
+                self?.pendingDashboardOpen = false
+            }
+            return
+        }
+        guard let credentials = readCredentials(),
+              let url = URL(string: "/admin/desktop-session", relativeTo: baseURL) else {
             ensureServiceIsRunning()
             return
         }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 3
+        request.setValue(credentials.adminToken, forHTTPHeaderField: "x-admin-token")
         request.httpBody = Data("{}".utf8)
         request.setValue("application/json", forHTTPHeaderField: "content-type")
         URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
             guard let self else { return }
             guard let data, (response as? HTTPURLResponse)?.statusCode == 200,
                   let session = try? JSONDecoder().decode(DesktopSession.self, from: data),
-                  let url = URL(string: session.path, relativeTo: self.dashboardURL) else { return }
+                  let dashboard = URL(string: session.path, relativeTo: baseURL) else {
+                self.requestDashboardSession(using: Array(candidates.dropFirst()))
+                return
+            }
             DispatchQueue.main.async {
                 self.pendingDashboardOpen = false
-                NSWorkspace.shared.open(url)
+                if NSWorkspace.shared.open(dashboard) {
+                    self.popover.performClose(nil)
+                }
             }
         }.resume()
     }
