@@ -5,10 +5,11 @@ export type CatalogSort = typeof catalogSorts[number];
 export type CatalogNeed = 'writing' | 'coding' | 'translation' | 'documents';
 export type OpenModel = {
   metadataCheckedAt?: string;
+  revision?: string | null;
   communityUsage?: import('./community-model-usage.js').CommunityUsage;
   id: string; url: string; license: string; createdAt: string | null; downloads: number | null;
   gated: boolean; needs: CatalogNeed[]; languages: string[]; parent: string | null;
-  relation: string | null; formats: string[]; files: { name: string; bytes: number | null }[];
+  relation: string | null; formats: string[]; files: { name: string; bytes: number | null; sha256?: string | null }[];
   architecture: string | null; context: number | null; trendingRank: number | null;
 };
 export type OpenModelCatalog = { models: OpenModel[]; checkedAt: string; stale: boolean; source: string; version: string; communityStatus?: 'available' | 'unavailable' };
