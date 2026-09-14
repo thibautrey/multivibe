@@ -11,7 +11,10 @@ final class AuthenticationUITests: XCTestCase {
         if dark { app.launchArguments += ["-AppleInterfaceStyle", "Dark"] }
         app.launch()
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "Message").firstMatch.waitForExistence(timeout: 15))
-        app.buttons["openAuthentication"].tap()
+        let login = app.buttons["openAuthentication"]
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: login)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 15), .completed)
+        login.tap()
         XCTAssertTrue(app.textFields["Adresse e-mail"].waitForExistence(timeout: 15))
         let capture = XCTAttachment(screenshot: app.screenshot())
         capture.name = dark ? "login-dark" : "login-light"
