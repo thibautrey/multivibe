@@ -76,7 +76,7 @@ func TestLocalPreparationControlBoundary(t *testing.T) {
 	}
 }
 func TestLocalPreparationControlUnavailable(t *testing.T) {
-	input := localPreparationOperation{Operation: "install", PolicyRevision: 1, ContextTokens: 2048, Artifact: localPreparationArtifact{ModelID: "author/model", Revision: strings.Repeat("a", 40), Filename: "model.gguf", SHA256: strings.Repeat("b", 64), Bytes: 10}}
+	input := localPreparationOperation{Operation: "install", RuntimeQuote: &localPreparationRuntimeQuote{Version: "0.33.2", Platform: "darwin-arm64", SHA256: strings.Repeat("c", 64), Bytes: 100}, PolicyRevision: 1, ContextTokens: 2048, Artifact: localPreparationArtifact{ModelID: "author/model", Revision: strings.Repeat("a", 40), Filename: "model.gguf", SHA256: strings.Repeat("b", 64), Bytes: 10}}
 	raw, _ := json.Marshal(input)
 	request := httptest.NewRequest("POST", "/", strings.NewReader(string(raw)))
 	request.Header.Set("authorization", "Bearer "+strings.Repeat("s", 32))
@@ -108,5 +108,39 @@ func TestLocalPreparationControlProbe(t *testing.T) {
 		} else if calls != 1 || !strings.Contains(response.Body.String(), `"output":"OK"`) || strings.Contains(response.Body.String(), `"runtime_model"`) {
 			t.Fatal("invalid probe output", response.Body.String())
 		}
+	}
+}
+
+func TestLocalPreparationControlRequiresSeparateRuntimeConsent(t *testing.T) {
+	for _, mode := range []string{"missing", "valid", "wrong-operation", "zero"} {
+		t.Run(mode, func(t *testing.T) {
+			calls := 0
+			input := localPreparationOperation{Operation: "install", PolicyRevision: 1, ContextTokens: 2048, Artifact: localPreparationArtifact{ModelID: "author/model", Revision: strings.Repeat("a", 40), Filename: "model.gguf", SHA256: strings.Repeat("b", 64), Bytes: 10}}
+			if mode != "missing" {
+				input.RuntimeQuote = &localPreparationRuntimeQuote{Version: "0.33.2", Platform: "darwin-arm64", SHA256: strings.Repeat("c", 64), Bytes: 100}
+			}
+			if mode == "zero" {
+				input.RuntimeQuote.Bytes = 0
+			}
+			if mode == "wrong-operation" {
+				input.Operation = "download"
+			}
+			raw, _ := json.Marshal(input)
+			r := httptest.NewRequest("POST", "/", strings.NewReader(string(raw)))
+			r.Header.Set("authorization", "Bearer "+strings.Repeat("s", 32))
+			r.Header.Set("content-type", "application/json")
+			w := httptest.NewRecorder()
+			localPreparationOperationHandler(strings.Repeat("s", 32), func(context.Context, localPreparationOperation, managedModelDownloadProgress) (string, error) {
+				calls++
+				return "", nil
+			})(w, r)
+			if mode == "valid" {
+				if calls != 1 || w.Code != 200 {
+					t.Fatal(w.Code, calls)
+				}
+			} else if calls != 0 || w.Code != 400 {
+				t.Fatal(w.Code, calls)
+			}
+		})
 	}
 }
