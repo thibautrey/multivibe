@@ -36,14 +36,14 @@ final class AuthenticationUITests: XCTestCase {
     func testEmptyLoginAndSignupRemainDisabled() {
         let app = launch()
         XCTAssertTrue(app.secureTextFields["Mot de passe"].exists)
-        XCTAssertFalse(app.buttons["Se connecter"].isEnabled)
+        XCTAssertFalse(app.buttons["submitAuthentication"].isEnabled)
         XCTAssertTrue(app.buttons["Continuer avec le SSO"].exists)
         app.buttons["Créer un compte"].tap()
         XCTAssertTrue(app.secureTextFields["Confirmer le mot de passe"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["Créer mon compte"].isEnabled)
+        XCTAssertFalse(app.buttons["submitAuthentication"].isEnabled)
         app.swipeUp()
         app.buttons["J’ai déjà un compte"].tap()
-        XCTAssertTrue(app.buttons["Se connecter"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["submitAuthentication"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.secureTextFields["Confirmer le mot de passe"].exists)
     }
 
@@ -55,6 +55,6 @@ final class AuthenticationUITests: XCTestCase {
         XCTAssertTrue(app.secureTextFields["Lien de réinitialisation"].exists)
         XCTAssertFalse(app.buttons["Changer mon mot de passe"].isEnabled)
         app.buttons["Terminé"].tap()
-        XCTAssertTrue(app.buttons["Se connecter"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["submitAuthentication"].waitForExistence(timeout: 5))
     }
 }
