@@ -53,7 +53,7 @@ test('ChatGPT discovery uses the Codex catalog and account header, not OpenAI AP
 
 test('xAI device discovery retains Core client identification headers',async()=>{
  const {accountFromXaiOAuth,buildXaiUpstreamHeaders}=await import('./xai.js');
- const xai=accountFromXaiOAuth({id:'',email:'',codeVerifier:'',createdAt:Date.now()}, {access_token:'fixture-access',expires_in:3600});
+ const xai=accountFromXaiOAuth({id:'',email:'',codeVerifier:'',createdAt:Date.now(),status:'pending'}, {access_token:'fixture-access',expires_in:3600});
  await discoverTeamDeviceAccount(xai,async(url,init)=>{
   assert.equal(url,'https://api.x.ai/v1/models');assert.deepEqual(init?.headers,buildXaiUpstreamHeaders(xai.accessToken,{accept:'application/json'}));
   return Response.json({data:[{id:'fixture-model'}]});
