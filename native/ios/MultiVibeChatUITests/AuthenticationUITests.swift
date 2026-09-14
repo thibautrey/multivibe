@@ -64,6 +64,7 @@ final class AuthenticationUITests: XCTestCase {
         XCTAssertFalse(app.buttons["submitAuthentication"].isEnabled)
         XCTAssertTrue(app.buttons["signInWithGoogle"].exists)
         XCTAssertTrue(app.buttons["signInWithGitHub"].exists)
+        XCTAssertTrue(app.buttons["signInWithApple"].exists)
         let google = app.buttons["signInWithGoogle"]
         let github = app.buttons["signInWithGitHub"]
         XCTAssertEqual(google.label, "Continuer avec Google")
