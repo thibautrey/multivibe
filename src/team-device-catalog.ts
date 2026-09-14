@@ -41,6 +41,6 @@ export async function discoverTeamDeviceAccount(account:Account, transport:typeo
     const result:Account={...account,...validated};
     if(account.provider==='github-copilot')result.copilotModelEndpoints=Object.fromEntries(entries.map((entry:any)=>[entry.id,entry.upstreamMode]));
     encodeTeamDeviceCredential(result);
-    return {account:result,endpoint:validated.baseUrl!,availableModels:[...models].sort()};
+    return {account:result,endpoint:validated.baseUrl!,availableModels:(models as string[]).slice().sort()};
   } catch {throw Error('Team device model discovery unavailable');}
 }
