@@ -197,5 +197,5 @@ test('Team analytics count distributed cloud-provider calls, not Cloud proxy cal
  assert.equal(buckets[0].inputTokens,2);assert.equal(buckets[0].outputTokens,3);assert.equal(buckets[0].estimatedCostUsd,0.01);
  assert.equal(buckets[0].executionLocation,'cloud');assert.doesNotMatch(JSON.stringify(buckets),/fixture-secret|accessToken/);
  const recovered=new MultivibeTeamSyncService(store,path.join(root,'identity.json'));await recovered.initialize();
- assert.deepEqual(recovered.analyticsBatch(),sync.analyticsBatch());
+ assert.equal(JSON.stringify(recovered.analyticsBatch()),JSON.stringify(sync.analyticsBatch()));
 });
