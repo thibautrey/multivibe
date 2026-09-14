@@ -121,3 +121,54 @@ test('failed manifest persistence is not acknowledged and retries the complete g
  const disk=JSON.parse(await fs.readFile(file,'utf8'));
  assert.equal(disk.accounts.length,2);assert.equal(disk.settings.multivibeTeam.syncCursor,1);
 });
+
+test('detach and local copy serialize behind a pending manifest across services',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'team-detach-queue-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const store=new AccountStore(path.join(root,'accounts.json'));await store.init();
+ const first=new MultivibeTeamSyncService(store,path.join(root,'identity.json'));await first.initialize();
+ const second=new MultivibeTeamSyncService(store,path.join(root,'identity.json'));await second.initialize();
+ const id='123e4567-e89b-42d3-a456-426614174000';
+ let release!:()=>void,entered!:()=>void;
+ const gate=new Promise<void>(resolve=>{release=resolve;}),started=new Promise<void>(resolve=>{entered=resolve;});
+ const commit=store.commitTeamManifest.bind(store);
+ store.commitTeamManifest=async(...args)=>{entered();await gate;return commit(...args);};
+ const applying=first.applyManifest({schemaVersion:'multivibe-team-sync-v1',cursor:1,removedProviderIds:[],providers:[{id,provider:'openai',displayName:'Shared',endpoint:'https://api.openai.com/v1',models:[],deliveryMode:'cloud_proxy',enabled:true,revision:1}]});
+ await started;
+ const copying=second.duplicateAsLocal(id);
+ const rejected=assert.rejects(copying,/cannot be copied/);
+ const detaching=second.detach();
+ release();await Promise.all([applying,rejected,detaching]);
+ assert.deepEqual(await store.listAccounts(),[]);
+ const disk=JSON.parse(await fs.readFile(path.join(root,'accounts.json'),'utf8'));
+ assert.deepEqual(disk.accounts,[]);assert.equal(disk.settings.multivibeTeam,undefined);
+});
+
+test('detach persists local credentials, proxy removal and settings in one generation',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'team-detach-batch-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const file=path.join(root,'accounts.json'),store=new AccountStore(file);await store.init();
+ const sync=new MultivibeTeamSyncService(store,path.join(root,'identity.json'));await sync.initialize();
+ const team={providerId:'123e4567-e89b-42d3-a456-426614174000',models:['fixture'],deliveryMode:'distributed' as const,revision:1,readOnly:true as const};
+ await store.addOrUpdate({id:'distributed',provider:'openai',accessToken:'fixture-only',enabled:true,multivibeTeam:team});
+ await store.addOrUpdate({id:'proxy',provider:'openai',accessToken:'',enabled:true,multivibeTeam:{...team,deliveryMode:'cloud_proxy'}});
+ await store.addOrUpdate({id:'local',provider:'openai',accessToken:'local-fixture',enabled:true});
+ const before=store.getRevision();
+ await sync.detach();assert.equal(store.getRevision()-before,1);
+ const disk=JSON.parse(await fs.readFile(file,'utf8'));
+ assert.deepEqual(disk.accounts.map((a:{id:string})=>a.id),['distributed','local']);
+ assert.equal(disk.accounts[0].multivibeTeam,undefined);assert.equal(disk.accounts[0].accessToken,'fixture-only');
+ assert.equal(disk.settings.multivibeTeam,undefined);
+});
+
+test('failed detach persistence rejects and retries without losing distributed credentials',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'team-detach-retry-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const file=path.join(root,'accounts.json'),store=new AccountStore(file);await store.init();
+ const sync=new MultivibeTeamSyncService(store,path.join(root,'identity.json'));await sync.initialize();
+ await store.addOrUpdate({id:'distributed',provider:'openai',accessToken:'fixture-only',enabled:true,multivibeTeam:{providerId:'123e4567-e89b-42d3-a456-426614174000',models:[],deliveryMode:'distributed',revision:1,readOnly:true}});
+ await fs.rename(file,file+'.saved');await fs.mkdir(file);
+ try { await assert.rejects(sync.detach());assert.equal(store.getPersistenceStatus().dirty,true); }
+ finally { await fs.rmdir(file);await fs.rename(file+'.saved',file); }
+ await sync.detach();assert.equal(store.getPersistenceStatus().dirty,false);
+ const disk=JSON.parse(await fs.readFile(file,'utf8'));
+ assert.equal(disk.accounts.length,1);assert.equal(disk.accounts[0].accessToken,'fixture-only');
+ assert.equal(disk.accounts[0].multivibeTeam,undefined);
+});

@@ -326,6 +326,28 @@ export class AccountStore {
     await this.flushIfDirty();
   }
 
+  /** Detach in one durable generation. Distributed credentials intentionally
+   * become local accounts; proxy-only accounts cannot work without Team access.
+   * Like manifest commits, a failed write leaves the whole generation dirty.
+   */
+  async commitTeamDetach(): Promise<void> {
+    const next: Account[] = [];
+    for (const account of this.inMemoryAccounts) {
+      if (!account.multivibeTeam) { next.push(account); continue; }
+      if (account.multivibeTeam.deliveryMode === "cloud_proxy") continue;
+      const {multivibeTeam: _, ...local} = account;
+      next.push(local);
+    }
+    const snapshots = new Map(next.map(account => [account.id, accountCatalogSnapshot(account)]));
+    this.inMemoryAccounts = next;
+    this.inMemorySettings = {...this.inMemorySettings, multivibeTeam: undefined};
+    this.accountCatalogSnapshots = snapshots;
+    this.catalogRevision += 1;
+    this.revision += 1;
+    this.dirty = true;
+    await this.flushIfDirty();
+  }
+
   async addOrUpdate(account: Account) {
     this.markAccountModified(account.id, account);
     await this.flushIfDirty();
