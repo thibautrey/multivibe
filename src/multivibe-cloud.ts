@@ -229,7 +229,24 @@ export class MultivibeCloudService {
       });
       if (response.status === 401 || response.status === 403) return result('access_denied');
       if (!response.ok) return result('unavailable');
-      const body = await response.json();
+      // Bound the authenticated catalog before JSON parsing, including chunked bodies.
+      const reader = response.body?.getReader();
+      if (!reader) return result('unavailable');
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          size += value.byteLength;
+          if (size > 4 * 1024 * 1024) {
+            await reader.cancel();
+            return result('unavailable');
+          }
+          chunks.push(value);
+        }
+      } finally { reader.releaseLock(); }
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       if (!Array.isArray(body?.data) || body.data.length > 10000
         || body.data.some((item: any) => typeof item?.id !== 'string' || !item.id || item.id.length > 512)) return result('unavailable');
       return result('available', [...new Set<string>(body.data.map((item: { id: string }) => item.id))]);

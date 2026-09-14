@@ -475,3 +475,10 @@ test('authenticated catalog distinguishes no connection, denied, empty, malforme
   }
   assert.equal((await service(fakeStores({ accounts: [account] }), untouched).getAccessibleModels()).status, 'unavailable');
 });
+
+ test('authenticated catalog rejects oversized responses without exposing their content', async () => {
+  const stores = fakeStores({ accounts: [{ id: 'multivibe-cloud', multivibeCloud: true, enabled: true, accessToken: 'secret', provider: 'openai-compatible' }] });
+  const result = await service(stores, (async () => response({ data: [], padding: 'x'.repeat(4 * 1024 * 1024) })) as typeof fetch).getAccessibleModels();
+  assert.equal(result.status, 'unavailable');
+  assert.deepEqual(result.modelIds, []);
+});
