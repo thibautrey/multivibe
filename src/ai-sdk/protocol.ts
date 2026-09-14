@@ -45,9 +45,20 @@ export function sdkCallOptions(body: any, signal: AbortSignal): LanguageModelV4C
       prompt.push({ role: "user", content });
     } else if (message.role === "assistant") {
       const content: Extract<LanguageModelV4Prompt[number], {role: "assistant"}>["content"] = [];
-      if (typeof message.content === "string" && message.content) content.push({ type: "text", text: message.content });
-      else if (message.content != null && message.content !== "") invalid("Assistant messages must contain text");
-      if (typeof message.reasoning_content === "string") content.push({ type: "reasoning", text: message.reasoning_content, providerOptions: message.provider_options });
+      const assistantParts = typeof message.content === "string"
+        ? (message.content ? [{ type: "text", text: message.content }] : [])
+        : message.content == null
+          ? []
+          : message.content;
+      if (!Array.isArray(assistantParts)) invalid("Assistant messages must contain text parts");
+      for (const part of assistantParts) {
+        if (part?.type === "text" && typeof part.text === "string") {
+          if (part.text) content.push({ type: "text", text: part.text });
+        } else if (part?.type === "refusal" && typeof part.refusal === "string") {
+          if (part.refusal) content.push({ type: "text", text: part.refusal });
+        } else invalid("Unsupported assistant content part");
+      }
+      if (typeof message.reasoning_content === "string" && message.reasoning_content) content.push({ type: "reasoning", text: message.reasoning_content, providerOptions: message.provider_options });
       if (message.tool_calls !== undefined && !Array.isArray(message.tool_calls)) invalid("tool_calls must be an array");
       for (const call of message.tool_calls ?? []) {
         if (call?.type !== "function") invalid("Only function tools are supported");
@@ -58,7 +69,10 @@ export function sdkCallOptions(body: any, signal: AbortSignal): LanguageModelV4C
         toolNames.set(id, name);
         content.push({ type: "tool-call", toolCallId: id, toolName: name, input });
       }
-      prompt.push({ role: "assistant", content });
+      // Some OpenAI-compatible clients persist a transient empty assistant
+      // placeholder. Dropping it is preferable to sending an invalid empty turn
+      // to strict providers such as DeepSeek.
+      if (content.length > 0) prompt.push({ role: "assistant", content });
     } else invalid("Unsupported message role");
   }
   const options: LanguageModelV4CallOptions = { prompt, abortSignal: signal };
