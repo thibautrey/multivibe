@@ -4,14 +4,19 @@ import XCTest
 /// credentials, open an external SSO session, or request a recovery email.
 @MainActor
 final class AuthenticationUITests: XCTestCase {
-    private func launch() -> XCUIApplication {
+    private func launch(dark: Bool = false) -> XCUIApplication {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR"]
+        if dark { app.launchArguments += ["-AppleInterfaceStyle", "Dark"] }
         app.launch()
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "Message").firstMatch.waitForExistence(timeout: 15))
         app.buttons["openAuthentication"].tap()
         XCTAssertTrue(app.textFields["Adresse e-mail"].waitForExistence(timeout: 15))
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = dark ? "login-dark" : "login-light"
+        capture.lifetime = .keepAlways
+        add(capture)
         return app
     }
 
@@ -31,6 +36,14 @@ final class AuthenticationUITests: XCTestCase {
         app.buttons["Fermer la connexion"].tap()
         XCTAssertTrue(message.waitForExistence(timeout: 5))
         XCTAssertEqual(message.value as? String, "Bonjour MultiVibe")
+    }
+
+    func testDarkLoginKeepsNativeSecureFieldsAndDismissal() {
+        let app = launch(dark: true)
+        XCTAssertTrue(app.secureTextFields["Mot de passe"].exists)
+        XCTAssertFalse(app.buttons["submitAuthentication"].isEnabled)
+        app.buttons["Fermer la connexion"].tap()
+        XCTAssertTrue(app.buttons["openAuthentication"].waitForExistence(timeout: 5))
     }
 
     func testEmptyLoginAndSignupRemainDisabled() {
