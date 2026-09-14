@@ -27,7 +27,7 @@ func testStore(t *testing.T) stateStore {
 	return stateStore{directory: directory, path: filepath.Join(directory, "state.json"), cache: cache, log: filepath.Join(directory, "update.log")}
 }
 
-func TestNotModifiedFeedRestoresDownloadedState(t *testing.T) {
+func TestNotModifiedFeedCannotAuthorizeCachedTarget(t *testing.T) {
 	store := testStore(t)
 	download := filepath.Join(store.cache, "multivibe-host_1.2.3.tar.gz")
 	if err := os.WriteFile(download, []byte("archive"), 0o600); err != nil {
@@ -48,17 +48,17 @@ func TestNotModifiedFeedRestoresDownloadedState(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if request.Header.Get("If-None-Match") != `"feed"` {
-			t.Fatalf("missing conditional feed request")
+		if request.Header.Get("If-None-Match") != "" {
+			t.Fatalf("cannot use conditional requests without a signed cached envelope")
 		}
 		return &http.Response{StatusCode: http.StatusNotModified, Header: make(http.Header), Body: http.NoBody}, nil
 	})}
 	update := updater{store: store, httpClient: client, now: func() time.Time { return time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC) }}
-	if err := update.check(context.Background(), &state, true); err != nil {
-		t.Fatal(err)
+	if err := update.check(context.Background(), &state, true); err == nil {
+		t.Fatal("unsigned not-modified response authorized a cached target")
 	}
-	if state.Status != "downloaded" || state.DownloadedPath != download {
-		t.Fatalf("downloaded state was not restored: %#v", state)
+	if state.Status != "failed" || state.LastErrorCode != "feed_verification_failed" {
+		t.Fatalf("missing verification failure: %#v", state)
 	}
 }
 
@@ -190,8 +190,8 @@ func TestInterruptedOperationRechecksImmediately(t *testing.T) {
 				called = true
 				return &http.Response{StatusCode: http.StatusNotModified, Header: make(http.Header), Body: http.NoBody}, nil
 			})}}
-			if err := update.check(context.Background(), &state, false); err != nil {
-				t.Fatal(err)
+			if err := update.check(context.Background(), &state, false); err == nil {
+				t.Fatal("unexpected 304 must fail verification")
 			}
 			if !called {
 				t.Fatal("interrupted operation stranded until next scheduled check")

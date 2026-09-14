@@ -173,18 +173,15 @@ func (update *updater) check(ctx context.Context, state *updaterState, force boo
 	if err := update.store.save(*state); err != nil {
 		return err
 	}
-	data, etag, notModified, err := update.fetchFeed(ctx, state.Channel, state.FeedETag)
+	data, etag, notModified, err := update.fetchFeed(ctx, state.Channel, "")
 	if err != nil {
 		return setFailure(update.store, state, "feed_download_failed", err)
 	}
+	// State contains the selected target, not the original signed envelope.
+	// Always retrieve the envelope so expiry and signature are checked again;
+	// a conditional response cannot establish authorization to install.
 	if notModified {
-		state.LastCheckedAt = now.Format(time.RFC3339Nano)
-		state.NextCheckAt = nextCheck(now)
-		if etag != "" {
-			state.FeedETag = etag
-		}
-		restoreCachedStatus(state)
-		return update.store.save(*state)
+		return setFailure(update.store, state, "feed_verification_failed", errors.New("the update server omitted the signed feed"))
 	}
 	document, err := verifyUpdateEnvelope(data, now, state.Channel)
 	if err != nil {
