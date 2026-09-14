@@ -121,11 +121,12 @@ export function chatUsage(usage: LanguageModelV4Usage) {
   }
   if (cached !== undefined && written !== undefined && cached + written > input) return null;
   return { prompt_tokens: input, completion_tokens: output, total_tokens: input + output,
-    ...(cached !== undefined ? {prompt_tokens_details: {cached_tokens: cached}} : {}),
+    ...((cached !== undefined || written !== undefined) ? {prompt_tokens_details: {
+      ...(cached !== undefined ? {cached_tokens: cached} : {}),
+      ...(written !== undefined ? {cache_write_tokens: written} : {}),
+    }} : {}),
     ...(reasoning !== undefined ? {completion_tokens_details: {reasoning_tokens: reasoning}} : {}),
-    // Preserve this separately priced native dimension. Managed billing can
-    // leave it uncertain until a corresponding adapter and rate are supported.
-    ...(written !== undefined ? {cache_creation_input_tokens: written} : {}),
+
   };
 }
 const finishReason = (reason: string) => ({ "tool-calls": "tool_calls", "content-filter": "content_filter", other: "stop" }[reason] ?? reason);

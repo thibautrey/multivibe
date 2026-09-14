@@ -21,6 +21,16 @@ export function nativeAnthropicUsageEligible(usage:LanguageModelV4Usage):boolean
  if(raw.service_tier!==undefined&&raw.service_tier!=="standard")return false;
  if(raw.server_tool_use!=null&&(typeof raw.server_tool_use!=="object"||Array.isArray(raw.server_tool_use)
   ||Object.values(raw.server_tool_use).some(value=>value!==0)))return false;
+ // The managed grant supports the standard five-minute cache-write rate.
+ // A one-hour write or geographical premium requires a separate admitted rate.
+ if(raw.inference_geo!==undefined&&raw.inference_geo!==null&&raw.inference_geo!=="global")return false;
+ if(raw.cache_creation!=null){
+  if(typeof raw.cache_creation!=="object"||Array.isArray(raw.cache_creation))return false;
+  const cache=raw.cache_creation as Record<string,unknown>;
+  if(Object.keys(cache).some(key=>!["ephemeral_5m_input_tokens","ephemeral_1h_input_tokens"].includes(key)))return false;
+  if(cache.ephemeral_1h_input_tokens!==undefined&&cache.ephemeral_1h_input_tokens!==0)return false;
+  if(cache.ephemeral_5m_input_tokens!==undefined&&(!count(cache.ephemeral_5m_input_tokens)||cache.ephemeral_5m_input_tokens!==(raw.cache_creation_input_tokens??0)))return false;
+ }
  const cacheRead=Number(raw.cache_read_input_tokens??0),cacheWrite=Number(raw.cache_creation_input_tokens??0);
  const total=raw.input_tokens+cacheRead+cacheWrite;
  return Number.isSafeInteger(total)&&usage.inputTokens.total===total&&usage.outputTokens.total===raw.output_tokens
