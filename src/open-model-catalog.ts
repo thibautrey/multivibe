@@ -46,11 +46,12 @@ export function parseOpenModels(value: unknown): OpenModel[] {
 export function createOpenModelCatalog(fetcher: typeof fetch = fetch, now = Date.now, cachePath?: string) {
   let cache: OpenModelCatalog | undefined; let pending: Promise<OpenModelCatalog> | undefined; let hydration: Promise<void> | undefined;
   let enrichmentCursor = 0;
+  let retryAfter = 0;
   async function hydrate() {
     if (!hydration) hydration = (async () => {
       if (cachePath) try {
         const saved = JSON.parse(await fs.readFile(cachePath, 'utf8'));
-        if (['2','3','4','5'].includes(saved.version) && Array.isArray(saved.models) && Number.isFinite(Date.parse(saved.checkedAt)) && saved.models.every((m: OpenModel) => m && typeof m.id === 'string' && idPattern.test(m.id) && m.url === `${source}/${m.id}` && Array.isArray(m.needs) && Array.isArray(m.files) && Array.isArray(m.formats) && Array.isArray(m.languages))) cache = saved;
+        if (['2','3','4','5','6'].includes(saved.version) && Array.isArray(saved.models) && Number.isFinite(Date.parse(saved.checkedAt)) && saved.models.every((m: OpenModel) => m && typeof m.id === 'string' && idPattern.test(m.id) && m.url === `${source}/${m.id}` && Array.isArray(m.needs) && Array.isArray(m.files) && Array.isArray(m.formats) && Array.isArray(m.languages))) cache = saved;
       } catch { /* First run or invalid cache. */ }
     })();
     await hydration;
@@ -60,7 +61,7 @@ export function createOpenModelCatalog(fetcher: typeof fetch = fetch, now = Date
     pending = (async () => {
       try {
         await hydrate();
-        const lists = await Promise.all(['trendingScore','downloads','createdAt'].flatMap(sort => ['pipeline_tag=text-generation', 'pipeline_tag=image-text-to-text', 'pipeline_tag=translation', 'pipeline_tag=summarization', 'pipeline_tag=text-generation&filter=translation', 'pipeline_tag=text-generation&filter=summarization', 'pipeline_tag=text-generation&filter=code'].map(filter => ({sort, filter}))).map(async ({sort, filter}) => {
+        const feeds = await Promise.allSettled(['trendingScore','downloads','createdAt'].flatMap(sort => ['pipeline_tag=text-generation', 'pipeline_tag=image-text-to-text', 'pipeline_tag=translation', 'pipeline_tag=summarization', 'pipeline_tag=text-generation&filter=translation', 'pipeline_tag=text-generation&filter=summarization', 'pipeline_tag=text-generation&filter=code'].map(filter => ({sort, filter}))).map(async ({sort, filter}) => {
           let url: string | undefined = `${source}/api/models?${filter}&sort=${sort}&direction=-1&limit=100&full=true&config=true`;
           const rows: OpenModel[] = [];
           for (let page=0; page<2 && url; page++) {
@@ -75,9 +76,17 @@ export function createOpenModelCatalog(fetcher: typeof fetch = fetch, now = Date
           }
           return rows;
         }));
+        const failedFeeds = feeds.filter(feed => feed.status === 'rejected').length;
+        const lists = feeds.flatMap(feed => feed.status === 'fulfilled' ? [feed.value] : []);
         const unique = new Map<string,OpenModel>();
         for (const row of lists.flat()) if (!unique.has(row.id)) unique.set(row.id,row);
         if (!unique.size) throw new Error('Empty public catalog');
+        // A failed independent feed must not hide new results from healthy feeds.
+        // Retain last-known records on partial refresh, without claiming fresh ranks.
+        if (failedFeeds) for (const prior of cache?.models ?? []) {
+          if (!unique.has(prior.id)) unique.set(prior.id, {...prior, trendingRank: null, communityUsage: undefined});
+        }
+        retryAfter = failedFeeds ? now() + 60_000 : 0;
         // Bounded progressive enrichment: fixed Hub metadata endpoints only.
         // Failures retain list metadata and never discard a valid discovery snapshot.
         const candidates = [...unique.values()];
@@ -112,17 +121,17 @@ export function createOpenModelCatalog(fetcher: typeof fetch = fetch, now = Date
           }));
           for (const [id, evidence] of usage) { const model = unique.get(id); if (model) model.communityUsage = evidence; }
         } catch { /* Discovery stays usable when community data is unavailable. */ }
-        const fresh: OpenModelCatalog = {models:[...unique.values()],checkedAt:new Date(now()).toISOString(),stale:false,source,version:'5',communityStatus};
+        const fresh: OpenModelCatalog = {models:[...unique.values()],checkedAt:new Date(now()).toISOString(),stale:failedFeeds > 0,source,version:'6',communityStatus,failedFeeds};
         if (cachePath) { await fs.mkdir(path.dirname(cachePath), {recursive:true}); const tmp = `${cachePath}.${process.pid}.tmp`; await fs.writeFile(tmp,JSON.stringify(fresh), {mode:0o600}); await fs.rename(tmp,cachePath); }
         cache = fresh; return fresh;
-      } catch { if (cache) { cache = {...cache,stale:true}; return cache; } throw new Error('Public catalog unavailable'); }
+      } catch { retryAfter = now() + 60_000; if (cache) { cache = {...cache,stale:true}; return cache; } throw new Error('Public catalog unavailable'); }
       finally { pending = undefined; }
     })();
     return pending;
   }
   async function load(): Promise<OpenModelCatalog> {
     await hydrate();
-    if (cache) { if (cache.version !== '5' || now()-Date.parse(cache.checkedAt)>=CATALOG_TTL) { void refresh().catch(()=>{}); return {...cache,stale:true}; } return cache; }
+    if (cache) { if (cache.version !== '6' || cache.stale || now()-Date.parse(cache.checkedAt)>=CATALOG_TTL) { if (now() >= retryAfter) void refresh().catch(()=>{}); return {...cache,stale:true}; } return cache; }
     return refresh();
   }
   return Object.assign(load,{refresh,start() { void load().catch(()=>{}); const timer=setInterval(()=>{void refresh().catch(()=>{});},CATALOG_TTL); timer.unref(); return ()=>clearInterval(timer); }});
