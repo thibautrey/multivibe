@@ -128,6 +128,7 @@ func requestOperation(update *updater, state *updaterState, install bool) error 
 	if update.container {
 		return errors.New("container updates are managed by the host-side Docker updater")
 	}
+	state.NextCheckAt = ""
 	state.DownloadRequested = true
 	if install {
 		state.InstallRequested = true
@@ -151,6 +152,11 @@ func main() {
 	if command == "version" {
 		fmt.Fprintln(os.Stdout, hostUpdaterVersion)
 		return
+	}
+	if command == "request-download" || command == "request-apply" {
+		if err := ensureScheduler(); err != nil {
+			fatal(err.Error())
+		}
 	}
 	update, state, err := newUpdater(container)
 	if err != nil {
@@ -209,10 +215,7 @@ func main() {
 		if len(os.Args) != 2 {
 			err = errors.New(command + " does not accept arguments")
 		} else {
-			err = ensureScheduler()
-			if err == nil {
-				err = requestOperation(update, &state, command == "request-apply")
-			}
+			err = requestOperation(update, &state, command == "request-apply")
 		}
 		if err == nil {
 			err = encodePublicStatus(state)

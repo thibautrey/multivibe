@@ -358,7 +358,7 @@ cat > "$STAGED_UPDATE_LAUNCH_AGENT" <<EOF
     <string>1456</string>
   </dict>
   <key>StartInterval</key>
-  <integer>3600</integer>
+  <integer>60</integer>
   <key>ProcessType</key>
   <string>Background</string>
   <key>StandardOutPath</key>

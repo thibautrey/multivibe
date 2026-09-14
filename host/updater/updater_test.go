@@ -161,3 +161,56 @@ func TestPartialReleaseWithoutCurrentPlatformClearsUnavailableUpdate(t *testing.
 		t.Fatalf("absent platform retained an update: %#v", state)
 	}
 }
+
+func TestFailureSchedulesShortRetry(t *testing.T) {
+	store := testStore(t)
+	state, _ := defaultState("1.0.0")
+	state.NextCheckAt = time.Now().Add(14 * time.Hour).Format(time.RFC3339Nano)
+	before := time.Now()
+	_ = setFailure(store, &state, "artifact_download_failed", io.ErrUnexpectedEOF)
+	next, err := time.Parse(time.RFC3339Nano, state.NextCheckAt)
+	if err != nil || next.Before(before.Add(5*time.Minute)) || next.After(time.Now().Add(5*time.Minute)) {
+		t.Fatalf("invalid retry: %s", state.NextCheckAt)
+	}
+	loaded, err := store.load("1.0.0")
+	if err != nil || loaded.Status != "failed" || loaded.NextCheckAt != state.NextCheckAt {
+		t.Fatalf("retry not persisted: %#v %v", loaded, err)
+	}
+}
+
+func TestInterruptedOperationRechecksImmediately(t *testing.T) {
+	for _, status := range []string{"checking", "downloading", "installing"} {
+		t.Run(status, func(t *testing.T) {
+			store := testStore(t)
+			state, _ := defaultState("1.0.0")
+			state.Status = status
+			state.NextCheckAt = time.Now().Add(14 * time.Hour).Format(time.RFC3339Nano)
+			called := false
+			update := updater{store: store, now: time.Now, httpClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				called = true
+				return &http.Response{StatusCode: http.StatusNotModified, Header: make(http.Header), Body: http.NoBody}, nil
+			})}}
+			if err := update.check(context.Background(), &state, false); err != nil {
+				t.Fatal(err)
+			}
+			if !called {
+				t.Fatal("interrupted operation stranded until next scheduled check")
+			}
+		})
+	}
+}
+
+func TestProductionHTTPClientDoesNotLimitArtifactBodyToOneMinute(t *testing.T) {
+	t.Setenv("MULTIVIBE_HOST_DATA_DIR", t.TempDir())
+	update, _, err := newUpdater(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if update.httpClient.Timeout != 0 {
+		t.Fatal("whole artifact response has a short timeout")
+	}
+	transport := update.httpClient.Transport.(*http.Transport)
+	if transport.ResponseHeaderTimeout <= 0 || transport.TLSHandshakeTimeout <= 0 {
+		t.Fatal("connection establishment must remain bounded")
+	}
+}
