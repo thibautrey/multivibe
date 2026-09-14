@@ -57,8 +57,12 @@ in older entries are superseded by this summary and subsequent validation entrie
   New passkey option parsing/validation and provider button presence are covered.
   The light login screenshot was visually inspected; UI tests do not authenticate.
   Disposable simulator and exact DerivedData directory were removed.
-- Backend auth regression results and any unrelated full-build limitations are
-  recorded in the task completion response. No push or deployment performed.
+- Final backend main-branch `npm run build` passed, followed by **74 auth regression
+  tests**, zero failures (`/tmp/multivibe-auth-parity-backend-expanded-tests.log`).
+  Coverage includes signed passkey assertions, challenge isolation/replay, both
+  provider callbacks with preserved PKCE/scopes, consent rejection and public AASA.
+  An intermediate unrelated SDK script type error was resolved by concurrent work
+  before this successful final build. No push or deployment performed.
 
 ### Latest completed validation
 
