@@ -91,7 +91,7 @@ export class MultivibeTeamSyncService {
       const existing=accounts.find(account=>account.multivibeTeam?.providerId===item.id);
       if(existing&&existing.multivibeTeam!.revision>item.revision) throw new Error('Team provider revision is stale');
       const credential=item.sealedCredential?this.openCredential(item.id,item.revision,item.sealedCredential):undefined;
-      const account:Account={...existing,id:existing?.id??`team-${item.id}`,provider:item.provider,email:item.displayName,accessToken:credential?.accessToken??'',refreshToken:credential?.refreshToken,expiresAt:credential?.expiresAt,baseUrl:item.deliveryMode==='cloud_proxy'?`https://api.multivibe.cloud/team/providers/${item.id}`:item.endpoint,enabled:item.enabled,location:'cloud',priority:existing?.priority??0,multivibeTeam:{providerId:item.id,deliveryMode:item.deliveryMode,revision:item.revision,readOnly:true}};
+      const account:Account={...existing,id:existing?.id??`team-${item.id}`,provider:item.provider,email:item.displayName,accessToken:credential?.accessToken??'',refreshToken:credential?.refreshToken,expiresAt:credential?.expiresAt,baseUrl:item.deliveryMode==='cloud_proxy'?`https://api.multivibe.cloud/team/providers/${item.id}`:item.endpoint,enabled:item.enabled,location:'cloud',priority:existing?.priority??0,multivibeTeam:{providerId:item.id,models:[...item.models],deliveryMode:item.deliveryMode,revision:item.revision,readOnly:true}};
       prepared.push(account);
     }
     // Validate and decrypt the entire manifest before making any local change.

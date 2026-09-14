@@ -61,6 +61,7 @@ test('Team manifest preflight rejects late failures without changing accounts or
  await assert.rejects(sync.applyManifest({...manifest,providers:[first,{...second,sealedCredential:{schemaVersion:'multivibe-team-sealed-credential-v1',algorithm:'X25519-HKDF-SHA256-AES-256-GCM',ephemeralPublicKeySpki:'invalid',nonce:'invalid',ciphertext:'invalid',tag:'invalid'}}]}));
  assert.deepEqual(await store.listAccounts(),[]);
  await sync.applyManifest({...manifest,providers:[first]});
+ assert.deepEqual((await store.listAccounts())[0].multivibeTeam?.models,['gpt-test']);
  await assert.rejects(sync.duplicateAsLocal(first.id),/cannot be copied/);
  assert.equal((await store.listAccounts()).length,1);
 });

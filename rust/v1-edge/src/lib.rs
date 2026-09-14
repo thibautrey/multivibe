@@ -458,6 +458,13 @@ pub struct LocalRuntime {
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
+pub struct TeamProviderPolicy {
+    #[serde(default)]
+    pub models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct Account {
     pub id: String,
     pub provider: Option<String>,
@@ -486,6 +493,7 @@ pub struct Account {
     pub capacity_profile: Option<CapacityProfile>,
     pub privacy_mode: Option<String>,
     pub multivibe_cloud: Option<bool>,
+    pub multivibe_team: Option<TeamProviderPolicy>,
     pub usage: Option<UsageSnapshot>,
     pub state: Option<AccountState>,
     pub local_runtime: Option<LocalRuntime>,
@@ -1147,8 +1155,13 @@ fn apply_opencode_headers(account: &Account, headers: &mut HeaderMap) {
     }
 }
 
+// Exact upstream IDs only: normalization or aliases must not expand a Team grant.
+fn team_model_allowed(account: &Account, model: &str) -> bool {
+    account.multivibe_team.as_ref().is_none_or(|policy| policy.models.iter().any(|allowed| allowed == model))
+}
+
 fn account_usable(account: &Account, model: &str, blocked: &HashMap<String, u64>) -> bool {
-    if !account.enabled {
+    if !account.enabled || !team_model_allowed(account, model) {
         return false;
     }
     if account_inference_token(account).is_empty() && !is_local_runtime(account)
@@ -9112,6 +9125,7 @@ fn catalog_signature(store: &StoreFile, config: &EdgeConfig) -> String {
                 "provider": account.provider,
                 "sdk_provider": account.sdk_provider,
                 "sdk_models": account.sdk_models,
+                "team_policy": account.multivibe_team,
                 "upstream_mode": account.upstream_mode,
                 "compatibility_mode": account.compatibility_mode,
                 "base_url": account.base_url,
@@ -9142,6 +9156,7 @@ fn account_model_source_signature(account: &Account, config: &EdgeConfig) -> Str
         "discovery_url": model_discovery_url(account, config),
         "sdk_provider": account.sdk_provider,
         "sdk_models": account.sdk_models,
+                "team_policy": account.multivibe_team,
         "chatgpt_account_id": account.chatgpt_account_id,
         "opencode_headers": account.opencode_headers,
         "opencode_org_id": account.opencode_org_id,
@@ -9397,6 +9412,7 @@ async fn exposed_models(state: &EdgeState, store: &StoreFile, force: bool) -> Ve
             }
         };
         for entry in entries {
+            if !entry.get("id").and_then(Value::as_str).is_some_and(|id| team_model_allowed(account, id)) { continue; }
             upsert_model(&mut models, entry);
         }
     }
@@ -15576,5 +15592,35 @@ mod tests {
         control_plane_task.abort();
         let _ = fs::remove_file(store_path).await;
         let _ = fs::remove_file(jobs_path).await;
+    }
+}
+
+#[cfg(test)]
+mod team_provider_policy_tests {
+    use super::*;
+    #[test]
+    fn team_models_restrict_execution_and_missing_selection_denies() {
+        let mut account = Account { enabled: true, access_token: "test-token".into(), ..Default::default() };
+        let blocked = HashMap::new();
+        assert!(account_usable(&account, "any", &blocked));
+        account.multivibe_team = Some(TeamProviderPolicy { models: vec!["selected-model".into()] });
+        assert!(account_usable(&account, "selected-model", &blocked));
+        assert!(!account_usable(&account, "other-model", &blocked));
+        assert!(!account_usable(&account, "SELECTED-MODEL", &blocked));
+        account.multivibe_team = Some(serde_json::from_value(json!({"providerId":"legacy"})).unwrap());
+        assert!(!account_usable(&account, "selected-model", &blocked));
+    }
+    #[test]
+    fn team_policy_changes_invalidate_catalog_and_discovery_cache() {
+        let mut account = Account::default();
+        let config = EdgeConfig::default();
+        let before = account_model_source_signature(&account, &config);
+        account.multivibe_team = Some(TeamProviderPolicy { models: vec!["selected".into()] });
+        assert_ne!(before, account_model_source_signature(&account, &config));
+        let mut store = StoreFile::default();
+        store.accounts.push(account);
+        let before = catalog_signature(&store, &config);
+        store.accounts[0].multivibe_team.as_mut().unwrap().models.clear();
+        assert_ne!(before, catalog_signature(&store, &config));
     }
 }
