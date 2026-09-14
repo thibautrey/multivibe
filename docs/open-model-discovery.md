@@ -7,3 +7,13 @@ Sorts: Recommended, Trending, Top downloaded, New, Established. Needs and sortin
 GET /admin/model-recommendations accepts need (writing/coding/translation/documents), sort (recommended/trending/downloads/newest/established), host=local. It returns the catalog, a minimal Host projection and ranked variant estimates. It invokes existing Host capability and compatibility interfaces, not the public-worker projection. No machine profile goes to Hugging Face. Missing or ambiguous exact estimates stay unknown. A compatible estimate does not create an installation or inference route.
 
 Limitations: this increment does not implement absent-weight preflight estimates, verified installable variants, remote Host selection, or Prepare actions in discovery. Exact, unambiguous connected routes can show Chat in discovery; Cloud routes still depend on the separate authenticated catalog. Runtime compatibility often requires already-downloaded metadata. Live execution and installation must be validated separately; the discovery catalog cannot resolve Cloud account access. File sizes/architecture/context remain unknown where upstream list metadata omits them. Downloads reporting period is not assumed from absent payload metadata.
+
+## Validation — 2026-09-14
+
+- Source worktree: `git diff --check` passed; no dependency installation in worktree.
+- On main: `npm run build:api` and `npm run build:web` passed. Web bundle retains the >500 kB warning.
+- On main: `node --import tsx --test src/open-model-catalog.test.ts web/test/model-guidance.test.ts web/test/model-catalog.test.ts` — 32 tests passed.
+- Fixture test injects a different source model on refresh and observes its appearance without source edits or redeployment. Other fixtures cover persistence across restart, upstream failure, pagination, gates, fine-tunes, unknown/ambiguous/insufficient estimates, and fixed metadata-only requests.
+- Real localhost demo API returned 471 repositories, 329 grouped writing recommendations; raw evidence covered 43 coding repositories. Translation and document tasks were empty in that cached snapshot: task relevance is deliberately not guessed. This remains a product coverage gap, not a successful end-to-end result for those tasks.
+- Internal browser checked Beginner (three cards), Advanced filters, Expert discovery controls, the explicit empty task state, and preference persistence after reload. Narrow viewport cards were visually inspected. No complete keyboard/screen-reader audit was performed.
+- No Host download, runtime launch, physical memory fit, successful local chat, or authenticated Cloud inference was performed. Demo is explicitly disconnected. Discovery does not solve the earlier Cloud-access issue.
