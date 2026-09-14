@@ -53,8 +53,8 @@ function aggregateKey(instanceId:string,trace:TraceEntry,principal:TeamPrincipal
   return [instanceId,bucketStart,principal.type,principal.id??'',trace.provider??'unknown',trace.resolvedModel??trace.model??'unknown',trace.projectId??'',trace.application??'',trace.executionLocation??'cloud'].join('\0');
 }
 
-// All service instances sharing one store serialize manifest application. Failure
-// must release the queue so a corrected manifest or durable-write retry can run.
+// All Team mutations sharing one store serialize reads and writes. Failure
+// releases the queue so a corrected operation or durable-write retry can run.
 const manifestQueues = new WeakMap<AccountStore, Promise<unknown>>();
 export class MultivibeTeamSyncService {
   private identity?:IdentityDocument;
@@ -73,8 +73,11 @@ export class MultivibeTeamSyncService {
 
   async applyManifest(manifest:TeamSyncManifest):Promise<{applied:string[];removed:string[]}> {
     const snapshot = structuredClone(manifest);
+    return this.serializeMutation(() => this.applyManifestSerial(snapshot));
+  }
+  private async serializeMutation<T>(operation:()=>Promise<T>):Promise<T> {
     const previous = manifestQueues.get(this.store) ?? Promise.resolve();
-    const result = previous.catch(() => {}).then(() => this.applyManifestSerial(snapshot));
+    const result = previous.catch(() => {}).then(operation);
     manifestQueues.set(this.store, result);
     try { return await result; }
     finally { if (manifestQueues.get(this.store) === result) manifestQueues.delete(this.store); }
@@ -117,13 +120,15 @@ export class MultivibeTeamSyncService {
   }
 
   async duplicateAsLocal(providerId:string):Promise<Account>{
+    return this.serializeMutation(() => this.duplicateAsLocalSerial(providerId));
+  }
+  private async duplicateAsLocalSerial(providerId:string):Promise<Account>{
     const source=(await this.store.listAccounts()).find(value=>value.multivibeTeam?.providerId===providerId);if(!source)throw new Error('Team provider not found');
     if(source.multivibeTeam?.deliveryMode==='cloud_proxy')throw new Error('Cloud proxy providers cannot be copied as local credentials');
     const {multivibeTeam:_,...copy}=source;const account:Account={...copy,id:randomUUID(),email:`${copy.email??copy.provider??'Provider'} (local copy)`};await this.store.addOrUpdate(account);return account;
   }
   async detach():Promise<void>{
-    for(const account of await this.store.listAccounts()){if(!account.multivibeTeam)continue;if(account.multivibeTeam.deliveryMode==='cloud_proxy'){await this.store.deleteAccount(account.id);continue;}const {multivibeTeam:_,...local}=account;await this.store.addOrUpdate(local);}
-    await this.store.patchSettings({multivibeTeam:undefined});
+    await this.serializeMutation(() => this.store.commitTeamDetach());
   }
 
   async recordTrace(trace:TraceEntry,principal:TeamPrincipal={type:'unassigned'}):Promise<void>{
