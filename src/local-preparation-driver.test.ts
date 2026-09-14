@@ -31,6 +31,7 @@ async function fixture(t: any) {
       calls.push(input.operation);
       assert.deepEqual(input.artifact, resolved.artifact);
       assert.equal(input.context_tokens, 2048);
+      if (input.operation === 'install') { assert.deepEqual(input.runtime_quote, resolved.quote.runtimeDownload); state.installed = true; }
       if (input.operation === 'download') await progress(100, 100);
       if (input.operation === 'import') { if (state.failImport) throw Error('connection_lost'); return { runtimeModel: alias }; }
       if (input.operation === 'test') { assert.equal(input.runtime_model, alias); return { output: 'OK' }; }
@@ -100,4 +101,16 @@ test('wrong evidence, manipulated quote, failed chat and cancellation cannot bec
   await service.consent(job.id, job.consentDigest); await service.wait(job.id);
   assert.equal((await service.list())[0].stage, 'failed');
   assert.equal((await service.list())[0].chatModelId, undefined);
+});
+
+test('missing runtime installs only against separately consented archive and total volume', async t => {
+ const f=await fixture(t);f.state.installed=false;
+ f.resolved.quote.runtimeDownload={version:'pinned',platform:'darwin-arm64',sha256:'c'.repeat(64),bytes:50};
+ f.resolved.quote.downloadBytes=150;
+ f.resolved.quote.configurationKey=HostLocalPreparationDriver.configurationKey(f.resolved);
+ const job=await f.service.quote('owner/model');assert.deepEqual(f.calls,[]);
+ assert.equal(job.quote.downloadBytes,150);
+ await f.service.consent(job.id,job.consentDigest);await f.service.wait(job.id);
+ assert.deepEqual(f.calls,['install','start','download','import','test','chat']);
+ assert.equal((await f.service.list())[0].stage,'ready');
 });

@@ -55,7 +55,7 @@ export function LocalPreparationPanel({modelId,onClose,onUse,onChanged}: {
       <h4>{job.quote.modelId}</h4><p>Target: {job.quote.hostName}</p>
       <p role="status">{preparationLabels[job.stage]}</p>
       {job.stage==='awaiting-consent' && <>
-        <dl><dt>Model version</dt><dd>{job.quote.variant}</dd><dt>Runtime</dt><dd>{job.quote.runtime} {job.quote.runtimeVersion}</dd><dt>Download</dt><dd>{preparationBytes(job.quote.downloadBytes)}</dd><dt>Required disk space</dt><dd>{preparationBytes(job.quote.requiredDiskBytes)}</dd></dl>
+        <dl><dt>Model version</dt><dd>{job.quote.variant}</dd><dt>Runtime</dt><dd>{job.quote.runtime} {job.quote.runtimeVersion}</dd><dt>Total download</dt><dd>{preparationBytes(job.quote.downloadBytes)}</dd>{job.quote.runtimeDownload && <><dt>Runtime archive included</dt><dd>{preparationBytes(job.quote.runtimeDownload.bytes)}</dd></>}<dt>Required disk space</dt><dd>{preparationBytes(job.quote.requiredDiskBytes)}</dd></dl>
         <p>Approval installs the listed runtime and model on {job.quote.hostName}, then tests a synthetic prompt locally. Your conversations are not used. Existing installations stay unchanged.</p>
         <button className="btn primary" disabled={busy} onClick={()=>void action(`/${encodeURIComponent(job.id)}/consent`,{consentDigest:job.consentDigest})}>Approve and prepare</button>
       </>}
