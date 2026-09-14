@@ -87,3 +87,26 @@ func TestLocalPreparationControlUnavailable(t *testing.T) {
 		t.Fatal(response.Body.String())
 	}
 }
+
+func TestLocalPreparationControlProbe(t *testing.T) {
+	for _, identity := range []string{"multivibe-local-" + strings.Repeat("a", 32) + ":latest", "cloud/model", ""} {
+		calls := 0
+		input := localPreparationOperation{Operation: "test", RuntimeModel: identity, PolicyRevision: 1, ContextTokens: 2048, Artifact: localPreparationArtifact{ModelID: "author/model", Revision: strings.Repeat("a", 40), Filename: "model.gguf", SHA256: strings.Repeat("b", 64), Bytes: 10}}
+		raw, _ := json.Marshal(input)
+		request := httptest.NewRequest("POST", "/", strings.NewReader(string(raw)))
+		request.Header.Set("authorization", "Bearer "+strings.Repeat("s", 32))
+		request.Header.Set("content-type", "application/json")
+		response := httptest.NewRecorder()
+		localPreparationOperationHandler(strings.Repeat("s", 32), func(ctx context.Context, input localPreparationOperation, progress managedModelDownloadProgress) (string, error) {
+			calls++
+			return "OK", nil
+		})(response, request)
+		if identity == "" || identity == "cloud/model" {
+			if calls != 0 || response.Code != 400 {
+				t.Fatal("invalid probe accepted")
+			}
+		} else if calls != 1 || !strings.Contains(response.Body.String(), `"output":"OK"`) || strings.Contains(response.Body.String(), `"runtime_model"`) {
+			t.Fatal("invalid probe output", response.Body.String())
+		}
+	}
+}
