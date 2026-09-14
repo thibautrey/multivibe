@@ -102,17 +102,44 @@ type stateStore struct {
 }
 
 func (store stateStore) lock() (func(), error) {
+	// This file must never be unlinked: all contenders must lock the same inode.
+	guardPath := filepath.Join(store.directory, "host-update.guard")
+	if info, err := os.Lstat(guardPath); err == nil && !updaterPrivateFile(guardPath, info) {
+		return nil, errors.New("the update guard is invalid")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	guard, err := os.OpenFile(guardPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err := secureUpdaterPrivateFile(guardPath); err != nil {
+		guard.Close()
+		return nil, err
+	}
+	if err := lockUpdaterFile(guard); err != nil {
+		guard.Close()
+		return nil, errors.New("another Host update operation is already running")
+	}
+	owned := false
+	defer func() {
+		if !owned {
+			guard.Close()
+		}
+	}()
+
 	path := filepath.Join(store.directory, "host-update.lock")
 	for attempt := 0; attempt < 2; attempt++ {
 		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
-			_, writeErr := fmt.Fprintf(file, "%d\n", os.Getpid())
+			_, writeErr := fmt.Fprintf(file, "%d\nkernel-guard-v1\n", os.Getpid())
 			closeErr := file.Close()
 			if writeErr != nil || closeErr != nil {
 				_ = os.Remove(path)
 				return nil, errors.New("the update lock cannot be persisted")
 			}
-			return func() { _ = os.Remove(path) }, nil
+			owned = true
+			return func() { _ = os.Remove(path); _ = guard.Close() }, nil
 		}
 		if !errors.Is(err, os.ErrExist) {
 			return nil, errors.New("the update lock cannot be created")
@@ -121,7 +148,11 @@ func (store stateStore) lock() (func(), error) {
 		if statErr != nil || !updaterPrivateFile(path, info) {
 			return nil, errors.New("the update lock is invalid")
 		}
-		if time.Since(info.ModTime()) <= time.Hour {
+		// A marked lock can only have been written while holding the guard.
+		// Acquiring that guard proves its previous owner has released it or died.
+		data, readErr := os.ReadFile(path)
+		orphaned := readErr == nil && strings.HasSuffix(string(data), "\nkernel-guard-v1\n")
+		if !orphaned && time.Since(info.ModTime()) <= time.Hour {
 			return nil, errors.New("another Host update operation is already running")
 		}
 		if removeErr := os.Remove(path); removeErr != nil {
