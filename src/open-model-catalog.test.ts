@@ -14,14 +14,14 @@ test('public specific licenses and gates are discovery, private/adapters are exc
 test('pagination, deduplication and new model discovery without code changes',async()=>{
  let generation=0;let calls=0;
  const load=createOpenModelCatalog((async(input)=>{calls++;return new Response(JSON.stringify([{...model,id:`publisher/model${generation}`}]),{headers:String(input).includes('cursor=next')?{}:{link:'<https://huggingface.co/api/models?cursor=next>; rel="next"'}});}) as typeof fetch);
- assert.equal((await load()).models.length,1);assert.equal(calls,6);
+ assert.equal((await load()).models.length,1);assert.equal(calls,7);
  generation++;assert.equal((await load.refresh()).models[0].id,'publisher/model1');
 });
 test('atomic cache survives restart and stale failure; no weights fetched',async()=>{
  const dir=await mkdtemp(path.join(os.tmpdir(),'catalog-test-'));try {
  let now=Date.now(); const file=path.join(dir,'cache.json');let calls=0;
- const fetcher=(async(input)=>{assert.ok(String(input).startsWith('https://huggingface.co/api/models?'));calls++;return new Response(JSON.stringify([model]));}) as typeof fetch;
- const load=createOpenModelCatalog(fetcher,()=>now,file);await Promise.all([load(),load()]);assert.equal(calls,3);
+ const fetcher=(async(input)=>{assert.ok(String(input).startsWith('https://huggingface.co/api/models'));calls++;return new Response(JSON.stringify([model]));}) as typeof fetch;
+ const load=createOpenModelCatalog(fetcher,()=>now,file);await Promise.all([load(),load()]);assert.equal(calls,4);
  const offline=createOpenModelCatalog((async()=>{throw Error('offline');}) as typeof fetch,()=>now,file);
  assert.equal((await offline()).models.length,1);now+=CATALOG_TTL+1;assert.equal((await offline()).stale,true);assert.equal((await offline.refresh()).stale,true);
  }finally{await rm(dir,{recursive:true,force:true});}
@@ -41,4 +41,21 @@ test('all needs and sorts work; exact runtime evidence only and gated never sele
 test('initial failure and unsafe pagination fail closed',async()=>{
  await assert.rejects(createOpenModelCatalog((async()=>new Response('',{status:503})) as typeof fetch)());
  await assert.rejects(createOpenModelCatalog((async()=>new Response(JSON.stringify([model]),{headers:{link:'<https://evil.example/api/models>; rel="next"'}})) as typeof fetch)());
+});
+
+test('structured task metadata is evidence, model names are not', () => {
+ const parsed = parseOpenModels([{...model, tags:['license:custom'], cardData:{task_categories:['translation','summarization']}}])[0];
+ assert.deepEqual(parsed.needs,['translation','documents']);
+ assert.deepEqual(parseOpenModels([{...model,id:'publisher/best-coding-translation',tags:['license:custom']}])[0].needs,[]);
+});
+test('progressive metadata enrichment uses only fixed metadata endpoints', async () => {
+ const calls: string[] = [];
+ const load = createOpenModelCatalog((async input => {
+  calls.push(String(input));
+  return new Response(JSON.stringify(String(input).includes('?blobs=true') ? {...model, cardData:{task_categories:['translation']},siblings:[{rfilename:'model.safetensors',size:42}]} : [model]));
+ }) as typeof fetch);
+ const result = await load();
+ assert.equal(result.models[0].files[0].bytes,42);
+ assert.ok(result.models[0].metadataCheckedAt);
+ assert.equal(calls.filter(url => url.endsWith('?blobs=true')).length,1);
 });

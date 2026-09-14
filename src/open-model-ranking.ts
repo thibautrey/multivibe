@@ -4,6 +4,7 @@ export const catalogSorts = ['recommended', 'trending', 'downloads', 'newest', '
 export type CatalogSort = typeof catalogSorts[number];
 export type CatalogNeed = 'writing' | 'coding' | 'translation' | 'documents';
 export type OpenModel = {
+  metadataCheckedAt?: string;
   id: string; url: string; license: string; createdAt: string | null; downloads: number | null;
   gated: boolean; needs: CatalogNeed[]; languages: string[]; parent: string | null;
   relation: string | null; formats: string[]; files: { name: string; bytes: number | null }[];

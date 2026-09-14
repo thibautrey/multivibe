@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
+import { relevantChoices, type GuidanceEntry } from '../../../../src/model-guidance';
 import { api } from '../../lib/api';
 import type { OpenModelCatalog, CatalogNeed, CatalogSort, rankOpenModels } from '../../../../src/open-model-ranking';
 type Result = {catalog: OpenModelCatalog; host: {name:string; supported:boolean} | null; recommendations: ReturnType<typeof rankOpenModels>};
 const sortLabels: Record<CatalogSort,string> = {recommended:'Recommended',trending:'Trending',downloads:'Top downloaded',newest:'New',established:'Established'};
 function saved(key:string, fallback:string) { try {return localStorage.getItem(key) ?? fallback;} catch {return fallback;} }
-export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false }: { compact: boolean; need?: CatalogNeed; expert?: boolean }) {
+export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false, connected = [], onUse }: { compact: boolean; need?: CatalogNeed; expert?: boolean; connected?: GuidanceEntry[]; onUse?: (id:string)=>void }) {
   const [need,setNeed] = useState<CatalogNeed>(()=>{const v=saved('multivibe.models.need.v1','writing');return ['writing','coding','translation','documents'].includes(v)?v as CatalogNeed:'writing';});
   const effectiveNeed = selectedNeed ?? need;
-  const [sort,setSort] = useState<CatalogSort>(()=>{const v=saved('multivibe.models.sort.v1','recommended');return v in sortLabels?v as CatalogSort:'recommended';});
+  const [sort,setSort] = useState<CatalogSort>(()=>{const v=saved('multivibe.models.sort.v1','recommended');return Object.prototype.hasOwnProperty.call(sortLabels,v)?v as CatalogSort:'recommended';});
   const [result,setResult] = useState<Result>(); const [error,setError] = useState(false);
   const [request,setRequest] = useState(0); const [query,setQuery] = useState(''); const [limit,setLimit] = useState(24);
   const [fitOnly,setFitOnly] = useState(false);
@@ -17,7 +18,9 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
     const load=()=>void api(`/admin/model-recommendations?need=${effectiveNeed}&sort=${sort}&host=local`,{signal:controller.signal}).then((value:Result)=>{if(!controller.signal.aborted){setResult(value);setError(false);}}).catch(()=>{if(!controller.signal.aborted)setError(true);});
     load();const timer=setInterval(load,60000);return()=>{controller.abort();clearInterval(timer);};
   },[effectiveNeed,sort,request]);
-  const models=(result?.recommendations ?? []).filter(row=>row.model.id.toLowerCase().includes(query.toLowerCase()) && (!fitOnly || row.compatibility==='compatible'));
+  const readyChoices = relevantChoices(connected, effectiveNeed, result?.catalog.models ?? []);
+  const readyFor = (id:string) => readyChoices.find(choice=>choice.route.modelId===id);
+  const models=(result?.recommendations ?? []).filter(row=>row.model.id.toLowerCase().includes(query.toLowerCase()) && (!fitOnly || row.compatibility==='compatible' || readyFor(row.model.id)?.route.source==='local')).sort((a,b)=>sort==='recommended'?Number(Boolean(readyFor(b.model.id)))-Number(Boolean(readyFor(a.model.id))):0);
   return <section className="models-open-discovery" aria-label="Open model discovery">
     <div className="models-selection-heading"><h3>Find your next model</h3><span>Live catalog</span></div>
     <div className="models-compare-filters">
@@ -31,11 +34,13 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
     <div className="models-choice-grid">{models.slice(0,compact?3:limit).map(row=><article className="models-choice" key={row.model.id}>
       <span className="models-choice-badge">{row.compatibility==='compatible'?'Estimated fit':row.compatibility==='insufficient'?'Not compatible':'Compatibility unknown'}</span>
       <h3>{row.model.id}</h3><p>{row.reason}</p>
-      <dl><div><dt>Cost</dt><dd>Hardware and electricity</dd></div><div><dt>Data</dt><dd>On Host if run locally</dd></div><div><dt>Speed</dt><dd>Not measured</dd></div><div><dt>Dependency</dt><dd>Host required · Network for download</dd></div></dl>
+      <dl><div><dt>Cost</dt><dd>{readyFor(row.model.id)?.cost.label ?? 'Hardware and electricity'}</dd></div><div><dt>Data</dt><dd>{readyFor(row.model.id)?.data ?? 'On Host if run locally'}</dd></div><div><dt>Speed</dt><dd>Not measured</dd></div><div><dt>Dependency</dt><dd>{readyFor(row.model.id)?.dependency ?? 'Host required · Network for download'}</dd></div></dl>
+      {onUse && readyFor(row.model.id) && <button className="btn primary" onClick={()=>onUse(readyFor(row.model.id)!.model.id)}>Chat</button>}
       <a className="btn ghost" href={row.model.url} target="_blank" rel="noreferrer">{row.access==='restricted'?'Review access requirements':'View model details'} ↗</a>
       <details><summary>Why this model?</summary><p>{row.model.downloads===null?'Downloads unknown':`${row.model.downloads.toLocaleString('en-US')} downloads · Source reporting window`}. Popularity is not quality or a user count.</p>
         <p>License: {row.model.license}. Publisher metadata, not an independent license audit. {row.model.gated?'Access approval is required.':''}</p>
         <p>{row.model.createdAt?`Repository created ${new Date(row.model.createdAt).toLocaleDateString('en-GB')}`:'Creation date unknown'} · Not a verified release date.</p>
+        <p>{row.model.metadataCheckedAt ? `Metadata checked ${new Date(row.model.metadataCheckedAt).toLocaleString('en-GB')}.` : 'List metadata only.'}</p>
         <p>No installation or chat route is granted by discovery. A runtime estimate is not a successful test. On mobile, models run on Host, not your phone.</p>
         {expert && row.variants.map(v=><p key={v.model.id}>{v.model.id} · {v.model.formats.join(', ') || 'Format unknown'} · {v.reason}</p>)}
       </details>
