@@ -64,6 +64,16 @@ final class AuthenticationUITests: XCTestCase {
         XCTAssertFalse(app.buttons["submitAuthentication"].isEnabled)
         XCTAssertTrue(app.buttons["signInWithGoogle"].exists)
         XCTAssertTrue(app.buttons["signInWithGitHub"].exists)
+        let google = app.buttons["signInWithGoogle"]
+        let github = app.buttons["signInWithGitHub"]
+        XCTAssertEqual(google.label, "Continuer avec Google")
+        XCTAssertEqual(github.label, "Continuer avec GitHub")
+        XCTAssertLessThan(abs(google.frame.midY - github.frame.midY), 2)
+        XCTAssertLessThanOrEqual(google.frame.maxX, github.frame.minX)
+        for button in [google, github] {
+            XCTAssertGreaterThanOrEqual(button.frame.height, 44)
+            XCTAssertLessThanOrEqual(button.frame.height, 56)
+        }
         XCTAssertTrue(app.buttons["Autre fournisseur SSO"].exists)
         app.buttons["Créer un compte"].tap()
         XCTAssertTrue(app.secureTextFields["Confirmer le mot de passe"].waitForExistence(timeout: 5))

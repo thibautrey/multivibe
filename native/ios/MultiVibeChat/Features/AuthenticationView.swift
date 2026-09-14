@@ -125,16 +125,30 @@ struct AuthenticationView: View {
                                 Text("ou").font(.caption).foregroundStyle(.secondary)
                                 Rectangle().fill(.primary.opacity(0.12)).frame(height: 1)
                             }.accessibilityHidden(true)
-                            ForEach(["Google", "GitHub"], id: \.self) { provider in
-                                Button { authenticateSSO(provider: provider.lowercased()) } label: {
-                                    Text("Continuer avec \(provider)").fontWeight(.medium)
-                                        .frame(maxWidth: .infinity).frame(minHeight: 32)
+                            HStack(spacing: 12) {
+                                ForEach(["Google", "GitHub"], id: \.self) { provider in
+                                    Button { authenticateSSO(provider: provider.lowercased()) } label: {
+                                        HStack(spacing: 8) {
+                                            Image(provider + "Logo")
+                                                .resizable().scaledToFit()
+                                                .frame(width: 20, height: 20)
+                                                .accessibilityHidden(true)
+                                            Text(provider).font(.subheadline.weight(.medium))
+                                        }
+                                        .frame(maxWidth: .infinity, minHeight: 44)
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 12)
+                                            .strokeBorder(.primary.opacity(0.12), lineWidth: 1)
+                                    }
+                                    .disabled(busy || authConfiguration?.nativeProviderSelection != true
+                                        || (authConfiguration?.signupEnabled == true && !terms))
+                                    .accessibilityLabel("Continuer avec " + provider)
+                                    .accessibilityIdentifier("signInWith" + provider)
                                 }
-                                .buttonStyle(.bordered).controlSize(.large)
-                                .buttonBorderShape(.roundedRectangle(radius: 16))
-                                .disabled(busy || authConfiguration?.nativeProviderSelection != true
-                                    || (authConfiguration?.signupEnabled == true && !terms))
-                                .accessibilityIdentifier("signInWith" + provider)
                             }
                             if !signup, authConfiguration?.signupEnabled == true { signupConsent }
                             Button("Autre fournisseur SSO") { authenticateSSO() }.disabled(busy)
