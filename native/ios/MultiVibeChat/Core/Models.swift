@@ -1,3 +1,4 @@
+import AuthenticationServices
 import Foundation
 
 struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
@@ -35,6 +36,7 @@ struct AuthReply: Decodable, Sendable {
     var accountId: String?
     var challenge: String?
     var status: String?
+    var passkeyOptions: NativePasskeyOptions?
     func session() throws -> NativeSession {
         guard let accessToken, let refreshToken, let expiresAt, let accountId else { throw APIError.invalidResponse }
         return NativeSession(accessToken: accessToken, refreshToken: refreshToken, expiresAt: expiresAt, accountId: accountId)
@@ -357,5 +359,29 @@ enum MessageBlock: Equatable {
         }
         for range in unsafeRanges { value[range].link = nil }
         return value
+    }
+}
+
+struct NativePasskeyOptions: Decodable, Sendable {
+    struct Credential: Decodable, Sendable { let id: String; let type: String }
+    let challenge: String
+    let rpId: String
+    let allowCredentials: [Credential]
+    func request() throws -> ASAuthorizationPlatformPublicKeyCredentialAssertionRequest {
+        guard rpId == "app.multivibe.cloud", let bytes = Self.decode(challenge), !bytes.isEmpty,
+              !allowCredentials.isEmpty, allowCredentials.count <= 100 else { throw APIError.invalidResponse }
+        let request = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: rpId)
+            .createCredentialAssertionRequest(challenge: bytes)
+        request.userVerificationPreference = .required
+        request.allowedCredentials = try allowCredentials.map {
+            guard $0.type == "public-key", let id = Self.decode($0.id), !id.isEmpty else { throw APIError.invalidResponse }
+            return ASAuthorizationPlatformPublicKeyCredentialDescriptor(credentialID: id)
+        }
+        return request
+    }
+    static func decode(_ value: String) -> Data? {
+        guard !value.isEmpty, value.count <= 4096, value.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil else { return nil }
+        let encoded = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        return Data(base64Encoded: encoded + String(repeating: "=", count: (4 - encoded.count % 4) % 4))
     }
 }
