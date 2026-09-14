@@ -1,4 +1,5 @@
 /** Storage-free, non-inference model discovery for the isolated Team vault. */
+import {openCodeAccountHeaders,openCodeInferenceToken} from './opencode.js';
 import {buildCopilotHeaders, copilotModelEntries} from './github-copilot.js';
 import {encodeTeamDeviceCredential, decodeTeamProviderCredential} from './team-provider-credential.js';
 import type {Account} from './types.js';
@@ -8,9 +9,10 @@ export async function discoverTeamDeviceAccount(account:Account, transport:typeo
     const bundle=encodeTeamDeviceCredential(account);
     const endpoint=account.baseUrl??'https://api.x.ai/v1';
     const validated=decodeTeamProviderCredential(bundle,account.provider!,endpoint);
+    const safeAccount:Account={...account,...validated};
     const response=await transport(`${validated.baseUrl}/models`,{method:'GET',redirect:'error',signal:AbortSignal.timeout(15_000),
       headers:account.provider==='github-copilot'?buildCopilotHeaders(account.accessToken,undefined,'application/json'):
-        {authorization:`Bearer ${account.accessToken}`,accept:'application/json'}});
+        account.provider==='opencode'?{...openCodeAccountHeaders(safeAccount),authorization:`Bearer ${openCodeInferenceToken(safeAccount)}`,accept:'application/json'}:{authorization:`Bearer ${account.accessToken}`,accept:'application/json'}});
     if(!response.ok||!response.body)throw Error();
     const reader=response.body.getReader();const chunks:Uint8Array[]=[];let size=0;
     try {for(;;){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>2*1024*1024)throw Error();chunks.push(value);}}
