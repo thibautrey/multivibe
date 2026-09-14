@@ -1,3 +1,4 @@
+import publisherIcons from './publisher-icons.json';
 import { useEffect, useState } from 'react';
 import { relevantChoices, type GuidanceEntry } from '../../../../src/model-guidance';
 import { api } from '../../lib/api';
@@ -35,7 +36,7 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
     {sort==='community' && result?.catalog.communityStatus !== 'available' && result && <p role="status">Anonymous activity ranking is unavailable. External popularity is not substituted.</p>}
     <div className="models-choice-grid">{models.slice(0,compact?3:limit).map(row=><article className="models-choice" key={row.model.id}>
       <span className="models-choice-badge">{row.compatibility==='compatible'?'Estimated fit':row.compatibility==='insufficient'?'Not compatible':'Compatibility unknown'}</span>
-      <h3><img src={`https://app.multivibe.cloud/assets/catalog-icons/models/${encodeURIComponent(row.model.id.split('/')[0].toLowerCase())}`} alt="" width="28" height="28" loading="lazy" referrerPolicy="no-referrer" onError={event=>{event.currentTarget.hidden=true;}} style={{objectFit:'contain',verticalAlign:'middle',marginRight:8}} />{row.model.id}</h3><p>{row.reason}</p>
+      <h3>{(publisherIcons as Record<string,string>)[row.model.id.split('/')[0].toLowerCase()] && <img src={(publisherIcons as Record<string,string>)[row.model.id.split('/')[0].toLowerCase()]} alt="" width="28" height="28" loading="lazy" referrerPolicy="no-referrer" onError={event=>{event.currentTarget.hidden=true;}} style={{objectFit:'contain',verticalAlign:'middle',marginRight:8}} />}{row.model.id}</h3><p>{row.reason}</p>
       <dl><div><dt>Cost</dt><dd>{readyFor(row.model.id)?.cost.label ?? 'Hardware and electricity'}</dd></div><div><dt>Data</dt><dd>{readyFor(row.model.id)?.data ?? 'On Host if run locally'}</dd></div><div><dt>Speed</dt><dd>Not measured</dd></div><div><dt>Dependency</dt><dd>{readyFor(row.model.id)?.dependency ?? 'Host required · Network for download'}</dd></div></dl>
       {onUse && readyFor(row.model.id) && <button className="btn primary" onClick={()=>onUse(readyFor(row.model.id)!.model.id)}>Chat</button>}
       <a className="btn ghost" href={row.model.url} target="_blank" rel="noreferrer">{row.access==='restricted'?'Review access requirements':'View model details'} ↗</a>
@@ -50,7 +51,7 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
     </article>)}</div>
     {result && !models.length && <p>No models have sufficient task metadata for these filters. Try another task or sort.</p>}
     {!compact && models.length>limit && <button className="btn ghost" onClick={()=>setLimit(n=>n+24)}>Show more models</button>}
-    <details><summary>Where does this list come from?</summary><p>MultiVibe Cloud supplies anonymous activity ranks; Hugging Face supplies trending, downloaded and new repositories, refreshed every six hours while MultiVibe runs. Explicit quantizations are grouped; fine-tunes remain separate. Missing metadata stays unknown.</p><p>Established means at least 90 days old and in the top quarter by downloads among task-matched models with known counts. It is not a certification. New means repository creation, not release date.</p><p>Publisher icons contact MultiVibe Cloud; opening a model card contacts Hugging Face. No chat content or hardware profile is sent by catalog discovery. No automatic model downloads.</p></details>
+    <details><summary>Where does this list come from?</summary><p>MultiVibe Cloud supplies anonymous activity ranks; Hugging Face supplies trending, downloaded and new repositories, refreshed every six hours while MultiVibe runs. Explicit quantizations are grouped; fine-tunes remain separate. Missing metadata stays unknown.</p><p>Established means at least 90 days old and in the top quarter by downloads among task-matched models with known counts. It is not a certification. New means repository creation, not release date.</p><p>Publisher icons are served locally; opening a model card contacts Hugging Face. No chat content or hardware profile is sent by catalog discovery. No automatic model downloads.</p></details>
     {result && <p className="muted">Checked {new Date(result.catalog.checkedAt).toLocaleString('en-GB')} · Hugging Face</p>}
   </section>;
 }
