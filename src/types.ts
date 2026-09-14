@@ -153,6 +153,8 @@ export type Account = {
   /** Cloud-authoritative Team provider metadata. Synced accounts are immutable locally. */
   multivibeTeam?: {
     providerId: string;
+    /** Exact upstream model IDs selected by the Team administrator. Missing means deny. */
+    models?: string[];
     deliveryMode: "distributed" | "cloud_proxy";
     revision: number;
     readOnly: true;
