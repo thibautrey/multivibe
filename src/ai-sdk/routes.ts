@@ -4,6 +4,8 @@ import { timingSafeEqual } from "node:crypto";
 import type { LanguageModelV4 } from "@ai-sdk/provider";
 import type { Account } from "../types.js";
 import { sdkAccountModels, sdkModelId } from "./catalog.js";
+import { LiveModelCatalog } from "./live-model-catalog.js";
+import type { LiveModelCatalogSource } from "./live-model-catalog.js";
 import { createSdkModel } from "./models.js";
 import { SdkInputError, sdkCallOptions, chatResult, chatStream } from "./protocol.js";
 
@@ -31,6 +33,7 @@ export function createSdkAdapterRouter(options: {
   store: { listAccounts(): Promise<Account[]> };
   internalToken: string;
   createModel?: (account: Account, model: string) => LanguageModelV4;
+  liveModelCatalog?: LiveModelCatalogSource;
 }) {
   const router = express.Router();
   router.use((req, res, next) => {
@@ -49,7 +52,19 @@ export function createSdkAdapterRouter(options: {
       next();
     } catch { res.status(500).json({ error: { message: "Could not load provider account" } }); }
   });
-  router.get("/:accountId/v1/models", (_req, res) => res.json({object: "list", data: sdkAccountModels(res.locals.sdkAccount)}));
+  const liveModelCatalog = options.liveModelCatalog ?? new LiveModelCatalog();
+  router.get("/:accountId/v1/models", async (_req, res) => {
+    const account = res.locals.sdkAccount as Account;
+    let live;
+    try {
+      live = await liveModelCatalog.snapshot(account);
+    } catch {
+      // Discovery never blocks the catalog: a failed refresh falls back to the
+      // reviewed snapshot instead of failing the listing.
+      live = undefined;
+    }
+    res.json({object: "list", data: sdkAccountModels(account, live)});
+  });
   router.post("/:accountId/v1/chat/completions", async (req, res) => {
     const controller = new AbortController();
     const abort = () => controller.abort();

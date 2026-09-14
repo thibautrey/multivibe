@@ -37,4 +37,19 @@ The following providers are available through API-key setup. Quota probes run in
 | [Cloud platforms](cloud-platforms.md) | AWS Bedrock, Azure AI Foundry, Google Vertex AI (Express), Cloudflare Workers AI | Provider API keys and validated cloud endpoints. Resource quotas and billing remain in the cloud console. |
 | Existing integrations retained | Together AI, Groq, Cerebras, DeepSeek, Mistral AI, OpenCode Go | Existing API-key or native integration; OpenCode Go quota tracking remains active. |
 
+## Model lists and live discovery
+
+An account's model list comes from the provider itself when its reviewed adapter
+declares a `/models` endpoint (`modelsPath`). MultiVibe calls that endpoint with
+the account's own key, caches the answer per account for a stale-while-revalidate
+window (10 minutes by default, `SDK_LIVE_MODEL_CATALOG_TTL_MS`), serves the cached
+list while refreshing in the background, and retries with a bounded backoff after
+a failure. The reviewed snapshot still supplies context, tool, reasoning,
+modality and price metadata for the ids the provider lists, and it stays
+authoritative whenever discovery is unavailable, rejected, or slower than the
+cold-start budget (`SDK_LIVE_MODEL_CATALOG_BLOCKING_BUDGET_MS`). Explicit model
+IDs entered in account setup override the discovered list. DeepSeek is enabled
+today; another adapter opts in by adding `modelsPath` once its endpoint is
+reviewed.
+
 Starter model catalogs are reviewed snapshots, not a promise of account entitlement. Add provider model IDs in account setup or editing; Azure requires your actual deployment names. Replicate accepts only its reviewed prediction schema. Regenerate browser display metadata after changing definitions with `node --import tsx scripts/sync-expanded-provider-metadata.ts`; tests catch stale metadata.

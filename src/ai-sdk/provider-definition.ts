@@ -11,4 +11,8 @@ export type SdkProviderDefinition = {
   endpointPlaceholder?: string;
   endpointRequired?: boolean;
   requiresModelSelection?: boolean;
+  /** Reviewed provider `/models` path, relative to `baseURL`. Present only for
+   * adapters whose endpoint is documented to list chat models for the account
+   * key; its presence enables live model discovery for that provider. */
+  modelsPath?: string;
 };
