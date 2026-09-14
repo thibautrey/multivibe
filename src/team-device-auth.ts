@@ -4,9 +4,10 @@
  */
 import { accountFromCopilotOAuth, pollCopilotDeviceCode, requestCopilotDeviceCode } from './github-copilot.js';
 import { accountFromXaiOAuth, pollXaiDeviceCode, requestXaiDeviceCode } from './xai.js';
+import {accountFromOpenCodeOAuth, pollOpenCodeDeviceCode, requestOpenCodeDeviceCode} from './opencode.js';
 import type { Account, OAuthFlowState } from './types.js';
 
-export type TeamDeviceProvider = 'github-copilot' | 'xai';
+export type TeamDeviceProvider = 'github-copilot' | 'xai' | 'opencode';
 export type TeamDeviceChallenge = Readonly<{
   provider: TeamDeviceProvider;
   userCode: string;
@@ -22,7 +23,7 @@ export type TeamDeviceSession = {
 
 /** Requires an injected egress transport: there is deliberately no direct-fetch fallback. */
 export async function startTeamDeviceAuth(provider: TeamDeviceProvider, transport: typeof fetch): Promise<TeamDeviceSession> {
-  if (provider !== 'github-copilot' && provider !== 'xai') throw new Error('Unsupported Team device provider');
+  if (provider !== 'github-copilot' && provider !== 'xai' && provider !== 'opencode') throw new Error('Unsupported Team device provider');
   const controller = new AbortController();
   const fetchImpl: typeof fetch = (input, init) => transport(input, {
     ...init,
@@ -34,7 +35,7 @@ export async function startTeamDeviceAuth(provider: TeamDeviceProvider, transpor
   try {
     result = provider === 'github-copilot'
       ? await requestCopilotDeviceCode(fetchImpl)
-      : await requestXaiDeviceCode(fetchImpl);
+      : provider === 'opencode' ? await requestOpenCodeDeviceCode(fetchImpl) : await requestXaiDeviceCode(fetchImpl);
   } catch {
     throw new Error('Team device authorization could not be started');
   }
@@ -64,7 +65,7 @@ export async function startTeamDeviceAuth(provider: TeamDeviceProvider, transpor
         const flow: OAuthFlowState = { id: '', email: '', codeVerifier: '', createdAt: Date.now(), method: 'device', provider, status: 'pending' };
         const polled = provider === 'github-copilot'
           ? await pollCopilotDeviceCode(deviceCode, intervalSeconds, fetchImpl)
-          : await pollXaiDeviceCode(deviceCode, intervalSeconds, fetchImpl);
+          : provider === 'opencode' ? await pollOpenCodeDeviceCode(deviceCode, intervalSeconds, fetchImpl) : await pollXaiDeviceCode(deviceCode, intervalSeconds, fetchImpl);
         if (closed || Date.now() >= challenge.expiresAt) throw new Error('Expired');
         if (polled.status === 'pending') {
           intervalSeconds = Math.max(intervalSeconds, polled.intervalSeconds);
@@ -74,7 +75,7 @@ export async function startTeamDeviceAuth(provider: TeamDeviceProvider, transpor
         // Preserve Core's complete account context, not only the access token.
         const account = 'githubToken' in polled
           ? await accountFromCopilotOAuth(flow, polled.githubToken, undefined, fetchImpl)
-          : accountFromXaiOAuth(flow, polled.token);
+          : provider === 'opencode' ? await accountFromOpenCodeOAuth(flow, polled.token, undefined, fetchImpl) : accountFromXaiOAuth(flow, polled.token);
         if (closed || Date.now() >= challenge.expiresAt) throw new Error('Expired');
         cancel();
         return { status: 'success', account };
