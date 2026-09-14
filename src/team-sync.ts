@@ -130,7 +130,7 @@ export class MultivibeTeamSyncService {
     if(!this.identity)throw new Error('Team Sync is not initialized');const at=issuedAt.toISOString();const canonical=JSON.stringify({instanceId:this.identity.instanceId,issuedAt:at,payload});const signature=sign(null,Buffer.from(canonical),createPrivateKey(this.identity.privateKeyPkcs8)).toString('base64url');return Object.freeze({schemaVersion:'multivibe-team-instance-envelope-v1',instanceId:this.identity.instanceId,issuedAt:at,payload,signature});
   }
   private openCredential(providerId:string,revision:number,envelope:NonNullable<TeamProviderManifest['sealedCredential']>,provider:ProviderId,endpoint:string):ReturnType<typeof decodeTeamProviderCredential>{
-    if(!this.identity||envelope.schemaVersion!=='multivibe-team-sealed-credential-v1'||envelope.algorithm!=='X25519-HKDF-SHA256-AES-256-GCM')throw new Error('Team credential envelope is invalid');
+    if(!this.identity||(envelope.schemaVersion!=='multivibe-team-sealed-credential-v1'&&envelope.schemaVersion!=='multivibe-team-sealed-credential-v2')||envelope.algorithm!=='X25519-HKDF-SHA256-AES-256-GCM')throw new Error('Team credential envelope is invalid');
     let shared:Buffer|undefined,key:Buffer|undefined,clear:Buffer|undefined;
     try {
       if(typeof envelope.ciphertext!=='string'||envelope.ciphertext.length>Math.ceil(200000*4/3)||typeof envelope.ephemeralPublicKeySpki!=='string'||envelope.ephemeralPublicKeySpki.length>1024)throw new Error();
@@ -139,10 +139,13 @@ export class MultivibeTeamSyncService {
       const nonce=Buffer.from(envelope.nonce,'base64url'),tag=Buffer.from(envelope.tag,'base64url');
       if(nonce.length!==12||tag.length!==16)throw new Error();
       shared=diffieHellman({privateKey:createPrivateKey(this.identity.encryptionPrivateKeyPkcs8),publicKey});
-      key=Buffer.from(hkdfSync('sha256',shared,Buffer.from(providerId),Buffer.from(`multivibe-team-provider-v1:${revision}`),32));
+      key=Buffer.from(hkdfSync('sha256',shared,Buffer.from(providerId),Buffer.from(`multivibe-team-provider-${envelope.schemaVersion.endsWith('v2')?'v2':'v1'}:${revision}`),32));
       const decipher=createDecipheriv('aes-256-gcm',key,nonce);decipher.setAuthTag(tag);
       clear=Buffer.concat([decipher.update(Buffer.from(envelope.ciphertext,'base64url')),decipher.final()]);
-      return decodeTeamProviderCredential(JSON.parse(clear.toString('utf8')),provider,endpoint);
+      const credential:unknown=JSON.parse(clear.toString('utf8'));
+      const hasContext=!!credential&&typeof credential==='object'&&Object.hasOwn(credential,'coreAccountContext');
+      if(hasContext!==envelope.schemaVersion.endsWith('v2'))throw new Error();
+      return decodeTeamProviderCredential(credential,provider,endpoint);
     } catch {throw new Error('Team credential envelope authentication or context validation failed');}
     finally {shared?.fill(0);key?.fill(0);clear?.fill(0);}
   }
