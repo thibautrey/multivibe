@@ -112,8 +112,8 @@ export function parseAuthorizationInput(input: string): { code?: string; state?:
   return { code: value };
 }
 
-async function postForm(url: string, body: URLSearchParams): Promise<TokenResponse> {
-  const res = await fetch(url, {
+async function postForm(url: string, body: URLSearchParams, fetchImpl: typeof fetch = fetch): Promise<TokenResponse> {
+  const res = await fetchImpl(url, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body,
@@ -124,8 +124,8 @@ async function postForm(url: string, body: URLSearchParams): Promise<TokenRespon
   return JSON.parse(text) as TokenResponse;
 }
 
-async function postJson<T>(url: string, body: unknown): Promise<T> {
-  const res = await fetch(url, {
+async function postJson<T>(url: string, body: unknown, fetchImpl: typeof fetch = fetch): Promise<T> {
+  const res = await fetchImpl(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -155,6 +155,7 @@ export async function exchangeCodeForToken(
   code: string,
   codeVerifier: string,
   redirectUri = config.redirectUri,
+  fetchImpl: typeof fetch = fetch,
 ): Promise<TokenResponse> {
   const body = new URLSearchParams({
     grant_type: "authorization_code",
@@ -163,20 +164,20 @@ export async function exchangeCodeForToken(
     redirect_uri: redirectUri,
     code_verifier: codeVerifier,
   });
-  return postForm(config.tokenUrl, body);
+  return postForm(config.tokenUrl, body, fetchImpl);
 }
 
-export async function requestDeviceCode(config: OAuthConfig): Promise<DeviceCodeResponse> {
+export async function requestDeviceCode(config: OAuthConfig, fetchImpl: typeof fetch = fetch): Promise<DeviceCodeResponse> {
   return postJson<DeviceCodeResponse>(config.deviceAuthorizationUrl, {
     client_id: config.clientId,
-  });
+  }, fetchImpl);
 }
 
-export async function pollDeviceCode(config: OAuthConfig, flow: OAuthFlowState): Promise<DeviceTokenPollResponse> {
+export async function pollDeviceCode(config: OAuthConfig, flow: OAuthFlowState, fetchImpl: typeof fetch = fetch): Promise<DeviceTokenPollResponse> {
   if (!flow.deviceAuthId || !flow.userCode) {
     throw new Error("device authorization has not been started");
   }
-  const res = await fetch(config.deviceTokenUrl, {
+  const res = await fetchImpl(config.deviceTokenUrl, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -206,13 +207,13 @@ export async function pollDeviceCode(config: OAuthConfig, flow: OAuthFlowState):
   );
 }
 
-export async function refreshAccessToken(config: OAuthConfig, refreshToken: string): Promise<TokenResponse> {
+export async function refreshAccessToken(config: OAuthConfig, refreshToken: string, fetchImpl: typeof fetch = fetch): Promise<TokenResponse> {
   const body = new URLSearchParams({
     grant_type: "refresh_token",
     client_id: config.clientId,
     refresh_token: refreshToken,
   });
-  return postForm(config.tokenUrl, body);
+  return postForm(config.tokenUrl, body, fetchImpl);
 }
 
 function decodeJwtPayload(jwt: string | undefined): any {
