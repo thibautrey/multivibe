@@ -310,18 +310,18 @@ struct AuthenticationView: View {
         catch { authConfiguration = nil; self.error = error.localizedDescription }
     }
     private func authenticateSSO(provider: String? = nil) {
-        print("SSODIAG tap busy=\(busy)")
+        error = "SSODIAG tap"
         guard !busy else { return }
         if let provider {
             guard authConfiguration?.canStartSSO(provider: provider, acceptedTerms: terms) == true else { return }
         }
-        print("SSODIAG guards passed")
+        error = "SSODIAG guards"
         let selectedProvider = provider.flatMap { authConfiguration?.directSSOProvider($0) }
         ssoBusy = true; error = nil
         ssoTask = Task {
             defer { ssoBusy = false; ssoTask = nil }
             do {
-                print("SSODIAG task starting")
+                error = "SSODIAG task"
                 let session = try await sso.signIn(provider: selectedProvider, termsVersion: terms ? authConfiguration?.termsVersion : nil)
                 do { try Task.checkCancellation() }
                 catch { try? await ChatAPI.shared.revoke(token: session.refreshToken); throw error }
