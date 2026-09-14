@@ -144,8 +144,7 @@ struct AuthenticationView: View {
                                         RoundedRectangle(cornerRadius: 12)
                                             .strokeBorder(.primary.opacity(0.12), lineWidth: 1)
                                     }
-                                    .disabled(busy || authConfiguration?.nativeProviderSelection != true
-                                        || (authConfiguration?.signupEnabled == true && !terms))
+                                    .disabled(busy || authConfiguration?.canStartSSO(provider: provider.lowercased(), acceptedTerms: terms) != true)
                                     .accessibilityLabel("Continuer avec " + provider)
                                     .accessibilityIdentifier("signInWith" + provider)
                                 }
@@ -162,11 +161,15 @@ struct AuthenticationView: View {
                                 RoundedRectangle(cornerRadius: 12)
                                     .strokeBorder(.primary.opacity(0.12), lineWidth: 1)
                             }
-                            .disabled(busy || authConfiguration?.nativeAppleProviderSelection != true
-                                || (authConfiguration?.signupEnabled == true && !terms))
+                            .disabled(busy || authConfiguration?.canStartSSO(provider: "apple", acceptedTerms: terms) != true)
                             .accessibilityIdentifier("signInWithApple")
                             if !signup, authConfiguration?.signupEnabled == true { signupConsent }
                             Button("Autre fournisseur SSO") { authenticateSSO() }.disabled(busy)
+                            if authConfiguration?.usesLegacyProviderChooser == true {
+                                Text("Choisissez votre fournisseur sur la page sécurisée. Apple y sera proposé s’il est configuré. Les conditions peuvent vous être demandées à nouveau.")
+                                    .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                                    .accessibilityIdentifier("legacySSOExplanation")
+                            }
                             Text("Authentification dans une fenêtre sécurisée d’iOS.")
                                 .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                         }
@@ -306,11 +309,15 @@ struct AuthenticationView: View {
     }
     private func authenticateSSO(provider: String? = nil) {
         guard !busy else { return }
+        if let provider {
+            guard authConfiguration?.canStartSSO(provider: provider, acceptedTerms: terms) == true else { return }
+        }
+        let selectedProvider = provider.flatMap { authConfiguration?.directSSOProvider($0) }
         ssoBusy = true; error = nil
         ssoTask = Task {
             defer { ssoBusy = false; ssoTask = nil }
             do {
-                let session = try await sso.signIn(provider: provider, termsVersion: terms ? authConfiguration?.termsVersion : nil)
+                let session = try await sso.signIn(provider: selectedProvider, termsVersion: terms ? authConfiguration?.termsVersion : nil)
                 do { try Task.checkCancellation() }
                 catch { try? await ChatAPI.shared.revoke(token: session.refreshToken); throw error }
                 try await manager.accept(session); password = ""

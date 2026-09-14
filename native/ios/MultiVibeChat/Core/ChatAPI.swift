@@ -196,6 +196,22 @@ struct NativeAuthConfiguration: Decodable {
     let termsVersion: String?
     let termsUrl: URL?
     let privacyUrl: URL?
+    /// Missing capabilities mean an older server: use its existing provider chooser.
+    /// Explicit false remains authoritative and must not be bypassed.
+    func providerCapability(_ provider: String) -> Bool? {
+        provider == "apple" ? nativeAppleProviderSelection : nativeProviderSelection
+    }
+    func canStartSSO(provider: String, acceptedTerms: Bool) -> Bool {
+        guard ["google", "github", "apple"].contains(provider),
+              providerCapability(provider) != false else { return false }
+        return !signupEnabled || (hasValidDocuments && acceptedTerms)
+    }
+    func directSSOProvider(_ provider: String) -> String? {
+        providerCapability(provider) == true ? provider : nil
+    }
+    var usesLegacyProviderChooser: Bool {
+        nativeProviderSelection == nil || nativeAppleProviderSelection == nil
+    }
     var hasValidDocuments: Bool {
         guard let termsVersion, !termsVersion.isEmpty, let termsUrl, let privacyUrl else { return false }
         return Self.isSecureDocument(termsUrl) && Self.isSecureDocument(privacyUrl)

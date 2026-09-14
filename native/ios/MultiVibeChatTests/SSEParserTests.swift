@@ -759,3 +759,35 @@ final class MessageMarkdownTests: XCTestCase {
         XCTAssertEqual(reply.challenge, "opaque")
     }
 }
+
+final class NativeSSOAvailabilityTests: XCTestCase {
+    private func configuration(_ capabilities: String = "") throws -> NativeAuthConfiguration {
+        try JSONDecoder().decode(NativeAuthConfiguration.self, from: Data(("""
+        {"signupEnabled":true,"termsVersion":"2026-09-03","termsUrl":"https://multivibe.cloud/terms/","privacyUrl":"https://multivibe.cloud/privacy/"
+        """ + capabilities + "}").utf8))
+    }
+    func testLegacyServerUnlocksChooserOnlyAfterConsent() throws {
+        let config = try configuration()
+        for provider in ["google", "github", "apple"] {
+            XCTAssertFalse(config.canStartSSO(provider: provider, acceptedTerms: false))
+            XCTAssertTrue(config.canStartSSO(provider: provider, acceptedTerms: true))
+            XCTAssertNil(config.directSSOProvider(provider))
+        }
+        XCTAssertTrue(config.usesLegacyProviderChooser)
+    }
+    func testExplicitUnavailableProvidersStayDisabled() throws {
+        let config = try configuration(",\"nativeProviderSelection\":false,\"nativeAppleProviderSelection\":false")
+        for provider in ["google", "github", "apple"] {
+            XCTAssertFalse(config.canStartSSO(provider: provider, acceptedTerms: true))
+        }
+    }
+    func testModernServerPreservesDirectProviderSelection() throws {
+        let config = try configuration(",\"nativeProviderSelection\":true,\"nativeAppleProviderSelection\":true")
+        for provider in ["google", "github", "apple"] {
+            XCTAssertTrue(config.canStartSSO(provider: provider, acceptedTerms: true))
+            XCTAssertEqual(config.directSSOProvider(provider), provider)
+        }
+        XCTAssertFalse(config.canStartSSO(provider: "unknown", acceptedTerms: true))
+        XCTAssertFalse(config.usesLegacyProviderChooser)
+    }
+}
