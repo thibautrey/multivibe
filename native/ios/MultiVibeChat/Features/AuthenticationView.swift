@@ -133,6 +133,7 @@ struct AuthenticationView: View {
                     Button(challenge != nil ? "Vérifier le code" : signup ? "Créer mon compte" : "Se connecter") { authenticate() }
                         .buttonStyle(.borderedProminent).controlSize(.large)
                         .frame(maxWidth: .infinity).disabled(!canSubmit)
+                        .accessibilityIdentifier("submitAuthentication")
                     if busy { ProgressView() }
                 }
                 if challenge == nil {
