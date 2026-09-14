@@ -1,10 +1,13 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { Metric } from "../Metric";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import { ProgressStat } from "../ProgressStat";
 import { HostHarnessCards } from "../../host/HostHarnessCarousel";
 import { AvailableModels } from "../AvailableModels";
 import type { ActivityView, ExposedModel, TraceStats } from "../../types";
+
+const WELCOME_VIEW_COUNT_KEY = "multivibe.workspaceWelcome.viewCount";
+const WELCOME_COMPACT_AFTER_VIEWS = 10;
 
 type Props = {
   stats: { total: number; enabled: number; blocked: number };
@@ -31,6 +34,27 @@ export function OverviewTab({
   hostApplication,
   onHarnessesChanged,
 }: Props) {
+  const [compactWelcome, setCompactWelcome] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      const storedCount = Number.parseInt(window.localStorage.getItem(WELCOME_VIEW_COUNT_KEY) ?? "0", 10);
+      return Number.isFinite(storedCount) && storedCount >= WELCOME_COMPACT_AFTER_VIEWS;
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      const storedCount = Number.parseInt(window.localStorage.getItem(WELCOME_VIEW_COUNT_KEY) ?? "0", 10);
+      const nextCount = (Number.isFinite(storedCount) ? storedCount : 0) + 1;
+      window.localStorage.setItem(WELCOME_VIEW_COUNT_KEY, String(nextCount));
+      if (nextCount > WELCOME_COMPACT_AFTER_VIEWS) setCompactWelcome(true);
+    } catch {
+      // Storage can be unavailable in privacy-restricted browser contexts.
+    }
+  }, []);
+
   const isReady = stats.enabled > 0 && models.length > 0;
   const hasTraffic = traceStats.totals.requests > 0;
   const isEverythingRunning = isReady && hasTraffic && stats.blocked === 0;
@@ -61,7 +85,7 @@ export function OverviewTab({
   return (
     <>
       <h1 className="sr-only">Workspace overview</h1>
-      <section className="workspace-welcome">
+      <section className={`workspace-welcome${compactWelcome ? " workspace-welcome-compact" : ""}`}>
         <div><span className="welcome-status">{isEverythingRunning ? "Ready for your next idea" : stats.blocked ? "Some providers need attention" : isReady ? "Your workspace is ready" : "Let’s get you connected"}</span>
         <h2>All your AI. One place to build.</h2><p>Use your favorite models through one API. Bring a provider, explore what’s available, and make your first request.</p>
         <div className="welcome-actions"><button className="welcome-secondary" onClick={() => navigate("docs")}>Open playground ↗</button><button className="btn" onClick={() => navigate("models")}>Explore models <span aria-hidden="true">→</span></button><button className="welcome-secondary" onClick={() => navigate("accounts")}>Manage providers ↗</button></div></div>
