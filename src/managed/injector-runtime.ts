@@ -1,3 +1,4 @@
+import {parseManagedModelPolicy} from "./model-policy.js";
 import { readFile } from "node:fs/promises";
 import { resolve, isAbsolute } from "node:path";
 import { createPublicKey } from "node:crypto";
@@ -62,7 +63,7 @@ export async function createManagedInjectorRuntime(config: ManagedInjectorRuntim
   const fetchViaEgress = createProviderProxyFetch();
   const refs = new Set<string>();
   const accounts = manifest.accounts.map((account: Record<string, unknown>) => {
-    if (!account || Object.keys(account).sort().join() !== "credentialFile,credentialRef,models,providerId"
+    if (!account || Object.keys(account).filter(key=>key!=="modelPolicy").sort().join() !== "credentialFile,credentialRef,models,providerId"
       || !["mistral", "openai", "xai", "deepseek", "anthropic"].includes(String(account.providerId))
       || typeof account.credentialRef !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$/.test(account.credentialRef)
       || refs.has(account.credentialRef) || typeof account.credentialFile !== "string"
@@ -72,7 +73,7 @@ export async function createManagedInjectorRuntime(config: ManagedInjectorRuntim
     refs.add(account.credentialRef);
     const filename = resolve(config.providerCredentialDirectory, account.credentialFile);
     return createManagedProviderAccount({ providerId: account.providerId as ManagedCompatibleProvider,
-      credentialRef: account.credentialRef, models: new Set<string>(account.models), fetchViaEgress,maximumResponseBytes:config.maximumResponseBytes,
+      credentialRef: account.credentialRef, models: new Set<string>(account.models), modelPolicy:parseManagedModelPolicy(account.modelPolicy), fetchViaEgress,maximumResponseBytes:config.maximumResponseBytes,
       readCredential: async () => {
         const credential = await readFile(filename);
         if (credential.byteLength > 16384) throw Error("managed_credential_too_large");

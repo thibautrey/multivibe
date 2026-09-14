@@ -1,3 +1,4 @@
+import {managedModelAllowed, type ManagedModelPolicy} from "./model-policy.js";
 import type { KeyObject } from "node:crypto";
 import { createHash } from "node:crypto";
 import { verifyExecutionGrant, type ExecutionGrant } from "./authorization.js";
@@ -22,6 +23,7 @@ export interface ManagedProviderAccount {
   providerId: string;
   credentialRef: string;
   models: ReadonlySet<string>;
+  modelPolicy?: ManagedModelPolicy;
   /** Deployment-owned connector. It resolves credentials and enforces provider TLS/egress.
    * This function must issue one request only; never install Core's desktop retry router. */
   chatCompletions(body: Uint8Array, signal: AbortSignal, authorization: ManagedInvocationAuthorization): Promise<Response>;
@@ -48,7 +50,7 @@ export class ManagedExecutor {
     if (body.byteLength > this.dependencies.maximumRequestBytes) throw Error("execution_request_too_large");
     const grant = verifyExecutionGrant(token, body, this.dependencies.verificationKey, now());
     const accounts = this.dependencies.accounts.filter(account => account.providerId === grant.providerId
-      && account.credentialRef === grant.credentialRef && account.models.has(grant.upstreamModel));
+      && account.credentialRef === grant.credentialRef && managedModelAllowed(account,grant.upstreamModel));
     if (accounts.length !== 1) throw Error("execution_account_unavailable");
     const bytes = managedProviderRequest(grant, body);
     const ownership = await this.dependencies.coordination.claim(token);

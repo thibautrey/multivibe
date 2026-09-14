@@ -1,3 +1,4 @@
+import {managedModelAllowed, type ManagedModelPolicy} from "./model-policy.js";
 import { createHash } from "node:crypto";
 import type { ManagedProviderAccount } from "./executor.js";
 const SAFE_FAILURES = new Set([
@@ -45,7 +46,7 @@ export class ManagedDiscovery {
       try {
         const models = await account.discoverModels(AbortSignal.timeout(10000));
         items.push({ providerId: account.providerId, credentialRef: account.credentialRef,
-          status: "verified", models, executableModels: [...account.models].filter(id => models.includes(id)).sort() });
+          status: "verified", models, executableModels: models.filter(id => managedModelAllowed(account,id)).sort() });
       } catch (error) {
         items.push({ providerId: account.providerId, credentialRef: account.credentialRef,
           status: "unavailable", failureCode: safeFailureCode(error), models: [], executableModels: [] });

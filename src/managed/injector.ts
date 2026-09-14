@@ -1,3 +1,4 @@
+import {managedModelAllowed, type ManagedModelPolicy} from "./model-policy.js";
 import type { KeyObject } from "node:crypto";
 import type { ManagedProviderAccount, ManagedInvocationAuthorization } from "./executor.js";
 import { authorizeManagedInjection } from "./injector-authorization.js";
@@ -20,7 +21,7 @@ export class ManagedCredentialInjector {
       throw Error("invalid_injector_limit");
     }
     this.accounts = dependencies.accounts.map(account => ({providerId:account.providerId,
-      credentialRef:account.credentialRef,models:new Set(account.models),
+      credentialRef:account.credentialRef,modelPolicy:account.modelPolicy,models:new Set(account.models),
       chatCompletions:account.chatCompletions.bind(account)}));
   }
   async execute(providerBody: Uint8Array, authorization: ManagedInvocationAuthorization): Promise<Response> {
@@ -35,7 +36,7 @@ export class ManagedCredentialInjector {
       verificationKey:this.dependencies.verificationKey,now:clock(),maximumRequestBytes:this.dependencies.maximumRequestBytes});
     const grant = verify();
     const accounts = this.accounts.filter(account => account.providerId === grant.providerId
-      && account.credentialRef === grant.credentialRef && account.models.has(grant.upstreamModel));
+      && account.credentialRef === grant.credentialRef && managedModelAllowed(account,grant.upstreamModel));
     if (accounts.length !== 1) throw Error("injector_account_unavailable");
     let dispatched = false;
     try {

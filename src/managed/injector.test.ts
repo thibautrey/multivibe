@@ -92,3 +92,17 @@ test("credential access cannot extend compatible or native grant dispatch validi
   assert.equal(reads,1);assert.equal(dispatches,0);assert.equal(calls,0);
  }
 });
+test("Cloud-authorized models still require exact signed body and dispatch fence",async()=>{
+ const f=fixture();let calls=0,dispatches=0;
+ const injector=new ManagedCredentialInjector({verificationKey:keys.publicKey,maximumRequestBytes:10000,executionTimeoutMs:1000,
+  clock:()=>1001,coordination:{async dispatch(){if(dispatches++)throw Error("fenced");}},
+  accounts:[{providerId:"mistral",credentialRef:"account",models:new Set(),modelPolicy:"cloud_authorized",
+   async chatCompletions(_body,_signal,authorization){await authorization.beforeDispatch?.();calls++;return new Response("ok");}}]});
+ await assert.rejects(injector.execute(f.body,{...f.authorization,token:"invalid"}));
+ const changed=JSON.parse(Buffer.from(f.body).toString());changed.model="another-model";
+ await assert.rejects(injector.execute(Buffer.from(JSON.stringify(changed)),f.authorization),/provider_body_mismatch/);
+ assert.equal(dispatches,0);assert.equal(calls,0);
+ assert.equal(await (await injector.execute(f.body,f.authorization)).text(),"ok");
+ await assert.rejects(injector.execute(f.body,f.authorization),/injector_execution_uncertain/);
+ assert.equal(calls,1);
+});

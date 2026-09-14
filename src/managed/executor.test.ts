@@ -8,7 +8,7 @@ import type { ExecutionReceipt } from "./journal.js";
 import type {ExecutionRecoveryEnvelope} from "./response-recovery.js";
 const keys = generateKeyPairSync("ed25519");
 const ownership = {ownerId:"11111111-1111-4111-8111-111111111111",epoch:1};
-function harness(reply: () => Promise<Response>, operation: ExecutionGrant["operation"] = "responses") {
+function harness(reply: () => Promise<Response>, operation: ExecutionGrant["operation"] = "responses", dynamic=false) {
   const receipts: ExecutionReceipt[] = [];
   const recoveries:(ExecutionRecoveryEnvelope|undefined)[]=[];
   let calls = 0;
@@ -23,7 +23,7 @@ function harness(reply: () => Promise<Response>, operation: ExecutionGrant["oper
     maximumResponseBytes: 10000, executionTimeoutMs: 1000, clock: () => 1001,
     coordination: { async claim() { if (claimed) throw Error("duplicate"); claimed = true; return ownership; } },
     receiptWriter: { async finish(_token,_ownership,receipt,recovery) { receipts.push(receipt);recoveries.push(recovery); } },
-    accounts: [{ providerId: "mistral", credentialRef: "account-1", models: new Set(["upstream"]), async chatCompletions(bytes, _signal, authorization) {
+    accounts: [{ providerId: "mistral", credentialRef: "account-1", models: new Set(dynamic?[]:["upstream"]), modelPolicy:dynamic?"cloud_authorized":"allowlist", async chatCompletions(bytes, _signal, authorization) {
       assert.deepEqual(authorization.originalBody, new Uint8Array(body));
       assert.equal(authorization.token, signExecutionGrant(grant, keys.privateKey, 1000));
       assert.deepEqual(authorization.ownership,ownership);
@@ -160,4 +160,12 @@ test("provider error payloads cannot manufacture authoritative usage under HTTP 
  const result=await h.executor.execute(h.token,h.body);
  assert.equal((await result.receipt).state,"uncertain");
  assert.equal((await result.receipt).usage,null);
+});
+
+test("Cloud-authorized executor accepts new signed model but rejects invalid authority",async()=>{
+ const h=harness(async()=>Response.json({model:"upstream",choices:[{message:{role:"assistant",content:"hello"},finish_reason:"stop"}],usage:{prompt_tokens:1,completion_tokens:1,total_tokens:2}}),"responses",true);
+ await assert.rejects(h.executor.execute("invalid",h.body));assert.equal(h.calls(),0);
+ const result=await h.executor.execute(h.token,h.body);
+ assert.equal(result.response.status,200);assert.equal(h.calls(),1);
+ await assert.rejects(h.executor.execute(h.token,h.body),/duplicate/);assert.equal(h.calls(),1);
 });
