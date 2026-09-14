@@ -34,3 +34,15 @@ locally; unknown publishers have no icon. This does not establish model provenan
 Validation: 36 Core tests and API/web builds passed from main. Cloud build and 6
 telemetry/cache tests passed. PostgreSQL integration could not start: local Docker
 socket unavailable. No production deployment or live updated ranking is claimed.
+
+### Task coverage (2026-09-14)
+Discovery now queries each existing sort for dedicated translation and summarization
+pipelines, plus text-generation repositories tagged translation, summarization, or
+code. Each feed retains the existing two-page limit and safe metadata-only fetching.
+Pipeline metadata is task evidence; it is never evidence of Host compatibility or
+chat-route availability. No maintained model-name list or guessed capability is used.
+Version 2 caches remain available offline but trigger background refresh to version 3.
+Live source validation returned 2,095 repositories: writing 770, coding 322,
+translation 662, documents 402 (categories overlap; counts vary over time).
+Thirteen catalogue tests and the API build passed on main. This does not validate
+specialist architecture support, model downloads, or physical inference.
