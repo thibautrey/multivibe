@@ -843,6 +843,14 @@ func ensureManagedOllamaModelStorage(path string) error {
 }
 
 func (manager *managedOllama) downloadDependency(ctx context.Context, artifact managedOllamaDependencyArtifact) (string, error) {
+	maximumBytes := managedOllamaArchiveMaxBytes
+	consent, quoted := ctx.Value(localPreparationRuntimeQuoteKey{}).(localPreparationRuntimeQuote)
+	if quoted {
+		if !consent.valid() || consent.SHA256 != artifact.SHA256 || consent.Platform != manager.platform {
+			return "", errLocalPreparationRuntimeQuote
+		}
+		maximumBytes = int64(consent.Bytes)
+	}
 	parsed, err := url.Parse(artifact.URL)
 	if err != nil || !allowedManagedOllamaDownloadURL(parsed, true) {
 		return "", errors.New("managed Ollama dependency URL is invalid")
@@ -858,7 +866,7 @@ func (manager *managedOllama) downloadDependency(ctx context.Context, artifact m
 		return "", errors.New("managed Ollama dependency download failed")
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Range") != "" || response.ContentLength > managedOllamaArchiveMaxBytes {
+	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Range") != "" || response.ContentLength > maximumBytes || (quoted && response.ContentLength >= 0 && response.ContentLength != maximumBytes) {
 		return "", errors.New("managed Ollama dependency response is invalid")
 	}
 	temporary, err := os.CreateTemp(filepath.Join(manager.root, "downloads"), ".ollama-archive-*.tmp")
@@ -877,8 +885,8 @@ func (manager *managedOllama) downloadDependency(ctx context.Context, artifact m
 		return "", errors.New("managed Ollama dependency temporary file cannot be secured")
 	}
 	hash := sha256.New()
-	written, err := io.Copy(io.MultiWriter(temporary, hash), io.LimitReader(response.Body, managedOllamaArchiveMaxBytes+1))
-	if err != nil || written < 1 || written > managedOllamaArchiveMaxBytes || (response.ContentLength >= 0 && response.ContentLength != written) {
+	written, err := io.Copy(io.MultiWriter(temporary, hash), io.LimitReader(response.Body, maximumBytes+1))
+	if err != nil || written < 1 || written > maximumBytes || (quoted && written != maximumBytes) || (response.ContentLength >= 0 && response.ContentLength != written) {
 		return "", errors.New("managed Ollama dependency download is incomplete or oversized")
 	}
 	if hex.EncodeToString(hash.Sum(nil)) != artifact.SHA256 {
