@@ -4,13 +4,14 @@ import express from "express";
 import type { AddressInfo } from "node:net";
 import type { LanguageModelV4 } from "@ai-sdk/provider";
 import { createSdkAdapterRouter } from "./routes.js";
+import type { LiveModelCatalogSource } from "./live-model-catalog.js";
 import type { Account } from "../types.js";
 
-async function server(run: (url: string, account: Account, calls: () => number) => Promise<void>, failure?: unknown) {
-  const account: Account = {id: "account", provider: "ai-sdk", sdkProvider: "anthropic", sdkModels: ["test"], accessToken: "provider-secret", enabled: true};
+async function server(run: (url: string, account: Account, calls: () => number) => Promise<void>, failure?: unknown, live?: LiveModelCatalogSource, sdkModels: string[] = ["test"]) {
+  const account: Account = {id: "account", provider: "ai-sdk", sdkProvider: "anthropic", sdkModels, accessToken: "provider-secret", enabled: true};
   let calls = 0;
   const app = express(); app.use(express.json());
-  app.use("/internal/ai-sdk", createSdkAdapterRouter({store: {listAccounts: async () => [account]}, internalToken: "internal-secret", createModel: () => ({
+  app.use("/internal/ai-sdk", createSdkAdapterRouter({store: {listAccounts: async () => [account]}, internalToken: "internal-secret", liveModelCatalog: live, createModel: () => ({
     doGenerate: async () => { calls++; return {content: [{type: "text", text: "Hi"}], finishReason: {unified: "stop"}, usage: {inputTokens: {total: 1}, outputTokens: {total: 2}}, warnings: []}; },
     doStream: async () => {calls++; if (failure) throw failure; return {stream: new ReadableStream({start(controller) {
       controller.enqueue({type: "text-delta", id: "text", delta: "Hi"});
@@ -68,4 +69,24 @@ test("SDK adapter returns a complete incremental chat stream", async () => {
     assert.match(response.headers.get("content-type") ?? "", /text\/event-stream/);
     const body = await response.text(); assert.match(body, /"content":"Hi"/); assert.match(body, /"total_tokens":3/); assert.ok(body.endsWith("data: [DONE]\n\n"));
   });
+});
+
+test("SDK adapter lists models discovered from the provider and survives discovery failure", async () => {
+  const live = {
+    ids: ["from-provider"],
+    source: "https://api.deepseek.com/models",
+    fetchedAt: "2026-09-14T10:00:00.000Z",
+    stale: false,
+  };
+  await server(async (url) => {
+    const catalog = await (await fetch(`${url}/models`, {headers: auth})).json() as any;
+    assert.deepEqual(catalog.data.map((model: any) => model.id), ["anthropic/from-provider"]);
+    assert.equal(catalog.data[0].catalog_source, "https://api.deepseek.com/models");
+    assert.equal(catalog.data[0].catalog_fetched_at, "2026-09-14T10:00:00.000Z");
+  }, undefined, {snapshot: async () => live}, []);
+
+  await server(async (url) => {
+    const catalog = await (await fetch(`${url}/models`, {headers: auth})).json() as any;
+    assert.deepEqual(catalog.data.map((model: any) => model.id), ["anthropic/test"]);
+  }, undefined, {snapshot: async () => { throw new Error("provider discovery exploded"); }});
 });

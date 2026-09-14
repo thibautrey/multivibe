@@ -12,6 +12,7 @@ import { HUGGINGFACE_MODELS, ABACUS_MODELS } from "./additional-providers.js";
 import { QWEN_MODELS } from "./qwen-provider.js";
 import { MANUS_MODELS } from "./manus-provider.js";
 import { CLOUD_PLATFORM_CATALOGS } from "./cloud-platforms.js";
+import type { LiveModelCatalogSnapshot } from "./live-model-catalog.js";
 
 export type SdkCatalogModel = { id: string; name: string; context?: number; output?: number; tools?: boolean; reasoning?: boolean; input: string[]; cost?: Record<string, number> };
 export type SdkCatalog = { source: string; fetchedAt: string; models: Record<string, SdkCatalogModel[]> };
@@ -40,20 +41,29 @@ export function sdkProviderCatalog() {
     providers: SDK_PROVIDERS.map(({ id, name, endpointPlaceholder, endpointRequired, credentialLabel, requiresModelSelection }) => ({ id, name, endpointPlaceholder, endpointRequired, credentialLabel, requiresModelSelection, source: catalogForProvider(id).source, fetchedAt: catalogForProvider(id).fetchedAt, models: catalogForProvider(id).models[id] ?? [] })) };
 }
 
-export function sdkAccountModels(account: Account) {
+export function sdkAccountModels(account: Account, live?: LiveModelCatalogSnapshot) {
   const provider = sdkProvider(account.sdkProvider);
   if (!provider) return [];
   const metadata = catalogForProvider(provider.id);
   const catalog = metadata.models[provider.id] ?? [];
-  const selected = account.sdkModels?.length
-    ? account.sdkModels.map((id) => catalog.find((model) => model.id === id) ?? { id, name: id, input: ["text"] })
+  const known = new Map(catalog.map((model) => [model.id.toLowerCase(), model]));
+  // A successful provider /models response decides which ids exist; the
+  // reviewed snapshot still supplies display metadata for the ids it knows and
+  // stays authoritative when discovery is unavailable.
+  const discovered = live && live.ids.length ? live : undefined;
+  const listed: SdkCatalogModel[] = discovered
+    ? discovered.ids.map((id) => known.get(id.toLowerCase()) ?? { id, name: id, input: ["text"] })
     : catalog;
+  const selected = account.sdkModels?.length
+    ? account.sdkModels.map((id) => known.get(id.toLowerCase()) ?? listed.find((model) => model.id === id) ?? { id, name: id, input: ["text"] })
+    : listed;
   return selected.map((model) => ({
     id: `${provider.id}/${model.id}`, object: "model", owned_by: provider.id, created: 0,
     name: model.name, context_window: model.context, max_output_tokens: model.output,
     supports_tools: model.tools, supported_tool_types: model.tools === undefined ? undefined : model.tools ? ["function"] : [],
     supports_reasoning: model.reasoning, input_modalities: model.input, pricing: model.cost,
-    catalog_source: metadata.source, catalog_fetched_at: metadata.fetchedAt,
+    catalog_source: discovered?.source ?? metadata.source,
+    catalog_fetched_at: discovered?.fetchedAt ?? metadata.fetchedAt,
   }));
 }
 

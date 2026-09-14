@@ -2978,7 +2978,7 @@ export function AccountsTab(props: Props) {
                   <input type="url" value={manualBaseUrl} onChange={(event) => setManualBaseUrl(event.target.value)} placeholder={selectedSdkProvider.endpointPlaceholder} />
                 </label>}
                 <label>{selectedSdkProvider?.requiresModelSelection ? "Deployment / model names (required)" : "Model IDs (optional)"}
-                  <textarea value={sdkModels} onChange={(event) => setSdkModels(event.target.value)} placeholder={selectedSdkProvider?.requiresModelSelection ? "Enter your deployed model names separated by commas" : "Leave empty for the catalog, or enter model IDs separated by commas"} />
+                  <textarea value={sdkModels} onChange={(event) => setSdkModels(event.target.value)} placeholder={selectedSdkProvider?.requiresModelSelection ? "Enter your deployed model names separated by commas" : "Leave empty for the provider model list, or enter model IDs separated by commas"} />
                 </label>
                 <p className="muted">{sdkProviders.find((entry) => entry.id === sdkProvider)?.models.length ?? 0} text-generation models listed in the provider catalog. Access and pricing depend on your provider account. Subscription quotas are not supplied by the catalog.</p>
                 {PROVIDER_ACCESS[sdkProvider] && <p className="muted">{PROVIDER_ACCESS[sdkProvider].note}</p>}
