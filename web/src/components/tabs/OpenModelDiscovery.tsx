@@ -3,7 +3,7 @@ import { relevantChoices, type GuidanceEntry } from '../../../../src/model-guida
 import { api } from '../../lib/api';
 import type { OpenModelCatalog, CatalogNeed, CatalogSort, rankOpenModels } from '../../../../src/open-model-ranking';
 type Result = {catalog: OpenModelCatalog; host: {name:string; supported:boolean} | null; recommendations: ReturnType<typeof rankOpenModels>};
-const sortLabels: Record<CatalogSort,string> = {recommended:'Recommended',trending:'Trending',downloads:'Top downloaded',newest:'New',established:'Established'};
+const sortLabels: Record<CatalogSort,string> = {recommended:'Recommended',trending:'Trending',downloads:'Top downloaded',newest:'New',established:'Established',community:'Most used on MultiVibe'};
 function saved(key:string, fallback:string) { try {return localStorage.getItem(key) ?? fallback;} catch {return fallback;} }
 export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false, connected = [], onUse }: { compact: boolean; need?: CatalogNeed; expert?: boolean; connected?: GuidanceEntry[]; onUse?: (id:string)=>void }) {
   const [need,setNeed] = useState<CatalogNeed>(()=>{const v=saved('multivibe.models.need.v1','writing');return ['writing','coding','translation','documents'].includes(v)?v as CatalogNeed:'writing';});
@@ -31,13 +31,16 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
     {result && <p className="muted">{result.host ? `Target: ${result.host.name}${result.host.supported?'':' · Unsupported platform'}` : 'Connect Host to check compatibility. Showing popularity for your task.'}</p>}
     {!result && !error && <p role="status">Finding models…</p>}
     {(error || result?.catalog.stale) && <p role="status">{result?'Showing the last catalog. Refresh is unavailable or in progress.':'The catalog is unavailable.'} <button className="btn ghost" onClick={()=>setRequest(n=>n+1)}>Retry</button></p>}
+    {sort==='community' && <p className="muted">Anonymous reported output volume · Last 30 completed days · Not verified users or quality.</p>}
+    {sort==='community' && result?.catalog.communityStatus !== 'available' && result && <p role="status">Anonymous activity ranking is unavailable. External popularity is not substituted.</p>}
     <div className="models-choice-grid">{models.slice(0,compact?3:limit).map(row=><article className="models-choice" key={row.model.id}>
       <span className="models-choice-badge">{row.compatibility==='compatible'?'Estimated fit':row.compatibility==='insufficient'?'Not compatible':'Compatibility unknown'}</span>
-      <h3>{row.model.id}</h3><p>{row.reason}</p>
+      <h3><img src={`https://app.multivibe.cloud/assets/catalog-icons/models/${encodeURIComponent(row.model.id.split('/')[0])}`} alt="" width="28" height="28" loading="lazy" referrerPolicy="no-referrer" onError={event=>{event.currentTarget.hidden=true;}} style={{objectFit:'contain',verticalAlign:'middle',marginRight:8}} />{row.model.id}</h3><p>{row.reason}</p>
       <dl><div><dt>Cost</dt><dd>{readyFor(row.model.id)?.cost.label ?? 'Hardware and electricity'}</dd></div><div><dt>Data</dt><dd>{readyFor(row.model.id)?.data ?? 'On Host if run locally'}</dd></div><div><dt>Speed</dt><dd>Not measured</dd></div><div><dt>Dependency</dt><dd>{readyFor(row.model.id)?.dependency ?? 'Host required · Network for download'}</dd></div></dl>
       {onUse && readyFor(row.model.id) && <button className="btn primary" onClick={()=>onUse(readyFor(row.model.id)!.model.id)}>Chat</button>}
       <a className="btn ghost" href={row.model.url} target="_blank" rel="noreferrer">{row.access==='restricted'?'Review access requirements':'View model details'} ↗</a>
       <details><summary>Why this model?</summary><p>{row.model.downloads===null?'Downloads unknown':`${row.model.downloads.toLocaleString('en-US')} downloads · Source reporting window`}. Popularity is not quality or a user count.</p>
+        {row.model.communityUsage && <p>Anonymous activity rank #{row.model.communityUsage.rank} · {row.model.communityUsage.periodStart.slice(0,10)} to {row.model.communityUsage.periodEnd.slice(0,10)} (end exclusive). Based on reported output tokens, not people. Minimum 20 contributions across 7 days; these are not distinct users.</p>}
         <p>License: {row.model.license}. Publisher metadata, not an independent license audit. {row.model.gated?'Access approval is required.':''}</p>
         <p>{row.model.createdAt?`Repository created ${new Date(row.model.createdAt).toLocaleDateString('en-GB')}`:'Creation date unknown'} · Not a verified release date.</p>
         <p>{row.model.metadataCheckedAt ? `Metadata checked ${new Date(row.model.metadataCheckedAt).toLocaleString('en-GB')}.` : 'List metadata only.'}</p>
@@ -47,7 +50,7 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
     </article>)}</div>
     {result && !models.length && <p>No models have sufficient task metadata for these filters. Try another task or sort.</p>}
     {!compact && models.length>limit && <button className="btn ghost" onClick={()=>setLimit(n=>n+24)}>Show more models</button>}
-    <details><summary>Where does this list come from?</summary><p>Hugging Face: trending, downloaded and new repositories, refreshed every six hours while MultiVibe runs. Explicit quantizations are grouped; fine-tunes remain separate. Missing metadata stays unknown.</p><p>Established means at least 90 days old and in the top quarter by downloads among task-matched models with known counts. It is not a certification. New means repository creation, not release date.</p><p>Opening a model card contacts Hugging Face. No chat content or hardware profile is sent by catalog discovery. No automatic model downloads.</p></details>
+    <details><summary>Where does this list come from?</summary><p>MultiVibe Cloud supplies anonymous activity ranks; Hugging Face supplies trending, downloaded and new repositories, refreshed every six hours while MultiVibe runs. Explicit quantizations are grouped; fine-tunes remain separate. Missing metadata stays unknown.</p><p>Established means at least 90 days old and in the top quarter by downloads among task-matched models with known counts. It is not a certification. New means repository creation, not release date.</p><p>Publisher icons contact MultiVibe Cloud; opening a model card contacts Hugging Face. No chat content or hardware profile is sent by catalog discovery. No automatic model downloads.</p></details>
     {result && <p className="muted">Checked {new Date(result.catalog.checkedAt).toLocaleString('en-GB')} · Hugging Face</p>}
   </section>;
 }

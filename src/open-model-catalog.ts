@@ -1,3 +1,4 @@
+import { fetchCommunityUsage } from './community-model-usage.js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { OpenModel, OpenModelCatalog, CatalogNeed } from './open-model-ranking.js';
@@ -89,7 +90,23 @@ export function createOpenModelCatalog(fetcher: typeof fetch = fetch, now = Date
           const prior = cache?.models.find(row => row.id === id && row.metadataCheckedAt);
           if (prior && !model.metadataCheckedAt) unique.set(id, {...prior, downloads:model.downloads, license:model.license, gated:model.gated, trendingRank:model.trendingRank});
         }
-        const fresh: OpenModelCatalog = {models:[...unique.values()],checkedAt:new Date(now()).toISOString(),stale:false,source,version:'2'};
+        let communityStatus: 'available' | 'unavailable' = 'unavailable';
+        // Supplement discovery with the central cached ranking; no credentials or prompts.
+        // Clear prior ranks on error rather than presenting old activity as current.
+        for (const model of unique.values()) delete model.communityUsage;
+        try {
+          const usage = await fetchCommunityUsage(fetcher);
+          communityStatus = 'available';
+          // Include ranked models absent from the discovery feeds, using documented metadata only.
+          await Promise.all([...usage].filter(([id]) => !unique.has(id)).slice(0,20).map(async ([id]) => {
+            try {
+              const response = await fetcher(`${source}/api/models/${id}?blobs=true`, {signal:AbortSignal.timeout(5000),redirect:'error'});
+              if (response.ok) for (const model of parseOpenModels([await response.json()])) if (model.id === id) unique.set(id,model);
+            } catch { /* Missing metadata cannot establish task suitability. */ }
+          }));
+          for (const [id, evidence] of usage) { const model = unique.get(id); if (model) model.communityUsage = evidence; }
+        } catch { /* Discovery stays usable when community data is unavailable. */ }
+        const fresh: OpenModelCatalog = {models:[...unique.values()],checkedAt:new Date(now()).toISOString(),stale:false,source,version:'2',communityStatus};
         if (cachePath) { await fs.mkdir(path.dirname(cachePath), {recursive:true}); const tmp = `${cachePath}.${process.pid}.tmp`; await fs.writeFile(tmp,JSON.stringify(fresh), {mode:0o600}); await fs.rename(tmp,cachePath); }
         cache = fresh; return fresh;
       } catch { if (cache) { cache = {...cache,stale:true}; return cache; } throw new Error('Public catalog unavailable'); }
