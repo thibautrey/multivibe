@@ -14,7 +14,7 @@ export function localPreparationRoutes(service?: LocalModelPreparation) {
     ['consent_mismatch', 409], ['new_preflight_required', 409],
     ['host_preparation_busy', 409], ['preparation_already_ready', 409],
     ['preparation_not_found', 404], ['insufficient_disk', 409],
-    ['resources_unknown', 409], ['compatibility_not_established', 409],
+    ['download_budget_exceeded', 409], ['resources_unknown', 409], ['compatibility_not_established', 409],
     ['model_identity_mismatch', 409],
     ['host_permission_required', 409], ['runtime_download_quote_required', 409],
     ['import_reconciliation_required', 409], ['model_access_required', 409],

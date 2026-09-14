@@ -1438,7 +1438,7 @@ func (manager *managedOllama) commandEnvironment(modelStoragePath string) []stri
 	if manager.cpuOnly {
 		environment = append(environment, "CUDA_VISIBLE_DEVICES=-1", "ROCR_VISIBLE_DEVICES=-1", "GGML_VK_VISIBLE_DEVICES=-1", "OLLAMA_VULKAN=false")
 	}
-	environment = append(environment, "OLLAMA_NUM_PARALLEL=1", "OLLAMA_MAX_LOADED_MODELS=1")
+	environment = append(environment, "OLLAMA_NUM_PARALLEL=1", "OLLAMA_MAX_LOADED_MODELS=1", "OLLAMA_KV_CACHE_TYPE=f16", "OLLAMA_FLASH_ATTENTION=false")
 	sort.Strings(environment)
 	return environment
 }
