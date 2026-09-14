@@ -73,11 +73,11 @@ test("discovery refuses page/model ceilings and a failed later page",async()=>{
  }
 });
 
-test('shared discovery cancels a stalled body on abort without requesting another page', async () => {
+for (const schedule of [queueMicrotask, setImmediate]) test(`shared discovery cancels a body aborted ${schedule.name} without requesting another page`, async () => {
  const controller=new AbortController();let cancelled=false,calls=0;
  const account=createManagedProviderAccount({providerId:'anthropic',credentialRef:'account',models:new Set(),async readCredential(){return 'fixture-key'},fetchViaEgress:async()=>{
   calls++;
-  return new Response(new ReadableStream({pull(){queueMicrotask(()=>controller.abort());},cancel(){cancelled=true;}}));
+  return new Response(new ReadableStream({pull(){schedule(()=>controller.abort());},cancel(){cancelled=true;}}));
  }});
  await assert.rejects(account.discoverModels(controller.signal),{name:'AbortError'});
  assert.equal(cancelled,true);assert.equal(calls,1);

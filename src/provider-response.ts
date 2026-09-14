@@ -4,7 +4,10 @@ export async function readCoreResponseBytes(
   maximum: number,
   signal?: AbortSignal,
 ): Promise<Uint8Array> {
-  signal?.throwIfAborted();
+  if (signal?.aborted) {
+    await response.body?.cancel(signal.reason).catch(() => undefined);
+    signal.throwIfAborted();
+  }
   if (!response.body) return new Uint8Array();
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
