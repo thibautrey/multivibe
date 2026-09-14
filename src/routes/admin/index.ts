@@ -1,3 +1,5 @@
+import { localPreparationRoutes } from './local-preparation.js';
+import type { LocalModelPreparation } from '../../local-model-preparation.js';
 import { rankOpenModels, catalogSorts, type CatalogNeed, type CatalogSort, type RuntimeEstimate } from '../../open-model-ranking.js';
 import { loadOpenModelCatalog } from '../../open-model-catalog.js';
 import { GUIDANCE_VERSION, modelNeeds, relevantChoices, recommendedChoices, verifiedCloudCatalog, type GuidanceEntry, type ModelNeed } from '../../model-guidance.js';
@@ -135,6 +137,7 @@ export type AdminRoutesOptions = {
   usageRefreshCoordinator?: UsageRefreshCoordinator;
   anonymousUsageSharing?: AnonymousUsageSharingController;
   providerAgent?: ProviderAgentControl;
+  localPreparation?: LocalModelPreparation;
   hostApplication?: boolean;
   hostHarnessIntegrations?: HostHarnessIntegrationManager;
   providerWorkerEstimateClient?: ProviderWorkerEstimateClient;
@@ -466,6 +469,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
   } = traceManager;
 
   const router = express.Router();
+  router.use("/local-model-preparation", localPreparationRoutes(options.localPreparation));
 
   router.get("/host-update", async (_req, res) => {
     res.setHeader("cache-control", "no-store");
