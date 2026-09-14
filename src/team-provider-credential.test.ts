@@ -62,3 +62,22 @@ test('OpenCode context preserves workspace and inference credential without arbi
  assert.throws(()=>decodeTeamProviderCredential(encodeTeamDeviceCredential(account),'xai',account.baseUrl!),/invalid/);
  assert.equal(withoutTeamCredentialContext(account).opencodeApiKey,undefined);
 });
+
+test('ChatGPT device context pins Codex routing and excludes local account data',()=>{
+ const account:Account={id:'local-chatgpt-id',enabled:true,provider:'openai',accessToken:'oauth-token',refreshToken:'refresh-token',chatgptAccountId:'acct_123-456',email:'private@example.test',state:{lastError:'private-diagnostic'}};
+ const encoded=encodeTeamDeviceCredential(account);
+ const decoded=decodeTeamProviderCredential(encoded,'openai','https://chatgpt.com');
+ assert.equal(decoded.chatgptAccountId,'acct_123-456');
+ assert.equal(decoded.upstreamMode,'responses');
+ assert.equal(decoded.baseUrl,'https://chatgpt.com');
+ assert.doesNotMatch(JSON.stringify(encoded),/local-chatgpt-id|private@example|private-diagnostic/);
+ for(const endpoint of ['https://api.openai.com/v1','https://attacker.test','https://chatgpt.com/backend-api'])assert.throws(()=>decodeTeamProviderCredential(encoded,'openai',endpoint),/invalid/);
+ assert.throws(()=>decodeTeamProviderCredential(encoded,'openai-compatible','https://chatgpt.com'),/invalid/);
+ for(const patch of [{baseUrl:'https://api.openai.com/v1'},{upstreamMode:'chat/completions' as const},{chatgptAccountId:'bad\r\nheader'},{chatgptAccountId:'bad header'},{chatgptAccountId:'é'},{chatgptAccountId:''},{chatgptAccountId:'a'.repeat(1025)}])assert.throws(()=>encodeTeamDeviceCredential({...account,...patch}),/invalid/);
+ assert.equal(decodeTeamProviderCredential(encodeTeamDeviceCredential({...account,chatgptAccountId:undefined}),'openai','https://chatgpt.com').chatgptAccountId,undefined);
+ const context=JSON.parse(encoded.coreAccountContext!);
+ assert.throws(()=>decodeTeamProviderCredential({...encoded,coreAccountContext:JSON.stringify({...context,email:'injected@example.test'})},'openai','https://chatgpt.com'),/invalid/);
+ const cleaned=withoutTeamCredentialContext({...account,...decoded});
+ assert.equal(cleaned.chatgptAccountId,undefined);assert.equal(cleaned.upstreamMode,undefined);assert.equal(cleaned.baseUrl,undefined);
+ assert.deepEqual(decodeTeamProviderCredential({accessToken:'api-key'},'openai','https://api.openai.com/v1'),{accessToken:'api-key'});
+});
