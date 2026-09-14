@@ -166,13 +166,6 @@ struct AuthenticationView: View {
                             }
                             .disabled(busy || authConfiguration?.canStartSSO(provider: "apple", acceptedTerms: terms) != true)
                             .accessibilityIdentifier("signInWithApple")
-                            if !signup, authConfiguration?.signupEnabled == true { signupConsent }
-                            Button("Autre fournisseur SSO") { authenticateSSO() }.disabled(busy)
-                            if authConfiguration?.usesLegacyProviderChooser == true {
-                                Text("Choisissez votre fournisseur sur la page sécurisée. Apple y sera proposé s’il est configuré. Les conditions peuvent vous être demandées à nouveau.")
-                                    .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                                    .accessibilityIdentifier("legacySSOExplanation")
-                            }
                             if ssoBusy {
                                 ProgressView("Ouverture de la connexion sécurisée…")
                                     .font(.callout).accessibilityIdentifier("ssoProgress")
@@ -182,6 +175,13 @@ struct AuthenticationView: View {
                                     .font(.callout).foregroundStyle(.red)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .accessibilityIdentifier("nativeSSOError")
+                            }
+                            if !signup, authConfiguration?.signupEnabled == true { signupConsent }
+                            Button("Autre fournisseur SSO") { authenticateSSO() }.disabled(busy)
+                            if authConfiguration?.usesLegacyProviderChooser == true {
+                                Text("Choisissez votre fournisseur sur la page sécurisée. Apple y sera proposé s’il est configuré. Les conditions peuvent vous être demandées à nouveau.")
+                                    .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                                    .accessibilityIdentifier("legacySSOExplanation")
                             }
                             Text("Authentification dans une fenêtre sécurisée d’iOS.")
                                 .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)

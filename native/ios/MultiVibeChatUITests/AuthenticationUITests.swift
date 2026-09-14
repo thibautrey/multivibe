@@ -119,6 +119,7 @@ final class AuthenticationUITests: XCTestCase {
             let failure = app.staticTexts["nativeSSOError"]
             XCTAssertTrue(failure.exists, "SSO must not silently swallow a presentation failure")
             XCTAssertTrue(failure.label.contains("n’est pas associé à cette application"))
+            XCTAssertTrue(failure.isHittable, "The configuration diagnostic must be visible beside SSO controls")
             XCTAssertTrue(button.isEnabled, "A failed attempt must allow retry")
         }
     }

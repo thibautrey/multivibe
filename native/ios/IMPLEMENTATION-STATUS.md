@@ -517,3 +517,33 @@ lifecycle integration remain outstanding.
 - The guest draft remains in memory when the sheet is cancelled and is transferred to a new conversation after successful session restoration, without automatic submission. Recovery sheets are presented above authentication when it is open; deep links remain supported from chat.
 - Added a UI regression for initial chat visibility, disabled empty send, authentication on send, and draft retention on cancellation. Updated the existing authentication tests for the new entry point and distinct submit identifier.
 - No backend authentication, signing, provisioning, or deployment configuration changed by this patch.
+
+### 2026-09-14 — SSO tap failure diagnosis
+
+- Reproduced an enabled Google button doing nothing on an iOS 26.5 simulator.
+  The action and `ASWebAuthenticationSession.start()` run; AuthenticationServices
+  returns `canceledLogin` (code 1) with a failure reason stating that
+  `cloud.multivibe.chat` is not associated with `auth.multivibe.cloud`.
+  HTTPS callbacks require the `webcredentials` association. This was silently
+  swallowed as though the user had cancelled. Removing sheet disappearance
+  cleanup did not fix the problem; that cleanup remains intact.
+- Native UI now displays a localized association diagnostic beside the social
+  controls, exposes progress, and allows retry. Other system cancellation
+  failures also receive feedback. Debug instrumentation was removed. No
+  custom-scheme fallback, provider-token bypass, or weakened PKCE was introduced.
+- Read-only production checks on September 14: the identity host's
+  `/.well-known/apple-app-site-association` returns HTTP 404 (request
+  `d98622d4-d970-41c0-8c6a-b9ceac3b8b3b`); a valid native authorization request
+  returns HTTP 500 (`922dc487-19f4-480c-8761-bedb16d5e58e`). These are separate
+  deployment blockers, not solved by the native error-display fix.
+- Backend already supports `IOS_ASSOCIATED_APPLICATION_ID` and an opt-in
+  `deploy/kubernetes/components/ios-associated-domain` component. Release must
+  provision the actual signed application identifier (not an assumed Team ID),
+  include the reviewed component and admission-policy changes, publish HTTP 200
+  AASA with the matching `webcredentials.apps`, resolve the authorization 500,
+  and verify SSO on a signed installed iPhone. An unsigned simulator failure
+  cannot by itself prove that a signed device's entitlements are incorrect.
+- No backend configuration, production admission policy, or deployment was
+  modified in this fix. UI regression checks explicitly distinguish opening the
+  browser from displaying the known association failure; neither diagnostic
+  tests nor a successful build establish end-to-end provider sign-in.
