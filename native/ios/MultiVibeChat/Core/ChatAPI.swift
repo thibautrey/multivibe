@@ -191,6 +191,7 @@ final class NativeTransportDelegate: NSObject, URLSessionTaskDelegate, Sendable 
 
 struct NativeAuthConfiguration: Decodable {
     var nativeProviderSelection: Bool? = nil
+    var nativeAppleProviderSelection: Bool? = nil
     let signupEnabled: Bool
     let termsVersion: String?
     let termsUrl: URL?

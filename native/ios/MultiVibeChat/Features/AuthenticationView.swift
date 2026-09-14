@@ -150,6 +150,21 @@ struct AuthenticationView: View {
                                     .accessibilityIdentifier("signInWith" + provider)
                                 }
                             }
+                            Button { authenticateSSO(provider: "apple") } label: {
+                                Label("Continuer avec Apple", systemImage: "apple.logo")
+                                    .font(.subheadline.weight(.medium))
+                                    .frame(maxWidth: .infinity, minHeight: 44)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 12)
+                                    .strokeBorder(.primary.opacity(0.12), lineWidth: 1)
+                            }
+                            .disabled(busy || authConfiguration?.nativeAppleProviderSelection != true
+                                || (authConfiguration?.signupEnabled == true && !terms))
+                            .accessibilityIdentifier("signInWithApple")
                             if !signup, authConfiguration?.signupEnabled == true { signupConsent }
                             Button("Autre fournisseur SSO") { authenticateSSO() }.disabled(busy)
                             Text("Authentification dans une fenêtre sécurisée d’iOS.")
@@ -449,7 +464,7 @@ struct PasswordRecoveryView: View {
             URLQueryItem(name: "code_challenge", value: challenge), URLQueryItem(name: "code_challenge_method", value: "S256"),
             URLQueryItem(name: "state", value: state)]
         if let provider {
-            guard ["google", "github"].contains(provider) else { throw APIError.invalidResponse }
+            guard ["google", "github", "apple"].contains(provider) else { throw APIError.invalidResponse }
             url.queryItems?.append(URLQueryItem(name: "provider", value: provider))
             if let termsVersion { url.queryItems?.append(URLQueryItem(name: "terms_version", value: termsVersion)) }
         }
