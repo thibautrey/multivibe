@@ -15,7 +15,7 @@ func TestLocalPreparationControlBoundary(t *testing.T) {
 	for _, mode := range []string{"success", "unauthorized", "unknown-field", "unknown-operation", "duplicate", "oversize", "failure", "regressing-progress"} {
 		t.Run(mode, func(t *testing.T) {
 			calls := 0
-			handler := localPreparationOperationHandler("test-secret", func(ctx context.Context, in localPreparationOperation, progress managedModelDownloadProgress) (string, error) {
+			handler := localPreparationOperationHandler(strings.Repeat("s", 32), func(ctx context.Context, in localPreparationOperation, progress managedModelDownloadProgress) (string, error) {
 				calls++
 				if mode == "failure" {
 					return "", errors.New("secret runtime path")
@@ -42,7 +42,7 @@ func TestLocalPreparationControlBoundary(t *testing.T) {
 			request := httptest.NewRequest("POST", "/v1/local-preparation/operation", strings.NewReader(body))
 			request.Header.Set("content-type", "application/json")
 			if mode != "unauthorized" {
-				request.Header.Set("authorization", "Bearer test-secret")
+				request.Header.Set("authorization", "Bearer "+strings.Repeat("s", 32))
 			}
 			response := httptest.NewRecorder()
 			handler(response, request)
@@ -79,10 +79,10 @@ func TestLocalPreparationControlUnavailable(t *testing.T) {
 	input := localPreparationOperation{Operation: "install", PolicyRevision: 1, ContextTokens: 2048, Artifact: localPreparationArtifact{ModelID: "author/model", Revision: strings.Repeat("a", 40), Filename: "model.gguf", SHA256: strings.Repeat("b", 64), Bytes: 10}}
 	raw, _ := json.Marshal(input)
 	request := httptest.NewRequest("POST", "/", strings.NewReader(string(raw)))
-	request.Header.Set("authorization", "Bearer test")
+	request.Header.Set("authorization", "Bearer "+strings.Repeat("s", 32))
 	request.Header.Set("content-type", "application/json")
 	response := httptest.NewRecorder()
-	localPreparationControlHandler(nil, "test")(response, request)
+	localPreparationControlHandler(nil, strings.Repeat("s", 32))(response, request)
 	if !strings.Contains(response.Body.String(), `"type":"error"`) {
 		t.Fatal(response.Body.String())
 	}
