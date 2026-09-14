@@ -58,7 +58,7 @@ test('OpenCode context preserves workspace and inference credential without arbi
  const account:Account={id:'local',enabled:true,provider:'opencode',accessToken:'oauth',refreshToken:'renew',baseUrl:'https://opencode.ai/inference/openai',opencodeAccountId:'user-one',opencodeOrgId:'org-one',opencodeConsoleUrl:'https://opencode.ai/console',opencodeApiKey:'{env:OPENCODE_CONSOLE_TOKEN}',opencodeHeaders:{'x-org-id':'org-one'}};
  const decoded=decodeTeamProviderCredential(encodeTeamDeviceCredential(account),'opencode',account.baseUrl!);
  assert.equal(decoded.opencodeOrgId,'org-one');assert.equal(decoded.opencodeApiKey,account.opencodeApiKey);
- for(const patch of [{baseUrl:'https://evil.test'},{opencodeConsoleUrl:'https://evil.test'}, {opencodeOrgId:'org\nheader'},{opencodeApiKey:'{file:/private}'},{opencodeHeaders:{authorization:'private'}},{opencodeHeaders:{'x-org-id':'other'}}])assert.throws(()=>encodeTeamDeviceCredential({...account,...patch}),/invalid/);
+ const patches:Partial<Account>[]=[{baseUrl:'https://evil.test'},{opencodeConsoleUrl:'https://evil.test'}, {opencodeOrgId:'org\nheader'},{opencodeApiKey:'{file:/private}'},{opencodeHeaders:{authorization:'private'}},{opencodeHeaders:{'x-org-id':'other'}}];for(const patch of patches)assert.throws(()=>encodeTeamDeviceCredential({...account,...patch}),/invalid/);
  assert.throws(()=>decodeTeamProviderCredential(encodeTeamDeviceCredential(account),'xai',account.baseUrl!),/invalid/);
  assert.equal(withoutTeamCredentialContext(account).opencodeApiKey,undefined);
 });
