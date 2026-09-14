@@ -53,6 +53,7 @@ export function createLocalPreparationResolver(host: ProviderAgentControl, fetch
     if (!Array.isArray(listing)) throw Error('compatibility_not_established');
     const candidates = listing.slice(0,8).filter(row => typeof row?.id === 'string' && safeId.test(row.id));
     const memoryLimit = Math.min(resources.free_accelerator_memory_bytes!, capability.accelerator_memory_bytes!*policy.policy.gpu_vram_percent/100, resources.free_host_memory_bytes!);
+    let failure = 'compatibility_not_established';
     for (const candidate of candidates) {
       const detail = await json(`${hub}/api/models/${candidate.id}?blobs=true`);
       const variant = parseOpenModels([detail])[0];
@@ -63,11 +64,12 @@ export function createLocalPreparationResolver(host: ProviderAgentControl, fetch
       if (files.length !== 1) continue;
       const file = files[0]; const contextTokens = 2048;
       const memory = estimatePreparationMemory(config,architecture,file.bytes!,contextTokens);
-      if (memory === null || memory > memoryLimit) continue;
+      if (memory === null) continue;
+      if (memory > memoryLimit) { failure = 'insufficient_memory'; continue; }
       const requiredDiskBytes = file.bytes!*2 + runtimeDiskBytes; // source + Ollama blob, no hardlink assumption
       if (!Number.isSafeInteger(requiredDiskBytes) || requiredDiskBytes > availableDiskBytes-policy.policy.reserve_free_disk_bytes ||
-          requiredDiskBytes+resources.occupied_storage_bytes! > policy.policy.max_disk_bytes) throw Error('insufficient_disk');
-      if (file.bytes! + (runtimeDownload?.bytes ?? 0) > policy.policy.max_download_bytes_per_day) throw Error('download_budget_exceeded');
+          requiredDiskBytes+resources.occupied_storage_bytes! > policy.policy.max_disk_bytes) { failure = 'insufficient_disk'; continue; }
+      if (file.bytes! + (runtimeDownload?.bytes ?? 0) > policy.policy.max_download_bytes_per_day) { failure = 'download_budget_exceeded'; continue; }
       const plan: ResolvedPreparationPlan = {artifact:{model_id:variant.id,revision:variant.revision,filename:file.name,bytes:file.bytes!,sha256:file.sha256!}, contextTokens, policy,
         memoryEvidence: { estimator: PREPARATION_MEMORY_VERSION, configDigest: createHash('sha256').update(JSON.stringify(config)).digest('hex'), requiredBytes: memory },
         quote:{hostId:manifest.device_key_id,hostName:capability.hardware_model || 'This Host',modelId,variant:file.name,runtime:'ollama',runtimeVersion:status.runtime.version,policyRevision:policy.revision,
@@ -76,6 +78,6 @@ export function createLocalPreparationResolver(host: ProviderAgentControl, fetch
       plan.quote.configurationKey = HostLocalPreparationDriver.configurationKey(plan);
       return plan;
     }
-    throw Error('compatibility_not_established');
+    throw Error(failure);
   };
 }

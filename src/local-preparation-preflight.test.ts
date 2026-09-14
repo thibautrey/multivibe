@@ -11,16 +11,17 @@ function fixture() {
   const metadata={id:'publisher/model',private:false,gated:false,pipeline_tag:'text-generation',sha:'a'.repeat(40),cardData:{license:'custom-license'},tags:[]};
   const variant={...metadata,id:'converter/model-GGUF',tags:['base_model:quantized:publisher/model'],gguf:{architecture:'qwen2'},siblings:[{rfilename:'model-Q4_K_M.gguf',lfs:{size:500_000_000,sha256:'b'.repeat(64)}}]};
   const config={model_type:'qwen2',hidden_size:896,num_hidden_layers:24,num_attention_heads:14,num_key_value_heads:2,vocab_size:151936,max_position_embeddings:32768};
+  const variants=[variant];
   const urls:string[]=[];
   const fetcher=(async(url: string,init:RequestInit)=>{urls.push(url);assert.equal(init.redirect,'error');assert.ok(!init.method || init.method==='GET');
     let data:unknown;
     if(url.includes('/raw/')) {assert.ok(url.includes('/'+'a'.repeat(40)+'/config.json'));data=config;}
-    else if(url.includes('?filter=')) data=[variant];
-    else if(url.includes('/converter/')) data=variant;
+    else if(url.includes('?filter=')) data=variants;
+    else if(url.includes('/converter/')) data=variants.find(item=>url.includes(`/api/models/${item.id}?`));
     else data=metadata;
     return new Response(JSON.stringify(data));
   }) as typeof fetch;
-  return {host,resolve:createLocalPreparationResolver(host,fetcher),policy,runtime,resources,variant,config,urls};
+  return {host,resolve:createLocalPreparationResolver(host,fetcher),policy,runtime,resources,variant,variants,config,urls};
 }
 test('real resolver produces exact artifact plan from bounded metadata, without downloading weights',async()=>{
   const f=fixture();const plan=await f.resolve('publisher/model');
@@ -56,4 +57,22 @@ test('absent runtime includes exact archive consent and separate filesystem rese
  await assert.rejects(f.resolve('publisher/model'),/insufficient_disk/);
  f.resources.free_runtime_storage_bytes=NaN;
  await assert.rejects(f.resolve('publisher/model'),/resources_unknown/);
+});
+
+test('memory shortage is actionable rather than unknown compatibility',async()=>{
+  const f=fixture();f.resources.free_host_memory_bytes=1;
+  await assert.rejects(f.resolve('publisher/model'),/insufficient_memory/);
+});
+test('tries another documented variant when the first exceeds disk or download limits',async()=>{
+  for (const constraint of ['disk','download']) {
+    const f=fixture();
+    const smaller=structuredClone(f.variant);smaller.id='converter/smaller-GGUF';
+    smaller.siblings[0].lfs.size=100_000_000;f.variants.push(smaller);
+    if(constraint==='disk') f.policy.policy.max_disk_bytes=300_000_000;
+    else f.policy.policy.max_download_bytes_per_day=200_000_000;
+    const plan=await f.resolve('publisher/model');
+    assert.equal(plan.artifact.model_id,smaller.id);
+    assert.equal(plan.quote.downloadBytes,100_000_000);
+    assert.ok(f.urls.every(url=>!url.includes('/resolve/')));
+  }
 });
