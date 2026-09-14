@@ -14,6 +14,7 @@ import (
 // A point-in-time observation, not permission or a promise that a model fits.
 // Missing measurements are explicit nulls; no total-memory fallback is allowed.
 type localPreparationResources struct {
+	FreeRuntimeStorageBytes    *uint64 `json:"free_runtime_storage_bytes"`
 	ObservedAt                 string  `json:"observed_at"`
 	PolicyRevision             uint64  `json:"policy_revision"`
 	FreeHostMemoryBytes        *uint64 `json:"free_host_memory_bytes"`
@@ -137,7 +138,7 @@ func observePreparationResources(ctx context.Context, document *capacityPolicySt
 	return result
 }
 
-func localPreparationResourcesHandler(store *capacityPolicyStore, capability hostCapability, token string) http.HandlerFunc {
+func localPreparationResourcesHandler(store *capacityPolicyStore, capability hostCapability, token string, controllers ...*managedProviderController) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !authorizeProviderControl(r, token) {
 			http.Error(w, "not found", 404)
@@ -153,6 +154,13 @@ func localPreparationResourcesHandler(store *capacityPolicyStore, capability hos
 		}
 		memory, accelerator := preparationMemory(ctx, capability)
 		result := observePreparationResources(ctx, document, memory, accelerator)
+		if len(controllers) == 1 && controllers[0] != nil {
+			if backend, ok := controllers[0].runtime.(*ollamaRuntimeBackend); ok {
+				if manager, ok := backend.pinnedRuntime.(*managedOllama); ok && manager != nil {
+					result.FreeRuntimeStorageBytes = preparationRuntimeFreeBytes(manager.root)
+				}
+			}
+		}
 		// Do not let observations from one policy be reused against another.
 		if store != nil {
 			current := store.snapshot()
