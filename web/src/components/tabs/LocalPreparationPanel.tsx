@@ -11,6 +11,7 @@ export function LocalPreparationPanel({modelId,onClose,onUse,onChanged}: {
   const [jobs,setJobs]=useState<PreparationJob[]>([]);
   const [error,setError]=useState('');
   const [busy,setBusy]=useState(false);
+  const [statusUnavailable,setStatusUnavailable]=useState(false);
   const locked=useRef(false); const mounted=useRef(true);
   const heading=useRef<HTMLHeadingElement>(null);
   const seenReady=useRef(new Set<string>());
@@ -22,11 +23,13 @@ export function LocalPreparationPanel({modelId,onClose,onUse,onChanged}: {
       try {
         const result=await api('/admin/local-model-preparation',{signal:controller.signal}) as {jobs:PreparationJob[]};
         if(controller.signal.aborted) return;
-        setJobs(result.jobs);
+        setJobs(result.jobs);setStatusUnavailable(false);
         for(const job of result.jobs) if(preparationChatReady(job) && !seenReady.current.has(job.id)) {
           seenReady.current.add(job.id);changed.current();
         }
-      } catch { /* Failed polls never advance a job to ready. Actions show explicit errors. */ }
+      } catch {
+        if (!controller.signal.aborted) setStatusUnavailable(true);
+      }
       if(!controller.signal.aborted) timer=setTimeout(load,2000);
     };
     void load();return()=>{mounted.current=false;controller.abort();clearTimeout(timer);};
@@ -38,7 +41,7 @@ export function LocalPreparationPanel({modelId,onClose,onUse,onChanged}: {
     try {
       await api(`/admin/local-model-preparation${path}`,{method:'POST',body:JSON.stringify(body)});
       const result=await api('/admin/local-model-preparation') as {jobs:PreparationJob[]};
-      if(mounted.current) setJobs(result.jobs);
+      if(mounted.current) {setJobs(result.jobs);setStatusUnavailable(false);}
     } catch(error) {if(mounted.current)setError(preparationError(error));}
     finally {locked.current=false;if(mounted.current)setBusy(false);}
   }
@@ -50,6 +53,7 @@ export function LocalPreparationPanel({modelId,onClose,onUse,onChanged}: {
     <h3 ref={heading} tabIndex={-1}>Prepare on Host</h3>
     {modelId && <><p>{modelId}</p><button className="btn ghost" onClick={onClose}>Close</button></>}
     {error && <p role="alert">{error}</p>}
+    {statusUnavailable && <p role="alert">Cannot refresh preparation status. Reconnecting to Host… Last known progress is shown; readiness is unconfirmed.</p>}
     {modelId && !visible.length && <><p>Check Host and get a download plan first. Nothing is installed before your approval.</p><button className="btn primary" disabled={busy} onClick={()=>void action('/quote',{modelId})}>{busy?'Checking…':'Check preparation'}</button></>}
     {visible.map(job=><article key={job.id}>
       <h4>{job.quote.modelId}</h4><p>Target: {job.quote.hostName}</p>
@@ -65,7 +69,7 @@ export function LocalPreparationPanel({modelId,onClose,onUse,onChanged}: {
       {(preparationActive(job.stage)||job.stage==='awaiting-consent') && <button className="btn ghost" disabled={busy} onClick={()=>void action(`/${encodeURIComponent(job.id)}/cancel`,{})}>Cancel preparation</button>}
       {job.error && <p>{preparationError(job.error)}</p>}
       {['cancelled','interrupted','failed'].includes(job.stage) && <><p>A new plan requires new approval. Resuming a partial download is not guaranteed.</p><button className="btn ghost" disabled={busy} onClick={()=>void action('/quote',{modelId:job.quote.modelId})}>Check again</button></>}
-      {preparationChatReady(job) && onUse && <button className="btn primary" onClick={()=>onUse(job.chatModelId!)}>Chat</button>}
+      {!statusUnavailable && preparationChatReady(job) && onUse && <button className="btn primary" onClick={()=>onUse(job.chatModelId!)}>Chat</button>}
     </article>)}
     <p className="muted">On a phone, the model still runs on the named Host—not on your phone.</p>
   </section>;
