@@ -1,7 +1,9 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -401,7 +403,7 @@ func TestManagedOllamaCancelledInstallCannotAdoptBundledRuntime(t *testing.T) {
 
 func TestManagedOllamaDownloadIsFreshPrivateHashedAndExtractedByAllowlistedTar(t *testing.T) {
 	base := t.TempDir()
-	archive := []byte("small pinned archive")
+	archive := managedOllamaTestGzip(t)
 	archiveSHA := managedOllamaTestSHA(archive)
 	dependencyPath := writeManagedOllamaTestDependencies(t, base, archiveSHA)
 	requestCount := 0
@@ -470,7 +472,7 @@ func TestManagedOllamaDownloadIsFreshPrivateHashedAndExtractedByAllowlistedTar(t
 
 func TestManagedOllamaPolicyChangeFencesRuntimeInstallCommit(t *testing.T) {
 	base := t.TempDir()
-	archive := []byte("small pinned archive")
+	archive := managedOllamaTestGzip(t)
 	archiveSHA := managedOllamaTestSHA(archive)
 	dependencyPath := writeManagedOllamaTestDependencies(t, base, archiveSHA)
 	extractStarted := make(chan struct{})
@@ -1014,4 +1016,24 @@ func TestManagedOllamaRejectsUnsafeArchivePathsAndDownloadWithoutConsent(t *test
 	if networkCalls != 0 {
 		t.Fatal("network was used without automatic-download consent")
 	}
+}
+
+func managedOllamaTestGzip(t *testing.T) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	gzipWriter := gzip.NewWriter(&buffer)
+	writer := tar.NewWriter(gzipWriter)
+	if err := writer.WriteHeader(&tar.Header{Name: "ollama", Mode: 0755, Size: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("OK")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
 }
