@@ -290,6 +290,42 @@ export class AccountStore {
     this.scheduleFlush();
   }
 
+  /** Install a validated Team manifest and its cursor as one persistence generation.
+   * No await occurs between the CAS check and replacement. A failed flush leaves
+   * the complete generation dirty for retry, never acknowledges a partial manifest.
+   */
+  async commitTeamManifest(accounts: readonly Account[], removedProviderIds: readonly string[],
+    expectedCursor: number, team: NonNullable<StoreSettings["multivibeTeam"]>): Promise<void> {
+    if ((this.inMemorySettings.multivibeTeam?.syncCursor ?? 0) !== expectedCursor)
+      throw new Error("Team Sync cursor changed");
+    if (!Number.isSafeInteger(team.syncCursor) || team.syncCursor < expectedCursor)
+      throw new Error("Team Sync manifest is stale");
+    const ids = new Set<string>(), providers = new Set<string>();
+    const removed = new Set(removedProviderIds);
+    const prepared = accounts.map(account => {
+      const providerId = account.multivibeTeam?.providerId;
+      if (!providerId || ids.has(account.id) || providers.has(providerId) || removed.has(providerId))
+        throw new Error("Team account batch is invalid");
+      const collision = this.inMemoryAccounts.find(existing => existing.id === account.id);
+      if (collision && collision.multivibeTeam?.providerId !== providerId)
+        throw new Error("Team account id collision");
+      ids.add(account.id); providers.add(providerId);
+      return structuredClone(account);
+    });
+    const next = this.inMemoryAccounts.filter(account => !account.multivibeTeam ||
+      (!removed.has(account.multivibeTeam.providerId) && !providers.has(account.multivibeTeam.providerId)));
+    next.push(...prepared);
+    const snapshots = new Map(next.map(account => [account.id, accountCatalogSnapshot(account)]));
+    const settings = {...this.inMemorySettings, multivibeTeam: structuredClone(team)};
+    this.inMemoryAccounts = next;
+    this.inMemorySettings = settings;
+    this.accountCatalogSnapshots = snapshots;
+    this.catalogRevision += 1;
+    this.revision += 1;
+    this.dirty = true;
+    await this.flushIfDirty();
+  }
+
   async addOrUpdate(account: Account) {
     this.markAccountModified(account.id, account);
     await this.flushIfDirty();
