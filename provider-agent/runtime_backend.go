@@ -2048,3 +2048,22 @@ func sdkDescriptorSupportsHost(descriptor runtimebackendapi.Descriptor, capabili
 }
 
 var _ runtimebackendapi.Backend = (*ollamaRuntimeBackendSDKBridge)(nil)
+
+// Preparation uses the same pinned manager and catalog as other managed pulls.
+// No fallback to an unmetered CLI pull when a backend lacks streaming support.
+func (backend *ollamaRuntimeBackend) localPreparationCatalog() providerModelCatalog {
+	return cloneRuntimeBackendCatalog(backend.catalog)
+}
+
+func (backend *ollamaRuntimeBackend) pullModelResultProgress(ctx context.Context, policy *capacityPolicyStateDocument, catalogPath string, download plannedModelDownload, progress managedModelDownloadProgress) (managedOllamaModelRecord, bool, error) {
+	if catalogPath != backend.catalogPath || progress == nil {
+		return managedOllamaModelRecord{}, false, errRuntimeBackendInvalid
+	}
+	runtime, ok := backend.pinnedRuntime.(interface {
+		pullModelResultPinnedProgress(context.Context, *capacityPolicyStateDocument, providerModelCatalog, plannedModelDownload, managedModelDownloadProgress) (managedOllamaModelRecord, bool, error)
+	})
+	if !ok {
+		return managedOllamaModelRecord{}, false, errRuntimeBackendInvalid
+	}
+	return runtime.pullModelResultPinnedProgress(ctx, policy, cloneRuntimeBackendCatalog(backend.catalog), download, progress)
+}

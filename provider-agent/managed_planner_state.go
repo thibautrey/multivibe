@@ -253,6 +253,20 @@ func (store *managedPlannerStateStore) recordAppliedPlanInternal(plan modelPlan,
 }
 
 func (store *managedPlannerStateStore) recordDownloads(downloads []plannedModelDownload, now time.Time) error {
+	return store.recordDownloadsWithinLimit(downloads, now, nil)
+}
+
+// reserveDownload charges the full consented bound before network activity. Failed
+// or cancelled attempts remain charged: partial transfers are not measurable here.
+// This is a conservative budget reservation, not measured network traffic.
+func (store *managedPlannerStateStore) reserveDownload(download plannedModelDownload, now time.Time, limit uint64) error {
+	if store.path == "" {
+		return errors.New("local download accounting must be persistent")
+	}
+	return store.recordDownloadsWithinLimit([]plannedModelDownload{download}, now, &limit)
+}
+
+func (store *managedPlannerStateStore) recordDownloadsWithinLimit(downloads []plannedModelDownload, now time.Time, limit *uint64) error {
 	if now.IsZero() || len(downloads) < 1 || len(downloads) > maximumPlannerItems {
 		return errors.New("managed planner download history update is invalid")
 	}
@@ -275,6 +289,23 @@ func (store *managedPlannerStateStore) recordDownloads(downloads []plannedModelD
 		parsed, _ := canonicalTimestamp(download.OccurredAt)
 		if !parsed.Before(windowStart) {
 			recent = append(recent, download)
+		}
+	}
+	if limit != nil {
+		var total uint64
+		for _, download := range recent {
+			var ok bool
+			total, ok = checkedAdd(total, download.Bytes)
+			if !ok {
+				return errInvalidModelPlannerInput
+			}
+		}
+		for _, download := range ordered {
+			var ok bool
+			total, ok = checkedAdd(total, download.Bytes)
+			if !ok || total > *limit {
+				return errLocalPreparationDownloadBudget
+			}
 		}
 	}
 	encodedNow := canonicalPlannerTime(now)
