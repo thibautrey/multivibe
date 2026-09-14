@@ -14,14 +14,14 @@ test('public specific licenses and gates are discovery, private/adapters are exc
 test('pagination, deduplication and new model discovery without code changes',async()=>{
  let generation=0;let calls=0;
  const load=createOpenModelCatalog((async(input)=>{calls++;return new Response(JSON.stringify([{...model,id:`publisher/model${generation}`}]),{headers:String(input).includes('cursor=next')?{}:{link:'<https://huggingface.co/api/models?cursor=next>; rel="next"'}});}) as typeof fetch);
- assert.equal((await load()).models.length,1);assert.equal(calls,38);
+ assert.equal((await load()).models.length,1);assert.equal(calls,44);
  generation++;assert.equal((await load.refresh()).models[0].id,'publisher/model1');
 });
 test('atomic cache survives restart and stale failure; no weights fetched',async()=>{
  const dir=await mkdtemp(path.join(os.tmpdir(),'catalog-test-'));try {
  let now=Date.now(); const file=path.join(dir,'cache.json');let calls=0;
  const fetcher=(async(input)=>{assert.ok(String(input).startsWith('https://huggingface.co/api/models'));calls++;return new Response(JSON.stringify([model]));}) as typeof fetch;
- const load=createOpenModelCatalog(fetcher,()=>now,file);await Promise.all([load(),load()]);assert.equal(calls,19);
+ const load=createOpenModelCatalog(fetcher,()=>now,file);await Promise.all([load(),load()]);assert.equal(calls,22);
  const offline=createOpenModelCatalog((async()=>{throw Error('offline');}) as typeof fetch,()=>now,file);
  assert.equal((await offline()).models.length,1);now+=CATALOG_TTL+1;assert.equal((await offline()).stale,true);assert.equal((await offline.refresh()).stale,true);
  }finally{await rm(dir,{recursive:true,force:true});}
