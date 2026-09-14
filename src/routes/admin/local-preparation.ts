@@ -16,6 +16,9 @@ export function localPreparationRoutes(service?: LocalModelPreparation) {
     ['preparation_not_found', 404], ['insufficient_disk', 409],
     ['resources_unknown', 409], ['compatibility_not_established', 409],
     ['model_identity_mismatch', 409],
+    ['host_permission_required', 409], ['runtime_download_quote_required', 409],
+    ['import_reconciliation_required', 409], ['model_access_required', 409],
+    ['local_preparation_unavailable', 503],
   ]);
   function failure(res: express.Response, error: unknown) {
     const code = error instanceof Error ? error.message : '';

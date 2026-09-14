@@ -13,6 +13,9 @@ export function preparationError(error: unknown): string {
   try { code = JSON.parse(code).error; } catch { /* A stored job contains a code, not JSON. */ }
   const messages: Record<string,string> = {
     local_preparation_unavailable:'Local preparation is not connected on this Host. No download was started.',
+    host_permission_required:'Local execution is paused or downloads are disabled. Review Host permissions before continuing.',
+    runtime_download_quote_required:'The runtime is not installed. Its download size must be included in a new approval before setup can continue.',
+    import_reconciliation_required:'A previous import was interrupted. Check its status on Host before starting another import.',
     insufficient_disk:'Free some space on Host, then check again.',
     resources_unknown:'Host could not check its available resources. Reconnect Host and check again.',
     compatibility_not_established:'Host cannot yet verify a suitable version of this model. No download was started.',
