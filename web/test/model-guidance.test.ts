@@ -60,3 +60,8 @@ test('Cloud verification never fabricates a chat route and fails closed', async 
   assert.equal(verifiedCloudCatalog([entry([route('local')])], undefined, false)[0].routes[0].ready, true);
   assert.equal(catalog[0].routes[0].ready, true, 'must not mutate input');
 });
+
+test('a reviewed alias never certifies an unrelated route', () => {
+  const models = [entry([{ ...route('provider'), modelId: 'unreviewed-variant' }])];
+  assert.deepEqual(relevantChoices(models, 'writing'), []);
+});
