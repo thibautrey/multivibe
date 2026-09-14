@@ -12,6 +12,8 @@ export interface TeamProviderCredential {
 }
 const MAX_CONTEXT = 64 * 1024;
 const COMMON = ['schemaVersion', 'provider', 'baseUrl', 'upstreamMode'];
+const CHATGPT = [...COMMON, 'chatgptAccountId'];
+type DeviceProvider = 'openai' | 'github-copilot' | 'xai' | 'opencode';
 const COPILOT = [...COMMON, 'copilotModelEndpoints'];
 const OPENCODE = [...COMMON, 'opencodeAccountId', 'opencodeOrgId', 'opencodeConsoleUrl', 'opencodeApiKey', 'opencodeHeaders'];
 const XAI = [...COMMON, 'xaiUserId', 'xaiAuthScope', 'oidcIssuer', 'oidcClientId'];
@@ -36,19 +38,27 @@ function canonicalEndpoint(value: unknown): string {
   } catch { return invalid(); }
 }
 /** Validate explicit allowlists; no arbitrary headers, URLs, local state or account IDs. */
-function accountContext(value: unknown): Partial<Account> & {provider: 'github-copilot' | 'xai' | 'opencode'; baseUrl: string} {
+function accountContext(value: unknown): Partial<Account> & {provider: DeviceProvider; baseUrl: string} {
   const input = object(value);
-  if (input.schemaVersion !== 1 || !['github-copilot', 'xai', 'opencode'].includes(String(input.provider))) return invalid();
-  const provider = input.provider as 'github-copilot' | 'xai' | 'opencode';
-  if (Object.keys(input).some(key => !(provider === 'github-copilot' ? COPILOT : provider === 'opencode' ? OPENCODE : XAI).includes(key))) return invalid();
+  if (input.schemaVersion !== 1 || !['openai', 'github-copilot', 'xai', 'opencode'].includes(String(input.provider))) return invalid();
+  const provider = input.provider as DeviceProvider;
+  if (Object.keys(input).some(key => !(provider === 'openai' ? CHATGPT : provider === 'github-copilot' ? COPILOT : provider === 'opencode' ? OPENCODE : XAI).includes(key))) return invalid();
   const baseUrl = canonicalEndpoint(input.baseUrl);
   if (provider === 'github-copilot') {
     try { if (trustedCopilotBaseUrl(baseUrl) !== baseUrl) return invalid(); } catch { return invalid(); }
-  } else if (provider === 'opencode' ? baseUrl !== 'https://opencode.ai/inference/openai' : baseUrl !== 'https://api.x.ai/v1') return invalid();
-  const result: Partial<Account> & {provider: 'github-copilot' | 'xai' | 'opencode'; baseUrl: string} = {provider, baseUrl};
+  } else if (provider === 'openai' ? baseUrl !== 'https://chatgpt.com' : provider === 'opencode' ? baseUrl !== 'https://opencode.ai/inference/openai' : baseUrl !== 'https://api.x.ai/v1') return invalid();
+  const result: Partial<Account> & {provider: DeviceProvider; baseUrl: string} = {provider, baseUrl};
   if (input.upstreamMode !== undefined) {
     if (!mode(input.upstreamMode)) return invalid();
     result.upstreamMode = input.upstreamMode;
+  }
+  if (provider === 'openai') {
+    if (input.upstreamMode !== undefined && input.upstreamMode !== 'responses') return invalid();
+    result.upstreamMode = 'responses';
+    if (input.chatgptAccountId !== undefined) {
+      if (!token(input.chatgptAccountId) || input.chatgptAccountId.length > 1024 || !/^[A-Za-z0-9_-]+$/.test(input.chatgptAccountId)) return invalid();
+      result.chatgptAccountId = input.chatgptAccountId;
+    }
   }
   if (provider === 'github-copilot' && input.copilotModelEndpoints !== undefined) {
     const entries = Object.entries(object(input.copilotModelEndpoints));
@@ -95,10 +105,11 @@ function accountContext(value: unknown): Partial<Account> & {provider: 'github-c
 /** Device-only serialization. Expanding supported providers requires a Core codec change. */
 export function encodeTeamDeviceCredential(account: Account): TeamProviderCredential {
   const provider = account.provider;
-  if (provider !== 'github-copilot' && provider !== 'xai' && provider !== 'opencode') return invalid();
+  if (provider !== 'openai' && provider !== 'github-copilot' && provider !== 'xai' && provider !== 'opencode') return invalid();
   const context = accountContext({schemaVersion: 1, provider,
-    baseUrl: account.baseUrl ?? (provider === 'xai' ? 'https://api.x.ai/v1' : undefined),
+    baseUrl: account.baseUrl ?? (provider === 'openai' ? 'https://chatgpt.com' : provider === 'xai' ? 'https://api.x.ai/v1' : undefined),
     ...(account.upstreamMode !== undefined ? {upstreamMode: account.upstreamMode} : {}),
+    ...(provider === 'openai' && account.chatgptAccountId !== undefined ? {chatgptAccountId: account.chatgptAccountId} : {}),
     ...(provider === 'github-copilot' && account.copilotModelEndpoints !== undefined ? {copilotModelEndpoints: account.copilotModelEndpoints} : {}),
     ...(provider === 'opencode' ? {opencodeAccountId:account.opencodeAccountId,opencodeOrgId:account.opencodeOrgId,opencodeConsoleUrl:account.opencodeConsoleUrl,opencodeApiKey:account.opencodeApiKey,...(account.opencodeHeaders !== undefined ? {opencodeHeaders:account.opencodeHeaders} : {})} : {}),
     ...(provider === 'xai' ? {oidcIssuer: account.oidcIssuer, oidcClientId: account.oidcClientId,
