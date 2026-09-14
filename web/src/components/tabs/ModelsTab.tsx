@@ -102,7 +102,8 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
   };
   const actionLabel = (route: ModelRoute) => route.ready ? canConfigure ? 'Use model' : 'Open chat' : !canConfigure ? 'Ask your admin' : route.source === 'cloud' ? cloudConnected ? 'View access' : 'Connect Cloud' : 'Set up';
   return <section className="panel models-catalog" aria-label="Modèles">
-    <nav className="models-view-switch" aria-label="Affichage des modèles">{([['guided', 'Guidé'], ['compare', 'Comparer'], ['expert', 'Expert']] as const).map(([value, label]) => <button key={value} className="btn ghost" aria-pressed={view === value} onClick={() => changeView(value)}>{label}</button>)}</nav>
+    <header className="models-page-heading"><div><h2>Le bon modèle, pour votre besoin</h2><p>Choisissez un usage. Gardez la main sur le modèle.</p></div>
+    <nav className="models-view-switch" aria-label="Affichage des modèles">{([['guided', 'Guidé'], ['compare', 'Comparer'], ['expert', 'Expert']] as const).map(([value, label]) => <button key={value} className="btn ghost" aria-pressed={view === value} onClick={() => changeView(value)}>{label}</button>)}</nav></header>
     {cloudConnected && canConfigure && <div className="models-access-notice" role="status">
       {!cloudAccess ? 'Vérification de votre accès Cloud…' : cloudAccess.status === 'available'
         ? !cloudAccess.modelIds.length ? 'Aucun modèle exposé pour votre compte Cloud.'
