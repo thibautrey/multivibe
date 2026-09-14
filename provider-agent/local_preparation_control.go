@@ -24,13 +24,12 @@ type localPreparationOperation struct {
 	RuntimeModel   string                        `json:"runtime_model,omitempty"`
 }
 type localPreparationEvent struct {
-	Type           string                        `json:"type"`
-	CompletedBytes uint64                        `json:"completed_bytes,omitempty"`
-	TotalBytes     uint64                        `json:"total_bytes,omitempty"`
-	RuntimeQuote   *localPreparationRuntimeQuote `json:"runtime_quote,omitempty"`
-	RuntimeModel   string                        `json:"runtime_model,omitempty"`
-	Error          string                        `json:"error,omitempty"`
-	Output         string                        `json:"output,omitempty"`
+	Type           string `json:"type"`
+	CompletedBytes uint64 `json:"completed_bytes,omitempty"`
+	TotalBytes     uint64 `json:"total_bytes,omitempty"`
+	RuntimeModel   string `json:"runtime_model,omitempty"`
+	Error          string `json:"error,omitempty"`
+	Output         string `json:"output,omitempty"`
 }
 type localPreparationExecute func(context.Context, localPreparationOperation, managedModelDownloadProgress) (string, error)
 
