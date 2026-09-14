@@ -4,6 +4,7 @@ export interface ProviderTokenUsage {
   outputTokens: string;
   totalTokens?: string;
   cachedInputTokens?: string;
+  cacheWriteInputTokens?: string;
   reasoningTokens?: string;
 }
 function record(value: unknown): value is Record<string, unknown> {
@@ -48,6 +49,8 @@ export function providerTokenUsage(payload: unknown, maximumOutputTokens?: numbe
     ["totalTokens", aliases(usage.total_tokens)],
     ["cachedInputTokens", aliases(detail("prompt_tokens_details", "cached_tokens"),
       detail("input_tokens_details", "cached_tokens"), usage.prompt_cache_hit_tokens)],
+    ["cacheWriteInputTokens", aliases(detail("prompt_tokens_details", "cache_write_tokens"),
+      detail("input_tokens_details", "cache_write_tokens"))],
     ["reasoningTokens", aliases(detail("completion_tokens_details", "reasoning_tokens"),
       detail("output_tokens_details", "reasoning_tokens"), usage.reasoning_tokens)],
   ] as const;
@@ -57,6 +60,7 @@ export function providerTokenUsage(payload: unknown, maximumOutputTokens?: numbe
   }
   if (result.totalTokens !== undefined && BigInt(result.totalTokens) !== BigInt(inputTokens) + BigInt(outputTokens)) return null;
   if (result.cachedInputTokens !== undefined && BigInt(result.cachedInputTokens) > BigInt(inputTokens)) return null;
+  if (BigInt(result.cachedInputTokens ?? "0") + BigInt(result.cacheWriteInputTokens ?? "0") > BigInt(inputTokens)) return null;
   if (result.reasoningTokens !== undefined && BigInt(result.reasoningTokens) > BigInt(outputTokens)) return null;
   // DeepSeek reports cache hits and misses as a partition of prompt_tokens.
   // Validate that partition without inventing a missing hit measurement.
@@ -68,8 +72,7 @@ export function providerTokenUsage(payload: unknown, maximumOutputTokens?: numbe
   // These native cache fields do not share compatible-provider input semantics.
   // Until their own adapter/price dimensions exist, positive or invalid values
   // must remain uncertain rather than disappearing from a token-only receipt.
-  for (const value of [usage.cache_creation_input_tokens, usage.cache_read_input_tokens,
-    detail("input_tokens_details", "cache_write_tokens"), detail("prompt_tokens_details", "cache_write_tokens")]) {
+  for (const value of [usage.cache_creation_input_tokens, usage.cache_read_input_tokens]) {
     if (value !== undefined && quantity(value) !== "0") return null;
   }
   return result;

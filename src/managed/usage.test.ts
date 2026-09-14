@@ -16,7 +16,7 @@ test("contradictory aliases and missing or inconsistent cache partitions remain 
   {completion_tokens_details:{reasoning_tokens:5},reasoning_tokens:6},
   {prompt_cache_hit_tokens:101},{prompt_cache_hit_tokens:70,prompt_cache_miss_tokens:31},
   {prompt_cache_miss_tokens:30},{prompt_cache_hit_tokens:null},{prompt_tokens_details:[]},
-  {cache_creation_input_tokens:1},{cache_read_input_tokens:1},{input_tokens_details:{cache_write_tokens:2}}]) {
+  {cache_creation_input_tokens:1},{cache_read_input_tokens:1}]) {
   assert.equal(providerTokenUsage({usage:{...base,...fields}}),null,JSON.stringify(fields));
  }
 });
@@ -24,4 +24,15 @@ test("contradictory aliases and missing or inconsistent cache partitions remain 
 test("reported unquoted service tiers cannot produce settled usage",()=>{
  for(const service_tier of ["priority","flex","auto",null,4])assert.equal(providerTokenUsage({service_tier,usage:base}),null);
  assert.ok(providerTokenUsage({service_tier:"default",usage:base}));
+});
+
+
+test("cache writes preserve the inclusive input partition without inventing absent counts",()=>{
+ assert.deepEqual(providerTokenUsage({usage:{...base,input_tokens_details:{cached_tokens:30,cache_write_tokens:50}}}),
+  {inputTokens:"100",outputTokens:"20",totalTokens:"120",cachedInputTokens:"30",cacheWriteInputTokens:"50"});
+ assert.equal(providerTokenUsage({usage:base})?.cacheWriteInputTokens,undefined);
+ for(const details of [{cached_tokens:60,cache_write_tokens:50},{cache_write_tokens:-1},{cache_write_tokens:null},{cache_write_tokens:"1.5"}])
+  assert.equal(providerTokenUsage({usage:{...base,input_tokens_details:details}}),null);
+ assert.equal(providerTokenUsage({usage:{...base,input_tokens_details:{cache_write_tokens:1},prompt_tokens_details:{cache_write_tokens:2}}}),null);
+ assert.equal(providerTokenUsage({usage:{...base,input_tokens_details:{cache_write_tokens:0}}})?.cacheWriteInputTokens,"0");
 });
