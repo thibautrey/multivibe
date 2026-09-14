@@ -248,6 +248,7 @@ export type StoreSettings = {
   imageRequestModelOverride?: string;
   anonymousUsageSharingEnabled?: boolean;
   anonymousUsageSharingEnabledAt?: string;
+  multivibeCloudDisconnectedAt?: number;
   /** Private OAuth credentials for the local MultiVibe Cloud connection. */
   multivibeCloud?: {
     accessToken: string;
@@ -255,6 +256,9 @@ export type StoreSettings = {
     expiresAt?: number;
     projectId?: string;
     apiKeyExpiresAt?: number;
+    /** Durable key for one possibly committed refresh attempt, never a new key on retry. */
+    refreshAttemptId?: string;
+    authenticationRequired?: boolean;
   };
   multivibeTeam?: {
     enabled: boolean;
