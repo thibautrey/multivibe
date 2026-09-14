@@ -9,8 +9,28 @@ final class AuthenticationUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR"]
         app.launch()
+        XCTAssertTrue(app.textFields["Message"].waitForExistence(timeout: 15))
+        app.buttons["openAuthentication"].tap()
         XCTAssertTrue(app.textFields["Adresse e-mail"].waitForExistence(timeout: 15))
         return app
+    }
+
+    func testGuestChatOpensFirstAndRetainsDraftAfterDismissingLogin() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR"]
+        app.launch()
+        let message = app.textFields["Message"]
+        XCTAssertTrue(message.waitForExistence(timeout: 15))
+        XCTAssertFalse(app.textFields["Adresse e-mail"].exists)
+        XCTAssertFalse(app.buttons["guestSend"].isEnabled)
+        message.tap()
+        message.typeText("Bonjour MultiVibe")
+        app.buttons["guestSend"].tap()
+        XCTAssertTrue(app.textFields["Adresse e-mail"].waitForExistence(timeout: 5))
+        app.buttons["Fermer la connexion"].tap()
+        XCTAssertTrue(message.waitForExistence(timeout: 5))
+        XCTAssertEqual(message.value as? String, "Bonjour MultiVibe")
     }
 
     func testEmptyLoginAndSignupRemainDisabled() {

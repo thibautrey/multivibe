@@ -200,35 +200,7 @@ struct ChatView: View {
         .onDisappear { voice.silence() }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in voice.silence() }
     }
-    private var welcome: some View {
-        ScrollView {
-            VStack(spacing: 28) {
-                Spacer(minLength: 40)
-                Image(systemName: "bubble.left.and.bubble.right.fill")
-                    .font(.system(size: 42)).foregroundStyle(MultiVibeTheme.accent).accessibilityHidden(true)
-                Text("Comment puis-je\nvous aider ?")
-                    .font(.largeTitle.bold()).multilineTextAlignment(.center)
-                Text("Une idée, une question, un premier brouillon.")
-                    .foregroundStyle(.secondary).multilineTextAlignment(.center)
-                VStack(spacing: 10) {
-                    suggestion("Trouver l’inspiration", icon: "lightbulb", draft: "Aide-moi à trouver des idées pour ")
-                    suggestion("M’aider à écrire", icon: "pencil.line", draft: "Aide-moi à rédiger ")
-                    suggestion("Comprendre un sujet", icon: "text.book.closed", draft: "Explique-moi simplement ")
-                }.padding(.top, 8)
-            }.frame(maxWidth: 560).padding(24).frame(maxWidth: .infinity)
-        }.scrollDismissesKeyboard(.interactively)
-    }
-
-    private func suggestion(_ title: String, icon: String, draft: String) -> some View {
-        Button { text = draft } label: {
-            HStack(spacing: 14) {
-                Image(systemName: icon).foregroundStyle(MultiVibeTheme.accent).frame(width: 24)
-                Text(title).foregroundStyle(.primary)
-                Spacer()
-                Image(systemName: "arrow.up.left").font(.caption).foregroundStyle(.secondary)
-            }.padding(16).background(.background.opacity(0.7), in: RoundedRectangle(cornerRadius: 18))
-        }.buttonStyle(.plain)
-    }
+    private var welcome: some View { ChatWelcomeView(text: $text) }
 
     private var composer: some View {
         @Bindable var manager = manager
@@ -464,4 +436,39 @@ private struct NativeMessageContent: View {
             }
         }
     }
+}
+
+/// Shared welcome for signed-out and authenticated empty chats. Suggestions only edit a draft.
+struct ChatWelcomeView: View {
+    @Binding var text: String
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 28) {
+                Spacer(minLength: 40)
+                Image(systemName: "bubble.left.and.bubble.right.fill")
+                    .font(.system(size: 42)).foregroundStyle(MultiVibeTheme.accent).accessibilityHidden(true)
+                Text("Comment puis-je\nvous aider ?")
+                    .font(.largeTitle.bold()).multilineTextAlignment(.center)
+                Text("Une idée, une question, un premier brouillon.")
+                    .foregroundStyle(.secondary).multilineTextAlignment(.center)
+                VStack(spacing: 10) {
+                    suggestion("Trouver l’inspiration", icon: "lightbulb", draft: "Aide-moi à trouver des idées pour ")
+                    suggestion("M’aider à écrire", icon: "pencil.line", draft: "Aide-moi à rédiger ")
+                    suggestion("Comprendre un sujet", icon: "text.book.closed", draft: "Explique-moi simplement ")
+                }.padding(.top, 8)
+            }.frame(maxWidth: 560).padding(24).frame(maxWidth: .infinity)
+        }.scrollDismissesKeyboard(.interactively)
+    }
+
+    private func suggestion(_ title: String, icon: String, draft: String) -> some View {
+        Button { text = draft } label: {
+            HStack(spacing: 14) {
+                Image(systemName: icon).foregroundStyle(MultiVibeTheme.accent).frame(width: 24)
+                Text(title).foregroundStyle(.primary)
+                Spacer()
+                Image(systemName: "arrow.up.left").font(.caption).foregroundStyle(.secondary)
+            }.padding(16).background(.background.opacity(0.7), in: RoundedRectangle(cornerRadius: 18))
+        }.buttonStyle(.plain)
+    }
+
 }
