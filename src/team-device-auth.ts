@@ -75,7 +75,7 @@ export async function startTeamDeviceAuth(provider: TeamDeviceProvider, transpor
         // Preserve Core's complete account context, not only the access token.
         const account = 'githubToken' in polled
           ? await accountFromCopilotOAuth(flow, polled.githubToken, undefined, fetchImpl)
-          : provider === 'opencode' ? await accountFromOpenCodeOAuth(flow, polled.token, undefined, fetchImpl) : accountFromXaiOAuth(flow, polled.token);
+          : 'accessToken' in polled.token ? await accountFromOpenCodeOAuth(flow, polled.token, undefined, fetchImpl) : accountFromXaiOAuth(flow, polled.token);
         if (closed || Date.now() >= challenge.expiresAt) throw new Error('Expired');
         cancel();
         return { status: 'success', account };
