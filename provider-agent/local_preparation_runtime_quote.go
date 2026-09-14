@@ -57,6 +57,14 @@ func (controller *managedProviderController) installQuotedLocalPreparationRuntim
 		if err != nil {
 			return err
 		}
+		free := preparationRuntimeFreeBytes(manager.root)
+		if free == nil {
+			return errors.New("resources_unknown")
+		}
+		required := consent.Bytes + uint64(managedOllamaArchiveMaxBytes)
+		if *free < capacity.reserveFreeDiskBytes || required > *free-capacity.reserveFreeDiskBytes {
+			return errors.New("insufficient_disk")
+		}
 		// Reserve conservatively before installation: even an unavailable bundle may
 		// fall back to the network. Failed/partial attempts retain their reservation.
 		if err := controller.plannerState.reserveDownload(plannedModelDownload{ModelID: "runtime/ollama-" + consent.Version + "-" + consent.Platform, Bytes: consent.Bytes}, controller.now().UTC(), capacity.maxDownloadBytesPerDay); err != nil {
