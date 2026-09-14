@@ -63,6 +63,7 @@ import CryptoKit
 }
 
 struct AuthenticationView: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(ConversationManager.self) private var manager
     @State private var sso = NativeSSOController()
     @State private var ssoTask: Task<Void, Never>?
@@ -91,84 +92,172 @@ struct AuthenticationView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                VStack(spacing: 16) {
-                    VStack(spacing: 4) {
-                        Image("MultiVibeMark").renderingMode(.original).resizable().scaledToFit()
-                            .frame(width: 96, height: 96).accessibilityHidden(true)
-                        Text("MultiVibe").font(.largeTitle.bold())
-                    }.frame(maxWidth: .infinity).padding(.vertical)
-                    Text("Vos modèles, vos conversations.").foregroundStyle(.secondary)
-                    Text(signup ? "Créons votre espace." : "Ravi de vous retrouver.").font(.title2.bold())
-                }
-                VStack(alignment: .leading, spacing: 16) {
-                    if challenge != nil {
-                        TextField("Code à six chiffres", text: $code).textContentType(.oneTimeCode).keyboardType(.numberPad)
-                            .focused($focusedField, equals: .code).disabled(busy)
-                    } else {
-                    TextField("Adresse e-mail", text: $email).textContentType(.emailAddress)
-                        .keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
-                        .focused($focusedField, equals: .email).submitLabel(.next)
-                        .onSubmit { focusedField = .password }.disabled(busy)
-                    SecureField("Mot de passe", text: $password).textContentType(signup ? .newPassword : .password)
-                        .focused($focusedField, equals: .password).submitLabel(signup ? .next : .go)
-                        .onSubmit { if signup { focusedField = .confirmation } else { authenticate() } }
-                        .disabled(busy)
-                    if signup {
-                        SecureField("Confirmer le mot de passe", text: $confirmPassword).textContentType(.newPassword)
-                            .focused($focusedField, equals: .confirmation).submitLabel(.done)
-                            .onSubmit { focusedField = nil }.disabled(busy)
-                        Text("Conseil : utilisez une phrase de passe d’au moins 12 caractères.").font(.caption).foregroundStyle(.secondary)
-                        if !confirmPassword.isEmpty && password != confirmPassword {
-                            Text("Les mots de passe ne correspondent pas.").font(.caption).foregroundStyle(.red)
+                VStack(spacing: 28) {
+                    header
+                    VStack(alignment: .leading, spacing: 18) {
+                        credentialFields
+                        if let message = error ?? manager.error {
+                            Label(message, systemImage: "exclamationmark.circle")
+                                .font(.callout).foregroundStyle(.red)
+                                .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                                .background(.red.opacity(0.07), in: RoundedRectangle(cornerRadius: 14))
+                                .accessibilityIdentifier("authenticationError")
                         }
-                        if let config = authConfiguration, config.signupEnabled,
-                           let termsUrl = config.termsUrl, let privacyUrl = config.privacyUrl {
-                            Link("Conditions d’utilisation", destination: termsUrl)
-                            Link("Politique de confidentialité", destination: privacyUrl)
-                            Toggle("J’accepte les conditions d’utilisation", isOn: $terms).disabled(busy)
-                        } else {
-                            Text("L’inscription est indisponible tant que les documents légaux ne sont pas chargés.")
-                            Button("Recharger les conditions") { Task { await loadConfiguration() } }.disabled(busy)
+                        Button { authenticate() } label: {
+                            HStack(spacing: 10) {
+                                if credentials.busy { ProgressView().tint(.white) }
+                                Text(challenge != nil ? "Vérifier le code" : signup ? "Créer mon compte" : "Se connecter")
+                                    .fontWeight(.semibold)
+                            }.frame(maxWidth: .infinity).frame(minHeight: 32)
                         }
-                    }
-                    }
-                    Button(challenge != nil ? "Vérifier le code" : signup ? "Créer mon compte" : "Se connecter") { authenticate() }
                         .buttonStyle(.borderedProminent).controlSize(.large)
-                        .frame(maxWidth: .infinity).disabled(!canSubmit)
-                        .accessibilityIdentifier("submitAuthentication")
-                    if busy { ProgressView() }
-                }
-                if challenge == nil {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Button("Continuer avec le SSO", systemImage: "person.badge.key.fill") { authenticateSSO() }.disabled(busy)
-                        Text("Choisissez votre fournisseur dans la fenêtre sécurisée. Les conditions et la double authentification y sont conservées.").font(.caption).foregroundStyle(.secondary)
+                        .buttonBorderShape(.roundedRectangle(radius: 16))
+                        .disabled(!canSubmit).accessibilityIdentifier("submitAuthentication")
                     }
-                }
-                if let message = error ?? manager.error { Group { Text(message).foregroundStyle(.red) } }
-                VStack(alignment: .leading, spacing: 12) {
-                    if challenge != nil {
-                        Button("Recommencer la connexion") { challenge = nil; code = ""; password = ""; error = nil }
-                    } else {
-                        Button(signup ? "J’ai déjà un compte" : "Créer un compte") { signup.toggle(); error = nil; password = ""; confirmPassword = ""; terms = false; focusedField = .email }
-                        if !signup { Button("Mot de passe oublié ?") { manager.passwordRecovery = PasswordRecoveryRequest(email: email) } }
+                    if challenge == nil {
+                        VStack(spacing: 18) {
+                            HStack(spacing: 16) {
+                                Rectangle().fill(.primary.opacity(0.12)).frame(height: 1)
+                                Text("ou").font(.caption).foregroundStyle(.secondary)
+                                Rectangle().fill(.primary.opacity(0.12)).frame(height: 1)
+                            }.accessibilityHidden(true)
+                            Button { authenticateSSO() } label: {
+                                HStack(spacing: 10) {
+                                    if ssoBusy { ProgressView() }
+                                    else { Image(systemName: "person.badge.key") }
+                                    Text("Continuer avec le SSO").fontWeight(.medium)
+                                }.frame(maxWidth: .infinity).frame(minHeight: 32)
+                            }
+                            .buttonStyle(.bordered).controlSize(.large)
+                            .buttonBorderShape(.roundedRectangle(radius: 16)).disabled(busy)
+                            Text("Choisissez votre fournisseur dans la fenêtre sécurisée.")
+                                .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        }
                     }
-                }.disabled(busy)
-                VStack(alignment: .leading, spacing: 12) { Button("Confidentialité et données", systemImage: "hand.raised") { privacyPresented = true } }
-            }
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 480).padding(24).frame(maxWidth: .infinity)
+                    footer
+                }
+                .frame(maxWidth: 420).padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 28)
+                .frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
             .background(MultiVibeTheme.background)
-            .navigationTitle(challenge != nil ? "Double authentification" : "")
             .navigationBarTitleDisplayMode(.inline)
-
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Fermer la connexion", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Terminé") { focusedField = nil }
+                }
+            }
         }
         .sheet(isPresented: $privacyPresented) { NativePrivacyView() }
         .task { await loadConfiguration() }
         .onDisappear { credentials.cancel(); ssoTask?.cancel(); sso.cancel(); password = ""; confirmPassword = ""; code = ""; challenge = nil }
     }
+
+    private var header: some View {
+        VStack(spacing: 10) {
+            Image("MultiVibeMark").renderingMode(.original).resizable().scaledToFit()
+                .frame(width: 80, height: 80).accessibilityHidden(true)
+            Text("MultiVibe").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            Text(challenge != nil ? "Vérifiez votre identité" : signup ? "Bienvenue chez vous" : "Ravi de vous retrouver")
+                .font(.title.bold()).multilineTextAlignment(.center).accessibilityAddTraits(.isHeader)
+            Text(challenge != nil ? "Saisissez le code de votre application d’authentification." : signup ? "Créez votre compte pour commencer à discuter." : "Connectez-vous pour reprendre la conversation.")
+                .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        }.frame(maxWidth: .infinity)
+    }
+
+    private var credentialFields: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if challenge != nil {
+                field("Code de vérification", icon: "lock.shield", focused: focusedField == .code) {
+                    TextField("Code à six chiffres", text: $code).textContentType(.oneTimeCode).keyboardType(.numberPad)
+                        .focused($focusedField, equals: .code).disabled(busy)
+                }
+            } else {
+                field("Adresse e-mail", icon: "envelope", focused: focusedField == .email) {
+                    TextField("Adresse e-mail", text: $email).textContentType(.emailAddress)
+                        .keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .focused($focusedField, equals: .email).submitLabel(.next)
+                        .onSubmit { focusedField = .password }.disabled(busy)
+                }
+                field("Mot de passe", icon: "lock", focused: focusedField == .password) {
+                    SecureField("Mot de passe", text: $password).textContentType(signup ? .newPassword : .password)
+                        .focused($focusedField, equals: .password).submitLabel(signup ? .next : .go)
+                        .onSubmit { if signup { focusedField = .confirmation } else { authenticate() } }.disabled(busy)
+                }
+                if signup {
+                    field("Confirmation", icon: "lock", focused: focusedField == .confirmation) {
+                        SecureField("Confirmer le mot de passe", text: $confirmPassword).textContentType(.newPassword)
+                            .focused($focusedField, equals: .confirmation).submitLabel(.done)
+                            .onSubmit { focusedField = nil }.disabled(busy)
+                    }
+                    Text("Conseil : utilisez une phrase de passe d’au moins 12 caractères.").font(.caption).foregroundStyle(.secondary)
+                    if !confirmPassword.isEmpty && password != confirmPassword {
+                        Text("Les mots de passe ne correspondent pas.").font(.caption).foregroundStyle(.red)
+                    }
+                    signupConsent
+                } else {
+                    Button("Mot de passe oublié ?") {
+                        focusedField = nil
+                        manager.passwordRecovery = PasswordRecoveryRequest(email: email)
+                    }
+                    .font(.subheadline.weight(.medium)).frame(minHeight: 44)
+                    .frame(maxWidth: .infinity, alignment: .trailing).disabled(busy)
+                }
+            }
+        }
+    }
+
+    private func field<Content: View>(_ title: String, icon: String, focused: Bool,
+                                      @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.subheadline.weight(.medium)).accessibilityHidden(true)
+            HStack(spacing: 12) {
+                Image(systemName: icon).foregroundStyle(.secondary).frame(width: 20).accessibilityHidden(true)
+                content().textFieldStyle(.plain)
+            }
+            .padding(.horizontal, 16).padding(.vertical, 16)
+            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(focused ? MultiVibeTheme.accent : Color.primary.opacity(0.10), lineWidth: focused ? 2 : 1))
+        }
+    }
+
+    @ViewBuilder private var signupConsent: some View {
+        if let config = authConfiguration, config.signupEnabled,
+           let termsUrl = config.termsUrl, let privacyUrl = config.privacyUrl {
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle("J’accepte les conditions d’utilisation", isOn: $terms).font(.subheadline).disabled(busy)
+                Link("Conditions d’utilisation", destination: termsUrl)
+                Link("Politique de confidentialité", destination: privacyUrl)
+            }.font(.footnote)
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("L’inscription est indisponible tant que les documents légaux ne sont pas chargés.")
+                Button("Recharger les conditions") { Task { await loadConfiguration() } }.disabled(busy)
+            }.font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var footer: some View {
+        VStack(spacing: 12) {
+            if challenge != nil {
+                Button("Recommencer la connexion") { challenge = nil; code = ""; password = ""; error = nil }
+                    .disabled(busy)
+            } else {
+                Text(signup ? "Déjà membre de MultiVibe ?" : "Pas encore de compte ?").foregroundStyle(.secondary)
+                Button(signup ? "J’ai déjà un compte" : "Créer un compte") {
+                    signup.toggle(); error = nil; password = ""; confirmPassword = ""; terms = false; focusedField = nil
+                }.fontWeight(.semibold).disabled(busy).frame(minHeight: 44)
+            }
+            Button("Confidentialité et données", systemImage: "hand.raised") { privacyPresented = true }
+                .font(.caption).foregroundStyle(.secondary).frame(minHeight: 44)
+        }.font(.subheadline).frame(maxWidth: .infinity)
+    }
+
     private func loadConfiguration() async {
         terms = false
         do { authConfiguration = try await ChatAPI.shared.authenticationConfiguration() }
