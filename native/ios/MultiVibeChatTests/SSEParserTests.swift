@@ -1,5 +1,6 @@
 import XCTest
 import AVFoundation
+import AuthenticationServices
 @testable import MultiVibeChat
 
 final class SSEParserTests: XCTestCase {
@@ -789,5 +790,28 @@ final class NativeSSOAvailabilityTests: XCTestCase {
         }
         XCTAssertFalse(config.canStartSSO(provider: "unknown", acceptedTerms: true))
         XCTAssertFalse(config.usesLegacyProviderChooser)
+    }
+}
+
+final class NativeSSOFailureTests: XCTestCase {
+    func testMissingAssociationIsNotSilentlyTreatedAsUserCancellation() {
+        let error = NSError(domain: ASWebAuthenticationSessionError.errorDomain,
+                            code: ASWebAuthenticationSessionError.canceledLogin.rawValue,
+                            userInfo: [NSLocalizedFailureReasonErrorKey:
+                                "Application with identifier cloud.multivibe.chat is not associated with domain auth.multivibe.cloud."])
+        XCTAssertEqual(NativeSSOFailure.message(for: error), NativeSSOFailure.associationMessage)
+    }
+
+    func testCancellationWithoutAssociationReasonStillOffersRetry() {
+        let error = NSError(domain: ASWebAuthenticationSessionError.errorDomain,
+                            code: ASWebAuthenticationSessionError.canceledLogin.rawValue)
+        XCTAssertTrue(NativeSSOFailure.message(for: error).contains("réessayer"))
+        XCTAssertNotEqual(NativeSSOFailure.message(for: error), NativeSSOFailure.associationMessage)
+    }
+
+    func testOtherFailuresPreserveTheirDescription() {
+        let error = NSError(domain: "test", code: 1,
+                            userInfo: [NSLocalizedDescriptionKey: "Presentation failed"])
+        XCTAssertEqual(NativeSSOFailure.message(for: error), "Presentation failed")
     }
 }

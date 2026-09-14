@@ -83,6 +83,7 @@ struct AuthenticationView: View {
     @State private var terms = false
     @State private var challenge: String?
     @State private var code = ""
+    @State private var ssoError: String?
     @State private var ssoBusy = false
     private var busy: Bool { ssoBusy || credentials.busy }
     @State private var error: String?
@@ -161,7 +162,7 @@ struct AuthenticationView: View {
                             .overlay {
                                 RoundedRectangle(cornerRadius: 12)
                                     .strokeBorder(.primary.opacity(0.12), lineWidth: 1)
-                                            .allowsHitTesting(false)
+                                    .allowsHitTesting(false)
                             }
                             .disabled(busy || authConfiguration?.canStartSSO(provider: "apple", acceptedTerms: terms) != true)
                             .accessibilityIdentifier("signInWithApple")
@@ -171,6 +172,16 @@ struct AuthenticationView: View {
                                 Text("Choisissez votre fournisseur sur la page sécurisée. Apple y sera proposé s’il est configuré. Les conditions peuvent vous être demandées à nouveau.")
                                     .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                                     .accessibilityIdentifier("legacySSOExplanation")
+                            }
+                            if ssoBusy {
+                                ProgressView("Ouverture de la connexion sécurisée…")
+                                    .font(.callout).accessibilityIdentifier("ssoProgress")
+                            }
+                            if let ssoError {
+                                Label(ssoError, systemImage: "exclamationmark.circle")
+                                    .font(.callout).foregroundStyle(.red)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .accessibilityIdentifier("nativeSSOError")
                             }
                             Text("Authentification dans une fenêtre sécurisée d’iOS.")
                                 .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
@@ -202,7 +213,7 @@ struct AuthenticationView: View {
         }
         .sheet(isPresented: $privacyPresented) { NativePrivacyView() }
         .task { await loadConfiguration() }
-        .onDisappear { credentials.cancel(); /* diagnostic: preserve browser session */ passkeyController.cancel(); passkeyOptions = nil; password = ""; confirmPassword = ""; code = ""; challenge = nil }
+        .onDisappear { credentials.cancel(); ssoTask?.cancel(); sso.cancel(); passkeyController.cancel(); passkeyOptions = nil; password = ""; confirmPassword = ""; code = ""; challenge = nil }
     }
 
     private var header: some View {
@@ -310,27 +321,25 @@ struct AuthenticationView: View {
         catch { authConfiguration = nil; self.error = error.localizedDescription }
     }
     private func authenticateSSO(provider: String? = nil) {
-        error = "SSODIAG tap"
         guard !busy else { return }
         if let provider {
             guard authConfiguration?.canStartSSO(provider: provider, acceptedTerms: terms) == true else { return }
         }
-        error = "SSODIAG guards"
         let selectedProvider = provider.flatMap { authConfiguration?.directSSOProvider($0) }
-        ssoBusy = true; error = nil
+        ssoBusy = true; error = nil; ssoError = nil; focusedField = nil
         ssoTask = Task {
             defer { ssoBusy = false; ssoTask = nil }
             do {
-                error = "SSODIAG task"
                 let session = try await sso.signIn(provider: selectedProvider, termsVersion: terms ? authConfiguration?.termsVersion : nil)
                 do { try Task.checkCancellation() }
                 catch { try? await ChatAPI.shared.revoke(token: session.refreshToken); throw error }
                 try await manager.accept(session); password = ""
             } catch is CancellationError {
-                self.error = "SSODIAG task cancelled"
-            } catch let failure as ASWebAuthenticationSessionError where failure.code == .canceledLogin {
-                self.error = "SSODIAG web cancelled: \(failure)"
-            } catch { self.error = error.localizedDescription }
+            } catch {
+                // iOS also uses canceledLogin for a missing domain association,
+                // so it must not be treated as proof that the user cancelled.
+                ssoError = NativeSSOFailure.message(for: error)
+            }
         }
     }
     private func authenticatePasskey() {
@@ -449,6 +458,31 @@ struct PasswordRecoveryView: View {
     }
 }
 
+enum NativeSSOFailure: LocalizedError {
+    case presentationUnavailable
+
+    static let associationMessage = "La connexion SSO est indisponible : le domaine auth.multivibe.cloud n’est pas associé à cette application. La configuration du serveur et la signature de l’app doivent être vérifiées."
+
+    var errorDescription: String? {
+        "Impossible d’ouvrir la fenêtre de connexion sécurisée. Réessayez depuis l’application au premier plan."
+    }
+
+    static func message(for error: Error) -> String {
+        let failure = error as NSError
+        if failure.domain == ASWebAuthenticationSessionError.errorDomain,
+           failure.code == ASWebAuthenticationSessionError.canceledLogin.rawValue {
+            // AuthenticationServices reports its association diagnostic as a
+            // failure reason, using the same code as an explicit user cancel.
+            if let reason = failure.userInfo[NSLocalizedFailureReasonErrorKey] as? String,
+               reason.localizedCaseInsensitiveContains("not associated with domain") {
+                return associationMessage
+            }
+            return "La connexion SSO a été annulée ou n’a pas pu s’ouvrir. Vous pouvez réessayer."
+        }
+        return error.localizedDescription
+    }
+}
+
 /// The system owns the provider UI and cookies. Only the one-time first-party
 /// authorization code returns to the app; provider tokens never enter it.
 @MainActor @Observable final class NativeSSOController: NSObject, ASWebAuthenticationPresentationContextProviding {
@@ -497,8 +531,7 @@ struct PasswordRecoveryView: View {
             session.prefersEphemeralWebBrowserSession = true
             authentication = session
             let started = session.start()
-            print("SSODIAG started=\(started)")
-            if !started { finish(.failure(APIError.invalidResponse)) }
+            if !started { finish(.failure(NativeSSOFailure.presentationUnavailable)) }
         }
         } onCancel: {
             Task { @MainActor in
@@ -528,12 +561,10 @@ struct PasswordRecoveryView: View {
         return issued
     }
     func cancel() {
-        print("SSODIAG cancel")
         authentication?.cancel()
         finish(.failure(CancellationError()))
     }
     private func finish(_ result: Result<URL, Error>) {
-        print("SSODIAG finish")
         let pending = continuation
         continuation = nil
         pending?.resume(with: result)

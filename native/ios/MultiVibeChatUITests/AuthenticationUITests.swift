@@ -1,7 +1,7 @@
 import XCTest
 
 /// Run on a disposable simulator with no saved account. These tests never submit
-/// credentials, open an external SSO session, or request a recovery email.
+/// credentials or request a recovery email. SSO tests open the first-party browser only.
 @MainActor
 final class AuthenticationUITests: XCTestCase {
     private func launch(dark: Bool = false) -> XCUIApplication {
@@ -85,23 +85,42 @@ final class AuthenticationUITests: XCTestCase {
         XCTAssertFalse(app.secureTextFields["Confirmer le mot de passe"].exists)
     }
 
-    func testGoogleTapPresentsSecureAuthentication() {
+    func testGoogleTapPresentsSecureAuthenticationOrAssociationDiagnostic() {
+        assertSSOTap(provider: "Google")
+    }
+
+    func testGitHubTapPresentsSecureAuthenticationOrAssociationDiagnostic() {
+        assertSSOTap(provider: "GitHub")
+    }
+
+    func testAppleTapPresentsSecureAuthenticationOrAssociationDiagnostic() {
+        assertSSOTap(provider: "Apple")
+    }
+
+    private func assertSSOTap(provider: String) {
         let app = launch()
         let consent = app.switches["J’accepte les conditions d’utilisation"]
         app.swipeUp()
         XCTAssertTrue(consent.waitForExistence(timeout: 5))
         if consent.value as? String != "1" { consent.tap() }
-        let google = app.buttons["signInWithGoogle"]
-        XCTAssertTrue(google.isEnabled)
-        google.tap()
+        let button = app.buttons["signInWith" + provider]
+        XCTAssertTrue(button.isEnabled)
+        button.tap()
         // Opening the first-party SSO window does not submit provider credentials.
         let browser = app.webViews.firstMatch
         let presented = browser.waitForExistence(timeout: 15)
         let capture = XCTAttachment(screenshot: app.screenshot())
-        capture.name = "google-after-tap"
+        capture.name = provider.lowercased() + "-after-tap"
         capture.lifetime = .keepAlways
         add(capture)
-        XCTAssertTrue(presented, "Google tap must present the secure web session, not silently do nothing")
+        // Unsigned simulators / an unconfigured AASA cannot open HTTPS SSO.
+        // Accept only that precise diagnostic, never an arbitrary error or no-op.
+        if !presented {
+            let failure = app.staticTexts["nativeSSOError"]
+            XCTAssertTrue(failure.exists, "SSO must not silently swallow a presentation failure")
+            XCTAssertTrue(failure.label.contains("n’est pas associé à cette application"))
+            XCTAssertTrue(button.isEnabled, "A failed attempt must allow retry")
+        }
     }
 
     func testRecoveryUsesNativeSheetWithoutSubmitting() {
