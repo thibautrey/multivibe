@@ -6,6 +6,7 @@ struct ChatView: View {
     @Environment(\.scenePhase) private var scenePhase
     private var voice: VoiceController { manager.voice }
     @State private var text = ""
+    @State private var preferredColumn: NavigationSplitViewColumn = .detail
     @State private var search = ""
     @State private var conversationToDelete: Conversation?
     @State private var confirmHistorySync = false
@@ -20,7 +21,7 @@ struct ChatView: View {
 
     var body: some View {
         @Bindable var manager = manager
-        NavigationSplitView {
+        NavigationSplitView(preferredCompactColumn: $preferredColumn) {
             List(selection: $manager.selection) {
                 ForEach(manager.conversations.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }) { conversation in
                     Label(conversation.title, systemImage: "bubble.left").tag(conversation.id)
@@ -53,33 +54,41 @@ struct ChatView: View {
             }
         } detail: {
             VStack(spacing: 0) {
-                if manager.current == nil {
-                    ContentUnavailableView("Une nouvelle idée ?", systemImage: "sparkles", description: Text("Choisissez un modèle et commencez une conversation."))
+                if manager.current?.messages.isEmpty != false {
+                    welcome
                 } else {
                     ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 20) {
                             ForEach(manager.current?.messages ?? []) { message in
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text(message.role == "user" ? "Vous" : "MultiVibe").font(.caption.bold()).foregroundStyle(.secondary)
-                                    if message.role == "assistant" && !message.content.isEmpty {
-                                        NativeMessageContent(content: message.content)
+                                VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 8) {
+                                    if message.role == "user" {
+                                        Text(message.content).textSelection(.enabled)
+                                            .padding(.horizontal, 18).padding(.vertical, 12)
+                                            .background(MultiVibeTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 22))
+                                            .padding(.leading, 36)
                                     } else {
-                                        Text(message.content.isEmpty ? "…" : message.content).textSelection(.enabled)
-                                    }
-                                    if let completion = message.completion {
-                                        Text(completion == .streaming ? "Réponse en cours" : completion == .completed ? "Réponse terminée" : completion == .stopped ? "Réponse arrêtée" : "Réponse interrompue par une erreur")
-                                            .font(.caption).foregroundStyle(.secondary)
-                                    }
-                                    if message.canRetry && manager.current?.messages.last?.id == message.id {
-                                        Button("Réessayer", systemImage: "arrow.clockwise") {
-                                            if let conversation = manager.selection {
-                                                retryTarget = RetryTarget(conversation: conversation, message: message.id)
+                                        if message.content.isEmpty { ProgressView("MultiVibe réfléchit…") }
+                                        else { NativeMessageContent(content: message.content) }
+                                        if let completion = message.completion, completion != .completed {
+                                            Text(completion == .streaming ? "Réponse en cours" : completion == .stopped ? "Réponse arrêtée" : "Réponse interrompue")
+                                                .font(.caption).foregroundStyle(.secondary)
+                                        }
+                                        HStack(spacing: 4) {
+                                            if !message.content.isEmpty {
+                                                Button("Lire à voix haute", systemImage: "speaker.wave.2") { voice.speak(message.content) }
+                                                ShareLink(item: message.content) { Image(systemName: "square.and.arrow.up") }.accessibilityLabel("Partager le message")
                                             }
-                                        }.disabled(manager.isStreaming)
+                                            if message.canRetry && manager.current?.messages.last?.id == message.id {
+                                                Button("Réessayer", systemImage: "arrow.clockwise") {
+                                                    if let conversation = manager.selection { retryTarget = RetryTarget(conversation: conversation, message: message.id) }
+                                                }.disabled(manager.isStreaming)
+                                            }
+                                        }.labelStyle(.iconOnly).buttonStyle(.borderless).controlSize(.large)
+                                            .foregroundStyle(.secondary)
                                     }
-                                    if !message.content.isEmpty { Button("Lire à voix haute", systemImage: "speaker.wave.2") { voice.speak(message.content) }; ShareLink(item: message.content) { Image(systemName: "square.and.arrow.up") }.accessibilityLabel("Partager le message") }
-                                }.frame(maxWidth: .infinity, alignment: .leading)
+                                }.frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
+
                             }
                             Color.clear.frame(height: 1).id(latestMessageAnchor)
                         }.padding()
@@ -129,31 +138,17 @@ struct ChatView: View {
                     }.padding(.horizontal)
                 }
                 if manager.isLoadingModels { ProgressView("Chargement des modèles…").padding(.horizontal) }
-                HStack(alignment: .bottom) {
-                    Button(voice.recording ? "Terminer la dictée" : "Dicter sur cet appareil", systemImage: voice.recording ? "mic.fill" : "mic") {
-                        if voice.recording { voice.stop() } else { Task { await voice.start() } }
-                    }
-                    TextField("Message", text: $text, axis: .vertical).lineLimit(1...8).textFieldStyle(.roundedBorder)
-                    if manager.isStreaming { Button("Arrêter", systemImage: "stop.circle.fill") { manager.stop() } }
-                    else { Button("Envoyer", systemImage: "arrow.up.circle.fill") { if manager.send(text) { text = "" } }.disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || manager.selectedModel.isEmpty || manager.isSynchronizing) }
-                }.padding()
             }
+            .safeAreaInset(edge: .bottom, spacing: 0) { composer }
             .background(MultiVibeTheme.background)
-            .navigationTitle(manager.current?.title ?? "Chat")
+            .navigationTitle("MultiVibe")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .secondaryAction) { Button("Conversation vocale", systemImage: "waveform") { voice.silence(); voicePresented = true } }
-                ToolbarItem(placement: .secondaryAction) {
-                    Button("Actualiser les modèles", systemImage: "arrow.clockwise") {
-                        Task { await manager.reloadModels() }
-                    }.disabled(manager.isLoadingModels || manager.isStreaming)
-                }
                 ToolbarItem(placement: .primaryAction) {
-                    Picker("Modèle", selection: $manager.selectedModel) {
-                        Text("Choisir un modèle").tag("")
-                        ForEach(manager.models) { model in Text(model.displayName).tag(model.id) }
-                    }.disabled(manager.isStreaming)
+                    Button("Nouvelle conversation", systemImage: "square.and.pencil") { manager.newConversation() }
                 }
             }
+
         }
         .alert("Supprimer cette conversation ?", isPresented: Binding(
             get: { conversationToDelete != nil },
@@ -205,6 +200,77 @@ struct ChatView: View {
         .onDisappear { voice.silence() }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in voice.silence() }
     }
+    private var welcome: some View {
+        ScrollView {
+            VStack(spacing: 28) {
+                Spacer(minLength: 40)
+                Image(systemName: "bubble.left.and.bubble.right.fill")
+                    .font(.system(size: 42)).foregroundStyle(MultiVibeTheme.accent).accessibilityHidden(true)
+                Text("Comment puis-je\nvous aider ?")
+                    .font(.largeTitle.bold()).multilineTextAlignment(.center)
+                Text("Une idée, une question, un premier brouillon.")
+                    .foregroundStyle(.secondary).multilineTextAlignment(.center)
+                VStack(spacing: 10) {
+                    suggestion("Trouver l’inspiration", icon: "lightbulb", draft: "Aide-moi à trouver des idées pour ")
+                    suggestion("M’aider à écrire", icon: "pencil.line", draft: "Aide-moi à rédiger ")
+                    suggestion("Comprendre un sujet", icon: "text.book.closed", draft: "Explique-moi simplement ")
+                }.padding(.top, 8)
+            }.frame(maxWidth: 560).padding(24).frame(maxWidth: .infinity)
+        }.scrollDismissesKeyboard(.interactively)
+    }
+
+    private func suggestion(_ title: String, icon: String, draft: String) -> some View {
+        Button { text = draft } label: {
+            HStack(spacing: 14) {
+                Image(systemName: icon).foregroundStyle(MultiVibeTheme.accent).frame(width: 24)
+                Text(title).foregroundStyle(.primary)
+                Spacer()
+                Image(systemName: "arrow.up.left").font(.caption).foregroundStyle(.secondary)
+            }.padding(16).background(.background.opacity(0.7), in: RoundedRectangle(cornerRadius: 18))
+        }.buttonStyle(.plain)
+    }
+
+    private var composer: some View {
+        @Bindable var manager = manager
+        return VStack(alignment: .leading, spacing: 12) {
+            TextField("Que souhaitez-vous savoir ?", text: $text, axis: .vertical)
+                .accessibilityLabel("Message").lineLimit(1...8).padding(.horizontal, 6).padding(.top, 6)
+            HStack(spacing: 8) {
+                Menu {
+                    Picker("Modèle", selection: $manager.selectedModel) {
+                        Text("Choisir un modèle").tag("")
+                        ForEach(manager.models) { model in Text(model.displayName).tag(model.id) }
+                    }
+                    Button("Actualiser les modèles", systemImage: "arrow.clockwise") { Task { await manager.reloadModels() } }
+                        .disabled(manager.isLoadingModels)
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(manager.models.first(where: { $0.id == manager.selectedModel })?.displayName ?? "Choisir un modèle").lineLimit(1)
+                        Image(systemName: "chevron.down").font(.caption2)
+                    }.font(.subheadline).frame(minHeight: 44)
+                }.disabled(manager.isStreaming).accessibilityLabel("Modèle")
+                Spacer(minLength: 0)
+                Button(voice.recording ? "Terminer la dictée" : "Dicter sur cet appareil", systemImage: voice.recording ? "mic.fill" : "mic") {
+                    if voice.recording { voice.stop() } else { Task { await voice.start() } }
+                }.frame(minWidth: 44, minHeight: 44)
+                if manager.isStreaming {
+                    Button("Arrêter", systemImage: "stop.circle.fill") { manager.stop() }.font(.title).frame(minWidth: 44, minHeight: 44)
+                } else if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Button("Conversation vocale", systemImage: "waveform.circle.fill") { voice.silence(); voicePresented = true }
+                        .font(.title).frame(minWidth: 44, minHeight: 44)
+                } else {
+                    Button("Envoyer", systemImage: "arrow.up.circle.fill") { if manager.send(text) { text = "" } }
+                        .font(.title).frame(minWidth: 44, minHeight: 44)
+                        .disabled(manager.selectedModel.isEmpty || manager.isSynchronizing)
+                }
+            }.labelStyle(.iconOnly).buttonStyle(.plain)
+        }
+        .padding(12).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28))
+        .overlay(RoundedRectangle(cornerRadius: 28).stroke(.primary.opacity(0.08), lineWidth: 1))
+        .frame(maxWidth: 760).padding(.horizontal, 16).padding(.vertical, 10)
+        .frame(maxWidth: .infinity).background(MultiVibeTheme.background)
+    }
+
     private func consumeIntent() {
         guard scenePhase == .active, manager.session != nil, !manager.isRestoring else { return }
         if manager.wantsNewConversation {
