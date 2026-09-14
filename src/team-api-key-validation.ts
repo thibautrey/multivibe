@@ -1,3 +1,5 @@
+import {readCoreResponseText} from "./provider-response.js";
+import {discoverProviderModelCatalog} from "./provider-model-catalog.js";
 /** Storage-free API-key validation owned by Core. Cloud injects its admitted egress
  * transport and retains consent, authorization and persistence. No default fetch,
  * account store, callbacks or billable inference during catalog discovery.
@@ -29,7 +31,6 @@ export const PROVIDER_CREDENTIAL_VALIDATION_PROVIDERS = Object.freeze(Object.key
 export function providerCredentialEndpoint(provider: string): string { return definition(provider).baseUrl; }
 
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$/u;
-const MAX_CATALOG_BYTES = 2 * 1024 * 1024;
 const MAX_INFERENCE_BYTES = 1024 * 1024;
 
 export class ProviderCredentialValidationError extends Error {
@@ -55,9 +56,6 @@ function headers(value: ProviderDefinition, apiKey: string): Headers {
   return result;
 }
 
-function statusError(status: number): ProviderCredentialValidationError {
-  return new ProviderCredentialValidationError([401, 403].includes(status) ? "unauthorized" : "unavailable");
-}
 
 async function boundedJson(response: Response, maximum: number, signal: AbortSignal): Promise<Record<string, unknown>> {
   let parsed: unknown;
@@ -90,21 +88,27 @@ class TeamApiKeyValidator {
     validateKey(input.apiKey);
     const provider = definition(input.provider);
     const signal = AbortSignal.timeout(10_000);
-    let response: Response;
     try {
-      response = await this.fetchImplementation(`${provider.baseUrl}/models`, {
-        method: "GET", headers: headers(provider, input.apiKey), redirect: "error", signal,
+      const models = await discoverProviderModelCatalog({
+        signal, anthropic: provider.protocol === "anthropic",
+        maximumModels: 4096,
+        normalizeModel: entry => {
+          const id = entry && typeof entry === "object" ? (entry as {id?: unknown}).id : undefined;
+          return typeof id === "string" && MODEL.test(id) && !id.includes(input.apiKey) ? id : undefined;
+        },
+        request: path => this.fetchImplementation(`${provider.baseUrl}${path}`, {
+          method: "GET", headers: headers(provider, input.apiKey), redirect: "error", signal,
+        }),
       });
-    } catch { throw new ProviderCredentialValidationError("unavailable"); }
-    if (!response.ok) throw statusError(response.status);
-    const body = await boundedJson(response, MAX_CATALOG_BYTES, signal);
-    if (!Array.isArray(body.data)) throw new ProviderCredentialValidationError("invalid_response");
-    const models = [...new Set(body.data.map((entry) => entry && typeof entry === "object"
-      ? (entry as { id?: unknown }).id : undefined)
-      .filter((id): id is string => typeof id === "string" && MODEL.test(id)
-        && !id.includes(input.apiKey)))].sort();
-    if (models.length === 0 || models.length > 4096) throw new ProviderCredentialValidationError("invalid_response");
-    return Object.freeze(models);
+      if (!models.length) throw new ProviderCredentialValidationError("invalid_response");
+      return models;
+    } catch (error) {
+      if (error instanceof ProviderCredentialValidationError) throw error;
+      const message = error instanceof Error ? error.message : "";
+      if (message === "provider_discovery_authentication_rejected") throw new ProviderCredentialValidationError("unauthorized");
+      if (/^provider_discovery_(invalid|too_large|incomplete)/.test(message)) throw new ProviderCredentialValidationError("invalid_response");
+      throw new ProviderCredentialValidationError("unavailable");
+    }
   }
 
   async testInference(input: Readonly<{ provider: string; apiKey: string; model: string }>): Promise<void> {
@@ -136,65 +140,6 @@ class TeamApiKeyValidator {
   }
 }
 
-async function readCoreResponseBytes(
-  response: Response,
-  maximum: number,
-  signal?: AbortSignal,
-): Promise<Uint8Array> {
-  signal?.throwIfAborted();
-  if (!response.body) return new Uint8Array();
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  let rejectAborted!: (reason: unknown) => void;
-  let cancellation: Promise<void> | undefined;
-  let completed = false;
-  let failure: unknown;
-  const cancelReader = (reason: unknown): Promise<void> => {
-    cancellation ??= reader.cancel(reason).catch(() => undefined);
-    return cancellation;
-  };
-  const aborted = new Promise<never>((_resolve, reject) => { rejectAborted = reject; });
-  const onAbort = (): void => {
-    void cancelReader(signal?.reason);
-    rejectAborted(signal?.reason ?? new DOMException("Operation aborted", "AbortError"));
-  };
-  signal?.addEventListener("abort", onAbort, { once: true });
-  try {
-    for (;;) {
-      const next = await (signal ? Promise.race([reader.read(), aborted]) : reader.read());
-      if (next.done) break;
-      length += next.value.byteLength;
-      if (length > maximum) throw new Error("Managed Core response exceeds the configured limit");
-      chunks.push(next.value);
-    }
-    signal?.throwIfAborted();
-    completed = true;
-  } catch (error) {
-    failure = error;
-    throw error;
-  } finally {
-    signal?.removeEventListener("abort", onAbort);
-    if (!completed) await cancelReader(failure);
-    else await cancellation;
-    reader.releaseLock();
-  }
-  const result = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return result;
-}
-
-async function readCoreResponseText(
-  response: Response,
-  maximum: number,
-  signal?: AbortSignal,
-): Promise<string> {
-  return new TextDecoder().decode(await readCoreResponseBytes(response, maximum, signal));
-}
 
 
 export function createTeamApiKeyValidator(transport: typeof fetch) {
