@@ -31,8 +31,8 @@ export function rankOpenModels(catalog: OpenModelCatalog, need: CatalogNeed, sor
       const estimate = matches.length === 1 ? matches[0] : undefined;
       return { model, compatibility: estimate?.state ?? 'unknown', reason: estimate?.reason ?? 'No runtime estimate for this exact variant.' };
     });
-    const fit = variants.find(v => !v.model.gated && v.compatibility === 'compatible');
-    return { ...g, variants, selectedVariant: fit?.model.id ?? null,
+    const fit = !g.model.gated && variants.find(v => !v.model.gated && v.compatibility === 'compatible');
+    return { ...g, variants, selectedVariant: fit ? fit.model.id : null,
       compatibility: fit ? 'compatible' : variants.every(v => v.compatibility === 'insufficient') ? 'insufficient' : 'unknown',
       access: g.model.gated ? 'restricted' : 'reference',
       reason: `Publisher metadata supports ${need === 'documents' ? 'text summarization or analysis' : need}. ${fit ? 'A runtime estimate is available.' : 'Compatibility is not verified.'}` };
@@ -41,7 +41,7 @@ export function rankOpenModels(catalog: OpenModelCatalog, need: CatalogNeed, sor
   if (sort === 'established') {
     const counts = rows.map(r => r.model.downloads).filter((n): n is number => n !== null).sort((a,b) => b-a);
     const threshold = counts[Math.max(0, Math.ceil(counts.length / 4)-1)] ?? Infinity;
-    rows = rows.filter(r => r.model.createdAt && now-Date.parse(r.model.createdAt) >= 90*86400000 && downloads(r.model) >= threshold);
+    rows = rows.filter(r => r.model.relation !== 'quantized' && (!r.model.parent || catalog.models.some(m => m.id === r.model.parent)) && r.model.createdAt && now-Date.parse(r.model.createdAt) >= 90*86400000 && downloads(r.model) >= threshold);
   }
   return rows.sort((a,b) => {
     if (sort === 'recommended') {

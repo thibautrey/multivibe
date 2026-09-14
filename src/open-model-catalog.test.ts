@@ -59,3 +59,23 @@ test('progressive metadata enrichment uses only fixed metadata endpoints', async
  assert.ok(result.models[0].metadataCheckedAt);
  assert.equal(calls.filter(url => url.endsWith('?blobs=true')).length,1);
 });
+
+test('ambiguous estimates stay unknown, unsupported variants cannot be selected', () => {
+ const catalog={models:parseOpenModels([model]),checkedAt:new Date().toISOString(),stale:false,source:'Hugging Face',version:'2'};
+ const estimate={model_id:model.id,aliases:[],variant:'q4',state:'compatible' as const,reason:'estimated'};
+ assert.equal(rankOpenModels(catalog,'writing','recommended',[estimate,{...estimate,variant:'q8'}])[0].selectedVariant,null);
+ for(const reason of ['unsupported_format','insufficient_memory']) {
+  const result=rankOpenModels(catalog,'writing','recommended',[{...estimate,state:'insufficient',reason}])[0];
+  assert.equal(result.compatibility,'insufficient');assert.equal(result.selectedVariant,null);
+ }
+});
+test('restricted canonical model does not gain estimated fit from an unrestricted conversion', () => {
+ const models=parseOpenModels([{...model,gated:true},{...model,id:'publisher/quant',tags:[...model.tags,'base_model:quantized:publisher/model']}]);
+ const catalog={models,checkedAt:new Date().toISOString(),stale:false,source:'Hugging Face',version:'2'};
+ const result=rankOpenModels(catalog,'writing','recommended',[{model_id:'publisher/quant',aliases:[],variant:'q4',state:'compatible',reason:'estimated'}])[0];
+ assert.equal(result.access,'restricted');assert.equal(result.selectedVariant,null);
+});
+test('Established excludes orphan conversions and never adds their adoption to the original', () => {
+ const models=parseOpenModels([{...model,id:'publisher/orphan',tags:[...model.tags,'base_model:quantized:publisher/missing']}]);
+ assert.equal(rankOpenModels({models,checkedAt:new Date().toISOString(),stale:false,source:'Hugging Face',version:'2'},'writing','established').length,0);
+});
