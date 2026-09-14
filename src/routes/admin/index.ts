@@ -1,3 +1,4 @@
+import { loadOpenModelCatalog } from '../../open-model-catalog.js';
 import { GUIDANCE_VERSION, modelNeeds, relevantChoices, recommendedChoices, verifiedCloudCatalog, type GuidanceEntry, type ModelNeed } from '../../model-guidance.js';
 import { invoiceOverview } from "../../provider-invoices.js";
 import { publishDeviceSignIn } from "../../host/device-signin.js";
@@ -1016,6 +1017,11 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       const status = message.includes("registration is disabled") ? 503 : 400;
       res.status(status).json({ error: message });
     }
+  });
+
+  router.get("/open-model-catalog", async (_req, res) => {
+    try { res.json(await loadOpenModelCatalog()); }
+    catch { res.status(503).json({ error: "Public model catalog unavailable. Try again later." }); }
   });
 
   router.get("/provider-catalog", (_req, res) => res.json(sdkProviderCatalog()));

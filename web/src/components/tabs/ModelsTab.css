@@ -168,3 +168,8 @@
 .models-level-choice { display:flex; flex-direction:column; gap:8px; }
 .models-level-label { font-size:12px; font-weight:600; color:var(--muted-strong); }
 @media (max-width:600px) { .models-level-choice { width:100%; } }
+
+.models-open-discovery { margin-top:28px; padding-top:24px; border-top:1px solid var(--border); }
+.models-open-discovery h3 { overflow-wrap:anywhere; }
+.models-open-discovery > p, .models-open-discovery details { font-size:12px; line-height:1.6; }
+.models-open-discovery .models-choice-grid { margin:16px 0; }

@@ -1,7 +1,8 @@
+import { loadOpenModelCatalog } from '../../src/open-model-catalog';
 import type { Plugin } from "vite";
 import { createDemoApi } from "./api";
 
-/** Development-only middleware. No gateway, storage, credentials, or upstream transport. */
+/** Development-only middleware. No gateway, storage or credentials. Public model discovery uses the live Hub API. */
 export function demoApiPlugin(): Plugin {
   return {
     name: "multivibe-demo-api",
@@ -12,6 +13,10 @@ export function demoApiPlugin(): Plugin {
       const respond = createDemoApi(Date.now(), role as "personal" | "owner" | "admin" | "member" | "billing", process.env.MULTIVIBE_DEMO_HOST === "1");
       server.middlewares.use((req, res, next) => {
         const path = new URL(req.url ?? "/", "http://demo.invalid").pathname;
+        if (path === '/admin/open-model-catalog' && req.method === 'GET') {
+          void loadOpenModelCatalog().then(body => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(body)); }).catch(() => { res.statusCode = 503; res.end(JSON.stringify({ error: 'Public catalog unavailable' })); });
+          return;
+        }
         if (!/^\/(admin|v1|auth)(\/|$)/.test(path) && path !== "/health") return next();
         try {
           const result = respond(req.method ?? "GET", req.url ?? "/");

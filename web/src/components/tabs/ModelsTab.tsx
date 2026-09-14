@@ -1,3 +1,4 @@
+import { OpenModelDiscovery } from './OpenModelDiscovery';
 import { useEffect, useMemo, useState } from 'react';
 import type { Account, ExposedModel } from '../../types';
 import { api } from '../../lib/api';
@@ -101,15 +102,15 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
     else onConfigure(route);
   };
   const actionLabel = (route: ModelRoute) => route.ready ? canConfigure ? 'Use model' : 'Open chat' : !canConfigure ? 'Ask your admin' : route.source === 'cloud' ? cloudConnected ? 'View access' : 'Connect Cloud' : 'Set up';
-  return <section className="panel models-catalog" aria-label="Modèles">
-    <header className="models-page-heading"><div><h2>Le bon modèle, pour votre besoin</h2><p>Choisissez un usage. Gardez la main sur le modèle.</p></div>
-    <div className="models-level-choice"><span id="models-level-label" className="models-level-label">Mon niveau de connaissance</span><nav className="models-view-switch" aria-labelledby="models-level-label">{([['guided', 'Débutant'], ['compare', 'Confirmé'], ['expert', 'Expert']] as const).map(([value, label]) => <button key={value} className="btn ghost" aria-pressed={view === value} onClick={() => changeView(value)}>{label}</button>)}</nav></div></header>
+  return <section className="panel models-catalog" aria-label="Models">
+    <header className="models-page-heading"><div><h2>The right model for your needs</h2><p>Choose a task. Stay in control.</p></div>
+    <div className="models-level-choice"><span id="models-level-label" className="models-level-label">My experience level</span><nav className="models-view-switch" aria-labelledby="models-level-label">{([['guided', 'Beginner'], ['compare', 'Advanced'], ['expert', 'Expert']] as const).map(([value, label]) => <button key={value} className="btn ghost" aria-pressed={view === value} onClick={() => changeView(value)}>{label}</button>)}</nav></div></header>
     {cloudConnected && canConfigure && <div className="models-access-notice" role="status">
-      {!cloudAccess ? 'Vérification de votre accès Cloud…' : cloudAccess.status === 'available'
-        ? !cloudAccess.modelIds.length ? 'Aucun modèle exposé pour votre compte Cloud.'
-          : !catalog.some(model => model.routes.some(route => route.source === 'cloud' && route.ready)) ? 'Le Cloud expose des modèles, mais aucune route de chat correspondante n’est disponible ici.' : 'Catalogue Cloud vérifié pour votre compte.'
-        : cloudAccess.status === 'access_denied' ? 'Accès Cloud refusé ou expiré. Vérifiez votre connexion.' : cloudAccess.status === 'disconnected' ? 'Compte Cloud déconnecté.' : 'Impossible de vérifier votre accès Cloud.'}
-      <button className="models-text-button" disabled={!cloudAccess} onClick={() => { setCloudAccess(undefined); setAccessRequest(value => value + 1); }}>Revérifier</button>
+      {!cloudAccess ? 'Checking your Cloud access…' : cloudAccess.status === 'available'
+        ? !cloudAccess.modelIds.length ? 'No models exposed for your Cloud account.'
+          : !catalog.some(model => model.routes.some(route => route.source === 'cloud' && route.ready)) ? 'Cloud exposes models, but no matching chat route is available here.' : 'Cloud catalog verified for your account.'
+        : cloudAccess.status === 'access_denied' ? 'Cloud access denied or expired. Check your connection.' : cloudAccess.status === 'disconnected' ? 'Cloud account disconnected.' : 'Could not verify your Cloud access.'}
+      <button className="models-text-button" disabled={!cloudAccess} onClick={() => { setCloudAccess(undefined); setAccessRequest(value => value + 1); }}>Check again</button>
     </div>}
     {view !== 'expert' ? <ModelGuidance view={view} catalog={catalog} canConfigure={canConfigure} cloudConnected={cloudConnected} onUse={onUse} onConnectCloud={connect} connecting={connecting} connectionError={connectionError} onExpert={() => changeView('expert')} /> : <>
     <div className="models-layout">
@@ -148,6 +149,7 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
         })}</ul>
         {!filtered.length && <div className="models-empty"><h3>{loading ? 'Loading your model library…' : activeFilters ? 'No models match your filters' : 'Your model library is empty'}</h3><p className="muted">{loading ? 'Connected models will appear as catalogs become available.' : activeFilters ? 'Try a different search, source, or provider.' : 'Connect a provider or refresh the catalog to get started.'}</p>{activeFilters && <button className="btn ghost" onClick={reset}>Clear filters</button>}</div>}
         {pages > 1 && <nav className="models-pagination" aria-label="Model pages"><button className="btn ghost" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>← Previous</button><label>Page<select aria-label="Go to page" value={currentPage} onChange={event => setPage(Number(event.target.value))}>{Array.from({ length: pages }, (_, index) => <option key={index} value={index}>{index + 1}</option>)}</select>of {pages}</label><button className="btn ghost" disabled={currentPage + 1 === pages} onClick={() => setPage(currentPage + 1)}>Next →</button></nav>}
+        <OpenModelDiscovery compact={false} />
       </div>
     </div>
     </>}
