@@ -142,6 +142,7 @@ func providerHandlerWithModelLifecycle(core *url.URL, selections *selectionStore
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/model-compatibility", modelCompatibilityHandler(controller, controlToken))
 	mux.HandleFunc("POST /v1/local-preparation/operation", localPreparationControlHandler(controller, controlToken))
+	mux.HandleFunc("GET /v1/local-preparation/resources", localPreparationResourcesHandler(capacity, capability, controlToken))
 	mux.HandleFunc("GET /v1/local-preparation/runtime-quote", localPreparationRuntimeQuoteHandler(controller, controlToken))
 	mux.HandleFunc("GET /health/live", func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("content-type", "application/json")
