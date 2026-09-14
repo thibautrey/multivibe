@@ -309,7 +309,9 @@ test("a non-allowlisted port or API path is refused", async () => {
   );
 });
 
-test("redirects are never followed, including to remote origins", async () => {
+test("redirects are never followed, including to remote origins", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-no-runtime-home-"));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
   let redirectMode: RequestRedirect | undefined;
   let calls = 0;
   const adapter: LocalRuntimeAdapter = {
@@ -318,6 +320,7 @@ test("redirects are never followed, including to remote origins", async () => {
   };
   const results = await discoverLocalRuntimes({
     adapters: [adapter],
+    homeDir: home,
     fetchFn: async (_input, init) => {
       calls += 1;
       redirectMode = init?.redirect;
@@ -333,7 +336,9 @@ test("redirects are never followed, including to remote origins", async () => {
   assert.equal(results[0].status, "unavailable");
 });
 
-test("a stalled probe is bounded by its deadline", async () => {
+test("a stalled probe is bounded by its deadline", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-no-runtime-home-"));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
   const adapter: LocalRuntimeAdapter = {
     ...lmStudio,
     candidates: [lmStudio.candidates[0]],
@@ -341,6 +346,7 @@ test("a stalled probe is bounded by its deadline", async () => {
   const startedAt = Date.now();
   const results = await discoverLocalRuntimes({
     adapters: [adapter],
+    homeDir: home,
     timeoutMs: 20,
     fetchFn: async (_input, init) =>
       new Promise<Response>((_resolve, reject) => {
