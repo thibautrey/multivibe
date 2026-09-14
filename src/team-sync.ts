@@ -53,6 +53,9 @@ function aggregateKey(instanceId:string,trace:TraceEntry,principal:TeamPrincipal
   return [instanceId,bucketStart,principal.type,principal.id??'',trace.provider??'unknown',trace.resolvedModel??trace.model??'unknown',trace.projectId??'',trace.application??'',trace.executionLocation??'cloud'].join('\0');
 }
 
+// All service instances sharing one store serialize manifest application. Failure
+// must release the queue so a corrected manifest or durable-write retry can run.
+const manifestQueues = new WeakMap<AccountStore, Promise<unknown>>();
 export class MultivibeTeamSyncService {
   private identity?:IdentityDocument;
   private aggregates=new Map<string,Aggregate>();
@@ -69,6 +72,14 @@ export class MultivibeTeamSyncService {
   async eligibleProviders(){return (await this.store.listAccounts()).map(account=>({accountId:account.id,provider:account.provider??'openai',email:account.email,baseUrl:account.baseUrl,...teamSyncEligibility(account)}));}
 
   async applyManifest(manifest:TeamSyncManifest):Promise<{applied:string[];removed:string[]}> {
+    const snapshot = structuredClone(manifest);
+    const previous = manifestQueues.get(this.store) ?? Promise.resolve();
+    const result = previous.catch(() => {}).then(() => this.applyManifestSerial(snapshot));
+    manifestQueues.set(this.store, result);
+    try { return await result; }
+    finally { if (manifestQueues.get(this.store) === result) manifestQueues.delete(this.store); }
+  }
+  private async applyManifestSerial(manifest:TeamSyncManifest):Promise<{applied:string[];removed:string[]}> {
     if(manifest.schemaVersion!=='multivibe-team-sync-v1'||!Number.isSafeInteger(manifest.cursor)||manifest.cursor<0) throw new Error('Team Sync manifest is invalid');
     if(!Array.isArray(manifest.providers))throw new Error('Team providers are invalid');
     if(!Array.isArray(manifest.removedProviderIds)||manifest.removedProviderIds.some(id=>!UUID.test(id)))throw new Error('Team removals are invalid');
@@ -95,11 +106,13 @@ export class MultivibeTeamSyncService {
       const account:Account={...withoutTeamCredentialContext(existing),...credential,id:existing?.id??`team-${item.id}`,provider:item.provider,email:item.displayName,accessToken:credential?.accessToken??'',refreshToken:credential?.refreshToken,expiresAt:credential?.expiresAt,baseUrl:item.deliveryMode==='cloud_proxy'?`https://api.multivibe.cloud/team/providers/${item.id}`:item.endpoint,enabled:item.enabled,location:'cloud',priority:existing?.priority??0,multivibeTeam:{providerId:item.id,models:[...item.models],deliveryMode:item.deliveryMode,revision:item.revision,readOnly:true}};
       prepared.push(account);
     }
-    // Validate and decrypt the entire manifest before making any local change.
-    // Storage I/O failures are still retryable, not an atomic database transaction.
-    for(const account of prepared){await this.store.addOrUpdate(account);applied.push(account.multivibeTeam!.providerId);}
-    for(const providerId of manifest.removedProviderIds){const account=(await this.store.listAccounts()).find(value=>value.multivibeTeam?.providerId===providerId);if(account)await this.store.deleteAccount(account.id);removed.push(providerId);}
-    await this.store.patchSettings({multivibeTeam:{...settings.multivibeTeam,enabled:true,instanceId:this.getIdentity().instanceId,instanceName:settings.multivibeTeam?.instanceName??'Multivibe instance',syncCursor:manifest.cursor,lastSuccessfulSyncAt:new Date().toISOString(),lastSuccessfulAnalyticsUploadAt:settings.multivibeTeam?.lastSuccessfulAnalyticsUploadAt}});
+    // Validate/decrypt first, then replace accounts, removals and cursor together.
+    await this.store.commitTeamManifest(prepared,manifest.removedProviderIds,current,
+      {...settings.multivibeTeam,enabled:true,instanceId:this.getIdentity().instanceId,
+       instanceName:settings.multivibeTeam?.instanceName??'Multivibe instance',syncCursor:manifest.cursor,
+       lastSuccessfulSyncAt:new Date().toISOString(),lastSuccessfulAnalyticsUploadAt:settings.multivibeTeam?.lastSuccessfulAnalyticsUploadAt});
+    applied.push(...prepared.map(account=>account.multivibeTeam!.providerId));
+    removed.push(...manifest.removedProviderIds);
     return {applied,removed};
   }
 
