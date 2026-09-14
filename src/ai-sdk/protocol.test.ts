@@ -92,7 +92,7 @@ test("JSON and streaming preserve missing usage and positive cache writes",async
  }
  const measured={...usage,inputTokens:{total:12,noCache:undefined,cacheRead:undefined,cacheWrite:5},outputTokens:{total:3,text:undefined,reasoning:undefined}};
  const result=chatResult("anthropic/test",{content:[],usage:measured,finishReason:{unified:"stop",raw:"stop"},warnings:[]});
- assert.deepEqual(result.usage,{prompt_tokens:12,completion_tokens:3,total_tokens:15,cache_creation_input_tokens:5});
+ assert.deepEqual(result.usage,{prompt_tokens:12,completion_tokens:3,total_tokens:15,prompt_tokens_details:{cache_write_tokens:5}});
 });
 
 test("Mammouth exposes documented models, provenance and custom model selection", () => {
