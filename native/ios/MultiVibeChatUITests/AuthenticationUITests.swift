@@ -33,6 +33,14 @@ final class AuthenticationUITests: XCTestCase {
         XCTAssertTrue(message.waitForExistence(timeout: 15))
         XCTAssertFalse(app.textFields["Adresse e-mail"].exists)
         XCTAssertFalse(app.buttons["guestSend"].isEnabled)
+        XCTAssertFalse(app.staticTexts["Connectez-vous pour envoyer un message."].exists)
+        let send = app.buttons["guestSend"]
+        XCTAssertLessThan(abs(message.frame.midY - send.frame.midY), 12)
+        XCTAssertGreaterThanOrEqual(send.frame.minX, message.frame.maxX)
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "guest-composer"
+        capture.lifetime = .keepAlways
+        add(capture)
         message.tap()
         message.typeText("Bonjour MultiVibe")
         app.buttons["guestSend"].tap()

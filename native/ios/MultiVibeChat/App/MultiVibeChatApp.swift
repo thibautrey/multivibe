@@ -80,18 +80,15 @@ struct ChatEntryView: View {
     }
 
     private var guestComposer: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        HStack(alignment: .top, spacing: 8) {
             TextField("Que souhaitez-vous savoir ?", text: $draft, axis: .vertical)
-                .accessibilityLabel("Message").lineLimit(1...8).padding(.horizontal, 6).padding(.top, 6)
-            HStack {
-                if manager.isRestoring { ProgressView("Restauration…").font(.caption) }
-                else { Text("Connectez-vous pour envoyer un message.").font(.caption).foregroundStyle(.secondary) }
-                Spacer(minLength: 8)
-                Button("Envoyer", systemImage: "arrow.up.circle.fill") { authenticationPresented = true }
-                    .accessibilityIdentifier("guestSend")
-                    .labelStyle(.iconOnly).font(.title).frame(minWidth: 44, minHeight: 44)
-                    .disabled(manager.isRestoring || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
+                .accessibilityLabel("Message").lineLimit(1...8)
+                .padding(.horizontal, 6).padding(.vertical, 11)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Envoyer", systemImage: "arrow.up.circle.fill") { authenticationPresented = true }
+                .accessibilityIdentifier("guestSend")
+                .labelStyle(.iconOnly).font(.title).frame(minWidth: 44, minHeight: 44)
+                .disabled(manager.isRestoring || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .padding(12).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28))
         .overlay(RoundedRectangle(cornerRadius: 28).stroke(.primary.opacity(0.08), lineWidth: 1))
