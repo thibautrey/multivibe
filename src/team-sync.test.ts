@@ -65,3 +65,35 @@ test('Team manifest preflight rejects late failures without changing accounts or
  await assert.rejects(sync.duplicateAsLocal(first.id),/cannot be copied/);
  assert.equal((await store.listAccounts()).length,1);
 });
+
+test('concurrent services cannot restore a manifest older than a queued revocation',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'team-concurrent-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const store=new AccountStore(path.join(root,'accounts.json'));await store.init();
+ const first=new MultivibeTeamSyncService(store,path.join(root,'identity.json'));await first.initialize();
+ const second=new MultivibeTeamSyncService(store,path.join(root,'identity.json'));await second.initialize();
+ const id='123e4567-e89b-42d3-a456-426614174000';
+ const active={schemaVersion:'multivibe-team-sync-v1' as const,cursor:1,removedProviderIds:[],providers:[{id,provider:'openai' as const,displayName:'Shared',endpoint:'https://api.openai.com/v1',models:[],deliveryMode:'cloud_proxy' as const,enabled:true,revision:1}]};
+ const revoked={schemaVersion:'multivibe-team-sync-v1' as const,cursor:2,providers:[],removedProviderIds:[id]};
+ const results=await Promise.allSettled([first.applyManifest(active),second.applyManifest(revoked),first.applyManifest(active)]);
+ assert.deepEqual(results.map(value=>value.status),['fulfilled','fulfilled','rejected']);
+ assert.deepEqual(await store.listAccounts(),[]);
+ const disk=JSON.parse(await fs.readFile(path.join(root,'accounts.json'),'utf8'));
+ assert.deepEqual(disk.accounts,[]);assert.equal(disk.settings.multivibeTeam.syncCursor,2);
+ // A rejection releases the shared queue.
+ await second.applyManifest({...revoked,cursor:3});
+ assert.equal((await store.getSettings()).multivibeTeam?.syncCursor,3);
+});
+
+test('a complete Team manifest changes accounts and cursor in one store generation',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'team-batch-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const store=new AccountStore(path.join(root,'accounts.json'));await store.init();
+ const sync=new MultivibeTeamSyncService(store,path.join(root,'identity.json'));await sync.initialize();
+ const before=store.getRevision();
+ const provider={id:'123e4567-e89b-42d3-a456-426614174000',provider:'openai' as const,displayName:'Shared',endpoint:'https://api.openai.com/v1',models:[],deliveryMode:'cloud_proxy' as const,enabled:true,revision:1};
+ await sync.applyManifest({schemaVersion:'multivibe-team-sync-v1',cursor:1,removedProviderIds:[],providers:[provider,{...provider,id:'123e4567-e89b-42d3-a456-426614174001'}]});
+ assert.equal(store.getRevision()-before,1);
+ const disk=JSON.parse(await fs.readFile(path.join(root,'accounts.json'),'utf8'));
+ assert.equal(disk.accounts.length,2);assert.equal(disk.settings.multivibeTeam.syncCursor,1);
+ await assert.rejects(store.commitTeamManifest([],[],0,disk.settings.multivibeTeam),/cursor changed/);
+ assert.equal((await store.listAccounts()).length,2);
+});
