@@ -311,7 +311,7 @@ test("Cloud status rotates an expired OAuth session and keeps the local API key"
   assert.equal(calls[0]?.endsWith("/oauth/token POST"), true);
 });
 
-test("Cloud status offers reconnection when project provisioning requires fresh authentication", async () => {
+test("Cloud provisioning fresh-auth requirement does not declare the session revoked", async () => {
   const stores = fakeStores({
     settings: { multivibeCloud: { accessToken: "stale-cloud-access" } },
   });
@@ -334,7 +334,7 @@ test("Cloud status offers reconnection when project provisioning requires fresh 
   });
 
   assert.deepEqual(await cloud.getStatus(), {
-    status: "disconnected",
+    status: "unavailable", reconnecting: true,
     topupUrl: "https://app.example.test/billing",
   });
   assert.deepEqual(calls, ["/client/v1/projects GET", "/client/v1/projects POST"]);
@@ -481,4 +481,104 @@ test('authenticated catalog distinguishes no connection, denied, empty, malforme
   const result = await service(stores, (async () => response({ data: [], padding: 'x'.repeat(4 * 1024 * 1024) })) as typeof fetch).getAccessibleModels();
   assert.equal(result.status, 'unavailable');
   assert.deepEqual(result.modelIds, []);
+});
+
+function renewableStores() {
+  return fakeStores({settings: {multivibeCloud: {accessToken: "old-access", refreshToken: "old-refresh", expiresAt: Date.now() - 1000, projectId}},
+    accounts: [{id: "multivibe-cloud", provider: "openai-compatible", accessToken: "mvk_existing", baseUrl: "https://api.example.test", enabled: true, location: "cloud", multivibeCloud: true, expiresAt: Date.now() + 2 * 86_400_000}]});
+}
+const renewed = {access_token: "new-access", refresh_token: "new-refresh", expires_in: 3600};
+const cloudRead = (url: string) => url.endsWith("/client/v1/credits") ? response({totalAvailableUsd: "1"}) : response({data: []});
+
+test("background renewal and concurrent status/invoices rotate once and persist clean credentials", async () => {
+  const stores = renewableStores(); let rotations = 0;
+  const cloud = service(stores, async (input) => {
+    if (String(input).endsWith("/oauth/token")) { rotations++; await new Promise(resolve => setTimeout(resolve, 10)); return response(renewed); }
+    return cloudRead(String(input));
+  });
+  await Promise.all([cloud.maintainSession(), cloud.getStatus(), cloud.getStatus(), cloud.getInvoices(), cloud.maintainSession()]);
+  assert.equal(rotations, 1);
+  assert.equal(stores.settings.multivibeCloud?.refreshToken, "new-refresh");
+  assert.equal(stores.settings.multivibeCloud?.refreshAttemptId, undefined);
+  assert.equal(stores.accounts[0]?.accessToken, "mvk_existing");
+});
+
+test("response loss retains credentials, backs off and retries the persisted attempt after restart", async () => {
+  const stores = renewableStores(); let calls = 0; let attempt: string | null = null;
+  const cloud = service(stores, async (_input, init) => {
+    calls++; attempt = new Headers(init?.headers).get("idempotency-key");
+    assert.equal(attempt, stores.settings.multivibeCloud?.refreshAttemptId);
+    throw new TypeError("network response lost");
+  });
+  await assert.rejects(cloud.maintainSession());
+  assert.equal((await cloud.getStatus()).status, "unavailable");
+  await cloud.maintainSession();
+  assert.equal(calls, 1);
+  assert.equal(stores.settings.multivibeCloud?.refreshToken, "old-refresh");
+  const restarted = service(stores, async (input, init) => {
+    if (String(input).endsWith("/oauth/token")) { assert.equal(new Headers(init?.headers).get("idempotency-key"), attempt); return response(renewed); }
+    return cloudRead(String(input));
+  });
+  await restarted.maintainSession();
+  assert.equal(stores.settings.multivibeCloud?.refreshToken, "new-refresh");
+});
+
+test("disconnect during rotation cannot restore credentials and revokes the consumed family", async () => {
+  const stores = renewableStores(); let release!: () => void; let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  let revoked = false;
+  const cloud = service(stores, async (input, init) => {
+    if (String(input).endsWith("/oauth/revoke")) { revoked = true; assert.equal(new URLSearchParams(String(init?.body)).get("token"), "old-refresh"); return response({}); }
+    entered(); await new Promise<void>(resolve => { release = resolve; }); return response(renewed);
+  });
+  const pending = cloud.maintainSession();
+  await started;
+  const disconnected = cloud.disconnect(); release();
+  await assert.rejects(pending); await disconnected;
+  assert.equal(revoked, true);
+  assert.equal(stores.settings.multivibeCloud, undefined);
+  assert.equal(stores.accounts.length, 0);
+  await cloud.maintainSession();
+  await assert.rejects(cloud.installManagedConnection(async () => { throw new Error("must not run"); }), /explicitly disconnected/);
+  assert.equal((await cloud.getStatus()).status, "disconnected");
+});
+
+test("confirmed invalid_grant requires sign-in but transient HTTP failures do not", async () => {
+  for (const [status, error, expected] of [[400, "invalid_grant", "disconnected"], [503, "unavailable", "unavailable"]] as const) {
+    const stores = renewableStores(); let calls = 0;
+    const cloud = service(stores, async () => { calls++; return response({error}, status); });
+    assert.equal((await cloud.getStatus()).status, expected);
+    await cloud.getStatus(); assert.equal(calls, 1);
+    assert.equal(stores.settings.multivibeCloud?.authenticationRequired === true, error === "invalid_grant");
+  }
+});
+
+test("concurrent resource 401s force only one rotation before retrying", async () => {
+  const stores = renewableStores(); stores.settings.multivibeCloud!.expiresAt = Date.now() + 3600_000;
+  let rotations = 0;
+  const cloud = service(stores, async (input, init) => {
+    if (String(input).endsWith("/oauth/token")) { rotations++; return response(renewed); }
+    if (new Headers(init?.headers).get("authorization") === "Bearer old-access") return response({error: {code: "invalid_token"}}, 401);
+    return cloudRead(String(input));
+  });
+  const results = await Promise.all([cloud.getStatus(), cloud.getStatus(), cloud.getInvoices()]);
+  assert.equal((results[0] as {status: string}).status, "connected");
+  assert.equal(rotations, 1);
+});
+
+test("startup renews without opening the UI and stop removes the timer", async () => {
+  const stores = renewableStores(); let rotated!: () => void;
+  const done = new Promise<void>(resolve => { rotated = resolve; });
+  const cloud = service(stores, async () => { rotated(); return response(renewed); });
+  cloud.start(); cloud.start();
+  try { await done; await cloud.maintainSession(); assert.equal(stores.settings.multivibeCloud?.refreshToken, "new-refresh"); }
+  finally { cloud.stop(); }
+});
+
+test("disconnect invalidates a pending OAuth callback across process restart", async () => {
+  const stores = fakeStores(); const cloud = service(stores, async () => { throw new Error("No network expected"); });
+  const flow = await cloud.startConnection();
+  await cloud.disconnect();
+  const restarted = service(stores, async () => { throw new Error("No exchange expected"); });
+  await assert.rejects(restarted.completeConnection(flow.flowId, "valid-code-value"), /disconnected/);
 });

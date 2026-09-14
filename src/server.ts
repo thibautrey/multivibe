@@ -230,7 +230,7 @@ const managedTeamEnrollment = new ManagedTeamEnrollmentService({
   profilePath: path.join(dataDir, "managed-team-enrollment.json"),
   statePath: path.join(dataDir, "managed-team-enrollment-state.json"),
   identity: teamSync,
-  installer: new AccountStoreManagedEnrollmentInstaller(store),
+  installer: { install: (result, profile) => multivibeCloud.installManagedConnection(() => new AccountStoreManagedEnrollmentInstaller(store).install(result, profile)) },
   appVersion,
 });
 teamMachineSharing.setUsageRecorder((trace,memberId)=>teamSync.recordTrace(trace,{type:"member",id:memberId}));
@@ -370,6 +370,7 @@ const multivibeCloud = new MultivibeCloudService(store, oauthStore, {
   privacyMode: MULTIVIBE_CLOUD_PRIVACY_MODE,
   managedTeamIdentity: teamSync,
 });
+multivibeCloud.start();
 const teamMachineTimer=setInterval(()=>{void multivibeCloud.syncMachine(teamMachineSharing).catch(()=>undefined);},2000);
 teamMachineTimer.unref();
 const teamMachineDirectoryTimer=setInterval(()=>{void multivibeCloud.syncMachineDirectory(teamMachineDirectory).catch(()=>undefined);},30000);
@@ -393,16 +394,18 @@ const HOST_CLOUD_STATUS_CACHE_MS = 60_000;
 let hostCloudStatusCache: {
   value: Awaited<ReturnType<MultivibeCloudService["getStatus"]>>;
   expiresAt: number;
+  revision: number;
 } | undefined;
 let hostCloudStatusInFlight: ReturnType<MultivibeCloudService["getStatus"]> | undefined;
 
 async function hostCloudStatus() {
-  if (hostCloudStatusCache && Date.now() < hostCloudStatusCache.expiresAt) {
+  const revision = multivibeCloud.sessionRevision;
+  if (hostCloudStatusCache?.revision === revision && Date.now() < hostCloudStatusCache.expiresAt) {
     return hostCloudStatusCache.value;
   }
   if (hostCloudStatusInFlight) return hostCloudStatusInFlight;
   hostCloudStatusInFlight = multivibeCloud.getStatus().then((value) => {
-    hostCloudStatusCache = { value, expiresAt: Date.now() + HOST_CLOUD_STATUS_CACHE_MS };
+    hostCloudStatusCache = { value, revision, expiresAt: Date.now() + HOST_CLOUD_STATUS_CACHE_MS };
     return value;
   }).finally(() => {
     hostCloudStatusInFlight = undefined;
@@ -798,6 +801,7 @@ server.listen(nodeHost ? { port: nodePort, host: nodeHost } : { port: nodePort }
 
 let shuttingDown = false;
 async function shutdown(signal: NodeJS.Signals) {
+  multivibeCloud.stop();
   if (shuttingDown) return;
   shuttingDown = true;
   smartRouting.stopHealthMonitoring();
