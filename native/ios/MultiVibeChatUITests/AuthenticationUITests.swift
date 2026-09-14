@@ -85,6 +85,25 @@ final class AuthenticationUITests: XCTestCase {
         XCTAssertFalse(app.secureTextFields["Confirmer le mot de passe"].exists)
     }
 
+    func testGoogleTapPresentsSecureAuthentication() {
+        let app = launch()
+        let consent = app.switches["J’accepte les conditions d’utilisation"]
+        app.swipeUp()
+        XCTAssertTrue(consent.waitForExistence(timeout: 5))
+        if consent.value as? String != "1" { consent.tap() }
+        let google = app.buttons["signInWithGoogle"]
+        XCTAssertTrue(google.isEnabled)
+        google.tap()
+        // Opening the first-party SSO window does not submit provider credentials.
+        let browser = app.webViews.firstMatch
+        let presented = browser.waitForExistence(timeout: 15)
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "google-after-tap"
+        capture.lifetime = .keepAlways
+        add(capture)
+        XCTAssertTrue(presented, "Google tap must present the secure web session, not silently do nothing")
+    }
+
     func testRecoveryUsesNativeSheetWithoutSubmitting() {
         let app = launch()
         app.buttons["Mot de passe oublié ?"].tap()
