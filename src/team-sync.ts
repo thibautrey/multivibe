@@ -133,7 +133,11 @@ export class MultivibeTeamSyncService {
 
   async recordTrace(trace:TraceEntry,principal:TeamPrincipal={type:'unassigned'}):Promise<void>{
     if(!this.identity||trace.traceKind!=='upstream-attempt'||trace.lifecycleState!=='completed')return;
-    if(trace.accountId==='multivibe-cloud'||trace.accountId?.startsWith('team-')&&trace.executionLocation==='cloud')return;
+    // Execution location describes the upstream, not who meters the request.
+    // Distributed Team keys still call cloud providers directly from this Host.
+    // Exclude only Cloud-managed accounts, whose usage is recorded server-side.
+    const account = trace.accountId ? this.store.getCachedAccounts().find(value => value.id === trace.accountId) : undefined;
+    if(trace.accountId==='multivibe-cloud'||account?.multivibeCloud||account?.multivibeTeam?.deliveryMode==='cloud_proxy')return;
     const start=new Date(trace.completedAt??trace.at);start.setUTCMinutes(0,0,0);const bucketStart=start.toISOString();const key=aggregateKey(this.identity.instanceId,trace,principal,bucketStart);const existing=this.aggregates.get(key);
     const next:Aggregate=existing??{bucketId:randomUUID(),bucketStart,revision:0,instanceId:this.identity.instanceId,principal,provider:trace.provider??'unknown',model:trace.resolvedModel??trace.model??'unknown',project:trace.projectId,application:trace.application,executionLocation:trace.executionLocation??'cloud',requests:0,succeeded:0,failed:0,inputTokens:0,outputTokens:0,cachedInputTokens:0,reasoningTokens:0,estimatedCostUsd:0,latencyHistogram:Array(16).fill(0),ttftHistogram:Array(16).fill(0)};
     next.revision++;next.requests++;if(trace.isError)next.failed++;else next.succeeded++;next.inputTokens+=trace.tokensInput??0;next.outputTokens+=trace.tokensOutput??0;next.cachedInputTokens+=trace.tokensInputCached??0;next.reasoningTokens+=trace.tokensReasoning??0;next.estimatedCostUsd+=trace.costUsd??0;
