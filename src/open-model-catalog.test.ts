@@ -116,6 +116,7 @@ test('a failed task feed does not prevent new models from healthy feeds appearin
   return new Response(JSON.stringify([{...model,id:partial ? 'publisher/newly-discovered' : 'publisher/previous'}]));
  }) as typeof fetch);
  assert.equal((await load()).stale,false);
+ partial=true;
  const updated=await load.refresh();
  assert.equal(updated.stale,true);
  assert.equal(updated.failedFeeds,3);
