@@ -41,6 +41,7 @@ export type HarnessContext = {
   apiKey: string;
   modelIds?: readonly string[];
   codexModels?: readonly Record<string, unknown>[];
+  modelInputModalities?: Record<string, string[]>;
   homeDirectory?: string;
 };
 
@@ -176,6 +177,7 @@ function safeModelIds(value: unknown): string[] {
 type DiscoveredModelCatalog = {
   modelIds: string[];
   codexModels: Record<string, unknown>[];
+  modelInputModalities: Record<string, string[]>;
 };
 
 async function discoverMultiVibeModelCatalog(context: HarnessContext): Promise<DiscoveredModelCatalog> {
@@ -225,7 +227,17 @@ async function discoverMultiVibeModelCatalog(context: HarnessContext): Promise<D
   if (!modelIds.length) {
     throw new HostHarnessIntegrationError("MultiVibe model catalog is empty", 409);
   }
-  return { modelIds, codexModels };
+  const modelInputModalities: Record<string, string[]> = Object.create(null);
+  for (const entry of document.data ?? []) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const model = entry as { id?: unknown; metadata?: { input_modalities?: unknown } };
+    const modalities = model.metadata?.input_modalities;
+    if (typeof model.id === "string" && exposedIds.has(model.id) && Array.isArray(modalities)) {
+      const supported = modalities.filter((value): value is string => value === "text" || value === "image");
+      if (supported.length) modelInputModalities[model.id] = [...new Set(supported)];
+    }
+  }
+  return { modelIds, codexModels, modelInputModalities };
 }
 
 function requireModelIds(context: HarnessContext): string[] {
@@ -492,7 +504,14 @@ function renderCodexToml(current: string | null, context: HarnessContext): strin
 
 function renderCodexModelCatalog(context: HarnessContext): string {
   const nativeModels = new Map((context.codexModels ?? []).map((model) => [model.slug, model]));
-  const models = requireModelIds(context).map((id, index) => nativeModels.get(id) ?? ({
+  const models = requireModelIds(context).map((id, index) => {
+    const nativeModel = nativeModels.get(id);
+    const modalities = context.modelInputModalities?.[id];
+    if (nativeModel) return {
+      ...nativeModel,
+      ...(modalities && !Array.isArray(nativeModel.input_modalities) ? { input_modalities: modalities } : {}),
+    };
+    return ({
     slug: id,
     display_name: id,
     description: "Available through MultiVibe Host.",
@@ -514,9 +533,10 @@ function renderCodexModelCatalog(context: HarnessContext): string {
     context_window: 128000,
     max_context_window: 128000,
     supports_parallel_tool_calls: true,
-    input_modalities: ["text"],
+    input_modalities: modalities ?? ["text"],
     experimental_supported_tools: [],
-  }));
+  });
+  });
   return `${JSON.stringify({ models }, null, 2)}\n`;
 }
 
