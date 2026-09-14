@@ -14,7 +14,7 @@ test('public specific licenses and gates are discovery, private/adapters are exc
 test('pagination, deduplication and new model discovery without code changes',async()=>{
  let generation=0;let calls=0;
  const load=createOpenModelCatalog((async(input)=>{calls++;return new Response(JSON.stringify([{...model,id:`publisher/model${generation}`}]),{headers:String(input).includes('cursor=next')?{}:{link:'<https://huggingface.co/api/models?cursor=next>; rel="next"'}});}) as typeof fetch);
- assert.equal((await load()).models.length,1);assert.equal(calls,7);
+ assert.equal((await load()).models.length,1);assert.equal(calls,8);
  generation++;assert.equal((await load.refresh()).models[0].id,'publisher/model1');
 });
 test('atomic cache survives restart and stale failure; no weights fetched',async()=>{
