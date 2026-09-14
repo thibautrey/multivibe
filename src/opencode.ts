@@ -59,8 +59,8 @@ async function jsonResponse<T>(response: Response, context: string): Promise<T> 
   return data as T;
 }
 
-async function postConsole<T>(path: string, body: Record<string, string>): Promise<T> {
-  const response = await fetch(`${configuredConsoleUrl()}${path}`, {
+async function postConsole<T>(path: string, body: Record<string, string>, fetchImpl: typeof fetch): Promise<T> {
+  const response = await fetchImpl(`${configuredConsoleUrl()}${path}`, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify(body),
@@ -101,14 +101,14 @@ export function openCodeUsageUrl(baseUrl?: string): string | undefined {
   return `${root}/v1/usage`;
 }
 
-export async function requestOpenCodeDeviceCode(): Promise<OpenCodeDeviceCode> {
+export async function requestOpenCodeDeviceCode(fetchImpl: typeof fetch = fetch): Promise<OpenCodeDeviceCode> {
   const device = await postConsole<{
     device_code: string;
     user_code: string;
     verification_uri_complete: string;
     expires_in: number;
     interval: number;
-  }>("/auth/device/code", { client_id: OPENCODE_OAUTH_CLIENT_ID });
+  }>("/auth/device/code", { client_id: OPENCODE_OAUTH_CLIENT_ID }, fetchImpl);
   const verificationUrl = new URL(
     device.verification_uri_complete,
     `${configuredConsoleUrl()}/`,
@@ -128,8 +128,9 @@ export async function requestOpenCodeDeviceCode(): Promise<OpenCodeDeviceCode> {
 export async function pollOpenCodeDeviceCode(
   deviceCode: string,
   intervalSeconds = 5,
+  fetchImpl: typeof fetch = fetch,
 ): Promise<OpenCodePollResult> {
-  const response = await fetch(`${configuredConsoleUrl()}/auth/device/token`, {
+  const response = await fetchImpl(`${configuredConsoleUrl()}/auth/device/token`, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify({
@@ -174,7 +175,7 @@ export async function pollOpenCodeDeviceCode(
   );
 }
 
-export async function refreshOpenCodeAccessToken(account: Account): Promise<OpenCodeToken> {
+export async function refreshOpenCodeAccessToken(account: Account, fetchImpl: typeof fetch = fetch): Promise<OpenCodeToken> {
   if (!account.refreshToken) throw new Error("OpenCode refresh token is missing");
   const server = configuredConsoleUrl();
   if (
@@ -183,7 +184,7 @@ export async function refreshOpenCodeAccessToken(account: Account): Promise<Open
   ) {
     throw new Error("untrusted OpenCode Console URL");
   }
-  const response = await fetch(`${server}/auth/device/token`, {
+  const response = await fetchImpl(`${server}/auth/device/token`, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify({
@@ -208,9 +209,10 @@ async function getConsole<T>(
   server: string,
   path: string,
   token: string,
-  orgId?: string,
+  orgId: string | undefined,
+  fetchImpl: typeof fetch,
 ): Promise<T> {
-  const response = await fetch(`${server}${path}`, {
+  const response = await fetchImpl(`${server}${path}`, {
     headers: {
       authorization: `Bearer ${token}`,
       accept: "application/json",
@@ -220,11 +222,11 @@ async function getConsole<T>(
   return jsonResponse<T>(response, `OpenCode ${path}`);
 }
 
-async function fetchOpenCodeProfile(token: string, orgId?: string): Promise<OpenCodeProfile> {
+async function fetchOpenCodeProfile(token: string, orgId: string | undefined, fetchImpl: typeof fetch): Promise<OpenCodeProfile> {
   const server = configuredConsoleUrl();
   const [user, orgs] = await Promise.all([
-    getConsole<{ id: string; email: string }>(server, "/api/user", token),
-    getConsole<Array<{ id: string; name: string }>>(server, "/api/orgs", token),
+    getConsole<{ id: string; email: string }>(server, "/api/user", token, undefined, fetchImpl),
+    getConsole<Array<{ id: string; name: string }>>(server, "/api/orgs", token, undefined, fetchImpl),
   ]);
   const org = orgId
     ? orgs.find((candidate) => candidate.id === orgId)
@@ -233,7 +235,7 @@ async function fetchOpenCodeProfile(token: string, orgId?: string): Promise<Open
   let apiRoot: string | undefined;
   let apiKey: string | undefined;
   let headers: Record<string, string> | undefined;
-  const remote = await getConsole<any>(server, "/api/config", token, org?.id);
+  const remote = await getConsole<any>(server, "/api/config", token, org?.id, fetchImpl);
   const provider = remote?.config?.provider?.opencode;
   if (typeof provider?.api === "string" && provider.api.trim()) {
     apiRoot = normalizeOpenCodeApiRoot(provider.api);
@@ -271,8 +273,9 @@ export async function accountFromOpenCodeOAuth(
   flow: OAuthFlowState,
   token: OpenCodeToken,
   existing?: Account,
+  fetchImpl: typeof fetch = fetch,
 ): Promise<Account> {
-  const profile = await fetchOpenCodeProfile(token.accessToken, existing?.opencodeOrgId);
+  const profile = await fetchOpenCodeProfile(token.accessToken, existing?.opencodeOrgId, fetchImpl);
   if (
     existing?.opencodeAccountId &&
     existing.opencodeAccountId !== profile.accountId
