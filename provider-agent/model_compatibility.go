@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -141,26 +140,18 @@ func (engines *managedInferenceEngines) compatibility(ctx context.Context, conte
 	return report
 }
 
-// Reuse current installations, including pre-diagnostic layouts. Upgrade an old
-// layout into a separately attested copy so disabled downloads never invalidate
-// an existing inference installation.
+// Compatibility reads only reuse attested installations. Download permission is
+// not consent to install or upgrade a diagnostic runtime while browsing models.
 func (engines *managedInferenceEngines) compatibilityTool(ctx context.Context, policy *capacityPolicyStateDocument, release managedEngineRelease) (string, string, error) {
 	for attempt := 0; attempt < 2; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return "", "", err
+		}
 		root := filepath.Join(engines.manager.root, "engines", release.ID+"-"+managedEnginePin(release))
 		executable, err := verifyManagedEngineInstallation(root, release)
 		if err != nil {
-			if _, statErr := os.Lstat(root); !errors.Is(statErr, os.ErrNotExist) {
-				return "", "", err
-			}
-			if err = engines.currentPolicy(policy, true); err != nil {
-				return "", "", err
-			}
-			installCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
-			executable, err = engines.install(installCtx, policy, release)
-			cancel()
-			if err != nil {
-				return "", "", err
-			}
+			release.diagnosticLayout = true
+			continue
 		}
 		tool := filepath.Join(filepath.Dir(executable), "llama-fit-params")
 		if engines.manager.goos == "windows" {

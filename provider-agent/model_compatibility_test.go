@@ -122,6 +122,15 @@ func TestCompatibilityRealRuntime(t *testing.T) {
 			return &http.Response{StatusCode: 200, ContentLength: info.Size(), Body: file, Header: http.Header{}}, nil
 		})}
 	}
+	// Opt-in fixture setup explicitly installs the estimator before the read.
+	for _, release := range engines.releases {
+		if release.ID == "llama-cpp" {
+			release.diagnosticLayout = true
+			if _, err := engines.install(context.Background(), engines.policies.snapshot(), release); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	var previous uint64
 	for _, tokens := range []uint64{2048, 8192} {
 		report := engines.compatibility(context.Background(), tokens)
@@ -203,6 +212,15 @@ func TestCompatibilityDiagnosticUpgradePreservesInferenceInstallation(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, _, err = engines.compatibilityTool(context.Background(), policy, release); err == nil || downloads != 1 {
+		t.Fatal("read-only lookup installed diagnostic runtime despite no exact consent")
+	}
+	// Installation is a separate explicit operation, never a lookup side effect.
+	diagnosticRelease := release
+	diagnosticRelease.diagnosticLayout = true
+	if _, err = engines.install(context.Background(), policy, diagnosticRelease); err != nil {
+		t.Fatal(err)
+	}
 	_, upgraded, err := engines.compatibilityTool(context.Background(), policy, release)
 	if err != nil || upgraded == tool || downloads != 2 {
 		t.Fatalf("upgrade failed: %s %v downloads=%d", upgraded, err, downloads)
@@ -219,5 +237,21 @@ func TestCompatibilityDiagnosticUpgradePreservesInferenceInstallation(t *testing
 	}
 	if _, _, err = engines.compatibilityTool(context.Background(), policy, release); err != nil || downloads != 2 {
 		t.Fatal("installed diagnostic cannot be used offline while paused", err)
+	}
+}
+
+func TestCompatibilityMissingRuntimeNeverDownloads(t *testing.T) {
+	engines, policy := testManagedEngines(t)
+	engines.downloadClient = &http.Client{Transport: managedOllamaRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("compatibility lookup attempted network installation")
+		return nil, nil
+	})}
+	for _, release := range engines.releases {
+		if _, _, err := engines.compatibilityTool(context.Background(), policy, release); err == nil {
+			t.Fatal("missing runtime reported available")
+		}
+	}
+	if entries, _ := os.ReadDir(filepath.Join(engines.manager.root, "engines")); len(entries) != 0 {
+		t.Fatal("read created runtime files")
 	}
 }
