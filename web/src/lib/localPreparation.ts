@@ -16,6 +16,7 @@ export function preparationError(error: unknown): string {
     host_permission_required:'Local execution is paused or downloads are disabled. Review Host permissions before continuing.',
     runtime_download_quote_required:'The runtime is not installed. Its download size must be included in a new approval before setup can continue.',
     import_reconciliation_required:'A previous import was interrupted. Check its status on Host before starting another import.',
+    download_budget_exceeded:'This download exceeds the Host download limit. Review Host limits or choose a smaller model.',
     insufficient_disk:'Free some space on Host, then check again.',
     resources_unknown:'Host could not check its available resources. Reconnect Host and check again.',
     compatibility_not_established:'Host cannot yet verify a suitable version of this model. No download was started.',

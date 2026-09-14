@@ -47,7 +47,7 @@ func TestLocalPreparationImportVerifiedLocalFileOnly(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if string(contents) != "FROM ./model.gguf\nPARAMETER num_ctx 2048\n" {
+				if string(contents) != "FROM ./model.gguf\nPARAMETER num_ctx 2048\nPARAMETER num_batch 512\n" {
 					t.Fatalf("unsafe Modelfile: %s", contents)
 				}
 				data, err := os.ReadFile(filepath.Join(dir, "model.gguf"))

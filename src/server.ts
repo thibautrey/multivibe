@@ -1,3 +1,7 @@
+import { LocalModelPreparation } from './local-model-preparation.js';
+import { HostLocalPreparationDriver } from './local-preparation-driver.js';
+import { createLocalPreparationResolver } from './local-preparation-preflight.js';
+import { verifyPreparedLocalChat } from './local-preparation-chat.js';
 import { loadOpenModelCatalog } from './open-model-catalog.js';
 import { takeDeviceSignIn } from "./host/device-signin.js";
 import { teamMachineTrustedKeys } from "./team-machine-trust.js";
@@ -338,6 +342,24 @@ const providerAgent = startEmbeddedProviderAgent({
   ollamaListen: PROVIDER_AGENT_OLLAMA_LISTEN,
   cudaVisibleDevices: PROVIDER_AGENT_CUDA_VISIBLE_DEVICES,
 });
+const localPreparation = providerAgent.enabled ? new LocalModelPreparation(
+  path.join(dataDir, 'local-preparation-jobs.json'),
+  new HostLocalPreparationDriver(path.join(dataDir, 'local-preparation-plans.json'), {
+    host: providerAgent,
+    resolvePlan: createLocalPreparationResolver(providerAgent),
+    verifyChat: (model, signal) => verifyPreparedLocalChat({
+      store, model, signal, runtimeOrigin: 'http://127.0.0.1:11434',
+      edgeOrigin: V1_EDGE_BASE_URL, proxyKey: configuredProxyApiKeys[0]?.key,
+      attest: async (activeSignal) => {
+        activeSignal.throwIfAborted();
+        const [policy, status] = await Promise.all([providerAgent.getCapacityPolicy(), providerAgent.getManagedOllamaStatus()]);
+        if (policy.paused || !status.runtime.running || !status.runtime.runtime_installed ||
+            status.runtime.version !== '0.33.2' ||
+            (status.runtime.execution_runtime && status.runtime.execution_runtime !== 'ollama')) throw Error('chat_route_not_ready');
+      },
+    }),
+  }),
+) : undefined;
 const hostUpdateController = MULTIVIBE_HOST_APPLICATION
   ? new HostUpdateController(
       MULTIVIBE_HOST_UPDATER_BINARY,
@@ -462,6 +484,7 @@ const adminRouter = createAdminRouter({
   usageRefreshCoordinator,
   anonymousUsageSharing,
   providerAgent,
+  localPreparation,
   hostApplication: MULTIVIBE_HOST_APPLICATION,
   hostHarnessIntegrations,
   providerWorkerEstimateClient,

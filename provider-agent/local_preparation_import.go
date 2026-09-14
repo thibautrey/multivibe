@@ -77,7 +77,7 @@ func (manager *managedOllama) importLocalPreparationArtifact(ctx context.Context
 		return "", errLocalPreparationArtifact
 	}
 	modelfile := filepath.Join(directory, "Modelfile")
-	if err = os.WriteFile(modelfile, []byte("FROM ./model.gguf\nPARAMETER num_ctx "+strconv.FormatUint(contextTokens, 10)+"\n"), 0600); err != nil {
+	if err = os.WriteFile(modelfile, []byte("FROM ./model.gguf\nPARAMETER num_ctx "+strconv.FormatUint(contextTokens, 10)+"\nPARAMETER num_batch 512\n"), 0600); err != nil {
 		return "", errLocalPreparationStorage
 	}
 	defer os.Remove(modelfile)
