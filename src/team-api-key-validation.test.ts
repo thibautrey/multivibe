@@ -97,3 +97,41 @@ test('empty inference output is not a successful validation',async()=>{
   const validator=createTeamApiKeyValidator(async()=>Response.json({choices:[]}));
   await assert.rejects(validator.testInference({provider:'openai',apiKey:API_KEY,model:'model-a'}),errorCode('inference_failed'));
 });
+
+test('Team API-key discovery reuses complete bounded Anthropic pagination', async () => {
+  const urls: string[] = [];
+  const signals: AbortSignal[] = [];
+  const validator = createTeamApiKeyValidator(async (url, init) => {
+    urls.push(String(url)); signals.push(init!.signal!);
+    assert.equal(init!.method, 'GET'); assert.equal(init!.redirect, 'error');
+    assert.equal(new Headers(init!.headers).get('x-api-key'), API_KEY);
+    return urls.length === 1
+      ? Response.json({data:[{id:'model/z'}],has_more:true,last_id:'model/z'})
+      : Response.json({data:[{id:'model/z'},{id:'model-a'}],has_more:false});
+  });
+  assert.deepEqual(await validator.listModels({provider:'anthropic',apiKey:API_KEY}), ['model-a','model/z']);
+  assert.deepEqual(urls,['https://api.anthropic.com/v1/models','https://api.anthropic.com/v1/models?after_id=model%2Fz']);
+  assert.equal(signals[0], signals[1]);
+});
+
+test('Team discovery never returns partial inventory or follows arbitrary upstream cursors', async () => {
+  for (const provider of ['anthropic','openai']) {
+    for (const last_id of ['model-a','https://evil.invalid/steal','model-'+API_KEY]) {
+      let calls=0;
+      const validator=createTeamApiKeyValidator(async()=>{calls++; return Response.json({data:[{id:'model-a'}],has_more:true,last_id});});
+      await assert.rejects(validator.listModels({provider,apiKey:API_KEY}),errorCode('invalid_response'));
+      assert.ok(calls<=2);
+    }
+  }
+  const missing=createTeamApiKeyValidator(async()=>Response.json({data:[{id:'model-a'}]}));
+  await assert.rejects(missing.listModels({provider:'anthropic',apiKey:API_KEY}),errorCode('invalid_response'));
+});
+
+test('Team discovery bounds the aggregate response across catalog pages', async () => {
+  let calls=0;
+  const validator=createTeamApiKeyValidator(async()=>{calls++;return Response.json({
+    data:[{id:`model-${calls}`}],has_more:true,last_id:`model-${calls}`,padding:'x'.repeat(1100000),
+  });});
+  await assert.rejects(validator.listModels({provider:'anthropic',apiKey:API_KEY}),errorCode('invalid_response'));
+  assert.equal(calls,2);
+});
