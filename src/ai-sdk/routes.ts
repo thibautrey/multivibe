@@ -7,6 +7,26 @@ import { sdkAccountModels, sdkModelId } from "./catalog.js";
 import { createSdkModel } from "./models.js";
 import { SdkInputError, sdkCallOptions, chatResult, chatStream } from "./protocol.js";
 
+function providerErrorMessage(error: unknown, status: number): string {
+  if (!error || typeof error !== "object") return `Provider request failed (${status})`;
+  const value = error as Record<string, unknown>;
+  const candidates: unknown[] = [value.data, value.responseBody];
+  for (const candidate of candidates) {
+    let parsed = candidate;
+    if (typeof candidate === "string") {
+      try { parsed = JSON.parse(candidate); } catch { parsed = candidate; }
+    }
+    if (typeof parsed === "string" && parsed.trim()) return parsed.trim().slice(0, 500);
+    if (parsed && typeof parsed === "object") {
+      const record = parsed as Record<string, unknown>;
+      const nested = record.error && typeof record.error === "object" ? record.error as Record<string, unknown> : undefined;
+      const message = nested?.message ?? record.message;
+      if (typeof message === "string" && message.trim()) return message.trim().slice(0, 500);
+    }
+  }
+  return `Provider request failed (${status})`;
+}
+
 export function createSdkAdapterRouter(options: {
   store: { listAccounts(): Promise<Account[]> };
   internalToken: string;
@@ -64,7 +84,7 @@ export function createSdkAdapterRouter(options: {
     } catch (error: any) {
       if (res.destroyed) return;
       const status = error instanceof SdkInputError ? 400 : Number.isInteger(error?.statusCode) && error.statusCode >= 400 && error.statusCode <= 599 ? error.statusCode : controller.signal.aborted ? 504 : 502;
-      const body = {error: {message: error instanceof SdkInputError ? error.message : `Provider request failed (${status})`, type: status === 429 ? "rate_limit_error" : "provider_error"}};
+      const body = {error: {message: error instanceof SdkInputError ? error.message : providerErrorMessage(error, status), type: status === 429 ? "rate_limit_error" : "provider_error"}};
       if (res.headersSent) res.end(`data: ${JSON.stringify(body)}\n\n`);
       else res.status(status).json(body);
     } finally {
