@@ -92,7 +92,7 @@ struct AuthenticationView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 28) {
+                VStack(spacing: 20) {
                     header
                     VStack(alignment: .leading, spacing: 18) {
                         credentialFields
@@ -136,14 +136,14 @@ struct AuthenticationView: View {
                     }
                     footer
                 }
-                .frame(maxWidth: 420).padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 28)
+                .frame(maxWidth: 420).padding(.horizontal, 24).padding(.top, 0).padding(.bottom, 28)
                 .frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
             .background(MultiVibeTheme.background)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Fermer la connexion", systemImage: "xmark") { dismiss() }
                         .labelStyle(.iconOnly)
                 }
@@ -161,8 +161,7 @@ struct AuthenticationView: View {
     private var header: some View {
         VStack(spacing: 10) {
             Image("MultiVibeMark").renderingMode(.original).resizable().scaledToFit()
-                .frame(width: 80, height: 80).accessibilityHidden(true)
-            Text("MultiVibe").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                .frame(width: 64, height: 64).accessibilityHidden(true)
             Text(challenge != nil ? "Vérifiez votre identité" : signup ? "Bienvenue chez vous" : "Ravi de vous retrouver")
                 .font(.title.bold()).multilineTextAlignment(.center).accessibilityAddTraits(.isHeader)
             Text(challenge != nil ? "Saisissez le code de votre application d’authentification." : signup ? "Créez votre compte pour commencer à discuter." : "Connectez-vous pour reprendre la conversation.")
@@ -243,7 +242,7 @@ struct AuthenticationView: View {
     }
 
     private var footer: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 4) {
             if challenge != nil {
                 Button("Recommencer la connexion") { challenge = nil; code = ""; password = ""; error = nil }
                     .disabled(busy)

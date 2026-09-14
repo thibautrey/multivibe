@@ -8,7 +8,8 @@ final class AuthenticationUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR"]
-        if dark { app.launchArguments += ["-AppleInterfaceStyle", "Dark"] }
+        // Set simulator appearance externally with simctl ui before the dark-only run.
+        // AppleInterfaceStyle launch arguments do not reliably override UIKit traits.
         app.launch()
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "Message").firstMatch.waitForExistence(timeout: 15))
         let login = app.buttons["openAuthentication"]
