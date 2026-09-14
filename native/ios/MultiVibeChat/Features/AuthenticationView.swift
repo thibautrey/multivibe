@@ -93,8 +93,11 @@ struct AuthenticationView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                 VStack(spacing: 16) {
-                    Label("MultiVibe", systemImage: "bubble.left.and.bubble.right.fill")
-                        .font(.largeTitle.bold()).foregroundStyle(MultiVibeTheme.accent).padding(.vertical)
+                    VStack(spacing: 4) {
+                        Image("MultiVibeMark").renderingMode(.original).resizable().scaledToFit()
+                            .frame(width: 96, height: 96).accessibilityHidden(true)
+                        Text("MultiVibe").font(.largeTitle.bold())
+                    }.frame(maxWidth: .infinity).padding(.vertical)
                     Text("Vos modèles, vos conversations.").foregroundStyle(.secondary)
                     Text(signup ? "Créons votre espace." : "Ravi de vous retrouver.").font(.title2.bold())
                 }
