@@ -87,7 +87,7 @@ export function createOpenModelCatalog(fetcher: typeof fetch = fetch, now = Date
         }));
         for (const [id, model] of unique) {
           const prior = cache?.models.find(row => row.id === id && row.metadataCheckedAt);
-          if (prior && !model.metadataCheckedAt) unique.set(id, {...prior, downloads:model.downloads, gated:model.gated, trendingRank:model.trendingRank});
+          if (prior && !model.metadataCheckedAt) unique.set(id, {...prior, downloads:model.downloads, license:model.license, gated:model.gated, trendingRank:model.trendingRank});
         }
         const fresh: OpenModelCatalog = {models:[...unique.values()],checkedAt:new Date(now()).toISOString(),stale:false,source,version:'2'};
         if (cachePath) { await fs.mkdir(path.dirname(cachePath), {recursive:true}); const tmp = `${cachePath}.${process.pid}.tmp`; await fs.writeFile(tmp,JSON.stringify(fresh), {mode:0o600}); await fs.rename(tmp,cachePath); }
