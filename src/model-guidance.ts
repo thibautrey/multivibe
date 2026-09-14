@@ -6,9 +6,9 @@ export const MODEL_VIEW_KEY = 'multivibe.models.view.v1';
 export type ModelView = 'guided' | 'compare' | 'expert';
 export type ModelNeed = 'writing' | 'coding' | 'documents';
 export const modelNeeds: { id: ModelNeed; label: string }[] = [
-  { id: 'writing', label: 'Discuter et rédiger' },
-  { id: 'coding', label: 'Coder' },
-  { id: 'documents', label: 'Travailler sur des documents' },
+  { id: 'writing', label: 'Chat and write' },
+  { id: 'coding', label: 'Code' },
+  { id: 'documents', label: 'Work with documents' },
 ];
 export function modelView(value: unknown): ModelView {
   return value === 'compare' || value === 'expert' ? value : 'guided';
@@ -18,12 +18,12 @@ export function modelView(value: unknown): ModelView {
 const selections: { ids: string[]; needs: ModelNeed[]; source: string; reason: Partial<Record<ModelNeed, string>> }[] = [
   { ids: ['gpt-5', 'openai/gpt-5', 'openrouter/openai/gpt-5'], needs: ['writing', 'coding', 'documents'],
     source: 'https://developers.openai.com/api/docs/models/gpt-5', reason: {
-      writing: 'Une option polyvalente pour rédiger et reformuler.', coding: 'Des capacités de programmation documentées.', documents: 'Pour analyser et résumer le texte de vos documents.',
+      writing: 'A versatile option for writing and rewording.', coding: 'Documented coding capabilities.', documents: 'Analyze and summarize text from your documents.',
     } },
   { ids: ['claude-sonnet-4-20250514', 'anthropic/claude-sonnet-4', 'openrouter/anthropic/claude-sonnet-4'], needs: ['coding'],
-    source: 'https://www.anthropic.com/news/claude-4', reason: { coding: 'Des capacités de programmation documentées.' } },
+    source: 'https://www.anthropic.com/news/claude-4', reason: { coding: 'Documented coding capabilities.' } },
   { ids: ['qwen2.5:0.5b', 'hf:qwen/qwen2.5-0.5b-instruct', 'Qwen/Qwen2.5-0.5B-Instruct'], needs: ['writing'],
-    source: 'https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct', reason: { writing: 'Une petite option pour des échanges simples ; vérifiez ses réponses.' } },
+    source: 'https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct', reason: { writing: 'A small option for simple conversations; check its answers.' } },
 ];
 export type GuidedChoice = {
   model: GuidanceEntry; route: GuidanceRoute; need: ModelNeed; access: 'usable'; reason: string;
@@ -41,10 +41,10 @@ export function relevantChoices(catalog: GuidanceEntry[], need: ModelNeed): Guid
     // Keep each route: a public reference cannot unlock a connected route.
     return model.routes.filter(route => route.ready && Boolean(route.accountId) && selection.ids.includes(route.modelId)).map(route => ({
       model, route, need, access: 'usable' as const, reason: selection.reason[need]!,
-      cost: { label: route.source === 'local' ? 'Matériel et électricité' : 'Tarif à vérifier', amount: null, unit: null },
-      data: route.source === 'local' ? 'Traitement sur la machine Host' : `Données envoyées à ${route.label}`,
-      speed: { label: 'Vitesse à vérifier', kind: 'unknown' as const, measuredAt: null },
-      dependency: route.source === 'local' ? 'Machine Host requise' : 'Internet et service distant requis',
+      cost: { label: route.source === 'local' ? 'Hardware and electricity' : 'Price needs checking', amount: null, unit: null },
+      data: route.source === 'local' ? 'Processed on the Host computer' : `Data sent to ${route.label}`,
+      speed: { label: 'Speed needs checking', kind: 'unknown' as const, measuredAt: null },
+      dependency: route.source === 'local' ? 'Host computer required' : 'Internet and remote service required',
       evidence: { source: selection.source, reviewedAt: '2026-09-14', version: GUIDANCE_VERSION },
     }));
   }).sort((a, b) => a.model.name.localeCompare(b.model.name) || a.route.label.localeCompare(b.route.label));

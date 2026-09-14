@@ -1,11 +1,12 @@
+import { OpenModelDiscovery } from './OpenModelDiscovery';
 import { useMemo, useState } from 'react';
 import type { CatalogEntry } from '../../lib/modelCatalog';
 import { modelNeeds, recommendedChoices, relevantChoices, type ModelNeed } from '../../lib/modelGuidance';
 
 const needPresentation: Record<ModelNeed, { icon: string; title: string; example: string }> = {
-  writing: { icon: '✎', title: 'Discuter et rédiger', example: 'Un mail, une idée, une reformulation' },
-  coding: { icon: '</>', title: 'Coder et dépanner', example: 'Comprendre du code, corriger un bug' },
-  documents: { icon: '▤', title: 'Résumer et analyser', example: 'Un document, des notes, un compte rendu' },
+  writing: { icon: '✎', title: 'Chat and write', example: 'Emails, ideas, better wording' },
+  coding: { icon: '</>', title: 'Code and troubleshoot', example: 'Understand code, fix a bug' },
+  documents: { icon: '▤', title: 'Summarize and analyze', example: 'Documents, notes, meeting summaries' },
 };
 
 export function ModelGuidance({ view, catalog, cloudConnected, canConfigure, onUse, onConnectCloud, connecting, connectionError, onExpert }: {
@@ -19,7 +20,7 @@ export function ModelGuidance({ view, catalog, cloudConnected, canConfigure, onU
   const displayed = view === 'guided' ? recommendedChoices(choices) : choices.filter(choice =>
     (location === 'all' || (location === 'local') === (choice.route.source === 'local')) && (cost !== 'known' || choice.cost.amount !== null));
   return <div className="models-guidance">
-    <fieldset className="models-needs"><legend>Que souhaitez-vous faire ?</legend>
+    <fieldset className="models-needs"><legend>What would you like to do?</legend>
       <div className="models-need-grid">{modelNeeds.map(item => <button className="models-need-card" aria-pressed={need === item.id} key={item.id} onClick={() => setNeed(item.id)}>
         <span className="models-need-icon" aria-hidden="true">{needPresentation[item.id].icon}</span>
         <span className="models-need-copy"><strong>{needPresentation[item.id].title}</strong><small>{needPresentation[item.id].example}</small></span>
@@ -27,35 +28,36 @@ export function ModelGuidance({ view, catalog, cloudConnected, canConfigure, onU
       </button>)}</div>
     </fieldset>
     {view === 'compare' && <div className="models-compare-filters">
-      <label>Exécution<select value={location} onChange={event => setLocation(event.target.value)}><option value="all">Partout</option><option value="local">Machine Host</option><option value="remote">Service distant</option></select></label>
-      <label>Coût<select value={cost} onChange={event => setCost(event.target.value)}><option value="all">Tous les tarifs</option><option value="known">Tarif connu</option></select></label>
-      <span className="muted">Modèles utilisables · Capacités selon le besoin choisi</span>
+      <label>Runs on<select value={location} onChange={event => setLocation(event.target.value)}><option value="all">Anywhere</option><option value="local">Host computer</option><option value="remote">Remote service</option></select></label>
+      <label>Cost<select value={cost} onChange={event => setCost(event.target.value)}><option value="all">All prices</option><option value="known">Known price</option></select></label>
+      <span className="muted">Usable models · Capabilities matched to your task</span>
     </div>}
     {connectionError && <p role="alert">{connectionError}</p>}
-    {displayed.length > 0 && <div className="models-selection-heading"><h3>{view === 'guided' ? 'Votre sélection' : 'Les modèles disponibles'}</h3><span>{displayed.length} option{displayed.length > 1 ? 's' : ''}</span></div>}
+    {displayed.length > 0 && <div className="models-selection-heading"><h3>{view === 'guided' ? 'Your selection' : 'Available models'}</h3><span>{displayed.length} option{displayed.length > 1 ? 's' : ''}</span></div>}
     <div className="models-choice-grid">{displayed.map((choice, index) => <article className={`models-choice${view === 'guided' && index === 0 ? ' models-choice-primary' : ''}`} key={`${choice.model.id}:${choice.route.accountId}`}>
-      {view === 'guided' && <span className="models-choice-badge">{index === 0 ? 'Choix proposé' : 'Alternative'}</span>}
+      {view === 'guided' && <span className="models-choice-badge">{index === 0 ? 'Suggested choice' : 'Alternative'}</span>}
       <h3>{choice.model.name}</h3><p>{choice.reason}</p>
-      <dl><div><dt>Coût</dt><dd>{choice.cost.label}</dd></div><div><dt>Données</dt><dd>{choice.data}</dd></div><div><dt>Vitesse</dt><dd>{choice.speed.label}</dd></div><div><dt>Dépendance</dt><dd>{choice.dependency}</dd></div></dl>
-      <button className="btn" onClick={() => onUse(choice.route.modelId)}>Discuter<span className="sr-only"> avec {choice.model.name}</span></button>
-      <details><summary>Pourquoi ce choix ?</summary><p>Ce modèle correspond au besoin choisi et dispose d’une route de chat. Ce n’est pas un classement de qualité.</p>
-        <p>{choice.route.source === 'local' ? 'La machine Host peut être un autre ordinateur. Ce choix n’installe rien sur votre téléphone. Les journaux et extensions ont leurs propres réglages de confidentialité.' : `Le traitement dépend de ${choice.route.label} et de ses conditions. Un modèle ouvert ne rend pas ce service indépendant.`}</p>
-        {need === 'documents' && <p>Cette sélection concerne le texte ; elle ne garantit pas la lecture de tous les fichiers ni de toute leur longueur.</p>}
-        <p>Aucune mesure de vitesse ni de coût comparable disponible. À preuves égales, ordre alphabétique, sans priorité au Cloud ou au local.</p>
-        <a href={choice.evidence.source} target="_blank" rel="noreferrer">Capacités documentées</a><p className="muted">Sélection {choice.evidence.version} · vérifiée le {choice.evidence.reviewedAt}</p>
+      <dl><div><dt>Cost</dt><dd>{choice.cost.label}</dd></div><div><dt>Data</dt><dd>{choice.data}</dd></div><div><dt>Speed</dt><dd>{choice.speed.label}</dd></div><div><dt>Dependency</dt><dd>{choice.dependency}</dd></div></dl>
+      <button className="btn" onClick={() => onUse(choice.route.modelId)}>Chat<span className="sr-only"> with {choice.model.name}</span></button>
+      <details><summary>Why this choice?</summary><p>This model supports your task and has a chat route. This is not a quality ranking.</p>
+        <p>{choice.route.source === 'local' ? 'Host may be another computer. This does not install anything on your phone. Logs and extensions have their own privacy settings.' : `Processing depends on ${choice.route.label} and its terms. Open weights do not remove dependence on this service.`}</p>
+        {need === 'documents' && <p>This selection covers text; it does not guarantee support for every file or its full length.</p>}
+        <p>Comparable speed and cost evidence is unavailable. Equal evidence uses alphabetical order, with no cloud or local preference.</p>
+        <a href={choice.evidence.source} target="_blank" rel="noreferrer">Documented capabilities</a><p className="muted">Selection {choice.evidence.version} · reviewed {choice.evidence.reviewedAt}</p>
       </details>
     </article>)}</div>
     {!displayed.length && <section className="models-guidance-empty" aria-labelledby="models-empty-title">
       <div className="models-empty-symbol" aria-hidden="true">{choices.length ? '⌕' : '◇'}</div>
-      <div className="models-empty-copy"><h3 id="models-empty-title">{choices.length ? 'Aucun modèle avec ces filtres' : 'Pas encore de sélection pour cet usage'}</h3>
-        <p>{choices.length ? 'Élargissez les filtres pour retrouver les modèles disponibles.' : 'Aucun modèle disponible ne correspond à notre sélection vérifiée.'}</p>
+      <div className="models-empty-copy"><h3 id="models-empty-title">{choices.length ? 'No models match these filters' : 'No ready-to-chat selection yet'}</h3>
+        <p>{choices.length ? 'Broaden your filters to see available models.' : 'No connected model matches our reviewed selection. Explore public models below.'}</p>
         <div className="models-empty-actions">{choices.length
-          ? <button className="btn" onClick={() => { setLocation('all'); setCost('all'); }}>Réinitialiser les filtres</button>
-          : <><button className="btn" onClick={onExpert}>Explorer mes modèles <span aria-hidden="true">→</span></button>
-            {!cloudConnected && canConfigure && <button className="btn ghost" disabled={connecting} onClick={() => void onConnectCloud()}>{connecting ? 'Connexion…' : 'Connecter le Cloud'}</button>}</>}
+          ? <button className="btn" onClick={() => { setLocation('all'); setCost('all'); }}>Reset filters</button>
+          : <><button className="btn" onClick={onExpert}>Explore my models <span aria-hidden="true">→</span></button>
+            {!cloudConnected && canConfigure && <button className="btn ghost" disabled={connecting} onClick={() => void onConnectCloud()}>{connecting ? 'Connecting…' : 'Connect Cloud'}</button>}</>}
         </div>
       </div>
     </section>}
-    <details className="models-local-help"><summary>Et sur mon ordinateur ?</summary><p>La préparation automatique avec accord et essai n’est pas encore disponible ici. Aucun téléchargement ne sera lancé. Les installations existantes restent inchangées.</p><p>Sur téléphone, le modèle s’exécute sur Host, pas sur le téléphone.</p></details>
+    <OpenModelDiscovery compact={view === 'guided'} />
+    <details className="models-local-help"><summary>What about my computer?</summary><p>Automatic setup with consent and a test is not available here yet. No download will start. Existing installations stay unchanged.</p><p>On mobile, the model runs on Host, not on your phone.</p></details>
   </div>;
 }
