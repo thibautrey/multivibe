@@ -103,3 +103,10 @@ test('catalog search combines terms, sorts deterministically, and handles no mat
   assert.deepEqual(filterCatalog(catalog, { ...filters, query: '', sort: 'name-desc' }).map(model => model.name), ['Beta', 'Alpha']);
   assert.deepEqual(filterCatalog(catalog, { ...filters, query: 'missing' }), []);
 });
+
+ test('Cloud account identity is recognized without relying on its reserved id', () => {
+  const [model] = aggregateModels([{ id: 'cloud-model', metadata: { account_ids: ['cloud-connection'] } }],
+    [{ id: 'cloud-connection', enabled: true, multivibeCloud: true }], [], []);
+  assert.equal(model.routes[0].source, 'cloud');
+  assert.equal(model.routes[0].ready, true);
+});

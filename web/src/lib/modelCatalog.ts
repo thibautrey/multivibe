@@ -114,7 +114,7 @@ export function aggregateModels(models: ExposedModel[], accounts: Account[], clo
       : candidates.includes(account.provider ?? 'openai') && (account.provider !== 'ai-sdk' || account.sdkProvider === model.metadata?.sdk_provider)
         && (account.provider !== 'openai-compatible' || account.localRuntime?.confirmedModelIds.includes(model.id)));
     for (const account of matching) {
-      const source = account.id === 'multivibe-cloud' ? 'cloud' : account.localRuntime || account.location === 'local' ? 'local' : 'provider';
+      const source = (account.multivibeCloud || account.id === 'multivibe-cloud') ? 'cloud' : account.localRuntime || account.location === 'local' ? 'local' : 'provider';
       add(model.id, model.id, { source, label: source === 'cloud' ? 'MultiVibe Cloud' : account.localRuntime?.adapter ?? account.sdkProvider ?? account.provider ?? 'OpenAI',
         modelId: model.id, ready: healthy(account, model.id), accountId: account.id, provider: account.provider ?? 'openai', sdkProvider: account.sdkProvider },
         authorHints.find(hint => knownOwner(hint)));
