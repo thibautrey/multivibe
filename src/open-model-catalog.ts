@@ -11,9 +11,9 @@ const positive = (v: unknown): number | null => typeof v === 'number' && Number.
 export function parseOpenModels(value: unknown): OpenModel[] {
   if (!Array.isArray(value)) throw new Error('Invalid public catalog');
   return value.flatMap(item => {
-    if (!item || typeof item.id !== 'string' || !idPattern.test(item.id) || item.private !== false || item.pipeline_tag !== 'text-generation') return [];
+    if (!item || typeof item.id !== 'string' || !idPattern.test(item.id) || item.private !== false || !['text-generation','text2text-generation','translation','summarization'].includes(item.pipeline_tag)) return [];
     const card = item.cardData ?? {};
-    const tags = [...strings(item.tags), ...strings(card.task_categories), ...strings(card.tags)];
+    const tags = [...strings(item.pipeline_tag), ...strings(item.tags), ...strings(card.task_categories), ...strings(card.tags)];
     for (const entry of Array.isArray(card['model-index']) ? card['model-index'] : []) {
       for (const result of Array.isArray(entry?.results) ? entry.results : []) tags.push(...strings(result?.task?.type));
     }
@@ -44,7 +44,7 @@ export function createOpenModelCatalog(fetcher: typeof fetch = fetch, now = Date
     if (!hydration) hydration = (async () => {
       if (cachePath) try {
         const saved = JSON.parse(await fs.readFile(cachePath, 'utf8'));
-        if (saved.version === '2' && Array.isArray(saved.models) && Number.isFinite(Date.parse(saved.checkedAt)) && saved.models.every((m: OpenModel) => m && typeof m.id === 'string' && idPattern.test(m.id) && m.url === `${source}/${m.id}` && Array.isArray(m.needs) && Array.isArray(m.files) && Array.isArray(m.formats) && Array.isArray(m.languages))) cache = saved;
+        if (['2','3'].includes(saved.version) && Array.isArray(saved.models) && Number.isFinite(Date.parse(saved.checkedAt)) && saved.models.every((m: OpenModel) => m && typeof m.id === 'string' && idPattern.test(m.id) && m.url === `${source}/${m.id}` && Array.isArray(m.needs) && Array.isArray(m.files) && Array.isArray(m.formats) && Array.isArray(m.languages))) cache = saved;
       } catch { /* First run or invalid cache. */ }
     })();
     await hydration;
@@ -54,8 +54,8 @@ export function createOpenModelCatalog(fetcher: typeof fetch = fetch, now = Date
     pending = (async () => {
       try {
         await hydrate();
-        const lists = await Promise.all(['trendingScore','downloads','createdAt'].map(async sort => {
-          let url: string | undefined = `${source}/api/models?pipeline_tag=text-generation&sort=${sort}&direction=-1&limit=100&full=true&config=true`;
+        const lists = await Promise.all(['trendingScore','downloads','createdAt'].flatMap(sort => ['pipeline_tag=text-generation', 'pipeline_tag=translation', 'pipeline_tag=summarization', 'pipeline_tag=text-generation&filter=translation', 'pipeline_tag=text-generation&filter=summarization', 'pipeline_tag=text-generation&filter=code'].map(filter => ({sort, filter}))).map(async ({sort, filter}) => {
+          let url: string | undefined = `${source}/api/models?${filter}&sort=${sort}&direction=-1&limit=100&full=true&config=true`;
           const rows: OpenModel[] = [];
           for (let page=0; page<2 && url; page++) {
             const response: Response = await fetcher(url, {signal: AbortSignal.timeout(12000), redirect:'error'});
@@ -106,7 +106,7 @@ export function createOpenModelCatalog(fetcher: typeof fetch = fetch, now = Date
           }));
           for (const [id, evidence] of usage) { const model = unique.get(id); if (model) model.communityUsage = evidence; }
         } catch { /* Discovery stays usable when community data is unavailable. */ }
-        const fresh: OpenModelCatalog = {models:[...unique.values()],checkedAt:new Date(now()).toISOString(),stale:false,source,version:'2',communityStatus};
+        const fresh: OpenModelCatalog = {models:[...unique.values()],checkedAt:new Date(now()).toISOString(),stale:false,source,version:'3',communityStatus};
         if (cachePath) { await fs.mkdir(path.dirname(cachePath), {recursive:true}); const tmp = `${cachePath}.${process.pid}.tmp`; await fs.writeFile(tmp,JSON.stringify(fresh), {mode:0o600}); await fs.rename(tmp,cachePath); }
         cache = fresh; return fresh;
       } catch { if (cache) { cache = {...cache,stale:true}; return cache; } throw new Error('Public catalog unavailable'); }
@@ -116,7 +116,7 @@ export function createOpenModelCatalog(fetcher: typeof fetch = fetch, now = Date
   }
   async function load(): Promise<OpenModelCatalog> {
     await hydrate();
-    if (cache) { if (now()-Date.parse(cache.checkedAt)>=CATALOG_TTL) { void refresh().catch(()=>{}); return {...cache,stale:true}; } return cache; }
+    if (cache) { if (cache.version !== '3' || now()-Date.parse(cache.checkedAt)>=CATALOG_TTL) { void refresh().catch(()=>{}); return {...cache,stale:true}; } return cache; }
     return refresh();
   }
   return Object.assign(load,{refresh,start() { void load().catch(()=>{}); const timer=setInterval(()=>{void refresh().catch(()=>{});},CATALOG_TTL); timer.unref(); return ()=>clearInterval(timer); }});
