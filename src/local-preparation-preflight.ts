@@ -25,9 +25,20 @@ export function createLocalPreparationResolver(host: ProviderAgentControl, fetch
     if (resources.policy_revision !== policy.revision) throw Error('new_preflight_required');
     if (!capability.supported || !['metal','cuda'].includes(capability.accelerator ?? '') || status.runtime.version !== '0.33.2' ||
       (status.runtime.execution_runtime && status.runtime.execution_runtime !== 'ollama')) throw Error('compatibility_not_established');
-    // Runtime-root extraction space is not yet exposed by Host. Do not approve
-    // an absent runtime using free space from a potentially different volume.
-    if (!status.runtime.runtime_installed) throw Error('runtime_download_quote_required');
+    let runtimeDownload: ResolvedPreparationPlan['quote']['runtimeDownload'];
+    if (!status.runtime.runtime_installed) {
+      if (!host.getLocalPreparationRuntimeQuote) throw Error('runtime_download_quote_required');
+      runtimeDownload = await host.getLocalPreparationRuntimeQuote();
+      // These archive formats have a pre-extraction aggregate size bound.
+      if (!['darwin-arm64','windows-amd64'].includes(runtimeDownload.platform) ||
+        runtimeDownload.version !== status.runtime.version || !/^[a-f0-9]{64}$/.test(runtimeDownload.sha256) ||
+        !Number.isSafeInteger(runtimeDownload.bytes) || runtimeDownload.bytes < 1 || runtimeDownload.bytes > 4*1024**3) throw Error('runtime_download_quote_required');
+      if (!Number.isSafeInteger(resources.free_runtime_storage_bytes) || Number(resources.free_runtime_storage_bytes) < 0) throw Error('resources_unknown');
+    }
+    const runtimeDiskBytes = runtimeDownload ? runtimeDownload.bytes + 4*1024**3 : 0;
+    // Requiring the whole reservation on both volumes is conservative even when
+    // model storage and runtime storage share a filesystem.
+    const availableDiskBytes = runtimeDownload ? Math.min(resources.free_storage_bytes!, resources.free_runtime_storage_bytes!) : resources.free_storage_bytes!;
     const measured = [resources.free_storage_bytes, resources.occupied_storage_bytes, resources.free_host_memory_bytes, resources.free_accelerator_memory_bytes, capability.accelerator_memory_bytes];
     if (!manifest.device_key_id || resources.storage_error || measured.some(n => !Number.isSafeInteger(n) || Number(n)<0)) throw Error('resources_unknown');
     if (!Number.isFinite(Date.parse(resources.observed_at)) || Math.abs(Date.now()-Date.parse(resources.observed_at)) > 60000) throw Error('resources_unknown');
@@ -53,14 +64,14 @@ export function createLocalPreparationResolver(host: ProviderAgentControl, fetch
       const file = files[0]; const contextTokens = 2048;
       const memory = estimatePreparationMemory(config,architecture,file.bytes!,contextTokens);
       if (memory === null || memory > memoryLimit) continue;
-      const requiredDiskBytes = file.bytes!*2; // source + Ollama blob, no hardlink assumption
-      if (!Number.isSafeInteger(requiredDiskBytes) || requiredDiskBytes > resources.free_storage_bytes!-policy.policy.reserve_free_disk_bytes ||
+      const requiredDiskBytes = file.bytes!*2 + runtimeDiskBytes; // source + Ollama blob, no hardlink assumption
+      if (!Number.isSafeInteger(requiredDiskBytes) || requiredDiskBytes > availableDiskBytes-policy.policy.reserve_free_disk_bytes ||
           requiredDiskBytes+resources.occupied_storage_bytes! > policy.policy.max_disk_bytes) throw Error('insufficient_disk');
-      if (file.bytes! > policy.policy.max_download_bytes_per_day) throw Error('download_budget_exceeded');
+      if (file.bytes! + (runtimeDownload?.bytes ?? 0) > policy.policy.max_download_bytes_per_day) throw Error('download_budget_exceeded');
       const plan: ResolvedPreparationPlan = {artifact:{model_id:variant.id,revision:variant.revision,filename:file.name,bytes:file.bytes!,sha256:file.sha256!}, contextTokens, policy,
         memoryEvidence: { estimator: PREPARATION_MEMORY_VERSION, configDigest: createHash('sha256').update(JSON.stringify(config)).digest('hex'), requiredBytes: memory },
         quote:{hostId:manifest.device_key_id,hostName:capability.hardware_model || 'This Host',modelId,variant:file.name,runtime:'ollama',runtimeVersion:status.runtime.version,policyRevision:policy.revision,
-          artifactDigest:`sha256:${file.sha256}`,downloadBytes:file.bytes!,requiredDiskBytes,availableDiskBytes:resources.free_storage_bytes!,reserveDiskBytes:policy.policy.reserve_free_disk_bytes,
+          artifactDigest:`sha256:${file.sha256}`,runtimeDownload,downloadBytes:file.bytes! + (runtimeDownload?.bytes ?? 0),requiredDiskBytes,availableDiskBytes,reserveDiskBytes:policy.policy.reserve_free_disk_bytes,
           compatibility:'estimated-fit',configurationKey:''}};
       plan.quote.configurationKey = HostLocalPreparationDriver.configurationKey(plan);
       return plan;

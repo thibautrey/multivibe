@@ -139,6 +139,10 @@ export class HostLocalPreparationDriver implements LocalPreparationDriver {
       capability.accelerator_memory_bytes, resources.free_storage_bytes, resources.occupied_storage_bytes];
     if (resources.storage_error || values.some(value => !Number.isSafeInteger(value) || Number(value) < 0) ||
       !Number.isFinite(Date.parse(resources.observed_at)) || Math.abs(Date.now() - Date.parse(resources.observed_at)) > 60000) throw Error('resources_unknown');
+    if (plan.quote.runtimeDownload) {
+      if (!Number.isSafeInteger(resources.free_runtime_storage_bytes) || Number(resources.free_runtime_storage_bytes) < 0) throw Error('resources_unknown');
+      if (plan.quote.requiredDiskBytes > resources.free_runtime_storage_bytes! - plan.policy.policy.reserve_free_disk_bytes) throw Error('insufficient_disk');
+    }
     const limit = Math.min(resources.free_host_memory_bytes!, resources.free_accelerator_memory_bytes!,
       capability.accelerator_memory_bytes! * plan.policy.policy.gpu_vram_percent / 100);
     if (plan.memoryEvidence.requiredBytes > limit) throw Error('insufficient_memory');
