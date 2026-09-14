@@ -75,3 +75,40 @@ test('cancel during pending transport discards a late successful response', asyn
   await assert.rejects(pending, { message: 'Team device authorization failed' });
   assert.equal(requests, 2);
 });
+
+test('OpenCode Team session reuses Core profile discovery through the isolated transport',async(t)=>{
+ const now=Date.now();t.mock.method(Date,'now',()=>now);
+ const paths:string[]=[];
+ const session=await startTeamDeviceAuth('opencode',async(input,init)=>{
+  assert.equal(init?.redirect,'error');assert.ok(init?.signal);
+  const path=new URL(String(input)).pathname;paths.push(path);
+  if(path.endsWith('/auth/device/code'))return Response.json({device_code:'private-device-code',user_code:'ABCD',verification_uri_complete:'/device?user_code=ABCD',expires_in:900,interval:5});
+  if(path.endsWith('/auth/device/token'))return Response.json({access_token:'private-access',refresh_token:'private-refresh',expires_in:3600});
+  if(path.endsWith('/api/user'))return Response.json({id:'user-one',email:'fixture@example.test'});
+  if(path.endsWith('/api/orgs'))return Response.json([{id:'org-one',name:'Team'}]);
+  if(path.endsWith('/api/config'))return Response.json({config:{provider:{opencode:{api:'https://opencode.ai/inference/openai/v1',options:{apiKey:'{env:OPENCODE_CONSOLE_TOKEN}'}}}}});
+  throw Error('Unexpected transport request');
+ });
+ assert.equal(session.challenge.provider,'opencode');
+ assert.equal(JSON.stringify(session).includes('private-device-code'),false);
+ assert.deepEqual(await session.poll(),{status:'pending',intervalSeconds:5});
+ t.mock.method(Date,'now',()=>now+6000);
+ const result=await session.poll();assert.equal(result.status,'success');
+ if(result.status!=='success')throw Error('Expected authenticated account');
+ assert.equal(result.account.provider,'opencode');assert.equal(result.account.opencodeOrgId,'org-one');
+ assert.equal(result.account.refreshToken,'private-refresh');assert.equal(paths.length,5);
+ await assert.rejects(session.poll(),/no longer active/);assert.equal(paths.length,5);
+});
+
+test('OpenCode Team session cancels and redacts a failed profile lookup',async(t)=>{
+ const now=Date.now();t.mock.method(Date,'now',()=>now);
+ const session=await startTeamDeviceAuth('opencode',async(input)=>{
+  const path=new URL(String(input)).pathname;
+  if(path.endsWith('/auth/device/code'))return Response.json({device_code:'private',user_code:'CODE',verification_uri_complete:'/device',expires_in:900,interval:5});
+  if(path.endsWith('/auth/device/token'))return Response.json({access_token:'private-access'});
+  throw Error('Private account diagnostic');
+ });
+ t.mock.method(Date,'now',()=>now+6000);
+ await assert.rejects(session.poll(),{message:'Team device authorization failed'});
+ await assert.rejects(session.poll(),/no longer active/);
+});
