@@ -432,7 +432,7 @@ version=$("$DESTINATION_APPLICATION/Contents/MacOS/multivibe-host" version)
 health_attempt=0
 health_ready=false
 while [ "$health_attempt" -lt 60 ]; do
-  if "$DESTINATION_APPLICATION/Contents/Frameworks/node" --eval "fetch('http://127.0.0.1:'+(process.env.MULTIVIBE_HOST_PORT||'1455')+'/health').then(async response=>{const body=await response.json();if(!response.ok||body.version!==process.argv[1])process.exit(1)}).catch(()=>process.exit(1))" "$version" >/dev/null 2>&1; then
+  if "$DESTINATION_APPLICATION/Contents/Frameworks/node" --eval "fetch('http://127.0.0.1:'+(process.env.MULTIVIBE_HOST_PORT||'1455')+'/health',{signal:AbortSignal.timeout(5000)}).then(async response=>{const body=await response.json();if(!response.ok||body.version!==process.argv[1])process.exit(1)}).catch(()=>process.exit(1))" "$version" >/dev/null 2>&1; then
     health_ready=true
     break
   fi

@@ -138,3 +138,39 @@ test("scheduler cadence supports bounded retry and Linux installer writes", asyn
   assert.match(macos, /<key>StartInterval<\/key>\s*<integer>60<\/integer>/u);
   assert.match(windows, /-RepetitionInterval \(New-TimeSpan -Minutes 1\)/u);
 });
+
+test("native installer health probes reject stalled responses and wrong versions", async (t) => {
+  const { createServer } = await import("node:http");
+  const { spawn } = await import("node:child_process");
+  const scripts = await Promise.all(["linux/install.sh", "macos/install.sh", "windows/install.ps1"].map(async (name) => {
+    const source = await read(`packaging/${name}`);
+    const probe = source.match(/"(fetch\('http:\/\/127\.0\.0\.1:'.*?)"/u)?.[1];
+    assert.ok(probe, `${name}: missing health probe`);
+    return probe;
+  }));
+  // Execute the exact expression embedded by all three installers, not a copy.
+  assert.equal(new Set(scripts).size, 1);
+  let mode = "healthy";
+  const server = createServer((request, response) => {
+    if (mode === "stalled") return;
+    if (mode === "stalled-body") { response.writeHead(200, {"content-type": "application/json"}); response.write('{'); return; }
+    response.writeHead(mode === "error" ? 500 : 200, {"content-type": "application/json"});
+    response.end(JSON.stringify({version: mode === "wrong-version" ? "1.0.0" : "2.0.0"}));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  for (const scenario of ["healthy", "wrong-version", "error", "stalled", "stalled-body"]) {
+    await t.test(scenario, async () => {
+      mode = scenario;
+      const result = await new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, ["--eval", scripts[0], "2.0.0"], {
+          env: {...process.env, MULTIVIBE_HOST_PORT: String(server.address().port)}, stdio: "ignore",
+        });
+        const watchdog = setTimeout(() => { child.kill(); reject(new Error("health probe exceeded its deadline")); }, 9000);
+        child.once("error", (error) => { clearTimeout(watchdog); reject(error); });
+        child.once("exit", (code) => { clearTimeout(watchdog); resolve(code); });
+      });
+      assert.equal(result, scenario === "healthy" ? 0 : 1);
+    });
+  }
+});

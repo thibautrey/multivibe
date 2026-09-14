@@ -321,7 +321,7 @@ function Invoke-HostInit([string]$Root) {
 
 function Test-HostHealth([string]$Root, [string]$Version) {
     $node = Join-Path $Root "bin\node.exe"
-    $script = "fetch('http://127.0.0.1:'+(process.env.MULTIVIBE_HOST_PORT||'1455')+'/health').then(async response=>{const body=await response.json();if(!response.ok||body.version!==process.argv[1])process.exit(1)}).catch(()=>process.exit(1))"
+    $script = "fetch('http://127.0.0.1:'+(process.env.MULTIVIBE_HOST_PORT||'1455')+'/health',{signal:AbortSignal.timeout(5000)}).then(async response=>{const body=await response.json();if(!response.ok||body.version!==process.argv[1])process.exit(1)}).catch(()=>process.exit(1))"
     & $node --eval $script $Version *> $null
     return $LASTEXITCODE -eq 0
 }
