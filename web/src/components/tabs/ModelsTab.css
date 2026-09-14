@@ -164,3 +164,7 @@
   .models-empty-actions { flex-direction:column; align-items:stretch; }
   .models-choice dl { grid-template-columns:1fr; }
 }
+
+.models-level-choice { display:flex; flex-direction:column; gap:8px; }
+.models-level-label { font-size:12px; font-weight:600; color:var(--muted-strong); }
+@media (max-width:600px) { .models-level-choice { width:100%; } }
