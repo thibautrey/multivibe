@@ -1668,6 +1668,10 @@ func (manager *managedOllama) pullModelResult(ctx context.Context, policyState *
 }
 
 func (manager *managedOllama) pullModelResultPinned(ctx context.Context, policyState *capacityPolicyStateDocument, catalog providerModelCatalog, planned plannedModelDownload) (managedOllamaModelRecord, bool, error) {
+	return manager.pullModelResultPinnedProgress(ctx, policyState, catalog, planned, nil)
+}
+
+func (manager *managedOllama) pullModelResultPinnedProgress(ctx context.Context, policyState *capacityPolicyStateDocument, catalog providerModelCatalog, planned plannedModelDownload, progress managedModelDownloadProgress) (managedOllamaModelRecord, bool, error) {
 	if validateProviderModelCatalog(&catalog) != nil {
 		return managedOllamaModelRecord{}, false, errors.New("managed Ollama model catalog is invalid")
 	}
@@ -1722,7 +1726,11 @@ func (manager *managedOllama) pullModelResultPinned(ctx context.Context, policyS
 	if err := manager.requireReadyRuntime(pullContext); err != nil {
 		return managedOllamaModelRecord{}, false, err
 	}
-	if _, err := manager.commands.Run(
+	if progress != nil {
+		if err := manager.streamModelPull(pullContext, entry.OllamaModel, planned.Bytes, progress); err != nil {
+			return managedOllamaModelRecord{}, false, err
+		}
+	} else if _, err := manager.commands.Run(
 		pullContext, binaryPath, []string{"pull", entry.OllamaModel}, manager.commandEnvironment(policy.modelStoragePath), manager.root, managedOllamaCommandOutputMaxBytes,
 	); err != nil {
 		return managedOllamaModelRecord{}, false, errors.New("managed Ollama model pull failed")
