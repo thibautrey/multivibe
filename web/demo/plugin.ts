@@ -1,4 +1,8 @@
-import { loadOpenModelCatalog } from '../../src/open-model-catalog';
+import { createOpenModelCatalog } from '../../src/open-model-catalog';
+import { rankOpenModels, catalogSorts, type CatalogNeed, type CatalogSort } from '../../src/open-model-ranking';
+import path from 'node:path';
+import os from 'node:os';
+const loadOpenModelCatalog = createOpenModelCatalog(fetch, Date.now, path.join(os.tmpdir(), 'multivibe-demo-open-catalog-v2.json'));
 import type { Plugin } from "vite";
 import { createDemoApi } from "./api";
 
@@ -8,11 +12,20 @@ export function demoApiPlugin(): Plugin {
     name: "multivibe-demo-api",
     apply: "serve",
     configureServer(server) {
+      const stopCatalog = loadOpenModelCatalog.start();
+      server.httpServer?.once("close", stopCatalog);
       const role = process.env.MULTIVIBE_DEMO_WORKSPACE ?? "personal";
       if (!["personal", "owner", "admin", "member", "billing"].includes(role)) throw new Error("Invalid demo workspace");
       const respond = createDemoApi(Date.now(), role as "personal" | "owner" | "admin" | "member" | "billing", process.env.MULTIVIBE_DEMO_HOST === "1");
       server.middlewares.use((req, res, next) => {
         const path = new URL(req.url ?? "/", "http://demo.invalid").pathname;
+        if (path === '/admin/model-recommendations' && req.method === 'GET') {
+          const params = new URL(req.url!, 'http://demo.invalid').searchParams;
+          const need = params.get('need') ?? 'writing'; const sort = params.get('sort') ?? 'recommended';
+          if (!['writing','coding','translation','documents'].includes(need) || !catalogSorts.includes(sort as CatalogSort)) { res.statusCode=400; res.end('{}'); return; }
+          void loadOpenModelCatalog().then(catalog => { res.setHeader('content-type','application/json'); res.end(JSON.stringify({catalog,host:null,recommendations:rankOpenModels(catalog,need as CatalogNeed,sort as CatalogSort)})); }).catch(()=>{res.statusCode=503;res.end('{}');});
+          return;
+        }
         if (path === '/admin/open-model-catalog' && req.method === 'GET') {
           void loadOpenModelCatalog().then(body => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(body)); }).catch(() => { res.statusCode = 503; res.end(JSON.stringify({ error: 'Public catalog unavailable' })); });
           return;
