@@ -36,7 +36,7 @@ struct ChatEntryView: View {
                 NavigationStack {
                     ChatWelcomeView(text: $draft)
                         .background(MultiVibeTheme.background)
-                        .navigationTitle("MultiVibe")
+                        .navigationTitle("")
                         .navigationBarTitleDisplayMode(.inline)
                         .toolbar {
                             ToolbarItem(placement: .topBarLeading) {
