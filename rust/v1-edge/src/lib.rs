@@ -2006,7 +2006,17 @@ fn responses_to_chat_completions(body: &Value, client_stream: bool) -> Value {
                             })
                             .or_else(|| value_string(item.get("content")).map(Value::String))
                             .unwrap_or_else(|| Value::String(String::new()));
-                        messages.push(json!({"role": role, "content": content}));
+                        let mut message = json!({"role": role, "content": content});
+                        if role == "assistant" {
+                            // Commentary and calls can be separate Responses items from
+                            // the same generation. Both need its reasoning continuation.
+                            if let Some(reasoning) = pending_reasoning.as_ref() {
+                                message["reasoning_content"] = json!(reasoning);
+                            }
+                        } else {
+                            pending_reasoning = None;
+                        }
+                        messages.push(message);
                     }
                 }
             }
@@ -6467,8 +6477,8 @@ impl SseStreamTransformer {
             {
                 if !self.chat_response.content_started {
                     self.chat_response.content_started = true;
-                    output.push_str(&sse_frame("response.output_item.added", &json!({"type": "response.output_item.added", "output_index": 0, "item": {"id": self.chat_response.output_item_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})));
-                    output.push_str(&sse_frame("response.content_part.added", &json!({"type": "response.content_part.added", "item_id": self.chat_response.output_item_id, "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": ""}})));
+                    output.push_str(&sse_frame("response.output_item.added", &json!({"type": "response.output_item.added", "output_index": usize::from(!self.chat_response.reasoning.is_empty()), "item": {"id": self.chat_response.output_item_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})));
+                    output.push_str(&sse_frame("response.content_part.added", &json!({"type": "response.content_part.added", "item_id": self.chat_response.output_item_id, "output_index": usize::from(!self.chat_response.reasoning.is_empty()), "content_index": 0, "part": {"type": "output_text", "text": ""}})));
                 }
                 self.chat_response.content.push_str(&content);
                 output.push_str(&sse_frame("response.output_text.delta", &json!({"type": "response.output_text.delta", "item_id": self.chat_response.output_item_id, "output_index": usize::from(!self.chat_response.reasoning.is_empty()), "content_index": 0, "delta": content})));
@@ -12497,6 +12507,21 @@ mod tests {
         assert_eq!(assistant["tool_calls"].as_array().unwrap().len(), 2);
         assert_eq!(continued["messages"][1]["tool_call_id"], "call-1");
         assert_eq!(continued["messages"][2]["tool_call_id"], "call-2");
+    }
+
+    #[test]
+    fn reasoning_is_preserved_on_commentary_and_calls() {
+        let result = responses_to_chat_completions(&json!({"input": [
+            {"type":"reasoning", "encrypted_content":encode_reasoning_content("think")},
+            {"type":"message", "role":"assistant", "content":"Checking now"},
+            {"type":"function_call", "call_id":"one", "name":"check", "arguments":"{}"},
+            {"type":"function_call_output", "call_id":"one", "output":"ok"},
+            {"type":"message", "role":"user", "content":"Next"},
+            {"type":"message", "role":"assistant", "content":"Unrelated"}
+        ]}), false);
+        assert_eq!(result["messages"][0]["reasoning_content"], "think");
+        assert_eq!(result["messages"][1]["reasoning_content"], "think");
+        assert!(result["messages"][4].get("reasoning_content").is_none());
     }
 
     #[test]
