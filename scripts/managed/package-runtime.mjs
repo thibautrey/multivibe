@@ -26,7 +26,7 @@ while(queue.length) {
       const match=input.match(/node_modules\/((?:@[^/]+\/)?[^/]+)/);
       if(match)packages.add(match[1]);
       if(match&&!allowed.has(match[1]))throw Error(`Unreviewed native codec dependency ${match[1]}`);
-      if(!match&&!['dist/managed/native-anthropic.js','dist/ai-sdk/anthropic-model.js','dist/ai-sdk/protocol.js'].includes(input))throw Error(`Unreviewed native codec source ${input}`);
+      if(!match&&!['dist/managed/model-policy.js','dist/managed/native-anthropic.js','dist/ai-sdk/anthropic-model.js','dist/ai-sdk/protocol.js'].includes(input))throw Error(`Unreviewed native codec source ${input}`);
     }
     const notices=[];
     for(const name of [...packages].sort()) {
