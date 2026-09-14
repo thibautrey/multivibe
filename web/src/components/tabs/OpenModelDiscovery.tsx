@@ -11,14 +11,14 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
   const effectiveNeed = selectedNeed ?? need;
   const [sort,setSort] = useState<CatalogSort>(()=>{const v=saved('multivibe.models.sort.v1','recommended');return Object.prototype.hasOwnProperty.call(sortLabels,v)?v as CatalogSort:'recommended';});
   const [result,setResult] = useState<Result>(); const [error,setError] = useState(false);
-  const [request,setRequest] = useState(0); const [query,setQuery] = useState(''); const [limit,setLimit] = useState(24);
+  const [request,setRequest] = useState(0); const [query,setQuery] = useState(''); const [limit,setLimit] = useState(compact ? 12 : 24);
   const [fitOnly,setFitOnly] = useState(false);
   useEffect(()=>{try {localStorage.setItem('multivibe.models.sort.v1',sort);localStorage.setItem('multivibe.models.need.v1',effectiveNeed);} catch {/* Optional browser storage. */}},[sort,effectiveNeed]);
   useEffect(()=>{
-    const controller=new AbortController(); setResult(undefined);setError(false);setLimit(24);
+    const controller=new AbortController(); setResult(undefined);setError(false);setLimit(compact ? 12 : 24);
     const load=()=>void api(`/admin/model-recommendations?need=${effectiveNeed}&sort=${sort}&host=local`,{signal:controller.signal}).then((value:Result)=>{if(!controller.signal.aborted){setResult(value);setError(false);}}).catch(()=>{if(!controller.signal.aborted)setError(true);});
     load();const timer=setInterval(load,60000);return()=>{controller.abort();clearInterval(timer);};
-  },[effectiveNeed,sort,request]);
+  },[effectiveNeed,sort,request,compact]);
   const readyChoices = relevantChoices(connected, effectiveNeed, result?.catalog.models ?? []);
   const readyFor = (id:string) => readyChoices.find(choice=>choice.route.modelId===id);
   const models=(result?.recommendations ?? []).filter(row=>row.model.id.toLowerCase().includes(query.toLowerCase()) && (!fitOnly || row.compatibility==='compatible' || readyFor(row.model.id)?.route.source==='local')).sort((a,b)=>sort==='recommended'?Number(Boolean(readyFor(b.model.id)))-Number(Boolean(readyFor(a.model.id))):0);
@@ -34,7 +34,7 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
     {(error || result?.catalog.stale) && <p role="status">{result?'Showing the last catalog. Refresh is unavailable or in progress.':'The catalog is unavailable.'} <button className="btn ghost" onClick={()=>setRequest(n=>n+1)}>Retry</button></p>}
     {sort==='community' && <p className="muted">Anonymous reported output volume · Last 30 completed days · Not verified users or quality.</p>}
     {sort==='community' && result?.catalog.communityStatus !== 'available' && result && <p role="status">Anonymous activity ranking is unavailable. External popularity is not substituted.</p>}
-    <div className="models-choice-grid">{models.slice(0,compact?3:limit).map(row=><article className="models-choice" key={row.model.id}>
+    <div className="models-choice-grid">{models.slice(0,limit).map(row=><article className="models-choice" key={row.model.id}>
       <span className="models-choice-badge">{row.compatibility==='compatible'?'Estimated fit':row.compatibility==='insufficient'?'Not compatible':'Compatibility unknown'}</span>
       <h3>{(publisherIcons as Record<string,string>)[row.model.id.split('/')[0].toLowerCase()] && <img src={(publisherIcons as Record<string,string>)[row.model.id.split('/')[0].toLowerCase()]} alt="" width="28" height="28" loading="lazy" referrerPolicy="no-referrer" onError={event=>{event.currentTarget.hidden=true;}} style={{objectFit:'contain',verticalAlign:'middle',marginRight:8}} />}{row.model.id}</h3><p>{row.reason}</p>
       <dl><div><dt>Cost</dt><dd>{readyFor(row.model.id)?.cost.label ?? 'Hardware and electricity'}</dd></div><div><dt>Data</dt><dd>{readyFor(row.model.id)?.data ?? 'On Host if run locally'}</dd></div><div><dt>Speed</dt><dd>Not measured</dd></div><div><dt>Dependency</dt><dd>{readyFor(row.model.id)?.dependency ?? 'Host required · Network for download'}</dd></div></dl>
@@ -50,7 +50,7 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
       </details>
     </article>)}</div>
     {result && !models.length && <p>No models have sufficient task metadata for these filters. Try another task or sort.</p>}
-    {!compact && models.length>limit && <button className="btn ghost" onClick={()=>setLimit(n=>n+24)}>Show more models</button>}
+    {models.length>limit && <button className="btn ghost" onClick={()=>setLimit(n=>n+(compact ? 12 : 24))}>Show more models</button>}
     <details><summary>Where does this list come from?</summary><p>MultiVibe Cloud supplies anonymous activity ranks; Hugging Face supplies trending, downloaded and new repositories, refreshed every six hours while MultiVibe runs. Explicit quantizations are grouped; fine-tunes remain separate. Missing metadata stays unknown.</p><p>Established means at least 90 days old and in the top quarter by downloads among task-matched models with known counts. It is not a certification. New means repository creation, not release date.</p><p>Publisher icons are served locally; opening a model card contacts Hugging Face. No chat content or hardware profile is sent by catalog discovery. No automatic model downloads.</p></details>
     {result && <p className="muted">Checked {new Date(result.catalog.checkedAt).toLocaleString('en-GB')} · Hugging Face</p>}
   </section>;
