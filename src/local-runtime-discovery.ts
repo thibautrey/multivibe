@@ -13,11 +13,18 @@ import type { AccountStore } from "./store.js";
 
 export const LOCAL_RUNTIME_DISCOVERY_TIMEOUT_MS = 1_500;
 export const LOCAL_RUNTIME_MAX_RESPONSE_BYTES = 256 * 1024;
+export const LOCAL_RUNTIME_MAX_FILESYSTEM_ENTRIES = 50_000;
 export const OLLAMA_ALLOWED_PORTS = [11434] as const;
 export const LM_STUDIO_ALLOWED_PORTS = [1234] as const;
 export const OMLX_ALLOWED_PORTS = [8000] as const;
 export const EXO_ALLOWED_PORTS = [52415] as const;
 export const MTPLX_ALLOWED_PORTS = [8000] as const;
+export const JAN_ALLOWED_PORTS = [1337] as const;
+export const GPT4ALL_ALLOWED_PORTS = [4891] as const;
+export const KOBOLDCPP_ALLOWED_PORTS = [5001] as const;
+export const XINFERENCE_ALLOWED_PORTS = [9997] as const;
+export const SGLANG_ALLOWED_PORTS = [30000] as const;
+export const APHRODITE_ALLOWED_PORTS = [2242] as const;
 
 const OLLAMA_ORIGINS = [
   "http://127.0.0.1:11434",
@@ -27,18 +34,18 @@ const LM_STUDIO_ORIGINS = [
   "http://127.0.0.1:1234",
   "http://[::1]:1234",
 ] as const;
-const OMLX_ORIGINS = [
-  "http://127.0.0.1:8000",
-  "http://[::1]:8000",
-] as const;
-const EXO_ORIGINS = [
-  "http://127.0.0.1:52415",
-  "http://[::1]:52415",
-] as const;
-const MTPLX_ORIGINS = [
-  "http://127.0.0.1:8000",
-  "http://[::1]:8000",
-] as const;
+const OMLX_ORIGINS = ["http://127.0.0.1:8000", "http://[::1]:8000"] as const;
+const EXO_ORIGINS = ["http://127.0.0.1:52415", "http://[::1]:52415"] as const;
+const MTPLX_ORIGINS = ["http://127.0.0.1:8000", "http://[::1]:8000"] as const;
+function loopbackOrigins(port: number) {
+  return [`http://127.0.0.1:${port}`, `http://[::1]:${port}`] as const;
+}
+const JAN_ORIGINS = loopbackOrigins(1337);
+const GPT4ALL_ORIGINS = loopbackOrigins(4891);
+const KOBOLDCPP_ORIGINS = loopbackOrigins(5001);
+const XINFERENCE_ORIGINS = loopbackOrigins(9997);
+const SGLANG_ORIGINS = loopbackOrigins(30000);
+const APHRODITE_ORIGINS = loopbackOrigins(2242);
 const OPENAI_COMPATIBLE_REQUEST_PATHS = [
   "/models",
   "/v1/models",
@@ -59,7 +66,13 @@ type AutomaticLocalRuntimeAdapterId =
   | "lm-studio"
   | "omlx"
   | "exo"
-  | "mtplx";
+  | "mtplx"
+  | "jan"
+  | "gpt4all"
+  | "koboldcpp"
+  | "xinference"
+  | "sglang"
+  | "aphrodite";
 
 const AUTOMATIC_LOCAL_RUNTIME_BOUNDARIES = {
   ollama: {
@@ -97,6 +110,48 @@ const AUTOMATIC_LOCAL_RUNTIME_BOUNDARIES = {
     catalogPath: "/v1/models",
     requestPaths: LOOPBACK_OPENAI_REQUEST_PATHS,
   },
+  jan: {
+    name: "Jan",
+    origins: JAN_ORIGINS,
+    ports: JAN_ALLOWED_PORTS,
+    catalogPath: "/v1/models",
+    requestPaths: LOOPBACK_OPENAI_REQUEST_PATHS,
+  },
+  gpt4all: {
+    name: "GPT4All",
+    origins: GPT4ALL_ORIGINS,
+    ports: GPT4ALL_ALLOWED_PORTS,
+    catalogPath: "/v1/models",
+    requestPaths: LOOPBACK_OPENAI_REQUEST_PATHS,
+  },
+  koboldcpp: {
+    name: "KoboldCpp",
+    origins: KOBOLDCPP_ORIGINS,
+    ports: KOBOLDCPP_ALLOWED_PORTS,
+    catalogPath: "/v1/models",
+    requestPaths: LOOPBACK_OPENAI_REQUEST_PATHS,
+  },
+  xinference: {
+    name: "Xinference",
+    origins: XINFERENCE_ORIGINS,
+    ports: XINFERENCE_ALLOWED_PORTS,
+    catalogPath: "/v1/models",
+    requestPaths: LOOPBACK_OPENAI_REQUEST_PATHS,
+  },
+  sglang: {
+    name: "SGLang",
+    origins: SGLANG_ORIGINS,
+    ports: SGLANG_ALLOWED_PORTS,
+    catalogPath: "/v1/models",
+    requestPaths: LOOPBACK_OPENAI_REQUEST_PATHS,
+  },
+  aphrodite: {
+    name: "Aphrodite",
+    origins: APHRODITE_ORIGINS,
+    ports: APHRODITE_ALLOWED_PORTS,
+    catalogPath: "/v1/models",
+    requestPaths: LOOPBACK_OPENAI_REQUEST_PATHS,
+  },
 } as const;
 
 type FetchLike = (
@@ -115,10 +170,25 @@ export type LocalRuntimeAdapter = {
   protocol: "openai-compatible" | "native";
   healthPath: string;
   catalogPath: string;
-  capabilities: readonly ("text" | "embeddings" | "image" | "audio" | "tools")[];
+  capabilities: readonly (
+    | "text"
+    | "embeddings"
+    | "image"
+    | "audio"
+    | "tools"
+  )[];
   authentication: "none" | "optional-bearer" | "required-bearer";
-  measurement: readonly ("input_text_token" | "output_text_token" | "request" | "runtime_metrics")[];
-  limits: { maxCatalogModels: number; maxResponseBytes: number; timeoutMs: number };
+  measurement: readonly (
+    | "input_text_token"
+    | "output_text_token"
+    | "request"
+    | "runtime_metrics"
+  )[];
+  limits: {
+    maxCatalogModels: number;
+    maxResponseBytes: number;
+    timeoutMs: number;
+  };
   candidates: readonly LocalRuntimeCandidate[];
 };
 
@@ -136,8 +206,27 @@ const DEFAULT_ADAPTER_CONTRACT = {
   },
 };
 
-function registeredAdapter(id: LocalRuntimeAdapterId, displayName: string): LocalRuntimeAdapter {
+function registeredAdapter(
+  id: LocalRuntimeAdapterId,
+  displayName: string,
+): LocalRuntimeAdapter {
   return { id, displayName, ...DEFAULT_ADAPTER_CONTRACT, candidates: [] };
+}
+function automaticAdapter(
+  id: AutomaticLocalRuntimeAdapterId,
+  displayName: string,
+  origins: readonly string[],
+): LocalRuntimeAdapter {
+  return {
+    id,
+    displayName,
+    ...DEFAULT_ADAPTER_CONTRACT,
+    authentication: "none",
+    candidates: origins.map((endpoint) => ({
+      endpoint,
+      modelsUrl: `${endpoint}/v1/models`,
+    })),
+  };
 }
 export const LOCAL_RUNTIME_ADAPTERS: readonly LocalRuntimeAdapter[] = [
   {
@@ -174,11 +263,11 @@ export const LOCAL_RUNTIME_ADAPTERS: readonly LocalRuntimeAdapter[] = [
   },
   registeredAdapter("llama-cpp", "llama.cpp / llama-server / llama-cpp-python"),
   registeredAdapter("vllm", "vLLM"),
-  registeredAdapter("sglang", "SGLang"),
+  automaticAdapter("sglang", "SGLang", SGLANG_ORIGINS),
   registeredAdapter("localai", "LocalAI"),
   registeredAdapter("huggingface-tgi", "Hugging Face TGI"),
   registeredAdapter("transformers-serve", "Transformers Serve"),
-  registeredAdapter("xinference", "Xinference"),
+  automaticAdapter("xinference", "Xinference", XINFERENCE_ORIGINS),
   registeredAdapter("mlx-lm", "MLX-LM"),
   {
     id: "omlx",
@@ -215,11 +304,11 @@ export const LOCAL_RUNTIME_ADAPTERS: readonly LocalRuntimeAdapter[] = [
       },
     ],
   },
-  registeredAdapter("jan", "Jan"),
-  registeredAdapter("gpt4all", "GPT4All"),
-  registeredAdapter("koboldcpp", "KoboldCpp"),
+  automaticAdapter("jan", "Jan", JAN_ORIGINS),
+  automaticAdapter("gpt4all", "GPT4All", GPT4ALL_ORIGINS),
+  automaticAdapter("koboldcpp", "KoboldCpp", KOBOLDCPP_ORIGINS),
   registeredAdapter("text-generation-webui", "text-generation-webui"),
-  registeredAdapter("aphrodite", "Aphrodite"),
+  automaticAdapter("aphrodite", "Aphrodite", APHRODITE_ORIGINS),
   registeredAdapter("tabbyapi", "TabbyAPI"),
   registeredAdapter("llama-box", "llama-box"),
   registeredAdapter("mistral-rs", "mistral.rs"),
@@ -248,7 +337,10 @@ export const LOCAL_RUNTIME_ADAPTERS: readonly LocalRuntimeAdapter[] = [
     ...registeredAdapter("nvidia-pair", "NVIDIA Personal AI Router (PAIR)"),
     authentication: "none",
   },
-  registeredAdapter("manual-openai-compatible", "Manual OpenAI-compatible server"),
+  registeredAdapter(
+    "manual-openai-compatible",
+    "Manual OpenAI-compatible server",
+  ),
 ];
 
 export type LocalRuntimeProbeSuccess = {
@@ -291,7 +383,13 @@ function isAutomaticLocalRuntimeAdapterId(
     id === "lm-studio" ||
     id === "omlx" ||
     id === "exo" ||
-    id === "mtplx"
+    id === "mtplx" ||
+    id === "jan" ||
+    id === "gpt4all" ||
+    id === "koboldcpp" ||
+    id === "xinference" ||
+    id === "sglang" ||
+    id === "aphrodite"
   );
 }
 
@@ -299,27 +397,36 @@ function automaticRuntimeBoundary(id: AutomaticLocalRuntimeAdapterId) {
   return AUTOMATIC_LOCAL_RUNTIME_BOUNDARIES[id];
 }
 
-export function localRuntimeCatalogPath(adapter: LocalRuntimeAdapterId): string {
+export function localRuntimeCatalogPath(
+  adapter: LocalRuntimeAdapterId,
+): string {
   return isAutomaticLocalRuntimeAdapterId(adapter)
     ? automaticRuntimeBoundary(adapter).catalogPath
     : "/v1/models";
 }
 
-function automaticRuntimeSignature(id: AutomaticLocalRuntimeAdapterId):
-  { ownedBy: string } | undefined {
+function automaticRuntimeSignature(
+  id: AutomaticLocalRuntimeAdapterId,
+): { ownedBy: string } | undefined {
   if (id === "omlx" || id === "mtplx" || id === "exo") {
     return { ownedBy: id };
   }
   return undefined;
 }
 
-function hasExactAutomaticRuntimeOrigin(id: AutomaticLocalRuntimeAdapterId, raw: string): boolean {
+function hasExactAutomaticRuntimeOrigin(
+  id: AutomaticLocalRuntimeAdapterId,
+  raw: string,
+): boolean {
   return AUTOMATIC_LOCAL_RUNTIME_BOUNDARIES[id].origins.some(
     (origin) => raw === origin || raw === `${origin}/`,
   );
 }
 
-function parseAutomaticRuntimeEndpoint(id: AutomaticLocalRuntimeAdapterId, raw: string): URL {
+function parseAutomaticRuntimeEndpoint(
+  id: AutomaticLocalRuntimeAdapterId,
+  raw: string,
+): URL {
   const boundary = AUTOMATIC_LOCAL_RUNTIME_BOUNDARIES[id];
   let url: URL;
   try {
@@ -344,7 +451,10 @@ function parseAutomaticRuntimeEndpoint(id: AutomaticLocalRuntimeAdapterId, raw: 
   return url;
 }
 
-function parseAutomaticRuntimeRequestUrl(id: AutomaticLocalRuntimeAdapterId, raw: string): URL {
+function parseAutomaticRuntimeRequestUrl(
+  id: AutomaticLocalRuntimeAdapterId,
+  raw: string,
+): URL {
   const boundary = AUTOMATIC_LOCAL_RUNTIME_BOUNDARIES[id];
   let url: URL;
   try {
@@ -352,9 +462,10 @@ function parseAutomaticRuntimeRequestUrl(id: AutomaticLocalRuntimeAdapterId, raw
   } catch {
     throw new Error("local runtime request must use a valid URL");
   }
-  const hasExactRequestUrl = boundary.origins.some((origin) =>
-    boundary.requestPaths.has(raw.slice(origin.length)) &&
-    raw === `${origin}${url.pathname}`,
+  const hasExactRequestUrl = boundary.origins.some(
+    (origin) =>
+      boundary.requestPaths.has(raw.slice(origin.length)) &&
+      raw === `${origin}${url.pathname}`,
   );
   if (
     !hasExactRequestUrl ||
@@ -366,7 +477,9 @@ function parseAutomaticRuntimeRequestUrl(id: AutomaticLocalRuntimeAdapterId, raw
     url.hash ||
     !boundary.requestPaths.has(url.pathname)
   ) {
-    throw new Error(`request is outside the discovered ${boundary.name} API boundary`);
+    throw new Error(
+      `request is outside the discovered ${boundary.name} API boundary`,
+    );
   }
   return url;
 }
@@ -402,10 +515,7 @@ export function isDiscoveredLocalRuntimeAccount(account: Account): boolean {
   const adapter = account.localRuntime.adapter;
   if (!isAutomaticLocalRuntimeAdapterId(adapter)) return false;
   try {
-    const baseUrl = parseAutomaticRuntimeEndpoint(
-      adapter,
-      account.baseUrl,
-    );
+    const baseUrl = parseAutomaticRuntimeEndpoint(adapter, account.baseUrl);
     const endpoint = parseAutomaticRuntimeEndpoint(
       adapter,
       account.localRuntime.endpoint,
@@ -428,7 +538,9 @@ function parseNvidiaPairEndpoint(value: string): URL {
     url.search ||
     url.hash
   ) {
-    throw new Error("PAIR endpoint must be a loopback HTTP origin with an explicit port");
+    throw new Error(
+      "PAIR endpoint must be a loopback HTTP origin with an explicit port",
+    );
   }
   return url;
 }
@@ -444,10 +556,13 @@ export function isConfiguredNvidiaPairAccount(account: Account): boolean {
     account.localRuntime.authentication !== "none" ||
     !account.baseUrl ||
     !validConfirmedModelIds(account.localRuntime.confirmedModelIds)
-  ) return false;
+  )
+    return false;
   try {
-    return parseNvidiaPairEndpoint(account.baseUrl).origin ===
-      parseNvidiaPairEndpoint(account.localRuntime.endpoint).origin;
+    return (
+      parseNvidiaPairEndpoint(account.baseUrl).origin ===
+      parseNvidiaPairEndpoint(account.localRuntime.endpoint).origin
+    );
   } catch {
     return false;
   }
@@ -459,8 +574,12 @@ export function authorizationForAccountRequest(
 ): string | undefined {
   if (account.provider === "github-copilot") {
     const url = new URL(requestUrl);
-    if (url.origin !== trustedCopilotBaseUrl(account.baseUrl) || url.username || url.password ||
-        !["/models", "/chat/completions", "/responses"].includes(url.pathname)) {
+    if (
+      url.origin !== trustedCopilotBaseUrl(account.baseUrl) ||
+      url.username ||
+      url.password ||
+      !["/models", "/chat/completions", "/responses"].includes(url.pathname)
+    ) {
       throw new Error("GitHub Copilot request is outside its account boundary");
     }
   }
@@ -470,9 +589,10 @@ export function authorizationForAccountRequest(
     }
     return `Bearer ${SDK_INTERNAL_TOKEN}`;
   }
-  const token = account.provider === "opencode"
-    ? openCodeInferenceToken(account)
-    : account.accessToken;
+  const token =
+    account.provider === "opencode"
+      ? openCodeInferenceToken(account)
+      : account.accessToken;
   if (token) return /^Bearer\s+/i.test(token) ? token : `Bearer ${token}`;
   if (isConfiguredNvidiaPairAccount(account)) {
     const request = new URL(requestUrl);
@@ -480,18 +600,30 @@ export function authorizationForAccountRequest(
     if (
       request.origin !== endpoint.origin ||
       !LOOPBACK_OPENAI_REQUEST_PATHS.has(request.pathname) ||
-      request.username || request.password || request.search || request.hash
-    ) throw new Error("request is outside the configured PAIR boundary");
+      request.username ||
+      request.password ||
+      request.search ||
+      request.hash
+    )
+      throw new Error("request is outside the configured PAIR boundary");
     return undefined;
   }
   if (!isDiscoveredLocalRuntimeAccount(account)) {
-    throw new Error("account has no credential and is not a discovered local runtime");
+    throw new Error(
+      "account has no credential and is not a discovered local runtime",
+    );
   }
-  const adapter = account.localRuntime!.adapter as AutomaticLocalRuntimeAdapterId;
+  const adapter = account.localRuntime!
+    .adapter as AutomaticLocalRuntimeAdapterId;
   const request = parseAutomaticRuntimeRequestUrl(adapter, requestUrl);
-  const endpoint = parseAutomaticRuntimeEndpoint(adapter, account.localRuntime!.endpoint);
+  const endpoint = parseAutomaticRuntimeEndpoint(
+    adapter,
+    account.localRuntime!.endpoint,
+  );
   if (request.origin !== endpoint.origin) {
-    throw new Error("request origin does not match the discovered local runtime");
+    throw new Error(
+      "request origin does not match the discovered local runtime",
+    );
   }
   return undefined;
 }
@@ -504,35 +636,71 @@ export async function configureNvidiaPairRuntime(
   const endpoint = parseNvidiaPairEndpoint(endpointInput).origin;
   const fetchFn = options.fetchFn ?? fetch;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Math.max(1, options.timeoutMs ?? LOCAL_RUNTIME_DISCOVERY_TIMEOUT_MS));
+  const timeout = setTimeout(
+    () => controller.abort(),
+    Math.max(1, options.timeoutMs ?? LOCAL_RUNTIME_DISCOVERY_TIMEOUT_MS),
+  );
   let confirmedModelIds: string[];
   try {
     const response = await fetchFn(`${endpoint}/v1/models`, {
-      method: "GET", headers: { accept: "application/json" }, redirect: "manual", signal: controller.signal,
+      method: "GET",
+      headers: { accept: "application/json" },
+      redirect: "manual",
+      signal: controller.signal,
     });
-    if (response.status !== 200) throw new Error(`PAIR model catalog probe returned HTTP ${response.status}`);
-    confirmedModelIds = parseModelsPayload(await readBoundedJson(response, options.maxResponseBytes ?? LOCAL_RUNTIME_MAX_RESPONSE_BYTES));
+    if (response.status !== 200)
+      throw new Error(
+        `PAIR model catalog probe returned HTTP ${response.status}`,
+      );
+    confirmedModelIds = parseModelsPayload(
+      await readBoundedJson(
+        response,
+        options.maxResponseBytes ?? LOCAL_RUNTIME_MAX_RESPONSE_BYTES,
+      ),
+    );
   } finally {
     clearTimeout(timeout);
   }
   const existing = await store.listAccounts();
-  const current = existing.find((account) => account.id === "local-runtime-nvidia-pair");
-  if (current && !isConfiguredNvidiaPairAccount(current)) throw new Error("refusing to replace existing non-PAIR account");
+  const current = existing.find(
+    (account) => account.id === "local-runtime-nvidia-pair",
+  );
+  if (current && !isConfiguredNvidiaPairAccount(current))
+    throw new Error("refusing to replace existing non-PAIR account");
   for (const account of existing) {
     if (
-      (account.localRuntime?.adapter === "ollama" || account.localRuntime?.adapter === "lm-studio") &&
-      account.localRuntime.source === "multivibe-local-discovery" && account.baseUrl
+      (account.localRuntime?.adapter === "ollama" ||
+        account.localRuntime?.adapter === "lm-studio") &&
+      account.localRuntime.source === "multivibe-local-discovery" &&
+      account.baseUrl
     ) {
-      try { if (new URL(account.baseUrl).origin === endpoint) await store.deleteAccount(account.id); } catch { /* ignore malformed legacy URL */ }
+      try {
+        if (new URL(account.baseUrl).origin === endpoint)
+          await store.deleteAccount(account.id);
+      } catch {
+        /* ignore malformed legacy URL */
+      }
     }
   }
   const account: Account = {
     ...current,
-    id: "local-runtime-nvidia-pair", provider: "openai-compatible", upstreamMode: "chat/completions",
-    email: current?.email ?? "NVIDIA Personal AI Router (PAIR)", accessToken: "", baseUrl: endpoint,
-    enabled: current?.enabled ?? true, priority: current?.priority ?? 0, location: "personal-cluster",
+    id: "local-runtime-nvidia-pair",
+    provider: "openai-compatible",
+    upstreamMode: "chat/completions",
+    email: current?.email ?? "NVIDIA Personal AI Router (PAIR)",
+    accessToken: "",
+    baseUrl: endpoint,
+    enabled: current?.enabled ?? true,
+    priority: current?.priority ?? 0,
+    location: "personal-cluster",
     usage: undefined,
-    localRuntime: { source: "multivibe-local-configuration", adapter: "nvidia-pair", endpoint, confirmedModelIds, authentication: "none" },
+    localRuntime: {
+      source: "multivibe-local-configuration",
+      adapter: "nvidia-pair",
+      endpoint,
+      confirmedModelIds,
+      authentication: "none",
+    },
   };
   await store.addOrUpdate(account);
   return account;
@@ -600,9 +768,9 @@ async function readBoundedJson(
     chunks.push(value);
   }
 
-  const body = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString(
-    "utf8",
-  );
+  const body = Buffer.concat(
+    chunks.map((chunk) => Buffer.from(chunk)),
+  ).toString("utf8");
   try {
     return JSON.parse(body);
   } catch {
@@ -621,16 +789,24 @@ export async function probeLocalRuntimeCandidate(
   }
   const boundary = automaticRuntimeBoundary(adapterId);
   const endpoint = parseAutomaticRuntimeEndpoint(adapterId, candidate.endpoint);
-  const modelsUrl = parseAutomaticRuntimeRequestUrl(adapterId, candidate.modelsUrl);
+  const modelsUrl = parseAutomaticRuntimeRequestUrl(
+    adapterId,
+    candidate.modelsUrl,
+  );
   if (
     endpoint.origin !== modelsUrl.origin ||
     modelsUrl.pathname !== boundary.catalogPath
   ) {
-    throw new Error(`model catalog URL does not match the ${boundary.name} endpoint`);
+    throw new Error(
+      `model catalog URL does not match the ${boundary.name} endpoint`,
+    );
   }
 
   const fetchFn = options.fetchFn ?? fetch;
-  const timeoutMs = Math.max(1, options.timeoutMs ?? LOCAL_RUNTIME_DISCOVERY_TIMEOUT_MS);
+  const timeoutMs = Math.max(
+    1,
+    options.timeoutMs ?? LOCAL_RUNTIME_DISCOVERY_TIMEOUT_MS,
+  );
   const maxResponseBytes = Math.max(
     1,
     options.maxResponseBytes ?? LOCAL_RUNTIME_MAX_RESPONSE_BYTES,
@@ -654,7 +830,9 @@ export async function probeLocalRuntimeCandidate(
           signal: controller.signal,
         });
         if (response.status !== 200) {
-          throw new Error(`model catalog probe returned HTTP ${response.status}`);
+          throw new Error(
+            `model catalog probe returned HTTP ${response.status}`,
+          );
         }
         const confirmedModelIds = parseModelsPayload(
           await readBoundedJson(response, maxResponseBytes),
@@ -676,13 +854,20 @@ export async function probeLocalRuntimeCandidate(
   }
 }
 
-
 const LOCAL_MODEL_FILE_EXTENSIONS = new Set([
-  ".gguf", ".safetensors", ".bin", ".pth", ".pt", ".onnx", ".mlx",
+  ".gguf",
+  ".safetensors",
+  ".bin",
+  ".pth",
+  ".pt",
+  ".onnx",
+  ".mlx",
 ]);
 
 function validDiskModelId(id: string): boolean {
-  return validConfirmedModelIds([id]) && !id.startsWith(".") && !id.includes("\\");
+  return (
+    validConfirmedModelIds([id]) && !id.startsWith(".") && !id.includes("\\")
+  );
 }
 
 async function directoryEntries(
@@ -704,10 +889,21 @@ async function containsModelFile(
   for (const entry of await directoryEntries(directory, filesystem)) {
     if (entry.isSymbolicLink()) continue;
     const entryPath = path.join(directory, entry.name);
-    if (entry.isFile() && (LOCAL_MODEL_FILE_EXTENSIONS.has(path.extname(entry.name).toLowerCase()) || entry.name === "config.json")) {
+    if (
+      entry.isFile() &&
+      (LOCAL_MODEL_FILE_EXTENSIONS.has(
+        path.extname(entry.name).toLowerCase(),
+      ) ||
+        entry.name === "config.json")
+    ) {
       return true;
     }
-    if (depth > 0 && entry.isDirectory() && await containsModelFile(entryPath, filesystem, depth - 1)) return true;
+    if (
+      depth > 0 &&
+      entry.isDirectory() &&
+      (await containsModelFile(entryPath, filesystem, depth - 1))
+    )
+      return true;
   }
   return false;
 }
@@ -730,14 +926,21 @@ async function discoverOllamaModelsFromDisk(
     for (const registry of await directoryEntries(manifests, filesystem)) {
       if (!registry.isDirectory() || registry.isSymbolicLink()) continue;
       const registryPath = path.join(manifests, registry.name);
-      for (const namespace of await directoryEntries(registryPath, filesystem)) {
+      for (const namespace of await directoryEntries(
+        registryPath,
+        filesystem,
+      )) {
         if (!namespace.isDirectory() || namespace.isSymbolicLink()) continue;
         const namespacePath = path.join(registryPath, namespace.name);
         for (const model of await directoryEntries(namespacePath, filesystem)) {
           if (!model.isDirectory() || model.isSymbolicLink()) continue;
-          for (const tag of await directoryEntries(path.join(namespacePath, model.name), filesystem)) {
+          for (const tag of await directoryEntries(
+            path.join(namespacePath, model.name),
+            filesystem,
+          )) {
             if (!tag.isFile() || tag.isSymbolicLink()) continue;
-            const prefix = namespace.name === "library" ? "" : `${namespace.name}/`;
+            const prefix =
+              namespace.name === "library" ? "" : `${namespace.name}/`;
             const id = `${prefix}${model.name}:${tag.name}`;
             if (validDiskModelId(id)) models.add(id);
             if (models.size >= 10_000) return [...models].sort();
@@ -757,11 +960,27 @@ async function discoverTwoLevelModelDirectory(
   const models = new Set<string>();
   for (const root of new Set(roots)) {
     for (const publisher of await directoryEntries(root, filesystem)) {
-      if (!publisher.isDirectory() || publisher.isSymbolicLink() || publisher.name.startsWith(".")) continue;
+      if (
+        !publisher.isDirectory() ||
+        publisher.isSymbolicLink() ||
+        publisher.name.startsWith(".")
+      )
+        continue;
       const publisherPath = path.join(root, publisher.name);
       for (const model of await directoryEntries(publisherPath, filesystem)) {
-        if (!model.isDirectory() || model.isSymbolicLink() || model.name.startsWith(".")) continue;
-        if (!await containsModelFile(path.join(publisherPath, model.name), filesystem)) continue;
+        if (
+          !model.isDirectory() ||
+          model.isSymbolicLink() ||
+          model.name.startsWith(".")
+        )
+          continue;
+        if (
+          !(await containsModelFile(
+            path.join(publisherPath, model.name),
+            filesystem,
+          ))
+        )
+          continue;
         const id = `${publisher.name}/${model.name}`;
         if (validDiskModelId(id)) models.add(id);
         if (models.size >= 10_000) return [...models].sort();
@@ -771,15 +990,186 @@ async function discoverTwoLevelModelDirectory(
   return [...models].sort();
 }
 
+function modelIdFromRelativePath(relativePath: string): string | undefined {
+  const normalized = relativePath.split(path.sep).filter(Boolean);
+  if (normalized.length === 0) return undefined;
+  const huggingFace = normalized.find((part) => part.startsWith("models--"));
+  if (huggingFace) {
+    const id = huggingFace.slice("models--".length).replaceAll("--", "/");
+    return validDiskModelId(id) ? id : undefined;
+  }
+  const filename = normalized.at(-1)!;
+  const extension = path.extname(filename).toLowerCase();
+  const directoryParts = normalized
+    .slice(0, -1)
+    .filter((part) => !["snapshots", "blobs"].includes(part));
+  const id =
+    directoryParts.length > 0
+      ? directoryParts.slice(-2).join("/")
+      : extension
+        ? path.basename(filename, extension)
+        : filename;
+  return validDiskModelId(id) ? id : undefined;
+}
+
+async function discoverFlexibleModelDirectory(
+  roots: readonly string[],
+  options: LocalRuntimeDiscoveryOptions,
+): Promise<string[]> {
+  const filesystem = options.filesystem ?? fs;
+  const models = new Set<string>();
+  let visitedEntries = 0;
+  const visit = async (
+    root: string,
+    directory: string,
+    depth: number,
+  ): Promise<void> => {
+    for (const entry of await directoryEntries(directory, filesystem)) {
+      visitedEntries += 1;
+      if (
+        visitedEntries > LOCAL_RUNTIME_MAX_FILESYSTEM_ENTRIES ||
+        models.size >= 10_000 ||
+        entry.isSymbolicLink() ||
+        entry.name.startsWith(".")
+      )
+        continue;
+      const entryPath = path.join(directory, entry.name);
+      if (
+        entry.isFile() &&
+        LOCAL_MODEL_FILE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())
+      ) {
+        const id = modelIdFromRelativePath(path.relative(root, entryPath));
+        if (id) models.add(id);
+      } else if (
+        entry.isDirectory() &&
+        depth > 0 &&
+        visitedEntries <= LOCAL_RUNTIME_MAX_FILESYSTEM_ENTRIES
+      ) {
+        await visit(root, entryPath, depth - 1);
+      }
+    }
+  };
+  for (const root of new Set(roots.filter(Boolean))) {
+    await visit(root, root, 5);
+    if (
+      models.size >= 10_000 ||
+      visitedEntries > LOCAL_RUNTIME_MAX_FILESYSTEM_ENTRIES
+    )
+      break;
+  }
+  return [...models].sort();
+}
+
+function platformDataRoots(
+  home: string,
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
+) {
+  return {
+    applicationSupport:
+      platform === "darwin"
+        ? path.join(home, "Library", "Application Support")
+        : undefined,
+    config:
+      platform === "win32"
+        ? env.APPDATA
+        : env.XDG_CONFIG_HOME || path.join(home, ".config"),
+    data:
+      platform === "win32"
+        ? env.LOCALAPPDATA
+        : env.XDG_DATA_HOME || path.join(home, ".local", "share"),
+    cache:
+      platform === "win32"
+        ? env.LOCALAPPDATA
+        : env.XDG_CACHE_HOME || path.join(home, ".cache"),
+  };
+}
+
+async function gpt4AllModelRoots(
+  home: string,
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
+  filesystem: Pick<typeof fs, "readdir" | "readFile">,
+): Promise<string[]> {
+  const dirs = platformDataRoots(home, platform, env);
+  const roots = [
+    env.GPT4ALL_MODEL_PATH,
+    path.join(home, ".cache", "gpt4all"),
+    dirs.applicationSupport &&
+      path.join(dirs.applicationSupport, "nomic.ai", "GPT4All"),
+    dirs.data && path.join(dirs.data, "nomic.ai", "GPT4All"),
+  ].filter((value): value is string => Boolean(value));
+  const configs = [
+    dirs.applicationSupport &&
+      path.join(dirs.applicationSupport, "nomic.ai", "GPT4All.ini"),
+    dirs.config && path.join(dirs.config, "nomic.ai", "GPT4All.ini"),
+  ].filter((value): value is string => Boolean(value));
+  for (const config of configs) {
+    try {
+      const raw = await filesystem.readFile(config, "utf8");
+      const configured = raw.match(/^modelPath\s*=\s*(.+)$/m)?.[1]?.trim();
+      if (configured && path.isAbsolute(configured)) roots.push(configured);
+    } catch {
+      /* use known defaults */
+    }
+  }
+  return [...new Set(roots)];
+}
+
+async function runtimeFilesystemRoots(
+  adapter: AutomaticLocalRuntimeAdapterId,
+  options: LocalRuntimeDiscoveryOptions,
+): Promise<string[]> {
+  const home = options.homeDir ?? os.homedir();
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  const dirs = platformDataRoots(home, platform, env);
+  if (adapter === "jan")
+    return [
+      env.JAN_MODEL_PATH,
+      path.join(home, ".jan", "models"),
+      path.join(home, "jan", "models"),
+      dirs.applicationSupport &&
+        path.join(dirs.applicationSupport, "Jan", "data", "models"),
+      dirs.config && path.join(dirs.config, "Jan", "data", "models"),
+      dirs.data && path.join(dirs.data, "Jan", "data", "models"),
+    ].filter((value): value is string => Boolean(value));
+  if (adapter === "gpt4all")
+    return gpt4AllModelRoots(home, platform, env, options.filesystem ?? fs);
+  if (adapter === "xinference")
+    return [
+      env.XINFERENCE_MODEL_SRC,
+      path.join(home, ".xinference", "cache"),
+    ].filter((value): value is string => Boolean(value));
+  if (adapter === "koboldcpp")
+    return [env.KOBOLDCPP_MODELS, env.KOBOLDCPP_MODEL_PATH].filter(
+      (value): value is string => Boolean(value),
+    );
+  if (adapter === "sglang")
+    return [env.SGLANG_MODEL_PATH].filter((value): value is string =>
+      Boolean(value),
+    );
+  if (adapter === "aphrodite")
+    return [env.APHRODITE_MODEL_PATH].filter((value): value is string =>
+      Boolean(value),
+    );
+  return [];
+}
+
 async function lmStudioModelRoots(
   home: string,
   filesystem: Pick<typeof fs, "readdir" | "readFile">,
 ): Promise<string[]> {
   const roots = [path.join(home, ".lmstudio", "models")];
   try {
-    const raw = await filesystem.readFile(path.join(home, ".lmstudio", "settings.json"), "utf8");
-    const configured = (JSON.parse(raw) as { downloadsFolder?: unknown }).downloadsFolder;
-    if (typeof configured === "string" && path.isAbsolute(configured)) roots.push(configured);
+    const raw = await filesystem.readFile(
+      path.join(home, ".lmstudio", "settings.json"),
+      "utf8",
+    );
+    const configured = (JSON.parse(raw) as { downloadsFolder?: unknown })
+      .downloadsFolder;
+    if (typeof configured === "string" && path.isAbsolute(configured))
+      roots.push(configured);
   } catch {
     // The default model directory remains usable when settings are absent or malformed.
   }
@@ -790,17 +1180,30 @@ async function discoverInstalledRuntime(
   adapter: LocalRuntimeAdapter,
   options: LocalRuntimeDiscoveryOptions,
 ): Promise<LocalRuntimeProbeSuccess | undefined> {
-  if (!isAutomaticLocalRuntimeAdapterId(adapter.id) || adapter.candidates.length === 0) return undefined;
+  if (
+    !isAutomaticLocalRuntimeAdapterId(adapter.id) ||
+    adapter.candidates.length === 0
+  )
+    return undefined;
   const home = options.homeDir ?? os.homedir();
   let confirmedModelIds: string[] = [];
   if (adapter.id === "ollama") {
     confirmedModelIds = await discoverOllamaModelsFromDisk(options);
   } else if (adapter.id === "lm-studio") {
     confirmedModelIds = await discoverTwoLevelModelDirectory(
-      await lmStudioModelRoots(home, options.filesystem ?? fs), options,
+      await lmStudioModelRoots(home, options.filesystem ?? fs),
+      options,
     );
   } else if (adapter.id === "omlx") {
-    confirmedModelIds = await discoverTwoLevelModelDirectory([path.join(home, ".omlx", "models")], options);
+    confirmedModelIds = await discoverTwoLevelModelDirectory(
+      [path.join(home, ".omlx", "models")],
+      options,
+    );
+  } else {
+    confirmedModelIds = await discoverFlexibleModelDirectory(
+      await runtimeFilesystemRoots(adapter.id, options),
+      options,
+    );
   }
   if (confirmedModelIds.length === 0) return undefined;
   return {
@@ -817,45 +1220,53 @@ export async function discoverLocalRuntimes(
   options: LocalRuntimeDiscoveryOptions = {},
 ): Promise<LocalRuntimeProbeResult[]> {
   const adapters = options.adapters ?? LOCAL_RUNTIME_ADAPTERS;
-  return Promise.all(adapters.map(async (adapter): Promise<LocalRuntimeProbeResult> => {
-    if (adapter.candidates.length === 0) {
-      return {
-        status: "not-configured",
-        adapter: adapter.id,
-        displayName: adapter.displayName,
-        attempts: 0,
-      };
-    }
-
-    let lastError: string | undefined;
-    let discovered: LocalRuntimeProbeSuccess | undefined;
-    let attempts = 0;
-    for (const candidate of adapter.candidates) {
-      attempts += 1;
-      try {
-        discovered = await probeLocalRuntimeCandidate(adapter, candidate, options);
-        break;
-      } catch (error: any) {
-        lastError = error?.message ?? String(error);
+  return Promise.all(
+    adapters.map(async (adapter): Promise<LocalRuntimeProbeResult> => {
+      if (adapter.candidates.length === 0) {
+        return {
+          status: "not-configured",
+          adapter: adapter.id,
+          displayName: adapter.displayName,
+          attempts: 0,
+        };
       }
-    }
 
-    if (!discovered) {
-      try {
-        discovered = await discoverInstalledRuntime(adapter, options);
-      } catch (error: any) {
-        lastError = error?.message ?? String(error);
+      let lastError: string | undefined;
+      let discovered: LocalRuntimeProbeSuccess | undefined;
+      let attempts = 0;
+      for (const candidate of adapter.candidates) {
+        attempts += 1;
+        try {
+          discovered = await probeLocalRuntimeCandidate(
+            adapter,
+            candidate,
+            options,
+          );
+          break;
+        } catch (error: any) {
+          lastError = error?.message ?? String(error);
+        }
       }
-    }
 
-    return discovered ?? {
-      status: "unavailable",
-      adapter: adapter.id,
-      displayName: adapter.displayName,
-      attempts,
-      error: lastError,
-    };
-  }));
+      if (!discovered) {
+        try {
+          discovered = await discoverInstalledRuntime(adapter, options);
+        } catch (error: any) {
+          lastError = error?.message ?? String(error);
+        }
+      }
+
+      return (
+        discovered ?? {
+          status: "unavailable",
+          adapter: adapter.id,
+          displayName: adapter.displayName,
+          attempts,
+          error: lastError,
+        }
+      );
+    }),
+  );
 }
 
 function discoveredAccountId(adapter: LocalRuntimeAdapterId): string {
@@ -880,22 +1291,34 @@ export async function discoverAndPersistLocalRuntimes(
 ): Promise<{ results: LocalRuntimeProbeResult[]; accounts: Account[] }> {
   const results = await discoverLocalRuntimes(options);
   const existingAccounts = await store.listAccounts();
-  const pairOrigins = new Set(existingAccounts.filter(isConfiguredNvidiaPairAccount).map((account) => new URL(account.baseUrl!).origin));
+  const pairOrigins = new Set(
+    existingAccounts
+      .filter(isConfiguredNvidiaPairAccount)
+      .map((account) => new URL(account.baseUrl!).origin),
+  );
   const accounts: Account[] = [];
 
   for (const result of results) {
     if (result.status !== "discovered") continue;
-    if ((result.adapter === "ollama" || result.adapter === "lm-studio") && pairOrigins.has(result.endpoint)) continue;
+    if (
+      (result.adapter === "ollama" || result.adapter === "lm-studio") &&
+      pairOrigins.has(result.endpoint)
+    )
+      continue;
     const id = discoveredAccountId(result.adapter);
     const existing = existingAccounts.find((account) => account.id === id);
     if (
       existing &&
       existing.localRuntime?.source !== "multivibe-local-discovery"
     ) {
-      throw new Error(`refusing to replace existing non-discovered account ${id}`);
+      throw new Error(
+        `refusing to replace existing non-discovered account ${id}`,
+      );
     }
     if (existing?.accessToken) {
-      throw new Error(`refusing to replace credentials on discovered account ${id}`);
+      throw new Error(
+        `refusing to replace credentials on discovered account ${id}`,
+      );
     }
 
     const account: Account = {

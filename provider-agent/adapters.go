@@ -132,6 +132,21 @@ var runtimeAdapters = func() []runtimeAdapter {
 			CatalogURL: "http://[::1]:8000/v1/models",
 		},
 	}
+	automaticOpenAI := func(id, displayName string, port int) runtimeAdapter {
+		adapter := manualOpenAIAdapter(id, displayName)
+		adapter.Authentication = "none"
+		adapter.Candidates = []adapterCandidate{
+			{Endpoint: fmt.Sprintf("http://127.0.0.1:%d", port), HealthURL: fmt.Sprintf("http://127.0.0.1:%d/v1/models", port), CatalogURL: fmt.Sprintf("http://127.0.0.1:%d/v1/models", port)},
+			{Endpoint: fmt.Sprintf("http://[::1]:%d", port), HealthURL: fmt.Sprintf("http://[::1]:%d/v1/models", port), CatalogURL: fmt.Sprintf("http://[::1]:%d/v1/models", port)},
+		}
+		return adapter
+	}
+	jan := automaticOpenAI("jan", "Jan", 1337)
+	gpt4all := automaticOpenAI("gpt4all", "GPT4All", 4891)
+	koboldcpp := automaticOpenAI("koboldcpp", "KoboldCpp", 5001)
+	xinference := automaticOpenAI("xinference", "Xinference", 9997)
+	sglang := automaticOpenAI("sglang", "SGLang", 30000)
+	aphrodite := automaticOpenAI("aphrodite", "Aphrodite", 2242)
 	nvidiaPair := manualOpenAIAdapter("nvidia-pair", "NVIDIA Personal AI Router (PAIR)")
 	nvidiaPair.Authentication = "none"
 	return []runtimeAdapter{
@@ -139,20 +154,20 @@ var runtimeAdapters = func() []runtimeAdapter {
 		lmStudio,
 		manualOpenAIAdapter("llama-cpp", "llama.cpp / llama-server / llama-cpp-python"),
 		manualOpenAIAdapter("vllm", "vLLM"),
-		manualOpenAIAdapter("sglang", "SGLang"),
+		sglang,
 		manualOpenAIAdapter("localai", "LocalAI"),
 		manualOpenAIAdapter("huggingface-tgi", "Hugging Face TGI"),
 		manualOpenAIAdapter("transformers-serve", "Transformers Serve"),
-		manualOpenAIAdapter("xinference", "Xinference"),
+		xinference,
 		manualOpenAIAdapter("mlx-lm", "MLX-LM"),
 		omlx,
 		manualOpenAIAdapter("mlc-llm", "MLC LLM"),
 		exo,
-		manualOpenAIAdapter("jan", "Jan"),
-		manualOpenAIAdapter("gpt4all", "GPT4All"),
-		manualOpenAIAdapter("koboldcpp", "KoboldCpp"),
+		jan,
+		gpt4all,
+		koboldcpp,
 		manualOpenAIAdapter("text-generation-webui", "text-generation-webui"),
-		manualOpenAIAdapter("aphrodite", "Aphrodite"),
+		aphrodite,
 		manualOpenAIAdapter("tabbyapi", "TabbyAPI"),
 		manualOpenAIAdapter("llama-box", "llama-box"),
 		manualOpenAIAdapter("mistral-rs", "mistral.rs"),
@@ -202,7 +217,11 @@ func validateAdapterRegistry(registry adapterRegistryDocument) error {
 			return fmt.Errorf("provider runtime adapter %s has invalid limits", adapter.ID)
 		}
 		expectedCandidates := 0
-		if adapter.ID == "ollama" || adapter.ID == "lm-studio" || adapter.ID == "omlx" || adapter.ID == "exo" || adapter.ID == "mtplx" {
+		automaticPorts := map[string]string{
+			"ollama": "11434", "lm-studio": "1234", "omlx": "8000", "exo": "52415", "mtplx": "8000",
+			"jan": "1337", "gpt4all": "4891", "koboldcpp": "5001", "xinference": "9997", "sglang": "30000", "aphrodite": "2242",
+		}
+		if _, automatic := automaticPorts[adapter.ID]; automatic {
 			expectedCandidates = 2
 		}
 		if len(adapter.Candidates) != expectedCandidates {
@@ -265,7 +284,11 @@ func validateLoopbackCandidate(adapter runtimeAdapter, candidate adapterCandidat
 			candidate.HealthURL == "http://[::1]:52415/models" &&
 			candidate.CatalogURL == "http://[::1]:52415/models")
 	approvedMTPLX := approvedOMLX
-	if (adapter.ID != "lm-studio" || !approvedLMStudio) &&
+	approvedStandard := false
+	if port, ok := map[string]string{"jan": "1337", "gpt4all": "4891", "koboldcpp": "5001", "xinference": "9997", "sglang": "30000", "aphrodite": "2242"}[adapter.ID]; ok {
+		approvedStandard = endpoint.Port() == port && health.Path == "/v1/models" && catalog.Path == "/v1/models"
+	}
+	if !approvedStandard && (adapter.ID != "lm-studio" || !approvedLMStudio) &&
 		(adapter.ID != "ollama" || !approvedOllama) &&
 		(adapter.ID != "omlx" || !approvedOMLX) &&
 		(adapter.ID != "exo" || !approvedExo) &&

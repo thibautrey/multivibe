@@ -208,10 +208,10 @@ func TestDetectedModelsEndpointReturnsOnlySuccessfulLoopbackInventory(t *testing
 		inventory.ObservedAt == "" || !reflect.DeepEqual(inventory.Runtimes, []detectedRuntime{{AdapterID: "lm-studio", Models: []string{"publisher/model"}}}) {
 		t.Fatalf("unexpected bounded inventory: %s", response.Body.String())
 	}
-	if len(inventory.Diagnostics) != 5 {
+	if len(inventory.Diagnostics) != 11 {
 		t.Fatalf("expected diagnostics for every reviewed automatic runtime, got %#v", inventory.Diagnostics)
 	}
-	if calls != 10 {
-		t.Fatalf("expected exactly ten reviewed loopback attempts, got %d", calls)
+	if calls != 22 {
+		t.Fatalf("expected exactly 22 reviewed loopback attempts, got %d", calls)
 	}
 }

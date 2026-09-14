@@ -17,12 +17,18 @@ import {
 import { AccountStore } from "./store.js";
 import type { Account } from "./types.js";
 
-const ollama = LOCAL_RUNTIME_ADAPTERS.find((adapter) => adapter.id === "ollama")!;
-const lmStudio = LOCAL_RUNTIME_ADAPTERS.find((adapter) => adapter.id === "lm-studio")!;
+const ollama = LOCAL_RUNTIME_ADAPTERS.find(
+  (adapter) => adapter.id === "ollama",
+)!;
+const lmStudio = LOCAL_RUNTIME_ADAPTERS.find(
+  (adapter) => adapter.id === "lm-studio",
+)!;
 const omlx = LOCAL_RUNTIME_ADAPTERS.find((adapter) => adapter.id === "omlx")!;
 const exo = LOCAL_RUNTIME_ADAPTERS.find((adapter) => adapter.id === "exo")!;
 const mtplx = LOCAL_RUNTIME_ADAPTERS.find((adapter) => adapter.id === "mtplx")!;
-const nvidiaPair = LOCAL_RUNTIME_ADAPTERS.find((adapter) => adapter.id === "nvidia-pair")!;
+const nvidiaPair = LOCAL_RUNTIME_ADAPTERS.find(
+  (adapter) => adapter.id === "nvidia-pair",
+)!;
 
 function modelsResponse(ids: string[], ownedBy?: string): Response {
   return new Response(
@@ -121,7 +127,10 @@ test("OMLX discovery exposes exact loopback models without a public key or beare
   const account = discoveredOmlxAccount();
   assert.equal(isDiscoveredLocalRuntimeAccount(account), true);
   assert.equal(
-    authorizationForAccountRequest(account, "http://127.0.0.1:8000/v1/chat/completions"),
+    authorizationForAccountRequest(
+      account,
+      "http://127.0.0.1:8000/v1/chat/completions",
+    ),
     undefined,
   );
 });
@@ -304,13 +313,19 @@ test("a non-allowlisted port or API path is refused", async () => {
     undefined,
   );
   assert.throws(
-    () => authorizationForAccountRequest(discoveredAccount(), "http://127.0.0.1:1234/models"),
+    () =>
+      authorizationForAccountRequest(
+        discoveredAccount(),
+        "http://127.0.0.1:1234/models",
+      ),
     /outside the discovered LM Studio API boundary/,
   );
 });
 
 test("redirects are never followed, including to remote origins", async (t) => {
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-no-runtime-home-"));
+  const home = await fs.mkdtemp(
+    path.join(os.tmpdir(), "multivibe-no-runtime-home-"),
+  );
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   let redirectMode: RequestRedirect | undefined;
   let calls = 0;
@@ -337,7 +352,9 @@ test("redirects are never followed, including to remote origins", async (t) => {
 });
 
 test("a stalled probe is bounded by its deadline", async (t) => {
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-no-runtime-home-"));
+  const home = await fs.mkdtemp(
+    path.join(os.tmpdir(), "multivibe-no-runtime-home-"),
+  );
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   const adapter: LocalRuntimeAdapter = {
     ...lmStudio,
@@ -361,7 +378,7 @@ test("a stalled probe is bounded by its deadline", async (t) => {
   assert.ok(Date.now() - startedAt < 1_000);
   assert.equal(results[0].status, "unavailable");
   assert.match(
-    results[0].status === "unavailable" ? results[0].error ?? "" : "",
+    results[0].status === "unavailable" ? (results[0].error ?? "") : "",
     /timed out/,
   );
 });
@@ -412,11 +429,31 @@ test("a remote account without a token is refused before any request", () => {
 
 test("only the exact declared automatic loopback candidates are probed", async () => {
   const cases = [
-    { adapter: ollama, modelsUrl: "http://127.0.0.1:11434/v1/models", ownedBy: undefined },
-    { adapter: lmStudio, modelsUrl: "http://127.0.0.1:1234/v1/models", ownedBy: undefined },
-    { adapter: omlx, modelsUrl: "http://127.0.0.1:8000/v1/models", ownedBy: "omlx" },
-    { adapter: mtplx, modelsUrl: "http://127.0.0.1:8000/v1/models", ownedBy: "mtplx" },
-    { adapter: exo, modelsUrl: "http://127.0.0.1:52415/models", ownedBy: "exo" },
+    {
+      adapter: ollama,
+      modelsUrl: "http://127.0.0.1:11434/v1/models",
+      ownedBy: undefined,
+    },
+    {
+      adapter: lmStudio,
+      modelsUrl: "http://127.0.0.1:1234/v1/models",
+      ownedBy: undefined,
+    },
+    {
+      adapter: omlx,
+      modelsUrl: "http://127.0.0.1:8000/v1/models",
+      ownedBy: "omlx",
+    },
+    {
+      adapter: mtplx,
+      modelsUrl: "http://127.0.0.1:8000/v1/models",
+      ownedBy: "mtplx",
+    },
+    {
+      adapter: exo,
+      modelsUrl: "http://127.0.0.1:52415/models",
+      ownedBy: "exo",
+    },
   ] as const;
 
   for (const testCase of cases) {
@@ -434,12 +471,17 @@ test("only the exact declared automatic loopback candidates are probed", async (
   }
 
   const manualResults = await discoverLocalRuntimes({
-    adapters: LOCAL_RUNTIME_ADAPTERS.filter((adapter) => adapter.candidates.length === 0),
+    adapters: LOCAL_RUNTIME_ADAPTERS.filter(
+      (adapter) => adapter.candidates.length === 0,
+    ),
     fetchFn: async () => {
       throw new Error("manual adapters must not be probed automatically");
     },
   });
-  assert.equal(manualResults.every((result) => result.status === "not-configured"), true);
+  assert.equal(
+    manualResults.every((result) => result.status === "not-configured"),
+    true,
+  );
 });
 
 test("NVIDIA PAIR is a distinct tokenless adapter without an ambiguous automatic probe", async () => {
@@ -457,12 +499,14 @@ test("NVIDIA PAIR is a distinct tokenless adapter without an ambiguous automatic
     },
   });
   assert.equal(calls, 0);
-  assert.deepEqual(results, [{
-    status: "not-configured",
-    adapter: "nvidia-pair",
-    displayName: "NVIDIA Personal AI Router (PAIR)",
-    attempts: 0,
-  }]);
+  assert.deepEqual(results, [
+    {
+      status: "not-configured",
+      adapter: "nvidia-pair",
+      displayName: "NVIDIA Personal AI Router (PAIR)",
+      attempts: 0,
+    },
+  ]);
 });
 
 test("explicit NVIDIA PAIR configuration creates a bounded personal-cluster account and wins over Ollama", async (t) => {
@@ -473,56 +517,99 @@ test("explicit NVIDIA PAIR configuration creates a bounded personal-cluster acco
   await store.addOrUpdate(discoveredAccount("http://127.0.0.1:11434"));
 
   const requested: string[] = [];
-  const pair = await configureNvidiaPairRuntime(store, "http://127.0.0.1:11434", {
-    fetchFn: async (input, init) => {
-      requested.push(String(input));
-      assert.equal(init?.redirect, "manual");
-      assert.equal(new Headers(init?.headers).get("authorization"), null);
-      return modelsResponse(["pair/model"]);
+  const pair = await configureNvidiaPairRuntime(
+    store,
+    "http://127.0.0.1:11434",
+    {
+      fetchFn: async (input, init) => {
+        requested.push(String(input));
+        assert.equal(init?.redirect, "manual");
+        assert.equal(new Headers(init?.headers).get("authorization"), null);
+        return modelsResponse(["pair/model"]);
+      },
     },
-  });
+  );
 
   assert.deepEqual(requested, ["http://127.0.0.1:11434/v1/models"]);
   assert.equal(pair.location, "personal-cluster");
   assert.equal(pair.localRuntime?.source, "multivibe-local-configuration");
   assert.deepEqual(pair.localRuntime?.confirmedModelIds, ["pair/model"]);
-  assert.equal(authorizationForAccountRequest(pair, "http://127.0.0.1:11434/v1/chat/completions"), undefined);
+  assert.equal(
+    authorizationForAccountRequest(
+      pair,
+      "http://127.0.0.1:11434/v1/chat/completions",
+    ),
+    undefined,
+  );
   assert.throws(
     () => authorizationForAccountRequest(pair, "http://127.0.0.1:11434/admin"),
     /outside the configured PAIR boundary/,
   );
-  assert.deepEqual((await store.listAccounts()).map((account) => account.id), ["local-runtime-nvidia-pair"]);
+  assert.deepEqual(
+    (await store.listAccounts()).map((account) => account.id),
+    ["local-runtime-nvidia-pair"],
+  );
 
   const report = await discoverAndPersistLocalRuntimes(store, {
     adapters: [ollama],
     fetchFn: async () => modelsResponse(["pair/model"]),
   });
   assert.equal(report.accounts.length, 0);
-  assert.deepEqual((await store.listAccounts()).map((account) => account.id), ["local-runtime-nvidia-pair"]);
+  assert.deepEqual(
+    (await store.listAccounts()).map((account) => account.id),
+    ["local-runtime-nvidia-pair"],
+  );
 });
 
 test("explicit NVIDIA PAIR rejects non-loopback and unbounded endpoints", async (t) => {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-pair-invalid-"));
+  const dataDir = await fs.mkdtemp(
+    path.join(os.tmpdir(), "multivibe-pair-invalid-"),
+  );
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   const store = new AccountStore(path.join(dataDir, "accounts.json"));
   await store.init();
-  for (const endpoint of ["https://127.0.0.1:11434", "http://localhost:11434", "http://127.0.0.1", "http://127.0.0.1:11434/path"]) {
-    await assert.rejects(configureNvidiaPairRuntime(store, endpoint), /loopback HTTP origin/);
+  for (const endpoint of [
+    "https://127.0.0.1:11434",
+    "http://localhost:11434",
+    "http://127.0.0.1",
+    "http://127.0.0.1:11434/path",
+  ]) {
+    await assert.rejects(
+      configureNvidiaPairRuntime(store, endpoint),
+      /loopback HTTP origin/,
+    );
   }
 });
 
 test("stopped LM Studio is discovered from its default downloaded-model directory", async (t) => {
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-lmstudio-home-"));
+  const home = await fs.mkdtemp(
+    path.join(os.tmpdir(), "multivibe-lmstudio-home-"),
+  );
   t.after(() => fs.rm(home, { recursive: true, force: true }));
-  await fs.mkdir(path.join(home, ".lmstudio", "models", "bartowski", "Qwen-GGUF"), { recursive: true });
-  await fs.writeFile(path.join(home, ".lmstudio", "models", "bartowski", "Qwen-GGUF", "model.gguf"), "weight");
+  await fs.mkdir(
+    path.join(home, ".lmstudio", "models", "bartowski", "Qwen-GGUF"),
+    { recursive: true },
+  );
+  await fs.writeFile(
+    path.join(
+      home,
+      ".lmstudio",
+      "models",
+      "bartowski",
+      "Qwen-GGUF",
+      "model.gguf",
+    ),
+    "weight",
+  );
 
   const [result] = await discoverLocalRuntimes({
     adapters: [lmStudio],
     homeDir: home,
     platform: "darwin",
     env: {},
-    fetchFn: async () => { throw new Error("server stopped"); },
+    fetchFn: async () => {
+      throw new Error("server stopped");
+    },
   });
 
   assert.equal(result?.status, "discovered");
@@ -533,16 +620,30 @@ test("stopped LM Studio is discovered from its default downloaded-model director
 });
 
 test("LM Studio uses its configured absolute download folder while stopped", async (t) => {
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-lmstudio-config-"));
+  const home = await fs.mkdtemp(
+    path.join(os.tmpdir(), "multivibe-lmstudio-config-"),
+  );
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   const downloads = path.join(home, "shared-models");
   await fs.mkdir(path.join(home, ".lmstudio"), { recursive: true });
-  await fs.writeFile(path.join(home, ".lmstudio", "settings.json"), JSON.stringify({ downloadsFolder: downloads }));
-  await fs.mkdir(path.join(downloads, "mlx-community", "Qwen-4bit"), { recursive: true });
-  await fs.writeFile(path.join(downloads, "mlx-community", "Qwen-4bit", "model.safetensors"), "weight");
+  await fs.writeFile(
+    path.join(home, ".lmstudio", "settings.json"),
+    JSON.stringify({ downloadsFolder: downloads }),
+  );
+  await fs.mkdir(path.join(downloads, "mlx-community", "Qwen-4bit"), {
+    recursive: true,
+  });
+  await fs.writeFile(
+    path.join(downloads, "mlx-community", "Qwen-4bit", "model.safetensors"),
+    "weight",
+  );
 
   const [result] = await discoverLocalRuntimes({
-    adapters: [lmStudio], homeDir: home, fetchFn: async () => { throw new Error("offline"); },
+    adapters: [lmStudio],
+    homeDir: home,
+    fetchFn: async () => {
+      throw new Error("offline");
+    },
   });
   assert.equal(result?.status, "discovered");
   if (result?.status === "discovered") {
@@ -551,42 +652,81 @@ test("LM Studio uses its configured absolute download folder while stopped", asy
 });
 
 test("stopped Ollama is discovered from default and OLLAMA_MODELS manifests", async (t) => {
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-ollama-home-"));
+  const home = await fs.mkdtemp(
+    path.join(os.tmpdir(), "multivibe-ollama-home-"),
+  );
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   const custom = path.join(home, "custom-ollama");
-  const defaultManifest = path.join(home, ".ollama", "models", "manifests", "registry.ollama.ai", "library", "qwen2.5", "latest");
-  const customManifest = path.join(custom, "manifests", "registry.example.com", "team", "coder", "7b");
+  const defaultManifest = path.join(
+    home,
+    ".ollama",
+    "models",
+    "manifests",
+    "registry.ollama.ai",
+    "library",
+    "qwen2.5",
+    "latest",
+  );
+  const customManifest = path.join(
+    custom,
+    "manifests",
+    "registry.example.com",
+    "team",
+    "coder",
+    "7b",
+  );
   await fs.mkdir(path.dirname(defaultManifest), { recursive: true });
   await fs.mkdir(path.dirname(customManifest), { recursive: true });
   await fs.writeFile(defaultManifest, "{}");
   await fs.writeFile(customManifest, "{}");
 
   const [result] = await discoverLocalRuntimes({
-    adapters: [ollama], homeDir: home, platform: "darwin", env: { OLLAMA_MODELS: custom },
-    fetchFn: async () => { throw new Error("offline"); },
+    adapters: [ollama],
+    homeDir: home,
+    platform: "darwin",
+    env: { OLLAMA_MODELS: custom },
+    fetchFn: async () => {
+      throw new Error("offline");
+    },
   });
   assert.equal(result?.status, "discovered");
   if (result?.status === "discovered") {
-    assert.deepEqual(result.confirmedModelIds, ["qwen2.5:latest", "team/coder:7b"]);
+    assert.deepEqual(result.confirmedModelIds, [
+      "qwen2.5:latest",
+      "team/coder:7b",
+    ]);
   }
 });
 
 test("stopped OMLX is discovered from its standard model directory", async (t) => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-omlx-home-"));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
-  const model = path.join(home, ".omlx", "models", "mlx-community", "Qwen-4bit");
+  const model = path.join(
+    home,
+    ".omlx",
+    "models",
+    "mlx-community",
+    "Qwen-4bit",
+  );
   await fs.mkdir(model, { recursive: true });
   await fs.writeFile(path.join(model, "config.json"), "{}");
 
   const [result] = await discoverLocalRuntimes({
-    adapters: [omlx], homeDir: home, fetchFn: async () => { throw new Error("offline"); },
+    adapters: [omlx],
+    homeDir: home,
+    fetchFn: async () => {
+      throw new Error("offline");
+    },
   });
   assert.equal(result?.status, "discovered");
-  if (result?.status === "discovered") assert.deepEqual(result.confirmedModelIds, ["mlx-community/Qwen-4bit"]);
+  if (result?.status === "discovered")
+    assert.deepEqual(result.confirmedModelIds, ["mlx-community/Qwen-4bit"]);
 });
 
 test("disk discovery ignores empty, hidden, unrelated, and symlinked model folders", async (t) => {
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-model-filter-"));
+  const home = await fs.mkdtemp(
+    path.join(os.tmpdir(), "multivibe-model-filter-"),
+  );
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   const root = path.join(home, ".lmstudio", "models", "publisher");
   await fs.mkdir(path.join(root, "empty"), { recursive: true });
@@ -597,21 +737,34 @@ test("disk discovery ignores empty, hidden, unrelated, and symlinked model folde
   await fs.symlink(path.join(root, "real"), path.join(root, "linked"));
 
   const [result] = await discoverLocalRuntimes({
-    adapters: [lmStudio], homeDir: home, fetchFn: async () => { throw new Error("offline"); },
+    adapters: [lmStudio],
+    homeDir: home,
+    fetchFn: async () => {
+      throw new Error("offline");
+    },
   });
   assert.equal(result?.status, "discovered");
-  if (result?.status === "discovered") assert.deepEqual(result.confirmedModelIds, ["publisher/real"]);
+  if (result?.status === "discovered")
+    assert.deepEqual(result.confirmedModelIds, ["publisher/real"]);
 });
 
 test("live runtime catalog takes precedence over the filesystem snapshot", async (t) => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-live-wins-"));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
-  const diskModel = path.join(home, ".lmstudio", "models", "publisher", "disk-model");
+  const diskModel = path.join(
+    home,
+    ".lmstudio",
+    "models",
+    "publisher",
+    "disk-model",
+  );
   await fs.mkdir(diskModel, { recursive: true });
   await fs.writeFile(path.join(diskModel, "model.gguf"), "weight");
 
   const [result] = await discoverLocalRuntimes({
-    adapters: [lmStudio], homeDir: home, fetchFn: async () => modelsResponse(["publisher/live-model"]),
+    adapters: [lmStudio],
+    homeDir: home,
+    fetchFn: async () => modelsResponse(["publisher/live-model"]),
   });
   assert.equal(result?.status, "discovered");
   if (result?.status === "discovered") {
@@ -621,20 +774,35 @@ test("live runtime catalog takes precedence over the filesystem snapshot", async
 });
 
 test("offline discovery persists and refreshes one deterministic account", async (t) => {
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-offline-persist-home-"));
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-offline-persist-store-"));
-  t.after(() => Promise.all([
-    fs.rm(home, { recursive: true, force: true }),
-    fs.rm(dataDir, { recursive: true, force: true }),
-  ]));
-  const model = path.join(home, ".lmstudio", "models", "publisher", "offline-model");
+  const home = await fs.mkdtemp(
+    path.join(os.tmpdir(), "multivibe-offline-persist-home-"),
+  );
+  const dataDir = await fs.mkdtemp(
+    path.join(os.tmpdir(), "multivibe-offline-persist-store-"),
+  );
+  t.after(() =>
+    Promise.all([
+      fs.rm(home, { recursive: true, force: true }),
+      fs.rm(dataDir, { recursive: true, force: true }),
+    ]),
+  );
+  const model = path.join(
+    home,
+    ".lmstudio",
+    "models",
+    "publisher",
+    "offline-model",
+  );
   await fs.mkdir(model, { recursive: true });
   await fs.writeFile(path.join(model, "model.gguf"), "weight");
   const store = new AccountStore(path.join(dataDir, "accounts.json"));
   await store.init();
   const options = {
-    adapters: [lmStudio], homeDir: home,
-    fetchFn: async () => { throw new Error("offline"); },
+    adapters: [lmStudio],
+    homeDir: home,
+    fetchFn: async () => {
+      throw new Error("offline");
+    },
   };
 
   await discoverAndPersistLocalRuntimes(store, options);
@@ -644,5 +812,183 @@ test("offline discovery persists and refreshes one deterministic account", async
   assert.equal(accounts.length, 1);
   assert.equal(accounts[0]?.id, "local-runtime-lm-studio");
   assert.equal(accounts[0]?.baseUrl, "http://127.0.0.1:1234");
-  assert.deepEqual(accounts[0]?.localRuntime?.confirmedModelIds, ["publisher/offline-model"]);
+  assert.deepEqual(accounts[0]?.localRuntime?.confirmedModelIds, [
+    "publisher/offline-model",
+  ]);
+});
+
+test("major runtimes with stable default ports are probed on IPv4 and expose bounded requests", async () => {
+  const expected = new Map([
+    ["jan", "http://127.0.0.1:1337"],
+    ["gpt4all", "http://127.0.0.1:4891"],
+    ["koboldcpp", "http://127.0.0.1:5001"],
+    ["xinference", "http://127.0.0.1:9997"],
+    ["sglang", "http://127.0.0.1:30000"],
+    ["aphrodite", "http://127.0.0.1:2242"],
+  ]);
+  for (const [adapterId, endpoint] of expected) {
+    const adapter = LOCAL_RUNTIME_ADAPTERS.find(
+      (candidate) => candidate.id === adapterId,
+    )!;
+    assert.equal(adapter.authentication, "none");
+    assert.deepEqual(
+      adapter.candidates.map((candidate) => candidate.endpoint),
+      [endpoint, endpoint.replace("127.0.0.1", "[::1]")],
+    );
+    const [result] = await discoverLocalRuntimes({
+      adapters: [adapter],
+      fetchFn: async (input) => {
+        assert.equal(String(input), `${endpoint}/v1/models`);
+        return modelsResponse([`${adapterId}/model`]);
+      },
+    });
+    assert.equal(result?.status, "discovered");
+    if (result?.status !== "discovered") continue;
+    const account: Account = {
+      id: `local-runtime-${adapterId}`,
+      provider: "openai-compatible",
+      upstreamMode: "chat/completions",
+      accessToken: "",
+      baseUrl: result.endpoint,
+      enabled: true,
+      location: "local",
+      localRuntime: {
+        source: "multivibe-local-discovery",
+        adapter: result.adapter,
+        endpoint: result.endpoint,
+        confirmedModelIds: result.confirmedModelIds,
+        authentication: "none",
+      },
+    };
+    assert.equal(isDiscoveredLocalRuntimeAccount(account), true);
+    assert.equal(
+      authorizationForAccountRequest(
+        account,
+        `${endpoint}/v1/chat/completions`,
+      ),
+      undefined,
+    );
+  }
+});
+
+test("stopped Jan is discovered from platform-specific downloaded models", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-jan-home-"));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const model = path.join(
+    home,
+    "Library",
+    "Application Support",
+    "Jan",
+    "data",
+    "models",
+    "TheBloke",
+    "Qwen-GGUF",
+  );
+  await fs.mkdir(model, { recursive: true });
+  await fs.writeFile(path.join(model, "qwen.gguf"), "weight");
+  const jan = LOCAL_RUNTIME_ADAPTERS.find((adapter) => adapter.id === "jan")!;
+  const [result] = await discoverLocalRuntimes({
+    adapters: [jan],
+    homeDir: home,
+    platform: "darwin",
+    env: {},
+    fetchFn: async () => {
+      throw new Error("stopped");
+    },
+  });
+  assert.equal(result?.status, "discovered");
+  if (result?.status === "discovered") {
+    assert.equal(result.discoveryMethod, "filesystem");
+    assert.deepEqual(result.confirmedModelIds, ["TheBloke/Qwen-GGUF"]);
+  }
+});
+
+test("stopped GPT4All reads its configured modelPath", async (t) => {
+  const home = await fs.mkdtemp(
+    path.join(os.tmpdir(), "multivibe-gpt4all-home-"),
+  );
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const models = path.join(home, "gpt4all-models");
+  const config = path.join(home, ".config", "nomic.ai", "GPT4All.ini");
+  await fs.mkdir(path.dirname(config), { recursive: true });
+  await fs.mkdir(models, { recursive: true });
+  await fs.writeFile(config, `[General]\nmodelPath=${models}\n`);
+  await fs.writeFile(path.join(models, "mistral-openorca.gguf"), "weight");
+  const gpt4all = LOCAL_RUNTIME_ADAPTERS.find(
+    (adapter) => adapter.id === "gpt4all",
+  )!;
+  const [result] = await discoverLocalRuntimes({
+    adapters: [gpt4all],
+    homeDir: home,
+    platform: "linux",
+    env: {},
+    fetchFn: async () => {
+      throw new Error("stopped");
+    },
+  });
+  assert.equal(result?.status, "discovered");
+  if (result?.status === "discovered")
+    assert.deepEqual(result.confirmedModelIds, ["mistral-openorca"]);
+});
+
+test("stopped Xinference recognizes its private Hugging Face-style cache", async (t) => {
+  const home = await fs.mkdtemp(
+    path.join(os.tmpdir(), "multivibe-xinference-home-"),
+  );
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const snapshot = path.join(
+    home,
+    ".xinference",
+    "cache",
+    "models--Qwen--Qwen2.5-7B",
+    "snapshots",
+    "revision",
+  );
+  await fs.mkdir(snapshot, { recursive: true });
+  await fs.writeFile(path.join(snapshot, "model.safetensors"), "weight");
+  const xinference = LOCAL_RUNTIME_ADAPTERS.find(
+    (adapter) => adapter.id === "xinference",
+  )!;
+  const [result] = await discoverLocalRuntimes({
+    adapters: [xinference],
+    homeDir: home,
+    env: {},
+    fetchFn: async () => {
+      throw new Error("stopped");
+    },
+  });
+  assert.equal(result?.status, "discovered");
+  if (result?.status === "discovered")
+    assert.deepEqual(result.confirmedModelIds, ["Qwen/Qwen2.5-7B"]);
+});
+
+test("explicit model roots enable stopped discovery for server runtimes without stable storage", async (t) => {
+  const home = await fs.mkdtemp(
+    path.join(os.tmpdir(), "multivibe-server-models-"),
+  );
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const cases = [
+    ["koboldcpp", "KOBOLDCPP_MODELS"],
+    ["sglang", "SGLANG_MODEL_PATH"],
+    ["aphrodite", "APHRODITE_MODEL_PATH"],
+  ] as const;
+  for (const [adapterId, envName] of cases) {
+    const root = path.join(home, adapterId);
+    await fs.mkdir(root, { recursive: true });
+    await fs.writeFile(path.join(root, `${adapterId}.gguf`), "weight");
+    const adapter = LOCAL_RUNTIME_ADAPTERS.find(
+      (candidate) => candidate.id === adapterId,
+    )!;
+    const [result] = await discoverLocalRuntimes({
+      adapters: [adapter],
+      homeDir: home,
+      env: { [envName]: root },
+      fetchFn: async () => {
+        throw new Error("stopped");
+      },
+    });
+    assert.equal(result?.status, "discovered");
+    if (result?.status === "discovered")
+      assert.deepEqual(result.confirmedModelIds, [adapterId]);
+  }
 });
