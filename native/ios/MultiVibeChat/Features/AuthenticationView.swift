@@ -202,7 +202,7 @@ struct AuthenticationView: View {
         }
         .sheet(isPresented: $privacyPresented) { NativePrivacyView() }
         .task { await loadConfiguration() }
-        .onDisappear { credentials.cancel(); ssoTask?.cancel(); sso.cancel(); passkeyController.cancel(); passkeyOptions = nil; password = ""; confirmPassword = ""; code = ""; challenge = nil }
+        .onDisappear { credentials.cancel(); /* diagnostic: preserve browser session */ passkeyController.cancel(); passkeyOptions = nil; password = ""; confirmPassword = ""; code = ""; challenge = nil }
     }
 
     private var header: some View {
@@ -327,7 +327,9 @@ struct AuthenticationView: View {
                 catch { try? await ChatAPI.shared.revoke(token: session.refreshToken); throw error }
                 try await manager.accept(session); password = ""
             } catch is CancellationError {
+                self.error = "SSODIAG task cancelled"
             } catch let failure as ASWebAuthenticationSessionError where failure.code == .canceledLogin {
+                self.error = "SSODIAG web cancelled"
             } catch { self.error = error.localizedDescription }
         }
     }
