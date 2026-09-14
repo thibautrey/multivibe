@@ -1,3 +1,4 @@
+import { readHostPreparationOperation, type HostPreparationOperation } from "./local-preparation-transport.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { isIP } from "node:net";
@@ -247,6 +248,7 @@ export type ProviderAgentControl = {
   getDemandPlan(): Promise<ProviderDemandPlan>;
   submitSignedDemand(envelope: Record<string, unknown>): Promise<{ duplicate: boolean; plan: ProviderDemandPlan }>;
   estimateModelCompatibility(contextTokens: number): Promise<unknown>;
+  runLocalPreparationOperation?(input: HostPreparationOperation, signal: AbortSignal, progress: (completed:number,total:number)=>Promise<void>): Promise<{runtimeModel?:string}>;
   getManagedOllamaStatus(): Promise<ProviderManagedOllamaView>;
   installManagedOllama(policyRevision: number): Promise<ProviderManagedOllamaView>;
   startManagedOllama(policyRevision: number): Promise<ProviderManagedOllamaView>;
@@ -648,6 +650,7 @@ export function startEmbeddedProviderAgent(options: {
     getDemandPlan: unavailable,
     submitSignedDemand: unavailable,
     estimateModelCompatibility: unavailable,
+    runLocalPreparationOperation: unavailable,
     getManagedOllamaStatus: unavailable,
     installManagedOllama: unavailable,
     startManagedOllama: unavailable,
@@ -843,6 +846,15 @@ export function startEmbeddedProviderAgent(options: {
         body: encoded,
       }, [200, 201]);
       return { duplicate: result.response.status === 200, plan: result.value };
+    },
+    runLocalPreparationOperation: async (input, signal, progress) => {
+      const {baseUrl,launch}=await currentEndpoint();
+      const operation=new AbortController();
+      const combined=AbortSignal.any([signal,launch.abortController.signal,operation.signal,AbortSignal.timeout(2*60*60*1000)]);
+      try {
+        const response=await fetch(`${baseUrl}/v1/local-preparation/operation`,{method:"POST",headers:{"authorization":`Bearer ${launch.controlToken}`,"content-type":"application/json"},body:JSON.stringify(input),redirect:"error",signal:combined});
+        return await readHostPreparationOperation(response,input,combined,progress);
+      } finally {operation.abort();}
     },
     estimateModelCompatibility: async (contextTokens) =>
       (await request<unknown>("/v1/model-compatibility", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ context_tokens: contextTokens }) }, [200], 125_000)).value,
