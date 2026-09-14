@@ -31,6 +31,22 @@ test("translates tool history, images, structured output and generation controls
   }
 });
 
+test("accepts OpenAI assistant content arrays and drops empty assistant placeholders", () => {
+  const options = sdkCallOptions({ messages: [
+    {role: "user", content: "Start"},
+    {role: "assistant", content: []},
+    {role: "assistant", content: [{type: "text", text: "Answer"}, {type: "refusal", refusal: "Cannot continue"}]},
+    {role: "assistant", content: [], tool_calls: [{id: "call_2", type: "function", function: {name: "lookup", arguments: "{}"}}]},
+    {role: "tool", tool_call_id: "call_2", content: "done"},
+  ] }, new AbortController().signal);
+
+  assert.equal(options.prompt.length, 4);
+  assert.deepEqual((options.prompt[1].content as any[]).map((part) => part.text), ["Answer", "Cannot continue"]);
+  assert.equal((options.prompt[2].content as any[])[0].type, "tool-call");
+  assert.equal(options.prompt[3].role, "tool");
+  assert.throws(() => sdkCallOptions({messages: [{role: "assistant", content: [{type: "image_url", image_url: {url: "https://example.test/image.png"}}]}]}, new AbortController().signal), /Unsupported assistant content part/);
+});
+
 test("streams text and function arguments incrementally without repeating completed tool calls", async () => {
   const parts: LanguageModelV4StreamPart[] = [
     {type: "text-delta", id: "text", delta: "Hello"},
