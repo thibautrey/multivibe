@@ -5,8 +5,9 @@ export type HostPreparationOperation = {
   artifact:{model_id:string;revision:string;filename:string;sha256:string;bytes:number};
   context_tokens:number;
   runtime_model?:string;
+  runtime_quote?:{version:string;platform:string;sha256:string;bytes:number};
 };
-const errors = new Set(['local_test_failed','cancelled','preparation_timeout','host_permission_required','new_preflight_required','storage_unavailable','insufficient_disk','download_budget_exceeded','artifact_verification_failed','local_preparation_failed']);
+const errors = new Set(['runtime_download_quote_required','local_test_failed','cancelled','preparation_timeout','host_permission_required','new_preflight_required','storage_unavailable','insufficient_disk','download_budget_exceeded','artifact_verification_failed','local_preparation_failed']);
 
 /** Incremental, bounded NDJSON; EOF alone never means operation success. */
 export async function readHostPreparationOperation(response:Response,input:HostPreparationOperation,signal:AbortSignal,progress:(completed:number,total:number)=>Promise<void>):Promise<{runtimeModel?:string;output?:string}> {

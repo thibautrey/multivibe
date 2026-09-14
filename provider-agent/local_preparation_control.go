@@ -16,19 +16,21 @@ import (
 // No arbitrary URL, filesystem path, command, runtime settings or Cloud route
 // can be supplied here. Each operation rechecks the complete policy fence.
 type localPreparationOperation struct {
-	Operation      string                   `json:"operation"`
-	PolicyRevision uint64                   `json:"policy_revision"`
-	Artifact       localPreparationArtifact `json:"artifact"`
-	ContextTokens  uint64                   `json:"context_tokens"`
-	RuntimeModel   string                   `json:"runtime_model,omitempty"`
+	Operation      string                        `json:"operation"`
+	PolicyRevision uint64                        `json:"policy_revision"`
+	Artifact       localPreparationArtifact      `json:"artifact"`
+	ContextTokens  uint64                        `json:"context_tokens"`
+	RuntimeQuote   *localPreparationRuntimeQuote `json:"runtime_quote,omitempty"`
+	RuntimeModel   string                        `json:"runtime_model,omitempty"`
 }
 type localPreparationEvent struct {
-	Type           string `json:"type"`
-	CompletedBytes uint64 `json:"completed_bytes,omitempty"`
-	TotalBytes     uint64 `json:"total_bytes,omitempty"`
-	RuntimeModel   string `json:"runtime_model,omitempty"`
-	Error          string `json:"error,omitempty"`
-	Output         string `json:"output,omitempty"`
+	Type           string                        `json:"type"`
+	CompletedBytes uint64                        `json:"completed_bytes,omitempty"`
+	TotalBytes     uint64                        `json:"total_bytes,omitempty"`
+	RuntimeQuote   *localPreparationRuntimeQuote `json:"runtime_quote,omitempty"`
+	RuntimeModel   string                        `json:"runtime_model,omitempty"`
+	Error          string                        `json:"error,omitempty"`
+	Output         string                        `json:"output,omitempty"`
 }
 type localPreparationExecute func(context.Context, localPreparationOperation, managedModelDownloadProgress) (string, error)
 
@@ -43,7 +45,7 @@ func localPreparationControlHandler(controller *managedProviderController, token
 		}
 		switch input.Operation {
 		case "install":
-			return "", controller.installLocalPreparationRuntime(ctx, expected)
+			return "", controller.installQuotedLocalPreparationRuntime(ctx, expected, input.RuntimeQuote)
 		case "start":
 			return "", controller.startLocalPreparationRuntime(ctx, expected)
 		case "download":
@@ -82,6 +84,10 @@ func localPreparationOperationHandler(token string, execute localPreparationExec
 		}
 		if _, err = input.Artifact.sourceURL(); err != nil {
 			http.Error(w, "invalid artifact", 400)
+			return
+		}
+		if (input.Operation == "install" && !input.RuntimeQuote.valid()) || (input.Operation != "install" && input.RuntimeQuote != nil) {
+			http.Error(w, "invalid runtime quote", 400)
 			return
 		}
 		switch input.Operation {
@@ -142,6 +148,8 @@ func localPreparationOperationHandler(token string, execute localPreparationExec
 }
 func localPreparationPublicError(err error) string {
 	switch {
+	case errors.Is(err, errLocalPreparationRuntimeQuote):
+		return "runtime_download_quote_required"
 	case errors.Is(err, errLocalPreparationProbe):
 		return "local_test_failed"
 	case errors.Is(err, context.Canceled):
