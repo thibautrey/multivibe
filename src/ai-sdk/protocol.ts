@@ -13,15 +13,18 @@ export function sdkCallOptions(body: any, signal: AbortSignal): LanguageModelV4C
   }
   const toolNames = new Map<string, string>();
   const prompt: LanguageModelV4Prompt = [];
-  for (const message of body.messages) {
+  for (let messageIndex = 0; messageIndex < body.messages.length; messageIndex++) {
+    const message = body.messages[messageIndex];
     if (!message || typeof message !== "object") invalid("Invalid message");
     if (message.role === "system" || message.role === "developer") {
       if (typeof message.content !== "string") invalid("System messages must contain text");
       prompt.push({ role: "system", content: message.content });
     } else if (message.role === "tool") {
       const id = requiredString(message.tool_call_id, "tool_call_id");
-      const toolName = toolNames.get(id) ?? message.name;
-      if (!toolName) invalid("Tool result has no matching tool call");
+      const toolName = toolNames.get(id);
+      // Conversation truncation can leave an orphaned tool result. Strict
+      // OpenAI-compatible providers reject it, so omit it from provider history.
+      if (!toolName) continue;
       if (typeof message.content !== "string") invalid("Tool results must contain text");
       prompt.push({ role: "tool", content: [{ type: "tool-result", toolCallId: id, toolName, output: { type: "text", value: message.content } }] });
     } else if (message.role === "user") {
@@ -60,9 +63,17 @@ export function sdkCallOptions(body: any, signal: AbortSignal): LanguageModelV4C
       }
       if (typeof message.reasoning_content === "string" && message.reasoning_content) content.push({ type: "reasoning", text: message.reasoning_content, providerOptions: message.provider_options });
       if (message.tool_calls !== undefined && !Array.isArray(message.tool_calls)) invalid("tool_calls must be an array");
+      const immediateToolResults = new Set<string>();
+      for (let next = messageIndex + 1; next < body.messages.length && body.messages[next]?.role === "tool"; next++) {
+        const resultId = body.messages[next]?.tool_call_id;
+        if (typeof resultId === "string" && resultId) immediateToolResults.add(resultId);
+      }
       for (const call of message.tool_calls ?? []) {
         if (call?.type !== "function") invalid("Only function tools are supported");
         const id = requiredString(call.id, "tool call ID");
+        // DeepSeek requires every declared call to have an immediately following
+        // tool result. Codex can send truncated history with only some results.
+        if (!immediateToolResults.has(id)) continue;
         const name = requiredString(call.function?.name, "tool name");
         let input: unknown;
         try { input = JSON.parse(call.function.arguments); } catch { invalid("Tool arguments must be valid JSON"); }
