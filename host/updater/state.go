@@ -263,6 +263,9 @@ func emptyAsNil(value string) any {
 }
 
 func setFailure(store stateStore, state *updaterState, code string, err error) error {
+	// Retry transient failures on the next scheduler tick after a short cooldown,
+	// rather than retaining the normal 10-14 hour successful-check interval.
+	state.NextCheckAt = time.Now().UTC().Add(5 * time.Minute).Format(time.RFC3339Nano)
 	state.Status = "failed"
 	state.LastErrorCode = code
 	state.LastError = err.Error()

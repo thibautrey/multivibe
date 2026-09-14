@@ -593,7 +593,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths="$LIBRARY_DIRECTORY" "$BIN_DIRECTORY" "$DATA_DIRECTORY" "$SYSTEMD_DIRECTORY"
+ReadWritePaths="$LIBRARY_DIRECTORY" "$BIN_DIRECTORY" "$DATA_DIRECTORY" "$SYSTEMD_DIRECTORY" "$AUTOSTART_DIRECTORY" "$APPLICATIONS_DIRECTORY"
 TimeoutStartSec=45min
 EOF
     chmod 0600 "$UPDATE_SERVICE_STAGING"
@@ -615,8 +615,8 @@ Description=Schedule verified MultiVibe Host update checks
 
 [Timer]
 OnBootSec=5m
-OnUnitActiveSec=1h
-RandomizedDelaySec=20m
+OnUnitInactiveSec=1m
+RandomizedDelaySec=15s
 Persistent=true
 Unit=multivibe-host-update.service
 

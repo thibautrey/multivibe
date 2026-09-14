@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 const updateServiceLabel = "cloud.multivibe.host.update"
@@ -62,8 +63,21 @@ func ensureScheduler() error {
 	}
 	path := filepath.Join(directory, updateServiceLabel+".plist")
 	service := fmt.Sprintf("gui/%d/%s", os.Getuid(), updateServiceLabel)
-	// Never unload a running updater: it may currently be replacing the bundle.
-	if exec.Command("/bin/launchctl", "print", service).Run() == nil {
+	// Serialize reconciliation with installation. Never boot out an updater that
+	// owns the mutation lock, including one currently replacing this bundle.
+	store, err := openStateStore()
+	if err != nil {
+		return err
+	}
+	unlock, err := store.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	desired := schedulerPlist(executable, data)
+	loaded, printErr := exec.Command("/bin/launchctl", "print", service).Output()
+	existing, _ := os.ReadFile(path)
+	if printErr == nil && schedulerMatches(existing, desired, string(loaded), executable) {
 		return nil
 	}
 	if info, err := os.Lstat(path); err == nil && !updaterPrivateFile(path, info) {
@@ -74,7 +88,7 @@ func ensureScheduler() error {
 		return err
 	}
 	defer os.Remove(temporary.Name())
-	if _, err := temporary.Write(schedulerPlist(executable, data)); err != nil {
+	if _, err := temporary.Write(desired); err != nil {
 		temporary.Close()
 		return err
 	}
@@ -83,6 +97,11 @@ func ensureScheduler() error {
 	}
 	if err := os.Rename(temporary.Name(), path); err != nil {
 		return err
+	}
+	if printErr == nil {
+		if err := exec.Command("/bin/launchctl", "bootout", service).Run(); err != nil {
+			return errors.New("the outdated background update service could not be unloaded")
+		}
 	}
 	domain := fmt.Sprintf("gui/%d", os.Getuid())
 	if err := exec.Command("/bin/launchctl", "enable", service).Run(); err != nil {
@@ -100,4 +119,12 @@ func wakeScheduler() error {
 		return errors.New("the background update service could not be started")
 	}
 	return nil
+}
+
+// The plist on disk may have been replaced while launchd retained its previous
+// definition during an automatic install. Check the loaded interval too.
+func schedulerMatches(existing, desired []byte, loaded, executable string) bool {
+	return bytes.Equal(existing, desired) &&
+		strings.Contains(loaded, "run interval = 60 seconds") &&
+		strings.Contains(loaded, "program = "+executable+"\n")
 }

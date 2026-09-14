@@ -125,3 +125,16 @@ test("Docker updates stay outside the container and roll back through Compose", 
   assert.match(updater, /the previous image was restored/u);
   assert.match(updater, /RepoDigests/u);
 });
+
+test("scheduler cadence supports bounded retry and Linux installer writes", async () => {
+  const linux = await read("packaging/linux/install.sh");
+  const macos = await read("packaging/macos/install.sh");
+  const windows = await read("packaging/windows/install.ps1");
+  const writable = linux.match(/^ReadWritePaths=(.*)$/mu)?.[1];
+  for (const directory of ["LIBRARY_DIRECTORY", "BIN_DIRECTORY", "DATA_DIRECTORY", "SYSTEMD_DIRECTORY", "AUTOSTART_DIRECTORY", "APPLICATIONS_DIRECTORY"]) {
+    assert.ok(writable?.includes(`"$${directory}"`), `${directory} must be writable by the installer`);
+  }
+  assert.match(linux, /OnUnitInactiveSec=1m/u);
+  assert.match(macos, /<key>StartInterval<\/key>\s*<integer>60<\/integer>/u);
+  assert.match(windows, /-RepetitionInterval \(New-TimeSpan -Minutes 1\)/u);
+});

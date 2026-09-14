@@ -291,15 +291,15 @@ func (update *updater) applyNative(ctx context.Context, state *updaterState) err
 	if err := update.store.save(*state); err != nil {
 		return err
 	}
-	if err := update.drain(ctx); err != nil {
-		return setFailure(update.store, state, "host_not_idle", err)
-	}
 	installed := false
 	defer func() {
 		if !installed {
 			update.resumeDrain()
 		}
 	}()
+	if err := update.drain(ctx); err != nil {
+		return setFailure(update.store, state, "host_not_idle", err)
+	}
 	var installErr error
 	if runtime.GOOS == "linux" {
 		staging, err := os.MkdirTemp(update.store.cache, ".extract-*")
@@ -354,7 +354,7 @@ func (update *updater) applyNative(ctx context.Context, state *updaterState) err
 		installErr = errors.New("native updates are unsupported on this operating system")
 	}
 	if installErr != nil {
-		return setFailure(update.store, state, "installation_failed", errors.New("the update installer failed and restored the previous Host"))
+		return setFailure(update.store, state, "installation_failed", errors.New("the update installer failed; consult the update log for rollback status"))
 	}
 	installed = true
 	state.CurrentVersion = state.AvailableVersion

@@ -4,19 +4,27 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestResolveHostControlPlanePort(t *testing.T) {
 	tests := []struct {
-		name          string
-		goos          string
-		controlPlane  string
-		hostPort      string
-		want          string
-		wantError     bool
+		name         string
+		goos         string
+		controlPlane string
+		hostPort     string
+		want         string
+		wantError    bool
 	}{
 		{name: "macOS default", goos: "darwin", want: "1456"},
 		{name: "macOS ignores edge port", goos: "darwin", hostPort: "1455", want: "1456"},
@@ -177,5 +185,56 @@ func TestWriteDockerOverride(t *testing.T) {
 	contents, _ := os.ReadFile(path)
 	if string(contents) != "# Managed by MultiVibe Host updater\nservices:\n  multivibe-host:\n    image: "+valid+"\n" {
 		t.Fatalf("unexpected override: %q", contents)
+	}
+}
+
+func TestApplyResumesAfterReadinessCancellation(t *testing.T) {
+	store := testStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var began, resumed atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/admin/host-update/drain":
+			began.Store(true)
+			w.Write([]byte(`{}`))
+		case "/admin/host-update/readiness":
+			cancel()
+			w.Write([]byte(`{"ready":false}`))
+		case "/admin/host-update/resume":
+			resumed.Store(true)
+			w.Write([]byte(`{}`))
+		default:
+			t.Errorf("unexpected route: %s", r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("MULTIVIBE_CONTROL_PLANE_PORT", strings.Split(strings.TrimPrefix(server.URL, "http://"), ":")[1])
+	credentials := `{"schema_version":"multivibe-host-credentials-v1","admin_token":"` + strings.Repeat("a", 32) + `","proxy_api_key":"` + strings.Repeat("b", 32) + `"}`
+	if err := os.WriteFile(filepath.Join(store.directory, "host-credentials.json"), []byte(credentials), 0600); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(store.cache, "archive")
+	contents := []byte("verified archive; installer must never run")
+	if err := os.WriteFile(archive, contents, 0600); err != nil {
+		t.Fatal(err)
+	}
+	hash := sha256.Sum256(contents)
+	digest := hex.EncodeToString(hash[:])
+	state, _ := defaultState("1.0.0")
+	state.AvailableVersion = "1.1.0"
+	state.DownloadedPath = archive
+	state.DownloadedSHA256 = digest
+	state.Target = &updateTarget{Kind: "archive", Size: int64(len(contents)), SHA256: digest}
+	update := updater{store: store, now: time.Now}
+	if err := update.applyNative(ctx, &state); err == nil {
+		t.Fatal("cancelled readiness must fail")
+	}
+	if !began.Load() || !resumed.Load() {
+		t.Fatalf("drain cleanup missing: begin=%v resume=%v", began.Load(), resumed.Load())
+	}
+	if state.LastErrorCode != "host_not_idle" {
+		t.Fatalf("unexpected failure: %#v", state)
 	}
 }

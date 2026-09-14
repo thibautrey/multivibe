@@ -40,7 +40,11 @@ func newUpdater(container bool) (*updater, updaterState, error) {
 		reconcileCurrentVersion(&state, hostUpdaterVersion)
 	}
 	client := &http.Client{
-		Timeout: 60 * time.Second,
+		// Artifact transfers are bounded by the operation context, not a small
+		// whole-response timeout. Large native packages can take many minutes.
+		Timeout: 0,
+		Transport: &http.Transport{Proxy: http.ProxyFromEnvironment,
+			ResponseHeaderTimeout: 30 * time.Second, TLSHandshakeTimeout: 15 * time.Second},
 		CheckRedirect: func(request *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return errors.New("too many update download redirects")
@@ -89,7 +93,9 @@ func (update *updater) fetchFeed(ctx context.Context, channel, etag string) ([]b
 		return nil, "", false, err
 	}
 	fetch := func(rawURL, accept, conditionalETag string, maximum int64) ([]byte, string, bool, error) {
-		request, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		feedContext, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+		request, requestErr := http.NewRequestWithContext(feedContext, http.MethodGet, rawURL, nil)
 		if requestErr != nil {
 			return nil, "", false, requestErr
 		}
@@ -154,7 +160,8 @@ func (update *updater) fetchFeed(ctx context.Context, channel, etag string) ([]b
 
 func (update *updater) check(ctx context.Context, state *updaterState, force bool) error {
 	now := update.now().UTC()
-	if !force && state.NextCheckAt != "" {
+	interrupted := state.Status == "checking" || state.Status == "downloading" || state.Status == "installing"
+	if !force && !interrupted && state.NextCheckAt != "" {
 		next, err := time.Parse(time.RFC3339Nano, state.NextCheckAt)
 		if err == nil && now.Before(next) {
 			return nil
