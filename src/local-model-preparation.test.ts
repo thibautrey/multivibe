@@ -44,3 +44,13 @@ test('download cannot exceed approved volume and runtime errors are redacted',as
  const {service,file}=await fixture(t,{download});const job=await service.quote(quote.modelId);await service.consent(job.id,job.consentDigest);await service.wait(job.id);assert.equal((await service.list())[0].stage,'failed');assert.equal((await fs.readFile(file,'utf8')).includes('Bearer secret'),false);
  }
 });
+
+test('actionable Host failures survive persistence without exposing raw errors',async t=>{
+ for(const code of ['host_permission_required','runtime_download_quote_required','import_reconciliation_required','new_preflight_required','insufficient_disk','resources_unknown','local_preparation_unavailable']) {
+  const {service}=await fixture(t,{install:async()=>{throw Error(code);}});
+  const job=await service.quote(quote.modelId);
+  await service.consent(job.id,job.consentDigest);await service.wait(job.id);
+  const stopped=(await service.list())[0];
+  assert.equal(stopped.stage,'failed');assert.equal(stopped.error,code);assert.equal(stopped.chatModelId,undefined);
+ }
+});

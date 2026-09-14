@@ -143,7 +143,7 @@ export class LocalModelPreparation {
         job.stage=signal.aborted?'cancelled':'failed';
         // Do not persist arbitrary driver exception text: it can contain credentials.
         const code=error instanceof Error?error.message:'';
-        job.error=signal.aborted?'cancelled':new Set(['download_exceeds_consent','invalid_download_progress','local_test_failed','chat_route_not_ready']).has(code)?code:'preparation_failed';
+        job.error=signal.aborted?'cancelled':new Set(['download_exceeds_consent','invalid_download_progress','local_test_failed','chat_route_not_ready','host_permission_required','runtime_download_quote_required','import_reconciliation_required','new_preflight_required','insufficient_disk','resources_unknown','local_preparation_unavailable']).has(code)?code:'preparation_failed';
         delete job.chatModelId;job.updatedAt=this.now();await this.persist();
       });
     }
