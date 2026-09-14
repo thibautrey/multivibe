@@ -114,3 +114,30 @@ test('missing runtime installs only against separately consented archive and tot
  assert.deepEqual(f.calls,['install','start','download','import','test','chat']);
  assert.equal((await f.service.list())[0].stage,'ready');
 });
+
+test('approved memory evidence persists and changed resources prevent execution', async t => {
+  const f = await fixture(t);
+  f.resolved.memoryEvidence = { estimator: 'dense-v1', configDigest: 'd'.repeat(64), requiredBytes: 300 };
+  f.resolved.quote.configurationKey = HostLocalPreparationDriver.configurationKey(f.resolved);
+  const resources = { observed_at: new Date().toISOString(), policy_revision: 1,
+    free_host_memory_bytes: 1000, free_accelerator_memory_bytes: 1000,
+    free_storage_bytes: 1000, occupied_storage_bytes: 0 };
+  Object.assign(f.dependencies.host, { getLocalPreparationResources: async () => resources,
+    getCapability: async () => ({ accelerator_memory_bytes: 1000 }),
+    getManifest: async () => ({ device_key_id: 'machine' }) });
+  const quote = await f.driver.preflight('owner/model');
+  const restarted = new HostLocalPreparationDriver(f.file, f.dependencies);
+  await restarted.validate(quote);
+  resources.free_host_memory_bytes = 200;
+  await assert.rejects(restarted.validate(quote), /insufficient_memory/);
+  await assert.rejects(restarted.install(quote, new AbortController().signal), /insufficient_memory/);
+  assert.deepEqual(f.calls, []);
+  resources.free_host_memory_bytes = 1000;
+  resources.free_storage_bytes = 150;
+  await assert.rejects(restarted.validate(quote), /insufficient_disk/);
+  resources.free_storage_bytes = 1000;
+  resources.observed_at = 'invalid';
+  await assert.rejects(restarted.validate(quote), /resources_unknown/);
+  f.resolved.memoryEvidence.requiredBytes++;
+  await assert.rejects(f.driver.preflight('owner/model'), /invalid_preflight/);
+});
