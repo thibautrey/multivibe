@@ -90,13 +90,15 @@ struct AuthenticationView: View {
     }
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                VStack(spacing: 16) {
                     Label("MultiVibe", systemImage: "bubble.left.and.bubble.right.fill")
                         .font(.largeTitle.bold()).foregroundStyle(MultiVibeTheme.accent).padding(.vertical)
                     Text("Vos modèles, vos conversations.").foregroundStyle(.secondary)
+                    Text(signup ? "Créons votre espace." : "Ravi de vous retrouver.").font(.title2.bold())
                 }
-                Section(signup ? "Créer un compte" : "Connexion") {
+                VStack(alignment: .leading, spacing: 16) {
                     if challenge != nil {
                         TextField("Code à six chiffres", text: $code).textContentType(.oneTimeCode).keyboardType(.numberPad)
                             .focused($focusedField, equals: .code).disabled(busy)
@@ -129,17 +131,18 @@ struct AuthenticationView: View {
                     }
                     }
                     Button(challenge != nil ? "Vérifier le code" : signup ? "Créer mon compte" : "Se connecter") { authenticate() }
-                        .disabled(!canSubmit)
+                        .buttonStyle(.borderedProminent).controlSize(.large)
+                        .frame(maxWidth: .infinity).disabled(!canSubmit)
                     if busy { ProgressView() }
                 }
                 if challenge == nil {
-                    Section {
+                    VStack(alignment: .leading, spacing: 12) {
                         Button("Continuer avec le SSO", systemImage: "person.badge.key.fill") { authenticateSSO() }.disabled(busy)
                         Text("Choisissez votre fournisseur dans la fenêtre sécurisée. Les conditions et la double authentification y sont conservées.").font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                if let message = error ?? manager.error { Section { Text(message).foregroundStyle(.red) } }
-                Section {
+                if let message = error ?? manager.error { Group { Text(message).foregroundStyle(.red) } }
+                VStack(alignment: .leading, spacing: 12) {
                     if challenge != nil {
                         Button("Recommencer la connexion") { challenge = nil; code = ""; password = ""; error = nil }
                     } else {
@@ -147,11 +150,15 @@ struct AuthenticationView: View {
                         if !signup { Button("Mot de passe oublié ?") { manager.passwordRecovery = PasswordRecoveryRequest(email: email) } }
                     }
                 }.disabled(busy)
-                Section { Button("Confidentialité et données", systemImage: "hand.raised") { privacyPresented = true } }
+                VStack(alignment: .leading, spacing: 12) { Button("Confidentialité et données", systemImage: "hand.raised") { privacyPresented = true } }
             }
-            .scrollContentBackground(.hidden)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 480).padding(24).frame(maxWidth: .infinity)
+            }
+            .scrollDismissesKeyboard(.interactively)
             .background(MultiVibeTheme.background)
-            .navigationTitle(challenge != nil ? "Double authentification" : signup ? "Bienvenue" : "MultiVibe Chat")
+            .navigationTitle(challenge != nil ? "Double authentification" : "")
+            .navigationBarTitleDisplayMode(.inline)
 
         }
         .sheet(isPresented: $privacyPresented) { NativePrivacyView() }
