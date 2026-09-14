@@ -329,7 +329,7 @@ struct AuthenticationView: View {
             } catch is CancellationError {
                 self.error = "SSODIAG task cancelled"
             } catch let failure as ASWebAuthenticationSessionError where failure.code == .canceledLogin {
-                self.error = "SSODIAG web cancelled"
+                self.error = "SSODIAG web cancelled: \(failure)"
             } catch { self.error = error.localizedDescription }
         }
     }
