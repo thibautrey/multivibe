@@ -42,14 +42,14 @@ export function createOpenModelCatalog(fetcher: typeof fetch = fetch, now = Date
           let url: string | undefined = `${source}/api/models?pipeline_tag=text-generation&sort=${sort}&direction=-1&limit=100&full=true&config=true`;
           const rows: OpenModel[] = [];
           for (let page=0; page<2 && url; page++) {
-            const response = await fetcher(url, {signal: AbortSignal.timeout(12000), redirect:'error'});
+            const response: Response = await fetcher(url, {signal: AbortSignal.timeout(12000), redirect:'error'});
             if (!response.ok) throw new Error('Public catalog unavailable');
             const raw = await response.json();
             const parsed = parseOpenModels(raw);
             for (const row of parsed) { if (sort === 'trendingScore') row.trendingRank = rows.length; rows.push(row); }
-            const next = response.headers.get('link')?.match(/<([^>]+)>;\s*rel="next"/)?.[1];
+            const next: string | undefined = response.headers.get('link')?.match(/<([^>]+)>;\s*rel="next"/)?.[1];
             url = undefined;
-            if (next) { const u = new URL(next, source); if (u.origin !== source || u.pathname !== '/api/models' || u.username || u.password) throw new Error('Unsafe catalog pagination'); url = u.href; }
+            if (next) { const u: URL = new URL(next, source); if (u.origin !== source || u.pathname !== '/api/models' || u.username || u.password) throw new Error('Unsafe catalog pagination'); url = u.href; }
           }
           return rows;
         }));

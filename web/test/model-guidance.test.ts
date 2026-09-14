@@ -5,6 +5,8 @@ import { modelView, modelNeeds, relevantChoices, recommendedChoices } from '../s
 import type { CatalogEntry, ModelRoute } from '../src/lib/modelCatalog.js';
 const route = (source: ModelRoute['source'], ready = true): ModelRoute => ({ source, ready, label: source, accountId: source, modelId: 'gpt-5' });
 const entry = (routes: ModelRoute[], id = 'gpt-5'): CatalogEntry => ({ id, name: id, routes });
+
+const evidenceFor = (ids: string[]) => ids.map(id => ({...parseOpenModels([{id:'publisher/model',private:false,gated:false,pipeline_tag:'text-generation',tags:['conversational','license:custom']}])[0],id}));
 test('new users and invalid persisted values use guided mode', () => {
   for (const value of [null, undefined, '', 'beginner', '{}']) assert.equal(modelView(value), 'guided');
   assert.equal(modelView('expert'), 'expert'); assert.equal(modelView('compare'), 'compare');
@@ -34,7 +36,7 @@ test('guided selection is capped at three and includes other execution mode', ()
     entry([{ ...route('local'), modelId: 'qwen2.5:0.5b' }], 'qwen2.5:0.5b'),
     entry([{ ...route('cloud'), modelId: 'openai/gpt-5' }], 'openai/gpt-5'),
     entry([{ ...route('provider'), modelId: 'openrouter/openai/gpt-5' }], 'openrouter/openai/gpt-5'),
-  ], 'writing');
+  ], 'writing', evidenceFor(['gpt-5','qwen2.5:0.5b','openai/gpt-5','openrouter/openai/gpt-5']));
   const choices = recommendedChoices(candidates);
   assert.equal(choices.length, 3); assert.ok(choices.some(choice => choice.route.source === 'local'));
   assert.ok(choices.some(choice => choice.route.source !== 'local'));
@@ -42,7 +44,7 @@ test('guided selection is capped at three and includes other execution mode', ()
 });
 test('a writing-only model is not recommended for coding or documents', () => {
   const models = [entry([{ ...route('local'), modelId: 'qwen2.5:0.5b' }], 'qwen2.5:0.5b')];
-  assert.equal(relevantChoices(models, 'writing').length, 1);
+  assert.equal(relevantChoices(models, 'writing', evidenceFor(['qwen2.5:0.5b'])).length, 1);
   assert.deepEqual(relevantChoices(models, 'coding'), []);
   assert.deepEqual(relevantChoices(models, 'documents'), []);
 });
@@ -64,5 +66,5 @@ test('Cloud verification never fabricates a chat route and fails closed', async 
 
 test('a reviewed alias never certifies an unrelated route', () => {
   const models = [entry([{ ...route('provider'), modelId: 'unreviewed-variant' }])];
-  assert.deepEqual(relevantChoices(models, 'writing'), []);
+  assert.deepEqual(relevantChoices(models, 'writing', evidenceFor(['qwen2.5:0.5b'])), []);
 });
