@@ -102,7 +102,7 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
     else onConfigure(route);
   };
   const actionLabel = (route: ModelRoute) => route.ready ? canConfigure ? 'Use model' : 'Open chat' : !canConfigure ? 'Ask your admin' : route.source === 'cloud' ? cloudConnected ? 'View access' : 'Connect Cloud' : 'Set up';
-  return <section className="panel models-catalog" aria-label="Models">
+  return <section className="models-catalog" aria-label="Models">
     <header className="models-page-heading"><div><h2>Find the right model</h2><p>Choose a task. Discover models for your needs and your Host.</p></div>
     <div className="models-level-choice"><span id="models-level-label" className="models-level-label">My experience level</span><nav className="models-view-switch" aria-labelledby="models-level-label">{([['guided', 'Beginner'], ['compare', 'Advanced'], ['expert', 'Expert']] as const).map(([value, label]) => <button key={value} className="btn ghost" aria-pressed={view === value} onClick={() => changeView(value)}>{label}</button>)}</nav></div></header>
     {cloudConnected && canConfigure && <div className="models-access-notice" role="status">
