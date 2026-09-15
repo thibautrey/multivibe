@@ -18,7 +18,9 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
   const [request,setRequest] = useState(0); const [query,setQuery] = useState(''); const [limit,setLimit] = useState(compact ? 6 : 12);
   const [preparing,setPreparing] = useState<string|null>(null);
   const [showChart,setShowChart] = useState(false);
-  const [benchmark,setBenchmark] = useState('');
+  const [benchmarkChoice,setBenchmarkChoice] = useState<{need: CatalogNeed; id: string}>();
+  const benchmark = benchmarkChoice?.need === effectiveNeed ? benchmarkChoice.id : '';
+  useEffect(()=>{setBenchmarkChoice(undefined);},[effectiveNeed]);
   const [memoryBudget,setMemoryBudget] = useState('');
   const validMemoryBudget = memoryBudget === '' || (Number.isFinite(Number(memoryBudget)) && Number(memoryBudget) > 0 && Number(memoryBudget) <= 4096);
   const [selectedModel,setSelectedModel] = useState<string>();
@@ -42,7 +44,7 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
       {!compact && <><label><input type="checkbox" checked={fitOnly} onChange={e=>setFitOnly(e.target.checked)} /> Estimated to fit</label></>}
       <button className="btn ghost models-chart-toggle" aria-label="Compare benchmarks and memory" title="Compare benchmarks and memory" aria-expanded={showChart} aria-controls="model-benchmark-chart" onClick={()=>setShowChart(value=>!value)}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M4 3v17h17"/><circle cx="9" cy="14" r="1.5"/><circle cx="14" cy="9" r="1.5"/><circle cx="19" cy="5" r="1.5"/></svg><span>Compare</span></button>
     </div></div>
-    {(sort === 'benchmark' || showChart) && <div className="models-benchmark-controls"><label>Benchmark<select value={benchmark || result?.benchmarks?.selected || ''} onChange={event=>setBenchmark(event.target.value)}>{!result?.benchmarks?.options?.length && <option value="">Collecting benchmarks…</option>}{result?.benchmarks?.options.map(option=><option key={option.id} value={option.id}>{option.label}</option>)}</select></label><label>Memory limit (GiB)<input type="number" min="0.25" max="4096" step="0.25" placeholder="Automatic" value={memoryBudget} onChange={event=>setMemoryBudget(event.target.value)} /></label></div>}
+    {(sort === 'benchmark' || showChart) && <div className="models-benchmark-controls"><label>Benchmark<select value={benchmark || result?.benchmarks?.selected || ''} onChange={event=>setBenchmarkChoice({need: effectiveNeed, id: event.target.value})}>{!result?.benchmarks?.options?.length && <option value="">Collecting benchmarks…</option>}{result?.benchmarks?.options.map(option=><option key={option.id} value={option.id}>{option.label}</option>)}</select></label><label>Memory limit (GiB)<input type="number" min="0.25" max="4096" step="0.25" placeholder="Automatic" value={memoryBudget} onChange={event=>setMemoryBudget(event.target.value)} /></label></div>}
     {!validMemoryBudget && <p className="models-error" role="alert">Enter a memory limit greater than 0 and at most 4,096 GiB. Using Host availability until the value is valid.</p>}
     {showChart && <ModelBenchmarkChart rows={models} label={result?.benchmarks?.options.find(option=>option.id===result.benchmarks?.selected)?.label ?? 'Benchmark score'} memory={result?.memory} onSelect={id=>{setSelectedModel(id);setQuery(id);setLimit(6);}} />}
     {selectedModel && <p className="models-chart-selection">Selected {selectedModel} <button className="models-text-button" onClick={()=>{setSelectedModel(undefined);setQuery('');}}>Show all models</button></p>}

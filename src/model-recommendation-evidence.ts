@@ -12,6 +12,18 @@ export const benchmarkProfiles = [
   { id: 'hle', label: 'Humanity’s Last Exam', dataset: 'cais/hle', task: 'hle', needs: ['writing', 'documents'] },
 ] as const;
 export type BenchmarkProfile = typeof benchmarkProfiles[number];
+// Prefer task relevance over the number of cached evaluations. Writing and
+// translation use general knowledge only as a proxy until direct tests exist.
+const taskBenchmarks: Record<CatalogNeed, readonly string[]> = {
+  coding: ['swe-pro'],
+  writing: ['mmlu-pro', 'gpqa', 'hle'],
+  translation: ['mmlu-pro'],
+  documents: ['extractbench', 'mmlu-pro', 'gpqa', 'hle'],
+};
+export function selectTaskBenchmark(need: CatalogNeed, options: readonly {id: string; count: number}[]) {
+  const preferred = taskBenchmarks[need];
+  return preferred.find(id => options.some(option => option.id === id && option.count > 0)) ?? preferred[0];
+}
 export type ScoredBenchmark = BenchmarkObservation & { label: string; stale: boolean; storedAt: string };
 export type MemoryAvailability = { accelerator?: string; freeHostMiB?: number | null; freeDeviceMiB?: number | null; budgetMiB?: number | null; observedAt?: string };
 export type RecommendationEvidence = { profile?: BenchmarkProfile; scores: Map<string, ScoredBenchmark>; memory?: MemoryAvailability };
@@ -70,7 +82,7 @@ export function createRecommendationEvidence(client: CachedModelBenchmarkClient,
       const scores = benchmarkScores(snapshot.models,profile);
       return {...profile, count: relevant.filter(m => scores.has(m.id)).length};
     });
-    const profile = benchmarkProfiles.find(p => p.id === requested) ?? options.filter(p => (p.needs as readonly string[]).includes(need)).sort((a,b) => b.count-a.count)[0];
+    const profile = benchmarkProfiles.find(p => p.id === requested) ?? benchmarkProfiles.find(p => p.id === selectTaskBenchmark(need, options));
     return { profile, scores: profile ? benchmarkScores(snapshot.models,profile) : new Map<string, ScoredBenchmark>(), options,
       coverage: { cachedModels: relevant.filter(m => cached.has(m.id)).length, totalModels: relevant.length, warming: Boolean(warming) } };
   };
