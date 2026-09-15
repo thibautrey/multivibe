@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { benchmarkProfiles, benchmarkScores, createRecommendationEvidence, runtimeMemory } from './model-recommendation-evidence.js';
+import { benchmarkProfiles, selectTaskBenchmark, benchmarkScores, createRecommendationEvidence, runtimeMemory } from './model-recommendation-evidence.js';
 import { rankOpenModels, type RuntimeEstimate } from './open-model-ranking.js';
 import { parseOpenModels } from './open-model-catalog.js';
 import { createCachedModelBenchmarkClient } from './model-benchmark-cache.js';
@@ -43,4 +43,14 @@ test('benchmark warming populates the shared durable cache and cached reads avoi
  for(let i=0;i<100 && (await load(catalog,'coding')).coverage.warming;i++) await new Promise(r=>setTimeout(r,10));
  const loaded=await load(catalog,'coding');assert.equal(loaded.scores.size,4);assert.equal(calls,4);
  await load(catalog,'coding');assert.equal(calls,4);
+});
+
+test('automatic benchmark prioritizes task relevance over coverage with suitable fallbacks', () => {
+ const options = benchmarkProfiles.map(p => ({id:p.id,count:p.id === 'extractbench' ? 1 : 100}));
+ assert.equal(selectTaskBenchmark('coding', options), 'swe-pro');
+ assert.equal(selectTaskBenchmark('documents', options), 'extractbench');
+ assert.equal(selectTaskBenchmark('writing', options), 'mmlu-pro');
+ assert.equal(selectTaskBenchmark('translation', options), 'mmlu-pro');
+ assert.equal(selectTaskBenchmark('documents', options.filter(p => p.id !== 'extractbench')), 'mmlu-pro');
+ assert.equal(selectTaskBenchmark('coding', []), 'swe-pro');
 });
