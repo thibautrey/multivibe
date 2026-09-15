@@ -1,5 +1,7 @@
 import AppKit
+import Darwin
 import Foundation
+import ServiceManagement
 
 private enum MenuBarPalette {
     private static func color(_ hex: UInt32) -> NSColor {
@@ -1244,6 +1246,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         }
         RunLoop.main.add(quotaTimer!, forMode: .common)
         configureTerminationSignals()
+        synchronizeLoginItem()
         render()
         ensureServiceIsRunning()
         if pendingEnrollmentToken != nil {
@@ -1895,14 +1898,91 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         presentNextNotificationIfNeeded()
     }
 
-    private func setStartAtLogin(_ enabled: Bool) {
-        UserDefaults.standard.set(enabled, forKey: "startAtLogin")
-        if !enabled, let service = ownedService, service.isRunning {
+    private var startAtLoginEnabled: Bool {
+        UserDefaults.standard.object(forKey: "startAtLogin") as? Bool ?? true
+    }
+
+    private func synchronizeLoginItem() {
+        do {
+            if startAtLoginEnabled {
+                if SMAppService.mainApp.status == .notRegistered {
+                    try SMAppService.mainApp.register()
+                }
+            } else if SMAppService.mainApp.status == .enabled || SMAppService.mainApp.status == .requiresApproval {
+                try SMAppService.mainApp.unregister()
+            }
+        } catch {
+            // The Host remains usable when macOS refuses a login-item change.
+            // The next explicit toggle retries and macOS exposes approval in System Settings.
+        }
+    }
+
+    @discardableResult
+    private func runLaunchctl(_ arguments: [String]) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    private var hostLaunchAgentService: String {
+        "gui/\(getuid())/cloud.multivibe.host"
+    }
+
+    private var hostLaunchAgentURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/cloud.multivibe.host.plist")
+    }
+
+    private func stopHostService() {
+        if let service = ownedService, service.isRunning {
             service.terminate()
             ownedService = nil
-            updateState(operational: false, status: "Stopped")
-        } else if enabled {
+        }
+        _ = runLaunchctl(["bootout", hostLaunchAgentService])
+        updateState(operational: false, status: "Stopped")
+    }
+
+    private func startHostLaunchAgent() {
+        _ = runLaunchctl(["enable", hostLaunchAgentService])
+        if FileManager.default.isReadableFile(atPath: hostLaunchAgentURL.path) {
+            _ = runLaunchctl(["bootstrap", "gui/\(getuid())", hostLaunchAgentURL.path])
+            _ = runLaunchctl(["kickstart", "-k", hostLaunchAgentService])
+        }
+    }
+
+    private func setStartAtLogin(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: "startAtLogin")
+        var loginItemNeedsAttention = false
+        do {
+            if enabled {
+                if SMAppService.mainApp.status == .notRegistered {
+                    try SMAppService.mainApp.register()
+                }
+            } else if SMAppService.mainApp.status == .enabled || SMAppService.mainApp.status == .requiresApproval {
+                try SMAppService.mainApp.unregister()
+            }
+        } catch {
+            loginItemNeedsAttention = true
+        }
+
+        if enabled {
+            startHostLaunchAgent()
             ensureServiceIsRunning()
+        } else {
+            _ = runLaunchctl(["disable", hostLaunchAgentService])
+            stopHostService()
+        }
+        if loginItemNeedsAttention {
+            updateState(operational: operational, status: "Login setting needs approval")
         }
         render()
     }
@@ -2027,6 +2107,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
     }
 
     @objc private func quitApplication() {
+        stopHostService()
         NSApplication.shared.terminate(nil)
     }
 }
