@@ -9079,10 +9079,20 @@ fn model_entry_from_upstream(
         }
     }
     if provider == "ai-sdk" {
-        for key in ["catalog_source", "catalog_fetched_at", "pricing", "input_modalities"] {
-            if let Some(value) = upstream.get(key) { metadata.insert(key.to_owned(), value.clone()); }
+        for key in [
+            "catalog_source",
+            "catalog_fetched_at",
+            "pricing",
+            "input_modalities",
+            "output_modalities",
+        ] {
+            if let Some(value) = upstream.get(key) {
+                metadata.insert(key.to_owned(), value.clone());
+            }
         }
-        if let Some(value) = upstream.get("owned_by") { metadata.insert("sdk_provider".to_owned(), value.clone()); }
+        if let Some(value) = upstream.get("owned_by") {
+            metadata.insert("sdk_provider".to_owned(), value.clone());
+        }
     }
     if provider == "openai" && upstream.is_object() {
         entry["codexModelInfo"] = upstream.clone();
@@ -9120,6 +9130,8 @@ fn merge_model_entry(existing: &mut Value, next: Value) {
         "supports_reasoning",
         "supports_tools",
         "supported_tool_types",
+        "input_modalities",
+        "output_modalities",
     ] {
         if existing_metadata.get(key).is_none_or(Value::is_null)
             && let Some(value) = next_metadata.get(key)
@@ -9586,16 +9598,36 @@ fn openai_model_shape(model: &Value) -> Value {
 }
 
 fn codex_model_shape(model: &Value) -> Option<Value> {
+    let metadata = model.get("metadata");
+    let output_modalities = metadata
+        .and_then(|value| value.get("output_modalities"))
+        .and_then(Value::as_array);
+    if output_modalities.is_some_and(|modalities| {
+        !modalities
+            .iter()
+            .any(|value| {
+                value
+                    .as_str()
+                    .is_some_and(|value| value.eq_ignore_ascii_case("text"))
+            })
+    }) {
+        return None;
+    }
     if let Some(value) = model.get("codexModelInfo") {
         return Some(value.clone());
     }
-    let metadata = model.get("metadata")?;
+    let metadata = metadata?;
     let provider = metadata.get("provider")?.as_str()?;
     let is_text_capable_ai_sdk_model = provider == "ai-sdk"
-        && metadata
-            .get("input_modalities")
-            .and_then(Value::as_array)
-            .is_some_and(|modalities| modalities.iter().any(|value| value.as_str() == Some("text")));
+        && output_modalities.is_some_and(|modalities| {
+            modalities
+                .iter()
+                .any(|value| {
+                    value
+                        .as_str()
+                        .is_some_and(|value| value.eq_ignore_ascii_case("text"))
+                })
+        });
     if provider != "zai" && provider != "openai-compatible" && !is_text_capable_ai_sdk_model {
         return None;
     }
@@ -11370,13 +11402,13 @@ mod tests {
     #[test]
     fn codex_catalog_includes_text_ai_sdk_models_but_not_utility_models() {
         let models = [
-            json!({"id": "deepseek/deepseek-v4-flash", "metadata": {"provider": "ai-sdk", "input_modalities": ["text"]}}),
-            json!({"id": "deepseek/deepseek-v4-flash-vision-exp", "metadata": {"provider": "ai-sdk", "input_modalities": ["text", "image"]}}),
-            json!({"id": "deepseek/deepseek-v4-pro", "metadata": {"provider": "ai-sdk", "input_modalities": ["text"]}}),
-            json!({"id": "image-generator", "metadata": {"provider": "ai-sdk", "input_modalities": ["image"]}}),
-            json!({"id": "speech/tts-1", "metadata": {"provider": "ai-sdk", "input_modalities": ["text"]}}),
-            json!({"id": "openai/text-embedding-3-small", "metadata": {"provider": "ai-sdk", "input_modalities": ["text"]}}),
-            json!({"id": "cohere/rerank-v3.5", "metadata": {"provider": "ai-sdk", "input_modalities": ["text"]}}),
+            json!({"id": "deepseek/deepseek-v4-flash", "metadata": {"provider": "ai-sdk", "input_modalities": ["text"], "output_modalities": ["text"]}}),
+            json!({"id": "deepseek/deepseek-v4-flash-vision-exp", "metadata": {"provider": "ai-sdk", "input_modalities": ["text", "image"], "output_modalities": ["text"]}}),
+            json!({"id": "image-captioner", "metadata": {"provider": "ai-sdk", "input_modalities": ["image"], "output_modalities": ["text"]}}),
+            json!({"id": "image-generator", "metadata": {"provider": "ai-sdk", "input_modalities": ["text"], "output_modalities": ["image"]}}),
+            json!({"id": "speech/synthesizer", "metadata": {"provider": "ai-sdk", "input_modalities": ["text"], "output_modalities": ["audio"]}}),
+            json!({"id": "openai/text-embedding-3-small", "metadata": {"provider": "ai-sdk", "input_modalities": ["text"], "output_modalities": ["embedding"]}}),
+            json!({"id": "cohere/rerank-v3.5", "metadata": {"provider": "ai-sdk", "input_modalities": ["text"], "output_modalities": ["text"]}}),
         ];
         let response = models_list_response(&models, json!({}));
         assert_eq!(response["data"].as_array().unwrap().len(), models.len());
@@ -11389,7 +11421,7 @@ mod tests {
         assert_eq!(slugs, [
             "deepseek/deepseek-v4-flash",
             "deepseek/deepseek-v4-flash-vision-exp",
-            "deepseek/deepseek-v4-pro",
+            "image-captioner",
         ]);
     }
 
