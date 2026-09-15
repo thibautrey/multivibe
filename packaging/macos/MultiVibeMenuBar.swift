@@ -607,21 +607,9 @@ private final class HostPopoverController: NSViewController {
         let providers = quotaProviders.map { $0.id }
         if !providers.contains(selectedProvider ?? "") { selectedProvider = providers.first }
         if !providers.isEmpty {
-            let picker = NSPopUpButton()
-            picker.bezelStyle = .rounded
-            picker.font = .systemFont(ofSize: 13, weight: .semibold)
-            for provider in quotaProviders {
-                picker.addItem(withTitle: provider.displayName)
-                picker.lastItem?.representedObject = provider.id
-            }
-            picker.selectItem(at: providers.firstIndex(of: selectedProvider ?? "") ?? 0)
-            picker.target = self
-            picker.action = #selector(didSelectProvider(_:))
-            picker.setAccessibilityLabel("View provider capacity")
-            let heading = NSStackView(views: [sectionLabel("PROVIDER"), NSView(), picker])
-            heading.orientation = .horizontal
-            heading.alignment = .centerY
-            accountSection.addArrangedSubview(heading)
+            // Avoid constructing a nested horizontal stack here: macOS 27 can
+            // throw from AppKit while activating its synthesized constraints.
+            accountSection.addArrangedSubview(sectionLabel("PROVIDER"))
         }
         let selected = quotaProviders.first { $0.id == selectedProvider }
         let accounts = selected?.accounts ?? []
