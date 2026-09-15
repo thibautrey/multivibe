@@ -1,4 +1,4 @@
-import { createDiscoveryMemory, type DiscoveryMemory } from './model-discovery-memory.js';
+import type { DiscoveryMemory } from './model-discovery-memory.js';
 import { groupModels } from './open-model-ranking.js';
 import type { BenchmarkObservation } from './model-benchmarks.js';
 import type { CachedModelBenchmarkClient } from './model-benchmark-cache.js';
@@ -64,7 +64,7 @@ export function runtimeMemory(estimate: RuntimeEstimate | undefined, availabilit
   return { requiredMiB, hostMiB, deviceMiB, state };
 }
 
-export function createRecommendationEvidence(client: CachedModelBenchmarkClient, now = Date.now, estimateDiscovery = createDiscoveryMemory()) {
+export function createRecommendationEvidence(client: CachedModelBenchmarkClient, now = Date.now, estimateDiscovery: (model: import('./open-model-ranking.js').OpenModel, original: import('./open-model-ranking.js').OpenModel) => Promise<DiscoveryMemory | null> = async()=>null) {
   const discoveryMemory = new Map<string, DiscoveryMemory>();
   let memoryWarming: Promise<void> | undefined;
   let warming: Promise<void> | undefined;

@@ -1,3 +1,4 @@
+import { createDiscoveryMemory } from '../../src/model-discovery-memory';
 import { createCachedModelBenchmarkClient } from '../../src/model-benchmark-cache';
 import { createModelBenchmarkClient } from '../../src/model-benchmarks';
 import { createRecommendationEvidence, benchmarkProfiles } from '../../src/model-recommendation-evidence';
@@ -7,7 +8,7 @@ import path from 'node:path';
 import os from 'node:os';
 const loadOpenModelCatalog = createOpenModelCatalog(fetch, Date.now, path.join(os.tmpdir(), 'multivibe-demo-open-catalog-v2.json'));
 const benchmarkClient = createCachedModelBenchmarkClient(createModelBenchmarkClient(), {path:path.join(os.tmpdir(), 'multivibe-demo-benchmarks-v1.json')});
-const evidenceFor = createRecommendationEvidence(benchmarkClient);
+const evidenceFor = createRecommendationEvidence(benchmarkClient, Date.now, createDiscoveryMemory());
 import type { Plugin } from "vite";
 import { createDemoApi } from "./api";
 
