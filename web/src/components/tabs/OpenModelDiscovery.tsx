@@ -34,7 +34,7 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
   const readyFor = (id:string) => readyChoices.find(choice=>choice.route.modelId===id);
   const models=(result?.recommendations ?? []).filter(row=>(showUnresolved || row.familyStatus !== 'unresolved') && [row.model.id,...row.variants.map(v=>v.model.id)].some(id=>id.toLowerCase().includes(query.trim().toLowerCase())) && (!fitOnly || row.compatibility==='compatible'));
   return <section className={`models-open-discovery models-picker${compact ? ' is-beginner' : ''}`} aria-label="Open model discovery">
-    <div className="models-picker-toolbar"><div className="models-selection-heading"><span className="models-host-symbol" aria-hidden="true">▱</span><div><h3>{result?.host?.supported ? 'Recommended for your Host' : 'Recommended for your task'}</h3><p className="muted">{result?.host ? `${result.host.name}${result.host.supported ? '' : ' · Unsupported platform'}` : 'Connect Host to check compatibility'}</p></div></div>
+    <div className="models-picker-toolbar">
     <div className="models-compare-filters">
       {!selectedNeed && <label>Task<select value={need} onChange={e=>setNeed(e.target.value as CatalogNeed)}><option value="writing">Chat and write</option><option value="coding">Code</option><option value="translation">Translate</option><option value="documents">Summarize and analyze</option></select></label>}
       <label><span className="sr-only">Sort models</span><select aria-label="Sort models" value={sort} onChange={e=>setSort(e.target.value as CatalogSort)}>{Object.entries(sortLabels).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
