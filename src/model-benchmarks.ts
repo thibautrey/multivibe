@@ -65,8 +65,8 @@ function sourceType(sourceUrl: string | null, modelId: string): BenchmarkObserva
 
 export function parseHuggingFaceModelResults(modelId: string, value: unknown): BenchmarkObservation[] {
   const root = record(value);
-  if (!root || root.id !== modelId || !Array.isArray(root.evalResults)) throw new ModelBenchmarkError("upstream_unavailable");
-  return root.evalResults.flatMap((entry: unknown) => {
+  if (!root || root.id !== modelId || (root.evalResults !== undefined && !Array.isArray(root.evalResults))) throw new ModelBenchmarkError("upstream_unavailable");
+  return (root.evalResults ?? []).flatMap((entry: unknown) => {
     const row = record(entry); const data = record(row?.data); const dataset = record(data?.dataset); const source = record(data?.source);
     const benchmarkId = string(dataset?.id, 256); const score = finite(data?.value);
     if (!benchmarkId || !DATASET_ID.test(benchmarkId) || score === null) return [];

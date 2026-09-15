@@ -1,3 +1,4 @@
+import { benchmarkProfiles, createRecommendationEvidence, type MemoryAvailability } from '../../model-recommendation-evidence.js';
 import { localPreparationRoutes } from './local-preparation.js';
 import { modelBenchmarkRoutes } from './model-benchmark-routes.js';
 import { createModelBenchmarkClient } from '../../model-benchmarks.js';
@@ -474,10 +475,12 @@ export function createAdminRouter(options: AdminRoutesOptions) {
 
   const router = express.Router();
   router.use("/local-model-preparation", localPreparationRoutes(options.localPreparation));
-  router.use("/benchmarks", modelBenchmarkRoutes(createCachedModelBenchmarkClient(
+  const benchmarkClient = createCachedModelBenchmarkClient(
     createModelBenchmarkClient({ artificialAnalysisApiKey: ARTIFICIAL_ANALYSIS_API_KEY }),
     { path: path.join(path.dirname(storagePaths.accountsPath), "model-benchmarks-v1.json") },
-  )));
+  );
+  router.use("/benchmarks", modelBenchmarkRoutes(benchmarkClient));
+  const recommendationEvidence = createRecommendationEvidence(benchmarkClient);
 
   router.get("/host-update", async (_req, res) => {
     res.setHeader("cache-control", "no-store");
@@ -1036,13 +1039,23 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     res.setHeader("cache-control", "no-store");
     const need = String(req.query.need ?? 'writing'); const sort = String(req.query.sort ?? 'recommended');
     if (!['writing','coding','translation','documents'].includes(need) || !catalogSorts.includes(sort as CatalogSort) || (req.query.host && req.query.host !== 'local')) return res.status(400).json({error:'Invalid recommendation query'});
+    const benchmark = req.query.benchmark === undefined ? undefined : String(req.query.benchmark);
+    const budgetMiB = req.query.memory_gib === undefined ? undefined : Number(req.query.memory_gib) * 1024;
+    if ((benchmark && !benchmarkProfiles.some(p => p.id === benchmark)) || (budgetMiB !== undefined && (!Number.isFinite(budgetMiB) || budgetMiB <= 0 || budgetMiB > 4096 * 1024))) return res.status(400).json({error:'Invalid benchmark or memory budget'});
     try {
       const catalog = await loadOpenModelCatalog();
+      const evidence = await recommendationEvidence(catalog, need as CatalogNeed, benchmark);
+      let memory: MemoryAvailability | undefined;
       let host: { name: string; supported: boolean } | null = null; let estimates: RuntimeEstimate[] = [];
       if (options.hostApplication && options.providerAgent?.enabled) {
         try {
           const capability = await options.providerAgent.getCapability();
           host = {name: capability.hardware_model ?? 'This Host', supported: capability.supported};
+          memory = {accelerator: capability.accelerator, budgetMiB};
+          try {
+            const resources = await options.providerAgent.getLocalPreparationResources?.();
+            if (resources) memory = {...memory, freeHostMiB: resources.free_host_memory_bytes === null ? null : resources.free_host_memory_bytes / 1048576, freeDeviceMiB: resources.free_accelerator_memory_bytes === null ? null : resources.free_accelerator_memory_bytes / 1048576, observedAt: resources.observed_at};
+          } catch { /* No claim of current free memory without a resource snapshot. */ }
           // Existing estimator is read-only and may return unknown for absent weights.
           if (capability.supported) {
             const report = await options.providerAgent.estimateModelCompatibility(8192) as {models?: RuntimeEstimate[]};
@@ -1050,7 +1063,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
           }
         } catch { /* Hardware uncertainty must never become a positive compatibility claim. */ }
       }
-      res.json({catalog, host, recommendations: rankOpenModels(catalog, need as CatalogNeed, sort as CatalogSort, estimates)});
+      res.json({catalog, host, memory, contextTokens:8192, benchmarks:{selected:evidence.profile?.id, options:evidence.options, coverage:evidence.coverage}, recommendations: rankOpenModels(catalog, need as CatalogNeed, sort as CatalogSort, estimates, Date.now(), {...evidence, memory: memory ?? (budgetMiB ? {budgetMiB} : undefined)})});
     } catch { res.status(503).json({error:'Public catalog unavailable'}); }
   });
 

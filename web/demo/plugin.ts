@@ -1,8 +1,13 @@
+import { createCachedModelBenchmarkClient } from '../../src/model-benchmark-cache';
+import { createModelBenchmarkClient } from '../../src/model-benchmarks';
+import { createRecommendationEvidence, benchmarkProfiles } from '../../src/model-recommendation-evidence';
 import { createOpenModelCatalog } from '../../src/open-model-catalog';
 import { rankOpenModels, catalogSorts, type CatalogNeed, type CatalogSort } from '../../src/open-model-ranking';
 import path from 'node:path';
 import os from 'node:os';
 const loadOpenModelCatalog = createOpenModelCatalog(fetch, Date.now, path.join(os.tmpdir(), 'multivibe-demo-open-catalog-v2.json'));
+const benchmarkClient = createCachedModelBenchmarkClient(createModelBenchmarkClient(), {path:path.join(os.tmpdir(), 'multivibe-demo-benchmarks-v1.json')});
+const evidenceFor = createRecommendationEvidence(benchmarkClient);
 import type { Plugin } from "vite";
 import { createDemoApi } from "./api";
 
@@ -23,7 +28,7 @@ export function demoApiPlugin(): Plugin {
           const params = new URL(req.url!, 'http://demo.invalid').searchParams;
           const need = params.get('need') ?? 'writing'; const sort = params.get('sort') ?? 'recommended';
           if (!['writing','coding','translation','documents'].includes(need) || !catalogSorts.includes(sort as CatalogSort)) { res.statusCode=400; res.end('{}'); return; }
-          void loadOpenModelCatalog().then(catalog => { res.setHeader('content-type','application/json'); res.end(JSON.stringify({catalog,host:null,recommendations:rankOpenModels(catalog,need as CatalogNeed,sort as CatalogSort)})); }).catch(()=>{res.statusCode=503;res.end('{}');});
+          void loadOpenModelCatalog().then(async catalog => { const benchmark = params.get('benchmark') ?? undefined; if (benchmark && !benchmarkProfiles.some(p=>p.id===benchmark)) {res.statusCode=400;res.end('{}');return;} const evidence = await evidenceFor(catalog,need as CatalogNeed,benchmark); res.setHeader('content-type','application/json'); res.end(JSON.stringify({catalog,host:null,benchmarks:{selected:evidence.profile?.id,options:evidence.options,coverage:evidence.coverage},recommendations:rankOpenModels(catalog,need as CatalogNeed,sort as CatalogSort,[],Date.now(),evidence)})); }).catch(()=>{res.statusCode=503;res.end('{}');});
           return;
         }
         if (path === '/admin/open-model-catalog' && req.method === 'GET') {
