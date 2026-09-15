@@ -2,9 +2,9 @@ import publisherIcons from './publisher-icons.json';
 import { ModelVariantsTable } from './ModelVariantsTable';
 import type { rankOpenModels } from '../../../../src/open-model-ranking';
 import type { MemoryAvailability } from '../../../../src/model-recommendation-evidence';
-import type { GuidanceEntry } from '../../../../src/model-guidance';
+import type { GuidedChoice } from '../../../../src/model-guidance';
 type Row = ReturnType<typeof rankOpenModels>[number];
-export function ModelDetailPanel({row,memory,supported,ready,onUse,onPrepare}:{row:Row;memory?:MemoryAvailability;supported:boolean;ready?:GuidanceEntry;onUse?:(id:string)=>void;onPrepare:(id:string)=>void}) {
+export function ModelDetailPanel({row,memory,supported,ready,onUse,onPrepare}:{row:Row;memory?:MemoryAvailability;supported:boolean;ready?:GuidedChoice;onUse?:(id:string)=>void;onPrepare:(id:string)=>void}) {
  const name=row.model.id.split('/').pop()?.replace(/[-_]/g,' ');
  const icon=(publisherIcons as Record<string,string>)[row.model.id.split('/')[0].toLowerCase()];
  return <article className="model-detail-panel" aria-label={`${name} details`}>
