@@ -47,3 +47,21 @@ test('resolver refuses incomplete shards and changed revisions',async()=>{
  const changed=createDiscoveryMemory((async()=>Response.json({...raw,sha:'b'.repeat(40)})) as typeof fetch);
  assert.equal(await changed(model,model),null);
 });
+
+test('all artifacts share config metadata and retain individual results or failure reasons',async()=>{
+ const raw={id:'owner/all',sha:'a'.repeat(40),private:false,gated:false,pipeline_tag:'text-generation',tags:['license:mit','code'],siblings:[{rfilename:'model-Q4_K_M.gguf',size:4*1024**3},{rfilename:'model-Q8_0.gguf',size:8*1024**3},{rfilename:'model-Q6_K-00001-of-00002.gguf',size:5*1024**3}]};
+ const m=parseOpenModels([raw])[0];let calls=0;
+ const resolver=createDiscoveryMemory((async url=>{calls++;return Response.json(String(url).includes('/api/models/')?raw:config);}) as typeof fetch);
+ const result=await resolver.inspect(m,m);assert.equal(result.estimates.length,2);assert.equal(calls,2);assert.equal(result.artifactReasons?.['model-Q6_K.gguf'],'incomplete_weights');
+ assert.ok(result.estimates.find(e=>e.artifact==='model-Q8_0.gguf')!.requiredMiB>result.estimates.find(e=>e.artifact==='model-Q4_K_M.gguf')!.requiredMiB);
+ const unsupported=createDiscoveryMemory((async url=>Response.json(String(url).includes('/api/models/')?raw:{...config,model_type:'unsupported'})) as typeof fetch);
+ assert.equal((await unsupported.inspect(m,m)).reason,'unsupported_architecture');
+ const offline=createDiscoveryMemory((async()=>{throw Error('offline');}) as typeof fetch);assert.equal((await offline.inspect(m,m)).reason,'temporary_failure');
+});
+test('standard dense and sliding-window families use a conservative full-context cache',()=>{
+ for(const type of ['mistral','mixtral','phi3','phi','gemma','gemma2','gemma3_text','starcoder2']){
+  assert.ok(estimateDiscoveryMemory({...config,model_type:type,sliding_window:4096},4*1024**3));
+ }
+ const layers=Array(32).fill('full_attention');assert.ok(estimateDiscoveryMemory({...config,layer_types:layers},4*1024**3));
+ assert.equal(estimateDiscoveryMemory({...config,layer_types:['unknown']},4*1024**3),null);
+});

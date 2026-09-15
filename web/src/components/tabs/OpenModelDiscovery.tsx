@@ -53,6 +53,7 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
     {showChart && <ModelBenchmarkChart rows={models} label={result?.benchmarks?.options.find(option=>option.id===result.benchmarks?.selected)?.label ?? 'Benchmark score'} memory={result?.memory} onSelect={id=>{setSelectedModel(id);setLimit(Math.max(limit,models.findIndex(row=>row.model.id===id)+1));setShowChart(false);}} />}
 
     {result?.memoryProgress?.pending && !models.length ? <p role="status">Estimating model memory… Results appear as estimates become available.</p> : null}
+    {result?.memoryProgress?.persistenceError && <p role="status">Memory estimates cannot be saved locally. Check available disk space and access.</p>}
     {!result && !error && <p role="status">Finding models…</p>}
     {(error || result?.catalog.stale) && <p role="status">{result ? result.catalog.failedFeeds ? 'Some catalog sources are unavailable. Showing new results and last-known models.' : 'Showing the last catalog. Refresh is unavailable or in progress.' : 'The catalog is unavailable.'} <button className="btn ghost" onClick={()=>setRequest(n=>n+1)}>Retry</button></p>}
     {sort==='community' && <p className="muted">Anonymous reported output volume · Last 30 completed days · Not verified users or quality.</p>}
