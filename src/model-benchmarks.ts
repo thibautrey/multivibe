@@ -1,7 +1,7 @@
 const HUGGING_FACE_ORIGIN = "https://huggingface.co";
 const ARTIFICIAL_ANALYSIS_ORIGIN = "https://artificialanalysis.ai";
-const MODEL_ID = /^[\w.-]+\/[\w.-]+$/u;
-const DATASET_ID = /^[\w.-]+\/[\w.-]+$/u;
+const MODEL_ID = /^[A-Za-z0-9][\w.-]{0,127}\/[A-Za-z0-9][\w.-]{0,127}$/u;
+const DATASET_ID = /^[A-Za-z0-9][\w.-]{0,127}\/[A-Za-z0-9][\w.-]{0,127}$/u;
 const AA_SLUG = /^[a-z0-9][a-z0-9-]{0,127}$/u;
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
@@ -70,13 +70,14 @@ export function parseHuggingFaceModelResults(modelId: string, value: unknown): B
     const benchmarkId = string(dataset?.id, 256); const score = finite(data?.value);
     if (!benchmarkId || !DATASET_ID.test(benchmarkId) || score === null) return [];
     const sourceUrl = string(source?.url);
+    const pullRequest = finite(row?.pullRequest);
     return [{
       modelId, benchmarkId, taskId: string(dataset?.task_id, 256), score,
       metric: string(data?.metric, 128), source: "hugging-face" as const,
       sourceType: sourceType(sourceUrl, modelId), verified: row?.verified === true,
       sourceUrl, sourceName: string(source?.name, 256), date: string(data?.date, 64),
       notes: string(data?.notes), filename: string(row?.filename, 1_024),
-      pullRequest: Number.isSafeInteger(row?.pullRequest) && row.pullRequest > 0 ? row.pullRequest : null,
+      pullRequest: pullRequest !== null && Number.isSafeInteger(pullRequest) && pullRequest > 0 ? pullRequest : null,
     }];
   });
 }
