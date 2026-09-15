@@ -4,6 +4,7 @@ const MODEL_ID = /^[A-Za-z0-9][\w.-]{0,127}\/[A-Za-z0-9][\w.-]{0,127}$/u;
 const DATASET_ID = /^[A-Za-z0-9][\w.-]{0,127}\/[A-Za-z0-9][\w.-]{0,127}$/u;
 const AA_SLUG = /^[a-z0-9][a-z0-9-]{0,127}$/u;
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+export const BENCHMARK_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 
 export type BenchmarkObservation = {
   modelId: string;
@@ -111,18 +112,18 @@ export function createModelBenchmarkClient(options: { fetcher?: typeof fetch; ar
         { id: "artificial-analysis", configured: Boolean(aaKey), access: aaKey ? "key-dependent" : "not-configured", modelResults: aaKey ? "tier-dependent" : false, leaderboards: false, attributionRequired: true },
       ] };
     },
-    async model(modelId: string) {
+    async model(modelId: string, _options?: { refresh?: boolean }) {
       if (!MODEL_ID.test(modelId)) throw new ModelBenchmarkError("invalid_request");
       const url = new URL(`/api/models/${modelId}`, HUGGING_FACE_ORIGIN); url.searchParams.set("expand", "evalResults");
       const { value } = await request(url.href);
       return { modelId, observations: parseHuggingFaceModelResults(modelId, value), source: "hugging-face", fetchedAt: new Date().toISOString() };
     },
-    async leaderboard(datasetId: string, limit = 100) {
+    async leaderboard(datasetId: string, limit = 100, _options?: { refresh?: boolean }) {
       if (!DATASET_ID.test(datasetId) || !Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new ModelBenchmarkError("invalid_request");
       const { value } = await request(new URL(`/api/datasets/${datasetId}/leaderboard`, HUGGING_FACE_ORIGIN).href);
       return { datasetId, entries: parseHuggingFaceLeaderboard(datasetId, value, limit), source: "hugging-face", fetchedAt: new Date().toISOString() };
     },
-    async artificialAnalysisModels(page = 1, access: "free" | "full" = "free") {
+    async artificialAnalysisModels(page = 1, access: "free" | "full" = "free", _options?: { refresh?: boolean }) {
       if (!aaKey) throw new ModelBenchmarkError("not_configured");
       if (!Number.isSafeInteger(page) || page < 1 || page > 10_000 || !["free", "full"].includes(access)) throw new ModelBenchmarkError("invalid_request");
       const pathname = access === "free" ? "/api/v2/language/models/free" : "/api/v2/language/models";
@@ -134,7 +135,7 @@ export function createModelBenchmarkClient(options: { fetcher?: typeof fetch; ar
         models: root.data, source: "artificial-analysis", attribution: "Artificial Analysis", fetchedAt: new Date().toISOString(),
         rateLimit: { limit: response.headers.get("x-ratelimit-limit"), remaining: response.headers.get("x-ratelimit-remaining"), reset: response.headers.get("x-ratelimit-reset") } };
     },
-    async artificialAnalysisModel(slug: string, promptType = "long") {
+    async artificialAnalysisModel(slug: string, promptType = "long", _options?: { refresh?: boolean }) {
       if (!aaKey) throw new ModelBenchmarkError("not_configured");
       if (!AA_SLUG.test(slug) || !["medium", "long", "100k", "vision_single_image", "medium_coding", "medium_parallel"].includes(promptType)) throw new ModelBenchmarkError("invalid_request");
       const url = new URL(`/api/v2/language/models/${slug}`, ARTIFICIAL_ANALYSIS_ORIGIN); url.searchParams.set("prompt_type", promptType);
