@@ -671,7 +671,6 @@ private final class HostPopoverController: NSViewController {
         view.layer?.borderWidth = 0.5
         view.layer?.masksToBounds = true
         view.translatesAutoresizingMaskIntoConstraints = false
-        view.widthAnchor.constraint(equalToConstant: 384).isActive = true
         return view
     }
 
