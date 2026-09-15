@@ -342,3 +342,15 @@
 .model-browser-card-grid .model-browser-item[aria-pressed=true] { border-color:var(--primary); }
 @media(max-width:1050px) { .model-browser:not(.model-browser-cards) { grid-template-columns:220px minmax(0,1fr); gap:14px; } .model-detail-panel { padding:18px; } }
 @media(max-width:700px) { .model-browser:not(.model-browser-cards) { grid-template-columns:1fr; } .model-browser-results { position:static; } .model-browser-list { max-height:260px; } .model-detail-heading h3 { font-size:22px; } .model-detail-panel { padding:16px; } }
+
+@media (min-width:701px) {
+  .model-browser,
+  .model-browser.model-browser-cards,
+  .model-browser:not(.model-browser-cards) {
+    grid-template-columns:minmax(0,1fr) minmax(0,2fr);
+  }
+  .model-browser-cards .model-browser-results { position:sticky; top:0; }
+  .model-browser-card-grid { display:flex; flex-direction:column; gap:4px; max-height:680px; overflow:auto; scrollbar-width:thin; }
+  .model-browser-card-grid .model-browser-item { border-color:transparent; }
+  .model-browser-card-grid .model-browser-item[aria-pressed=true] { border-color:var(--primary); }
+}
