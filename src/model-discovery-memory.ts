@@ -20,7 +20,8 @@ export function estimateDiscoveryMemory(raw: Record<string, any>, weights: numbe
   const dim = c.head_dim ?? e / heads;
   if (![e,layers,heads,kvHeads,vocab,dim,c.max_position_embeddings].every(positive) || heads % kvHeads || layers > 1024 || context > 1048576) return null;
   // Even one-bit embeddings require this much storage; smaller artifacts cannot be full weights.
-  if(weights < e*vocab/8)return null;
+  const feedForward=positive(c.intermediate_size) ? e*c.intermediate_size*layers*(c.model_type==='phi'?2:3) : 0;
+  if(weights < (e*vocab+feedForward)/8)return null;
   const hybrid = ['qwen3_next','qwen3_5_text','qwen3_5_moe_text'].includes(c.model_type);
   let attentionLayers = layers; let recurrent = 0;
   if (hybrid) {
