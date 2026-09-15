@@ -1,4 +1,5 @@
 .app-shell-models {
+  max-width: none;
   height: calc(100dvh - 36px);
   align-items: stretch;
 }
@@ -14,6 +15,7 @@
   overflow: hidden;
 }
 .models-catalog {
+  padding: 0 4px 16px 0;
   min-width: 0;
   min-height: 0;
   height: 100%;
@@ -114,7 +116,7 @@
 .models-view-switch { display:flex; gap:4px; padding:4px; border:1px solid var(--border); border-radius:12px; background:var(--surface-muted); }
 .models-view-switch .btn { min-height:38px; padding:8px 15px; border:0; background:transparent; box-shadow:none; color:var(--muted-strong); font-size:12px; }
 .models-view-switch .btn[aria-pressed="true"] { background:var(--panel); color:var(--text); box-shadow:0 1px 4px #0002; }
-.models-guidance { max-width:1120px; margin:0 auto; padding:0; }
+.models-guidance { max-width:none; margin:0 auto; padding:0; }
 .models-needs { border:0; padding:0; margin:0 0 28px; min-width:0; }
 .models-needs legend { font-size:14px; font-weight:600; margin-bottom:14px; padding:0; }
 .models-need-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
@@ -175,7 +177,7 @@
 .models-open-discovery .models-choice-grid { margin:16px 0; }
 
 /* Task-first picker shared by Beginner and Advanced. */
-.models-page-heading { max-width:1120px; margin:8px auto 32px; }
+.models-page-heading { max-width:none; margin:8px 0 24px; }
 .models-page-heading h2 { font-size:clamp(24px,3vw,34px); letter-spacing:-.04em; }
 .models-page-heading p { font-size:15px; line-height:1.6; }
 .models-guidance .models-needs legend { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
