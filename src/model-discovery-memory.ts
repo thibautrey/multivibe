@@ -1,4 +1,4 @@
-import { modelArtifacts } from './model-variants.js';
+import { modelArtifacts,isModelWeightArtifact } from './model-variants.js';
 import { parseOpenModels } from './open-model-catalog.js';
 import type { OpenModel } from './open-model-ranking.js';
 
@@ -69,6 +69,7 @@ export function createDiscoveryMemory(fetcher: typeof fetch = fetch, now = Date.
     const report=(reason:MemoryEstimateReason,rest:Partial<MemoryEstimateReport>={}):MemoryEstimateReport=>({reason,estimates:[],checkedAt:new Date(now()).toISOString(),...rest});
     if(![model.id,original.id].every(id=>/^[\w.-]+\/[\w.-]+$/.test(id)))return report('incomplete_metadata');
     if(model.gated || original.gated)return report('access_required');
+    if(!isModelWeightArtifact(model.id))return report('incomplete_weights');
     const key=`v2:${context}:${model.id}@${model.revision}:${original.id}@${original.revision}`;
     const saved=cache.get(key);if(saved && now()-saved.at< (saved.value.reason==='temporary_failure'?60000:6*3600000))return saved.value;
     if(pending.has(key))return pending.get(key)!;

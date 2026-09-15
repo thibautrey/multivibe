@@ -5,7 +5,6 @@ export function quantizationLabel(name: string): string | null {
 }
 /** Calibration, tokenizer, projector and standalone prediction modules are not a runnable model. */
 export function isModelWeightArtifact(name:string) {
- if(!/\.gguf$/i.test(name))return true;
  const base=(name.split('/').pop()??'').replace(/(?:no[-_]?mtp|without[-_]?mtp)/ig,'');
  return !/(?:^|[._-])(?:imatrix|tokenizer|mmproj|projector|draft|mtp|lora)(?:[._-]|$)/i.test(base);
 }

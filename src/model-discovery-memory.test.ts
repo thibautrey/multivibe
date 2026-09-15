@@ -71,3 +71,9 @@ test('calibration and tokenizer GGUF files never become model memory estimates',
  const m=parseOpenModels([raw])[0];const resolver=createDiscoveryMemory((async url=>Response.json(String(url).includes('/api/models/')?raw:config)) as typeof fetch);
  const result=await resolver.inspect(m,m);assert.equal(result.estimates.length,1);assert.equal(result.estimates[0].artifact,'model-Q4_K_M.gguf');
 });
+
+test('standalone MTP safetensors repositories are not full model estimates',async()=>{
+ const raw={id:'mlx-community/Model-MTP-4bit',private:false,gated:false,pipeline_tag:'text-generation',tags:['license:mit']};
+ const m=parseOpenModels([raw])[0];let calls=0;const resolver=createDiscoveryMemory((async()=>{calls++;throw Error('should not fetch');}) as typeof fetch);
+ assert.equal((await resolver.inspect(m,m)).reason,'incomplete_weights');assert.equal(calls,0);
+});
