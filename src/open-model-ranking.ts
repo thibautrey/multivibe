@@ -1,6 +1,7 @@
+import { runtimeMemory, type RecommendationEvidence } from './model-recommendation-evidence.js';
 /** Pure catalog projection. Source metadata is evidence, never execution permission. */
-export const RANKING_VERSION = '2026-09-14.2';
-export const catalogSorts = ['recommended', 'trending', 'downloads', 'newest', 'established', 'community'] as const;
+export const RANKING_VERSION = '2026-09-15.1';
+export const catalogSorts = ['recommended', 'benchmark', 'trending', 'downloads', 'newest', 'established', 'community'] as const;
 export type CatalogSort = typeof catalogSorts[number];
 export type CatalogNeed = 'writing' | 'coding' | 'translation' | 'documents';
 export type OpenModel = {
@@ -13,7 +14,7 @@ export type OpenModel = {
   architecture: string | null; context: number | null; trendingRank: number | null;
 };
 export type OpenModelCatalog = { failedFeeds?: number; models: OpenModel[]; checkedAt: string; stale: boolean; source: string; version: string; communityStatus?: 'available' | 'unavailable' };
-export type RuntimeEstimate = { model_id: string; aliases: string[]; variant: string; state: 'compatible' | 'insufficient' | 'unknown'; reason: string };
+export type RuntimeEstimate = { model_id: string; aliases: string[]; variant: string; state: 'compatible' | 'insufficient' | 'unknown'; reason: string; memory?: { device: string; model_mib: number; context_mib: number; compute_mib: number }[] };
 export function groupModels(models: OpenModel[]) {
   const byId = new Map(models.map(m => [m.id, m]));
   const groups = new Map<string, { model: OpenModel; variants: OpenModel[] }>();
@@ -26,15 +27,18 @@ export function groupModels(models: OpenModel[]) {
   }
   return [...groups.values()];
 }
-export function rankOpenModels(catalog: OpenModelCatalog, need: CatalogNeed, sort: CatalogSort, estimates: RuntimeEstimate[] = [], now = Date.now()) {
+export function rankOpenModels(catalog: OpenModelCatalog, need: CatalogNeed, sort: CatalogSort, estimates: RuntimeEstimate[] = [], now = Date.now(), evidence?: RecommendationEvidence) {
   let rows = groupModels(catalog.models).filter(g => g.model.needs.includes(need)).map(g => {
     const variants = g.variants.map(model => {
       const matches = estimates.filter(e => [e.model_id, ...(e.aliases ?? [])].includes(model.id));
       const estimate = matches.length === 1 ? matches[0] : undefined;
-      return { model, compatibility: estimate?.state ?? 'unknown', reason: estimate?.reason ?? 'Host has no memory estimate for this variant. Discovery alone cannot confirm that it fits or can be installed.' };
+      const memory = runtimeMemory(estimate, evidence?.memory);
+      return { model, memory, compatibility: memory.state, reason: estimate?.reason ?? 'Host has no memory estimate for this variant. Discovery alone cannot confirm that it fits or can be installed.' };
     });
-    const fit = !g.model.gated && variants.find(v => !v.model.gated && v.compatibility === 'compatible');
-    return { ...g, variants, selectedVariant: fit ? fit.model.id : null,
+    const fit = !g.model.gated && [...variants].sort((a,b) => (a.memory.requiredMiB ?? Infinity)-(b.memory.requiredMiB ?? Infinity)).find(v => !v.model.gated && v.compatibility === 'compatible');
+    const measured = fit || variants.find(v => v.memory.requiredMiB !== null);
+    const benchmark = evidence?.scores.get(g.model.id) ?? null;
+    return { ...g, variants, benchmark, memory: measured ? { ...measured.memory, variant: measured.model.id } : null, selectedVariant: fit ? fit.model.id : null,
       compatibility: fit ? 'compatible' : variants.every(v => v.compatibility === 'insufficient') ? 'insufficient' : 'unknown',
       access: g.model.gated ? 'restricted' : 'reference',
       reason: `Publisher metadata supports ${need === 'documents' ? 'text summarization or analysis' : need}. ${fit ? 'A runtime estimate is available.' : 'Compatibility is not verified.'}` };
@@ -47,9 +51,14 @@ export function rankOpenModels(catalog: OpenModelCatalog, need: CatalogNeed, sor
     rows = rows.filter(r => r.model.relation !== 'quantized' && (!r.model.parent || catalog.models.some(m => m.id === r.model.parent)) && r.model.createdAt && now-Date.parse(r.model.createdAt) >= 90*86400000 && downloads(r.model) >= threshold);
   }
   return rows.sort((a,b) => {
-    if (sort === 'recommended') {
+    if (sort === 'recommended' || sort === 'benchmark') {
       const eligible = (r: typeof a) => r.access !== 'restricted' && r.compatibility === 'compatible' ? 2 : r.access !== 'restricted' && r.compatibility !== 'insufficient' ? 1 : 0;
       const delta = eligible(b)-eligible(a); if (delta) return delta;
+      const scored = Number(Boolean(b.benchmark))-Number(Boolean(a.benchmark)); if (scored) return scored;
+      if (a.benchmark && b.benchmark) {
+        const score = b.benchmark.score-a.benchmark.score; if (score) return score;
+        const memory = (a.memory?.requiredMiB ?? Infinity)-(b.memory?.requiredMiB ?? Infinity); if (memory) return memory;
+      }
     }
     if (sort === 'community') return (a.model.communityUsage!.rank - b.model.communityUsage!.rank) || a.model.id.localeCompare(b.model.id);
     if (sort === 'trending') return (a.model.trendingRank ?? Infinity)-(b.model.trendingRank ?? Infinity) || a.model.id.localeCompare(b.model.id);
