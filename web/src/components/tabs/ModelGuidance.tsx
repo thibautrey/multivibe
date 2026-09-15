@@ -4,10 +4,10 @@ import type { CatalogEntry } from '../../lib/modelCatalog';
 import { modelNeeds, type ModelNeed } from '../../lib/modelGuidance';
 
 const needPresentation: Record<ModelNeed, { icon: string; title: string; example: string }> = {
-  writing: { icon: '✎', title: 'Chat and write', example: 'Emails, ideas, better wording' },
+  writing: { icon: '✎', title: 'Chat', example: 'Emails, ideas, better wording' },
   translation: { icon: '↔', title: 'Translate', example: 'Languages and wording' },
-  coding: { icon: '</>', title: 'Code and troubleshoot', example: 'Understand code, fix a bug' },
-  documents: { icon: '▤', title: 'Summarize and analyze', example: 'Documents, notes, meeting summaries' },
+  coding: { icon: '</>', title: 'Code', example: 'Understand code, fix a bug' },
+  documents: { icon: '▤', title: 'Analyze', example: 'Documents, notes, meeting summaries' },
 };
 
 export function ModelGuidance({ view, catalog, cloudConnected, canConfigure, onUse, onConnectCloud, connecting, connectionError, onExpert }: {
@@ -17,7 +17,7 @@ export function ModelGuidance({ view, catalog, cloudConnected, canConfigure, onU
   const [need, setNeed] = useState<ModelNeed>(() => { try { const value=localStorage.getItem('multivibe.models.need.v1'); return modelNeeds.some(n=>n.id===value) ? value as ModelNeed : 'writing'; } catch {return 'writing';} });
   return <div className="models-guidance">
     <fieldset className="models-needs"><legend>What would you like to do?</legend>
-      <div className="models-need-grid">{modelNeeds.map(item => <button className="models-need-card" aria-pressed={need === item.id} key={item.id} onClick={() => setNeed(item.id)}>
+      <div className="models-need-grid">{[...modelNeeds].sort((a, b) => ['writing', 'coding', 'documents', 'translation'].indexOf(a.id) - ['writing', 'coding', 'documents', 'translation'].indexOf(b.id)).map(item => <button className="models-need-card" aria-pressed={need === item.id} key={item.id} onClick={() => setNeed(item.id)}>
         <span className="models-need-icon" aria-hidden="true">{needPresentation[item.id].icon}</span>
         <span className="models-need-copy"><strong>{needPresentation[item.id].title}</strong><small>{needPresentation[item.id].example}</small></span>
         <span className="models-need-check" aria-hidden="true">{need === item.id ? '✓' : ''}</span>
