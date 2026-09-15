@@ -3,8 +3,14 @@ export type ModelArtifact = { name: string; format: string; quantization: string
 export function quantizationLabel(name: string): string | null {
   return name.match(/(?:^|[.\/_-])((?:IQ|Q)[1-8](?:_[A-Z0-9]+)*|NVFP4|MXFP4|BF16|FP16|F16|FP8|INT[248]|[248]-?BIT)(?=[.\/_-]|$)/i)?.[1]?.toUpperCase() ?? null;
 }
+/** Calibration, tokenizer, projector and standalone prediction modules are not a runnable model. */
+export function isModelWeightArtifact(name:string) {
+ if(!/\.gguf$/i.test(name))return true;
+ const base=(name.split('/').pop()??'').replace(/(?:no[-_]?mtp|without[-_]?mtp)/ig,'');
+ return !/(?:^|[._-])(?:imatrix|tokenizer|mmproj|projector|draft|mtp|lora)(?:[._-]|$)/i.test(base);
+}
 export function modelArtifacts(model: OpenModel): ModelArtifact[] {
-  const gguf = model.files.filter(file => /\.gguf$/i.test(file.name) && !/(?:mmproj|(?:^|[-_])draft(?:[-_.]|$)|^mtp-)/i.test(file.name.split('/').pop() ?? ''));
+  const gguf = model.files.filter(file => /\.gguf$/i.test(file.name) && isModelWeightArtifact(file.name));
   const groups = new Map<string, typeof gguf>();
   for (const file of gguf) {
     const key = file.name.replace(/-\d{5}-of-\d{5}(?=\.gguf$)/i,'');

@@ -1,3 +1,4 @@
+import {isModelWeightArtifact} from './model-variants.js';
 import {promises as fs} from 'node:fs';
 import path from 'node:path';
 import {createDiscoveryMemory,type MemoryEstimateReport,type DiscoveryMemory} from './model-discovery-memory.js';
@@ -37,6 +38,7 @@ export function createMemoryEstimationQueue(options:{path:string;resolve?:Return
   for(const j of [...recovered.values()].slice(0,MAX_JOBS)){
    if(!validModel(j.model)||!validModel(j.original)||j.key!==identity(j.model,j.original)||!Number.isFinite(j.nextAt)||!Number.isSafeInteger(j.order)||!Number.isSafeInteger(j.attempts))continue;
    if(j.report && (!Array.isArray(j.report.estimates)||j.report.estimates.some((e:any)=>e.variant!==j.model.id||e.estimator!=='catalog-memory-v2'||e.contextTokens!==8192||!Number.isFinite(e.requiredMiB)||e.requiredMiB<=0)))continue;
+   if(j.report){j.report.estimates=j.report.estimates.filter(e=>isModelWeightArtifact(e.artifact));if(j.report.reason==='ready'&&!j.report.estimates.length)j.report.reason='incomplete_weights';}
    if(j.report?.httpStatus===429 && j.nextAt>now())pauseUntil=Math.max(pauseUntil,j.nextAt);
    j.state=j.state==='done'?'done':'queued';jobs.set(j.model.id,j);storedJobs.set(j.model.id,JSON.stringify(j));order=Math.max(order,j.order+1);
   }
