@@ -6,9 +6,10 @@ export function quantizationLabel(name: string): string | null {
 /** Calibration, tokenizer, projector and standalone prediction modules are not a runnable model. */
 export function isModelWeightArtifact(name:string) {
  const base=(name.split('/').pop()??'').replace(/(?:no[-_]?mtp|without[-_]?mtp)/ig,'');
- return !/(?:^|[._-])(?:imatrix|tokenizer|mmproj|projector|draft|fastmtp|mtp|dspark|lora)(?:[._-]|$)/i.test(base);
+ return !/(?:^|[._-])(?:imatrix|tokenizer|mmproj|projector|draft|dflash[0-9]*|fastmtp|mtp|dspark|lora)(?:[._-]|$)/i.test(base);
 }
 export function modelArtifacts(model: OpenModel): ModelArtifact[] {
+  if(!isModelWeightArtifact(model.id))return [];
   const gguf = model.files.filter(file => /\.gguf$/i.test(file.name) && isModelWeightArtifact(file.name));
   const groups = new Map<string, typeof gguf>();
   for (const file of gguf) {

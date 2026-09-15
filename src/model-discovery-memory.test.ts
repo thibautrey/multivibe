@@ -77,3 +77,11 @@ test('standalone MTP safetensors repositories are not full model estimates',asyn
  const m=parseOpenModels([raw])[0];let calls=0;const resolver=createDiscoveryMemory((async()=>{calls++;throw Error('should not fetch');}) as typeof fetch);
  assert.equal((await resolver.inspect(m,m)).reason,'incomplete_weights');assert.equal(calls,0);
 });
+
+test('conversion tags cannot attach a small draft configuration to a full-model score',async()=>{
+ const base={id:'owner/original',sha:'a'.repeat(40),private:false,gated:false,pipeline_tag:'text-generation',tags:['license:mit','code']};
+ const raw={...base,id:'converter/model',tags:['license:mit','code','base_model:quantized:owner/original'],siblings:[{rfilename:'model-Q4_K_M.gguf',size:4*1024**3}]};
+ const m=parseOpenModels([raw])[0],original=parseOpenModels([base])[0];
+ const resolver=createDiscoveryMemory((async url=>Response.json(String(url).includes('/api/models/')?raw:String(url).includes('/converter/')?{...config,num_hidden_layers:2}:config)) as typeof fetch);
+ assert.equal((await resolver.inspect(m,original)).reason,'configuration_mismatch');
+});
