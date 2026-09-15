@@ -65,3 +65,9 @@ test('standard dense and sliding-window families use a conservative full-context
  const layers=Array(32).fill('full_attention');assert.ok(estimateDiscoveryMemory({...config,layer_types:layers},4*1024**3));
  assert.equal(estimateDiscoveryMemory({...config,layer_types:['unknown']},4*1024**3),null);
 });
+
+test('calibration and tokenizer GGUF files never become model memory estimates',async()=>{
+ const raw={id:'owner/model',sha:'a'.repeat(40),private:false,gated:false,pipeline_tag:'text-generation',tags:['license:mit','code'],siblings:[{rfilename:'imatrix-model.gguf',size:13*1024**2},{rfilename:'model.tokenizer.gguf',size:6*1024**2},{rfilename:'model-Q4_K_M.gguf',size:4*1024**3}]};
+ const m=parseOpenModels([raw])[0];const resolver=createDiscoveryMemory((async url=>Response.json(String(url).includes('/api/models/')?raw:config)) as typeof fetch);
+ const result=await resolver.inspect(m,m);assert.equal(result.estimates.length,1);assert.equal(result.estimates[0].artifact,'model-Q4_K_M.gguf');
+});
