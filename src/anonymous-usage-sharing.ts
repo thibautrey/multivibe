@@ -6,7 +6,7 @@ import type { StoreSettings } from "./types.js";
 import { solveAnonymousUsageProof } from "./anonymous-usage-proof.js";
 
 const DAY_MS = 86_400_000;
-const MAX_ALLOWLIST_BYTES = 2 * 1024 * 1024;
+const MAX_ALLOWLIST_BYTES = 8 * 1024 * 1024;
 const MAX_STATE_BYTES = 32 * 1024;
 const MAX_MODELS = 50;
 const OUTPUT_TOKEN_THOUSANDS_CAP = 1_000_000;
@@ -348,8 +348,10 @@ export function createAnonymousUsageSharingWorker(options: AnonymousUsageSharing
         await discardState().catch(() => undefined);
         return "disabled";
       }
+      const errorMessage = error instanceof Error ? error.message : String(error);
       console.warn("anonymous usage sharing cycle failed", {
         errorType: error instanceof Error ? error.name : "unknown",
+        errorMessage: errorMessage.slice(0, 240),
         ...(error instanceof AnonymousUsageHttpError ? { stage: error.stage, status: error.status } : {}),
       });
       return "failed";
