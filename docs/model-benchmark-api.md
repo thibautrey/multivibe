@@ -81,3 +81,10 @@ writing/translation. Parent-model scores do not certify quantization quality.
 Artificial Analysis endpoints remain available, but are not joined by fuzzy model
 names or mixed with Hugging Face scores; an explicit identity/metric mapping is
 required before that source can participate in this ranking.
+
+Validation (2026-09-15): dependency-free worktree diff review; web and API builds
+on main; 37 targeted ranking, cache, catalog, guidance and route tests passed.
+The live demo populated cached Hugging Face observations and returned published
+scores. A separate synthetic browser fixture verified plotted points, point
+selection, the available-memory line, a 16-to-6 GiB recommendation change, and
+390px layout. Those fixture memory values are not physical Host measurements.
