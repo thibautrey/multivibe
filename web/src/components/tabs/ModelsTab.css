@@ -227,3 +227,8 @@
   .models-picker-list .models-choice h3 { font-size:18px; }
   .models-picker-search { flex-basis:100%; }
 }
+
+.models-picker-list .models-card-details > summary { width:fit-content; padding:3px 0; }
+.models-picker-list .models-card-details > details { margin-top:12px; }
+.models-picker-list .models-card-details > .models-publisher-link { display:inline-block; margin-top:10px; }
+.models-picker-list .models-card-details .models-comparison-details { margin-top:14px; }
