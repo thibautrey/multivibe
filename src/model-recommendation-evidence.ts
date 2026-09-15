@@ -99,7 +99,7 @@ export function createRecommendationEvidence(client: CachedModelBenchmarkClient,
     }
     if(memoryQueue)await memoryQueue.enqueue(groupModels(catalog.models).flatMap(g=>g.variants.map(model=>({model,original:g.model,priority:scores.has(g.model.id)?10:0}))));
     const persisted=await memoryQueue?.snapshot(catalog.models.map(m=>m.id));
-    return { profile, scores, discoveryMemory:persisted?.discoveryMemory ?? new Map(discoveryMemory),artifactMemory:persisted?.artifactMemory,memoryReports:persisted?.reports,memoryProgress:persisted?{pending:persisted.pending,total:persisted.total,persistenceError:persisted.persistenceError}:undefined, options,
+    return { profile, scores, discoveryMemory:persisted?.discoveryMemory ?? new Map(discoveryMemory),artifactMemory:persisted?.artifactMemory,memoryReports:persisted?.reports,memoryProgress:persisted?{pending:persisted.pending,total:persisted.total,persistenceError:persisted.persistenceError,pausedUntil:persisted.pausedUntil}:undefined, options,
       coverage: { cachedModels: relevant.filter(m => cached.has(m.id)).length, totalModels: relevant.length, warming: Boolean(warming) } };
   };
 }
