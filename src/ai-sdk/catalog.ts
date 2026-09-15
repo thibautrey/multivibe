@@ -61,7 +61,7 @@ export function sdkAccountModels(account: Account, live?: LiveModelCatalogSnapsh
     id: `${provider.id}/${model.id}`, object: "model", owned_by: provider.id, created: 0,
     name: model.name, context_window: model.context, max_output_tokens: model.output,
     supports_tools: model.tools, supported_tool_types: model.tools === undefined ? undefined : model.tools ? ["function"] : [],
-    supports_reasoning: model.reasoning, input_modalities: model.input, pricing: model.cost,
+    supports_reasoning: model.reasoning, input_modalities: model.input, output_modalities: ["text"], pricing: model.cost,
     catalog_source: discovered?.source ?? metadata.source,
     catalog_fetched_at: discovered?.fetchedAt ?? metadata.fetchedAt,
   }));
