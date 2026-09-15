@@ -42,8 +42,8 @@ export function estimateDiscoveryMemory(raw: Record<string, any>, weights: numbe
 }
 
 export const SUPPORTED_MEMORY_ARCHITECTURES = ['llama','qwen2','qwen3','qwen3_moe','qwen3_next','qwen3_5_text','qwen3_5_moe_text','mistral','mixtral','phi3','phi','gemma','gemma2','gemma3_text','starcoder2'];
-export type MemoryEstimateReason = 'ready'|'queued'|'estimating'|'unsupported_architecture'|'missing_config'|'incomplete_metadata'|'incomplete_weights'|'context_unsupported'|'access_required'|'revision_changed'|'temporary_failure';
-export type MemoryEstimateReport = {reason:MemoryEstimateReason; estimates:DiscoveryMemory[]; artifactReasons?:Record<string,MemoryEstimateReason>; revision?:string; httpStatus?:number;retryAfterMs?:number; checkedAt:string};
+export type MemoryEstimateReason = 'ready'|'queued'|'estimating'|'unsupported_architecture'|'missing_config'|'incomplete_metadata'|'incomplete_weights'|'context_unsupported'|'access_required'|'revision_changed'|'configuration_mismatch'|'temporary_failure';
+export type MemoryEstimateReport = {reason:MemoryEstimateReason; estimates:DiscoveryMemory[]; artifactReasons?:Record<string,MemoryEstimateReason>; revision?:string;lineageVerified?:boolean; httpStatus?:number;retryAfterMs?:number; checkedAt:string};
 class MetadataError extends Error {constructor(readonly status:number,readonly retryAfterMs?:number){super('Metadata unavailable');}}
 /** Shared immutable-config cache: one config read can estimate every quantization. */
 export function createDiscoveryMemory(fetcher: typeof fetch = fetch, now = Date.now) {
@@ -96,6 +96,19 @@ export function createDiscoveryMemory(fetcher: typeof fetch = fetch, now = Date.
         if(!c || typeof c!=='object')return report('missing_config');
         if(!SUPPORTED_MEMORY_ARCHITECTURES.includes(c.model_type))return report('unsupported_architecture',{revision:current.revision});
         if(positive(c.max_position_embeddings) && context>c.max_position_embeddings)return report('context_unsupported',{revision:current.revision});
+        if(model.id!==original.id){
+          // A converter may publish a draft/pruned model under conversion tags.
+          // Verify structural identity before borrowing the original's benchmark.
+          let parentRevision=original.revision;
+          if(!parentRevision){const parent=await json(`https://huggingface.co/api/models/${original.id}`);parentRevision=parent.id===original.id && /^[a-f0-9]{40}$/.test(parent.sha)?parent.sha:null;}
+          if(!parentRevision)return report('incomplete_metadata');
+          let parent;try{parent=await configAt(original.id,parentRevision);}catch(e){if(e instanceof MetadataError&&e.status===404)return report('missing_config');throw e;}
+          const base=parent?.text_config??parent;
+          for(const key of ['hidden_size','num_hidden_layers','num_attention_heads','num_key_value_heads','vocab_size']){
+            if(!positive(base?.[key])||!positive(c[key]))return report('incomplete_metadata');
+            if(base[key]!==c[key])return report('configuration_mismatch');
+          }
+        }
         const artifacts=modelArtifacts(current);const estimates:DiscoveryMemory[]=[];const artifactReasons:Record<string,MemoryEstimateReason>={};
         for(const artifact of artifacts){
           if(!positive(artifact.bytes)){artifactReasons[artifact.name]='incomplete_weights';continue;}
@@ -104,7 +117,7 @@ export function createDiscoveryMemory(fetcher: typeof fetch = fetch, now = Date.
           estimates.push({...result,variant:model.id,artifact:artifact.name,contextTokens:context,source:'metadata',estimator:'catalog-memory-v2'});artifactReasons[artifact.name]='ready';
         }
         estimates.sort((a,b)=>Number(/Q4_K_M/i.test(b.artifact))-Number(/Q4_K_M/i.test(a.artifact))||a.requiredMiB-b.requiredMiB);
-        return report(estimates.length?'ready':Object.values(artifactReasons)[0]??'incomplete_weights',{estimates,artifactReasons,revision:current.revision});
+        return report(estimates.length?'ready':Object.values(artifactReasons)[0]??'incomplete_weights',{estimates,artifactReasons,revision:current.revision,lineageVerified:true});
       }catch(error){return report(error instanceof MetadataError && [401,403].includes(error.status)?'access_required':'temporary_failure',error instanceof MetadataError?{httpStatus:error.status,retryAfterMs:error.retryAfterMs}:{});}
     })().then(value=>{if(cache.size>=512)cache.delete(cache.keys().next().value!);cache.set(key,{at:now(),value});return value;}).finally(()=>pending.delete(key));
     pending.set(key,operation);return operation;
