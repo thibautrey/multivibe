@@ -1,3 +1,4 @@
+import { createDiscoveryMemory } from '../../model-discovery-memory.js';
 import { benchmarkProfiles, createRecommendationEvidence, type MemoryAvailability } from '../../model-recommendation-evidence.js';
 import { localPreparationRoutes } from './local-preparation.js';
 import { modelBenchmarkRoutes } from './model-benchmark-routes.js';
@@ -480,7 +481,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     { path: path.join(path.dirname(storagePaths.accountsPath), "model-benchmarks-v1.json") },
   );
   router.use("/benchmarks", modelBenchmarkRoutes(benchmarkClient));
-  const recommendationEvidence = createRecommendationEvidence(benchmarkClient);
+  const recommendationEvidence = createRecommendationEvidence(benchmarkClient, Date.now, createDiscoveryMemory());
 
   router.get("/host-update", async (_req, res) => {
     res.setHeader("cache-control", "no-store");
