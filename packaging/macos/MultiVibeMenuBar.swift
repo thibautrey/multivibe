@@ -17,7 +17,7 @@ private enum MenuBarPalette {
         }
     }
 
-    static let background = NSColor.windowBackgroundColor
+    static let background = adaptive(light: color(0xf3f5f6), dark: color(0x171b1e))
     static let panel = NSColor.controlBackgroundColor
     static let surfaceMuted = adaptive(light: color(0xf6f8f7), dark: color(0x182521))
     static let line = adaptive(light: color(0xe0e7e4), dark: color(0x273733))
@@ -341,6 +341,8 @@ private final class HostPopoverController: NSViewController {
     private var settingsExpanded = false
     private var selectedProvider: String?
     private var quotaProviders: [ProviderQuota] = []
+    private var hostOperational = false
+    private var providerPolicyPicker: NSPopUpButton?
     private let accountSection = NSStackView()
     private let primaryButton = NSButton(title: "Open Dashboard", target: nil, action: nil)
     private let startAtLoginButton = NSButton(checkboxWithTitle: "Launch at login", target: nil, action: nil)
@@ -354,13 +356,14 @@ private final class HostPopoverController: NSViewController {
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
+        scrollView.scrollerStyle = .overlay
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
         let document = FlippedView()
         document.translatesAutoresizingMaskIntoConstraints = false
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
-        contentStack.spacing = 10
+        contentStack.spacing = 12
         contentStack.edgeInsets = NSEdgeInsets(top: 14, left: 18, bottom: 16, right: 18)
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         document.addSubview(contentStack)
@@ -387,7 +390,7 @@ private final class HostPopoverController: NSViewController {
             footer.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             footer.trailingAnchor.constraint(equalTo: background.trailingAnchor),
             footer.bottomAnchor.constraint(equalTo: background.bottomAnchor),
-            footer.heightAnchor.constraint(equalToConstant: 68),
+            footer.heightAnchor.constraint(equalToConstant: 60),
             document.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
             contentStack.topAnchor.constraint(equalTo: document.topAnchor),
             contentStack.leadingAnchor.constraint(equalTo: document.leadingAnchor),
@@ -455,7 +458,9 @@ private final class HostPopoverController: NSViewController {
         let quitButton = NSButton(title: "Quit", target: self, action: #selector(didQuit))
         styleButton(quitButton, kind: .quiet)
 
-        let actions = NSStackView(views: [primaryButton, quitButton])
+        primaryButton.image = NSImage(systemSymbolName: "arrow.up.right.square", accessibilityDescription: nil)
+        primaryButton.imagePosition = .imageTrailing
+        let actions = NSStackView(views: [primaryButton, NSView(), quitButton])
         actions.orientation = .horizontal
         actions.alignment = .centerY
         actions.spacing = 8
@@ -517,6 +522,8 @@ private final class HostPopoverController: NSViewController {
         startAtLogin: Bool
     ) {
         _ = view
+        hostOperational = operational
+        providerPolicyPicker = nil
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
         headerTitle.stringValue = "MultiVibe"
         headerStatus.stringValue = status
@@ -531,14 +538,17 @@ private final class HostPopoverController: NSViewController {
 
         if let providers = summary?.providers, !providers.isEmpty {
             let picker = NSPopUpButton()
-            picker.addItem(withTitle: "Automatic · follow active provider")
+            picker.addItem(withTitle: "Automatic · active provider")
+            picker.controlSize = .small
+            picker.font = .systemFont(ofSize: 11)
+            picker.setAccessibilityLabel("Menu bar quota behavior")
             for provider in providers { picker.addItem(withTitle: "Pin \(provider.displayName)") }
             picker.selectItem(at: providers.firstIndex(where: { $0.id == pinnedQuotaProvider }).map { $0 + 1 } ?? 0)
             picker.target = self
             picker.action = #selector(didSelectQuotaProvider(_:))
             picker.itemArray.first?.representedObject = ""
             for (index, provider) in providers.enumerated() { picker.item(at: index + 1)?.representedObject = provider.id }
-            contentStack.addArrangedSubview(picker)
+            providerPolicyPicker = picker
         }
         quotaProviders = summary?.providers ?? []
         if quotaProviders.isEmpty, let accounts = summary?.accounts, !accounts.isEmpty {
@@ -567,6 +577,10 @@ private final class HostPopoverController: NSViewController {
         settingsStack.orientation = .vertical
         settingsStack.alignment = .leading
         settingsStack.spacing = 12
+        if let picker = providerPolicyPicker {
+            settingsStack.addArrangedSubview(sectionLabel("Menu bar quota"))
+            settingsStack.addArrangedSubview(picker)
+        }
         if updateStatus?.availableVersion == nil {
             settingsStack.addArrangedSubview(updateCard(updateStatus, busy: updateBusy))
         }
@@ -591,23 +605,25 @@ private final class HostPopoverController: NSViewController {
         let providers = quotaProviders.map { $0.id }
         if !providers.contains(selectedProvider ?? "") { selectedProvider = providers.first }
         if !providers.isEmpty {
-            // Wrap native tab controls so every provider remains reachable in the fixed-width popover.
-            for offset in stride(from: 0, to: providers.count, by: 3) {
-                let group = Array(providers[offset..<min(offset + 3, providers.count)])
-                let tabs = NSSegmentedControl(labels: group.map { provider in
-                    quotaProviders.first { $0.id == provider }?.displayName ?? provider
-                }, trackingMode: .selectOne, target: self, action: #selector(didSelectProvider(_:)))
-                tabs.segmentStyle = .rounded
-                tabs.selectedSegment = group.firstIndex(of: selectedProvider ?? "") ?? -1
-                tabs.translatesAutoresizingMaskIntoConstraints = false
-                tabs.widthAnchor.constraint(equalToConstant: 384).isActive = true
-                for (index, provider) in group.enumerated() {
-                    tabs.setTag(providers.firstIndex(of: provider)!, forSegment: index)
-                    tabs.setWidth(384 / CGFloat(group.count), forSegment: index)
-                }
-                tabs.setAccessibilityLabel("Quota provider")
-                accountSection.addArrangedSubview(tabs)
+            let picker = NSPopUpButton()
+            picker.bezelStyle = .rounded
+            picker.font = .systemFont(ofSize: 13, weight: .semibold)
+            for provider in quotaProviders {
+                picker.addItem(withTitle: provider.displayName)
+                picker.lastItem?.representedObject = provider.id
             }
+            picker.selectItem(at: providers.firstIndex(of: selectedProvider ?? "") ?? 0)
+            picker.target = self
+            picker.action = #selector(didSelectProvider(_:))
+            picker.setAccessibilityLabel("View provider capacity")
+            picker.translatesAutoresizingMaskIntoConstraints = false
+            picker.widthAnchor.constraint(lessThanOrEqualToConstant: 270).isActive = true
+            let heading = NSStackView(views: [sectionLabel("PROVIDER"), NSView(), picker])
+            heading.orientation = .horizontal
+            heading.alignment = .centerY
+            heading.translatesAutoresizingMaskIntoConstraints = false
+            heading.widthAnchor.constraint(equalToConstant: 384).isActive = true
+            accountSection.addArrangedSubview(heading)
         }
         let selected = quotaProviders.first { $0.id == selectedProvider }
         let accounts = selected?.accounts ?? []
@@ -615,7 +631,7 @@ private final class HostPopoverController: NSViewController {
             accountSection.addArrangedSubview(emptyAccountsCard(operational: operational))
             return
         }
-        accountSection.addArrangedSubview(sectionLabel("Remaining capacity · " + accountCount(accounts.count)))
+        accountSection.addArrangedSubview(sectionLabel("CAPACITY REMAINING"))
         let cells: [NSView] = (selected?.windows ?? []).map { window in
             quotaCell(title: window.label, value: window.remainingPercent, detail: accountCount(window.accountCount))
         }
@@ -634,14 +650,15 @@ private final class HostPopoverController: NSViewController {
             ])
             accountSection.addArrangedSubview(container)
         }
+        accountSection.addArrangedSubview(sectionLabel("CONNECTED ACCOUNTS · \(accounts.count)"))
         accountSection.addArrangedSubview(accountsCard(accounts))
     }
 
-    @objc private func didSelectProvider(_ sender: NSSegmentedControl) {
-        guard sender.selectedSegment >= 0 else { return }
-        let providers = quotaProviders.map { $0.id }
-        selectedProvider = providers[sender.tag(forSegment: sender.selectedSegment)]
-        renderAccounts(operational: true)
+    @objc private func didSelectProvider(_ sender: NSPopUpButton) {
+        guard let id = sender.selectedItem?.representedObject as? String,
+              quotaProviders.contains(where: { $0.id == id }) else { return }
+        selectedProvider = id
+        renderAccounts(operational: hostOperational)
     }
 
     @objc private func didToggleSettings() {
@@ -659,13 +676,13 @@ private final class HostPopoverController: NSViewController {
     }
 
     private func sectionLabel(_ text: String) -> NSTextField {
-        label(text, size: 11, weight: .medium, color: MenuBarPalette.muted)
+        label(text, size: 10, weight: .semibold, color: MenuBarPalette.muted)
     }
 
     private func card() -> NSView {
         let view = AdaptiveLayerView(backgroundColor: MenuBarPalette.panel, borderColor: MenuBarPalette.line)
-        view.layer?.cornerRadius = 10
-        view.layer?.borderWidth = 0
+        view.layer?.cornerRadius = 14
+        view.layer?.borderWidth = 0.5
         view.layer?.masksToBounds = true
         view.translatesAutoresizingMaskIntoConstraints = false
         view.widthAnchor.constraint(equalToConstant: 384).isActive = true
@@ -716,7 +733,11 @@ private final class HostPopoverController: NSViewController {
         bar.translatesAutoresizingMaskIntoConstraints = false
         bar.setAccessibilityLabel(title)
         bar.setAccessibilityValue(percent(value))
-        let stack = NSStackView(views: [titleLabel, valueLabel, bar, detailLabel])
+        let heading = NSStackView(views: [titleLabel, NSView(), valueLabel])
+        heading.orientation = .horizontal
+        heading.alignment = .firstBaseline
+        heading.widthAnchor.constraint(equalTo: bar.widthAnchor).isActive = true
+        let stack = NSStackView(views: [heading, bar, detailLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 5
@@ -792,7 +813,9 @@ private final class HostPopoverController: NSViewController {
         updated.lineBreakMode = .byTruncatingTail
         updated.maximumNumberOfLines = 1
         if visibleQuotaWindows.isEmpty { contentViews.append(updated) }
-        container.toolTip = account.displayName + " · " + updatedText
+        name.toolTip = account.displayName + " · " + updatedText
+        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        state.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         let stack = NSStackView(views: contentViews)
         stack.orientation = .vertical
@@ -803,10 +826,10 @@ private final class HostPopoverController: NSViewController {
         windowsView?.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         container.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 9),
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
             stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 15),
             stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -15),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -9),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
         ])
         return container
     }
