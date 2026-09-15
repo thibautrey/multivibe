@@ -600,10 +600,13 @@ private final class HostPopoverController: NSViewController {
     }
 
     private func renderAccounts(operational: Bool) {
-
         // Keep startup rendering constraint-free on macOS 27. The detailed
         // account cards are rendered by the main app; rebuilding them here
         // can trigger an AppKit mutually-exclusive constraint exception.
+        for child in accountSection.arrangedSubviews {
+            accountSection.removeArrangedSubview(child)
+            child.removeFromSuperview()
+        }
         accountSection.addArrangedSubview(sectionLabel("ACCOUNTS"))
     }
 
