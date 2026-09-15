@@ -1,3 +1,4 @@
+import { groupModels } from './open-model-ranking.js';
 import type { BenchmarkObservation } from './model-benchmarks.js';
 import type { CachedModelBenchmarkClient } from './model-benchmark-cache.js';
 import type { CatalogNeed, OpenModelCatalog, RuntimeEstimate } from './open-model-ranking.js';
@@ -55,7 +56,7 @@ export function createRecommendationEvidence(client: CachedModelBenchmarkClient,
   const attempted = new Map<string, number>();
   return async (catalog: OpenModelCatalog, need: CatalogNeed, requested?: string) => {
     const snapshot = await client.cachedModels('hugging-face');
-    const relevant = catalog.models.filter(m => m.needs.includes(need));
+    const relevant = groupModels(catalog.models).filter(g=>g.model.needs.includes(need) || g.variants.some(v=>v.needs.includes(need))).flatMap(g=>g.variants);
     const cached = new Map(snapshot.models.map(r => [r.data.modelId, r]));
     if (!warming) {
       const queue = [...relevant].sort((a,b) => (b.downloads ?? 0)-(a.downloads ?? 0)).filter(m => (!cached.has(m.id) || cached.get(m.id)!.stale) && now()-(attempted.get(m.id) ?? -Infinity) >= 30 * 60_000).slice(0,40);

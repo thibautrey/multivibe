@@ -33,7 +33,8 @@ export function parseOpenModels(value: unknown): OpenModel[] {
     const quantConfig = item.config?.quantization_config ?? card.quantization_config;
     const bits = typeof quantConfig?.bits === 'number' ? quantConfig.bits : typeof quantConfig?.weight_bits === 'number' ? quantConfig.weight_bits : null;
     const quantization = [typeof quantConfig?.quant_method === 'string' ? quantConfig.quant_method : '', bits !== null ? `${bits}-bit` : ''].filter(Boolean).join(' ') || null;
-    const relation = taggedParents.length ? tags.some(t=>t.startsWith('base_model:quantized:')) ? 'quantized' : 'converted' : typeof card.base_model_relation === 'string' ? card.base_model_relation : quantization && parent ? 'quantized' : null;
+    const declaredNonConversion = ['finetune','merge'].includes(card.base_model_relation) ? card.base_model_relation : tags.some(t=>t.startsWith('base_model:finetune:')) ? 'finetune' : tags.some(t=>t.startsWith('base_model:merge:')) ? 'merge' : null;
+    const relation = declaredNonConversion ?? (taggedParents.length ? tags.some(t=>t.startsWith('base_model:quantized:')) ? 'quantized' : 'converted' : typeof card.base_model_relation === 'string' ? card.base_model_relation : quantization && parent ? 'quantized' : null);
     const files = Array.isArray(item.siblings) ? item.siblings.filter((f: any) => f && safeFilename(f.rfilename)).map((f: any) => {
       const bytes = safeBytes(f.size ?? f.lfs?.size);
       const sha256 = typeof f.lfs?.sha256 === 'string' && /^[a-f0-9]{64}$/u.test(f.lfs.sha256) && bytes !== null && safeBytes(f.lfs.size) === bytes ? f.lfs.sha256 : null;

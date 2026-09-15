@@ -36,3 +36,7 @@ test('family discovery uses declared identities and caches metadata across repea
  }) as typeof fetch);
  await load();const family=await load.family('org/original');assert.equal(family.length,2);assert.equal(family[1].files[0].bytes,100);const before=calls;await load.family('org/original');assert.equal(calls,before);await assert.rejects(load.family('../secret'));
 });
+test('an explicit fine-tune declaration is not overridden by a quantization tag',()=>{
+ const rows=models(raw('org/original'),raw('other/tune',{tags:['code','license:mit','base_model:quantized:org/original'],cardData:{base_model:'org/original',base_model_relation:'finetune'}}));
+ assert.equal(rows[1].relation,'finetune');assert.equal(groupModels(rows).length,2);
+});
