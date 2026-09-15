@@ -49,7 +49,7 @@ export function parseOpenModels(value: unknown): OpenModel[] {
       architecture: strings(item.config?.architectures)[0] ?? null, context: positive(item.config?.max_position_embeddings), trendingRank: null }];
   });
 }
-export function createOpenModelCatalog(fetcher: typeof fetch = fetch, now = Date.now, cachePath?: string) {
+export function createOpenModelCatalog(fetcher: typeof fetch = fetch, now = Date.now, cachePath?: string, loadSources = collectionSources) {
   let cache: OpenModelCatalog | undefined; let pending: Promise<OpenModelCatalog> | undefined; let hydration: Promise<void> | undefined;
   let enrichmentCursor = 0;
   let retryAfter = 0;
@@ -87,7 +87,7 @@ export function createOpenModelCatalog(fetcher: typeof fetch = fetch, now = Date
         const unique = new Map<string,OpenModel>();
         for (const row of lists.flat()) if (!unique.has(row.id)) unique.set(row.id,row);
         if (!unique.size) throw new Error('Empty public catalog');
-        const curated = await collectionSources(fetcher,now);
+        const curated = await loadSources(fetcher,now);
         const missingCurated=[...curated.keys()].filter(id=>!unique.has(id));
         for(let offset=0;offset<missingCurated.length;offset+=8)await Promise.all(missingCurated.slice(offset,offset+8).map(async id=>{
           try {const response=await fetcher(`${source}/api/models/${id}?blobs=true`,{redirect:'error',signal:AbortSignal.timeout(5000)});if(!response.ok)return;const model=parseOpenModels([await response.json()]).find(m=>m.id===id);if(model)unique.set(id,model);} catch {/* Keep independently available sources. */}

@@ -74,7 +74,7 @@ export function rankOpenModels(catalog: OpenModelCatalog, need: CatalogNeed, sor
       const eligible = (r: typeof a) => r.access !== 'restricted' && r.compatibility === 'compatible' ? 2 : r.access !== 'restricted' && r.compatibility !== 'insufficient' ? 1 : 0;
       const delta = eligible(b)-eligible(a); if (delta) return delta;
       if (sort === 'recommended') {
-        const curated = (r: typeof a)=>r.recommendationSources.filter(s=>s.kind==='curated'||s.kind==='runtime').length;
+        const curated = (r: typeof a)=>r.recommendationSources.reduce((n,s)=>n+(s.kind==='curated'?2:s.kind==='runtime'?1:0),0);
         const endorsed = curated(b)-curated(a); if(endorsed)return endorsed;
         if(curated(a)>0 && curated(b)>0){
           const trend=(r:typeof a)=>Math.min(...r.variants.map(v=>v.model.trendingRank ?? Infinity));

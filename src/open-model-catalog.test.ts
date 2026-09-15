@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createOpenModelCatalog, parseOpenModels, CATALOG_TTL } from './open-model-catalog.js';
+import { createOpenModelCatalog as createCatalog, parseOpenModels, CATALOG_TTL } from './open-model-catalog.js';
 import { rankOpenModels, groupModels } from './open-model-ranking.js';
+const createOpenModelCatalog: typeof createCatalog = (fetcher, now, cachePath) => createCatalog(fetcher, now, cachePath, async()=>new Map());
 const model = { id:'publisher/model', private:false, gated:false, pipeline_tag:'text-generation', tags:['conversational','code','translation','summarization','license:custom'], createdAt:'2025-01-01T00:00:00Z', downloads:100 };
 test('public specific licenses and gates are discovery, private/adapters are excluded',()=>{
  assert.equal(parseOpenModels([model])[0].license,'custom');
