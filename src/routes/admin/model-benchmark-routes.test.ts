@@ -10,7 +10,7 @@ import path from "node:path";
 import { modelBenchmarkRoutes } from "./model-benchmark-routes.js";
 
 async function fixture(t: any) {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "benchmark-routes-")); t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await mkdtemp(path.join(os.tmpdir(), "benchmark-routes-")); t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 }));
   const fetcher = (async input => {
     const url = String(input);
     if (url.includes("leaderboard")) return new Response(JSON.stringify([{ rank: 1, model_id: "owner/model", value: 8 }]));

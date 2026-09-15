@@ -53,6 +53,7 @@ export function createCachedModelBenchmarkClient(upstream: ModelBenchmarkClient,
       await fs.writeFile(temporary, body, { mode: 0o600 });
       await fs.rename(temporary, options.path);
     }).catch(() => {});
+    return writeQueue;
   }
 
   function decorated(entry: CacheEntry, hit: boolean, stale: boolean) {
