@@ -618,11 +618,9 @@ private final class HostPopoverController: NSViewController {
             picker.target = self
             picker.action = #selector(didSelectProvider(_:))
             picker.setAccessibilityLabel("View provider capacity")
-            picker.translatesAutoresizingMaskIntoConstraints = false
             let heading = NSStackView(views: [sectionLabel("PROVIDER"), NSView(), picker])
             heading.orientation = .horizontal
             heading.alignment = .centerY
-            heading.translatesAutoresizingMaskIntoConstraints = false
             accountSection.addArrangedSubview(heading)
         }
         let selected = quotaProviders.first { $0.id == selectedProvider }
