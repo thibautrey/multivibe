@@ -655,6 +655,11 @@ private final class HostPopoverController: NSViewController {
         accountSection.addArrangedSubview(sectionLabel("CONNECTED ACCOUNTS · \(accounts.count)"))
         accountSection.addArrangedSubview(accountsCard(accounts))
     }
+
+    @objc private func didSelectProvider(_ sender: NSPopUpButton) {
+        guard let id = sender.selectedItem?.representedObject as? String,
+              quotaProviders.contains(where: { $0.id == id }) else { return }
+        selectedProvider = id
         renderAccounts(operational: hostOperational)
     }
 
