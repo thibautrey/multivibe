@@ -600,20 +600,61 @@ private final class HostPopoverController: NSViewController {
     }
 
     private func renderAccounts(operational: Bool) {
-        // Keep startup rendering constraint-free on macOS 27. The detailed
-        // account cards are rendered by the main app; rebuilding them here
-        // can trigger an AppKit mutually-exclusive constraint exception.
         for child in accountSection.arrangedSubviews {
             accountSection.removeArrangedSubview(child)
             child.removeFromSuperview()
         }
-        accountSection.addArrangedSubview(sectionLabel("ACCOUNTS"))
+        let providers = quotaProviders.map { $0.id }
+        if !providers.contains(selectedProvider ?? "") { selectedProvider = providers.first }
+        if !providers.isEmpty {
+            let picker = NSPopUpButton()
+            picker.bezelStyle = .rounded
+            picker.font = .systemFont(ofSize: 13, weight: .semibold)
+            for provider in quotaProviders {
+                picker.addItem(withTitle: provider.displayName)
+                picker.lastItem?.representedObject = provider.id
+            }
+            picker.selectItem(at: providers.firstIndex(of: selectedProvider ?? "") ?? 0)
+            picker.target = self
+            picker.action = #selector(didSelectProvider(_:))
+            picker.setAccessibilityLabel("View provider capacity")
+            picker.translatesAutoresizingMaskIntoConstraints = false
+            picker.widthAnchor.constraint(lessThanOrEqualToConstant: 270).isActive = true
+            let heading = NSStackView(views: [sectionLabel("PROVIDER"), NSView(), picker])
+            heading.orientation = .horizontal
+            heading.alignment = .centerY
+            heading.translatesAutoresizingMaskIntoConstraints = false
+            heading.widthAnchor.constraint(lessThanOrEqualToConstant: 384).isActive = true
+            accountSection.addArrangedSubview(heading)
+        }
+        let selected = quotaProviders.first { $0.id == selectedProvider }
+        let accounts = selected?.accounts ?? []
+        if accounts.isEmpty {
+            accountSection.addArrangedSubview(emptyAccountsCard(operational: operational))
+            return
+        }
+        accountSection.addArrangedSubview(sectionLabel("CAPACITY REMAINING"))
+        let cells: [NSView] = (selected?.windows ?? []).map { window in
+            quotaCell(title: window.label, value: window.remainingPercent, detail: accountCount(window.accountCount))
+        }
+        if !cells.isEmpty {
+            let container = card()
+            let stack = NSStackView(views: cells)
+            stack.distribution = .fillEqually
+            stack.spacing = 12
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(stack)
+            NSLayoutConstraint.activate([
+                stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
+                stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
+                stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+                stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            ])
+            accountSection.addArrangedSubview(container)
+        }
+        accountSection.addArrangedSubview(sectionLabel("CONNECTED ACCOUNTS · \(accounts.count)"))
+        accountSection.addArrangedSubview(accountsCard(accounts))
     }
-
-    @objc private func didSelectProvider(_ sender: NSPopUpButton) {
-        guard let id = sender.selectedItem?.representedObject as? String,
-              quotaProviders.contains(where: { $0.id == id }) else { return }
-        selectedProvider = id
         renderAccounts(operational: hostOperational)
     }
 
@@ -641,6 +682,7 @@ private final class HostPopoverController: NSViewController {
         view.layer?.borderWidth = 0.5
         view.layer?.masksToBounds = true
         view.translatesAutoresizingMaskIntoConstraints = false
+        view.widthAnchor.constraint(equalToConstant: 384).isActive = true
         return view
     }
 
@@ -691,8 +733,9 @@ private final class HostPopoverController: NSViewController {
         let heading = NSStackView(views: [titleLabel, NSView(), valueLabel])
         heading.orientation = .horizontal
         heading.alignment = .firstBaseline
-        heading.widthAnchor.constraint(equalTo: bar.widthAnchor).isActive = true
         let stack = NSStackView(views: [heading, bar, detailLabel])
+        // Both views must share an ancestor before activating their constraint.
+        heading.widthAnchor.constraint(equalTo: bar.widthAnchor).isActive = true
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 5
