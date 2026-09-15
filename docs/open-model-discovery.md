@@ -46,3 +46,31 @@ Live source validation returned 2,095 repositories: writing 770, coding 322,
 translation 662, documents 402 (categories overlap; counts vary over time).
 Thirteen catalogue tests and the API build passed on main. This does not validate
 specialist architecture support, model downloads, or physical inference.
+
+## Original models and conversions (2026-09-15)
+
+Model families follow declared quantized/converted parent links through multiple
+levels. Missing parents are retrieved from fixed Hugging Face metadata endpoints
+(up to 32 parents and four network levels per catalog refresh). Cycles, conflicting
+parents and unnamed conversion ancestry remain unresolved and are hidden behind
+an explicit UI toggle. Declared fine-tunes and merges retain separate identities.
+Names alone never establish a parent. Upstream declarations are not an independent
+verification that weights are unchanged.
+
+`GET /admin/open-model-family?model=owner%2Fmodel` discovers up to 100 repositories
+per conversion type, enriches file metadata for up to 20 repositories, and persists
+the result in the existing catalog cache for six hours. Family requests coalesce.
+The model details table searches and progressively displays individual weight
+variants, with publisher, format, quantization, download bytes, exact runtime fit,
+and repository download counts. Complete split GGUF shards are summed; alternative
+formats, projectors and auxiliary draft files are not added to model weight size.
+File size is not a RAM estimate; ambiguous multi-file fits stay unknown.
+
+Benchmarks remain attached to the original model, and conversion downloads are
+not added to the original's count. Selecting a recommended available conversion
+opens that repository's existing preparation flow. No Cloud changes are needed.
+
+Validation: web/API builds and targeted family, artifact, catalog and benchmark
+ranking tests on main. Live Qwen3.8-27B family discovery returned 104 repositories;
+the browser showed original-first results and per-file quantization levels/sizes.
+Physical fit remains dependent on Host runtime evidence, absent in the demo.
