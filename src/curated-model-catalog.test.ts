@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {snapshotSources,collectionSources} from './curated-model-catalog.js';
-import {parseOpenModels} from './open-model-catalog.js';
+import {parseOpenModels,createOpenModelCatalog} from './open-model-catalog.js';
 import {rankOpenModels} from './open-model-ranking.js';
 test('verified catalog references use exact model ids and valid source links',()=>{
  const sources=snapshotSources();assert.ok(sources.get('Qwen/Qwen3.8-27B')?.some(s=>s.id==='lmstudio'));
@@ -23,4 +23,13 @@ test('curation boosts Recommended only; publisher catalogs are not quality votes
  const scores=new Map([[models[1].id,{modelId:models[1].id,score:90,label:'Test',benchmarkId:'test',taskId:'test',metric:null,source:'hugging-face',sourceType:'provider',verified:false,sourceUrl:null,sourceName:null,date:null,notes:null,filename:null,pullRequest:null,stale:false,storedAt:'2026-09-15'} as const]]);
  assert.equal(rankOpenModels(catalog,'coding','recommended',[],Date.now(),{scores})[0].model.id,'owner/curated');
  assert.equal(rankOpenModels(catalog,'coding','benchmark',[],Date.now(),{scores})[0].model.id,'owner/benchmark');
+});
+
+test('curated originals missing from broad feeds are fetched and attributed',async()=>{
+ const row={id:'owner/pick',private:false,gated:false,pipeline_tag:'text-generation',tags:['code','license:mit']};
+ const catalog=createOpenModelCatalog((async input=>{
+  const url=String(input);if(url.includes('/api/models/'))return Response.json(row);
+  return Response.json([{...row,id:'owner/feed'}]);
+ }) as typeof fetch, Date.now, undefined, async()=>new Map([['owner/pick',[{id:'lmstudio',label:'LM Studio',kind:'curated' as const,url:'https://lmstudio.ai/models/qwen3.8',checkedAt:'2026-09-15'}]]]));
+ const result=await catalog();assert.equal(result.models.find(m=>m.id==='owner/pick')?.recommendationSources?.[0].id,'lmstudio');
 });
