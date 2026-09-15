@@ -11,23 +11,34 @@ const validModel=(m:any)=>m && typeof m.id==='string' && /^[\w.-]+\/[\w.-]+$/.te
 export function createMemoryEstimationQueue(options:{path:string;resolve?:ReturnType<typeof createDiscoveryMemory>['inspect'];now?:()=>number;concurrency?:number}) {
  const now=options.now??Date.now;const resolve=options.resolve??createDiscoveryMemory().inspect;
  const jobs=new Map<string,Job>();let order=0;let active=0;let dispatch=0;let stopped=false;let timer:ReturnType<typeof setTimeout>|undefined;
- let saveChain=Promise.resolve();let persistenceError=false;
- const save=()=>{
-  const data=JSON.stringify({version:2,jobs:[...jobs.values()]});
-  saveChain=saveChain.catch(()=>{}).then(async()=>{await fs.mkdir(path.dirname(options.path),{recursive:true});const tmp=`${options.path}.${process.pid}.tmp`;await fs.writeFile(tmp,data,{mode:0o600});await fs.rename(tmp,options.path);persistenceError=false;}).catch(()=>{persistenceError=true;});
+ let saveChain=Promise.resolve();let persistenceError=false;let writes=0;
+ const storedJobs=new Map<string,string>();const deleted=new Set<string>();
+ const save=(updated:Job[]=[])=>{
+  const record=JSON.stringify({version:2,updates:updated,deleted:[...deleted]});deleted.clear();
+  saveChain=saveChain.catch(()=>{}).then(async()=>{
+   await fs.mkdir(path.dirname(options.path),{recursive:true});
+   await fs.appendFile(`${options.path}.journal`,'\n'+record+'\n',{mode:0o600});
+   const parsed=JSON.parse(record);for(const id of parsed.deleted)storedJobs.delete(id);for(const j of parsed.updates)storedJobs.set(j.model.id,JSON.stringify(j));
+   if(++writes>=200||stopped){
+    const tmp=`${options.path}.${process.pid}.tmp`;
+    await fs.writeFile(tmp,`{"version":2,"jobs":[${[...storedJobs.values()].join(',')}]}`,{mode:0o600});
+    await fs.rename(tmp,options.path);await fs.writeFile(`${options.path}.journal`,'',{mode:0o600});writes=0;
+   }
+   persistenceError=false;
+  }).catch(()=>{persistenceError=true;});
   return saveChain;
  };
  const ready=(async()=>{
-  try{
-   if((await fs.stat(options.path)).size>64*1024**2)return;
-   const stored=JSON.parse(await fs.readFile(options.path,'utf8'));
-   if(stored.version!==2||!Array.isArray(stored.jobs))return;
-   for(const j of stored.jobs.slice(0,MAX_JOBS)){
-    if(!validModel(j.model)||!validModel(j.original)||j.key!==identity(j.model,j.original)||!Number.isFinite(j.nextAt)||!Number.isSafeInteger(j.order)||!Number.isSafeInteger(j.attempts))continue;
-    if(j.report && (!Array.isArray(j.report.estimates)||j.report.estimates.some((e:any)=>e.variant!==j.model.id||e.estimator!=='catalog-memory-v2'||e.contextTokens!==8192||!Number.isFinite(e.requiredMiB)||e.requiredMiB<=0)))continue;
-    j.state=j.state==='done'?'done':'queued';jobs.set(j.model.id,j);order=Math.max(order,j.order+1);
-   }
-  }catch{/* Missing or corrupt cache is safely rebuilt. */}
+  const recovered=new Map<string,Job>();
+  try{if((await fs.stat(options.path)).size<=64*1024**2){const snapshot=JSON.parse(await fs.readFile(options.path,'utf8'));if(snapshot.version===2&&Array.isArray(snapshot.jobs))for(const j of snapshot.jobs.slice(0,MAX_JOBS))if(j?.model?.id)recovered.set(j.model.id,j);}}catch{/* Missing or corrupt snapshot can be recovered from the journal. */}
+  try{if((await fs.stat(`${options.path}.journal`)).size<=64*1024**2)for(const line of (await fs.readFile(`${options.path}.journal`,'utf8')).split('\n')){
+    if(!line)continue;try{const event=JSON.parse(line);if(event.version!==2||!Array.isArray(event.updates))continue;for(const id of event.deleted??[])recovered.delete(id);for(const j of event.updates)if(j?.model?.id)recovered.set(j.model.id,j);}catch{/* An interrupted final journal record is ignored. */}
+  }}catch{/* First run. */}
+  for(const j of [...recovered.values()].slice(0,MAX_JOBS)){
+   if(!validModel(j.model)||!validModel(j.original)||j.key!==identity(j.model,j.original)||!Number.isFinite(j.nextAt)||!Number.isSafeInteger(j.order)||!Number.isSafeInteger(j.attempts))continue;
+   if(j.report && (!Array.isArray(j.report.estimates)||j.report.estimates.some((e:any)=>e.variant!==j.model.id||e.estimator!=='catalog-memory-v2'||e.contextTokens!==8192||!Number.isFinite(e.requiredMiB)||e.requiredMiB<=0)))continue;
+   j.state=j.state==='done'?'done':'queued';jobs.set(j.model.id,j);storedJobs.set(j.model.id,JSON.stringify(j));order=Math.max(order,j.order+1);
+  }
  })();
  function kick(){
   if(stopped)return;if(timer){clearTimeout(timer);timer=undefined;}
@@ -38,7 +49,7 @@ export function createMemoryEstimationQueue(options:{path:string;resolve?:Return
    const fair=++dispatch%5===0;available.sort((a,b)=>fair?a.order-b.order:b.priority-a.priority||a.order-b.order);
    const job=available[0];job.state='running';active++;
    void (async()=>{
-    await save();
+    await save([job]);
     let report:MemoryEstimateReport;
     try{report=await resolve(job.model,job.original,8192);}catch{report={reason:'temporary_failure',estimates:[],checkedAt:new Date(now()).toISOString()};}
     if(jobs.get(job.model.id)===job){
@@ -46,7 +57,7 @@ export function createMemoryEstimationQueue(options:{path:string;resolve?:Return
      const retry=report.reason==='temporary_failure'&&job.attempts<4;
      job.state=retry?'queued':'done';job.priority=0;
      job.nextAt=now()+(retry?[60000,300000,1800000][job.attempts-1]:report.reason==='ready'?6*3600000:24*3600000);
-     await save();
+     await save([job]);
     }
    })().finally(()=>{active--;kick();});
   }
@@ -54,19 +65,19 @@ export function createMemoryEstimationQueue(options:{path:string;resolve?:Return
   if(pending.length&&active===0){const delay=Math.max(1,Math.min(...pending.map(j=>j.nextAt))-now());timer=setTimeout(kick,Math.min(delay,2147483647));timer.unref?.();}
  }
  async function enqueue(items:{model:OpenModel;original:OpenModel;priority?:number}[]){
-  await ready;let changed=false;
+  await ready;const updated=new Set<Job>();
   for(const item of items){
    if(!validModel(item.model)||!validModel(item.original))continue;
    const key=identity(item.model,item.original);const previous=jobs.get(item.model.id);
    if(previous?.key===key){
-    if(previous.state==='done'&&previous.nextAt<=now()){previous.state='queued';previous.report=undefined;previous.order=order++;previous.attempts=0;changed=true;}
-    if(previous.state==='queued'&&(item.priority??0)>previous.priority){previous.priority=item.priority??0;changed=true;}
+    if(previous.state==='done'&&previous.nextAt<=now()){previous.state='queued';previous.report=undefined;previous.order=order++;previous.attempts=0;updated.add(previous);}
+    if(previous.state==='queued'&&(item.priority??0)>previous.priority){previous.priority=item.priority??0;updated.add(previous);}
     continue;
    }
-   if(jobs.size>=MAX_JOBS&&!previous){const oldest=[...jobs.values()].filter(j=>j.state==='done').sort((a,b)=>a.order-b.order)[0];if(!oldest)continue;jobs.delete(oldest.model.id);}
-   jobs.set(item.model.id,{model:descriptor(item.model),original:descriptor(item.original),key,priority:item.priority??0,order:order++,state:'queued',attempts:0,nextAt:0});changed=true;
+   if(jobs.size>=MAX_JOBS&&!previous){const oldest=[...jobs.values()].filter(j=>j.state==='done').sort((a,b)=>a.order-b.order)[0];if(!oldest)continue;jobs.delete(oldest.model.id);deleted.add(oldest.model.id);}
+   const job:Job={model:descriptor(item.model),original:descriptor(item.original),key,priority:item.priority??0,order:order++,state:'queued',attempts:0,nextAt:0};jobs.set(item.model.id,job);updated.add(job);
   }
-  if(changed)await save();kick();
+  if(updated.size)await save([...updated]);kick();
  }
  async function snapshot(ids?:string[]){
   await ready;const selected=ids?ids.flatMap(id=>jobs.has(id)?[jobs.get(id)!]:[]):[...jobs.values()];
