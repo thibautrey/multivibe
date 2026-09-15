@@ -1067,6 +1067,13 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     } catch { res.status(503).json({error:'Public catalog unavailable'}); }
   });
 
+  router.get("/open-model-family", async (req,res) => {
+    const model = String(req.query.model ?? '');
+    if (!/^[A-Za-z0-9][\w.-]{0,127}\/[A-Za-z0-9][\w.-]{0,127}$/.test(model)) return res.status(400).json({error:'Invalid model identity'});
+    try { res.json({models:await loadOpenModelCatalog.family(model),source:'Hugging Face',limit:100}); }
+    catch { res.status(503).json({error:'Model variants unavailable. Try again.'}); }
+  });
+
   router.get("/open-model-catalog", async (_req, res) => {
     try { res.json(await loadOpenModelCatalog()); }
     catch { res.status(503).json({ error: "Public model catalog unavailable. Try again later." }); }

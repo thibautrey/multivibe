@@ -252,3 +252,12 @@
 .model-chart-table table { width:100%; text-align:left; border-collapse:collapse; font-size:12px; }
 .model-chart-table td, .model-chart-table th { padding:10px; border-bottom:1px solid var(--border); }
 @media(max-width:600px) { .model-benchmark-chart { padding:14px 8px; } .models-benchmark-controls label { flex-basis:100%; } }
+.models-variants { margin:16px 0; border:1px solid var(--border); border-radius:10px; padding:12px; }
+.models-variants > summary { color:var(--primary); font-weight:600; }
+.models-variants-scroll { overflow-x:auto; margin:16px 0; }
+.models-variants table { width:100%; min-width:760px; border-collapse:collapse; text-align:left; font-size:12px; }
+.models-variants th, .models-variants td { padding:12px 10px; border-bottom:1px solid var(--border); vertical-align:top; }
+.models-variants td:first-child { min-width:190px; max-width:300px; overflow-wrap:anywhere; }
+.models-variants small { display:block; color:var(--muted-strong); margin-top:6px; }
+.models-variants td:last-child { display:grid; gap:8px; }
+.models-unresolved-toggle { margin:18px 0; color:var(--muted-strong); }

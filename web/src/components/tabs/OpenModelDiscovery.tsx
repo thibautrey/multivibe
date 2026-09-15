@@ -1,3 +1,4 @@
+import { ModelVariantsTable } from './ModelVariantsTable';
 import { ModelBenchmarkChart } from './ModelBenchmarkChart';
 import type { MemoryAvailability } from '../../../../src/model-recommendation-evidence';
 import { LocalPreparationPanel } from './LocalPreparationPanel';
@@ -21,6 +22,7 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
   const [memoryBudget,setMemoryBudget] = useState('');
   const validMemoryBudget = memoryBudget === '' || (Number.isFinite(Number(memoryBudget)) && Number(memoryBudget) > 0 && Number(memoryBudget) <= 4096);
   const [selectedModel,setSelectedModel] = useState<string>();
+  const [showUnresolved,setShowUnresolved] = useState(false);
   const [fitOnly,setFitOnly] = useState(false);
   useEffect(()=>{try {localStorage.setItem('multivibe.models.sort.v1',sort);localStorage.setItem('multivibe.models.need.v1',effectiveNeed);} catch {/* Optional browser storage. */}},[sort,effectiveNeed]);
   useEffect(()=>{
@@ -30,7 +32,7 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
   },[effectiveNeed,sort,request,compact,benchmark,memoryBudget]);
   const readyChoices = relevantChoices(connected, effectiveNeed, result?.catalog.models ?? []);
   const readyFor = (id:string) => readyChoices.find(choice=>choice.route.modelId===id);
-  const models=(result?.recommendations ?? []).filter(row=>row.model.id.toLowerCase().includes(query.trim().toLowerCase()) && (!fitOnly || row.compatibility==='compatible'));
+  const models=(result?.recommendations ?? []).filter(row=>(showUnresolved || row.familyStatus !== 'unresolved') && [row.model.id,...row.variants.map(v=>v.model.id)].some(id=>id.toLowerCase().includes(query.trim().toLowerCase())) && (!fitOnly || row.compatibility==='compatible'));
   return <section className={`models-open-discovery${expert ? '' : ' models-picker'}${compact ? ' is-beginner' : ''}`} aria-label="Open model discovery">
     <div className="models-picker-toolbar"><div className="models-selection-heading"><span className="models-host-symbol" aria-hidden="true">▱</span><div><h3>{result?.host?.supported ? 'Recommended for your Host' : 'Recommended for your task'}</h3><p className="muted">{result?.host ? `${result.host.name}${result.host.supported ? '' : ' · Unsupported platform'}` : 'Connect Host to check compatibility'}</p></div></div>
     <div className="models-compare-filters">
@@ -49,13 +51,14 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
     {(error || result?.catalog.stale) && <p role="status">{result ? result.catalog.failedFeeds ? 'Some catalog sources are unavailable. Showing new results and last-known models.' : 'Showing the last catalog. Refresh is unavailable or in progress.' : 'The catalog is unavailable.'} <button className="btn ghost" onClick={()=>setRequest(n=>n+1)}>Retry</button></p>}
     {sort==='community' && <p className="muted">Anonymous reported output volume · Last 30 completed days · Not verified users or quality.</p>}
     {sort==='community' && result?.catalog.communityStatus !== 'available' && result && <p role="status">Anonymous activity ranking is unavailable. External popularity is not substituted.</p>}
+    {result?.recommendations.some(row=>row.familyStatus==='unresolved') && <label className="models-ready models-unresolved-toggle"><input type="checkbox" checked={showUnresolved} onChange={e=>setShowUnresolved(e.target.checked)} /> Show conversions with unresolved originals ({result.recommendations.filter(row=>row.familyStatus==='unresolved').length})</label>}
     <LocalPreparationPanel modelId={preparing} onClose={()=>setPreparing(null)} onUse={onUse} onChanged={()=>setRequest(n=>n+1)} />
     <div className={expert ? 'models-choice-grid' : 'models-picker-list'}>{models.slice(0,limit).map((row,index)=><article className={`models-choice${!expert && index === 0 && (sort === 'recommended' || sort === 'benchmark') ? ' models-choice-primary' : ''}`} key={row.model.id}>
       {!expert && index === 0 && (sort === 'recommended' || sort === 'benchmark') && <span className="models-best-match">★ Top recommendation</span>}
       {!expert && index === 1 && (sort === 'recommended' || sort === 'benchmark') && <h4 className="models-alternatives-heading">Other good choices</h4>}
       <span className="models-choice-badge">{row.compatibility==='compatible'?'Estimated fit':row.compatibility==='insufficient'?'Exceeds memory':'Host check needed'}</span>
       <h3>{(publisherIcons as Record<string,string>)[row.model.id.split('/')[0].toLowerCase()] && <img src={(publisherIcons as Record<string,string>)[row.model.id.split('/')[0].toLowerCase()]} alt="" width="28" height="28" loading="lazy" referrerPolicy="no-referrer" onError={event=>{event.currentTarget.hidden=true;}} style={{objectFit:'contain',verticalAlign:'middle',marginRight:8}} />}{row.model.id.split('/').pop()?.replace(/[-_]/g, ' ')}</h3><p>{row.reason}{row.benchmark && <span className="models-benchmark-score">{row.benchmark.label}: <strong>{row.benchmark.score}</strong> / 100 · {row.benchmark.sourceType}{row.benchmark.stale ? ' · Cached older result' : ''}</span>}{row.memory?.requiredMiB != null && <span className="models-benchmark-score">{(row.memory.requiredMiB/1024).toFixed(2)} GiB estimated · 8,192 tokens</span>}</p>
-      <details className="models-card-details" open={!compact || expert}><summary>Model details</summary><details className="models-comparison-details" open={!compact || expert}><summary>Compare cost, data and requirements</summary><dl><div><dt>Cost</dt><dd>{readyFor(row.model.id)?.cost.label ?? 'Hardware and electricity'}</dd></div><div><dt>Data</dt><dd>{readyFor(row.model.id)?.data ?? 'On Host if run locally'}</dd></div><div><dt>Speed</dt><dd>Not measured</dd></div><div><dt>Dependency</dt><dd>{readyFor(row.model.id)?.dependency ?? 'Host required · Network for download'}</dd></div></dl></details>
+      <details className="models-card-details" open={!compact || expert}><summary>Model details</summary>{row.familyStatus==='unresolved' ? <p>Original model could not be resolved from the declared metadata. This repository is shown separately, not presented as an original.</p> : <ModelVariantsTable row={row} memory={result?.memory} supported={Boolean(result?.host?.supported)} onPrepare={setPreparing} />}<details className="models-comparison-details" open={!compact || expert}><summary>Compare cost, data and requirements</summary><dl><div><dt>Cost</dt><dd>{readyFor(row.model.id)?.cost.label ?? 'Hardware and electricity'}</dd></div><div><dt>Data</dt><dd>{readyFor(row.model.id)?.data ?? 'On Host if run locally'}</dd></div><div><dt>Speed</dt><dd>Not measured</dd></div><div><dt>Dependency</dt><dd>{readyFor(row.model.id)?.dependency ?? 'Host required · Network for download'}</dd></div></dl></details>
       <a className="models-publisher-link" href={row.model.url} target="_blank" rel="noreferrer">{row.access==='restricted'?'Review access requirements':'View model details'} ↗</a>
       <details><summary>Why this model?</summary>{row.benchmark && <div><p>{row.benchmark.label} · {row.benchmark.score}/100 · {row.benchmark.verified ? 'Verified' : 'Unverified'} · {row.benchmark.date ?? 'Date unknown'}. {row.benchmark.sourceName}</p><p>{row.benchmark.notes}</p><p>Score recorded for {row.benchmark.modelId}. Quantizations may perform differently.</p>{row.benchmark.sourceUrl && /^https?:\/\//.test(row.benchmark.sourceUrl) && <a href={row.benchmark.sourceUrl} target="_blank" rel="noreferrer">Benchmark source ↗</a>}</div>}<p>{row.model.downloads===null?'Downloads unknown':`${row.model.downloads.toLocaleString('en-US')} downloads · Source reporting window`}. Popularity is not quality or a user count.</p>
         {row.model.communityUsage && <p>Anonymous activity rank #{row.model.communityUsage.rank} · {row.model.communityUsage.periodStart.slice(0,10)} to {row.model.communityUsage.periodEnd.slice(0,10)} (end exclusive). Based on reported output tokens, not people. Minimum 20 contributions across 7 days; these are not distinct users.</p>}
@@ -67,7 +70,7 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
       </details>
       </details>
       {onUse && readyFor(row.model.id) && <button className="btn primary" onClick={()=>onUse(readyFor(row.model.id)!.model.id)}>Use model <span aria-hidden="true">→</span></button>}
-      {result?.host?.supported && row.access!=='restricted' && !readyFor(row.model.id) && <button className="btn ghost" onClick={()=>setPreparing(row.model.id)}>Select model <span aria-hidden="true">→</span></button>}
+      {result?.host?.supported && row.access!=='restricted' && !readyFor(row.model.id) && <button className="btn ghost" onClick={()=>setPreparing(row.selectedVariant ?? row.model.id)}>Select model <span aria-hidden="true">→</span></button>}
     </article>)}</div>
     {result && !models.length && <p>No models have sufficient task metadata for these filters. Try another task or sort.</p>}
     {models.length>limit && <button className="btn ghost" onClick={()=>setLimit(n=>n+(compact ? 6 : 12))}>View more models ({models.length - limit} remaining) <span aria-hidden="true">→</span></button>}

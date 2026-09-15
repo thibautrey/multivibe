@@ -1,3 +1,4 @@
+import { isModelConversion } from './model-variants.js';
 import { runtimeMemory, type RecommendationEvidence } from './model-recommendation-evidence.js';
 /** Pure catalog projection. Source metadata is evidence, never execution permission. */
 export const RANKING_VERSION = '2026-09-15.1';
@@ -6,6 +7,8 @@ export type CatalogSort = typeof catalogSorts[number];
 export type CatalogNeed = 'writing' | 'coding' | 'translation' | 'documents';
 export type OpenModel = {
   metadataCheckedAt?: string;
+  quantization?: string | null;
+  lineageAmbiguous?: boolean;
   revision?: string | null;
   communityUsage?: import('./community-model-usage.js').CommunityUsage;
   id: string; url: string; license: string; createdAt: string | null; downloads: number | null;
@@ -13,27 +16,34 @@ export type OpenModel = {
   relation: string | null; formats: string[]; files: { name: string; bytes: number | null; sha256?: string | null }[];
   architecture: string | null; context: number | null; trendingRank: number | null;
 };
-export type OpenModelCatalog = { failedFeeds?: number; models: OpenModel[]; checkedAt: string; stale: boolean; source: string; version: string; communityStatus?: 'available' | 'unavailable' };
+export type OpenModelCatalog = { familyChecks?: Record<string,string>; failedFeeds?: number; models: OpenModel[]; checkedAt: string; stale: boolean; source: string; version: string; communityStatus?: 'available' | 'unavailable' };
 export type RuntimeEstimate = { model_id: string; aliases: string[]; variant: string; state: 'compatible' | 'insufficient' | 'unknown'; reason: string; memory?: { device: string; model_mib: number; context_mib: number; compute_mib: number }[] };
 export function groupModels(models: OpenModel[]) {
   const byId = new Map(models.map(m => [m.id, m]));
-  const groups = new Map<string, { model: OpenModel; variants: OpenModel[] }>();
-  for (const m of models) {
-    // Only explicit quantization relations; absent parents are not invented.
-    const parent = m.relation === 'quantized' && m.parent && byId.get(m.parent);
-    const canonical = parent && parent.relation !== 'quantized' ? parent : m;
-    const group = groups.get(canonical.id) ?? { model: canonical, variants: [] };
-    group.variants.push(m); groups.set(canonical.id, group);
+  const groups = new Map<string, { model: OpenModel; variants: OpenModel[]; familyStatus: 'model' | 'resolved' | 'unresolved' }>();
+  for (const model of models) {
+    let canonical = model;
+    const seen = new Set<string>();
+    let unresolved = false;
+    while (isModelConversion(canonical)) {
+      if (seen.has(canonical.id) || canonical.lineageAmbiguous || !canonical.parent || !['quantized','converted'].includes(canonical.relation ?? '') || !byId.has(canonical.parent)) { unresolved = true; break; }
+      seen.add(canonical.id); canonical = byId.get(canonical.parent)!;
+    }
+    if (unresolved) canonical = model;
+    const group = groups.get(canonical.id) ?? {model:canonical, variants:[], familyStatus:unresolved ? 'unresolved' : 'model'};
+    if (canonical.id !== model.id) group.familyStatus = 'resolved';
+    group.variants.push(model); groups.set(canonical.id,group);
   }
-  return [...groups.values()];
+  return [...groups.values()].map(group => ({...group,variants:group.variants.sort((a,b)=>Number(b.id===group.model.id)-Number(a.id===group.model.id) || (b.downloads ?? -1)-(a.downloads ?? -1) || a.id.localeCompare(b.id))}));
 }
+
 export function rankOpenModels(catalog: OpenModelCatalog, need: CatalogNeed, sort: CatalogSort, estimates: RuntimeEstimate[] = [], now = Date.now(), evidence?: RecommendationEvidence) {
-  let rows = groupModels(catalog.models).filter(g => g.model.needs.includes(need)).map(g => {
+  let rows = groupModels(catalog.models).filter(g => g.model.needs.includes(need) || (g.familyStatus === 'resolved' && g.variants.some(v=>v.needs.includes(need)))).map(g => {
     const variants = g.variants.map(model => {
       const matches = estimates.filter(e => [e.model_id, ...(e.aliases ?? [])].includes(model.id));
       const estimate = matches.length === 1 ? matches[0] : undefined;
       const memory = runtimeMemory(estimate, evidence?.memory);
-      return { model, memory, compatibility: memory.state, reason: estimate?.reason ?? 'Host has no memory estimate for this variant. Discovery alone cannot confirm that it fits or can be installed.' };
+      return { model, memory, estimateVariant: estimate?.variant ?? null, compatibility: memory.state, reason: estimate?.reason ?? 'Host has no memory estimate for this variant. Discovery alone cannot confirm that it fits or can be installed.' };
     });
     const fit = !g.model.gated && [...variants].sort((a,b) => (a.memory.requiredMiB ?? Infinity)-(b.memory.requiredMiB ?? Infinity)).find(v => !v.model.gated && v.compatibility === 'compatible');
     const measured = fit || variants.find(v => v.memory.requiredMiB !== null);
