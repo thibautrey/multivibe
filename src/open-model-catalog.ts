@@ -1,3 +1,4 @@
+import { collectionSources } from './curated-model-catalog.js';
 import { fetchCommunityUsage } from './community-model-usage.js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -56,7 +57,7 @@ export function createOpenModelCatalog(fetcher: typeof fetch = fetch, now = Date
     if (!hydration) hydration = (async () => {
       if (cachePath) try {
         const saved = JSON.parse(await fs.readFile(cachePath, 'utf8'));
-        if (['2','3','4','5','6','7'].includes(saved.version) && Array.isArray(saved.models) && Number.isFinite(Date.parse(saved.checkedAt)) && saved.models.every((m: OpenModel) => m && typeof m.id === 'string' && idPattern.test(m.id) && m.url === `${source}/${m.id}` && Array.isArray(m.needs) && Array.isArray(m.files) && Array.isArray(m.formats) && Array.isArray(m.languages))) cache = saved;
+        if (['2','3','4','5','6','7','8'].includes(saved.version) && Array.isArray(saved.models) && Number.isFinite(Date.parse(saved.checkedAt)) && saved.models.every((m: OpenModel) => m && typeof m.id === 'string' && idPattern.test(m.id) && m.url === `${source}/${m.id}` && Array.isArray(m.needs) && Array.isArray(m.files) && Array.isArray(m.formats) && Array.isArray(m.languages))) cache = saved;
       } catch { /* First run or invalid cache. */ }
     })();
     await hydration;
@@ -86,6 +87,12 @@ export function createOpenModelCatalog(fetcher: typeof fetch = fetch, now = Date
         const unique = new Map<string,OpenModel>();
         for (const row of lists.flat()) if (!unique.has(row.id)) unique.set(row.id,row);
         if (!unique.size) throw new Error('Empty public catalog');
+        const curated = await collectionSources(fetcher,now);
+        const missingCurated=[...curated.keys()].filter(id=>!unique.has(id));
+        for(let offset=0;offset<missingCurated.length;offset+=8)await Promise.all(missingCurated.slice(offset,offset+8).map(async id=>{
+          try {const response=await fetcher(`${source}/api/models/${id}?blobs=true`,{redirect:'error',signal:AbortSignal.timeout(5000)});if(!response.ok)return;const model=parseOpenModels([await response.json()]).find(m=>m.id===id);if(model)unique.set(id,model);} catch {/* Keep independently available sources. */}
+        }));
+
         // A failed independent feed must not hide new results from healthy feeds.
         // Retain last-known records on partial refresh, without claiming fresh ranks.
         if (failedFeeds) for (const prior of cache?.models ?? []) {
@@ -145,7 +152,8 @@ export function createOpenModelCatalog(fetcher: typeof fetch = fetch, now = Date
           }));
         }
         for (const prior of cache?.models ?? []) if (!unique.has(prior.id) && prior.parent && cache?.familyChecks?.[prior.parent] && now()-Date.parse(cache.familyChecks[prior.parent])<CATALOG_TTL) unique.set(prior.id,prior);
-        const fresh: OpenModelCatalog = {familyChecks:cache?.familyChecks,models:[...unique.values()],checkedAt:new Date(now()).toISOString(),stale:failedFeeds > 0,source,version:'7',communityStatus,failedFeeds};
+        for(const model of unique.values())model.recommendationSources=curated.get(model.id) ?? [];
+        const fresh: OpenModelCatalog = {familyChecks:cache?.familyChecks,models:[...unique.values()],checkedAt:new Date(now()).toISOString(),stale:failedFeeds > 0,source,version:'8',communityStatus,failedFeeds};
         if (cachePath) { await fs.mkdir(path.dirname(cachePath), {recursive:true}); const tmp = `${cachePath}.${process.pid}.tmp`; await fs.writeFile(tmp,JSON.stringify(fresh), {mode:0o600}); await fs.rename(tmp,cachePath); }
         cache = fresh; return fresh;
       } catch { retryAfter = now() + 60_000; if (cache) { cache = {...cache,stale:true}; return cache; } throw new Error('Public catalog unavailable'); }
@@ -155,7 +163,7 @@ export function createOpenModelCatalog(fetcher: typeof fetch = fetch, now = Date
   }
   async function load(): Promise<OpenModelCatalog> {
     await hydrate();
-    if (cache) { if (cache.version !== '7' || cache.stale || now()-Date.parse(cache.checkedAt)>=CATALOG_TTL) { if (now() >= retryAfter) void refresh().catch(()=>{}); return {...cache,stale:true}; } return cache; }
+    if (cache) { if (cache.version !== '8' || cache.stale || now()-Date.parse(cache.checkedAt)>=CATALOG_TTL) { if (now() >= retryAfter) void refresh().catch(()=>{}); return {...cache,stale:true}; } return cache; }
     return refresh();
   }
   const familyPending = new Map<string, Promise<OpenModel[]>>();
