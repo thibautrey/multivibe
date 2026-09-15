@@ -22,6 +22,11 @@ approximation: 512-token batch, non-flash attention workspace plus 25% and 1 GiB
 It is not a port of a runtime's exact allocation planner. Vision/audio processing
 is excluded, even when text generation uses a multimodal model.
 
+Auxiliary artifacts (tokenizers, calibration matrices, projectors and speculative
+draft modules) are excluded. Conversion configurations must match the original
+model dimensions before their estimates can inherit its benchmark association.
+Saved conversion estimates without this validation are recomputed.
+
 Supported metadata: Llama, Qwen2, Qwen3 (including MoE), Qwen3 Next,
 Qwen3.5 text configurations (including MoE), Mistral/Mixtral, Phi/Phi3,
 Gemma/Gemma2/Gemma3 text and StarCoder2. Sliding-window attention uses the
