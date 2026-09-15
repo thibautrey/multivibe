@@ -617,7 +617,6 @@ private final class HostPopoverController: NSViewController {
             picker.action = #selector(didSelectProvider(_:))
             picker.setAccessibilityLabel("View provider capacity")
             picker.translatesAutoresizingMaskIntoConstraints = false
-            picker.widthAnchor.constraint(lessThanOrEqualToConstant: 270).isActive = true
             let heading = NSStackView(views: [sectionLabel("PROVIDER"), NSView(), picker])
             heading.orientation = .horizontal
             heading.alignment = .centerY
