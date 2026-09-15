@@ -34,6 +34,16 @@ test('metadata-only resolver selects complete Q4 artifact and caches without rea
  assert.ok(row.memory?.requiredMiB);assert.equal(row.compatibility,'unknown');
  row=rankOpenModels(catalog,'coding','recommended',[],Date.now(),{...evidence,memory:{budgetMiB:32768}})[0];assert.equal(row.compatibility,'compatible');
  row=rankOpenModels(catalog,'coding','recommended',[],Date.now(),{...evidence,memory:{budgetMiB:1024}})[0];assert.equal(row.compatibility,'insufficient');
+ row=rankOpenModels(catalog,'coding','recommended',[],Date.now(),{...evidence,memory:{accelerator:'cuda',freeHostMiB:32768,freeDeviceMiB:32768}})[0];assert.equal(row.compatibility,'unknown');
  row=rankOpenModels(catalog,'coding','recommended',[{model_id:model.id,aliases:[],variant:'downloaded',state:'unknown',reason:'runtime',memory:[{device:'Host',model_mib:100,context_mib:10,compute_mib:5}]}],Date.now(),evidence)[0];
  assert.equal(row.memory?.requiredMiB,115);assert.equal(row.memory?.source,'runtime');
+});
+
+test('resolver refuses incomplete shards and changed revisions',async()=>{
+ const raw={id:'owner/model',sha:'a'.repeat(40),private:false,gated:false,pipeline_tag:'text-generation',tags:['license:mit','code'],siblings:[{rfilename:'model-Q4_K_M-00001-of-00002.gguf',size:1024}]};
+ const model=parseOpenModels([raw])[0];
+ const resolve=createDiscoveryMemory((async(input)=>Response.json(String(input).includes('/api/models/')?raw:config)) as typeof fetch);
+ assert.equal(await resolve(model,model),null);
+ const changed=createDiscoveryMemory((async()=>Response.json({...raw,sha:'b'.repeat(40)})) as typeof fetch);
+ assert.equal(await changed(model,model),null);
 });
