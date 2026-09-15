@@ -30,6 +30,7 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
     return () => controller.abort();
   }, [cloudConnected, canConfigure, accessRequest]);
   const [cloud, setCloud] = useState<CloudModel[]>([]);
+  const [expertSection, setExpertSection] = useState<'library' | 'discover'>('library');
   const [showDiscovery, setShowDiscovery] = useState(false);
   const [catalogError, setCatalogError] = useState('');
   const [catalogRequest, setCatalogRequest] = useState(0);
@@ -51,7 +52,7 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
   const [connecting, setConnecting] = useState(false);
   useEffect(() => {
     let active = true;
-    if (!canConfigure || !showDiscovery || view !== 'expert') { setLoading(false); return; }
+    if (!canConfigure || !showDiscovery || view !== 'expert' || expertSection !== 'library') { setLoading(false); return; }
     setLoading(true);
     setCatalogError('');
     void Promise.allSettled([api('/admin/cloud/models'), api('/admin/provider-catalog')]).then(([cloudResult, providerResult]) => {
@@ -62,7 +63,7 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
       setLoading(false);
     });
     return () => { active = false; };
-  }, [canConfigure, showDiscovery, catalogRequest, view]);
+  }, [canConfigure, showDiscovery, catalogRequest, view, expertSection]);
   useEffect(() => {
     setCompatibility(undefined);
     setEstimateError('');
@@ -113,8 +114,9 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
       <button className="models-text-button" disabled={!cloudAccess} onClick={() => { setCloudAccess(undefined); setAccessRequest(value => value + 1); }}>Check again</button>
     </div>}
     {view !== 'expert' ? <ModelGuidance view={view} catalog={catalog} canConfigure={canConfigure} cloudConnected={cloudConnected} onUse={onUse} onConnectCloud={connect} connecting={connecting} connectionError={connectionError} onExpert={() => changeView('expert')} /> : <>
-    <div className="models-layout">
-      <aside className="models-sidebar" aria-label="Model filters">
+    <nav className="models-expert-sections" aria-label="Expert model sections"><button className="btn ghost" aria-pressed={expertSection==='library'} onClick={()=>setExpertSection('library')}>Connected library <span>{catalog.length}</span></button><button className="btn ghost" aria-pressed={expertSection==='discover'} onClick={()=>setExpertSection('discover')}>Discover models</button></nav>
+    {expertSection==='discover' ? <OpenModelDiscovery compact={false} expert connected={catalog} onUse={onUse} /> : <div className="models-layout models-expert-library">
+      <details className="models-expert-filters"><summary>Filters and memory checks{activeFilters ? ' · Active filters' : ''}</summary><div className="models-sidebar" aria-label="Model filters">
         <div className="models-filter-heading"><strong>Filters</strong>{activeFilters && <button className="models-text-button" onClick={reset}>Reset</button>}</div>
         <fieldset><legend>Source</legend>{sources.map(item => <button key={item.id} className="models-source" aria-pressed={source === item.id} onClick={() => { setSource(item.id); setProvider('all'); setPage(0); }}><span>{item.label}</span><span>{catalog.filter(model => item.id === 'all' || model.routes.some(route => route.source === item.id)).length.toLocaleString('en-US')}</span></button>)}</fieldset>
         <fieldset><legend>Availability</legend><label className="models-ready"><input type="checkbox" checked={readyOnly} onChange={event => { setReadyOnly(event.target.checked); setPage(0); }} /> Ready to use</label><p className="muted">Models with a connected, available account.</p></fieldset>
@@ -129,7 +131,7 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
         </fieldset>}
         <label className="models-provider">Provider or runtime<select value={provider} onChange={event => { setProvider(event.target.value); setPage(0); }}><option value="all">All providers</option>{providerOptions.map(name => <option key={name} value={name}>{name}</option>)}</select></label>
         <div className="models-cloud-card"><strong>MultiVibe Cloud</strong><p className="muted">Cloud access depends on your plan and available capacity.</p>{!cloudConnected && <button className="btn ghost" disabled={connecting} onClick={() => void connect()}>{connecting ? 'Connecting…' : 'Connect Cloud'}</button>}</div>
-      </aside>
+      </div></details>
       <div className="models-results" aria-busy={loading}>
         {canConfigure && <label className="models-ready"><input type="checkbox" checked={showDiscovery} onChange={event => { setShowDiscovery(event.target.checked); reset(); }} /> Explore unconnected catalogs</label>}
         <p className="muted">{showDiscovery ? 'Includes reference catalogs, not a guarantee of access through your accounts or MultiVibe Cloud.' : 'Models exposed by your configured connections and detected local runtimes.'}</p>
@@ -149,9 +151,9 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
         })}</ul>
         {!filtered.length && <div className="models-empty"><h3>{loading ? 'Loading your model library…' : activeFilters ? 'No models match your filters' : 'Your model library is empty'}</h3><p className="muted">{loading ? 'Connected models will appear as catalogs become available.' : activeFilters ? 'Try a different search, source, or provider.' : 'Connect a provider or refresh the catalog to get started.'}</p>{activeFilters && <button className="btn ghost" onClick={reset}>Clear filters</button>}</div>}
         {pages > 1 && <nav className="models-pagination" aria-label="Model pages"><button className="btn ghost" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>← Previous</button><label>Page<select aria-label="Go to page" value={currentPage} onChange={event => setPage(Number(event.target.value))}>{Array.from({ length: pages }, (_, index) => <option key={index} value={index}>{index + 1}</option>)}</select>of {pages}</label><button className="btn ghost" disabled={currentPage + 1 === pages} onClick={() => setPage(currentPage + 1)}>Next →</button></nav>}
-        <OpenModelDiscovery compact={false} expert connected={catalog} onUse={onUse} />
+
       </div>
-    </div>
+    </div>}
     </>}
   </section>;
 }
