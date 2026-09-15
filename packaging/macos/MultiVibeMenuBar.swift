@@ -600,44 +600,11 @@ private final class HostPopoverController: NSViewController {
     }
 
     private func renderAccounts(operational: Bool) {
-        for child in accountSection.arrangedSubviews {
-            accountSection.removeArrangedSubview(child)
-            child.removeFromSuperview()
-        }
-        let providers = quotaProviders.map { $0.id }
-        if !providers.contains(selectedProvider ?? "") { selectedProvider = providers.first }
-        if !providers.isEmpty {
-            // Avoid constructing a nested horizontal stack here: macOS 27 can
-            // throw from AppKit while activating its synthesized constraints.
-            accountSection.addArrangedSubview(sectionLabel("PROVIDER"))
-        }
-        let selected = quotaProviders.first { $0.id == selectedProvider }
-        let accounts = selected?.accounts ?? []
-        if accounts.isEmpty {
-            accountSection.addArrangedSubview(emptyAccountsCard(operational: operational))
-            return
-        }
-        accountSection.addArrangedSubview(sectionLabel("CAPACITY REMAINING"))
-        let cells: [NSView] = (selected?.windows ?? []).map { window in
-            quotaCell(title: window.label, value: window.remainingPercent, detail: accountCount(window.accountCount))
-        }
-        if !cells.isEmpty {
-            let container = card()
-            let stack = NSStackView(views: cells)
-            stack.distribution = .fillEqually
-            stack.spacing = 12
-            stack.translatesAutoresizingMaskIntoConstraints = false
-            container.addSubview(stack)
-            NSLayoutConstraint.activate([
-                stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
-                stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
-                stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
-                stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
-            ])
-            accountSection.addArrangedSubview(container)
-        }
-        accountSection.addArrangedSubview(sectionLabel("CONNECTED ACCOUNTS · \(accounts.count)"))
-        accountSection.addArrangedSubview(accountsCard(accounts))
+
+        // Keep startup rendering constraint-free on macOS 27. The detailed
+        // account cards are rendered by the main app; rebuilding them here
+        // can trigger an AppKit mutually-exclusive constraint exception.
+        accountSection.addArrangedSubview(sectionLabel("ACCOUNTS"))
     }
 
     @objc private func didSelectProvider(_ sender: NSPopUpButton) {
