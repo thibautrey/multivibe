@@ -44,3 +44,40 @@ Sources:
 
 - <https://huggingface.co/docs/hub/leaderboard-data-guide>
 - <https://artificialanalysis.ai/data-api/docs>
+
+## Model recommendations and comparison chart
+
+`GET /admin/model-recommendations` joins the same persistent Hugging Face cache
+with exact-variant runtime estimates at 8,192 context tokens. `benchmark` selects
+`swe-pro`, `gpqa`, `mmlu-pro`, `extractbench`, or `hle`; the default is the
+most-covered relevant evaluation for the requested task. `memory_gib` optionally
+adds a total-memory ceiling (greater than zero, at most 4096 GiB).
+
+Recommended and benchmark sorting first separate estimated fits, unknown fits,
+and insufficient/restricted models; within each group, scored models are ordered
+by the selected benchmark, then lower runtime memory, then popularity. Unknown
+scores are not zeros. Other sorts retain their established behavior. Live free
+RAM and accelerator memory further constrain existing runtime compatibility;
+CUDA checks RAM and VRAM separately, while Metal sums shared allocations.
+A manual memory ceiling does not override Host limits or prove runtime support.
+
+The response adds benchmark options/coverage, source-preserving score records,
+current memory availability, and per-row total memory/variant. The dashboard plot
+uses precisely these same rows and filters. Models without a score or a runtime
+memory estimate are omitted from the plot with explicit missing-data counts.
+The plot's table offers keyboard-accessible model selection.
+
+Cache warming is nonblocking, four requests at a time and up to forty previously
+unchecked/stale task models per recommendation read. Successful empty evaluation
+responses are cached for thirty days too; failed attempts back off for thirty
+minutes. No weights are downloaded. Normal minute polling progressively broadens
+coverage without waiting for upstream responses in the ranking path.
+
+Scores match exact dataset, task and absent/default metric for the supported
+0–100 evaluations. Conflicting runs are omitted instead of choosing the highest.
+Source verification flags, dates and notes remain visible: harnesses, quantization,
+context and tools can differ. General-knowledge benchmarks are only proxies for
+writing/translation. Parent-model scores do not certify quantization quality.
+Artificial Analysis endpoints remain available, but are not joined by fuzzy model
+names or mixed with Hugging Face scores; an explicit identity/metric mapping is
+required before that source can participate in this ranking.

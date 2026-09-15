@@ -9,10 +9,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 const profile = benchmarkProfiles[0];
-const observation = (id:string,score:number) => ({modelId:id,benchmarkId:profile.dataset,taskId:profile.task,score,metric:null,source:'hugging-face' as const,sourceType:'provider' as const,verified:false,sourceUrl:null,sourceName:null,date:null,notes:null,filename:null,pullRequest:null});
+const observation = (id:string,score:number): import('./model-benchmarks.js').BenchmarkObservation => ({modelId:id,benchmarkId:profile.dataset,taskId:profile.task,score,metric:null,source:'hugging-face' as const,sourceType:'provider' as const,verified:false,sourceUrl:null,sourceName:null,date:null,notes:null,filename:null,pullRequest:null});
 const records = (id:string,score:number) => ({key:`hf:model:${id}`,storedAt:'2026-09-15',stale:false,data:{modelId:id,observations:[observation(id,score)]}});
 const estimate = (id:string,mib:number):RuntimeEstimate => ({model_id:id,aliases:[],variant:'q4',state:'compatible',reason:'runtime_memory_estimate',memory:[{device:'Host',model_mib:512,context_mib:0,compute_mib:0},{device:'Metal',model_mib:mib-512,context_mib:0,compute_mib:0}]});
-const catalog = {models:parseOpenModels(['small','best','large','unknown'].map((name,index)=>({id:`owner/${name}`,pipeline_tag:'text-generation',tags:['code','license:mit'],downloads:1000-index*100}))),checkedAt:'2026-09-15',stale:false,source:'test',version:'6'};
+const catalog = {models:parseOpenModels(['small','best','large','unknown'].map((name,index)=>({id:`owner/${name}`,private:false,gated:false,pipeline_tag:'text-generation',tags:['code','license:mit'],downloads:1000-index*100}))),checkedAt:'2026-09-15',stale:false,source:'test',version:'6'};
 test('best benchmark that fits outranks popularity and higher scores that exceed available memory',()=>{
  const scores=benchmarkScores([records('owner/small',40),records('owner/best',80),records('owner/large',95),records('owner/unknown',100)],profile);
  const rows=rankOpenModels(catalog,'coding','recommended',[estimate('owner/small',4096),estimate('owner/best',8192),estimate('owner/large',24576)],Date.now(),{profile,scores,memory:{accelerator:'metal',freeHostMiB:16384}});
