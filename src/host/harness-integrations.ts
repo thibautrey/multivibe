@@ -42,6 +42,7 @@ export type HarnessContext = {
   modelIds?: readonly string[];
   codexModels?: readonly Record<string, unknown>[];
   modelInputModalities?: Record<string, string[]>;
+  modelContextWindows?: Record<string, number>;
   homeDirectory?: string;
 };
 
@@ -178,6 +179,7 @@ type DiscoveredModelCatalog = {
   modelIds: string[];
   codexModels: Record<string, unknown>[];
   modelInputModalities: Record<string, string[]>;
+  modelContextWindows: Record<string, number>;
 };
 
 async function discoverMultiVibeModelCatalog(context: HarnessContext): Promise<DiscoveredModelCatalog> {
@@ -228,16 +230,22 @@ async function discoverMultiVibeModelCatalog(context: HarnessContext): Promise<D
     throw new HostHarnessIntegrationError("MultiVibe model catalog is empty", 409);
   }
   const modelInputModalities: Record<string, string[]> = Object.create(null);
+  const modelContextWindows: Record<string, number> = Object.create(null);
   for (const entry of document.data ?? []) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-    const model = entry as { id?: unknown; metadata?: { input_modalities?: unknown } };
+    const model = entry as { id?: unknown; metadata?: { input_modalities?: unknown; context_window?: unknown; max_context_window?: unknown; context_length?: unknown } };
     const modalities = model.metadata?.input_modalities;
+    const contextWindow = [model.metadata?.context_window, model.metadata?.max_context_window, model.metadata?.context_length]
+      .find((value): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0);
+    if (typeof model.id === "string" && exposedIds.has(model.id) && contextWindow !== undefined) {
+      modelContextWindows[model.id] = contextWindow;
+    }
     if (typeof model.id === "string" && exposedIds.has(model.id) && Array.isArray(modalities)) {
       const supported = modalities.filter((value): value is string => value === "text" || value === "image");
       if (supported.length) modelInputModalities[model.id] = [...new Set(supported)];
     }
   }
-  return { modelIds, codexModels, modelInputModalities };
+  return { modelIds, codexModels, modelInputModalities, modelContextWindows };
 }
 
 function requireModelIds(context: HarnessContext): string[] {
@@ -507,6 +515,7 @@ function renderCodexModelCatalog(context: HarnessContext): string {
   const models = requireModelIds(context).map((id, index) => {
     const nativeModel = nativeModels.get(id);
     const modalities = context.modelInputModalities?.[id];
+    const contextWindow = context.modelContextWindows?.[id];
     if (nativeModel) return {
       ...nativeModel,
       ...(modalities && !Array.isArray(nativeModel.input_modalities) ? { input_modalities: modalities } : {}),
@@ -530,8 +539,8 @@ function renderCodexModelCatalog(context: HarnessContext): string {
     base_instructions: "",
     support_verbosity: false,
     truncation_policy: { mode: "tokens", limit: 10000 },
-    context_window: 128000,
-    max_context_window: 128000,
+    context_window: contextWindow ?? 128000,
+    max_context_window: contextWindow ?? 128000,
     supports_parallel_tool_calls: true,
     input_modalities: modalities ?? ["text"],
     experimental_supported_tools: [],

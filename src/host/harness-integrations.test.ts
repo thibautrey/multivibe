@@ -85,10 +85,11 @@ function mockCodexModelCatalog(
   modelIds = ["model-a", "gpt-5.5"],
   models: Record<string, unknown>[] = [],
   modalities: Record<string, string[]> = {},
+  contextWindows: Record<string, number> = {},
 ) {
   const originalFetch = globalThis.fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
-  globalThis.fetch = async () => Response.json({ data: modelIds.map((id) => ({ id, metadata: { input_modalities: modalities[id] } })), models });
+  globalThis.fetch = async () => Response.json({ data: modelIds.map((id) => ({ id, metadata: { input_modalities: modalities[id], context_window: contextWindows[id] } })), models });
 }
 
 test("detects without executing, installs privately, and restores the exact previous file", async (t) => {
@@ -456,7 +457,7 @@ test("Codex installation authenticates its provider with the proxy key and resto
     supports_parallel_tool_calls: true,
     input_modalities: ["text", "image"],
     experimental_supported_tools: [],
-  }], { "vision-fallback": ["text", "image"], "vision-native": ["text", "image"] });
+  }], { "vision-fallback": ["text", "image"], "vision-native": ["text", "image"] }, { "model-a": 65536 });
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-harness-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const home = path.join(root, "home");
@@ -495,6 +496,8 @@ test("Codex installation authenticates its provider with the proxy key and resto
     assert.deepEqual(model.truncation_policy, { mode: "tokens", limit: 10000 });
   }
   assert.deepEqual(catalog.models.find((model: any) => model.slug === "model-a").input_modalities, ["text"]);
+  assert.equal(catalog.models.find((model: any) => model.slug === "model-a").context_window, 65536);
+  assert.equal(catalog.models.find((model: any) => model.slug === "model-a").max_context_window, 65536);
   assert.deepEqual(catalog.models.find((model: any) => model.slug === "gpt-5.5").input_modalities, ["text", "image"]);
   assert.equal(catalog.models.find((model: any) => model.slug === "gpt-5.5").support_verbosity, true);
   assert.deepEqual(catalog.models.find((model: any) => model.slug === "vision-fallback").input_modalities, ["text", "image"]);
