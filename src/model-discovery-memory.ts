@@ -2,7 +2,7 @@ import { modelArtifacts } from './model-variants.js';
 import { parseOpenModels } from './open-model-catalog.js';
 import type { OpenModel } from './open-model-ranking.js';
 
-export type DiscoveryMemory = { requiredMiB: number; weightsMiB: number; cacheMiB: number; overheadMiB: number; variant: string; artifact: string; contextTokens: number; source: 'metadata'; estimator: 'catalog-memory-v1' };
+export type DiscoveryMemory = { requiredMiB: number; weightsMiB: number; cacheMiB: number; overheadMiB: number; variant: string; artifact: string; contextTokens: number; source: 'metadata'; estimator: 'catalog-memory-v1' | 'catalog-memory-v2' };
 const MiB = 1024 ** 2;
 const positive = (n: unknown): n is number => Number.isSafeInteger(n) && Number(n) > 0;
 /** Approximate text-generation budget, not a runtime allocation or installation approval.
@@ -14,7 +14,7 @@ const positive = (n: unknown): n is number => Number.isSafeInteger(n) && Number(
 export function estimateDiscoveryMemory(raw: Record<string, any>, weights: number, context = 8192) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const c = raw.text_config ?? raw;
-  const supported = ['llama','qwen2','qwen3','qwen3_moe','qwen3_next','qwen3_5_text','qwen3_5_moe_text'];
+  const supported = SUPPORTED_MEMORY_ARCHITECTURES;
   if (!c || !supported.includes(c.model_type) || !positive(weights) || !positive(context) || context > c.max_position_embeddings) return null;
   const {hidden_size:e,num_hidden_layers:layers,num_attention_heads:heads,num_key_value_heads:kvHeads,vocab_size:vocab} = c;
   const dim = c.head_dim ?? e / heads;
@@ -27,7 +27,8 @@ export function estimateDiscoveryMemory(raw: Record<string, any>, weights: numbe
     const {linear_conv_kernel_dim:conv,linear_key_head_dim:key,linear_value_head_dim:value,linear_num_key_heads:keyHeads,linear_num_value_heads:valueHeads} = c;
     if (![conv,key,value,keyHeads,valueHeads].every(positive)) return null;
     recurrent = (layers-attentionLayers) * 4 * ((conv-1)*(2*keyHeads*key + valueHeads*value) + valueHeads*key*value);
-  } else if (c.layer_types || c.sliding_window || c.use_sliding_window) return null;
+  } else if (c.layer_types && (!Array.isArray(c.layer_types) || c.layer_types.length !== layers || c.layer_types.some((t:string)=>!['full_attention','sliding_attention'].includes(t)))) return null;
+  // For sliding-window attention, full-context KV is a conservative upper bound.
   const cache = context * attentionLayers * kvHeads * dim * 2 * 2 + recurrent;
   const batch = Math.min(context, 512);
   const workspace = 4 * batch * (context * heads + 4 * e + vocab);
@@ -37,46 +38,69 @@ export function estimateDiscoveryMemory(raw: Record<string, any>, weights: numbe
   return {requiredMiB:total/MiB,weightsMiB:weights/MiB,cacheMiB:cache/MiB,overheadMiB:overhead/MiB};
 }
 
-/** Fixed-origin, bounded metadata reads. No weights, remote code, or model-card URLs. */
+export const SUPPORTED_MEMORY_ARCHITECTURES = ['llama','qwen2','qwen3','qwen3_moe','qwen3_next','qwen3_5_text','qwen3_5_moe_text','mistral','mixtral','phi3','phi','gemma','gemma2','gemma3_text','starcoder2'];
+export type MemoryEstimateReason = 'ready'|'queued'|'estimating'|'unsupported_architecture'|'missing_config'|'incomplete_metadata'|'incomplete_weights'|'context_unsupported'|'access_required'|'revision_changed'|'temporary_failure';
+export type MemoryEstimateReport = {reason:MemoryEstimateReason; estimates:DiscoveryMemory[]; artifactReasons?:Record<string,MemoryEstimateReason>; revision?:string; checkedAt:string};
+class MetadataError extends Error {constructor(readonly status:number){super('Metadata unavailable');}}
+/** Shared immutable-config cache: one config read can estimate every quantization. */
 export function createDiscoveryMemory(fetcher: typeof fetch = fetch, now = Date.now) {
-  const cache = new Map<string,{at:number; value:DiscoveryMemory | null}>();
-  const pending = new Map<string,Promise<DiscoveryMemory | null>>();
+  const cache = new Map<string,{at:number; value:MemoryEstimateReport}>();
+  const pending = new Map<string,Promise<MemoryEstimateReport>>();
+  const configs = new Map<string,Promise<any>>();
   async function json(url: string): Promise<any> {
     const response = await fetcher(url,{redirect:'error',signal:AbortSignal.timeout(6000)});
-    if (!response.ok || !response.body) {await response.body?.cancel();throw Error('Metadata unavailable');}
+    if (!response.ok || !response.body) {await response.body?.cancel();throw new MetadataError(response.status);}
     const reader=response.body.getReader();const chunks:Uint8Array[]=[];let size=0;
     try {for (;;) {const item=await reader.read();if(item.done)break;size+=item.value.length;if(size>2*MiB)throw Error('Metadata too large');chunks.push(item.value);}}
     finally {await reader.cancel().catch(()=>{});reader.releaseLock();}
     return JSON.parse(Buffer.concat(chunks).toString('utf8'));
   }
-  return async function estimate(model: OpenModel, original: OpenModel): Promise<DiscoveryMemory | null> {
-    if (![model.id,original.id].every(id=>/^[\w.-]+\/[\w.-]+$/.test(id)) || model.gated || original.gated) return null;
-    const key=`${model.id}@${model.revision}:${original.id}@${original.revision}`;
-    const saved=cache.get(key);if(saved && now()-saved.at < (saved.value ? 6*3600000 : 10*60000))return saved.value;
+  function configAt(id:string,revision:string){
+    const key=`${id}@${revision}`;if(configs.has(key))return configs.get(key)!;
+    if(configs.size>=256)configs.delete(configs.keys().next().value!);
+    const task=json(`https://huggingface.co/${id}/raw/${revision}/config.json`).catch(error=>{configs.delete(key);throw error;});configs.set(key,task);return task;
+  }
+  async function inspect(model:OpenModel,original:OpenModel,context=8192):Promise<MemoryEstimateReport>{
+    const report=(reason:MemoryEstimateReason,rest:Partial<MemoryEstimateReport>={}):MemoryEstimateReport=>({reason,estimates:[],checkedAt:new Date(now()).toISOString(),...rest});
+    if(![model.id,original.id].every(id=>/^[\w.-]+\/[\w.-]+$/.test(id)))return report('incomplete_metadata');
+    if(model.gated || original.gated)return report('access_required');
+    const key=`v2:${context}:${model.id}@${model.revision}:${original.id}@${original.revision}`;
+    const saved=cache.get(key);if(saved && now()-saved.at< (saved.value.reason==='temporary_failure'?60000:6*3600000))return saved.value;
     if(pending.has(key))return pending.get(key)!;
     const operation=(async()=>{
-      let value:DiscoveryMemory|null=null;
-      try {
-        const detail=await json(`https://huggingface.co/api/models/${model.id}?blobs=true`);
+      try{
+        const revisionPath=model.revision && /^[a-f0-9]{40}$/.test(model.revision)?`/revision/${model.revision}`:'';
+        const detail=await json(`https://huggingface.co/api/models/${model.id}${revisionPath}?blobs=true`);
         const current=parseOpenModels([detail])[0];
-        if (!current || current.id !== model.id || current.gated || !current.revision || (model.revision && current.revision !== model.revision)) return null;
-        // Read the variant's own config first: conversions may change architecture.
-        const configRevision=current.revision;
+        if(!current || current.id!==model.id || !current.revision)return report('incomplete_metadata');
+        if(current.gated)return report('access_required');
+        if(model.revision && current.revision!==model.revision)return report('revision_changed');
         let config;
-        try {config=await json(`https://huggingface.co/${model.id}/raw/${configRevision}/config.json`);}
-        catch {
-          if(model.id===original.id || current.parent!==original.id || !['quantized','converted'].includes(current.relation ?? '') || !original.revision)return null;
-          config=await json(`https://huggingface.co/${original.id}/raw/${original.revision}/config.json`);
+        try{config=await configAt(model.id,current.revision);}
+        catch(error){
+          if(!(error instanceof MetadataError) || error.status!==404)throw error;
+          if(model.id===original.id || current.parent!==original.id || !['quantized','converted'].includes(current.relation??''))return report('missing_config');
+          let originalRevision=original.revision;
+          if(!originalRevision){const parent=await json(`https://huggingface.co/api/models/${original.id}`);originalRevision=parent.id===original.id && /^[a-f0-9]{40}$/.test(parent.sha)?parent.sha:null;}
+          if(!originalRevision)return report('incomplete_metadata');
+          try{config=await configAt(original.id,originalRevision);}catch(e){if(e instanceof MetadataError&&e.status===404)return report('missing_config');throw e;}
         }
-        const artifacts=modelArtifacts(current).filter(a=>positive(a.bytes));
-        // Prefer a real, complete Q4_K_M artifact; never invent a quantized size.
-        artifacts.sort((a,b)=>Number(b.quantization==='Q4_K_M')-Number(a.quantization==='Q4_K_M') || (a.bytes!-b.bytes!));
-        const artifact=artifacts[0];
-        const result=artifact && estimateDiscoveryMemory(config,artifact.bytes!);
-        if(result)value={...result,variant:model.id,artifact:artifact.name,contextTokens:8192,source:'metadata',estimator:'catalog-memory-v1'};
-      } catch { /* Absent or unsupported metadata remains unknown. */ }
-      return value;
+        const c=config?.text_config??config;
+        if(!c || typeof c!=='object')return report('missing_config');
+        if(!SUPPORTED_MEMORY_ARCHITECTURES.includes(c.model_type))return report('unsupported_architecture',{revision:current.revision});
+        if(positive(c.max_position_embeddings) && context>c.max_position_embeddings)return report('context_unsupported',{revision:current.revision});
+        const artifacts=modelArtifacts(current);const estimates:DiscoveryMemory[]=[];const artifactReasons:Record<string,MemoryEstimateReason>={};
+        for(const artifact of artifacts){
+          if(!positive(artifact.bytes)){artifactReasons[artifact.name]='incomplete_weights';continue;}
+          const result=estimateDiscoveryMemory(config,artifact.bytes,context);
+          if(!result){artifactReasons[artifact.name]='incomplete_metadata';continue;}
+          estimates.push({...result,variant:model.id,artifact:artifact.name,contextTokens:context,source:'metadata',estimator:'catalog-memory-v2'});artifactReasons[artifact.name]='ready';
+        }
+        estimates.sort((a,b)=>Number(/Q4_K_M/i.test(b.artifact))-Number(/Q4_K_M/i.test(a.artifact))||a.requiredMiB-b.requiredMiB);
+        return report(estimates.length?'ready':Object.values(artifactReasons)[0]??'incomplete_weights',{estimates,artifactReasons,revision:current.revision});
+      }catch(error){return report(error instanceof MetadataError && [401,403].includes(error.status)?'access_required':'temporary_failure');}
     })().then(value=>{if(cache.size>=512)cache.delete(cache.keys().next().value!);cache.set(key,{at:now(),value});return value;}).finally(()=>pending.delete(key));
     pending.set(key,operation);return operation;
-  };
+  }
+  return Object.assign(async(model:OpenModel,original:OpenModel)=> (await inspect(model,original)).estimates[0]??null,{inspect});
 }

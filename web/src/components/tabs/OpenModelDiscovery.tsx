@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react';
 import { relevantChoices, type GuidanceEntry } from '../../../../src/model-guidance';
 import { api } from '../../lib/api';
 import type { OpenModelCatalog, CatalogNeed, CatalogSort, rankOpenModels } from '../../../../src/open-model-ranking';
-type Result = {catalog: OpenModelCatalog; host: {name:string; supported:boolean} | null; memory?: MemoryAvailability; benchmarks?: {selected?: string; options: {id:string;label:string;count:number}[]; coverage:{cachedModels:number;totalModels:number;warming:boolean}}; recommendations: ReturnType<typeof rankOpenModels>};
+type Result = {memoryProgress?:{pending:number;total:number;persistenceError:boolean};catalog: OpenModelCatalog; host: {name:string; supported:boolean} | null; memory?: MemoryAvailability; benchmarks?: {selected?: string; options: {id:string;label:string;count:number}[]; coverage:{cachedModels:number;totalModels:number;warming:boolean}}; recommendations: ReturnType<typeof rankOpenModels>};
 const sortLabels: Record<CatalogSort,string> = {recommended:'Recommended',benchmark:'Best benchmark that fits',trending:'Trending',downloads:'Top downloaded',newest:'New',established:'Established',community:'Most used on MultiVibe'};
 function saved(key:string, fallback:string) { try {return localStorage.getItem(key) ?? fallback;} catch {return fallback;} }
 export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false, connected = [], onUse }: { compact: boolean; need?: CatalogNeed; expert?: boolean; connected?: GuidanceEntry[]; onUse?: (id:string)=>void }) {
@@ -30,8 +30,9 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
   useEffect(()=>{try {localStorage.setItem('multivibe.models.sort.v1',sort);localStorage.setItem('multivibe.models.need.v1',effectiveNeed);} catch {/* Optional browser storage. */}},[sort,effectiveNeed]);
   useEffect(()=>{
     const controller=new AbortController(); setResult(undefined);setError(false);setLimit(compact ? 6 : 12);
-    const load=()=>void api(`/admin/model-recommendations?need=${effectiveNeed}&sort=${sort}&host=local${benchmark ? `&benchmark=${encodeURIComponent(benchmark)}` : ''}${validMemoryBudget && Number(memoryBudget)>0 ? `&memory_gib=${encodeURIComponent(memoryBudget)}` : ''}`,{signal:controller.signal}).then((value:Result)=>{if(!controller.signal.aborted){setResult(value);setError(false);}}).catch(()=>{if(!controller.signal.aborted)setError(true);});
-    load();const timer=setInterval(load,60000);return()=>{controller.abort();clearInterval(timer);};
+    let memoryPending=true;let lastLoad=0;
+    const load=()=>{lastLoad=Date.now();void api(`/admin/model-recommendations?need=${effectiveNeed}&sort=${sort}&host=local${benchmark ? `&benchmark=${encodeURIComponent(benchmark)}` : ''}${validMemoryBudget && Number(memoryBudget)>0 ? `&memory_gib=${encodeURIComponent(memoryBudget)}` : ''}`,{signal:controller.signal}).then((value:Result)=>{if(!controller.signal.aborted){setResult(value);memoryPending=Boolean(value.memoryProgress?.pending);setError(false);}}).catch(()=>{if(!controller.signal.aborted)setError(true);});};
+    load();const timer=setInterval(()=>{if(memoryPending||Date.now()-lastLoad>=60000)load();},5000);return()=>{controller.abort();clearInterval(timer);};
   },[effectiveNeed,sort,request,compact,benchmark,memoryBudget]);
   const readyChoices = relevantChoices(connected, effectiveNeed, result?.catalog.models ?? []);
   const readyFor = (id:string) => readyChoices.find(choice=>choice.route.modelId===id);
@@ -51,6 +52,7 @@ export function OpenModelDiscovery({ compact, need: selectedNeed, expert = false
     {!validMemoryBudget && <p className="models-error" role="alert">Enter a memory limit greater than 0 and at most 4,096 GiB. Using Host availability until the value is valid.</p>}
     {showChart && <ModelBenchmarkChart rows={models} label={result?.benchmarks?.options.find(option=>option.id===result.benchmarks?.selected)?.label ?? 'Benchmark score'} memory={result?.memory} onSelect={id=>{setSelectedModel(id);setLimit(Math.max(limit,models.findIndex(row=>row.model.id===id)+1));setShowChart(false);}} />}
 
+    {result?.memoryProgress?.pending && !models.length ? <p role="status">Estimating model memory… Results appear as estimates become available.</p> : null}
     {!result && !error && <p role="status">Finding models…</p>}
     {(error || result?.catalog.stale) && <p role="status">{result ? result.catalog.failedFeeds ? 'Some catalog sources are unavailable. Showing new results and last-known models.' : 'Showing the last catalog. Refresh is unavailable or in progress.' : 'The catalog is unavailable.'} <button className="btn ghost" onClick={()=>setRequest(n=>n+1)}>Retry</button></p>}
     {sort==='community' && <p className="muted">Anonymous reported output volume · Last 30 completed days · Not verified users or quality.</p>}

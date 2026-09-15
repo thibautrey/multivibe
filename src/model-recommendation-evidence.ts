@@ -1,3 +1,5 @@
+import type {MemoryQueue} from './model-memory-queue.js';
+import type {MemoryEstimateReport} from './model-discovery-memory.js';
 import type { DiscoveryMemory } from './model-discovery-memory.js';
 import { groupModels } from './open-model-ranking.js';
 import type { BenchmarkObservation } from './model-benchmarks.js';
@@ -27,7 +29,7 @@ export function selectTaskBenchmark(need: CatalogNeed, options: readonly {id: st
 }
 export type ScoredBenchmark = BenchmarkObservation & { label: string; stale: boolean; storedAt: string };
 export type MemoryAvailability = { totalHostMiB?: number; accelerator?: string; freeHostMiB?: number | null; freeDeviceMiB?: number | null; budgetMiB?: number | null; observedAt?: string };
-export type RecommendationEvidence = { profile?: BenchmarkProfile; scores: Map<string, ScoredBenchmark>; discoveryMemory?: Map<string, DiscoveryMemory>; memory?: MemoryAvailability };
+export type RecommendationEvidence = { profile?: BenchmarkProfile; scores: Map<string, ScoredBenchmark>; discoveryMemory?: Map<string, DiscoveryMemory>; artifactMemory?: Map<string, DiscoveryMemory[]>; memoryReports?: Record<string,MemoryEstimateReport>; memory?: MemoryAvailability };
 
 export function benchmarkScores(records: Awaited<ReturnType<CachedModelBenchmarkClient['cachedModels']>>['models'], profile: BenchmarkProfile) {
   const scores = new Map<string, ScoredBenchmark>();
@@ -64,7 +66,7 @@ export function runtimeMemory(estimate: RuntimeEstimate | undefined, availabilit
   return { requiredMiB, hostMiB, deviceMiB, state };
 }
 
-export function createRecommendationEvidence(client: CachedModelBenchmarkClient, now = Date.now, estimateDiscovery: (model: import('./open-model-ranking.js').OpenModel, original: import('./open-model-ranking.js').OpenModel) => Promise<DiscoveryMemory | null> = async()=>null) {
+export function createRecommendationEvidence(client: CachedModelBenchmarkClient, now = Date.now, estimateDiscovery: (model: import('./open-model-ranking.js').OpenModel, original: import('./open-model-ranking.js').OpenModel) => Promise<DiscoveryMemory | null> = async()=>null, memoryQueue?: MemoryQueue) {
   const discoveryMemory = new Map<string, DiscoveryMemory>();
   let memoryWarming: Promise<void> | undefined;
   let warming: Promise<void> | undefined;
@@ -87,15 +89,17 @@ export function createRecommendationEvidence(client: CachedModelBenchmarkClient,
     });
     const profile = benchmarkProfiles.find(p => p.id === requested) ?? benchmarkProfiles.find(p => p.id === selectTaskBenchmark(need, options));
     const scores = profile ? benchmarkScores(snapshot.models,profile) : new Map<string, ScoredBenchmark>();
-    if (!memoryWarming) {
+    if (!memoryQueue && !memoryWarming) {
       const groups = groupModels(catalog.models).filter(g=>g.model.needs.includes(need) || g.variants.some(v=>v.needs.includes(need)))
         .sort((a,b)=>Number(scores.has(b.model.id))-Number(scores.has(a.model.id)) || (b.model.downloads ?? 0)-(a.model.downloads ?? 0));
-      const queue = groups.slice(0,24).flatMap(g=>[...g.variants].sort((a,b)=>Number(b.formats.includes('gguf'))-Number(a.formats.includes('gguf'))).slice(0,2).map(model=>({model,original:g.model})));
+      const queue = groups.flatMap(g=>[...g.variants].sort((a,b)=>Number(b.formats.includes('gguf'))-Number(a.formats.includes('gguf'))).map(model=>({model,original:g.model})));
       memoryWarming = Promise.all(Array.from({length:4},async()=>{
         while(queue.length){const item=queue.shift()!;const value=await estimateDiscovery(item.model,item.original);if(value)discoveryMemory.set(item.model.id,value);else discoveryMemory.delete(item.model.id);}
       })).then(()=>{}).finally(()=>{memoryWarming=undefined;});
     }
-    return { profile, scores, discoveryMemory: new Map(discoveryMemory), options,
+    if(memoryQueue)await memoryQueue.enqueue(groupModels(catalog.models).flatMap(g=>g.variants.map(model=>({model,original:g.model,priority:scores.has(g.model.id)?10:0}))));
+    const persisted=await memoryQueue?.snapshot(catalog.models.map(m=>m.id));
+    return { profile, scores, discoveryMemory:persisted?.discoveryMemory ?? new Map(discoveryMemory),artifactMemory:persisted?.artifactMemory,memoryReports:persisted?.reports,memoryProgress:persisted?{pending:persisted.pending,total:persisted.total,persistenceError:persisted.persistenceError}:undefined, options,
       coverage: { cachedModels: relevant.filter(m => cached.has(m.id)).length, totalModels: relevant.length, warming: Boolean(warming) } };
   };
 }
