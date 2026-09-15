@@ -212,6 +212,7 @@ export const XAI_USER_AGENT =
 export const XAI_AUTH_PATH =
   process.env.XAI_AUTH_PATH ?? `${os.homedir()}/.grok/auth.json`;
 export const ADMIN_TOKEN = process.env.ADMIN_TOKEN ?? "";
+export const ARTIFICIAL_ANALYSIS_API_KEY = process.env.ARTIFICIAL_ANALYSIS_API_KEY ?? "";
 export const CODEX_PROJECT_REGISTRATION_TOKEN =
   process.env.CODEX_PROJECT_REGISTRATION_TOKEN ?? ADMIN_TOKEN;
 export const CODEX_SESSION_AFFINITY =

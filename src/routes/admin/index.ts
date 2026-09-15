@@ -1,4 +1,6 @@
 import { localPreparationRoutes } from './local-preparation.js';
+import { modelBenchmarkRoutes } from './model-benchmark-routes.js';
+import { createModelBenchmarkClient } from '../../model-benchmarks.js';
 import type { LocalModelPreparation } from '../../local-model-preparation.js';
 import { rankOpenModels, catalogSorts, type CatalogNeed, type CatalogSort, type RuntimeEstimate } from '../../open-model-ranking.js';
 import { loadOpenModelCatalog } from '../../open-model-catalog.js';
@@ -7,7 +9,7 @@ import { invoiceOverview } from "../../provider-invoices.js";
 import { publishDeviceSignIn } from "../../host/device-signin.js";
 import { COPILOT_BASE_URL, requestCopilotDeviceCode, pollCopilotDeviceCode, accountFromCopilotOAuth, trustedCopilotBaseUrl } from "../../github-copilot.js";
 import { withVirtualModels } from "../../module-virtual-models.js";
-import { MULTIVIBE_CONTROL_PLANE } from "../../config.js";
+import { ARTIFICIAL_ANALYSIS_API_KEY, MULTIVIBE_CONTROL_PLANE } from "../../config.js";
 import { createAuthRateLimiter } from "../../auth-rate-limit.js";
 import { trimTrailingSlashes } from "../../string-utils.js";
 import { sdkProviderCatalog } from "../../ai-sdk/catalog.js";
@@ -470,6 +472,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
 
   const router = express.Router();
   router.use("/local-model-preparation", localPreparationRoutes(options.localPreparation));
+  router.use("/benchmarks", modelBenchmarkRoutes(createModelBenchmarkClient({ artificialAnalysisApiKey: ARTIFICIAL_ANALYSIS_API_KEY })));
 
   router.get("/host-update", async (_req, res) => {
     res.setHeader("cache-control", "no-store");
