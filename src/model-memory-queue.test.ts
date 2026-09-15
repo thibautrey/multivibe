@@ -36,3 +36,9 @@ test('corrupt queue is rebuilt and supported jobs still complete',async()=>{
  const q=createMemoryEstimationQueue({path:file,resolve:async m=>ready(m.id)});
  try{const m=model(1);await q.enqueue([{model:m,original:m}]);await until(async()=>!(await q.snapshot()).pending);assert.equal((await q.snapshot()).discoveryMemory.size,1);}finally{await q.close();await rm(dir,{recursive:true,force:true});}
 });
+
+test('rate limits pause the shared queue rather than failing every pending model',async()=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'memory-rate-test-'));const file=path.join(dir,'queue.json');let calls=0;
+ const q=createMemoryEstimationQueue({path:file,concurrency:1,resolve:async()=>{calls++;return {reason:'temporary_failure',httpStatus:429,retryAfterMs:60000,estimates:[],checkedAt:new Date().toISOString()};}});
+ try{await q.enqueue([model(1),model(2)].map(m=>({model:m,original:m})));await until(async()=>Boolean((await q.snapshot()).pausedUntil));assert.equal(calls,1);assert.equal((await q.snapshot()).pending,2);}finally{await q.close();await rm(dir,{recursive:true,force:true});}
+});
