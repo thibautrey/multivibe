@@ -1,4 +1,5 @@
-import { isModelConversion } from './model-variants.js';
+import {exceedsWeightBudget} from './model-memory-budget.js';
+import { isModelConversion, modelArtifacts } from './model-variants.js';
 import { runtimeMemory, type RecommendationEvidence } from './model-recommendation-evidence.js';
 /** Pure catalog projection. Source metadata is evidence, never execution permission. */
 export const RANKING_VERSION = '2026-09-15.1';
@@ -51,6 +52,8 @@ export function rankOpenModels(catalog: OpenModelCatalog, need: CatalogNeed, sor
       const limit = limits.length ? Math.min(...limits) : undefined;
       const predictedState = prediction && limit !== undefined ? prediction.requiredMiB >= limit ? 'insufficient' as const : shared || !availability?.accelerator ? 'compatible' as const : 'unknown' as const : 'unknown' as const;
       const memory = runtime.requiredMiB !== null || !prediction ? {...runtime,source:'runtime' as const,artifact:estimate?.variant ?? null} : {...prediction,hostMiB:null,deviceMiB:null,state:predictedState};
+      const artifacts=modelArtifacts(model);
+      if(memory.requiredMiB===null && artifacts.length>0 && artifacts.every(a=>exceedsWeightBudget(a.bytes,availability)))memory.state='insufficient';
       return { model, memory, estimateVariant: memory.artifact, compatibility: memory.state, reason: estimate?.reason ?? 'Host has no memory estimate for this variant. Discovery alone cannot confirm that it fits or can be installed.' };
     });
     const fit = !g.model.gated && [...variants].sort((a,b) => (a.memory.requiredMiB ?? Infinity)-(b.memory.requiredMiB ?? Infinity)).find(v => !v.model.gated && v.compatibility === 'compatible');
