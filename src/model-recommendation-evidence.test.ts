@@ -38,7 +38,7 @@ test('task/metric identity and ambiguous scores are not silently mixed',()=>{
 test('benchmark warming populates the shared durable cache and cached reads avoid repeated fetches',async t=>{
  const dir=await mkdtemp(path.join(os.tmpdir(),'recommendation-evidence-'));t.after(()=>rm(dir,{recursive:true,force:true}));let calls=0;
  const client=createCachedModelBenchmarkClient(createModelBenchmarkClient({fetcher:(async input=>{calls++;const id=new URL(String(input)).pathname.slice('/api/models/'.length);return new Response(JSON.stringify({id,evalResults:[{data:{dataset:{id:profile.dataset,task_id:profile.task},value:80}}]}));}) as typeof fetch}),{path:path.join(dir,'cache.json')});
- const load=createRecommendationEvidence(client);
+ const load=createRecommendationEvidence(client, Date.now, async()=>null);
  const initial=await load(catalog,'coding');assert.equal(initial.coverage.warming,true);
  for(let i=0;i<100 && (await load(catalog,'coding')).coverage.warming;i++) await new Promise(r=>setTimeout(r,10));
  const loaded=await load(catalog,'coding');assert.equal(loaded.scores.size,4);assert.equal(calls,4);
