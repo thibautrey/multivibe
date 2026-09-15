@@ -622,7 +622,6 @@ private final class HostPopoverController: NSViewController {
             heading.orientation = .horizontal
             heading.alignment = .centerY
             heading.translatesAutoresizingMaskIntoConstraints = false
-            heading.widthAnchor.constraint(lessThanOrEqualToConstant: 384).isActive = true
             accountSection.addArrangedSubview(heading)
         }
         let selected = quotaProviders.first { $0.id == selectedProvider }
