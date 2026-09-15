@@ -39,7 +39,7 @@ include model and original revisions, estimator version and context identity.
 Changed revisions invalidate results; interrupted jobs resume after restart.
 
 Successful results expire after six hours. Unsupported/missing data is reconsidered
-after 24 hours; temporary fetch failures retry after 1, 5 and 30 minutes. Queued,
+after 24 hours; temporary fetch failures retry after 1, 5 and 30 minutes. Metadata reads are spaced at least 200 ms apart per estimator; HTTP 429/503 pauses the shared queue and honors Retry-After (up to 15 minutes). Queued,
 estimating, unsupported architecture, incomplete configuration/weights, access,
 context and fetch failures are reported separately. Fresh runtime allocations
 still take precedence. UI selection requests are checked against declared model

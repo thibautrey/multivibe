@@ -40,16 +40,19 @@ export function estimateDiscoveryMemory(raw: Record<string, any>, weights: numbe
 
 export const SUPPORTED_MEMORY_ARCHITECTURES = ['llama','qwen2','qwen3','qwen3_moe','qwen3_next','qwen3_5_text','qwen3_5_moe_text','mistral','mixtral','phi3','phi','gemma','gemma2','gemma3_text','starcoder2'];
 export type MemoryEstimateReason = 'ready'|'queued'|'estimating'|'unsupported_architecture'|'missing_config'|'incomplete_metadata'|'incomplete_weights'|'context_unsupported'|'access_required'|'revision_changed'|'temporary_failure';
-export type MemoryEstimateReport = {reason:MemoryEstimateReason; estimates:DiscoveryMemory[]; artifactReasons?:Record<string,MemoryEstimateReason>; revision?:string; checkedAt:string};
-class MetadataError extends Error {constructor(readonly status:number){super('Metadata unavailable');}}
+export type MemoryEstimateReport = {reason:MemoryEstimateReason; estimates:DiscoveryMemory[]; artifactReasons?:Record<string,MemoryEstimateReason>; revision?:string; httpStatus?:number;retryAfterMs?:number; checkedAt:string};
+class MetadataError extends Error {constructor(readonly status:number,readonly retryAfterMs?:number){super('Metadata unavailable');}}
 /** Shared immutable-config cache: one config read can estimate every quantization. */
 export function createDiscoveryMemory(fetcher: typeof fetch = fetch, now = Date.now) {
   const cache = new Map<string,{at:number; value:MemoryEstimateReport}>();
   const pending = new Map<string,Promise<MemoryEstimateReport>>();
   const configs = new Map<string,Promise<any>>();
+  let nextRequest=0;
   async function json(url: string): Promise<any> {
+    const delay=Math.max(0,nextRequest-now());nextRequest=Math.max(nextRequest,now())+200;
+    if(delay)await new Promise(r=>setTimeout(r,delay));
     const response = await fetcher(url,{redirect:'error',signal:AbortSignal.timeout(6000)});
-    if (!response.ok || !response.body) {await response.body?.cancel();throw new MetadataError(response.status);}
+    if (!response.ok || !response.body) {await response.body?.cancel();const retry=response.headers.get('retry-after');const seconds=retry?Number(retry):NaN;const retryMs=retry?(Number.isFinite(seconds)?seconds*1000:Date.parse(retry)-now()):60000;throw new MetadataError(response.status,Math.max(1000,Math.min(Number.isFinite(retryMs)?retryMs:60000,15*60000)));}
     const reader=response.body.getReader();const chunks:Uint8Array[]=[];let size=0;
     try {for (;;) {const item=await reader.read();if(item.done)break;size+=item.value.length;if(size>2*MiB)throw Error('Metadata too large');chunks.push(item.value);}}
     finally {await reader.cancel().catch(()=>{});reader.releaseLock();}
@@ -98,7 +101,7 @@ export function createDiscoveryMemory(fetcher: typeof fetch = fetch, now = Date.
         }
         estimates.sort((a,b)=>Number(/Q4_K_M/i.test(b.artifact))-Number(/Q4_K_M/i.test(a.artifact))||a.requiredMiB-b.requiredMiB);
         return report(estimates.length?'ready':Object.values(artifactReasons)[0]??'incomplete_weights',{estimates,artifactReasons,revision:current.revision});
-      }catch(error){return report(error instanceof MetadataError && [401,403].includes(error.status)?'access_required':'temporary_failure');}
+      }catch(error){return report(error instanceof MetadataError && [401,403].includes(error.status)?'access_required':'temporary_failure',error instanceof MetadataError?{httpStatus:error.status,retryAfterMs:error.retryAfterMs}:{});}
     })().then(value=>{if(cache.size>=512)cache.delete(cache.keys().next().value!);cache.set(key,{at:now(),value});return value;}).finally(()=>pending.delete(key));
     pending.set(key,operation);return operation;
   }

@@ -10,7 +10,7 @@ const identity=(model:OpenModel,original:OpenModel)=>`v2:8192:${model.id}@${mode
 const validModel=(m:any)=>m && typeof m.id==='string' && /^[\w.-]+\/[\w.-]+$/.test(m.id) && (m.revision==null||/^[a-f0-9]{40}$/.test(m.revision));
 export function createMemoryEstimationQueue(options:{path:string;resolve?:ReturnType<typeof createDiscoveryMemory>['inspect'];now?:()=>number;concurrency?:number}) {
  const now=options.now??Date.now;const resolve=options.resolve??createDiscoveryMemory().inspect;
- const jobs=new Map<string,Job>();let order=0;let active=0;let dispatch=0;let stopped=false;let timer:ReturnType<typeof setTimeout>|undefined;
+ const jobs=new Map<string,Job>();let order=0;let active=0;let dispatch=0;let stopped=false;let pauseUntil=0;let timer:ReturnType<typeof setTimeout>|undefined;
  let saveChain=Promise.resolve();let persistenceError=false;let writes=0;
  const storedJobs=new Map<string,string>();const deleted=new Set<string>();
  const save=(updated:Job[]=[])=>{
@@ -37,11 +37,13 @@ export function createMemoryEstimationQueue(options:{path:string;resolve?:Return
   for(const j of [...recovered.values()].slice(0,MAX_JOBS)){
    if(!validModel(j.model)||!validModel(j.original)||j.key!==identity(j.model,j.original)||!Number.isFinite(j.nextAt)||!Number.isSafeInteger(j.order)||!Number.isSafeInteger(j.attempts))continue;
    if(j.report && (!Array.isArray(j.report.estimates)||j.report.estimates.some((e:any)=>e.variant!==j.model.id||e.estimator!=='catalog-memory-v2'||e.contextTokens!==8192||!Number.isFinite(e.requiredMiB)||e.requiredMiB<=0)))continue;
+   if(j.report?.httpStatus===429 && j.nextAt>now())pauseUntil=Math.max(pauseUntil,j.nextAt);
    j.state=j.state==='done'?'done':'queued';jobs.set(j.model.id,j);storedJobs.set(j.model.id,JSON.stringify(j));order=Math.max(order,j.order+1);
   }
  })();
  function kick(){
   if(stopped)return;if(timer){clearTimeout(timer);timer=undefined;}
+  if(pauseUntil>now()){timer=setTimeout(kick,pauseUntil-now());timer.unref?.();return;}
   while(active<Math.max(1,Math.min(options.concurrency??3,8))){
    const available=[...jobs.values()].filter(j=>j.state==='queued'&&j.nextAt<=now());
    if(!available.length)break;
@@ -56,7 +58,8 @@ export function createMemoryEstimationQueue(options:{path:string;resolve?:Return
      job.report=report;job.attempts++;
      const retry=report.reason==='temporary_failure'&&job.attempts<4;
      job.state=retry?'queued':'done';job.priority=0;
-     job.nextAt=now()+(retry?[60000,300000,1800000][job.attempts-1]:report.reason==='ready'?6*3600000:24*3600000);
+     job.nextAt=now()+(retry?Math.max(report.retryAfterMs??0,[60000,300000,1800000][job.attempts-1]):report.reason==='ready'?6*3600000:24*3600000);
+     if(report.httpStatus===429 || report.httpStatus===503)pauseUntil=Math.max(pauseUntil,now()+(report.retryAfterMs??60000));
      await save([job]);
     }
    })().finally(()=>{active--;kick();});
@@ -88,7 +91,7 @@ export function createMemoryEstimationQueue(options:{path:string;resolve?:Return
    reports[job.model.id]=report;
    if(report.estimates.length){discoveryMemory.set(job.model.id,report.estimates[0]);artifactMemory.set(job.model.id,report.estimates);}
   }
-  return {reports,discoveryMemory,artifactMemory,pending:selected.filter(j=>j.state!=='done').length,total:selected.length,persistenceError};
+  return {reports,discoveryMemory,artifactMemory,pending:selected.filter(j=>j.state!=='done').length,total:selected.length,persistenceError,pausedUntil:pauseUntil>now()?new Date(pauseUntil).toISOString():undefined};
  }
  async function close(){stopped=true;if(timer)clearTimeout(timer);await ready;while(active)await new Promise(r=>setTimeout(r,10));await save();}
  void ready.then(kick);
