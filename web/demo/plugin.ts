@@ -31,6 +31,10 @@ export function demoApiPlugin(): Plugin {
           void loadOpenModelCatalog().then(async catalog => { const benchmark = params.get('benchmark') ?? undefined; if (benchmark && !benchmarkProfiles.some(p=>p.id===benchmark)) {res.statusCode=400;res.end('{}');return;} const evidence = await evidenceFor(catalog,need as CatalogNeed,benchmark); res.setHeader('content-type','application/json'); res.end(JSON.stringify({catalog,host:null,benchmarks:{selected:evidence.profile?.id,options:evidence.options,coverage:evidence.coverage},recommendations:rankOpenModels(catalog,need as CatalogNeed,sort as CatalogSort,[],Date.now(),evidence)})); }).catch(()=>{res.statusCode=503;res.end('{}');});
           return;
         }
+        if (path === '/admin/open-model-family' && req.method === 'GET') {
+          const model = new URL(req.url!, 'http://demo.invalid').searchParams.get('model') ?? '';
+          void loadOpenModelCatalog.family(model).then(models=>{res.setHeader('content-type','application/json');res.end(JSON.stringify({models,source:'Hugging Face',limit:100}));}).catch(()=>{res.statusCode=503;res.end('{}');}); return;
+        }
         if (path === '/admin/open-model-catalog' && req.method === 'GET') {
           void loadOpenModelCatalog().then(body => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(body)); }).catch(() => { res.statusCode = 503; res.end(JSON.stringify({ error: 'Public catalog unavailable' })); });
           return;
