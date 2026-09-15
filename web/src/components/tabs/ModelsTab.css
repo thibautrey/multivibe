@@ -354,3 +354,6 @@
   .model-browser-card-grid .model-browser-item { border-color:transparent; }
   .model-browser-card-grid .model-browser-item[aria-pressed=true] { border-color:var(--primary); }
 }
+
+.model-browser-memory { display:flex; flex-wrap:wrap; align-items:center; gap:12px 24px; color:var(--muted); font-size:12px; margin:12px 0; }
+.model-browser-memory label { display:flex; align-items:center; gap:6px; }

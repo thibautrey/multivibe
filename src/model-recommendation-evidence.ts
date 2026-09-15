@@ -26,7 +26,7 @@ export function selectTaskBenchmark(need: CatalogNeed, options: readonly {id: st
   return preferred.find(id => options.some(option => option.id === id && option.count > 0)) ?? preferred[0];
 }
 export type ScoredBenchmark = BenchmarkObservation & { label: string; stale: boolean; storedAt: string };
-export type MemoryAvailability = { accelerator?: string; freeHostMiB?: number | null; freeDeviceMiB?: number | null; budgetMiB?: number | null; observedAt?: string };
+export type MemoryAvailability = { totalHostMiB?: number; accelerator?: string; freeHostMiB?: number | null; freeDeviceMiB?: number | null; budgetMiB?: number | null; observedAt?: string };
 export type RecommendationEvidence = { profile?: BenchmarkProfile; scores: Map<string, ScoredBenchmark>; discoveryMemory?: Map<string, DiscoveryMemory>; memory?: MemoryAvailability };
 
 export function benchmarkScores(records: Awaited<ReturnType<CachedModelBenchmarkClient['cachedModels']>>['models'], profile: BenchmarkProfile) {

@@ -1,3 +1,5 @@
+import {localMemoryBudget} from '../../model-memory-budget.js';
+import {totalmem, platform, arch} from 'node:os';
 import { createDiscoveryMemory } from '../../model-discovery-memory.js';
 import { benchmarkProfiles, createRecommendationEvidence, type MemoryAvailability } from '../../model-recommendation-evidence.js';
 import { localPreparationRoutes } from './local-preparation.js';
@@ -1046,13 +1048,13 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     try {
       const catalog = await loadOpenModelCatalog();
       const evidence = await recommendationEvidence(catalog, need as CatalogNeed, benchmark);
-      let memory: MemoryAvailability | undefined;
+      let memory: MemoryAvailability | undefined = options.hostApplication && platform()==='darwin' && arch()==='arm64' ? localMemoryBudget(totalmem(),budgetMiB) : undefined;
       let host: { name: string; supported: boolean } | null = null; let estimates: RuntimeEstimate[] = [];
       if (options.hostApplication && options.providerAgent?.enabled) {
         try {
           const capability = await options.providerAgent.getCapability();
           host = {name: capability.hardware_model ?? 'This Host', supported: capability.supported};
-          memory = {accelerator: capability.accelerator, budgetMiB};
+          memory = {...memory, accelerator: capability.accelerator, budgetMiB: budgetMiB === undefined ? memory?.budgetMiB : Math.min(budgetMiB,memory?.budgetMiB ?? Infinity)};
           try {
             const resources = await options.providerAgent.getLocalPreparationResources?.();
             if (resources) memory = {...memory, freeHostMiB: resources.free_host_memory_bytes === null ? null : resources.free_host_memory_bytes / 1048576, freeDeviceMiB: resources.free_accelerator_memory_bytes === null ? null : resources.free_accelerator_memory_bytes / 1048576, observedAt: resources.observed_at};
