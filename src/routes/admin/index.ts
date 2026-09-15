@@ -1,6 +1,7 @@
 import {localMemoryBudget} from '../../model-memory-budget.js';
 import {totalmem, platform, arch} from 'node:os';
-import { createDiscoveryMemory } from '../../model-discovery-memory.js';
+import {createMemoryEstimationQueue} from '../../model-memory-queue.js';
+import {modelMemoryRequest} from '../../model-memory-request.js';
 import { benchmarkProfiles, createRecommendationEvidence, type MemoryAvailability } from '../../model-recommendation-evidence.js';
 import { localPreparationRoutes } from './local-preparation.js';
 import { modelBenchmarkRoutes } from './model-benchmark-routes.js';
@@ -483,7 +484,12 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     { path: path.join(path.dirname(storagePaths.accountsPath), "model-benchmarks-v1.json") },
   );
   router.use("/benchmarks", modelBenchmarkRoutes(benchmarkClient));
-  const recommendationEvidence = createRecommendationEvidence(benchmarkClient, Date.now, createDiscoveryMemory());
+  const memoryQueue=createMemoryEstimationQueue({path:path.join(path.dirname(storagePaths.accountsPath),'model-memory-queue-v2.json')});
+  const recommendationEvidence = createRecommendationEvidence(benchmarkClient, Date.now, undefined,memoryQueue);
+  router.get('/model-memory',async(req,res)=>{
+    try {res.setHeader('cache-control','no-store');res.json(await modelMemoryRequest(memoryQueue,loadOpenModelCatalog,String(req.query.model??''),String(req.query.variant??'')));}
+    catch {res.status(400).json({error:'Invalid model family or unavailable catalog'});}
+  });
 
   router.get("/host-update", async (_req, res) => {
     res.setHeader("cache-control", "no-store");
@@ -1066,7 +1072,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
           }
         } catch { /* Hardware uncertainty must never become a positive compatibility claim. */ }
       }
-      res.json({catalog, host, memory, contextTokens:8192, benchmarks:{selected:evidence.profile?.id, options:evidence.options, coverage:evidence.coverage}, recommendations: rankOpenModels(catalog, need as CatalogNeed, sort as CatalogSort, estimates, Date.now(), {...evidence, memory: memory ?? (budgetMiB ? {budgetMiB} : undefined)})});
+      res.json({catalog, host, memory,memoryProgress:evidence.memoryProgress, contextTokens:8192, benchmarks:{selected:evidence.profile?.id, options:evidence.options, coverage:evidence.coverage}, recommendations: rankOpenModels(catalog, need as CatalogNeed, sort as CatalogSort, estimates, Date.now(), {...evidence, memory: memory ?? (budgetMiB ? {budgetMiB} : undefined)})});
     } catch { res.status(503).json({error:'Public catalog unavailable'}); }
   });
 
