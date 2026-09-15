@@ -6,6 +6,7 @@ export const catalogSorts = ['recommended', 'benchmark', 'trending', 'downloads'
 export type CatalogSort = typeof catalogSorts[number];
 export type CatalogNeed = 'writing' | 'coding' | 'translation' | 'documents';
 export type OpenModel = {
+  recommendationSources?: import('./curated-model-catalog.js').ModelRecommendationSource[];
   metadataCheckedAt?: string;
   quantization?: string | null;
   lineageAmbiguous?: boolean;
@@ -54,8 +55,9 @@ export function rankOpenModels(catalog: OpenModelCatalog, need: CatalogNeed, sor
     });
     const fit = !g.model.gated && [...variants].sort((a,b) => (a.memory.requiredMiB ?? Infinity)-(b.memory.requiredMiB ?? Infinity)).find(v => !v.model.gated && v.compatibility === 'compatible');
     const measured = fit || [...variants].sort((a,b)=>(a.memory.requiredMiB ?? Infinity)-(b.memory.requiredMiB ?? Infinity)).find(v => v.memory.requiredMiB !== null);
+    const recommendationSources = [...new Map(g.variants.flatMap(v=>v.recommendationSources ?? []).map(source=>[source.id,source])).values()];
     const benchmark = evidence?.scores.get(g.model.id) ?? null;
-    return { ...g, variants, benchmark, memory: measured ? { ...measured.memory, variant: measured.model.id } : null, selectedVariant: fit ? fit.model.id : null,
+    return { ...g, variants, recommendationSources, benchmark, memory: measured ? { ...measured.memory, variant: measured.model.id } : null, selectedVariant: fit ? fit.model.id : null,
       compatibility: fit ? 'compatible' : variants.every(v => v.compatibility === 'insufficient') ? 'insufficient' : 'unknown',
       access: g.model.gated ? 'restricted' : 'reference',
       reason: `Publisher metadata supports ${need === 'documents' ? 'text summarization or analysis' : need}. ${fit ? 'Estimated to fit the memory limit.' : variants.every(v => v.compatibility === 'insufficient') ? 'Memory estimates exceed the memory limit.' : 'Compatibility is not verified.'}` };
@@ -71,6 +73,14 @@ export function rankOpenModels(catalog: OpenModelCatalog, need: CatalogNeed, sor
     if (sort === 'recommended' || sort === 'benchmark') {
       const eligible = (r: typeof a) => r.access !== 'restricted' && r.compatibility === 'compatible' ? 2 : r.access !== 'restricted' && r.compatibility !== 'insufficient' ? 1 : 0;
       const delta = eligible(b)-eligible(a); if (delta) return delta;
+      if (sort === 'recommended') {
+        const curated = (r: typeof a)=>r.recommendationSources.filter(s=>s.kind==='curated'||s.kind==='runtime').length;
+        const endorsed = curated(b)-curated(a); if(endorsed)return endorsed;
+        if(curated(a)>0 && curated(b)>0){
+          const trend=(r:typeof a)=>Math.min(...r.variants.map(v=>v.model.trendingRank ?? Infinity));
+          const trending=trend(a)-trend(b);if(Number.isFinite(trending)&&trending)return trending;
+        }
+      }
       const scored = Number(Boolean(b.benchmark))-Number(Boolean(a.benchmark)); if (scored) return scored;
       if (a.benchmark && b.benchmark) {
         const score = b.benchmark.score-a.benchmark.score; if (score) return score;
