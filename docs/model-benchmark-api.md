@@ -6,6 +6,8 @@ inherit the existing `/admin` authentication boundary.
 | Route | Source | Purpose |
 | --- | --- | --- |
 | `GET /admin/benchmarks/sources` | MultiVibe | Report configured sources and capabilities. |
+| `GET /admin/benchmarks/cache` | Local cache | Report locally retained coverage and cache age. |
+| `GET /admin/benchmarks/cached-models?source=all` | Local cache | Return the broad, network-free set of cached model records. |
 | `GET /admin/benchmarks/models?model=owner%2Fmodel` | Hugging Face | Return every evaluation observation recorded for one model. |
 | `GET /admin/benchmarks/leaderboards?dataset=owner%2Fbenchmark&limit=100` | Hugging Face | Return ranked entries for one official benchmark dataset. |
 | `GET /admin/benchmarks/artificial-analysis/models?page=1&access=free` | Artificial Analysis | Return a page of model indices, pricing and median performance. |
@@ -24,6 +26,19 @@ scores may not be comparable.
 Artificial Analysis requires visible attribution. Its Free tier is for internal
 use; use in a customer-facing dashboard depends on the applicable redistribution
 rights.
+
+## Cache policy
+
+Successful responses are stored atomically in `model-benchmarks-v1.json` beside
+the account store, with mode `0600`. Records remain fresh for 30 days. After that
+window, normal reads still return the local record immediately and start one
+deduplicated background refresh. If refresh fails, the older record remains
+available. Use `refresh=true` only for an intentional forced refresh.
+
+The cache retains up to 10,000 independently keyed model, leaderboard and
+Artificial Analysis page/detail responses, bounded to 64 MiB. This favors broad
+coverage and offline dashboard reads over repeatedly retrieving a small fresh
+subset.
 
 Sources:
 

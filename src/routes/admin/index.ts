@@ -1,6 +1,7 @@
 import { localPreparationRoutes } from './local-preparation.js';
 import { modelBenchmarkRoutes } from './model-benchmark-routes.js';
 import { createModelBenchmarkClient } from '../../model-benchmarks.js';
+import { createCachedModelBenchmarkClient } from '../../model-benchmark-cache.js';
 import type { LocalModelPreparation } from '../../local-model-preparation.js';
 import { rankOpenModels, catalogSorts, type CatalogNeed, type CatalogSort, type RuntimeEstimate } from '../../open-model-ranking.js';
 import { loadOpenModelCatalog } from '../../open-model-catalog.js';
@@ -15,6 +16,7 @@ import { trimTrailingSlashes } from "../../string-utils.js";
 import { sdkProviderCatalog } from "../../ai-sdk/catalog.js";
 import { validateSdkAccount } from "../../ai-sdk/providers.js";
 import express from "express";
+import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { AccountStore, OAuthStateStore } from "../../store.js";
 import type {
@@ -472,7 +474,10 @@ export function createAdminRouter(options: AdminRoutesOptions) {
 
   const router = express.Router();
   router.use("/local-model-preparation", localPreparationRoutes(options.localPreparation));
-  router.use("/benchmarks", modelBenchmarkRoutes(createModelBenchmarkClient({ artificialAnalysisApiKey: ARTIFICIAL_ANALYSIS_API_KEY })));
+  router.use("/benchmarks", modelBenchmarkRoutes(createCachedModelBenchmarkClient(
+    createModelBenchmarkClient({ artificialAnalysisApiKey: ARTIFICIAL_ANALYSIS_API_KEY }),
+    { path: path.join(path.dirname(storagePaths.accountsPath), "model-benchmarks-v1.json") },
+  )));
 
   router.get("/host-update", async (_req, res) => {
     res.setHeader("cache-control", "no-store");
