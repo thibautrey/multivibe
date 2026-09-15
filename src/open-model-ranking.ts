@@ -41,7 +41,7 @@ export function rankOpenModels(catalog: OpenModelCatalog, need: CatalogNeed, sor
     return { ...g, variants, benchmark, memory: measured ? { ...measured.memory, variant: measured.model.id } : null, selectedVariant: fit ? fit.model.id : null,
       compatibility: fit ? 'compatible' : variants.every(v => v.compatibility === 'insufficient') ? 'insufficient' : 'unknown',
       access: g.model.gated ? 'restricted' : 'reference',
-      reason: `Publisher metadata supports ${need === 'documents' ? 'text summarization or analysis' : need}. ${fit ? 'A runtime estimate is available.' : 'Compatibility is not verified.'}` };
+      reason: `Publisher metadata supports ${need === 'documents' ? 'text summarization or analysis' : need}. ${fit ? 'A runtime estimate fits the available memory.' : variants.every(v => v.compatibility === 'insufficient') ? 'Runtime estimates exceed the memory limit.' : 'Compatibility is not verified.'}` };
   });
   const downloads = (m: OpenModel) => m.downloads ?? -1;
   if (sort === 'community') rows = rows.filter(r => r.model.communityUsage);
