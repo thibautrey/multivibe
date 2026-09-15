@@ -40,7 +40,7 @@ test('benchmark warming populates the shared durable cache and cached reads avoi
  const client=createCachedModelBenchmarkClient(createModelBenchmarkClient({fetcher:(async input=>{calls++;const id=new URL(String(input)).pathname.slice('/api/models/'.length);return new Response(JSON.stringify({id,evalResults:[{data:{dataset:{id:profile.dataset,task_id:profile.task},value:80}}]}));}) as typeof fetch}),{path:path.join(dir,'cache.json')});
  const load=createRecommendationEvidence(client);
  const initial=await load(catalog,'coding');assert.equal(initial.coverage.warming,true);
- for(let i=0;i<100 && (await client.cacheInventory()).entries<4;i++) await new Promise(r=>setTimeout(r,10));
+ for(let i=0;i<100 && (await load(catalog,'coding')).coverage.warming;i++) await new Promise(r=>setTimeout(r,10));
  const loaded=await load(catalog,'coding');assert.equal(loaded.scores.size,4);assert.equal(calls,4);
  await load(catalog,'coding');assert.equal(calls,4);
 });
