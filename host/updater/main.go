@@ -123,8 +123,9 @@ func runAutomatic(ctx context.Context, update *updater, state *updaterState) err
 				return err
 			}
 		}
-		if (state.Mode == "download" || state.Mode == "notify") && !installRequested {
-			return nil
+		if (state.Mode == "download" || state.Mode == "notify" || !update.unattended) && !installRequested {
+			state.DownloadRequested = false
+			return update.store.save(*state)
 		}
 		return update.applyNative(ctx, state)
 	}
