@@ -45,7 +45,8 @@ func TestLinuxAutomaticSignedReleaseFlow(t *testing.T) {
 			if err := compressed.Close(); err != nil {
 				t.Fatal(err)
 			}
-			now := time.Now()
+			// Use one clock for both the signed feed and the overnight scheduler.
+			now := time.Date(2026, 9, 16, 3, 0, 0, 0, time.UTC)
 			document := validDocument(now)
 			target := document.Targets["linux-amd64"]
 			target.Size = int64(archive.Len())
@@ -79,7 +80,7 @@ func TestLinuxAutomaticSignedReleaseFlow(t *testing.T) {
 				t.Fatal(err)
 			}
 			downloads := 0
-			update := updater{store: store, now: func() time.Time { return time.Date(2026, 9, 16, 3, 0, 0, 0, time.UTC) }, httpClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			update := updater{store: store, now: func() time.Time { return now }, httpClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				data := envelope
 				if r.URL.String() == target.URL {
 					data = archive.Bytes()
