@@ -64,12 +64,14 @@ export function UpdatesTab() {
         <label><span className="field-label">Mode</span><select value={status.mode} disabled={Boolean(busy)} onChange={(event) => {
           const mode = event.target.value as HostUpdateStatus["mode"];
           void action("policy", () => api("/admin/host-update", { method: "PATCH", body: JSON.stringify({ mode, channel: status.channel }) }));
-        }}><option value="automatic">Download and install automatically</option><option value="download">Download automatically, install manually</option><option value="notify">Notify only</option></select></label>
+        }}><option value="automatic">Install automatically overnight</option><option value="download">Download automatically, install manually</option><option value="notify">Notify only</option></select></label>
         <label><span className="field-label">Channel</span><select value={status.channel} disabled={Boolean(busy)} onChange={(event) => {
           const channel = event.target.value as HostUpdateStatus["channel"];
           void action("policy", () => api("/admin/host-update", { method: "PATCH", body: JSON.stringify({ mode: status.mode, channel }) }));
         }}><option value="stable">Stable</option><option value="beta">Beta</option></select></label>
       </div>
+      <p className="muted">Automatic updates run between 02:00 and 06:00 in this machine’s local time, at a randomized time, after 30 minutes without requests. Busy or sleeping machines wait for a later night. No confirmation is needed.</p>
+      <p className="muted">Next automatic update window: {timestamp(status.next_automatic_at ?? null)}</p>
       <div className="actions-row">
         <button className="btn secondary" disabled={Boolean(busy)} onClick={() => void action("check", () => api("/admin/host-update/check", { method: "POST", body: "{}" }))}>{busy === "check" ? "Checking…" : "Check now"}</button>
         <button className="btn secondary" disabled={Boolean(busy) || !canDownload || status.download_requested} onClick={() => void action("download", () => api("/admin/host-update/download", { method: "POST", body: "{}" }), "Download queued for the background updater.")}>{busy === "download" ? "Queuing…" : status.download_requested ? "Download queued" : "Download in background"}</button>

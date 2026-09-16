@@ -30,6 +30,7 @@ test("Host update drain waits for HTTP, websocket, job and provider operations",
     active_websocket_turns: 0,
     active_jobs: 0,
     provider_operation: null,
+    quiet: false,
   });
   await controller.resume();
   assert.equal(stopped, false);
@@ -132,6 +133,7 @@ test("Host update drain coordinates begin, status and resume with the native edg
     active_websocket_turns: 1,
     active_jobs: 3,
     provider_operation: "install",
+    quiet: false,
   });
   providerOperation = "";
   await controller.resume();
@@ -266,4 +268,25 @@ test("Host update resume keeps local admission drained when the native edge fail
   );
   assert.deepEqual(jobEvents, ["stop"]);
   assert.equal(controller.admitWebsocket(), false);
+});
+
+
+test("quiet period covers startup, active requests and the last stream completion", async () => {
+  let now = 0;
+  const controller = new HostUpdateController(undefined, undefined, undefined, () => now);
+  assert.equal((await controller.readiness()).quiet, false);
+  now = 30 * 60_000;
+  assert.equal((await controller.readiness()).quiet, true);
+  const response = new EventEmitter() as any;
+  controller.inferenceMiddleware({} as any, response, () => {});
+  now += 60 * 60_000;
+  assert.equal((await controller.readiness()).quiet, false);
+  response.emit("finish");
+  now += 30 * 60_000 - 1;
+  assert.equal((await controller.readiness()).quiet, false);
+  now += 1;
+  assert.equal((await controller.readiness()).quiet, true);
+  controller.websocketTurnStarted();
+  controller.websocketTurnFinished();
+  assert.equal((await controller.readiness()).quiet, false);
 });

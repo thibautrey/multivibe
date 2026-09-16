@@ -14,6 +14,7 @@ export type HostUpdateStatus = {
   status: "idle" | "checking" | "available" | "downloading" | "downloaded" | "installing" | "current" | "deferred" | "failed";
   last_checked_at: string | null;
   next_check_at: string | null;
+  next_automatic_at?: string | null;
   available_version: string | null;
   available_critical: boolean;
   rollout_eligible: boolean;
@@ -30,6 +31,7 @@ type JobRunnerControl = {
   start(): void;
   stop(): void;
   activeCount(): number;
+  idleForMs?(): number;
 };
 
 type NativeEdgeControl = {
@@ -38,6 +40,7 @@ type NativeEdgeControl = {
 };
 
 type NativeDrainStatus = {
+  quiet?: boolean;
   draining: boolean;
   ready: boolean;
   active_requests: number;
@@ -57,6 +60,7 @@ function isUpdateStatus(value: unknown): value is HostUpdateStatus {
 
 export class HostUpdateController {
   private draining = false;
+  private lastActivity: number;
   private activeRequests = 0;
   private activeWebsocketTurns = 0;
   private jobRunner?: JobRunnerControl;
@@ -65,7 +69,9 @@ export class HostUpdateController {
     private readonly binaryPath: string | undefined,
     private readonly providerAgent: ProviderAgentControl | undefined,
     private readonly nativeEdge?: NativeEdgeControl,
+    private readonly clock = () => performance.now(),
   ) {
+    this.lastActivity = this.clock();
     if (binaryPath && (!path.isAbsolute(binaryPath) || path.normalize(binaryPath) !== binaryPath)) {
       throw new Error("Host updater binary path must be a clean absolute path");
     }
@@ -86,11 +92,13 @@ export class HostUpdateController {
         error: { message: "MultiVibe Host is draining for a verified update", type: "service_unavailable", code: "host_update_draining" },
       });
     }
+    this.lastActivity = this.clock();
     this.activeRequests += 1;
     let finished = false;
     const complete = () => {
       if (finished) return;
       finished = true;
+      this.lastActivity = this.clock();
       this.activeRequests = Math.max(0, this.activeRequests - 1);
     };
     res.once("finish", complete);
@@ -101,10 +109,12 @@ export class HostUpdateController {
   admitWebsocket = () => !this.draining;
 
   websocketTurnStarted = () => {
+    this.lastActivity = this.clock();
     this.activeWebsocketTurns += 1;
   };
 
   websocketTurnFinished = () => {
+    this.lastActivity = this.clock();
     this.activeWebsocketTurns = Math.max(0, this.activeWebsocketTurns - 1);
   };
 
@@ -162,16 +172,22 @@ export class HostUpdateController {
       const status = await this.providerAgent.getManagedOllamaStatus();
       providerOperation = status.operation?.trim() || null;
     }
+    const activeJobs = this.jobRunner?.activeCount() ?? 0;
+    if (providerOperation || activeJobs || this.activeRequests || this.activeWebsocketTurns) this.lastActivity = this.clock();
+    const quiet = !providerOperation && activeJobs === 0 && this.activeRequests === 0 && this.activeWebsocketTurns === 0 &&
+      this.clock() - this.lastActivity >= 30 * 60_000 &&
+      (!this.jobRunner || (this.jobRunner.idleForMs?.() ?? 0) >= 30 * 60_000);
     const native = await this.nativeDrain("status");
     if (native) {
       return {
         ...native,
         ready: native.ready && !providerOperation,
+        quiet: quiet && native.quiet === true,
         provider_operation: providerOperation,
       };
     }
-    const activeJobs = this.jobRunner?.activeCount() ?? 0;
     return {
+      quiet,
       draining: this.draining,
       ready: this.draining && this.activeRequests === 0 && this.activeWebsocketTurns === 0 && activeJobs === 0 && !providerOperation,
       active_requests: this.activeRequests,

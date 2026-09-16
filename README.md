@@ -189,8 +189,14 @@ Docker Compose and Unraid setup are documented in
 ### Updates and release verification
 
 Native macOS, Linux, and Windows installations check an authenticated release feed and,
-by default, download and install an eligible stable release while the Host is
-idle. The updater drains new work, waits for active requests and model
+by default, download and install an eligible stable release overnight (02:00–06:00
+in the machine's local time), without confirmation. Each installation persists a
+random start between 02:00 and 05:00 to spread download traffic. Missed windows
+and busy Hosts defer to a later night, including after wake or restart. Downloads
+and installation require 30 minutes without requests, WebSocket turns, or jobs;
+installation rechecks activity after draining. Unknown activity fails closed.
+Explicit download/install actions bypass the overnight schedule, but installation
+still requires the quiet period. The updater drains new work, waits for active requests and model
 operations, verifies the archive with an embedded Ed25519 trust root, stages
 the replacement, and restores the previous version if the restarted Host does
 not pass its health check. The dashboard and macOS menu bar can switch between

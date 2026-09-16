@@ -93,6 +93,19 @@ func dockerConfigureArguments(arguments []string) (string, string, error) {
 }
 
 func runAutomatic(ctx context.Context, update *updater, state *updaterState) error {
+	update.unattended = !state.InstallRequested && !state.DownloadRequested
+	if update.unattended {
+		due, err := update.automaticDue(state)
+		if err != nil || !due {
+			return err
+		}
+		// Do not even download while the Host is being used. Missing activity
+		// evidence (including an older Host) must never authorize a restart.
+		if err := update.requireQuiet(ctx); err != nil {
+			return nil
+		}
+	}
+
 	if err := update.check(ctx, state, false); err != nil {
 		return err
 	}

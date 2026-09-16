@@ -199,8 +199,10 @@ func TestApplyResumesAfterReadinessCancellation(t *testing.T) {
 			began.Store(true)
 			w.Write([]byte(`{}`))
 		case "/admin/host-update/readiness":
-			cancel()
-			w.Write([]byte(`{"ready":false}`))
+			if began.Load() {
+				cancel()
+			}
+			w.Write([]byte(`{"ready":false,"quiet":true}`))
 		case "/admin/host-update/resume":
 			resumed.Store(true)
 			w.Write([]byte(`{}`))

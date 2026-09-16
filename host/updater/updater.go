@@ -25,6 +25,7 @@ type updater struct {
 	httpClient *http.Client
 	now        func() time.Time
 	container  bool
+	unattended bool
 }
 
 func newUpdater(container bool) (*updater, updaterState, error) {

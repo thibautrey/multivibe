@@ -626,6 +626,7 @@ export type JobExecutionResult = {
 export class JobRunner {
   private timer?: NodeJS.Timeout;
   private active = new Set<string>();
+  private lastActivity = performance.now();
   private deliveringWebhooks = false;
   private lastPurgeAt = 0;
   private owner = `worker-${randomUUID()}`;
@@ -649,6 +650,10 @@ export class JobRunner {
     this.timer = undefined;
   }
 
+  idleForMs() {
+    return this.active.size ? 0 : performance.now() - this.lastActivity;
+  }
+
   activeCount() {
     return this.active.size;
   }
@@ -657,6 +662,7 @@ export class JobRunner {
     while (this.active.size < this.maxConcurrency) {
       const job = this.jobs.acquire(this.owner);
       if (!job) break;
+      this.lastActivity = performance.now();
       this.active.add(job.id);
       void this.runJob(job);
     }
@@ -693,6 +699,7 @@ export class JobRunner {
       this.jobs.fail(job.id, this.owner, error?.message ?? String(error), true);
     } finally {
       clearInterval(renewal);
+      this.lastActivity = performance.now();
       this.active.delete(job.id);
       queueMicrotask(() => void this.tick());
     }
