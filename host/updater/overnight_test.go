@@ -90,3 +90,19 @@ func TestQuietPreflightAndDrainRace(t *testing.T) {
 		})
 	}
 }
+
+func TestExplicitDownloadDoesNotAuthorizeDaytimeInstallation(t *testing.T) {
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	update := updater{store: testStore(t), now: func() time.Time { return now }}
+	state, _ := defaultState("1.0.0")
+	state.Status = "downloaded"
+	state.DownloadRequested = true
+	state.DownloadedPath = "cached-archive"
+	state.NextCheckAt = now.Add(time.Hour).Format(time.RFC3339Nano)
+	if err := runAutomatic(context.Background(), &update, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != "downloaded" || state.DownloadRequested {
+		t.Fatal("download-only action attempted installation or stayed queued")
+	}
+}
