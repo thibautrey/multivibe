@@ -172,16 +172,16 @@ export class HostUpdateController {
       const status = await this.providerAgent.getManagedOllamaStatus();
       providerOperation = status.operation?.trim() || null;
     }
+    const native = await this.nativeDrain("status");
     const activeJobs = this.jobRunner?.activeCount() ?? 0;
     if (providerOperation || activeJobs || this.activeRequests || this.activeWebsocketTurns) this.lastActivity = this.clock();
     const quiet = !providerOperation && activeJobs === 0 && this.activeRequests === 0 && this.activeWebsocketTurns === 0 &&
       this.clock() - this.lastActivity >= 30 * 60_000 &&
       (!this.jobRunner || (this.jobRunner.idleForMs?.() ?? 0) >= 30 * 60_000);
-    const native = await this.nativeDrain("status");
     if (native) {
       return {
         ...native,
-        ready: native.ready && !providerOperation,
+        ready: native.ready && !providerOperation && this.activeRequests === 0 && this.activeWebsocketTurns === 0 && activeJobs === 0,
         quiet: quiet && native.quiet === true,
         provider_operation: providerOperation,
       };

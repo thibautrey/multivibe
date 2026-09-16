@@ -290,3 +290,21 @@ test("quiet period covers startup, active requests and the last stream completio
   controller.websocketTurnFinished();
   assert.equal((await controller.readiness()).quiet, false);
 });
+
+
+test("native readiness also accounts for Team requests arriving during the status call", async (t) => {
+  let now = 0;
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const controller = new HostUpdateController(undefined, undefined, {baseUrl: "http://localhost", internalToken: "test"}, () => now);
+  const response = new EventEmitter() as any;
+  globalThis.fetch = async () => {
+    controller.inferenceMiddleware({} as any, response, () => {});
+    return new Response(JSON.stringify({draining: true, ready: true, quiet: true, active_requests: 0, active_websocket_turns: 0, active_jobs: 0}));
+  };
+  now = 31 * 60_000;
+  const status = await controller.readiness();
+  assert.equal(status.quiet, false);
+  assert.equal(status.ready, false);
+  response.emit("finish");
+});

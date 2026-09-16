@@ -220,14 +220,6 @@ const teamMachineSharing = new TeamMachineSharing(store, path.join(dataDir, "tea
 await teamMachineSharing.initialize();
 const teamMachineDirectory=new TeamMachineDirectory(path.join(dataDir,"team-machine-directory.json"),teamMachineTrustedKeys(process.env.MULTIVIBE_TEAM_MACHINE_TRUSTED_KEYS));
 await teamMachineDirectory.initialize();
-app.use("/v1",teamMachineDirectory.router());
-app.use("/team-machine", teamMachineSharing.inferenceRouter());
-// Optional dedicated private-network TLS listener. No listener is exposed without operator-provided certificates.
-if(process.env.MULTIVIBE_TEAM_MACHINE_TLS_CERT_PATH && process.env.MULTIVIBE_TEAM_MACHINE_TLS_KEY_PATH){
-  const privateApp=express();privateApp.use(express.json({limit:REQUEST_BODY_LIMIT}));privateApp.use("/team-machine",teamMachineSharing.inferenceRouter());
-  const tlsServer=createTeamHttpsServer({cert:await readTeamIdentity(process.env.MULTIVIBE_TEAM_MACHINE_TLS_CERT_PATH),key:await readTeamIdentity(process.env.MULTIVIBE_TEAM_MACHINE_TLS_KEY_PATH)},privateApp);
-  tlsServer.listen(Number(process.env.MULTIVIBE_TEAM_MACHINE_TLS_PORT ?? "1456"),process.env.MULTIVIBE_TEAM_MACHINE_BIND ?? "127.0.0.1");
-}
 
 const teamSync = new MultivibeTeamSyncService(store, `${STORE_PATH}.team-instance.json`);
 const appVersion = process.env.APP_VERSION ?? "unknown";
@@ -372,6 +364,18 @@ const hostUpdateController = MULTIVIBE_HOST_APPLICATION
         : undefined,
     )
   : undefined;
+if (hostUpdateController) {
+  app.use(["/v1", "/team-machine"], hostUpdateController.inferenceMiddleware);
+}
+app.use("/v1",teamMachineDirectory.router());
+app.use("/team-machine", teamMachineSharing.inferenceRouter());
+// Optional dedicated private-network TLS listener. No listener is exposed without operator-provided certificates.
+if(process.env.MULTIVIBE_TEAM_MACHINE_TLS_CERT_PATH && process.env.MULTIVIBE_TEAM_MACHINE_TLS_KEY_PATH){
+  const privateApp=express();privateApp.use(express.json({limit:REQUEST_BODY_LIMIT}));if (hostUpdateController) privateApp.use("/team-machine", hostUpdateController.inferenceMiddleware);privateApp.use("/team-machine",teamMachineSharing.inferenceRouter());
+  const tlsServer=createTeamHttpsServer({cert:await readTeamIdentity(process.env.MULTIVIBE_TEAM_MACHINE_TLS_CERT_PATH),key:await readTeamIdentity(process.env.MULTIVIBE_TEAM_MACHINE_TLS_KEY_PATH)},privateApp);
+  tlsServer.listen(Number(process.env.MULTIVIBE_TEAM_MACHINE_TLS_PORT ?? "1456"),process.env.MULTIVIBE_TEAM_MACHINE_BIND ?? "127.0.0.1");
+}
+
 const confidentialTrustPolicy = parseConfidentialTrustPolicy(
   MULTIVIBE_CONFIDENTIAL_INFERENCE_TRUST_POLICY,
 );
