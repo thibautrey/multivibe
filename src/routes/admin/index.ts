@@ -557,7 +557,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
   });
 
   router.post("/host-update/drain", async (_req, res) => {
-    if (!options.hostApplication || !options.hostUpdateController?.available()) {
+    if (!options.hostApplication || !options.hostUpdateController) {
       return res.status(404).json({ error: "Host updater is unavailable" });
     }
     try {
@@ -569,7 +569,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
   });
 
   router.post("/host-update/resume", async (_req, res) => {
-    if (!options.hostApplication || !options.hostUpdateController?.available()) {
+    if (!options.hostApplication || !options.hostUpdateController) {
       return res.status(404).json({ error: "Host updater is unavailable" });
     }
     try {
@@ -582,7 +582,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
 
   router.get("/host-update/readiness", async (_req, res) => {
     res.setHeader("cache-control", "no-store");
-    if (!options.hostApplication || !options.hostUpdateController?.available()) {
+    if (!options.hostApplication || !options.hostUpdateController) {
       return res.status(404).json({ error: "Host updater is unavailable" });
     }
     try {

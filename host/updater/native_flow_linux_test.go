@@ -64,7 +64,7 @@ func TestLinuxAutomaticSignedReleaseFlow(t *testing.T) {
 					io.WriteString(w, `{}`)
 				case "/admin/host-update/readiness":
 					ready.Store(drained.Load())
-					io.WriteString(w, `{"ready":true}`)
+					io.WriteString(w, `{"ready":true,"quiet":true}`)
 				case "/admin/host-update/resume":
 					resumed.Store(true)
 					io.WriteString(w, `{}`)
@@ -79,7 +79,7 @@ func TestLinuxAutomaticSignedReleaseFlow(t *testing.T) {
 				t.Fatal(err)
 			}
 			downloads := 0
-			update := updater{store: store, now: time.Now, httpClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			update := updater{store: store, now: func() time.Time { return time.Date(2026, 9, 16, 3, 0, 0, 0, time.UTC) }, httpClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				data := envelope
 				if r.URL.String() == target.URL {
 					data = archive.Bytes()
@@ -88,6 +88,7 @@ func TestLinuxAutomaticSignedReleaseFlow(t *testing.T) {
 				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(data))}, nil
 			})}}
 			state, _ := defaultState("1.0.0")
+			state.NextAutomaticAt = update.now().Format(time.RFC3339Nano)
 			err := runAutomatic(context.Background(), &update, &state)
 			if (err != nil) != failInstall {
 				t.Fatalf("unexpected result: %v", err)

@@ -177,6 +177,10 @@ func hostControlPlanePort() (string, error) {
 }
 
 func (update *updater) hostRequest(ctx context.Context, method, route string) (*http.Response, error) {
+	if update.container {
+		return dockerHostRequest(ctx, method, route)
+	}
+
 	credentialPath := filepath.Join(update.store.directory, "host-credentials.json")
 	info, err := os.Lstat(credentialPath)
 	if err != nil || !updaterPrivateFile(credentialPath, info) || info.Size() > 16*1024 {
@@ -204,6 +208,13 @@ func (update *updater) hostRequest(ctx context.Context, method, route string) (*
 }
 
 func (update *updater) drain(ctx context.Context) error {
+	if update.unattended && !overnightWindow(update.now()) {
+		return errors.New("automatic installation deferred until the next night")
+	}
+	if err := update.requireQuiet(ctx); err != nil {
+		return err
+	}
+
 	var response *http.Response
 	var err error
 	startupDeadline := time.Now().Add(30 * time.Second)
@@ -243,7 +254,9 @@ func (update *updater) drain(ctx context.Context) error {
 			decodeErr := json.NewDecoder(io.LimitReader(response.Body, 64*1024)).Decode(&result)
 			_ = response.Body.Close()
 			if response.StatusCode == http.StatusOK && decodeErr == nil && result.Ready {
-				return nil
+				// Recheck after admission is closed to cover requests arriving
+				// between the preflight check and entering drain mode.
+				return update.requireQuiet(ctx)
 			}
 		}
 		select {

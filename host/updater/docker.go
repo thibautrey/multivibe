@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -196,6 +198,10 @@ func (update *updater) applyDocker(ctx context.Context, state *updaterState) err
 	if _, err := dockerCommand(pullContext, state.DockerProjectDir, "pull", next); err != nil {
 		return setFailure(update.store, state, "docker_pull_failed", errors.New("the signed MultiVibe Host image could not be pulled"))
 	}
+	defer update.resumeDrain()
+	if err := update.drain(ctx); err != nil {
+		return setFailure(update.store, state, "host_not_idle", err)
+	}
 	if err := writeDockerOverride(state.DockerOverrideFile, next); err != nil {
 		return setFailure(update.store, state, "docker_override_failed", err)
 	}
@@ -221,4 +227,36 @@ func (update *updater) applyDocker(ctx context.Context, state *updaterState) err
 	state.InstallRequested = false
 	state.Target = nil
 	return update.store.save(*state)
+}
+
+// Authenticate inside the container: never copy its admin credential to the
+// host updater state, command arguments, or output.
+func dockerHostRequest(ctx context.Context, method, route string) (*http.Response, error) {
+	if route != "/admin/host-update/readiness" && route != "/admin/host-update/drain" && route != "/admin/host-update/resume" {
+		return nil, errors.New("invalid Docker control route")
+	}
+	script := `const fs = require('node:fs');
+(async () => {
+ const credentials = JSON.parse(fs.readFileSync((process.env.MULTIVIBE_HOST_DATA_DIR || '/data') + '/host-credentials.json', 'utf8'));
+ const port = process.env.MULTIVIBE_CONTROL_PLANE_PORT || process.env.MULTIVIBE_HOST_PORT || '1455';
+ if (!/^[0-9]+$/.test(port)) throw new Error('port');
+ const response = await fetch('http://127.0.0.1:' + port + process.argv[2], { method: process.argv[1], headers: {'x-admin-token': credentials.admin_token}, signal: AbortSignal.timeout(5000) });
+ const body = await response.text();
+ if (body.length > 65536) throw new Error('size');
+ process.stdout.write(JSON.stringify({status: response.status, body}));
+})().catch(() => { process.stderr.write('Host activity control unavailable'); process.exitCode = 1; });`
+	requestContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	encoded, err := dockerCommand(requestContext, "", "exec", "multivibe-host", "/opt/multivibe-host/bin/node", "--eval", script, method, route)
+	if err != nil {
+		return nil, errors.New("Docker Host activity control unavailable")
+	}
+	var result struct {
+		Status int    `json:"status"`
+		Body   string `json:"body"`
+	}
+	if json.Unmarshal([]byte(encoded), &result) != nil || result.Status < 100 || result.Status > 599 {
+		return nil, errors.New("invalid Docker Host activity response")
+	}
+	return &http.Response{StatusCode: result.Status, Body: io.NopCloser(strings.NewReader(result.Body))}, nil
 }

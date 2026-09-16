@@ -306,6 +306,7 @@ export type HostUpdateStatus = {
   status: "idle" | "checking" | "available" | "downloading" | "downloaded" | "installing" | "current" | "deferred" | "failed";
   last_checked_at: string | null;
   next_check_at: string | null;
+  next_automatic_at?: string | null;
   available_version: string | null;
   available_critical: boolean;
   rollout_eligible: boolean;

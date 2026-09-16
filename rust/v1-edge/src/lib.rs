@@ -2898,13 +2898,40 @@ struct ActivityCounters {
     jobs: AtomicU64,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct DrainController {
+    last_activity: Arc<StdMutex<Instant>>,
     draining: Arc<AtomicBool>,
     counters: Arc<ActivityCounters>,
 }
 
+impl Default for DrainController {
+    fn default() -> Self {
+        Self {
+            draining: Arc::new(AtomicBool::new(false)),
+            counters: Arc::new(ActivityCounters::default()),
+            last_activity: Arc::new(StdMutex::new(Instant::now())),
+        }
+    }
+}
+
 impl DrainController {
+    fn touch(&self) {
+        *self.last_activity.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+    }
+
+    fn quiet(&self) -> bool {
+        let (_, requests, turns, jobs) = self.snapshot();
+        requests == 0
+            && turns == 0
+            && jobs == 0
+            && self
+                .last_activity
+                .lock()
+                .map(|last| last.elapsed() >= Duration::from_secs(30 * 60))
+                .unwrap_or(false)
+    }
+
     fn admit(&self, kind: ActivityKind) -> Option<ActivityLease> {
         if self.draining.load(AtomicOrdering::SeqCst) {
             return None;
@@ -2915,6 +2942,7 @@ impl DrainController {
             counter.fetch_sub(1, AtomicOrdering::SeqCst);
             return None;
         }
+        self.touch();
         Some(ActivityLease {
             controller: self.clone(),
             kind,
@@ -2958,6 +2986,7 @@ struct ActivityLease {
 
 impl Drop for ActivityLease {
     fn drop(&mut self) {
+        self.controller.touch();
         self.controller
             .counter(self.kind)
             .fetch_sub(1, AtomicOrdering::SeqCst);
@@ -11132,6 +11161,7 @@ fn drain_status_response(state: &EdgeState) -> Response {
                 && active_requests == 0
                 && active_websocket_turns == 0
                 && active_jobs == 0,
+            "quiet": state.drain.quiet(),
             "active_requests": active_requests,
             "active_websocket_turns": active_websocket_turns,
             "active_jobs": active_jobs,
@@ -11423,6 +11453,25 @@ mod tests {
             "deepseek/deepseek-v4-flash-vision-exp",
             "image-captioner",
         ]);
+    }
+
+    #[test]
+    fn native_drain_quiet_period_includes_completed_work() {
+        let drain = DrainController::default();
+        assert!(!drain.quiet());
+        *drain.last_activity.lock().unwrap() = Instant::now() - Duration::from_secs(1801);
+        assert!(drain.quiet());
+        for kind in [
+            ActivityKind::Request,
+            ActivityKind::WebsocketTurn,
+            ActivityKind::Job,
+        ] {
+            let lease = drain.admit(kind).unwrap();
+            *drain.last_activity.lock().unwrap() = Instant::now() - Duration::from_secs(1801);
+            assert!(!drain.quiet());
+            drop(lease);
+            assert!(!drain.quiet());
+        }
     }
 
     #[tokio::test]

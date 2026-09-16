@@ -23,6 +23,7 @@ type updaterState struct {
 	CurrentVersion     string        `json:"current_version"`
 	Status             string        `json:"status"`
 	LastCheckedAt      string        `json:"last_checked_at,omitempty"`
+	NextAutomaticAt    string        `json:"next_automatic_at,omitempty"`
 	NextCheckAt        string        `json:"next_check_at,omitempty"`
 	FeedETag           string        `json:"feed_etag,omitempty"`
 	AvailableVersion   string        `json:"available_version,omitempty"`
@@ -214,7 +215,7 @@ func validateState(state updaterState) error {
 	if len(state.FeedETag) > 256 || strings.ContainsAny(state.FeedETag, "\r\n") {
 		return errors.New("update state ETag is invalid")
 	}
-	for _, timestamp := range []string{state.LastCheckedAt, state.NextCheckAt, state.LastInstalledAt} {
+	for _, timestamp := range []string{state.LastCheckedAt, state.NextCheckAt, state.NextAutomaticAt, state.LastInstalledAt} {
 		if timestamp != "" {
 			if _, err := time.Parse(time.RFC3339Nano, timestamp); err != nil {
 				return errors.New("update state timestamp is invalid")
@@ -273,6 +274,7 @@ func publicState(state updaterState) map[string]any {
 		"status":             state.Status,
 		"last_checked_at":    emptyAsNil(state.LastCheckedAt),
 		"next_check_at":      emptyAsNil(state.NextCheckAt),
+		"next_automatic_at":  emptyAsNil(state.NextAutomaticAt),
 		"available_version":  emptyAsNil(state.AvailableVersion),
 		"available_critical": state.AvailableCritical,
 		"rollout_eligible":   state.RolloutEligible,
