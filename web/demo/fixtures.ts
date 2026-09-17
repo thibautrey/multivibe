@@ -75,6 +75,7 @@ export function createDemoFixtures(now = Date.now()) {
   }];
 
   const traces: TraceEntry[] = [];
+  const sessionTurnCounts = new Map<string, number>();
   for (let hour = 14 * 24 - 1; hour >= 0; hour--) {
     const count = 8 + Math.floor(random() * 25);
     for (let index = 0; index < count; index++) {
@@ -82,8 +83,11 @@ export function createDemoFixtures(now = Date.now()) {
       const account = accounts[workload.account];
       const at = now - hour * HOUR - Math.floor(random() * HOUR) - 60_000;
       const isError = random() < 0.012;
-      const tokensInput = isError ? 0 : 1200 + Math.floor(random() * 6200);
-      const tokensInputCached = Math.floor(tokensInput * (0.35 + random() * 0.45));
+      const sessionId = `${workload.application.toLowerCase().replaceAll(" ", "-")}-${Math.floor(hour / 3)}`;
+      const turn = sessionTurnCounts.get(sessionId) ?? 0;
+      sessionTurnCounts.set(sessionId, turn + 1);
+      const tokensInput = isError ? 0 : 1400 + turn * (350 + Math.floor(random() * 550)) + Math.floor(random() * 900);
+      const tokensInputCached = turn === 0 ? 0 : Math.floor(tokensInput * (0.45 + random() * 0.4));
       const tokensOutput = isError ? 0 : 180 + Math.floor(random() * 1500);
       const ttftMs = 180 + Math.floor(random() * 900) + workload.account * 95;
       const latencyMs = isError ? 1200 : ttftMs + Math.round(tokensOutput / (55 + random() * 70) * 1000);
@@ -91,7 +95,8 @@ export function createDemoFixtures(now = Date.now()) {
       const id = `demo-request-${hour}-${index}`;
       const trace: TraceEntry = {
         id, clientRequestId: id, at, route: workload.account === 2 ? "/v1/chat/completions" : "/v1/responses",
-        application: workload.application, projectId: workload.project.toLowerCase().replaceAll(" ", "-"), projectName: workload.project,
+        application: workload.application, codexSessionId: sessionId,
+        projectId: workload.project.toLowerCase().replaceAll(" ", "-"), projectName: workload.project,
         accountId: account.id, accountEmail: account.email, provider: account.provider,
         model: workload.model, requestedModel: workload.model, resolvedModel: workload.model,
         status: isError ? 429 : 200, isError, stream: true, latencyMs, ttftMs: isError ? undefined : ttftMs,

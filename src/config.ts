@@ -78,6 +78,14 @@ export const TRACE_FILE_PATH =
   process.env.TRACE_FILE_PATH ?? "/data/requests-trace.jsonl";
 export const TRACE_STATS_HISTORY_PATH =
   process.env.TRACE_STATS_HISTORY_PATH ?? "/data/requests-stats-history.jsonl";
+/** Persisted runtime models.dev metadata snapshot (best effort, no secrets). */
+export const SDK_MODELS_DEV_CACHE_PATH =
+  process.env.SDK_MODELS_DEV_CACHE_PATH ??
+  path.resolve(path.dirname(STORE_PATH), "models-dev-catalog.json");
+/** Persisted last successful provider `/models` discovery per account. */
+export const SDK_LIVE_MODEL_CACHE_PATH =
+  process.env.SDK_LIVE_MODEL_CACHE_PATH ??
+  path.resolve(path.dirname(STORE_PATH), "live-model-catalog.json");
 export const ANONYMOUS_USAGE_STATE_PATH =
   process.env.ANONYMOUS_USAGE_STATE_PATH ?? "/data/anonymous-usage-state.json";
 export const ANONYMOUS_USAGE_API_BASE_URL =

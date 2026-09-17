@@ -1,19 +1,20 @@
 import type { Account, UsageSnapshot, UsageWindow } from "../../types.js";
+import type { SdkProviderDiscoveryMetadata } from "../provider-definition.js";
 
 export type ExpansionModel = { id: string; name: string; input: string[]; contextWindow?: number };
 export type ExpansionCatalog = { source: string; fetchedAt: string; models: ExpansionModel[] };
 
 export const PROVIDERS = [
-  { id: "chutes", name: "Chutes.ai", adapter: "compatible", baseURL: "https://llm.chutes.ai/v1" },
-  { id: "venice", name: "Venice AI", adapter: "compatible", baseURL: "https://api.venice.ai/api/v1" },
-  { id: "kilo", name: "Kilo AI Gateway", adapter: "compatible", baseURL: "https://api.kilo.ai/api/gateway" },
-  { id: "byteplus-coding", name: "BytePlus Coding Plan", adapter: "compatible", baseURL: "https://ark.ap-southeast.bytepluses.com/api/coding/v3" },
-  { id: "xiaomi-token-plan", name: "Xiaomi MiMo Token Plan (China)", adapter: "compatible", baseURL: "https://token-plan-cn.xiaomimimo.com/v1" },
-  { id: "xiaomi-token-plan-ams", name: "Xiaomi MiMo Token Plan (Europe)", adapter: "compatible", baseURL: "https://token-plan-ams.xiaomimimo.com/v1" },
-  { id: "xiaomi-token-plan-sgp", name: "Xiaomi MiMo Token Plan (Singapore)", adapter: "compatible", baseURL: "https://token-plan-sgp.xiaomimimo.com/v1" },
-  { id: "ollama-cloud", name: "Ollama Cloud", adapter: "compatible", baseURL: "https://ollama.com/v1" },
-  { id: "synthetic", name: "Synthetic", adapter: "compatible", baseURL: "https://api.synthetic.new/openai/v1" },
-] as const satisfies ReadonlyArray<{ id: string; name: string; adapter: "compatible" | "anthropic"; baseURL: string }>;
+  { id: "chutes", name: "Chutes.ai", adapter: "compatible", baseURL: "https://llm.chutes.ai/v1", modelsPath: "/models", modelsDevId: "chutes" },
+  { id: "venice", name: "Venice AI", adapter: "compatible", baseURL: "https://api.venice.ai/api/v1", modelsPath: "/models", modelsDevId: "venice" },
+  { id: "kilo", name: "Kilo AI Gateway", adapter: "compatible", baseURL: "https://api.kilo.ai/api/gateway", modelsPath: "/models", modelsDevId: "kilo" },
+  { id: "byteplus-coding", name: "BytePlus Coding Plan", adapter: "compatible", baseURL: "https://ark.ap-southeast.bytepluses.com/api/coding/v3", modelsPath: "/models" },
+  { id: "xiaomi-token-plan", name: "Xiaomi MiMo Token Plan (China)", adapter: "compatible", baseURL: "https://token-plan-cn.xiaomimimo.com/v1", modelsPath: "/models", modelsDevId: "xiaomi-token-plan-cn" },
+  { id: "xiaomi-token-plan-ams", name: "Xiaomi MiMo Token Plan (Europe)", adapter: "compatible", baseURL: "https://token-plan-ams.xiaomimimo.com/v1", modelsPath: "/models", modelsDevId: "xiaomi-token-plan-ams" },
+  { id: "xiaomi-token-plan-sgp", name: "Xiaomi MiMo Token Plan (Singapore)", adapter: "compatible", baseURL: "https://token-plan-sgp.xiaomimimo.com/v1", modelsPath: "/models", modelsDevId: "xiaomi-token-plan-sgp" },
+  { id: "ollama-cloud", name: "Ollama Cloud", adapter: "compatible", baseURL: "https://ollama.com/v1", modelsPath: "/models", modelsDevId: "ollama-cloud" },
+  { id: "synthetic", name: "Synthetic", adapter: "compatible", baseURL: "https://api.synthetic.new/openai/v1", modelsPath: "/models", modelsDevId: "synthetic" },
+] as const satisfies ReadonlyArray<SdkProviderDiscoveryMetadata & { id: string; name: string; adapter: "compatible" | "anthropic"; baseURL: string }>;
 
 const reviewed = "2026-09-09";
 const text = (id: string, name = id): ExpansionModel => ({ id, name, input: ["text"] });

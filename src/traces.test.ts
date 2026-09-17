@@ -551,6 +551,41 @@ test("Codex project attribution is resolved once and retained in long-term stats
   assert.equal(historical.projectId, "prj_example");
   assert.equal(historical.projectName, "example");
   assert.equal(historical.codexSessionId, undefined);
+  assert.match(historical.sessionKey ?? "", /^[0-9a-f]{24}$/);
+  assert.notEqual(historical.sessionKey, "thread-project");
+});
+
+test("long-term stats keep a stable session fingerprint scoped by application", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-traces-"));
+  const manager = createTraceManager({
+    filePath: path.join(directory, "traces.jsonl"),
+    historyFilePath: path.join(directory, "history.jsonl"),
+  });
+  await manager.initialize();
+
+  const base = {
+    at: Date.now(),
+    route: "/responses",
+    status: 200,
+    stream: false,
+    latencyMs: 10,
+  };
+  manager.recordTrace({ ...base, application: "codex-a", codexSessionId: "session-one" });
+  manager.recordTrace({ ...base, at: base.at + 1, application: "codex-a", codexSessionId: "session-one" });
+  manager.recordTrace({ ...base, at: base.at + 2, application: "codex-b", codexSessionId: "session-one" });
+  manager.recordTrace({ ...base, at: base.at + 3, application: "codex-a", codexSessionId: "session-two" });
+  await manager.flushPendingWrites();
+
+  const history = await manager.readStatsHistory();
+  const byAt = new Map(history.map((trace) => [trace.at, trace]));
+  const keyFor = (offset: number) => byAt.get(base.at + offset)?.sessionKey;
+  assert.match(keyFor(0) ?? "", /^[0-9a-f]{24}$/);
+  assert.equal(keyFor(0), keyFor(1));
+  assert.notEqual(keyFor(0), keyFor(2));
+  assert.notEqual(keyFor(0), keyFor(3));
+  assert.equal(history.length, 4);
+
+  await fs.rm(directory, { recursive: true, force: true });
 });
 
 test("passes the project-root context to fallback resolution without persisting raw context", async () => {

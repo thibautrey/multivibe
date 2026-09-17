@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { normalizeTraceHeaders } from "./trace-headers.js";
+import { sessionKeyFor } from "./session-identity.js";
 import type { CodexProjectAttribution } from "./codex-projects.js";
 import type {
   AccountSelectionReason,
@@ -44,6 +45,8 @@ export type TraceEntry = {
   recoveredRetry?: boolean;
   application?: string;
   codexSessionId?: string;
+  /** Privacy-preserving session fingerprint retained in long-term stats. */
+  sessionKey?: string;
   /** Untrusted request context used only for registry fallback resolution. */
   codexProjectRoot?: string;
   /** Stable execution-host context paired with codexProjectRoot. */
@@ -598,6 +601,11 @@ function normalizeTrace(raw: any): TraceEntry | null {
       typeof raw.codexSessionId === "string" && raw.codexSessionId.trim()
         ? raw.codexSessionId.trim()
         : undefined,
+    sessionKey:
+      typeof raw.sessionKey === "string" &&
+      /^[0-9a-f]{8,64}$/.test(raw.sessionKey.trim())
+        ? raw.sessionKey.trim()
+        : undefined,
     projectId:
       typeof raw.projectId === "string" && raw.projectId.trim()
         ? raw.projectId.trim()
@@ -804,7 +812,7 @@ function average(values: number[]): number {
     : 0;
 }
 
-function ttftInputTokenBucket(
+export function ttftInputTokenBucket(
   tokensInput: number | undefined,
 ): TtftInputTokenBucket {
   if (
@@ -1815,7 +1823,12 @@ export function createTraceManager(config: TraceManagerConfig) {
       responseStreamDiagnostics: _responseStreamDiagnostics,
       ...rest
     } = entry;
-    return rest;
+    const sessionKey =
+      rest.sessionKey ??
+      (entry.codexSessionId
+        ? sessionKeyFor(entry.application, entry.codexSessionId)
+        : undefined);
+    return sessionKey ? { ...rest, sessionKey } : rest;
   }
 
   function toNormalizedHistoryEntry(entry: TraceEntry): TraceEntry | null {

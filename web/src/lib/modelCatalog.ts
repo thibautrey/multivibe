@@ -109,21 +109,26 @@ export function aggregateModels(models: ExposedModel[], accounts: Account[], clo
   for (const model of models) {
     const candidates = model.metadata?.provider_candidates ?? (model.metadata?.provider ? [model.metadata.provider] : []);
     const authorHints = [model.metadata?.model_author, model.owned_by, ...candidates];
+    const label = model.name?.trim() || model.id;
     const matching = accounts.filter(account => model.metadata?.account_ids?.length
       ? model.metadata.account_ids.includes(account.id)
       : candidates.includes(account.provider ?? 'openai') && (account.provider !== 'ai-sdk' || account.sdkProvider === model.metadata?.sdk_provider)
-        && (account.provider !== 'openai-compatible' || account.localRuntime?.confirmedModelIds.includes(model.id)));
+        && (account.provider !== 'openai-compatible' || account.localRuntime?.confirmedModelIds.includes(model.metadata?.upstream_model_id ?? model.id)));
     for (const account of matching) {
       const source = (account.multivibeCloud || account.id === 'multivibe-cloud') ? 'cloud' : account.localRuntime || account.location === 'local' ? 'local' : 'provider';
-      add(model.id, model.id, { source, label: source === 'cloud' ? 'MultiVibe Cloud' : account.localRuntime?.adapter ?? account.sdkProvider ?? account.provider ?? 'OpenAI',
+      add(model.id, label, { source, label: source === 'cloud' ? 'MultiVibe Cloud' : account.localRuntime?.adapter ?? account.sdkProvider ?? account.provider ?? 'OpenAI',
         modelId: model.id, ready: healthy(account, model.id), accountId: account.id, provider: account.provider ?? 'openai', sdkProvider: account.sdkProvider },
         authorHints.find(hint => knownOwner(hint)));
     }
-    if (!matching.length) add(model.id, model.id, { source: 'provider', label: model.metadata?.is_alias ? 'Routing alias' : candidates.join(' · ') || 'Provider', modelId: model.id, ready: false, provider: candidates[0] },
+    if (!matching.length) add(model.id, label, { source: 'provider', label: model.metadata?.is_alias ? 'Routing alias' : candidates.join(' · ') || 'Provider', modelId: model.id, ready: false, provider: candidates[0] },
       authorHints.find(hint => knownOwner(hint)));
   }
   for (const account of accounts.filter(account => account.localRuntime)) {
-    for (const id of account.localRuntime!.confirmedModelIds) add(id, id, { source: 'local', label: account.localRuntime!.adapter, modelId: id, ready: healthy(account, id), accountId: account.id });
+    const adapter = account.localRuntime!.adapter;
+    for (const id of account.localRuntime!.confirmedModelIds) {
+      const runtimeId = `${adapter}/${id}`;
+      add(runtimeId, runtimeId, { source: 'local', label: adapter, modelId: runtimeId, ready: healthy(account, id), accountId: account.id });
+    }
   }
   for (const provider of providers) for (const model of provider.models) {
     const id = `${provider.id}/${model.id}`;

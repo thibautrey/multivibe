@@ -18,6 +18,8 @@ test("declares Kimi's documented global endpoint and active models", () => {
     name: "Kimi",
     adapter: "compatible",
     baseURL: "https://api.moonshot.ai/v1",
+    modelsPath: "/models",
+    modelsDevId: "moonshotai",
   });
   assert.deepEqual(KIMI_MODELS.map(({ id }) => id), [
     "kimi-k3",
@@ -32,6 +34,7 @@ test("declares Kimi's documented global endpoint and active models", () => {
 test("declares the distinct Kimi Code subscription provider", () => {
   assert.deepEqual(KIMI_CODING_PROVIDER, {
     id: "kimi-coding", name: "Kimi Code", adapter: "compatible", baseURL: "https://api.kimi.com/coding/v1",
+    modelsPath: "/models", modelsDevId: "kimi-for-coding",
   });
   assert.deepEqual(KIMI_CODING_MODELS.map(({ id }) => id), [
     "k3", "k3-256k", "kimi-for-coding", "kimi-for-coding-highspeed",

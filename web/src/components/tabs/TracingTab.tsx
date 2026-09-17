@@ -16,7 +16,8 @@ import {
   YAxis,
 } from "recharts";
 import { estimateCostUsd } from "../../model-pricing";
-import { fmt, formatTokenCount, formatTokenRate, maskEmail, maskId, pct, routeLabel, usd } from "../../lib/ui";
+import { TTFT_BUCKET_ORDER, TTFT_CONTEXT_LABELS, fmt, formatTokenCount, formatTokenRate, maskEmail, maskId, pct, routeLabel, usd } from "../../lib/ui";
+import type { TtftBucket } from "../../lib/ui";
 import { HostHarnessCards } from "../../host/HostHarnessCarousel";
 import {
   runtimeIdentityForAccount,
@@ -25,7 +26,8 @@ import {
 import { Metric } from "../Metric";
 import { TtftComparisonChart } from "../TtftComparisonChart";
 import { WidgetGrid } from "../WidgetGrid";
-import type { ActivityView, Account, ProjectUsageStats, StoreSettings, Trace, TracePagination, TraceRange, TraceStats } from "../../types";
+import { TracingSessions } from "./TracingSessions";
+import type { ActivityView, Account, ProjectUsageStats, SessionTurn, SessionsResponse, StoreSettings, Trace, TracePagination, TraceRange, TraceStats } from "../../types";
 
 type Props = {
   accounts: Account[];
@@ -42,6 +44,12 @@ type Props = {
   traceExportInProgress: boolean;
   traces: Trace[];
   projectUsageStats: ProjectUsageStats;
+  sessionStats: SessionsResponse;
+  sessionStatsLoading: boolean;
+  expandedSessionKey: string | null;
+  sessionTurns: SessionTurn[];
+  sessionTurnsLoading: boolean;
+  toggleSession: (sessionKey: string) => void;
   expandedTraceId: string | null;
   expandedTrace: Trace | null;
   expandedTraceLoading: boolean;
@@ -51,20 +59,6 @@ type Props = {
   patchSettings: (body: Partial<StoreSettings>) => Promise<void>;
   activeView?: ActivityView;
   onActiveViewChange?: (view: ActivityView) => void;
-};
-
-const TTFT_BUCKET_ORDER = ["lt1k", "1k-8k", "8k-32k", "32k-64k", "64k-128k", "128k-plus", "unknown"] as const;
-
-type TtftBucket = (typeof TTFT_BUCKET_ORDER)[number];
-
-const TTFT_CONTEXT_LABELS: Record<TtftBucket, string> = {
-  lt1k: "<1K",
-  "1k-8k": "1K–8K",
-  "8k-32k": "8K–32K",
-  "32k-64k": "32K–64K",
-  "64k-128k": "64K–128K",
-  "128k-plus": ">128K",
-  unknown: "Unknown",
 };
 
 function formatTtftDuration(value: number): string {
@@ -228,6 +222,12 @@ function TracingTabContent(props: Props) {
     traceExportInProgress,
     traces,
     projectUsageStats,
+    sessionStats,
+    sessionStatsLoading,
+    expandedSessionKey,
+    sessionTurns,
+    sessionTurnsLoading,
+    toggleSession,
     expandedTraceId,
     expandedTrace,
     expandedTraceLoading,
@@ -289,6 +289,7 @@ function TracingTabContent(props: Props) {
   const viewOptions = [
     { id: "overview" as const, label: "Overview", description: "Health and routing" },
     { id: "performance" as const, label: "Performance", description: "Latency and TTFT" },
+    { id: "sessions" as const, label: "Sessions", description: "Contexts and cache" },
     { id: "usage" as const, label: "Usage & cost", description: "Tokens and projects" },
     { id: "requests" as const, label: "Requests", description: `${tracePagination.total} traces` },
   ];
@@ -497,6 +498,19 @@ function TracingTabContent(props: Props) {
               </div>
             </section>
           </section>
+        </div>
+      )}
+
+      {activeView === "sessions" && (
+        <div id="trace-view-sessions" role="tabpanel" aria-labelledby="trace-tab-sessions" className="trace-view-content">
+          <TracingSessions
+            sessionStats={sessionStats}
+            sessionStatsLoading={sessionStatsLoading}
+            expandedSessionKey={expandedSessionKey}
+            sessionTurns={sessionTurns}
+            sessionTurnsLoading={sessionTurnsLoading}
+            toggleSession={toggleSession}
+          />
         </div>
       )}
 

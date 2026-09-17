@@ -8,6 +8,7 @@ test("declares Alibaba Coding Plan's dedicated compatible endpoints", () => {
     name: "Qwen Coding Plan (Alibaba)",
     adapter: "compatible",
     baseURL: "https://coding-intl.dashscope.aliyuncs.com/v1",
+    modelsDevId: "alibaba-coding-plan",
   });
   assert.equal(QWEN_CODING_PLAN_CHINA_BASE_URL, "https://coding.dashscope.aliyuncs.com/v1");
 });

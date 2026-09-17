@@ -4,6 +4,8 @@ export const KIMI_PROVIDER = {
   name: "Kimi",
   adapter: "compatible",
   baseURL: "https://api.moonshot.ai/v1",
+  modelsPath: "/models",
+  modelsDevId: "moonshotai",
 } as const;
 
 /** Kimi Code is a separate subscription product with separate API keys. */
@@ -12,6 +14,8 @@ export const KIMI_CODING_PROVIDER = {
   name: "Kimi Code",
   adapter: "compatible",
   baseURL: "https://api.kimi.com/coding/v1",
+  modelsPath: "/models",
+  modelsDevId: "kimi-for-coding",
 } as const;
 
 /** Models listed as active in Kimi's public model catalog on 2026-09-09. */

@@ -19,6 +19,9 @@ import { ARTIFICIAL_ANALYSIS_API_KEY, MULTIVIBE_CONTROL_PLANE } from "../../conf
 import { createAuthRateLimiter } from "../../auth-rate-limit.js";
 import { trimTrailingSlashes } from "../../string-utils.js";
 import { sdkProviderCatalog } from "../../ai-sdk/catalog.js";
+import { sdkAccountModels } from "../../ai-sdk/catalog.js";
+import type { LiveModelCatalogSource } from "../../ai-sdk/live-model-catalog.js";
+import type { ModelsDevCatalog } from "../../ai-sdk/models-dev-catalog.js";
 import { validateSdkAccount } from "../../ai-sdk/providers.js";
 import express from "express";
 import path from "node:path";
@@ -83,6 +86,10 @@ import {
 } from "../../opencode.js";
 import type { CodexProjectRegistry } from "../../codex-projects.js";
 import { aggregateProjectUsage } from "../../project-usage.js";
+import {
+  aggregateSessionUsage,
+  sessionTurnsFor,
+} from "../../session-usage.js";
 import { buildCodexHookInstallCommand } from "../../codex-hook-install.js";
 import type { ProxyApiKey } from "../../proxy-api-keys.js";
 import {
@@ -156,6 +163,8 @@ export type AdminRoutesOptions = {
   teamSync?: MultivibeTeamSyncService;
   managedTeamEnrollment?: ManagedTeamEnrollmentService;
   appVersion?: string;
+  liveModelCatalog?: LiveModelCatalogSource;
+  modelsDevCatalog?: ModelsDevCatalog;
 };
 
 function proxyApiKeyPreview(key: string): string {
@@ -1088,7 +1097,50 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     catch { res.status(503).json({ error: "Public model catalog unavailable. Try again later." }); }
   });
 
-  router.get("/provider-catalog", (_req, res) => res.json(sdkProviderCatalog()));
+  router.get("/provider-catalog", async (_req, res) => {
+    if (options.modelsDevCatalog) {
+      try { await options.modelsDevCatalog.ensure(); } catch { /* bundled snapshot stays authoritative */ }
+    }
+    res.json(sdkProviderCatalog(options.modelsDevCatalog));
+  });
+
+  const providerAccountModels = async (req: express.Request, res: express.Response, force: boolean) => {
+    const account = (await store.listAccounts()).find((entry) => entry.id === req.params.id);
+    if (!account || account.provider !== "ai-sdk" || !account.enabled) {
+      return res.status(404).json({ error: "Provider account unavailable" });
+    }
+    if (options.modelsDevCatalog) {
+      try { await options.modelsDevCatalog.ensure(); } catch { /* optional metadata */ }
+    }
+    let live;
+    try {
+      live = force && options.liveModelCatalog?.refresh
+        ? await options.liveModelCatalog.refresh(account)
+        : await options.liveModelCatalog?.snapshot(account);
+    } catch {
+      live = undefined;
+    }
+    res.setHeader("Cache-Control", "no-store");
+    res.json({
+      object: "list",
+      provider: account.sdkProvider ?? null,
+      selection: account.sdkModels ?? [],
+      discovered: Boolean(live),
+      live: live ?? null,
+      catalog: options.modelsDevCatalog?.state() ?? null,
+      data: sdkAccountModels(account, live, options.modelsDevCatalog),
+    });
+  };
+
+  router.get("/accounts/:id/models", async (req, res) => {
+    try { await providerAccountModels(req, res, false); }
+    catch { res.status(500).json({ error: "Could not load provider models" }); }
+  });
+
+  router.post("/accounts/:id/models/refresh", async (req, res) => {
+    try { await providerAccountModels(req, res, true); }
+    catch { res.status(500).json({ error: "Could not refresh provider models" }); }
+  });
 
   router.get("/invoices", async (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
@@ -1986,6 +2038,68 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       tracesEvaluated: traces.length,
       tracesMatched: usageTraces.length,
     });
+  });
+
+  router.get("/stats/sessions", async (req, res) => {
+    const applicationFilter =
+      typeof req.query.application === "string"
+        ? req.query.application.trim()
+        : "";
+    const projectIdFilter =
+      typeof req.query.projectId === "string" ? req.query.projectId.trim() : "";
+    const sinceMs = parseQueryNumber(req.query.sinceMs);
+    const untilMs = parseQueryNumber(req.query.untilMs);
+    const limit = Math.max(
+      1,
+      Math.min(500, Math.floor(parseQueryNumber(req.query.limit) ?? 100)),
+    );
+    const offset = Math.max(
+      0,
+      Math.floor(parseQueryNumber(req.query.offset) ?? 0),
+    );
+
+    const traces = filterVisibleTraces(
+      await readStatsHistoryRange(sinceMs, untilMs),
+    );
+    const filtered = traces.filter((t) => {
+      if (applicationFilter && t.application !== applicationFilter) return false;
+      if (projectIdFilter && t.projectId !== projectIdFilter) return false;
+      return true;
+    });
+    const { summary, sessions } = aggregateSessionUsage(filtered);
+
+    res.json({
+      ok: true,
+      filters: {
+        application: applicationFilter || undefined,
+        projectId: projectIdFilter || undefined,
+        sinceMs,
+        untilMs,
+      },
+      coverage: {
+        totalAttempts: summary.totalAttempts,
+        identifiedAttempts: summary.attempts,
+        ratio: summary.coverage,
+      },
+      summary,
+      total: sessions.length,
+      sessions: sessions.slice(offset, offset + limit),
+    });
+  });
+
+  router.get("/stats/sessions/:key/turns", async (req, res) => {
+    const sessionKey = String(req.params.key ?? "").trim().toLowerCase();
+    if (!/^[0-9a-f]{8,64}$/.test(sessionKey)) {
+      return res.status(400).json({ error: "invalid session key" });
+    }
+    const sinceMs = parseQueryNumber(req.query.sinceMs);
+    const untilMs = parseQueryNumber(req.query.untilMs);
+    const traces = filterVisibleTraces(
+      await readStatsHistoryRange(sinceMs, untilMs),
+    );
+    const turns = sessionTurnsFor(traces, sessionKey);
+    if (!turns.length) return res.status(404).json({ error: "not found" });
+    res.json({ ok: true, filters: { sinceMs, untilMs }, sessionKey, turns });
   });
 
   router.get("/stats/traces", async (req, res) => {

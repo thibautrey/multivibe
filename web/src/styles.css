@@ -5479,3 +5479,31 @@ body:has(> .modal-backdrop) {
 }
 
 .workspace-chat-link{margin-bottom:12px;text-decoration:none;justify-content:center}.team-workspace-home{max-width:960px}.team-workspace-home>p{max-width:640px;color:var(--muted);line-height:1.7}.team-workspace-actions{display:flex;flex-wrap:wrap;gap:12px;margin:24px 0}.team-workspace-home>.panel{margin-top:20px}.core-mobile-chat{display:none}@media(max-width:900px){.core-mobile-chat{display:inline-flex;margin-bottom:18px;text-decoration:none}}
+
+.session-turn-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.session-turn-summary strong {
+  color: var(--text);
+}
+
+.session-turn-chart {
+  margin: 10px 0;
+}
+
+.session-turn-table {
+  min-width: 760px;
+}
+
+.session-table {
+  min-width: 1180px;
+}

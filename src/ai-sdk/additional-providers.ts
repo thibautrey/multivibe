@@ -4,10 +4,12 @@ import type { SdkCatalogModel } from "./catalog.js";
 export const HUGGINGFACE_PROVIDER = {
   id: "huggingface", name: "Hugging Face", adapter: "compatible",
   baseURL: "https://router.huggingface.co/v1",
+  modelsDevId: "huggingface",
 } as const;
 export const ABACUS_PROVIDER = {
   id: "abacus", name: "Abacus.AI", adapter: "compatible",
   baseURL: "https://routellm.abacus.ai/v1",
+  modelsDevId: "abacus",
 } as const;
 
 export const HUGGINGFACE_MODELS: SdkCatalogModel[] = [

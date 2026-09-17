@@ -2,6 +2,8 @@ import type { ProviderId } from "./types.js";
 
 export type ExposedModel = {
   id: string;
+  /** Provider-published display name when available. */
+  name?: string;
   object: "model";
   created: number;
   owned_by: string;
@@ -26,5 +28,9 @@ export type ExposedModel = {
     sdk_provider?: string;
     pricing?: Record<string, number>;
     input_modalities?: string[];
+    /** Local runtime adapter exposing the model (for example "omlx"). */
+    runtime?: string;
+    /** Bare model id sent to the local runtime upstream. */
+    upstream_model_id?: string;
   };
 };

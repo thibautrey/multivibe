@@ -1,4 +1,4 @@
-import type { TracePagination, TraceStats } from "../types";
+import type { SessionsResponse, TracePagination, TraceStats } from "../types";
 
 export const TRACE_PAGE_SIZE = 100;
 export const CHART_COLORS = ["#147d72", "#45a99c", "#dda15e", "#8d79d6", "#d96270", "#55c7b8", "#efb26f", "#6b7d77"];
@@ -38,6 +38,54 @@ export const EMPTY_TRACE_STATS: TraceStats = {
       "quota-headroom": 0,
     },
   },
+};
+
+export const EMPTY_SESSIONS_RESPONSE: SessionsResponse = {
+  ok: true,
+  coverage: { totalAttempts: 0, identifiedAttempts: 0, ratio: 0 },
+  summary: {
+    sessions: 0,
+    turns: 0,
+    attempts: 0,
+    totalAttempts: 0,
+    coverage: 0,
+    initialInputTokensMedian: undefined,
+    initialInputTokenBuckets: {
+      lt1k: 0,
+      "1k-8k": 0,
+      "8k-32k": 0,
+      "32k-64k": 0,
+      "64k-128k": 0,
+      "128k-plus": 0,
+      unknown: 0,
+    },
+    turnsPerSessionMedian: 0,
+    cachedInputRatio: undefined,
+    cacheHitTurns: 0,
+    cacheHitRatio: 0,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    cacheWriteTokens: 0,
+    outputTokens: 0,
+    costUsd: 0,
+    cacheSavingsUsd: 0,
+  },
+  total: 0,
+  sessions: [],
+};
+
+export const TTFT_BUCKET_ORDER = ["lt1k", "1k-8k", "8k-32k", "32k-64k", "64k-128k", "128k-plus", "unknown"] as const;
+
+export type TtftBucket = (typeof TTFT_BUCKET_ORDER)[number];
+
+export const TTFT_CONTEXT_LABELS: Record<TtftBucket, string> = {
+  lt1k: "<1K",
+  "1k-8k": "1K–8K",
+  "8k-32k": "8K–32K",
+  "32k-64k": "32K–64K",
+  "64k-128k": "64K–128K",
+  "128k-plus": ">128K",
+  unknown: "Unknown",
 };
 
 export const EMPTY_TRACE_PAGINATION: TracePagination = {

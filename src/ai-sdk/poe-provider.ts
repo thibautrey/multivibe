@@ -7,6 +7,7 @@ export const POE_PROVIDER = {
   name: "Poe",
   adapter: "compatible",
   baseURL: "https://api.poe.com/v1",
+  modelsDevId: "poe",
 } as const;
 
 /**

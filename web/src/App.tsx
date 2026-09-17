@@ -15,6 +15,7 @@ import "./workspace-refresh.css";
 import { estimateCostUsd } from "./model-pricing";
 import { ApiError, api } from "./lib/api";
 import {
+  EMPTY_SESSIONS_RESPONSE,
   EMPTY_TRACE_PAGINATION,
   EMPTY_TRACE_STATS,
   TRACE_PAGE_SIZE,
@@ -32,6 +33,8 @@ import type {
   ProxyApiKey,
   CreatedProxyApiKey,
   ProjectUsageStats,
+  SessionTurn,
+  SessionsResponse,
   StoreSettings,
   Tab,
   Trace,
@@ -86,7 +89,7 @@ function tabFromSearch(search: string): Tab {
 
 function activityViewFromSearch(search: string): ActivityView {
   const requestedView = new URLSearchParams(search).get("view");
-  return requestedView === "performance" || requestedView === "usage" || requestedView === "requests"
+  return requestedView === "performance" || requestedView === "sessions" || requestedView === "usage" || requestedView === "requests"
     ? requestedView
     : "overview";
 }
@@ -177,6 +180,13 @@ export default function App() {
   const [projectUsageStats, setProjectUsageStats] = useState<ProjectUsageStats>({
     byProject: [],
   });
+  const [sessionStats, setSessionStats] = useState<SessionsResponse>(EMPTY_SESSIONS_RESPONSE);
+  const [sessionStatsLoading, setSessionStatsLoading] = useState(false);
+  const sessionStatsLoadedRef = useRef<string | null>(null);
+  const sessionStatsInFlightRef = useRef(false);
+  const [expandedSessionKey, setExpandedSessionKey] = useState<string | null>(null);
+  const [sessionTurns, setSessionTurns] = useState<SessionTurn[]>([]);
+  const [sessionTurnsLoading, setSessionTurnsLoading] = useState(false);
   const [tracePagination, setTracePagination] = useState<TracePagination>(EMPTY_TRACE_PAGINATION);
   const [models, setModels] = useState<ExposedModel[]>([]);
   const [aliases, setAliases] = useState<ModelAlias[]>([]);
@@ -622,6 +632,55 @@ export default function App() {
       setTraceStatsLoading(traceStatsPendingRef.current > 0);
     }
   };
+
+  const loadSessionStats = async (range: TraceRange = traceRange, background = false) => {
+    if (sessionStatsInFlightRef.current) return;
+    sessionStatsInFlightRef.current = true;
+    const params = traceRangeParams(range).toString();
+    if (!background) setSessionStatsLoading(true);
+    try {
+      const res = await api(`/admin/stats/sessions?${params}`);
+      setSessionStats((res ?? EMPTY_SESSIONS_RESPONSE) as SessionsResponse);
+      sessionStatsLoadedRef.current = params;
+    } finally {
+      sessionStatsInFlightRef.current = false;
+      if (!background) setSessionStatsLoading(false);
+    }
+  };
+
+  const toggleSession = (sessionKey: string) => {
+    if (expandedSessionKey === sessionKey) {
+      setExpandedSessionKey(null);
+      setSessionTurns([]);
+      return;
+    }
+    setExpandedSessionKey(sessionKey);
+    setSessionTurns([]);
+    setSessionTurnsLoading(true);
+    const params = traceRangeParams(traceRangeRef.current).toString();
+    void api(`/admin/stats/sessions/${encodeURIComponent(sessionKey)}/turns?${params}`)
+      .then((res) => setSessionTurns((res?.turns ?? []) as SessionTurn[]))
+      .catch(() => setSessionTurns([]))
+      .finally(() => setSessionTurnsLoading(false));
+  };
+
+  useEffect(() => {
+    setExpandedSessionKey(null);
+    setSessionTurns([]);
+    sessionStatsLoadedRef.current = null;
+  }, [traceRange]);
+
+  useEffect(() => {
+    if (tab !== "tracing" || activityView !== "sessions") return;
+    const params = traceRangeParams(traceRange).toString();
+    if (sessionStatsLoadedRef.current !== params) {
+      void loadSessionStats(traceRange).catch(() => undefined);
+    }
+    const timer = window.setInterval(() => {
+      void loadSessionStats(traceRangeRef.current, true).catch(() => undefined);
+    }, 10_000);
+    return () => window.clearInterval(timer);
+  }, [activityView, tab, traceRange]);
 
   const loadTracing = async (page: number, range: TraceRange = traceRange, background = false) => {
     // Poll in place: loading placeholders are only for explicit navigation.
@@ -1521,6 +1580,12 @@ export default function App() {
             traceExportInProgress={traceExportInProgress}
             traces={traces}
             projectUsageStats={projectUsageStats}
+            sessionStats={sessionStats}
+            sessionStatsLoading={sessionStatsLoading}
+            expandedSessionKey={expandedSessionKey}
+            sessionTurns={sessionTurns}
+            sessionTurnsLoading={sessionTurnsLoading}
+            toggleSession={toggleSession}
             expandedTraceId={expandedTraceId}
             expandedTrace={expandedTrace}
             expandedTraceLoading={expandedTraceLoading}

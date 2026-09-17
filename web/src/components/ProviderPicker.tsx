@@ -16,7 +16,7 @@ export const SETUP_PROVIDERS: { id: SetupProvider; name: string; description: st
 ];
 
 export type CloudProvider = { id: string; name: string; models: Array<{ id: string; name: string }>;
-  endpointPlaceholder?: string; endpointRequired?: boolean; credentialLabel?: string; requiresModelSelection?: boolean };
+  endpointPlaceholder?: string; endpointRequired?: boolean; credentialLabel?: string; requiresModelSelection?: boolean; liveDiscovery?: boolean };
 
 const PROVIDER_ICON_ALIASES: Record<string, string> = {"github-copilot": "githubcopilot", "azure-foundry": "azureai", "vertex-express": "vertexai", "siliconflow": "siliconcloud", "nvidia-nim": "nvidia", "codestral": "mistral", "kilo": "kilocode", "byteplus-coding": "bytedance", "xiaomi-token-plan": "xiaomimimo", "xiaomi-token-plan-ams": "xiaomimimo", "xiaomi-token-plan-sgp": "xiaomimimo", "ollama-cloud": "ollama", "minimax-coding": "minimax", "kimi-coding": "kimi", "qwen-coding": "qwen"};
 const PROVIDER_ICONS = new Set(["ai21", "anthropic", "azureai", "baseten", "bedrock", "bytedance", "cerebras", "cloudflare", "cohere", "deepinfra", "deepseek", "fal", "fireworks", "githubcopilot", "google", "groq", "huggingface", "kilocode", "kimi", "mammouth", "manus", "minimax", "mistral", "nebius", "novita", "nvidia", "ollama", "openai", "opencode", "openrouter", "perplexity", "poe", "qwen", "replicate", "sambanova", "siliconcloud", "togetherai", "venice", "vertexai", "xai", "xiaomimimo", "zai"]);

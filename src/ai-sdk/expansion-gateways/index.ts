@@ -3,8 +3,9 @@ import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4Genera
 import { setTimeout as delay } from "node:timers/promises";
 import type { Account, UsageSnapshot } from "../../types.js";
 import { SdkInputError } from "../protocol.js";
+import type { SdkProviderDiscoveryMetadata } from "../provider-definition.js";
 
-export type ExpansionGatewayProvider = {
+export type ExpansionGatewayProvider = SdkProviderDiscoveryMetadata & {
   id: string;
   name: string;
   adapter: "compatible" | "custom";
@@ -14,15 +15,15 @@ export type ExpansionGatewayProvider = {
 
 /** Fixed endpoints reviewed against the linked provider documentation on 2026-09-09. */
 export const PROVIDERS: ExpansionGatewayProvider[] = [
-  { id: "orcarouter", name: "OrcaRouter", adapter: "compatible", baseURL: "https://api.orcarouter.ai/v1" },
-  { id: "martian", name: "Martian", adapter: "compatible", baseURL: "https://api.withmartian.com/v1" },
-  { id: "crofai", name: "CrofAI", adapter: "compatible", baseURL: "https://crof.ai/v1" },
-  { id: "inceptron", name: "Inceptron", adapter: "compatible", baseURL: "https://api.inceptron.io/v1" },
-  { id: "neuralwatt", name: "Neuralwatt", adapter: "compatible", baseURL: "https://api.neuralwatt.com/v1" },
-  { id: "baseten", name: "Baseten", adapter: "compatible", baseURL: "https://inference.baseten.co/v1" },
+  { id: "orcarouter", name: "OrcaRouter", adapter: "compatible", baseURL: "https://api.orcarouter.ai/v1", modelsPath: "/models", modelsDevId: "orcarouter" },
+  { id: "martian", name: "Martian", adapter: "compatible", baseURL: "https://api.withmartian.com/v1", modelsPath: "/models" },
+  { id: "crofai", name: "CrofAI", adapter: "compatible", baseURL: "https://crof.ai/v1", modelsPath: "/models", modelsDevId: "crof" },
+  { id: "inceptron", name: "Inceptron", adapter: "compatible", baseURL: "https://api.inceptron.io/v1", modelsPath: "/models", modelsDevId: "inceptron" },
+  { id: "neuralwatt", name: "Neuralwatt", adapter: "compatible", baseURL: "https://api.neuralwatt.com/v1", modelsPath: "/models", modelsDevId: "neuralwatt" },
+  { id: "baseten", name: "Baseten", adapter: "compatible", baseURL: "https://inference.baseten.co/v1", modelsPath: "/models", modelsDevId: "baseten" },
   { id: "replicate", name: "Replicate", adapter: "custom", baseURL: "https://api.replicate.com/v1" },
   // fal's OpenRouter endpoint uses the OpenAI wire format with `Authorization: Key`, not Bearer.
-  { id: "fal", name: "fal.ai", adapter: "compatible", baseURL: "https://fal.run/openrouter/router/openai/v1", authScheme: "Key" },
+  { id: "fal", name: "fal.ai", adapter: "compatible", baseURL: "https://fal.run/openrouter/router/openai/v1", authScheme: "Key", modelsPath: "/models" },
 ];
 
 export type ExpansionCatalogModel = {

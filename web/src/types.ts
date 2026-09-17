@@ -185,14 +185,7 @@ export type TraceStats = {
   ttftByProviderModel: Array<{
     provider: ProviderId;
     model: string;
-    inputTokenBucket:
-      | "lt1k"
-      | "1k-8k"
-      | "8k-32k"
-      | "32k-64k"
-      | "64k-128k"
-      | "128k-plus"
-      | "unknown";
+    inputTokenBucket: TtftInputTokenBucket;
     samples: number;
     ttftP50Ms: number;
     ttftP95Ms: number;
@@ -284,7 +277,104 @@ export type TraceRange = TraceRangePreset | { startDate: string; endDate: string
 
 export type TraceRangePreset = "24h" | "7d" | "30d" | "all";
 
-export type ActivityView = "overview" | "performance" | "usage" | "requests";
+export type ActivityView = "overview" | "performance" | "sessions" | "usage" | "requests";
+
+export type SessionTurn = {
+  at: number;
+  lastAt: number;
+  clientRequestId: string;
+  application?: string;
+  projectId?: string;
+  projectName?: string;
+  provider?: ProviderId;
+  model?: string;
+  status: number;
+  isError: boolean;
+  upstreamAttempts: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  ttftMs?: number;
+  latencyMs: number;
+  costUsd: number;
+  costUsdWithoutCache: number;
+};
+
+export type SessionUsage = {
+  sessionKey: string;
+  application?: string;
+  projectId?: string;
+  projectName?: string;
+  provider?: ProviderId;
+  models: string[];
+  turns: number;
+  firstAt: number;
+  lastAt: number;
+  durationMs: number;
+  initialInputTokens?: number;
+  initialInputTokenBucket: TtftInputTokenBucket;
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  medianInputTokens?: number;
+  maxInputTokens?: number;
+  medianOutputTokens?: number;
+  cachedInputRatio?: number;
+  cacheHitTurns: number;
+  cacheMissTurns: number;
+  cacheWriteTurns: number;
+  contextGrowthTokens?: number;
+  medianTurnGrowthTokens?: number;
+  errorTurns: number;
+  costUsd: number;
+  costUsdWithoutCache: number;
+  cacheSavingsUsd: number;
+};
+
+export type TtftInputTokenBucket =
+  | "lt1k"
+  | "1k-8k"
+  | "8k-32k"
+  | "32k-64k"
+  | "64k-128k"
+  | "128k-plus"
+  | "unknown";
+
+export type SessionUsageSummary = {
+  sessions: number;
+  turns: number;
+  attempts: number;
+  totalAttempts: number;
+  coverage: number;
+  initialInputTokensMedian?: number;
+  initialInputTokenBuckets: Record<TtftInputTokenBucket, number>;
+  turnsPerSessionMedian: number;
+  cachedInputRatio?: number;
+  cacheHitTurns: number;
+  cacheHitRatio: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  cacheSavingsUsd: number;
+};
+
+export type SessionsResponse = {
+  ok: boolean;
+  coverage: {
+    totalAttempts: number;
+    identifiedAttempts: number;
+    ratio: number;
+  };
+  summary: SessionUsageSummary;
+  total: number;
+  sessions: SessionUsage[];
+};
 
 export type Tab =
   | "invoices"
@@ -321,6 +411,7 @@ export type HostUpdateStatus = {
 
 export type ExposedModel = {
   id: string;
+  name?: string;
   owned_by?: string;
   metadata?: {
     account_ids?: string[];
@@ -332,6 +423,8 @@ export type ExposedModel = {
     >;
     is_alias?: boolean;
     alias_targets?: string[];
+    runtime?: string;
+    upstream_model_id?: string;
   };
 };
 

@@ -23,15 +23,15 @@ export const SDK_PROVIDERS: readonly SdkProviderDefinition[] = [
   ABACUS_PROVIDER,
   QWEN_PROVIDER,
   MANUS_PROVIDER,
-  { id: "anthropic", name: "Anthropic", adapter: "anthropic", baseURL: "https://api.anthropic.com/v1" },
-  { id: "google", name: "Google Gemini", adapter: "google", baseURL: "https://generativelanguage.googleapis.com/v1beta" },
+  { id: "anthropic", name: "Anthropic", adapter: "anthropic", baseURL: "https://api.anthropic.com/v1", modelsPath: "/models", modelsFormat: "anthropic", modelsHeaders: { "anthropic-version": "2023-06-01" } },
+  { id: "google", name: "Google Gemini", adapter: "google", baseURL: "https://generativelanguage.googleapis.com/v1beta", modelsPath: "/models", modelsFormat: "google", modelsAuth: "google" },
   { id: "mammouth", name: "Mammouth AI", adapter: "compatible", baseURL: "https://api.mammouth.ai/v1" },
-  { id: "openrouter", name: "OpenRouter", adapter: "compatible", baseURL: "https://openrouter.ai/api/v1" },
+  { id: "openrouter", name: "OpenRouter", adapter: "compatible", baseURL: "https://openrouter.ai/api/v1", modelsPath: "/models" },
   { id: "deepseek", name: "DeepSeek", adapter: "compatible", baseURL: "https://api.deepseek.com", modelsPath: "/models" },
-  { id: "groq", name: "Groq", adapter: "compatible", baseURL: "https://api.groq.com/openai/v1" },
-  { id: "togetherai", name: "Together AI", adapter: "compatible", baseURL: "https://api.together.xyz/v1" },
-  { id: "cerebras", name: "Cerebras", adapter: "compatible", baseURL: "https://api.cerebras.ai/v1" },
-  { id: "perplexity", name: "Perplexity", adapter: "compatible", baseURL: "https://api.perplexity.ai" },
+  { id: "groq", name: "Groq", adapter: "compatible", baseURL: "https://api.groq.com/openai/v1", modelsPath: "/models" },
+  { id: "togetherai", name: "Together AI", adapter: "compatible", baseURL: "https://api.together.xyz/v1", modelsPath: "/models" },
+  { id: "cerebras", name: "Cerebras", adapter: "compatible", baseURL: "https://api.cerebras.ai/v1", modelsPath: "/models" },
+  { id: "perplexity", name: "Perplexity", adapter: "compatible", baseURL: "https://api.perplexity.ai", modelsDevId: "perplexity" },
 ] as const;
 
 export type SdkProviderId = (typeof SDK_PROVIDERS)[number]["id"];

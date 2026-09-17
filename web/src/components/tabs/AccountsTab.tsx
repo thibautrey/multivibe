@@ -23,6 +23,7 @@ import { tracksSubscriptionQuota } from "../../lib/accountQuota";
 import { PROVIDER_ACCESS } from "../../lib/providerAccess";
 
 import { ProviderPicker, ProviderMark, SETUP_PROVIDERS, type SetupProvider, type CloudProvider } from "../ProviderPicker";
+import { ProviderModelPicker, type ProviderModelOption, type ProviderModelsLive } from "../ProviderModelPicker";
 import { Metric } from "../Metric";
 import { WidgetGrid } from "../WidgetGrid";
 import { createPortal } from "react-dom";
@@ -561,6 +562,10 @@ export function AccountsTab(props: Props) {
   const [sdkProviders, setSdkProviders] = useState<CloudProvider[]>([]);
   const [sdkProvider, setSdkProvider] = useState("anthropic");
   const [sdkModels, setSdkModels] = useState("");
+  const [editModelOptions, setEditModelOptions] = useState<ProviderModelOption[]>([]);
+  const [editModelsLoading, setEditModelsLoading] = useState(false);
+  const [editModelsError, setEditModelsError] = useState("");
+  const [editModelsLive, setEditModelsLive] = useState<ProviderModelsLive>(null);
   const [sdkCatalogError, setSdkCatalogError] = useState("");
   useEffect(() => {
     let active = true;
@@ -1187,6 +1192,47 @@ export function AccountsTab(props: Props) {
     : SETUP_PROVIDERS.find((item) => item.id === provider)?.name;
   const selectedSdkProvider = sdkProviders.find((item) => item.id === sdkProvider);
   const editingSdkProvider = sdkProviders.find((item) => item.id === editingAccount?.sdkProvider);
+  const createModelOptions = React.useMemo<ProviderModelOption[]>(
+    () => (selectedSdkProvider?.models ?? []).map((model) => ({ id: model.id, name: model.name })),
+    [selectedSdkProvider],
+  );
+
+  const loadAccountProviderModels = useCallback(async (accountId: string, refresh = false) => {
+    setEditModelsLoading(true);
+    setEditModelsError("");
+    try {
+      const result = await api(
+        `/admin/accounts/${encodeURIComponent(accountId)}/models${refresh ? "/refresh" : ""}`,
+        refresh ? { method: "POST" } : undefined,
+      );
+      const prefix = typeof result.provider === "string" && result.provider ? `${result.provider}/` : "";
+      const options = (Array.isArray(result.data) ? result.data : [])
+        .map((model: any) => {
+          const raw = typeof model?.id === "string" ? model.id : "";
+          return {
+            id: prefix && raw.startsWith(prefix) ? raw.slice(prefix.length) : raw,
+            name: typeof model?.name === "string" ? model.name : undefined,
+            context: typeof model?.context_window === "number" ? model.context_window : null,
+          };
+        })
+        .filter((model: ProviderModelOption) => model.id);
+      setEditModelOptions(options);
+      setEditModelsLive({
+        discovered: Boolean(result.discovered),
+        source: result.live?.source ?? null,
+        fetchedAt: result.live?.fetchedAt ?? null,
+        stale: Boolean(result.live?.stale),
+        error: result.live?.error ?? null,
+        catalog: result.catalog ?? null,
+      });
+    } catch {
+      setEditModelOptions([]);
+      setEditModelsLive(null);
+      setEditModelsError("Modèles indisponibles. Saisis les IDs manuellement ou réessaie.");
+    } finally {
+      setEditModelsLoading(false);
+    }
+  }, []);
 
   const providerConnectionReady = isOAuthProvider(provider)
     ? provider !== "openai" || Boolean(manualEmail.trim())
@@ -1239,6 +1285,10 @@ export function AccountsTab(props: Props) {
     setEditingAccount(null);
     setEditOAuthMethod("device");
     setIsSavingEdit(false);
+    setEditModelOptions([]);
+    setEditModelsLive(null);
+    setEditModelsError("");
+    setEditModelsLoading(false);
   };
 
   const closeOauthDialog = () => {
@@ -1404,6 +1454,8 @@ export function AccountsTab(props: Props) {
       metricsUrl: account.capacityProfile?.metricsUrl ?? "",
     });
     setEditOAuthMethod("device");
+    if (account.provider === "ai-sdk") void loadAccountProviderModels(account.id);
+    else { setEditModelOptions([]); setEditModelsLive(null); setEditModelsError(""); }
   };
 
   const saveEditedAccount = async () => {
@@ -2975,10 +3027,17 @@ export function AccountsTab(props: Props) {
                   Provider endpoint {selectedSdkProvider.endpointRequired ? "(required)" : "(optional)"}
                   <input type="url" value={manualBaseUrl} onChange={(event) => setManualBaseUrl(event.target.value)} placeholder={selectedSdkProvider.endpointPlaceholder} />
                 </label>}
-                <label>{selectedSdkProvider?.requiresModelSelection ? "Deployment / model names (required)" : "Model IDs (optional)"}
-                  <textarea value={sdkModels} onChange={(event) => setSdkModels(event.target.value)} placeholder={selectedSdkProvider?.requiresModelSelection ? "Enter your deployed model names separated by commas" : "Leave empty for the provider model list, or enter model IDs separated by commas"} />
-                </label>
-                <p className="muted">{sdkProviders.find((entry) => entry.id === sdkProvider)?.models.length ?? 0} text-generation models listed in the provider catalog. Access and pricing depend on your provider account. Subscription quotas are not supplied by the catalog.</p>
+                <div>
+                  <p className="muted">{selectedSdkProvider?.requiresModelSelection ? "Deployment / model names (required)" : "Model IDs (optional)"}</p>
+                  <ProviderModelPicker
+                    providerName={selectedSdkProvider?.name}
+                    value={sdkModels}
+                    onChange={setSdkModels}
+                    options={createModelOptions}
+                    requiresSelection={selectedSdkProvider?.requiresModelSelection}
+                  />
+                </div>
+                <p className="muted">Access and pricing depend on your provider account. Subscription quotas are not supplied by the catalog.</p>
                 {PROVIDER_ACCESS[sdkProvider] && <p className="muted">{PROVIDER_ACCESS[sdkProvider].note}</p>}
               </>}
               {provider === "nvidia-pair" ? (
@@ -3195,10 +3254,20 @@ export function AccountsTab(props: Props) {
                   />
                 </label>
               )}
-              {editingAccount.provider === "ai-sdk" && <label>
-                {editingSdkProvider?.requiresModelSelection ? "Deployment / model names (required)" : "Model IDs (optional)"}
-                <textarea value={editingAccount.sdkModels} onChange={(event) => setEditingAccount((current) => current ? { ...current, sdkModels: event.target.value } : current)} />
-              </label>}
+              {editingAccount.provider === "ai-sdk" && <div>
+                <p className="muted">{editingSdkProvider?.requiresModelSelection ? "Deployment / model names (required)" : "Model IDs (optional)"}</p>
+                <ProviderModelPicker
+                  providerName={editingSdkProvider?.name}
+                  value={editingAccount.sdkModels}
+                  onChange={(next) => setEditingAccount((current) => current ? { ...current, sdkModels: next } : current)}
+                  options={editModelOptions}
+                  live={editModelsLive}
+                  loading={editModelsLoading}
+                  error={editModelsError}
+                  onRefresh={() => { if (editingAccount) void loadAccountProviderModels(editingAccount.id, true); }}
+                  requiresSelection={editingSdkProvider?.requiresModelSelection}
+                />
+              </div>}
               <label>
                 Upstream mode (optional)
                 <select

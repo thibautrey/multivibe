@@ -14,6 +14,8 @@ import { automaticRouterManifest, createAutomaticRouter } from "./automatic-rout
 import { createAuthRateLimiter } from "./auth-rate-limit.js";
 import { createSdkAdapterRouter } from "./ai-sdk/routes.js";
 import { SDK_INTERNAL_TOKEN } from "./ai-sdk/connection.js";
+import { LiveModelCatalog } from "./ai-sdk/live-model-catalog.js";
+import { ModelsDevCatalog } from "./ai-sdk/models-dev-catalog.js";
 import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,6 +58,8 @@ import {
   STORE_PATH,
   TRACE_FILE_PATH,
   TRACE_STATS_HISTORY_PATH,
+  SDK_MODELS_DEV_CACHE_PATH,
+  SDK_LIVE_MODEL_CACHE_PATH,
   ANONYMOUS_USAGE_STATE_PATH,
   ANONYMOUS_USAGE_API_BASE_URL,
   TRACE_RETENTION_MAX,
@@ -473,6 +477,9 @@ app.use(
   }),
 );
 
+const liveModelCatalog = new LiveModelCatalog({ cachePath: SDK_LIVE_MODEL_CACHE_PATH });
+const modelsDevCatalog = new ModelsDevCatalog({ cachePath: SDK_MODELS_DEV_CACHE_PATH });
+
 const adminRouter = createAdminRouter({
   store,
   oauthStore,
@@ -498,6 +505,8 @@ const adminRouter = createAdminRouter({
   teamSync,
   managedTeamEnrollment,
   appVersion,
+  liveModelCatalog,
+  modelsDevCatalog,
   storagePaths: {
     accountsPath: STORE_PATH,
     oauthStatePath: OAUTH_STATE_PATH,
@@ -587,7 +596,7 @@ function adminGuard(
   next();
 }
 
-app.use("/internal/ai-sdk", createSdkAdapterRouter({ store, internalToken: SDK_INTERNAL_TOKEN }));
+app.use("/internal/ai-sdk", createSdkAdapterRouter({ store, internalToken: SDK_INTERNAL_TOKEN, liveModelCatalog, modelsDevCatalog }));
 
 if (MULTIVIBE_CONTROL_PLANE) {
   app.use(
