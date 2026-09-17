@@ -71,6 +71,18 @@ test("SDK adapter returns a complete incremental chat stream", async () => {
   });
 });
 
+test("SDK adapter always reports measured stream usage to the Edge", async () => {
+  await server(async (url) => {
+    const response = await fetch(`${url}/chat/completions`, {method: "POST", headers: auth, body: JSON.stringify({model: "anthropic/test", messages: [{role: "user", content: "Hi"}], stream: true})});
+    assert.equal(response.status, 200);
+    const body = await response.text();
+    assert.match(body, /"content":"Hi"/);
+    assert.match(body, /"prompt_tokens":1/);
+    assert.match(body, /"completion_tokens":2/);
+    assert.match(body, /"total_tokens":3/);
+  });
+});
+
 test("SDK adapter lists models discovered from the provider and survives discovery failure", async () => {
   const live = {
     ids: ["from-provider"],
