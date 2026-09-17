@@ -24,6 +24,7 @@ use axum::{
         HeaderMap, Method, Request, StatusCode, Uri,
         header::{self, HeaderName, HeaderValue},
     },
+    middleware::Next,
     response::Response,
     routing::{get, post},
 };
@@ -846,8 +847,13 @@ fn error_response(status: StatusCode, message: impl Into<String>, code: &str) ->
 }
 
 fn anthropic_error_response(status: StatusCode, message: impl Into<String>) -> Response {
-    let kind = if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+    // Anthropic's documented error types keyed by HTTP status.
+    let kind = if status == StatusCode::UNAUTHORIZED {
         "authentication_error"
+    } else if status == StatusCode::FORBIDDEN {
+        "permission_error"
+    } else if status == StatusCode::NOT_FOUND {
+        "not_found_error"
     } else if status == StatusCode::TOO_MANY_REQUESTS {
         "rate_limit_error"
     } else if status == StatusCode::SERVICE_UNAVAILABLE || status.as_u16() == 529 {
@@ -5208,22 +5214,170 @@ fn provider_error_message(body: &str) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.chars().take(500).collect())
 }
 
-/// Canonical OpenAI-shaped reply for an exhausted context window. The
-/// `context_length_exceeded` code is the contract clients key off, so keep the
-/// provider's explanation in `message` while normalizing the envelope.
-fn context_length_error_value(body: &str) -> Value {
-    let message = provider_error_message(body).unwrap_or_else(|| {
-        "The request exceeds the model's maximum context length. Reduce the length of the messages or completion and try again.".to_owned()
-    });
-    json!({
-        "error": {
-            "message": message,
-            "type": "invalid_request_error",
-            "param": Value::Null,
-            "code": "context_length_exceeded",
-        }
-    })
+/// Providers in thinking mode reject a request whose assistant turn lost the
+/// `reasoning_content` they produced. Only the client owns that history, so
+/// the failure is surfaced with a dedicated code and the provider wording that
+/// names the missing field.
+fn is_reasoning_content_required_error(body: &str) -> bool {
+    let body = body.to_ascii_lowercase();
+    (body.contains("reasoning_content") && body.contains("passed back"))
+        || body.contains("reasoning_content is required")
+        || body.contains("missing reasoning_content")
+        || (body.contains("reasoning")
+            && body.contains("thinking mode")
+            && (body.contains("required") || body.contains("missing")))
 }
+
+fn is_content_filter_error(body: &str) -> bool {
+    let body = body.to_ascii_lowercase();
+    body.contains("content filter")
+        || body.contains("content_filter")
+        || body.contains("content policy")
+        || body.contains("responsible ai")
+        || body.contains("data_inspection_failed")
+        || body.contains("flagged")
+}
+
+fn is_insufficient_quota_error(status: StatusCode, body: &str) -> bool {
+    let body = body.to_ascii_lowercase();
+    status == StatusCode::PAYMENT_REQUIRED
+        || body.contains("insufficient_quota")
+        || body.contains("insufficient balance")
+        || body.contains("insufficient credit")
+        || body.contains("insufficient fund")
+        || body.contains("exceeded your current quota")
+        || (body.contains("quota")
+            && (body.contains("exceed") || body.contains("insufficient") || body.contains("reached") || body.contains("no available")))
+}
+
+fn is_rate_limit_error(status: StatusCode, body: &str) -> bool {
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        return true;
+    }
+    let body = body.to_ascii_lowercase();
+    body.contains("rate limit")
+        || body.contains("rate_limit_exceeded")
+        || body.contains("too many requests")
+        || body.contains("requests per")
+}
+
+fn is_model_not_found_error(status: StatusCode, body: &str) -> bool {
+    if status != StatusCode::NOT_FOUND {
+        return false;
+    }
+    let body = body.to_ascii_lowercase();
+    body.contains("model") || body.contains("model_not_found") || body.contains("does not exist")
+}
+
+/// Canonical OpenAI error `type`, used only when the provider supplies none.
+fn error_type_for_status(status: StatusCode) -> &'static str {
+    if status == StatusCode::UNAUTHORIZED {
+        "authentication_error"
+    } else if status == StatusCode::FORBIDDEN {
+        "permission_error"
+    } else if status == StatusCode::TOO_MANY_REQUESTS {
+        "rate_limit_error"
+    } else if status.is_server_error() {
+        "api_error"
+    } else {
+        "invalid_request_error"
+    }
+}
+
+fn default_error_message(status: StatusCode) -> String {
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        "The upstream provider is rate limiting requests. Retry after a short delay.".to_owned()
+    } else if status.is_server_error() {
+        format!("The upstream provider failed with HTTP {status}.")
+    } else {
+        format!("The upstream provider rejected the request with HTTP {status}.")
+    }
+}
+
+/// Normalize an upstream error body into the documented client contract.
+///
+/// Providers answer with OpenAI-style JSON, bare strings, or HTML error pages,
+/// and several classes (exhausted context, thinking-mode reasoning) need a
+/// stable machine-readable code that the provider does not emit. Every field
+/// the provider already supplied is preserved; `message`, `type`, `param` and
+/// `code` are then guaranteed to be present so a client can always branch on
+/// them instead of pattern-matching free text.
+fn normalize_provider_error_body(status: StatusCode, body: &str) -> Value {
+    let extracted = provider_error_message(body);
+    let mut envelope = match serde_json::from_str::<Value>(body) {
+        Ok(value) if value.is_object() => value,
+        _ => json!({ "error": {} }),
+    };
+    if !envelope.get("error").is_some_and(Value::is_object) {
+        envelope = json!({ "error": {} });
+    }
+    let error = envelope
+        .get_mut("error")
+        .and_then(Value::as_object_mut)
+        .expect("error envelope");
+    if !error
+        .get("message")
+        .and_then(Value::as_str)
+        .is_some_and(|message| !message.trim().is_empty())
+    {
+        error.insert(
+            "message".to_owned(),
+            Value::String(
+                extracted
+                    .clone()
+                    .unwrap_or_else(|| default_error_message(status)),
+            ),
+        );
+    }
+
+    let mut error_type: Option<&'static str> = None;
+    let mut code: Option<String> = None;
+    if is_context_length_error(status, body) {
+        error_type = Some("invalid_request_error");
+        code = Some("context_length_exceeded".to_owned());
+    } else if is_reasoning_content_required_error(body) {
+        error_type = Some("invalid_request_error");
+        code = Some("reasoning_content_required".to_owned());
+    } else if is_content_filter_error(body) {
+        code = Some("content_filter".to_owned());
+    } else if is_insufficient_quota_error(status, body) {
+        error_type = Some("rate_limit_error");
+        code = Some("insufficient_quota".to_owned());
+    } else if is_rate_limit_error(status, body) {
+        error_type = Some("rate_limit_error");
+        if !has_non_empty_string(error.get("code")) {
+            code = Some("rate_limit_exceeded".to_owned());
+        }
+    } else if is_model_not_found_error(status, body) {
+        code = Some("model_not_found".to_owned());
+    }
+
+    if error_type.is_none() && !has_non_empty_string(error.get("type")) {
+        error_type = Some(error_type_for_status(status));
+    }
+    if code.is_none() && !has_non_empty_string(error.get("code")) {
+        code = Some(if status.is_server_error() {
+            "server_error".to_owned()
+        } else {
+            "upstream_error".to_owned()
+        });
+    }
+    if let Some(value) = error_type {
+        error.insert("type".to_owned(), Value::String(value.to_owned()));
+    }
+    if let Some(value) = code {
+        error.insert("code".to_owned(), Value::String(value));
+    }
+    error.entry("param".to_owned()).or_insert(Value::Null);
+    envelope
+}
+
+fn has_non_empty_string(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
 
 fn is_quota_error(status: StatusCode, body: &str) -> bool {
     status == StatusCode::TOO_MANY_REQUESTS
@@ -5939,18 +6093,15 @@ async fn proxy_inference(
                                 .await;
                             continue;
                         }
-                        let body = if path.ends_with("/messages") {
-                            serde_json::to_vec(&anthropic_error_value(status, &text))
-                                .unwrap_or_else(|_| b"{}".to_vec())
-                        } else if is_context_length_error(status, &text) {
-                            // Normalize provider-specific overflow wording into the
-                            // documented OpenAI error so clients can detect it and
-                            // compact the conversation instead of failing the turn.
-                            serde_json::to_vec(&context_length_error_value(&text))
-                                .unwrap_or_else(|_| bytes.to_vec())
-                        } else {
-                            bytes.to_vec()
-                        };
+                        // Every upstream failure reaches the client through the
+                        // documented error contract: the provider message is kept and
+                        // `type`/`code` are always present so a client can branch on
+                        // them. The Anthropic surface is rewritten from this OpenAI
+                        // envelope by the router layer, which also covers errors
+                        // raised before the upstream call.
+                        let body =
+                            serde_json::to_vec(&normalize_provider_error_body(status, &text))
+                                .unwrap_or_else(|_| bytes.to_vec());
                         state
                             .trace
                             .record(
@@ -6183,7 +6334,16 @@ async fn proxy_inference(
             ),
         )
         .await;
-    let mut response = error_response(status, final_error, error_code);
+    let mut response = if had_account && !capacity_exhausted {
+        // The provider failure that exhausted the account rotation still reaches
+        // the client through the documented error contract.
+        json_response(
+            status,
+            normalize_provider_error_body(status, &final_error),
+        )
+    } else {
+        error_response(status, final_error, error_code)
+    };
     if status == StatusCode::TOO_MANY_REQUESTS {
         response
             .headers_mut()
@@ -6207,8 +6367,13 @@ impl EmptyStringFallback for String {
 }
 
 fn anthropic_error_value(status: StatusCode, message: &str) -> Value {
-    let kind = if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+    // Anthropic's documented error types keyed by HTTP status.
+    let kind = if status == StatusCode::UNAUTHORIZED {
         "authentication_error"
+    } else if status == StatusCode::FORBIDDEN {
+        "permission_error"
+    } else if status == StatusCode::NOT_FOUND {
+        "not_found_error"
     } else if status == StatusCode::TOO_MANY_REQUESTS {
         "rate_limit_error"
     } else if status == StatusCode::SERVICE_UNAVAILABLE || status.as_u16() == 529 {
@@ -6220,6 +6385,63 @@ fn anthropic_error_value(status: StatusCode, message: &str) -> Value {
     };
     json!({"type": "error", "error": {"type": kind, "message": message}})
 }
+
+/// Translate an OpenAI-shaped error into the Anthropic envelope for the
+/// `/messages` surface.
+///
+/// Error responses are produced by many layers (authorization, routing,
+/// idempotency, upstream classification), and only the already-converted ones
+/// know the client protocol. Doing it once, here, guarantees that every failure
+/// reaches an Anthropic client in the shape it parses, instead of an OpenAI
+/// body it silently misreads. Success and streaming responses pass through
+/// untouched.
+async fn anthropic_error_envelope_layer(request: axum::extract::Request, next: Next) -> Response {
+    let anthropic_surface = request.uri().path().ends_with("/messages");
+    let response = next.run(request).await;
+    if !anthropic_surface || response.status().is_success() {
+        return response;
+    }
+    let is_json = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().contains("application/json"));
+    if !is_json {
+        return response;
+    }
+    let status = response.status();
+    let (mut parts, body) = response.into_parts();
+    let bytes = match to_bytes(body, 1024 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => return Response::from_parts(parts, Body::empty()),
+    };
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    if let Ok(value) = serde_json::from_str::<Value>(&text) {
+        let already_anthropic = value.get("type").and_then(Value::as_str) == Some("error")
+            && value.get("error").is_some();
+        if already_anthropic {
+            return Response::from_parts(parts, Body::from(bytes));
+        }
+    }
+    let message = provider_error_message(&text)
+        .or_else(|| {
+            serde_json::from_str::<Value>(&text)
+                .ok()
+                .and_then(|value| {
+                    value_string(value.get("error").and_then(|error| error.get("message")))
+                        .or_else(|| value_string(value.get("message")))
+                })
+        })
+        .unwrap_or_else(|| default_error_message(status));
+    let payload = anthropic_error_value(status, &message);
+    let encoded = serde_json::to_vec(&payload).unwrap_or_else(|_| b"{}".to_vec());
+    parts.headers.remove(header::CONTENT_LENGTH);
+    parts
+        .headers
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    Response::from_parts(parts, Body::from(encoded))
+}
+
 
 fn anthropic_stream_from_response(response: &Value, requested_model: &str) -> String {
     let message = responses_to_anthropic(response, requested_model);
@@ -8421,6 +8643,19 @@ fn format_rfc3339_ms(value: u64) -> String {
         .unwrap_or_else(|| "1970-01-01T00:00:00.000Z".to_owned())
 }
 
+/// Classified `(type, code)` for a message-only deferred-job failure. The
+/// historical string `error` field stays for compatibility; the machine
+/// readable pair is exposed alongside it so clients do not have to
+/// pattern-match the message.
+fn job_error_classification(message: &str) -> (String, String) {
+    let value = normalize_provider_error_body(StatusCode::BAD_GATEWAY, message);
+    let error = value.get("error").cloned().unwrap_or(Value::Null);
+    (
+        value_string(error.get("type")).unwrap_or_else(|| "api_error".to_owned()),
+        value_string(error.get("code")).unwrap_or_else(|| "upstream_error".to_owned()),
+    )
+}
+
 fn public_job(job: &Job) -> Value {
     let mut value = json!({
         "object": "multivibe.job",
@@ -8437,6 +8672,11 @@ fn public_job(job: &Job) -> Value {
         "events_url": format!("/v1/jobs/{}/events", job.id),
         "error": job.error,
     });
+    if let Some(error) = job.error.as_deref() {
+        let (error_type, error_code) = job_error_classification(error);
+        value["error_type"] = Value::String(error_type);
+        value["error_code"] = Value::String(error_code);
+    }
     if let Some(deadline) = job.deadline_at {
         value["deadline"] = Value::String(format_rfc3339_ms(deadline));
     }
@@ -10268,9 +10508,19 @@ async fn get_job_result_handler(
     };
     if job.status != "succeeded" {
         if matches!(job.status.as_str(), "failed" | "cancelled" | "expired") {
+            let message = job
+                .error
+                .clone()
+                .unwrap_or_else(|| format!("job {}", job.status));
+            let (error_type, error_code) = job_error_classification(&message);
             return json_response(
                 StatusCode::GONE,
-                json!({"error": job.error.unwrap_or_else(|| format!("job {}", job.status))}),
+                json!({
+                    "error": message,
+                    "error_type": error_type,
+                    "error_code": error_code,
+                    "job": public_job(&job),
+                }),
             );
         }
         return json_response(
@@ -11493,6 +11743,10 @@ pub fn build_router(state: EdgeState) -> Router {
         .route("/internal/v1-edge/drain/status", get(drain_status_handler))
         .route("/internal/v1-edge/drain/begin", post(drain_begin_handler))
         .route("/internal/v1-edge/drain/resume", post(drain_resume_handler))
+        // Applied to every route so an Anthropic client receives the Anthropic
+        // error envelope even when the failure is raised before protocol
+        // conversion (authorization, routing, idempotency, upstream failure).
+        .layer(axum::middleware::from_fn(anthropic_error_envelope_layer))
         .fallback(fallback_handler)
         .with_state(state)
 }
@@ -16476,7 +16730,7 @@ mod context_length_tests {
 
     #[test]
     fn context_overflow_reply_keeps_provider_detail_under_a_stable_code() {
-        let value = context_length_error_value(VLLM_OVERFLOW);
+        let value = normalize_provider_error_body(StatusCode::BAD_REQUEST, VLLM_OVERFLOW);
         assert_eq!(value["error"]["code"], "context_length_exceeded");
         assert_eq!(value["error"]["type"], "invalid_request_error");
         assert_eq!(value["error"]["param"], Value::Null);
@@ -16502,14 +16756,16 @@ mod context_length_tests {
     }
 
     #[test]
-    fn context_overflow_falls_back_to_a_clear_message_without_provider_text() {
-        let value = context_length_error_value("");
-        assert_eq!(value["error"]["code"], "context_length_exceeded");
+    fn upstream_error_without_a_provider_body_still_gets_a_coded_envelope() {
+        let value = normalize_provider_error_body(StatusCode::BAD_GATEWAY, "<html>bad gateway</html>");
+        assert_eq!(value["error"]["code"], "server_error");
+        assert_eq!(value["error"]["type"], "api_error");
+        assert_eq!(value["error"]["param"], Value::Null);
         assert!(
             value["error"]["message"]
                 .as_str()
                 .unwrap()
-                .contains("maximum context length")
+                .contains("bad gateway")
         );
     }
 }
@@ -16630,5 +16886,303 @@ mod context_overflow_router_tests {
         upstream_task.abort();
         let _ = tokio::fs::remove_file(&store_path).await;
         let _ = tokio::fs::remove_file(&jobs_path).await;
+    }
+    #[tokio::test]
+    async fn every_failure_reaches_each_surface_in_its_own_envelope() {
+        let upstream = Router::new()
+            .route(
+                "/backend-api/codex/models",
+                get(|| async {
+                    Json(json!({"models": [{"slug": "gpt-filtered", "display_name": "GPT Filtered"}]}))
+                }),
+            )
+            .route(
+                "/backend-api/codex/responses",
+                post(|Json(body): Json<Value>| async move {
+                    if body.get("model").and_then(Value::as_str) == Some("gpt-filtered") {
+                        (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({
+                                "error": {
+                                    "message": "The response was filtered due to the prompt triggering the content management policy.",
+                                    "code": "content_filter"
+                                }
+                            })),
+                        )
+                    } else {
+                        (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({
+                                "error": {"message": OVERFLOW, "type": "invalid_request_error", "param": null, "code": null}
+                            })),
+                        )
+                    }
+                }),
+            );
+        let (upstream_url, upstream_task) = start(upstream).await;
+
+        let suffix = Uuid::new_v4().simple().to_string();
+        let store_path = std::env::temp_dir().join(format!("multivibe-envelope-{suffix}"));
+        let jobs_path = std::env::temp_dir().join(format!("multivibe-envelope-jobs-{suffix}"));
+        let store = StoreFile {
+            accounts: vec![Account {
+                id: "openai-1".to_owned(),
+                provider: Some("openai".to_owned()),
+                access_token: "upstream-token".to_owned(),
+                enabled: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        tokio::fs::write(&store_path, serde_json::to_vec(&store).unwrap())
+            .await
+            .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.chatgpt_base_url = upstream_url;
+        config.configured_api_keys = vec![("envelope-app".to_owned(), "envelope-key".to_owned())];
+        config.upstream_timeout = Duration::from_secs(5);
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start(build_router(state)).await;
+        let client = reqwest::Client::new();
+        let post = |path: &str| {
+            client
+                .post(format!("{edge_url}{path}"))
+                .header("authorization", "Bearer envelope-key")
+        };
+
+        // OpenAI surface: a non-overflow provider failure is coded.
+        let response = post("/chat/completions")
+            .json(&json!({"model": "gpt-filtered", "messages": [{"role": "user", "content": "hello"}]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "content_filter");
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(body["error"]["param"], Value::Null);
+
+        // Anthropic surface: the same failure keeps the Anthropic envelope.
+        let response = post("/messages")
+            .json(&json!({
+                "model": "gpt-filtered",
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hello"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["type"], "error");
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("filtered")
+        );
+
+        // Anthropic surface: a failure decided before the upstream call is also
+        // delivered in the Anthropic envelope.
+        let response = post("/messages")
+            .header("x-multivibe-execution", "defer")
+            .json(&json!({
+                "model": "gpt-filtered",
+                "max_tokens": 16,
+                "stream": true,
+                "messages": [{"role": "user", "content": "hello"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["type"], "error");
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("deferred")
+        );
+
+        edge_task.abort();
+        upstream_task.abort();
+        let _ = tokio::fs::remove_file(&store_path).await;
+        let _ = tokio::fs::remove_file(&jobs_path).await;
+    }
+}
+
+#[cfg(test)]
+mod provider_error_tests {
+    use super::*;
+
+    #[test]
+    fn thinking_mode_reasoning_rejection_gets_a_dedicated_code() {
+        let body = json!({
+            "error": {
+                "message": "The `reasoning_content` in the thinking mode must be passed back to the API.",
+                "type": "invalid_request_error"
+            }
+        })
+        .to_string();
+        let value = normalize_provider_error_body(StatusCode::BAD_REQUEST, &body);
+        assert_eq!(value["error"]["code"], "reasoning_content_required");
+        assert_eq!(value["error"]["type"], "invalid_request_error");
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("must be passed back")
+        );
+        assert!(is_reasoning_content_required_error(
+            "Missing `reasoning_content` field in the thinking mode"
+        ));
+        assert!(!is_reasoning_content_required_error("reasoning_content accepted"));
+    }
+
+    #[test]
+    fn provider_error_classes_map_to_documented_codes() {
+        let cases: &[(StatusCode, &str, &str, &str)] = &[
+            (
+                StatusCode::BAD_REQUEST,
+                r#"{"error":{"message":"The response was filtered due to the prompt triggering Azure OpenAI's content management policy.","code":"content_filter"}}"#,
+                "content_filter",
+                "invalid_request_error",
+            ),
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                r#"{"error":{"message":"You exceeded your current quota, please check your plan and billing details.","code":"insufficient_quota"}}"#,
+                "insufficient_quota",
+                "rate_limit_error",
+            ),
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                r#"{"error":{"message":"Rate limit reached for gpt-5 in organization org-x on requests per min."}}"#,
+                "rate_limit_exceeded",
+                "rate_limit_error",
+            ),
+            (
+                StatusCode::NOT_FOUND,
+                r#"{"error":{"message":"The model `gpt-nope` does not exist"}}"#,
+                "model_not_found",
+                "invalid_request_error",
+            ),
+            (
+                StatusCode::UNAUTHORIZED,
+                r#"{"error":{"message":"Incorrect API key provided"}}"#,
+                "upstream_error",
+                "authentication_error",
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                r#"{"error":{"message":"Invalid value for 'temperature'","code":"invalid_value"}}"#,
+                "invalid_value",
+                "invalid_request_error",
+            ),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "upstream overloaded",
+                "server_error",
+                "api_error",
+            ),
+        ];
+        for (status, body, code, error_type) in cases {
+            let value = normalize_provider_error_body(*status, body);
+            assert_eq!(value["error"]["code"], *code, "code for {body}");
+            assert_eq!(value["error"]["type"], *error_type, "type for {body}");
+            assert!(value["error"]["param"].is_null());
+            assert!(
+                value["error"]["message"]
+                    .as_str()
+                    .is_some_and(|message| !message.trim().is_empty()),
+                "message for {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn normalization_preserves_provider_fields_and_replaces_only_what_is_missing() {
+        let body = json!({
+            "error": {
+                "message": "Bad tool arguments",
+                "type": "invalid_request_error",
+                "code": "invalid_tool_arguments",
+                "param": "tools[0]",
+                "provider_detail": {"trace": "abc"}
+            }
+        })
+        .to_string();
+        let value = normalize_provider_error_body(StatusCode::BAD_REQUEST, &body);
+        assert_eq!(value["error"]["code"], "invalid_tool_arguments");
+        assert_eq!(value["error"]["param"], "tools[0]");
+        assert_eq!(value["error"]["provider_detail"]["trace"], "abc");
+
+        let anthropic = normalize_provider_error_body(
+            StatusCode::BAD_REQUEST,
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long"}}"#,
+        );
+        assert_eq!(anthropic["error"]["message"], "prompt is too long");
+        assert_eq!(anthropic["error"]["code"], "context_length_exceeded");
+    }
+
+    #[test]
+    fn deferred_job_failures_expose_a_classified_error() {
+        let (error_type, error_code) = job_error_classification(
+            "The `reasoning_content` in the thinking mode must be passed back to the API.",
+        );
+        assert_eq!(error_code, "reasoning_content_required");
+        assert_eq!(error_type, "invalid_request_error");
+
+        let job: Job = serde_json::from_value(json!({
+            "id": "job-1",
+            "application": "app",
+            "route": "/v1/chat/completions",
+            "request_body": {},
+            "status": "failed",
+            "priority": "batch",
+            "model": "MiniMax-M2.5",
+            "created_at": 0,
+            "updated_at": 0,
+            "not_before": 0,
+            "attempts": 1,
+            "error": "Rate limit reached for requests per min."
+        }))
+        .unwrap();
+        let value = public_job(&job);
+        assert_eq!(value["error"], "Rate limit reached for requests per min.");
+        assert_eq!(value["error_code"], "rate_limit_exceeded");
+        assert_eq!(value["error_type"], "rate_limit_error");
+    }
+
+    #[test]
+    fn anthropic_envelope_maps_status_to_the_documented_type() {
+        assert_eq!(
+            anthropic_error_value(StatusCode::UNAUTHORIZED, "nope")["error"]["type"],
+            "authentication_error"
+        );
+        assert_eq!(
+            anthropic_error_value(StatusCode::FORBIDDEN, "nope")["error"]["type"],
+            "permission_error"
+        );
+        assert_eq!(
+            anthropic_error_value(StatusCode::NOT_FOUND, "nope")["error"]["type"],
+            "not_found_error"
+        );
+        assert_eq!(
+            anthropic_error_value(StatusCode::TOO_MANY_REQUESTS, "slow down")["error"]["type"],
+            "rate_limit_error"
+        );
+        assert_eq!(
+            anthropic_error_value(StatusCode::BAD_GATEWAY, "boom")["error"]["type"],
+            "api_error"
+        );
+        assert_eq!(
+            anthropic_error_value(StatusCode::SERVICE_UNAVAILABLE, "busy")["error"]["type"],
+            "overloaded_error"
+        );
     }
 }

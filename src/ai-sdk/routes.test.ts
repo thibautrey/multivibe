@@ -107,3 +107,47 @@ test("SDK adapter reports an exhausted context window with a stable code", async
     responseBody: JSON.stringify({error: {message: overflow, type: "invalid_request_error", code: null}}),
   }));
 });
+
+test("SDK adapter labels every provider failure with a documented code", async () => {
+  const cases = [
+    {name: "thinking-mode reasoning", status: 400, body: {error: {message: "The `reasoning_content` in the thinking mode must be passed back to the API.", type: "invalid_request_error"}}, code: "reasoning_content_required", type: "invalid_request_error"},
+    {name: "context overflow", status: 400, body: {error: {message: "This model's maximum context length is 1048576 tokens."}}, code: "context_length_exceeded", type: "invalid_request_error"},
+    {name: "content filter", status: 400, body: {error: {message: "The response was filtered due to the prompt triggering the content management policy.", code: "content_filter"}}, code: "content_filter", type: "invalid_request_error"},
+    {name: "quota", status: 429, body: {error: {message: "You exceeded your current quota, please check your plan and billing details.", code: "insufficient_quota"}}, code: "insufficient_quota", type: "rate_limit_error"},
+    {name: "rate limit", status: 429, body: {error: {message: "Rate limit reached for requests per min."}}, code: "rate_limit_exceeded", type: "rate_limit_error"},
+    {name: "model not found", status: 404, body: {error: {message: "The model `gpt-nope` does not exist"}}, code: "model_not_found", type: "invalid_request_error"},
+    {name: "authentication", status: 401, body: {error: {message: "Incorrect API key provided"}}, code: "upstream_error", type: "authentication_error"},
+    {name: "upstream failure", status: 502, message: "socket hang up", code: "server_error", type: "api_error"},
+  ];
+  for (const entry of cases) {
+    await server(async (url) => {
+      const response = await fetch(`${url}/chat/completions`, {method: "POST", headers: auth, body: JSON.stringify({model: "anthropic/test", messages: [{role: "user", content: "Hi"}], stream: true})});
+      assert.equal(response.status, entry.status, entry.name);
+      const body = await response.json() as any;
+      assert.equal(body.error.code, entry.code, entry.name);
+      assert.equal(body.error.type, entry.type, entry.name);
+      assert.equal(body.error.param, null, entry.name);
+      assert.ok(typeof body.error.message === "string" && body.error.message.length > 0, entry.name);
+    }, Object.assign(new Error(entry.message ?? "request failed"), entry.body === undefined ? {statusCode: entry.status} : {statusCode: entry.status, responseBody: JSON.stringify(entry.body)}));
+  }
+});
+
+test("SDK adapter preserves provider error fields and labels its own input errors", async () => {
+  await server(async (url) => {
+    const response = await fetch(`${url}/chat/completions`, {method: "POST", headers: auth, body: JSON.stringify({model: "anthropic/test", messages: [{role: "user", content: "Hi"}], stream: true})});
+    assert.equal(response.status, 400);
+    const body = await response.json() as any;
+    assert.equal(body.error.code, "invalid_tool_arguments");
+    assert.equal(body.error.param, "tools[0]");
+    assert.equal(body.error.provider_detail.trace, "abc");
+  }, Object.assign(new Error("request failed"), {statusCode: 400, responseBody: JSON.stringify({error: {message: "Bad tool arguments", type: "invalid_request_error", code: "invalid_tool_arguments", param: "tools[0]", provider_detail: {trace: "abc"}}})}));
+
+  await server(async (url) => {
+    const response = await fetch(`${url}/chat/completions`, {method: "POST", headers: auth, body: JSON.stringify({model: "anthropic/test", messages: []})});
+    assert.equal(response.status, 400);
+    const body = await response.json() as any;
+    assert.equal(body.error.type, "invalid_request_error");
+    assert.equal(body.error.code, "invalid_request_error");
+    assert.equal(body.error.param, null);
+  });
+});
