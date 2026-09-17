@@ -90,3 +90,20 @@ test("SDK adapter lists models discovered from the provider and survives discove
     assert.deepEqual(catalog.data.map((model: any) => model.id), ["anthropic/test"]);
   }, undefined, {snapshot: async () => { throw new Error("provider discovery exploded"); }});
 });
+
+test("SDK adapter reports an exhausted context window with a stable code", async () => {
+  const overflow = "This model's maximum context length is 1048576 tokens. However, you requested 1373993 tokens (1373993 in the messages, 0 in the completion). Please reduce the length of the messages or completion.";
+  await server(async (url) => {
+    const response = await fetch(`${url}/chat/completions`, {method: "POST", headers: auth, body: JSON.stringify({model: "anthropic/test", messages: [{role: "user", content: "Hi"}], stream: true})});
+    assert.equal(response.status, 400);
+    const body = await response.json() as any;
+    assert.equal(body.error.code, "context_length_exceeded");
+    assert.equal(body.error.type, "invalid_request_error");
+    assert.equal(body.error.param, null);
+    assert.equal(body.error.message, overflow);
+    assert.doesNotMatch(JSON.stringify(body), /provider-secret|authorization/i);
+  }, Object.assign(new Error("request failed"), {
+    statusCode: 400,
+    responseBody: JSON.stringify({error: {message: overflow, type: "invalid_request_error", code: null}}),
+  }));
+});

@@ -30,6 +30,39 @@ function providerErrorMessage(error: unknown, status: number): string {
   return `Provider request failed (${status})`;
 }
 
+const CONTEXT_LENGTH_SIGNATURES = [
+  // vLLM and OpenAI-compatible runtimes (Together, Fireworks, DeepInfra).
+  "maximum context length",
+  "reduce the length of the messages",
+  // OpenAI.
+  "context_length_exceeded",
+  // Anthropic.
+  "prompt is too long",
+  // Ollama and llama.cpp local runtimes.
+  "available context size",
+  // Gateways and other providers.
+  "context length exceeded",
+  "context window exceeded",
+  "too many tokens",
+  "input is too long",
+  "exceeds the maximum context",
+];
+
+// A request that exceeded the model's context window is recoverable: agent
+// clients compact or trim the conversation when they see this signal, so it
+// must stay detectable instead of collapsing into a generic provider_error.
+function isContextLengthError(status: number, message: string): boolean {
+  // Only the statuses a runtime uses for an oversized request. A 429 is a rate
+  // limit even when the body happens to mention context, and auth or not-found
+  // errors must never be relabeled as an overflow.
+  if (status !== 400 && status !== 413 && status !== 422) return false;
+  const text = message.toLowerCase();
+  return (
+    CONTEXT_LENGTH_SIGNATURES.some((signature) => text.includes(signature)) ||
+    (text.includes("input token count") && text.includes("exceed"))
+  );
+}
+
 export function createSdkAdapterRouter(options: {
   store: { listAccounts(): Promise<Account[]> };
   internalToken: string;
@@ -106,7 +139,10 @@ export function createSdkAdapterRouter(options: {
     } catch (error: any) {
       if (res.destroyed) return;
       const status = error instanceof SdkInputError ? 400 : Number.isInteger(error?.statusCode) && error.statusCode >= 400 && error.statusCode <= 599 ? error.statusCode : controller.signal.aborted ? 504 : 502;
-      const body = {error: {message: error instanceof SdkInputError ? error.message : providerErrorMessage(error, status), type: status === 429 ? "rate_limit_error" : "provider_error"}};
+      const message = error instanceof SdkInputError ? error.message : providerErrorMessage(error, status);
+      const body = isContextLengthError(status, message)
+        ? {error: {message, type: "invalid_request_error", param: null, code: "context_length_exceeded"}}
+        : {error: {message, type: status === 429 ? "rate_limit_error" : "provider_error"}};
       if (res.headersSent) res.end(`data: ${JSON.stringify(body)}\n\n`);
       else res.status(status).json(body);
     } finally {

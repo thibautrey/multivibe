@@ -5148,6 +5148,83 @@ fn prepared_payload(
     payload
 }
 
+/// Machine-detectable signal for a request that exceeded the model's context
+/// window. Runtimes phrase this differently (vLLM, OpenAI, Anthropic, Google,
+/// Ollama), so match stable substrings instead of one exact sentence. Clients
+/// such as Codex use this signal to compact or trim the conversation, which is
+/// why the reply must carry a stable error code rather than a raw provider
+/// string that happens to be human-readable.
+fn is_context_length_error(status: StatusCode, body: &str) -> bool {
+    // Only the statuses a runtime uses for an oversized request. A 429 is a
+    // rate limit even when the body happens to mention context, and auth or
+    // not-found errors must never be relabeled as an overflow.
+    if !matches!(
+        status,
+        StatusCode::BAD_REQUEST
+            | StatusCode::PAYLOAD_TOO_LARGE
+            | StatusCode::UNPROCESSABLE_ENTITY
+    ) {
+        return false;
+    }
+    let body = body.to_ascii_lowercase();
+    const SIGNATURES: &[&str] = &[
+        // vLLM and OpenAI-compatible runtimes (Together, Fireworks, DeepInfra).
+        "maximum context length",
+        "reduce the length of the messages",
+        // OpenAI.
+        "context_length_exceeded",
+        // Anthropic.
+        "prompt is too long",
+        // Ollama and llama.cpp local runtimes.
+        "available context size",
+        // Gateways and other providers.
+        "context length exceeded",
+        "context window exceeded",
+        "too many tokens",
+        "input is too long",
+        "exceeds the maximum context",
+    ];
+    SIGNATURES.iter().any(|signature| body.contains(signature))
+        // Google / Vertex reports the requested and the allowed token counts.
+        || (body.contains("input token count") && body.contains("exceed"))
+}
+
+/// Best-effort human-readable upstream error, used when MultiVibe rewrites a
+/// provider error into its own envelope. Falls back to a bounded raw body.
+fn provider_error_message(body: &str) -> Option<String> {
+    if let Ok(value) = serde_json::from_str::<Value>(body) {
+        let error = value.get("error");
+        for candidate in [
+            error.and_then(|error| error.get("message")).and_then(Value::as_str),
+            error.and_then(Value::as_str),
+            value.get("message").and_then(Value::as_str),
+        ] {
+            if let Some(message) = candidate.filter(|message| !message.trim().is_empty()) {
+                return Some(message.trim().chars().take(500).collect());
+            }
+        }
+    }
+    let trimmed = body.trim();
+    (!trimmed.is_empty()).then(|| trimmed.chars().take(500).collect())
+}
+
+/// Canonical OpenAI-shaped reply for an exhausted context window. The
+/// `context_length_exceeded` code is the contract clients key off, so keep the
+/// provider's explanation in `message` while normalizing the envelope.
+fn context_length_error_value(body: &str) -> Value {
+    let message = provider_error_message(body).unwrap_or_else(|| {
+        "The request exceeds the model's maximum context length. Reduce the length of the messages or completion and try again.".to_owned()
+    });
+    json!({
+        "error": {
+            "message": message,
+            "type": "invalid_request_error",
+            "param": Value::Null,
+            "code": "context_length_exceeded",
+        }
+    })
+}
+
 fn is_quota_error(status: StatusCode, body: &str) -> bool {
     status == StatusCode::TOO_MANY_REQUESTS
         || body.to_ascii_lowercase().contains("quota")
@@ -5865,6 +5942,12 @@ async fn proxy_inference(
                         let body = if path.ends_with("/messages") {
                             serde_json::to_vec(&anthropic_error_value(status, &text))
                                 .unwrap_or_else(|_| b"{}".to_vec())
+                        } else if is_context_length_error(status, &text) {
+                            // Normalize provider-specific overflow wording into the
+                            // documented OpenAI error so clients can detect it and
+                            // compact the conversation instead of failing the turn.
+                            serde_json::to_vec(&context_length_error_value(&text))
+                                .unwrap_or_else(|_| bytes.to_vec())
                         } else {
                             bytes.to_vec()
                         };
@@ -16347,5 +16430,205 @@ mod team_provider_policy_tests {
         let before = catalog_signature(&store, &config);
         store.accounts[0].multivibe_team.as_mut().unwrap().models.clear();
         assert_ne!(before, catalog_signature(&store, &config));
+    }
+}
+
+#[cfg(test)]
+mod context_length_tests {
+    use super::*;
+
+    const VLLM_OVERFLOW: &str = "This model's maximum context length is 1048576 tokens. However, you requested 1373993 tokens (1373993 in the messages, 0 in the completion). Please reduce the length of the messages or completion.";
+
+    #[test]
+    fn context_overflow_is_detected_across_provider_wording() {
+        let body =
+            json!({"error": {"message": VLLM_OVERFLOW, "type": "invalid_request_error"}}).to_string();
+        assert!(is_context_length_error(StatusCode::BAD_REQUEST, &body));
+
+        for message in [
+            "This model's maximum context length is 200000 tokens.",
+            "prompt is too long: 1373993 tokens > 200000 maximum",
+            "exceeds the available context size",
+            "Maximum context length exceeded",
+            "Input is too long for requested model",
+            "Prompt contains too many tokens",
+            "The input token count (1373993) exceeds the maximum number of tokens allowed (1048576).",
+        ] {
+            assert!(
+                is_context_length_error(StatusCode::BAD_REQUEST, message),
+                "expected context overflow detection for {message:?}"
+            );
+        }
+
+        assert!(!is_context_length_error(
+            StatusCode::BAD_REQUEST,
+            "Invalid tool message sequence"
+        ));
+        assert!(!is_context_length_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            VLLM_OVERFLOW
+        ));
+        assert!(!is_context_length_error(
+            StatusCode::BAD_GATEWAY,
+            VLLM_OVERFLOW
+        ));
+    }
+
+    #[test]
+    fn context_overflow_reply_keeps_provider_detail_under_a_stable_code() {
+        let value = context_length_error_value(VLLM_OVERFLOW);
+        assert_eq!(value["error"]["code"], "context_length_exceeded");
+        assert_eq!(value["error"]["type"], "invalid_request_error");
+        assert_eq!(value["error"]["param"], Value::Null);
+        assert_eq!(value["error"]["message"], VLLM_OVERFLOW);
+    }
+
+    #[test]
+    fn provider_error_message_extracts_and_bounds_upstream_detail() {
+        assert_eq!(
+            provider_error_message(r#"{"error":{"message":"boom"}}"#).as_deref(),
+            Some("boom")
+        );
+        assert_eq!(
+            provider_error_message(r#"{"error":"boom"}"#).as_deref(),
+            Some("boom")
+        );
+        assert_eq!(provider_error_message("   "), None);
+        let long = "x".repeat(900);
+        assert_eq!(
+            provider_error_message(&long).map(|message| message.chars().count()),
+            Some(500)
+        );
+    }
+
+    #[test]
+    fn context_overflow_falls_back_to_a_clear_message_without_provider_text() {
+        let value = context_length_error_value("");
+        assert_eq!(value["error"]["code"], "context_length_exceeded");
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("maximum context length")
+        );
+    }
+}
+
+#[cfg(test)]
+mod context_overflow_router_tests {
+    use super::*;
+    use axum::{
+        Json, Router,
+        routing::{get, post},
+    };
+    use std::time::Duration;
+    use tokio::net::TcpListener;
+    use uuid::Uuid;
+
+    const OVERFLOW: &str = "This model's maximum context length is 1048576 tokens. However, you requested 1373993 tokens (1373993 in the messages, 0 in the completion). Please reduce the length of the messages or completion.";
+
+    async fn start(router: Router) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        tokio::task::yield_now().await;
+        (format!("http://{address}"), task)
+    }
+
+    #[tokio::test]
+    async fn upstream_context_overflow_reaches_openai_clients_as_a_stable_code() {
+        let upstream = Router::new()
+            .route(
+                "/backend-api/codex/models",
+                get(|| async {
+                    Json(json!({"models": [{"slug": "gpt-overflow", "display_name": "GPT Overflow"}]}))
+                }),
+            )
+            .route(
+                "/backend-api/codex/responses",
+                post(|| async {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "error": {
+                                "message": OVERFLOW,
+                                "type": "invalid_request_error",
+                                "param": null,
+                                "code": null
+                            }
+                        })),
+                    )
+                }),
+            );
+        let (upstream_url, upstream_task) = start(upstream).await;
+
+        let suffix = Uuid::new_v4().simple().to_string();
+        let store_path = std::env::temp_dir().join(format!("multivibe-overflow-{suffix}"));
+        let jobs_path = std::env::temp_dir().join(format!("multivibe-overflow-jobs-{suffix}"));
+        let store = StoreFile {
+            accounts: vec![Account {
+                id: "openai-1".to_owned(),
+                provider: Some("openai".to_owned()),
+                access_token: "upstream-token".to_owned(),
+                enabled: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        tokio::fs::write(&store_path, serde_json::to_vec(&store).unwrap())
+            .await
+            .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.chatgpt_base_url = upstream_url;
+        config.configured_api_keys = vec![("overflow-app".to_owned(), "overflow-key".to_owned())];
+        config.upstream_timeout = Duration::from_secs(5);
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start(build_router(state)).await;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("{edge_url}/chat/completions"))
+            .header("authorization", "Bearer overflow-key")
+            .json(&json!({"model": "gpt-overflow", "messages": [{"role": "user", "content": "hello"}]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "context_length_exceeded");
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(body["error"]["message"], OVERFLOW);
+
+        // The Anthropic surface keeps its own envelope but stays a 400.
+        let response = client
+            .post(format!("{edge_url}/messages"))
+            .header("authorization", "Bearer overflow-key")
+            .json(&json!({
+                "model": "gpt-overflow",
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hello"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["type"], "error");
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("maximum context length")
+        );
+
+        edge_task.abort();
+        upstream_task.abort();
+        let _ = tokio::fs::remove_file(&store_path).await;
+        let _ = tokio::fs::remove_file(&jobs_path).await;
     }
 }
