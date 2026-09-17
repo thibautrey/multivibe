@@ -13,9 +13,13 @@ import { QWEN_MODELS } from "./qwen-provider.js";
 import { MANUS_MODELS } from "./manus-provider.js";
 import { CLOUD_PLATFORM_CATALOGS } from "./cloud-platforms.js";
 import type { LiveModelCatalogSnapshot } from "./live-model-catalog.js";
+import type { ModelsDevCatalog } from "./models-dev-catalog.js";
 
 export type SdkCatalogModel = { id: string; name: string; context?: number; output?: number; tools?: boolean; reasoning?: boolean; input: string[]; cost?: Record<string, number> };
 export type SdkCatalog = { source: string; fetchedAt: string; models: Record<string, SdkCatalogModel[]> };
+
+/** Runtime models.dev lookups only; the full catalog holds disk/network state. */
+export type ModelsDevLookup = Pick<ModelsDevCatalog, "catalogFor">;
 
 const REVIEWED_CATALOGS: Record<string, SdkCatalog> = {
   ...CLOUD_PLATFORM_CATALOGS,
@@ -32,24 +36,34 @@ const REVIEWED_CATALOGS: Record<string, SdkCatalog> = {
   "minimax-coding": { source: "https://platform.minimax.io/docs/api-reference/text-openai-api", fetchedAt: "2026-09-09T00:00:00.000Z", models: { "minimax-coding": [...MINIMAX_MODELS] } },
 };
 
-function catalogForProvider(id: string) {
-  return REVIEWED_CATALOGS[id] ?? SDK_CATALOG;
+function catalogForProvider(id: string, modelsDev?: ModelsDevLookup): SdkCatalog {
+  const runtime = modelsDev?.catalogFor(id);
+  if (runtime?.models.length) {
+    return { source: runtime.source, fetchedAt: runtime.fetchedAt, models: { [id]: runtime.models } };
+  }
+  const reviewed = REVIEWED_CATALOGS[id] ?? SDK_CATALOG;
+  return { source: reviewed.source, fetchedAt: reviewed.fetchedAt, models: { [id]: reviewed.models[id] ?? [] } };
 }
 
-export function sdkProviderCatalog() {
+export function sdkProviderCatalog(modelsDev?: ModelsDevLookup) {
   return { source: SDK_CATALOG.source, fetchedAt: SDK_CATALOG.fetchedAt,
-    providers: SDK_PROVIDERS.map(({ id, name, endpointPlaceholder, endpointRequired, credentialLabel, requiresModelSelection }) => ({ id, name, endpointPlaceholder, endpointRequired, credentialLabel, requiresModelSelection, source: catalogForProvider(id).source, fetchedAt: catalogForProvider(id).fetchedAt, models: catalogForProvider(id).models[id] ?? [] })) };
+    providers: SDK_PROVIDERS.map(({ id, name, endpointPlaceholder, endpointRequired, credentialLabel, requiresModelSelection, modelsPath }) => {
+      const catalog = catalogForProvider(id, modelsDev);
+      return { id, name, endpointPlaceholder, endpointRequired, credentialLabel, requiresModelSelection, liveDiscovery: Boolean(modelsPath), source: catalog.source, fetchedAt: catalog.fetchedAt, models: catalog.models[id] ?? [] };
+    }) };
 }
 
-export function sdkAccountModels(account: Account, live?: LiveModelCatalogSnapshot) {
+export function sdkAccountModels(account: Account, live?: LiveModelCatalogSnapshot, modelsDev?: ModelsDevLookup) {
   const provider = sdkProvider(account.sdkProvider);
   if (!provider) return [];
-  const metadata = catalogForProvider(provider.id);
+  const metadata = catalogForProvider(provider.id, modelsDev);
   const catalog = metadata.models[provider.id] ?? [];
   const known = new Map(catalog.map((model) => [model.id.toLowerCase(), model]));
-  // A successful provider /models response decides which ids exist; the
-  // reviewed snapshot still supplies display metadata for the ids it knows and
-  // stays authoritative when discovery is unavailable.
+  // A successful provider /models response is authoritative for existence: it
+  // reflects current ids and retirements, while reviewed metadata can keep
+  // listing legacy aliases. The reviewed catalog still supplies display
+  // metadata for discovered ids and stays authoritative when discovery is
+  // unavailable.
   const discovered = live && live.ids.length ? live : undefined;
   const listed: SdkCatalogModel[] = discovered
     ? discovered.ids.map((id) => known.get(id.toLowerCase()) ?? { id, name: id, input: ["text"] })

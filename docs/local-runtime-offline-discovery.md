@@ -25,6 +25,16 @@ Equivalent IPv6-loopback endpoints are also probed. Responses are size- and
 time-bounded, and only the declared origin and known inference paths can be
 used afterward.
 
+## Model names exposed to clients
+
+Models served by a local runtime are exposed with a runtime-prefixed catalog
+id, for example `omlx/Qwen3.8-27B-4bit` or `lm-studio/qwen3:4b`. The prefix is
+the runtime adapter and keeps the model list unambiguous across runtimes: a
+model exposed by several runtimes is listed once per runtime, and each entry is
+routed to the runtime that exposes it. The runtime upstream keeps receiving its
+own bare model id, and the unprefixed id remains accepted on input for
+backward compatibility.
+
 ## Stopped runtimes
 
 When an API is stopped, MultiVibe can still configure a provider if it finds

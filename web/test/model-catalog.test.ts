@@ -26,9 +26,41 @@ test('unrelated custom endpoints do not unlock models and expired authentication
 test('local discovery requires no cloud provider and SDK candidates retain namespaced IDs', () => {
   const result = aggregateModels([], [{ id: 'local', enabled: true, localRuntime: { source: 'multivibe-local-discovery', adapter: 'ollama', endpoint: 'http://localhost:11434', authentication: 'none', confirmedModelIds: ['qwen:latest'] } }], [],
     [{ id: 'anthropic', name: 'Anthropic', models: [{ id: 'claude', name: 'Claude' }] }]);
-  assert.equal(result.find(model => model.id === 'qwen:latest')?.routes[0].ready, true);
+  assert.equal(result.find(model => model.id === 'ollama/qwen:latest')?.routes[0].ready, true);
   assert.equal(result.find(model => model.id === 'anthropic/claude')?.routes[0].sdkProvider, 'anthropic');
   assert.equal(result.find(model => model.id === 'anthropic/claude')?.logo, 'anthropic.svg');
+});
+
+test('provider display names label models without changing their routable id', () => {
+  const [model] = aggregateModels(
+    [{ id: 'deepseek/deepseek-flash', name: 'DeepSeek V4.1 Flash', metadata: { account_ids: ['deepseek'] } }],
+    [{ id: 'deepseek', provider: 'ai-sdk', sdkProvider: 'deepseek', enabled: true }],
+    [], []);
+  assert.equal(model.name, 'DeepSeek V4.1 Flash');
+  assert.equal(model.id, 'deepseek/deepseek-flash');
+  assert.equal(model.routes[0].modelId, 'deepseek/deepseek-flash');
+});
+
+test('runtime-prefixed local models keep their runtime label and account route', () => {
+  const result = aggregateModels(
+    [{
+      id: 'omlx/Qwen3.8-27B-4bit',
+      metadata: {
+        provider: 'openai-compatible',
+        provider_candidates: ['openai-compatible'],
+        account_ids: ['local-runtime-omlx'],
+        runtime: 'omlx',
+        upstream_model_id: 'Qwen3.8-27B-4bit',
+      },
+    }],
+    [{ id: 'local-runtime-omlx', provider: 'openai-compatible', enabled: true, localRuntime: { source: 'multivibe-local-discovery', adapter: 'omlx', endpoint: 'http://127.0.0.1:8000', authentication: 'none', confirmedModelIds: ['Qwen3.8-27B-4bit'] } }],
+    [], []);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].id, 'omlx/Qwen3.8-27B-4bit');
+  assert.equal(result[0].routes.length, 1);
+  assert.equal(result[0].routes[0].source, 'local');
+  assert.equal(result[0].routes[0].label, 'omlx');
+  assert.equal(result[0].routes[0].ready, true);
 });
 
 test('model logos use canonical authors, known aliases, and provider metadata with a safe fallback', () => {

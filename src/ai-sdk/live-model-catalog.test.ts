@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { LiveModelCatalog, isNonChatProviderModelId } from "./live-model-catalog.js";
 import { sdkAccountModels } from "./catalog.js";
 import type { Account } from "../types.js";
@@ -138,11 +141,57 @@ test("does not call a provider without a reviewed models endpoint", async () => 
     fetch: (async () => { calls++; return providerResponse(["anything"]); }) as typeof fetch,
     blockingBudgetMs: 500,
   });
-  const anthropic: Account = { id: "anthropic", provider: "ai-sdk", sdkProvider: "anthropic", accessToken: "key", enabled: true };
-  assert.equal(await catalog.snapshot(anthropic), undefined);
-  assert.equal(await catalog.snapshot({ ...anthropic, accessToken: "" }), undefined);
-  assert.equal(await catalog.snapshot({ ...anthropic, provider: "openai-compatible" }), undefined);
+  const mammouth: Account = { id: "mammouth", provider: "ai-sdk", sdkProvider: "mammouth", accessToken: "key", enabled: true };
+  assert.equal(await catalog.snapshot(mammouth), undefined);
+  assert.equal(await catalog.snapshot({ ...mammouth, accessToken: "" }), undefined);
+  assert.equal(await catalog.snapshot({ ...mammouth, provider: "openai-compatible" }), undefined);
   assert.equal(calls, 0);
+});
+
+test("follows Anthropic cursor pagination with the reviewed version header", async () => {
+  const requested: { url: string; headers: Headers }[] = [];
+  const catalog = new LiveModelCatalog({
+    fetch: (async (input, init) => {
+      const url = String(input);
+      requested.push({ url, headers: new Headers(init?.headers) });
+      if (url.endsWith("after_id=claude-a")) {
+        return Response.json({ data: [{ id: "claude-b" }], has_more: false, last_id: "claude-b" });
+      }
+      return Response.json({ data: [{ id: "claude-a" }], has_more: true, last_id: "claude-a" });
+    }) as typeof fetch,
+    blockingBudgetMs: 500,
+  });
+  const account: Account = { id: "anthropic", provider: "ai-sdk", sdkProvider: "anthropic", accessToken: "sk-ant-secret", enabled: true };
+  const snapshot = await catalog.snapshot(account);
+  assert.deepEqual(snapshot?.ids, ["claude-a", "claude-b"]);
+  assert.equal(requested.length, 2);
+  assert.equal(requested[0].url, "https://api.anthropic.com/v1/models");
+  assert.equal(requested[0].headers.get("authorization"), "Bearer sk-ant-secret");
+  assert.equal(requested[0].headers.get("anthropic-version"), "2023-06-01");
+  assert.equal(requested[1].url, "https://api.anthropic.com/v1/models?after_id=claude-a");
+});
+
+test("lists Google models with page tokens and the API-key header", async () => {
+  const requested: { url: string; headers: Headers }[] = [];
+  const catalog = new LiveModelCatalog({
+    fetch: (async (input, init) => {
+      const url = String(input);
+      requested.push({ url, headers: new Headers(init?.headers) });
+      if (url.includes("pageToken=page-2")) {
+        return Response.json({ models: [{ name: "models/gemini-3-flash" }, { name: "models/text-embedding-005" }] });
+      }
+      return Response.json({ models: [{ name: "models/gemini-3-pro" }], nextPageToken: "page-2" });
+    }) as typeof fetch,
+    blockingBudgetMs: 500,
+  });
+  const account: Account = { id: "google", provider: "ai-sdk", sdkProvider: "google", accessToken: "google-secret", enabled: true };
+  const snapshot = await catalog.snapshot(account);
+  assert.deepEqual(snapshot?.ids, ["gemini-3-flash", "gemini-3-pro"]);
+  assert.equal(requested.length, 2);
+  assert.equal(requested[0].url, "https://generativelanguage.googleapis.com/v1beta/models");
+  assert.equal(requested[0].headers.get("x-goog-api-key"), "google-secret");
+  assert.equal(requested[0].headers.get("authorization"), null);
+  assert.equal(requested[1].url, "https://generativelanguage.googleapis.com/v1beta/models?pageToken=page-2");
 });
 
 test("refreshes when the account credential changes", async () => {
@@ -161,6 +210,7 @@ test("merges discovered ids with reviewed metadata and keeps an explicit selecti
   const account = deepseekAccount();
   const snapshot = { ids: ["deepseek-v4-flash", "deepseek-flash"], source: "https://api.deepseek.com/models", fetchedAt: "2026-09-14T10:00:00.000Z", stale: false };
   const models = sdkAccountModels(account, snapshot);
+  // The provider list is authoritative: reviewed ids it omits are not shown.
   assert.deepEqual(models.map((model) => model.id), ["deepseek/deepseek-v4-flash", "deepseek/deepseek-flash"]);
   assert.equal(models[0].catalog_source, "https://api.deepseek.com/models");
   assert.equal(models[0].catalog_fetched_at, "2026-09-14T10:00:00.000Z");
@@ -177,4 +227,40 @@ test("merges discovered ids with reviewed metadata and keeps an explicit selecti
   const reviewed = sdkAccountModels(account);
   assert.equal(reviewed[0].catalog_source, "https://models.dev/api.json");
   assert.deepEqual(reviewed.map((model) => model.id), ["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash-vision-exp", "deepseek/deepseek-v4-pro"]);
+});
+
+test("persists the last successful provider list and reloads it after a restart", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "multivibe-live-catalog-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const cachePath = path.join(root, "live-model-catalog.json");
+  const first = new LiveModelCatalog({
+    fetch: (async () => providerResponse(["deepseek-v4-pro", "deepseek-flash"])) as typeof fetch,
+    blockingBudgetMs: 500,
+    cachePath,
+  });
+  await first.snapshot(deepseekAccount());
+  const stored = JSON.parse(await readFile(cachePath, "utf8"));
+  assert.equal(stored.version, 1);
+  assert.deepEqual(stored.accounts.deepseek.ids, ["deepseek-flash", "deepseek-v4-pro"]);
+  assert.equal(typeof stored.accounts.deepseek.signature, "string");
+
+  let calls = 0;
+  const second = new LiveModelCatalog({
+    fetch: (async () => { calls++; return providerResponse(["something-else"]); }) as typeof fetch,
+    blockingBudgetMs: 0,
+    cachePath,
+  });
+  const snapshot = await second.snapshot(deepseekAccount());
+  assert.deepEqual(snapshot?.ids, ["deepseek-flash", "deepseek-v4-pro"]);
+  assert.equal(snapshot?.stale, true, "a persisted list is revalidated, not trusted forever");
+  await waitFor(() => calls === 1);
+
+  // A rotated credential invalidates the persisted signature instead of reusing it.
+  const third = new LiveModelCatalog({
+    fetch: (async () => providerResponse(["rotated-model"])) as typeof fetch,
+    blockingBudgetMs: 500,
+    cachePath,
+  });
+  const rotated = await third.snapshot({ ...deepseekAccount(), accessToken: "rotated-secret" });
+  assert.deepEqual(rotated?.ids, ["rotated-model"]);
 });

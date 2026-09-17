@@ -6,6 +6,7 @@ import type { Account } from "../types.js";
 import { sdkAccountModels, sdkModelId } from "./catalog.js";
 import { LiveModelCatalog } from "./live-model-catalog.js";
 import type { LiveModelCatalogSource } from "./live-model-catalog.js";
+import type { ModelsDevCatalog } from "./models-dev-catalog.js";
 import { createSdkModel } from "./models.js";
 import { SdkInputError, sdkCallOptions, chatResult, chatStream } from "./protocol.js";
 
@@ -34,6 +35,7 @@ export function createSdkAdapterRouter(options: {
   internalToken: string;
   createModel?: (account: Account, model: string) => LanguageModelV4;
   liveModelCatalog?: LiveModelCatalogSource;
+  modelsDevCatalog?: ModelsDevCatalog;
 }) {
   const router = express.Router();
   router.use((req, res, next) => {
@@ -63,7 +65,12 @@ export function createSdkAdapterRouter(options: {
       // reviewed snapshot instead of failing the listing.
       live = undefined;
     }
-    res.json({object: "list", data: sdkAccountModels(account, live)});
+    try {
+      await options.modelsDevCatalog?.ensure();
+    } catch {
+      // Runtime metadata is optional; the bundled snapshot stays authoritative.
+    }
+    res.json({object: "list", data: sdkAccountModels(account, live, options.modelsDevCatalog)});
   });
   router.post("/:accountId/v1/chat/completions", async (req, res) => {
     const controller = new AbortController();

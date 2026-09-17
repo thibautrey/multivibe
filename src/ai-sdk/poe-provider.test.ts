@@ -8,6 +8,7 @@ test("Poe uses its documented OpenAI-compatible endpoint", () => {
     name: "Poe",
     adapter: "compatible",
     baseURL: "https://api.poe.com/v1",
+    modelsDevId: "poe",
   });
   assert.equal(POE_CATALOG_SOURCE,
     "https://creator.poe.com/docs/external-applications/openai-compatible-api");

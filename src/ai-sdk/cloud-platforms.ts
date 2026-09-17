@@ -3,13 +3,13 @@ import type { SdkCatalog } from "./catalog.js";
 
 export const CLOUD_PLATFORM_PROVIDERS: readonly SdkProviderDefinition[] = [
   { id: "bedrock", name: "AWS Bedrock", adapter: "compatible", baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1",
-    credentialLabel: "Amazon Bedrock API key", endpointPlaceholder: "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1" },
+    credentialLabel: "Amazon Bedrock API key", endpointPlaceholder: "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1", modelsDevId: "amazon-bedrock" },
   { id: "azure-foundry", name: "Azure AI Foundry", adapter: "compatible", baseURL: "", endpointRequired: true,
-    endpointPlaceholder: "https://YOUR-RESOURCE.openai.azure.com/openai/v1", requiresModelSelection: true, credentialLabel: "Foundry resource API key" },
+    endpointPlaceholder: "https://YOUR-RESOURCE.openai.azure.com/openai/v1", requiresModelSelection: true, credentialLabel: "Foundry resource API key", modelsDevId: "azure" },
   { id: "vertex-express", name: "Google Vertex AI (Express)", adapter: "google", baseURL: "https://aiplatform.googleapis.com/v1/publishers/google",
-    credentialLabel: "Vertex AI Express API key" },
+    credentialLabel: "Vertex AI Express API key", modelsDevId: "google-vertex" },
   { id: "cloudflare", name: "Cloudflare Workers AI", adapter: "compatible", baseURL: "", endpointRequired: true,
-    endpointPlaceholder: "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_ID/ai/v1", credentialLabel: "Cloudflare API token" },
+    endpointPlaceholder: "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_ID/ai/v1", credentialLabel: "Cloudflare API token", modelsDevId: "cloudflare-workers-ai" },
 ];
 
 const reviewed = (source: string, id: string, models: string[]): SdkCatalog => ({ source, fetchedAt: "2026-09-09T00:00:00.000Z",

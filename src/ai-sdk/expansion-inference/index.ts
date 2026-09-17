@@ -1,6 +1,7 @@
 import type { Account, UsageSnapshot } from "../../types.js";
+import type { SdkProviderDiscoveryMetadata } from "../provider-definition.js";
 
-export type ExpansionInferenceProvider = {
+export type ExpansionInferenceProvider = SdkProviderDiscoveryMetadata & {
   id: string;
   name: string;
   adapter: "compatible" | "anthropic";
@@ -34,16 +35,16 @@ export type ExpansionInferenceAccess = {
 // Reviewed against the linked provider documentation on 2026-09-09. These are
 // hosted API roots, not self-hosted NIM or model-specific deployment URLs.
 export const PROVIDERS: ExpansionInferenceProvider[] = [
-  { id: "fireworks", name: "Fireworks AI", adapter: "compatible", baseURL: "https://api.fireworks.ai/inference/v1" },
-  { id: "deepinfra", name: "DeepInfra", adapter: "compatible", baseURL: "https://api.deepinfra.com/v1/openai" },
-  { id: "nebius", name: "Nebius AI Studio", adapter: "compatible", baseURL: "https://api.studio.nebius.ai/v1" },
-  { id: "sambanova", name: "SambaNova Cloud", adapter: "compatible", baseURL: "https://api.sambanovacloud.com/v1" },
-  { id: "siliconflow", name: "SiliconFlow", adapter: "compatible", baseURL: "https://api.siliconflow.com/v1" },
-  { id: "novita", name: "Novita AI", adapter: "compatible", baseURL: "https://api.novita.ai/openai/v1" },
-  { id: "nvidia-nim", name: "NVIDIA NIM", adapter: "compatible", baseURL: "https://integrate.api.nvidia.com/v1" },
-  { id: "codestral", name: "Mistral Codestral", adapter: "compatible", baseURL: "https://codestral.mistral.ai/v1" },
-  { id: "cohere", name: "Cohere", adapter: "compatible", baseURL: "https://api.cohere.ai/compatibility/v1" },
-  { id: "ai21", name: "AI21 Labs", adapter: "compatible", baseURL: "https://api.ai21.com/studio/v1" },
+  { id: "fireworks", name: "Fireworks AI", adapter: "compatible", baseURL: "https://api.fireworks.ai/inference/v1", modelsPath: "/models", modelsDevId: "fireworks-ai" },
+  { id: "deepinfra", name: "DeepInfra", adapter: "compatible", baseURL: "https://api.deepinfra.com/v1/openai", modelsPath: "/models", modelsDevId: "deepinfra" },
+  { id: "nebius", name: "Nebius AI Studio", adapter: "compatible", baseURL: "https://api.studio.nebius.ai/v1", modelsPath: "/models", modelsDevId: "nebius" },
+  { id: "sambanova", name: "SambaNova Cloud", adapter: "compatible", baseURL: "https://api.sambanovacloud.com/v1", modelsPath: "/models" },
+  { id: "siliconflow", name: "SiliconFlow", adapter: "compatible", baseURL: "https://api.siliconflow.com/v1", modelsPath: "/models", modelsDevId: "siliconflow" },
+  { id: "novita", name: "Novita AI", adapter: "compatible", baseURL: "https://api.novita.ai/openai/v1", modelsPath: "/models", modelsDevId: "novita-ai" },
+  { id: "nvidia-nim", name: "NVIDIA NIM", adapter: "compatible", baseURL: "https://integrate.api.nvidia.com/v1", modelsPath: "/models", modelsDevId: "nvidia" },
+  { id: "codestral", name: "Mistral Codestral", adapter: "compatible", baseURL: "https://codestral.mistral.ai/v1", modelsPath: "/models", modelsDevId: "mistral" },
+  { id: "cohere", name: "Cohere", adapter: "compatible", baseURL: "https://api.cohere.ai/compatibility/v1", modelsPath: "/models", modelsDevId: "cohere" },
+  { id: "ai21", name: "AI21 Labs", adapter: "compatible", baseURL: "https://api.ai21.com/studio/v1", modelsPath: "/models", modelsDevId: "ai21" },
 ];
 
 const fetchedAt = "2026-09-09T00:00:00.000Z";

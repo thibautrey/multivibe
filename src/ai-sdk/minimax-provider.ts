@@ -6,10 +6,11 @@ export const MINIMAX_PROVIDER = {
   name: "MiniMax",
   adapter: "compatible",
   baseURL: "https://api.minimax.io/v1",
+  modelsDevId: "minimax",
 } as const;
 
 export const MINIMAX_CODING_PROVIDER = {
-  ...MINIMAX_PROVIDER, id: "minimax-coding", name: "MiniMax Token Plan",
+  ...MINIMAX_PROVIDER, id: "minimax-coding", name: "MiniMax Token Plan", modelsDevId: "minimax-coding-plan",
 } as const;
 
 export const MINIMAX_MODELS = [

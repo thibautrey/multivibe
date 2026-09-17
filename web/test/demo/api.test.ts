@@ -49,6 +49,21 @@ test("demo rejects writes, OAuth, inference, and exports without changing fixtur
 });
 
 
+test("demo session stats aggregate harness turns and cache reuse", () => {
+  const response = read("/admin/stats/sessions");
+  assert.ok(response.summary.sessions > 0);
+  assert.ok(response.sessions.length > 0);
+  assert.equal(response.coverage.ratio, 1);
+  assert.ok(response.summary.initialInputTokensMedian > 0);
+  assert.ok(response.summary.cachedInputTokens > 0);
+  assert.ok(response.summary.cacheSavingsUsd > 0);
+  const multiTurn = response.sessions.find((session: any) => session.turns > 1);
+  assert.ok(multiTurn);
+  const detail = read(`/admin/stats/sessions/${multiTurn.sessionKey}/turns`);
+  assert.equal(detail.turns.length, multiTurn.turns);
+  assert.equal(read(`/admin/stats/sessions/${"0".repeat(24)}/turns`).error, "not found");
+});
+
 test("demo invoice sources match configured billable providers and enforce the billing role", () => {
   const overview = read("/admin/invoices");
   assert.deepEqual(overview.providers.map((provider: any) => provider.id), ["openai", "mistral"]);

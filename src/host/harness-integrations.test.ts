@@ -154,7 +154,8 @@ test("OpenCode installation synchronizes every safe model from MultiVibe", async
       data: [
         { id: "gpt-5.6-luna" },
         { id: "gpt-5.5" },
-        { id: "local/model" },
+        { id: "omlx/Qwen3.8-27B-4bit" },
+        { id: "deepseek/deepseek-flash", name: "DeepSeek V4.1 Flash" },
         { id: "gpt-5.5" },
         { id: "\u0000invalid" },
       ],
@@ -180,15 +181,17 @@ test("OpenCode installation synchronizes every safe model from MultiVibe", async
   assert.deepEqual(Object.keys(configured.provider.multivibe.models), [
     "gpt-5.6-luna",
     "gpt-5.5",
-    "local/model",
+    "omlx/Qwen3.8-27B-4bit",
+    "deepseek/deepseek-flash",
   ]);
+  assert.equal(configured.provider.multivibe.models["deepseek/deepseek-flash"].name, "DeepSeek V4.1 Flash");
   assert.equal(configured.provider.multivibe.options.baseURL, "http://127.0.0.1:1455/v1");
   assert.deepEqual(configured.provider.litellm, { name: "Keep me" });
   assert.equal(requests, 1);
 });
 
 test("all model-aware harnesses synchronize the live MultiVibe catalog", async (t) => {
-  const modelIds = ["gpt-5.6-luna", "gpt-5.5", "local/model"];
+  const modelIds = ["gpt-5.6-luna", "gpt-5.5", "omlx/Qwen3.8-27B-4bit"];
   const catalogHarnesses = new Set(["openclaw", "pi", "crush", "continue"]);
   const harnessIds = [
     "openclaw", "pi", "crush", "continue", "hermes-agent", "goose", "openhands",
@@ -439,7 +442,7 @@ test("uninstall refuses to overwrite user changes made after installation", asyn
 });
 
 test("Codex installation authenticates its provider with the proxy key and restores the original workspace", async (t) => {
-  mockCodexModelCatalog(t, ["model-a", "gpt-5.5", "vision-fallback"], [{
+  mockCodexModelCatalog(t, ["model-a", "gpt-5.5", "vision-fallback", "omlx/Qwen3.8-27B-4bit"], [{
     slug: "gpt-5.5",
     display_name: "GPT-5.5",
     description: "OpenAI model",
@@ -456,6 +459,19 @@ test("Codex installation authenticates its provider with the proxy key and resto
     max_context_window: 400000,
     supports_parallel_tool_calls: true,
     input_modalities: ["text", "image"],
+    experimental_supported_tools: [],
+  }, {
+    slug: "omlx/Qwen3.8-27B-4bit",
+    display_name: "omlx/Qwen3.8-27B-4bit",
+    description: "OpenAI-compatible model omlx/Qwen3.8-27B-4bit",
+    supported_reasoning_levels: [],
+    shell_type: "shell_command",
+    visibility: "list",
+    supported_in_api: true,
+    priority: 100,
+    base_instructions: "",
+    support_verbosity: false,
+    truncation_policy: { mode: "tokens", limit: 10000 },
     experimental_supported_tools: [],
   }], { "vision-fallback": ["text", "image"], "vision-native": ["text", "image"] }, { "model-a": 65536 });
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-harness-"));
@@ -489,7 +505,8 @@ test("Codex installation authenticates its provider with the proxy key and resto
   assert.ok(rootProvider >= 0 && rootProvider < firstTable, "Codex provider must remain at the TOML root");
   assert.equal((configured.match(/^model_provider\s*=/gm) ?? []).length, 1);
   const catalog = JSON.parse(await fs.readFile(path.join(home, ".codex", "multivibe-models.json"), "utf8"));
-  assert.deepEqual(catalog.models.map((model: any) => model.slug), ["model-a", "gpt-5.5", "vision-fallback"]);
+  assert.deepEqual(catalog.models.map((model: any) => model.slug), ["model-a", "gpt-5.5", "vision-fallback", "omlx/Qwen3.8-27B-4bit"]);
+  assert.equal(catalog.models.find((model: any) => model.slug === "omlx/Qwen3.8-27B-4bit").display_name, "omlx/Qwen3.8-27B-4bit");
   for (const model of catalog.models) {
     // Codex requires these fields when deserializing model_catalog_json.
     assert.equal(typeof model.base_instructions, "string");
@@ -583,6 +600,51 @@ test("Codex synchronizes its managed catalog when MultiVibe models change at run
   }
   assert.equal((await manager.get("openai-codex")).drifted, false);
   assert.equal((await manager.uninstall("openai-codex")).apiKeyId, "key-live");
+});
+
+test("Codex live synchronization survives unrelated config.toml edits", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-live-catalog-user-edit-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const home = path.join(root, "home");
+  const bin = path.join(home, "bin");
+  await fs.mkdir(path.join(home, ".codex"), { recursive: true });
+  await fs.mkdir(bin, { recursive: true });
+  await fs.writeFile(path.join(bin, "codex"), "binary", { mode: 0o755 });
+  let modelIds = ["model-a"];
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = async () => Response.json({ data: modelIds.map((id) => ({ id })) });
+  const manager = new HostHarnessIntegrationManager({
+    homeDirectory: home,
+    statePath: path.join(home, ".multivibe", "harnesses.json"),
+    baseUrl: "http://127.0.0.1:1455",
+    apiKeyForId: () => "mv_live",
+    definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
+    executableDirectories: [bin],
+  });
+  const credential = { apiKeyId: "key-live", apiKey: "mv_live", application: "harness-openai-codex" };
+  await manager.install("openai-codex", credential);
+  const configPath = path.join(home, ".codex", "config.toml");
+  const catalogPath = path.join(home, ".codex", "multivibe-models.json");
+  // The Codex desktop app and the user edit unrelated keys in config.toml
+  // after installation; those edits must not freeze the managed catalog.
+  await fs.appendFile(configPath, '\nmodel = "qwen3:4b"\nmodel_reasoning_effort = "none"\n');
+  modelIds = ["model-a", "new-provider/model-b"];
+  assert.equal(await manager.synchronizeCodexModelCatalog(), true);
+  const catalog = JSON.parse(await fs.readFile(catalogPath, "utf8"));
+  assert.deepEqual(catalog.models.map((model: any) => model.slug), modelIds);
+
+  // A config that no longer points at the managed provider stops the sync.
+  const driftedConfig = (await fs.readFile(configPath, "utf8")).replace(
+    'experimental_bearer_token = "mv_live"',
+    'experimental_bearer_token = "mv_stale"',
+  );
+  await fs.writeFile(configPath, driftedConfig);
+  modelIds = ["model-a", "new-provider/model-b", "new-provider/model-c"];
+  assert.equal(await manager.synchronizeCodexModelCatalog(), false);
+  const untouched = await fs.readFile(catalogPath, "utf8");
+  assert.match(untouched, /new-provider\/model-b/);
+  assert.doesNotMatch(untouched, /new-provider\/model-c/);
 });
 
 test("Codex live synchronization never overwrites a user-modified catalog", async (t) => {

@@ -16,7 +16,7 @@ const fixture = {
 };
 
 test("declares the reviewed MiniMax OpenAI-compatible provider and models", () => {
-  assert.deepEqual(MINIMAX_PROVIDER, { id: "minimax", name: "MiniMax", adapter: "compatible", baseURL: "https://api.minimax.io/v1" });
+  assert.deepEqual(MINIMAX_PROVIDER, { id: "minimax", name: "MiniMax", adapter: "compatible", baseURL: "https://api.minimax.io/v1", modelsDevId: "minimax" });
   assert.deepEqual(MINIMAX_MODELS.map(({ id }) => id), ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1", "MiniMax-M2.1-highspeed", "MiniMax-M2"]);
 });
 

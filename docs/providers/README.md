@@ -39,17 +39,40 @@ The following providers are available through API-key setup. Quota probes run in
 
 ## Model lists and live discovery
 
-An account's model list comes from the provider itself when its reviewed adapter
-declares a `/models` endpoint (`modelsPath`). MultiVibe calls that endpoint with
-the account's own key, caches the answer per account for a stale-while-revalidate
-window (10 minutes by default, `SDK_LIVE_MODEL_CATALOG_TTL_MS`), serves the cached
-list while refreshing in the background, and retries with a bounded backoff after
-a failure. The reviewed snapshot still supplies context, tool, reasoning,
-modality and price metadata for the ids the provider lists, and it stays
-authoritative whenever discovery is unavailable, rejected, or slower than the
-cold-start budget (`SDK_LIVE_MODEL_CATALOG_BLOCKING_BUDGET_MS`). Explicit model
-IDs entered in account setup override the discovered list. DeepSeek is enabled
-today; another adapter opts in by adding `modelsPath` once its endpoint is
-reviewed.
+An account's model list comes from the provider itself whenever its reviewed
+adapter declares a `/models` endpoint (`modelsPath`). MultiVibe calls that
+endpoint with the account's own key, caches the answer per account for a
+stale-while-revalidate window (10 minutes by default,
+`SDK_LIVE_MODEL_CATALOG_TTL_MS`), serves the cached list while refreshing in the
+background, and retries with a bounded backoff after a failure. The last
+successful list is persisted on disk so a restart does not lose discovered ids.
+
+Model metadata (context window, output limit, tool support, reasoning, input
+modalities and price) is refreshed at runtime from the public models.dev
+catalog (`SDK_MODELS_DEV_TTL_MS`, 24 hours by default), cached on disk next to
+the account store (`SDK_MODELS_DEV_CACHE_PATH`, `SDK_LIVE_MODEL_CACHE_PATH`).
+The generated `catalog.generated.ts` snapshot stays the offline fallback, and
+curated catalogs remain authoritative for providers models.dev does not cover
+or that have no list endpoint. This means a model a provider adds or retires
+appears or disappears without shipping a new MultiVibe build.
+
+Response shapes are declarative per provider: OpenAI-compatible `data` lists,
+Anthropic cursor pagination (with the reviewed `anthropic-version` header) and
+Google Gemini `models` lists with `pageToken` are supported today. Credential
+placement for discovery is reviewed too (`modelsAuth`: Bearer, `Key`,
+`x-goog-api-key` or none). The provider listing is authoritative for existence:
+it reflects current ids and retirements, while reviewed catalogs may still name
+legacy aliases. Provider-published display names (for example
+`DeepSeek V4.1 Flash` for the `deepseek-flash` id) are propagated to the Codex
+catalog and to model-aware harness model lists without renaming the routable
+id. Explicit model IDs entered in account setup override the discovered list;
+an empty selection keeps every listed model. Azure Foundry still requires your
+actual deployment names.
+
+The account editor lists the discovered models with their provenance, supports
+manual model IDs, and offers a refresh action backed by
+`GET|POST /admin/accounts/:id/models[/refresh]`. `GET /admin/provider-catalog`
+annotates each provider with `liveDiscovery` and the source/freshness of its
+metadata.
 
 Starter model catalogs are reviewed snapshots, not a promise of account entitlement. Add provider model IDs in account setup or editing; Azure requires your actual deployment names. Replicate accepts only its reviewed prediction schema. Regenerate browser display metadata after changing definitions with `node --import tsx scripts/sync-expanded-provider-metadata.ts`; tests catch stale metadata.

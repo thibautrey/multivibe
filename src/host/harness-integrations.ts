@@ -43,6 +43,8 @@ export type HarnessContext = {
   codexModels?: readonly Record<string, unknown>[];
   modelInputModalities?: Record<string, string[]>;
   modelContextWindows?: Record<string, number>;
+  /** Provider-published display names keyed by model id. */
+  modelNames?: Record<string, string>;
   homeDirectory?: string;
 };
 
@@ -180,6 +182,7 @@ type DiscoveredModelCatalog = {
   codexModels: Record<string, unknown>[];
   modelInputModalities: Record<string, string[]>;
   modelContextWindows: Record<string, number>;
+  modelNames: Record<string, string>;
 };
 
 async function discoverMultiVibeModelCatalog(context: HarnessContext): Promise<DiscoveredModelCatalog> {
@@ -231,9 +234,10 @@ async function discoverMultiVibeModelCatalog(context: HarnessContext): Promise<D
   }
   const modelInputModalities: Record<string, string[]> = Object.create(null);
   const modelContextWindows: Record<string, number> = Object.create(null);
+  const modelNames: Record<string, string> = Object.create(null);
   for (const entry of document.data ?? []) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-    const model = entry as { id?: unknown; metadata?: { input_modalities?: unknown; context_window?: unknown; max_context_window?: unknown; context_length?: unknown } };
+    const model = entry as { id?: unknown; name?: unknown; metadata?: { display_name?: unknown; input_modalities?: unknown; context_window?: unknown; max_context_window?: unknown; context_length?: unknown } };
     const modalities = model.metadata?.input_modalities;
     const contextWindow = [model.metadata?.context_window, model.metadata?.max_context_window, model.metadata?.context_length]
       .find((value): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0);
@@ -244,8 +248,19 @@ async function discoverMultiVibeModelCatalog(context: HarnessContext): Promise<D
       const supported = modalities.filter((value): value is string => value === "text" || value === "image");
       if (supported.length) modelInputModalities[model.id] = [...new Set(supported)];
     }
+    const displayName = [model.name, model.metadata?.display_name]
+      .find((value): value is string => typeof value === "string" && value.trim().length > 0 && value.trim().length <= 200);
+    if (typeof model.id === "string" && exposedIds.has(model.id) && displayName && displayName.trim() !== model.id) {
+      modelNames[model.id] = displayName.trim();
+    }
   }
-  return { modelIds, codexModels, modelInputModalities, modelContextWindows };
+  return { modelIds, codexModels, modelInputModalities, modelContextWindows, modelNames };
+}
+
+/** Provider display name when published, otherwise the routable id. */
+function modelLabel(context: HarnessContext, id: string): string {
+  const name = context.modelNames?.[id];
+  return typeof name === "string" && name.trim() ? name.trim() : id;
 }
 
 function requireModelIds(context: HarnessContext): string[] {
@@ -273,8 +288,8 @@ function modelAwareConfiguration(configuration: HarnessConfiguration): HarnessCo
   };
 }
 
-function openCodeModelMap(modelIds: readonly string[]): Record<string, { name: string }> {
-  return Object.fromEntries(modelIds.map((id) => [id, { name: id }]));
+function openCodeModelMap(modelIds: readonly string[], context: HarnessContext): Record<string, { name: string }> {
+  return Object.fromEntries(modelIds.map((id) => [id, { name: modelLabel(context, id) }]));
 }
 
 function openCodeConfigurationDocument(
@@ -296,7 +311,7 @@ function openCodeConfigurationDocument(
     npm: "@ai-sdk/openai-compatible",
     name: "MultiVibe Host",
     options: { baseURL: `${context.baseUrl}/v1`, apiKey: context.apiKey },
-    models: openCodeModelMap(modelIds),
+    models: openCodeModelMap(modelIds, context),
   });
   return `${JSON.stringify(document, null, 2)}\n`;
 }
@@ -522,7 +537,7 @@ function renderCodexModelCatalog(context: HarnessContext): string {
     };
     return ({
     slug: id,
-    display_name: id,
+    display_name: context.modelNames?.[id] ?? id,
     description: "Available through MultiVibe Host.",
     default_reasoning_level: "medium",
     supported_reasoning_levels: [
@@ -569,22 +584,22 @@ const claudeConfiguration = jsonConfiguration(".claude/settings.json", ({ baseUr
   [["env", "ANTHROPIC_AUTH_TOKEN"], apiKey],
 ]);
 
-const openClawConfiguration = modelAwareConfiguration(jsonConfiguration(".openclaw/openclaw.json", ({ baseUrl, apiKey, modelIds }) => [
+const openClawConfiguration = modelAwareConfiguration(jsonConfiguration(".openclaw/openclaw.json", ({ baseUrl, apiKey, modelIds, modelNames }) => [
   [["agents", "defaults", "model", "primary"], `multivibe/${selectDefaultModelId({ baseUrl, apiKey, modelIds })}`],
   [["models", "providers", "multivibe"], {
     baseUrl: `${baseUrl}/v1`,
     apiKey,
     api: "openai-responses",
-    models: requireModelIds({ baseUrl, apiKey, modelIds }).map((id) => ({ id, name: id })),
+    models: requireModelIds({ baseUrl, apiKey, modelIds }).map((id) => ({ id, name: modelNames?.[id] ?? id })),
   }],
 ]));
 
-const piConfiguration = modelAwareConfiguration(jsonConfiguration(".pi/agent/models.json", ({ baseUrl, apiKey, modelIds }) => [
+const piConfiguration = modelAwareConfiguration(jsonConfiguration(".pi/agent/models.json", ({ baseUrl, apiKey, modelIds, modelNames }) => [
   [["providers", "multivibe"], {
     baseUrl: `${baseUrl}/v1`,
     apiKey,
     api: "openai-responses",
-    models: requireModelIds({ baseUrl, apiKey, modelIds }).map((id) => ({ id, name: id })),
+    models: requireModelIds({ baseUrl, apiKey, modelIds }).map((id) => ({ id, name: modelNames?.[id] ?? id })),
   }],
 ]));
 
@@ -593,12 +608,12 @@ const qwenConfiguration = jsonConfiguration(".qwen/settings.json", ({ baseUrl, a
   [["env", "OPENAI_API_KEY"], apiKey],
 ]);
 
-const crushConfiguration = modelAwareConfiguration(jsonConfiguration(".config/crush/crush.json", ({ baseUrl, apiKey, modelIds }) => [
+const crushConfiguration = modelAwareConfiguration(jsonConfiguration(".config/crush/crush.json", ({ baseUrl, apiKey, modelIds, modelNames }) => [
   [["providers", "multivibe"], {
     type: "openai",
     base_url: `${baseUrl}/v1`,
     api_key: apiKey,
-    models: requireModelIds({ baseUrl, apiKey, modelIds }).map((id) => ({ id, name: id })),
+    models: requireModelIds({ baseUrl, apiKey, modelIds }).map((id) => ({ id, name: modelNames?.[id] ?? id })),
   }],
 ]));
 
@@ -629,10 +644,10 @@ const aiderConfiguration = modelAwareConfiguration(managedBlockConfiguration(".a
   `openai-api-key: ${jsonString(apiKey)}`,
 ].join("\n")));
 
-const continueConfiguration = modelAwareConfiguration(managedBlockConfiguration(".continue/config.yaml", ({ baseUrl, apiKey, modelIds }) => [
+const continueConfiguration = modelAwareConfiguration(managedBlockConfiguration(".continue/config.yaml", ({ baseUrl, apiKey, modelIds, modelNames }) => [
   "models:",
   ...requireModelIds({ baseUrl, apiKey, modelIds }).map((id) => [
-    `  - name: ${jsonString(`MultiVibe Host / ${id}`)}`,
+    `  - name: ${jsonString(`MultiVibe Host / ${modelNames?.[id] ?? id}`)}`,
     "    provider: openai",
     `    model: ${jsonString(id)}`,
     `    apiBase: ${jsonString(`${baseUrl}/v1`)}`,
@@ -989,11 +1004,23 @@ export class HostHarnessIntegrationManager {
       const state = await this.readState();
       const installation = state.installations[definition.id];
       if (!installation?.auxiliaryFiles?.length) return false;
+      if (
+        definition.configuration.revision !== undefined &&
+        installation.configurationRevision !== definition.configuration.revision
+      ) return false;
       const configPath = await this.safeConfigPath(definition.configuration.relativePath);
       const config = await readBounded(configPath);
-      if (!config || sha256(config.content) !== installation.installedSha256) return false;
+      if (!config) return false;
       const apiKey = this.apiKeyForId(installation.apiKeyId);
       if (!apiKey) return false;
+      // Codex and its desktop app rewrite unrelated keys in config.toml at any
+      // time, so the whole-file hash is not a drift signal. Keep synchronizing
+      // while the managed provider block still points at MultiVibe; anything
+      // else is reported by `view()` and requires an explicit repair.
+      const inspection = definition.configuration.inspect
+        ? definition.configuration.inspect(config.content, this.baseUrl, apiKey, this.homeDirectory)
+        : { configured: definition.configuration.isConfigured(config.content, this.baseUrl) };
+      if (!inspection.configured) return false;
       const context: HarnessContext = { baseUrl: this.baseUrl, apiKey, homeDirectory: this.homeDirectory };
       const preparedContext = definition.configuration.prepare
         ? { ...context, ...(await definition.configuration.prepare(context)) }
