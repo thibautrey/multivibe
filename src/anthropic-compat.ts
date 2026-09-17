@@ -307,8 +307,12 @@ export function anthropicErrorEnvelope(
       : typeof sourceError === "string"
         ? sourceError
         : "Upstream request failed";
+  // Anthropic's documented error types keyed by HTTP status, matching the
+  // native edge so the bridge and the edge never disagree.
   let type = "api_error";
-  if (status === 401 || status === 403) type = "authentication_error";
+  if (status === 401) type = "authentication_error";
+  else if (status === 403) type = "permission_error";
+  else if (status === 404) type = "not_found_error";
   else if (status === 429) type = "rate_limit_error";
   else if (status === 529 || status === 503) type = "overloaded_error";
   else if (status >= 400 && status < 500) type = "invalid_request_error";

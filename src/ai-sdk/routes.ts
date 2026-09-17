@@ -48,6 +48,15 @@ const CONTEXT_LENGTH_SIGNATURES = [
   "exceeds the maximum context",
 ];
 
+const CONTENT_FILTER_SIGNATURES = [
+  "content filter",
+  "content_filter",
+  "content policy",
+  "content management policy",
+  "responsible ai",
+  "data_inspection_failed",
+];
+
 // A request that exceeded the model's context window is recoverable: agent
 // clients compact or trim the conversation when they see this signal, so it
 // must stay detectable instead of collapsing into a generic provider_error.
@@ -61,6 +70,121 @@ function isContextLengthError(status: number, message: string): boolean {
     CONTEXT_LENGTH_SIGNATURES.some((signature) => text.includes(signature)) ||
     (text.includes("input token count") && text.includes("exceed"))
   );
+}
+
+// Thinking-mode providers reject a turn whose assistant message lost the
+// reasoning they produced. Only the client owns that history, so the failure is
+// surfaced with a dedicated code instead of a provider-specific string.
+function isReasoningContentRequiredError(message: string): boolean {
+  const text = message.toLowerCase();
+  return (
+    (text.includes("reasoning_content") && text.includes("passed back")) ||
+    text.includes("reasoning_content is required") ||
+    text.includes("missing reasoning_content") ||
+    (text.includes("reasoning") && text.includes("thinking mode") && /required|missing/.test(text))
+  );
+}
+
+function isContentFilterError(message: string): boolean {
+  const text = message.toLowerCase();
+  return CONTENT_FILTER_SIGNATURES.some((signature) => text.includes(signature)) || text.includes("flagged");
+}
+
+function isInsufficientQuotaError(status: number, message: string): boolean {
+  const text = message.toLowerCase();
+  return (
+    status === 402 ||
+    text.includes("insufficient_quota") ||
+    text.includes("insufficient balance") ||
+    text.includes("insufficient credit") ||
+    text.includes("insufficient fund") ||
+    text.includes("exceeded your current quota") ||
+    (text.includes("quota") && /exceed|insufficient|reached|no available/.test(text))
+  );
+}
+
+function isRateLimitError(status: number, message: string): boolean {
+  if (status === 429) return true;
+  const text = message.toLowerCase();
+  return text.includes("rate limit") || text.includes("rate_limit_exceeded") || text.includes("too many requests");
+}
+
+function isModelNotFoundError(status: number, message: string): boolean {
+  if (status !== 404) return false;
+  const text = message.toLowerCase();
+  return text.includes("model") || text.includes("does not exist");
+}
+
+/** Anthropic-independent, OpenAI-shaped error `type` for a bare status. */
+function errorTypeForStatus(status: number): string {
+  if (status === 401) return "authentication_error";
+  if (status === 403) return "permission_error";
+  if (status === 429) return "rate_limit_error";
+  if (status >= 500) return "api_error";
+  return "invalid_request_error";
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+/** The provider's own structured error object, when the SDK exposes one. */
+function providerErrorSource(error: unknown): Record<string, unknown> | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const value = error as Record<string, unknown>;
+  for (const candidate of [value.data, value.responseBody]) {
+    let parsed = candidate;
+    if (typeof candidate === "string") {
+      try { parsed = JSON.parse(candidate); } catch { continue; }
+    }
+    if (!parsed || typeof parsed !== "object") continue;
+    const nested = (parsed as Record<string, unknown>).error;
+    if (nested && typeof nested === "object") return nested as Record<string, unknown>;
+    return parsed as Record<string, unknown>;
+  }
+  return undefined;
+}
+
+/**
+ * Normalize an adapter provider failure into the documented client contract.
+ *
+ * Every field the provider supplied is preserved; `message`, `type`, `param`
+ * and `code` are then guaranteed to be present, and the classes that need a
+ * stable machine-readable code (exhausted context, thinking-mode reasoning,
+ * content filtering, quota, rate limits) are relabeled so a client can branch on
+ * `code` instead of pattern-matching free text.
+ */
+export function normalizeProviderError(error: unknown, status: number): Record<string, unknown> {
+  const message = providerErrorMessage(error, status);
+  const envelope: Record<string, unknown> = { ...(providerErrorSource(error) ?? {}) };
+  if (!nonEmptyString(envelope.message)) envelope.message = message;
+  const text = String(envelope.message);
+
+  let type: string | undefined;
+  let code: string | undefined;
+  if (isContextLengthError(status, text)) {
+    type = "invalid_request_error";
+    code = "context_length_exceeded";
+  } else if (isReasoningContentRequiredError(text)) {
+    type = "invalid_request_error";
+    code = "reasoning_content_required";
+  } else if (isContentFilterError(text)) {
+    code = "content_filter";
+  } else if (isInsufficientQuotaError(status, text)) {
+    type = "rate_limit_error";
+    code = "insufficient_quota";
+  } else if (isRateLimitError(status, text)) {
+    type = "rate_limit_error";
+    if (!nonEmptyString(envelope.code)) code = "rate_limit_exceeded";
+  } else if (isModelNotFoundError(status, text)) {
+    code = "model_not_found";
+  }
+  if (!type && !nonEmptyString(envelope.type)) type = errorTypeForStatus(status);
+  if (!code && !nonEmptyString(envelope.code)) code = status >= 500 ? "server_error" : "upstream_error";
+  if (type) envelope.type = type;
+  if (code) envelope.code = code;
+  if (!("param" in envelope)) envelope.param = null;
+  return envelope;
 }
 
 export function createSdkAdapterRouter(options: {
@@ -139,10 +263,9 @@ export function createSdkAdapterRouter(options: {
     } catch (error: any) {
       if (res.destroyed) return;
       const status = error instanceof SdkInputError ? 400 : Number.isInteger(error?.statusCode) && error.statusCode >= 400 && error.statusCode <= 599 ? error.statusCode : controller.signal.aborted ? 504 : 502;
-      const message = error instanceof SdkInputError ? error.message : providerErrorMessage(error, status);
-      const body = isContextLengthError(status, message)
-        ? {error: {message, type: "invalid_request_error", param: null, code: "context_length_exceeded"}}
-        : {error: {message, type: status === 429 ? "rate_limit_error" : "provider_error"}};
+      const body = error instanceof SdkInputError
+        ? {error: {message: error.message, type: "invalid_request_error", param: null, code: "invalid_request_error"}}
+        : {error: normalizeProviderError(error, status)};
       if (res.headersSent) res.end(`data: ${JSON.stringify(body)}\n\n`);
       else res.status(status).json(body);
     } finally {
