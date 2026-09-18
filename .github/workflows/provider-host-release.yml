@@ -76,7 +76,7 @@ jobs:
       contents: read
 
   build-linux:
-    needs: [validate-tag, validate-catalog]
+    needs: validate-tag
     runs-on: multivibe-linux
     timeout-minutes: 150
     permissions:
@@ -190,7 +190,7 @@ jobs:
     if: ${{ needs.validate-tag.outputs.macos_enabled == 'true' }}
     # A later evidence gate accepts only pre-start quota failures; real build failures still block publishing.
     continue-on-error: true
-    needs: [validate-tag, validate-catalog]
+    needs: validate-tag
     name: build-macos-${{ matrix.architecture }}
     strategy:
       fail-fast: false
@@ -218,7 +218,6 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -390,7 +389,7 @@ jobs:
   build-windows:
     if: ${{ vars.HOSTED_RELEASE_BUILDS_ENABLED != 'false' && !inputs.self_hosted_only }}
     continue-on-error: true
-    needs: [validate-tag, validate-catalog]
+    needs: validate-tag
     # node-gyp bundled with the pinned npm supports Visual Studio 2022.
     runs-on: windows-2022
     timeout-minutes: 150
@@ -513,20 +512,21 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
-  select-artifacts:
-    needs: [validate-tag, build-linux, build-macos, build-windows]
-    if: ${{ !cancelled() && needs.validate-tag.result == 'success' && needs.build-linux.result == 'success' }}
+  sign-release:
+    needs: [validate-tag, validate-catalog, build-linux, build-macos, build-windows]
+    if: ${{ !cancelled() && needs.validate-tag.result == 'success' && needs.validate-catalog.result == 'success' && needs.build-linux.result == 'success' }}
     runs-on: multivibe-linux
-    timeout-minutes: 10
+    timeout-minutes: 45
     permissions:
       contents: read
       actions: read
       checks: read
-    outputs:
-      artifact_ids: ${{ steps.select.outputs.artifact_ids }}
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -544,27 +544,9 @@ jobs:
           name: release-platform-selection
           path: release-platforms.md
           if-no-files-found: error
-
-  sign-release:
-    needs: [validate-tag, select-artifacts]
-    if: ${{ !cancelled() && needs.validate-tag.result == 'success' && needs.select-artifacts.result == 'success' }}
-    runs-on: multivibe-linux
-    timeout-minutes: 45
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          artifact-ids: ${{ needs.select-artifacts.outputs.artifact_ids }}
+          artifact-ids: ${{ steps.select.outputs.artifact_ids }}
           path: release
           merge-multiple: true
       - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
@@ -624,8 +606,8 @@ jobs:
           if [[ -n "${MULTIVIBE_RELEASE_GH_DIR:-}" ]]; then rm -rf -- "$MULTIVIBE_RELEASE_GH_DIR"; fi
 
   publish-container:
-    needs: [validate-tag, build-linux, sign-release]
-    if: ${{ !cancelled() && needs.build-linux.result == 'success' && needs.sign-release.result == 'success' }}
+    needs: [validate-tag, validate-catalog, build-linux]
+    if: ${{ !cancelled() && needs.build-linux.result == 'success' && needs.validate-catalog.result == 'success' }}
     runs-on: multivibe-docker
     timeout-minutes: 45
     permissions:

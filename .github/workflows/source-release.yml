@@ -49,7 +49,7 @@ jobs:
           provenance: mode=max
           sbom: true
   release:
-    needs: [managed-validation, managed-images]
+    needs: managed-validation
     # Cloud verifies this attestation with --deny-self-hosted-runners.
     runs-on: ubuntu-latest
     permissions:
