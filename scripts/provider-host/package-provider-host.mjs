@@ -172,6 +172,15 @@ async function command(program, args, options = {}) {
   });
 }
 
+async function swiftSources(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".swift"))
+    .map((entry) => entry.name)
+    .sort()
+    .map((name) => path.join(directory, name));
+}
+
 async function sha256(file) {
   const digest = createHash("sha256");
   for await (const chunk of createReadStream(file)) digest.update(chunk);
@@ -731,11 +740,12 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
   }
   if (menuBarDestination) {
     const swiftArchitecture = selectedTarget.goarch === "arm64" ? "arm64" : "x86_64";
+    const menuBarSources = await swiftSources(path.join(repositoryRoot, "packaging", "macos"));
     await command("xcrun", [
       "swiftc", "-parse-as-library", "-O", "-whole-module-optimization",
       "-target", `${swiftArchitecture}-apple-macos${macOSMinimumVersion}`,
       "-framework", "AppKit",
-      path.join(repositoryRoot, "packaging", "macos", "MultiVibeMenuBar.swift"),
+      ...menuBarSources,
       "-o", menuBarDestination,
     ]);
     await chmod(menuBarDestination, 0o555);

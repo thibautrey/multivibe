@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
 
 const accountsTabSource = await readFile(
   new URL("../src/components/tabs/AccountsTab.tsx", import.meta.url),
   "utf8",
 );
-const macOSMenuSource = await readFile(
-  new URL("../../packaging/macos/MultiVibeMenuBar.swift", import.meta.url),
-  "utf8",
-);
+const macOSMenuDirectory = new URL("../../packaging/macos/", import.meta.url);
+const macOSMenuSource = (await Promise.all(
+  (await readdir(macOSMenuDirectory))
+    .filter((name) => name.endsWith(".swift"))
+    .sort()
+    .map((name) => readFile(new URL(name, macOSMenuDirectory), "utf8")),
+)).join("\n");
 const linuxMenuSource = await readFile(
   new URL("../../host/menu/menu.c", import.meta.url),
   "utf8",

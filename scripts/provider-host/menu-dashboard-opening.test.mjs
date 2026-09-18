@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
+import { readMacOSMenuSourceSync } from "./macos-menu-sources.mjs";
 
-const source = readFileSync(new URL("../../packaging/macos/MultiVibeMenuBar.swift", import.meta.url), "utf8");
+const source = readMacOSMenuSourceSync();
 
 test("macOS menu bar retries dashboard sessions on the canonical edge port", () => {
   assert.match(source, /let canonicalURL = URL\(string: "http:\/\/127\.0\.0\.1:\\\(configuredHostPort\)"\)!/);
