@@ -320,21 +320,29 @@ enum PersistError {
 // Credentials may cross the process boundary over loopback HTTP, but must
 // never cross a network in cleartext. Keep account IDs in a single URL segment.
 fn persistence_url(base: &str, account_id: &str) -> Result<Url, String> {
-    let invalid = || "token persistence requires HTTPS or loopback HTTP without URL credentials, query or fragment".to_owned();
+    let invalid = || {
+        "token persistence requires HTTPS or loopback HTTP without URL credentials, query or fragment".to_owned()
+    };
     let mut url = Url::parse(base.trim()).map_err(|_| invalid())?;
     let loopback = url.host_str().is_some_and(|host| {
         host == "localhost"
-            || host.trim_matches(['[', ']']).parse::<std::net::IpAddr>()
+            || host
+                .trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
                 .is_ok_and(|ip| ip.is_loopback())
     });
-    if !url.username().is_empty() || url.password().is_some()
-        || url.query().is_some() || url.fragment().is_some()
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
         || !(url.scheme() == "https" || (url.scheme() == "http" && loopback))
     {
         return Err(invalid());
     }
-    url.path_segments_mut().map_err(|_| invalid())?
-        .pop_if_empty().extend(["internal", "v1-edge", "accounts", account_id, "token"]);
+    url.path_segments_mut()
+        .map_err(|_| invalid())?
+        .pop_if_empty()
+        .extend(["internal", "v1-edge", "accounts", account_id, "token"]);
     Ok(url)
 }
 
@@ -398,14 +406,26 @@ mod tests {
 
     #[test]
     fn persistence_transport_preserves_local_and_tls_deployments() {
-        for base in ["http://127.0.0.1:1456", "http://[::1]:1456", "http://localhost:1456", "https://control.example"] {
+        for base in [
+            "http://127.0.0.1:1456",
+            "http://[::1]:1456",
+            "http://localhost:1456",
+            "https://control.example",
+        ] {
             let url = persistence_url(base, "account one").unwrap();
-            assert!(url.path().ends_with("/internal/v1-edge/accounts/account%20one/token"));
+            assert!(
+                url.path()
+                    .ends_with("/internal/v1-edge/accounts/account%20one/token")
+            );
         }
         assert!(persistence_url("http://control.example", "account").is_err());
         assert!(persistence_url("https://control.example?region=one", "account").is_err());
-        assert_eq!(persistence_url("https://control.example/core/", "account").unwrap().path(),
-            "/core/internal/v1-edge/accounts/account/token");
+        assert_eq!(
+            persistence_url("https://control.example/core/", "account")
+                .unwrap()
+                .path(),
+            "/core/internal/v1-edge/accounts/account/token"
+        );
     }
 
     #[test]

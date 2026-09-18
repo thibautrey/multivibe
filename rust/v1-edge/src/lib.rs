@@ -1179,7 +1179,8 @@ fn is_local_runtime(account: &Account) -> bool {
         && runtime.and_then(|value| value.source.as_deref()) == Some("multivibe-local-discovery");
     let pair = account.id == "local-runtime-nvidia-pair"
         && account.location.as_deref() == Some("personal-cluster")
-        && runtime.and_then(|value| value.source.as_deref()) == Some("multivibe-local-configuration")
+        && runtime.and_then(|value| value.source.as_deref())
+            == Some("multivibe-local-configuration")
         && runtime.and_then(|value| value.adapter.as_deref()) == Some("nvidia-pair");
     account.provider.as_deref() == Some("openai-compatible")
         && (discovered || pair)
@@ -1228,15 +1229,17 @@ fn apply_opencode_headers(account: &Account, headers: &mut HeaderMap) {
 
 // Exact upstream IDs only: normalization or aliases must not expand a Team grant.
 fn team_model_allowed(account: &Account, model: &str) -> bool {
-    account.multivibe_team.as_ref().is_none_or(|policy| policy.models.iter().any(|allowed| allowed == model))
+    account
+        .multivibe_team
+        .as_ref()
+        .is_none_or(|policy| policy.models.iter().any(|allowed| allowed == model))
 }
 
 fn account_usable(account: &Account, model: &str, blocked: &HashMap<String, u64>) -> bool {
     if !account.enabled || !team_model_allowed(account, model) {
         return false;
     }
-    if account_inference_token(account).is_empty() && !is_local_runtime(account)
-    {
+    if account_inference_token(account).is_empty() && !is_local_runtime(account) {
         return false;
     }
     let now = now_ms();
@@ -1325,7 +1328,8 @@ fn select_accounts(
         .iter()
         .filter(|account| {
             normalize_provider(account) == route.provider.as_deref().unwrap_or("")
-                && (!is_cloud_model_selector(&route.requested_model) || account.multivibe_cloud == Some(true))
+                && (!is_cloud_model_selector(&route.requested_model)
+                    || account.multivibe_cloud == Some(true))
                 && local_preparation_route_allowed(account, route)
                 && (route.account_ids.is_empty() || route.account_ids.contains(&account.id))
                 && account_usable(account, &route.model, blocked)
@@ -1333,7 +1337,10 @@ fn select_accounts(
         .cloned()
         .collect::<Vec<_>>();
     let provider = route.provider.clone().unwrap_or_default();
-    if candidates.iter().any(|account| account_headroom(account) != Some(0.0)) {
+    if candidates
+        .iter()
+        .any(|account| account_headroom(account) != Some(0.0))
+    {
         candidates.retain(|account| account_headroom(account) != Some(0.0));
     }
     let effective_pool = {
@@ -1409,11 +1416,18 @@ fn select_accounts(
         {
             // Credit-only accounts rotate only within the best headroom tier.
             let credit_only = candidates.iter().all(|account| {
-                account.usage.as_ref().and_then(|usage| usage.secondary.as_ref()).is_none()
+                account
+                    .usage
+                    .as_ref()
+                    .and_then(|usage| usage.secondary.as_ref())
+                    .is_none()
             });
             let count = if credit_only {
                 let best = account_headroom(&candidates[0]);
-                candidates.iter().take_while(|account| account_headroom(account) == best).count()
+                candidates
+                    .iter()
+                    .take_while(|account| account_headroom(account) == best)
+                    .count()
             } else {
                 candidates.len()
             };
@@ -1451,20 +1465,29 @@ fn local_preparation_route_allowed(account: &Account, route: &RouteCandidate) ->
     {
         return false;
     }
-    let Some(runtime) = account.local_runtime.as_ref() else { return false; };
+    let Some(runtime) = account.local_runtime.as_ref() else {
+        return false;
+    };
     if runtime.adapter.as_deref() != Some("ollama")
         || !runtime.confirmed_model_ids.contains(&route.model)
     {
         return false;
     }
-    let Some(origin) = account.base_url.as_deref().and_then(|value| reqwest::Url::parse(value).ok()) else {
+    let Some(origin) = account
+        .base_url
+        .as_deref()
+        .and_then(|value| reqwest::Url::parse(value).ok())
+    else {
         return false;
     };
     origin.scheme() == "http"
         && matches!(origin.host_str(), Some("127.0.0.1" | "[::1]"))
         && origin.port() == Some(11434)
-        && origin.username().is_empty() && origin.password().is_none()
-        && origin.path() == "/" && origin.query().is_none() && origin.fragment().is_none()
+        && origin.username().is_empty()
+        && origin.password().is_none()
+        && origin.path() == "/"
+        && origin.query().is_none()
+        && origin.fragment().is_none()
 }
 
 fn is_cloud_model_selector(model: &str) -> bool {
@@ -1484,7 +1507,8 @@ fn routes_for_model(
     };
     if is_cloud_model_selector(requested) || is_prepared_local_model(requested) {
         return vec![RouteCandidate {
-            requested_model: requested.to_owned(), model: requested.to_owned(),
+            requested_model: requested.to_owned(),
+            model: requested.to_owned(),
             provider: Some("openai-compatible".to_owned()),
             account_ids: vec![],
         }];
@@ -1571,7 +1595,10 @@ fn image_aware_routing_model(
     body: &Value,
     requested_model: &str,
 ) -> String {
-    if is_cloud_model_selector(requested_model) || is_prepared_local_model(requested_model) || !payload_has_image(body) {
+    if is_cloud_model_selector(requested_model)
+        || is_prepared_local_model(requested_model)
+        || !payload_has_image(body)
+    {
         return requested_model.to_owned();
     }
     let Some(override_model) = store
@@ -1611,8 +1638,21 @@ fn trim_slashes(value: &str) -> String {
 
 fn account_base_url(account: &Account, config: &EdgeConfig) -> String {
     match normalize_provider(account).as_str() {
-        "ai-sdk" => format!("{}/internal/ai-sdk/{}", trim_slashes(&config.node_control_plane_url),
-            account.id.bytes().map(|byte| if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_') { char::from(byte).to_string() } else { format!("%{byte:02X}") }).collect::<String>()),
+        "ai-sdk" => format!(
+            "{}/internal/ai-sdk/{}",
+            trim_slashes(&config.node_control_plane_url),
+            account
+                .id
+                .bytes()
+                .map(
+                    |byte| if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_') {
+                        char::from(byte).to_string()
+                    } else {
+                        format!("%{byte:02X}")
+                    }
+                )
+                .collect::<String>()
+        ),
         "openai-compatible" => account.base_url.clone().unwrap_or_default(),
         "opencode" => account
             .base_url
@@ -1629,7 +1669,9 @@ fn account_base_url(account: &Account, config: &EdgeConfig) -> String {
 }
 
 fn resolve_upstream_mode(account: &Account, chat_route: bool, compact: bool) -> bool {
-    if normalize_provider(account) == "ai-sdk" { return true; }
+    if normalize_provider(account) == "ai-sdk" {
+        return true;
+    }
     if let Some(mode) = account.upstream_mode.as_deref() {
         return mode == "chat/completions";
     }
@@ -2065,17 +2107,63 @@ fn chat_completions_to_responses(body: &Value, session_id: Option<&str>) -> Valu
 const MULTIVIBE_REASONING_PREFIX: &str = "mv-reasoning-v1:";
 
 fn encode_reasoning_content(text: &str) -> String {
-    format!("{MULTIVIBE_REASONING_PREFIX}{}", URL_SAFE_NO_PAD.encode(text.as_bytes()))
+    format!(
+        "{MULTIVIBE_REASONING_PREFIX}{}",
+        URL_SAFE_NO_PAD.encode(text.as_bytes())
+    )
 }
 
 fn decode_reasoning_content(value: Option<&Value>) -> Option<String> {
     let encoded = value_string(value)?;
     let payload = encoded.strip_prefix(MULTIVIBE_REASONING_PREFIX)?;
     let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
-    String::from_utf8(bytes).ok().filter(|text| !text.is_empty())
+    String::from_utf8(bytes)
+        .ok()
+        .filter(|text| !text.is_empty())
 }
 
-fn responses_to_chat_completions(body: &Value, client_stream: bool) -> Value {
+/// DeepSeek's thinking mode rejects a request that ends on a tool result when
+/// any assistant message of the pending turn lacks `reasoning_content`, even
+/// when the model itself omitted reasoning for that generation. The provider
+/// accepts a placeholder, so repair the continuation instead of failing the
+/// turn. Non-continuation requests stay byte-identical to what the client sent.
+const REASONING_CONTINUATION_PLACEHOLDER: &str =
+    "(reasoning content was not emitted for this assistant turn)";
+
+fn ensure_reasoning_continuation(messages: &mut [Value]) {
+    let ends_with_tool_result = messages
+        .last()
+        .and_then(|message| message.get("role"))
+        .and_then(Value::as_str)
+        == Some("tool");
+    if !ends_with_tool_result {
+        return;
+    }
+    for message in messages.iter_mut() {
+        let Some(object) = message.as_object_mut() else {
+            continue;
+        };
+        if object.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let has_reasoning = object
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty());
+        if !has_reasoning {
+            object.insert(
+                "reasoning_content".to_owned(),
+                Value::String(REASONING_CONTINUATION_PLACEHOLDER.to_owned()),
+            );
+        }
+    }
+}
+
+fn responses_to_chat_completions(
+    body: &Value,
+    client_stream: bool,
+    ensure_reasoning: bool,
+) -> Value {
     let object = object_value(body);
     let mut messages = Vec::new();
     let mut pending_reasoning: Option<String> = None;
@@ -2108,14 +2196,25 @@ fn responses_to_chat_completions(body: &Value, client_stream: bool) -> Value {
                                 "arguments": item.get("arguments").map(|value| value.as_str().map(str::to_owned).unwrap_or_else(|| json_string(value))).unwrap_or_else(|| "{}".to_owned()),
                             }
                         });
-                        if let Some(previous) = messages.last_mut().and_then(Value::as_object_mut)
-                            .filter(|message| message.get("role").and_then(Value::as_str) == Some("assistant")
-                                && message.get("tool_calls").is_some_and(Value::is_array))
+                        if let Some(previous) = messages
+                            .last_mut()
+                            .and_then(Value::as_object_mut)
+                            .filter(|message| {
+                                message.get("role").and_then(Value::as_str) == Some("assistant")
+                                    && message.get("tool_calls").is_some_and(Value::is_array)
+                            })
                         {
-                            previous.get_mut("tool_calls").and_then(Value::as_array_mut).unwrap().push(call);
+                            previous
+                                .get_mut("tool_calls")
+                                .and_then(Value::as_array_mut)
+                                .unwrap()
+                                .push(call);
                         } else {
-                            let mut assistant = json!({"role": "assistant", "content": "", "tool_calls": [call]});
-                            if let Some(reasoning) = pending_reasoning.take() { assistant["reasoning_content"] = Value::String(reasoning); }
+                            let mut assistant =
+                                json!({"role": "assistant", "content": "", "tool_calls": [call]});
+                            if let Some(reasoning) = pending_reasoning.take() {
+                                assistant["reasoning_content"] = Value::String(reasoning);
+                            }
                             messages.push(assistant);
                         }
                     }
@@ -2187,6 +2286,9 @@ fn responses_to_chat_completions(body: &Value, client_stream: bool) -> Value {
             }
         }
     }
+    if ensure_reasoning {
+        ensure_reasoning_continuation(&mut messages);
+    }
     let mut output = Map::new();
     output.insert(
         "model".to_owned(),
@@ -2224,10 +2326,7 @@ fn responses_to_chat_completions(body: &Value, client_stream: bool) -> Value {
             })
             .collect();
 
-        output.insert(
-            "tools".to_owned(),
-            Value::Array(normalized_tools),
-        );
+        output.insert("tools".to_owned(), Value::Array(normalized_tools));
     }
     if let Some(choice) = object.get("tool_choice") {
         let normalized_choice = choice
@@ -2242,7 +2341,12 @@ fn responses_to_chat_completions(body: &Value, client_stream: bool) -> Value {
                 let name = choice_object
                     .get("name")
                     .and_then(Value::as_str)
-                    .or_else(|| choice_object.get("function")?.get("name").and_then(Value::as_str))?;
+                    .or_else(|| {
+                        choice_object
+                            .get("function")?
+                            .get("name")
+                            .and_then(Value::as_str)
+                    })?;
                 Some(json!({"type": "function", "function": {"name": name}}))
             });
         if let Some(value) = normalized_choice {
@@ -2255,7 +2359,10 @@ fn responses_to_chat_completions(body: &Value, client_stream: bool) -> Value {
         .is_none_or(|tools| tools.is_empty());
     if no_tools {
         output.remove("tools");
-        if matches!(output.get("tool_choice").and_then(Value::as_str), Some("auto" | "required")) {
+        if matches!(
+            output.get("tool_choice").and_then(Value::as_str),
+            Some("auto" | "required")
+        ) {
             output.remove("tool_choice");
         }
     }
@@ -2281,10 +2388,17 @@ fn validate_chat_tool_contract(body: &Value) -> Result<(), String> {
     let mut names = Vec::new();
     for (index, tool) in tools.iter().enumerate() {
         if tool["type"] != "function" {
-            return Err(format!("tools[{index}].type is unsupported by the Chat Completions bridge"));
+            return Err(format!(
+                "tools[{index}].type is unsupported by the Chat Completions bridge"
+            ));
         }
-        let source = tool.get("function").filter(|v| !v.is_null()).unwrap_or(tool);
-        let name = source["name"].as_str().filter(|name| !name.trim().is_empty())
+        let source = tool
+            .get("function")
+            .filter(|v| !v.is_null())
+            .unwrap_or(tool);
+        let name = source["name"]
+            .as_str()
+            .filter(|name| !name.trim().is_empty())
             .ok_or_else(|| format!("tools[{index}] requires a function name"))?;
         names.push(name);
     }
@@ -2292,10 +2406,22 @@ fn validate_chat_tool_contract(body: &Value) -> Result<(), String> {
         None => Ok(()),
         Some(choice) if matches!(choice.as_str(), Some("auto" | "none")) => Ok(()),
         Some(choice) if choice == "required" && !names.is_empty() => Ok(()),
-        Some(choice) if choice["type"] == "function" && names.contains(&choice.get("name")
-            .or_else(|| choice.get("function")?.get("name"))
-            .and_then(Value::as_str).unwrap_or("")) => Ok(()),
-        _ => Err("tool_choice must select an available function or be auto, none, or required".to_owned()),
+        Some(choice)
+            if choice["type"] == "function"
+                && names.contains(
+                    &choice
+                        .get("name")
+                        .or_else(|| choice.get("function")?.get("name"))
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                ) =>
+        {
+            Ok(())
+        }
+        _ => Err(
+            "tool_choice must select an available function or be auto, none, or required"
+                .to_owned(),
+        ),
     }
 }
 
@@ -2365,7 +2491,10 @@ fn claude_code_model(requested_model: &str) -> String {
 }
 
 fn claude_code_routing_model(requested_model: &str, detected: bool) -> String {
-    if !is_cloud_model_selector(requested_model) && detected && requested_model.to_ascii_lowercase().contains("claude") {
+    if !is_cloud_model_selector(requested_model)
+        && detected
+        && requested_model.to_ascii_lowercase().contains("claude")
+    {
         claude_code_model(requested_model)
     } else {
         requested_model.to_owned()
@@ -2669,7 +2798,9 @@ fn chat_to_response(value: &Value, fallback_model: &str) -> Value {
         .unwrap_or_else(|| json!({}));
     let message = choice.get("message").cloned().unwrap_or_else(|| json!({}));
     let mut output = Vec::new();
-    if let Some(reasoning) = value_string(message.get("reasoning_content")).filter(|text| !text.is_empty()) {
+    if let Some(reasoning) =
+        value_string(message.get("reasoning_content")).filter(|text| !text.is_empty())
+    {
         output.push(json!({"id": new_id("rs"), "type": "reasoning", "summary": [], "encrypted_content": encode_reasoning_content(&reasoning)}));
     }
     let text = message
@@ -2956,7 +3087,9 @@ fn chat_from_sse(text: &str, model: &str) -> Value {
                 {
                     content.push_str(&value);
                 }
-                if let Some(value) = raw_string(delta.get("reasoning_content")).filter(|value| !value.is_empty()) {
+                if let Some(value) =
+                    raw_string(delta.get("reasoning_content")).filter(|value| !value.is_empty())
+                {
                     reasoning.push_str(&value);
                 }
                 if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
@@ -2976,7 +3109,9 @@ fn chat_from_sse(text: &str, model: &str) -> Value {
                             if let Some(name) = value_string(function.get("name")) {
                                 tool_calls[index]["function"]["name"] = Value::String(name);
                             }
-                            if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
+                            if let Some(arguments) =
+                                function.get("arguments").and_then(Value::as_str)
+                            {
                                 tool_calls[index]["function"]["arguments"] =
                                     Value::String(format!(
                                         "{}{}",
@@ -4691,13 +4826,7 @@ impl Drop for StreamingTrace {
         let client_context = self.client_context.clone();
         let completed_at = now_ms();
         if self.observer.diagnostics.saw_response_completed {
-            let outcome = self.outcome(
-                self.status,
-                completed_at,
-                "completed",
-                None,
-                Some(true),
-            );
+            let outcome = self.outcome(self.status, completed_at, "completed", None, Some(true));
             let status = self.status;
             handle.spawn(async move {
                 sink.record(&context, outcome).await;
@@ -5079,8 +5208,11 @@ fn upstream_headers(
     let mut headers = HeaderMap::new();
     set_header(&mut headers, "content-type", "application/json");
     set_header(&mut headers, "accept", "text/event-stream");
-    let token = if provider == "ai-sdk" { config.internal_job_token.as_deref().unwrap_or("") }
-        else { account_inference_token(account) };
+    let token = if provider == "ai-sdk" {
+        config.internal_job_token.as_deref().unwrap_or("")
+    } else {
+        account_inference_token(account)
+    };
     if !token.is_empty() && !is_local_runtime(account) {
         set_header(&mut headers, "authorization", format!("Bearer {token}"));
     }
@@ -5194,7 +5326,15 @@ fn prepared_payload(
             }
             value
         } else {
-            responses_to_chat_completions(body, client_stream)
+            // DeepSeek's thinking mode requires `reasoning_content` on the
+            // pending tool turn; other chat upstreams must not receive fields
+            // they do not understand.
+            let ensure_reasoning = normalize_provider(account) == "ai-sdk"
+                && account
+                    .sdk_provider
+                    .as_deref()
+                    .is_some_and(|provider| provider.eq_ignore_ascii_case("deepseek"));
+            responses_to_chat_completions(body, client_stream, ensure_reasoning)
         }
     } else if chat_route {
         chat_completions_to_responses(body, session_id)
@@ -5244,9 +5384,7 @@ fn is_context_length_error(status: StatusCode, body: &str) -> bool {
     // not-found errors must never be relabeled as an overflow.
     if !matches!(
         status,
-        StatusCode::BAD_REQUEST
-            | StatusCode::PAYLOAD_TOO_LARGE
-            | StatusCode::UNPROCESSABLE_ENTITY
+        StatusCode::BAD_REQUEST | StatusCode::PAYLOAD_TOO_LARGE | StatusCode::UNPROCESSABLE_ENTITY
     ) {
         return false;
     }
@@ -5279,7 +5417,9 @@ fn provider_error_message(body: &str) -> Option<String> {
     if let Ok(value) = serde_json::from_str::<Value>(body) {
         let error = value.get("error");
         for candidate in [
-            error.and_then(|error| error.get("message")).and_then(Value::as_str),
+            error
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str),
             error.and_then(Value::as_str),
             value.get("message").and_then(Value::as_str),
         ] {
@@ -5325,7 +5465,10 @@ fn is_insufficient_quota_error(status: StatusCode, body: &str) -> bool {
         || body.contains("insufficient fund")
         || body.contains("exceeded your current quota")
         || (body.contains("quota")
-            && (body.contains("exceed") || body.contains("insufficient") || body.contains("reached") || body.contains("no available")))
+            && (body.contains("exceed")
+                || body.contains("insufficient")
+                || body.contains("reached")
+                || body.contains("no available")))
 }
 
 fn is_rate_limit_error(status: StatusCode, body: &str) -> bool {
@@ -5455,7 +5598,6 @@ fn has_non_empty_string(value: Option<&Value>) -> bool {
         .and_then(Value::as_str)
         .is_some_and(|value| !value.trim().is_empty())
 }
-
 
 fn is_quota_error(status: StatusCode, body: &str) -> bool {
     status == StatusCode::TOO_MANY_REQUESTS
@@ -5864,7 +6006,13 @@ async fn proxy_inference(
                 if token_refresh::TokenRefreshManager::needs_refresh(&account, now_ms()) {
                     match state
                         .token_refresh
-                        .refresh(&state.webhook_client, &state.config, &state.store, &account, false)
+                        .refresh(
+                            &state.webhook_client,
+                            &state.config,
+                            &state.store,
+                            &account,
+                            false,
+                        )
                         .await
                     {
                         Ok(refreshed) => account = refreshed,
@@ -5905,14 +6053,23 @@ async fn proxy_inference(
                     path.ends_with("/responses/compact"),
                 );
                 let (chat_body, chat_tools) = if sends_chat && path.ends_with("/responses") {
-                    chat_tools::ChatTools::prepare(body).map_err(|message|
-                        error_response(StatusCode::BAD_REQUEST, message, "unsupported_tool_contract"))?
+                    chat_tools::ChatTools::prepare(body).map_err(|message| {
+                        error_response(
+                            StatusCode::BAD_REQUEST,
+                            message,
+                            "unsupported_tool_contract",
+                        )
+                    })?
                 } else {
                     (body.clone(), chat_tools::ChatTools::default())
                 };
                 if sends_chat {
                     if let Err(message) = validate_chat_tool_contract(&chat_body) {
-                        return Err(error_response(StatusCode::BAD_REQUEST, message, "unsupported_tool_contract"));
+                        return Err(error_response(
+                            StatusCode::BAD_REQUEST,
+                            message,
+                            "unsupported_tool_contract",
+                        ));
                     }
                 }
                 let mut payload = prepared_payload(
@@ -6102,7 +6259,13 @@ async fn proxy_inference(
                     {
                         match state
                             .token_refresh
-                            .refresh(&state.webhook_client, &state.config, &state.store, &account, true)
+                            .refresh(
+                                &state.webhook_client,
+                                &state.config,
+                                &state.store,
+                                &account,
+                                true,
+                            )
                             .await
                         {
                             Ok(refreshed) if refreshed.access_token != account.access_token => {
@@ -6415,10 +6578,7 @@ async fn proxy_inference(
     let mut response = if had_account && !capacity_exhausted {
         // The provider failure that exhausted the account rotation still reaches
         // the client through the documented error contract.
-        json_response(
-            status,
-            normalize_provider_error_body(status, &final_error),
-        )
+        json_response(status, normalize_provider_error_body(status, &final_error))
     } else {
         error_response(status, final_error, error_code)
     };
@@ -6503,23 +6663,21 @@ async fn anthropic_error_envelope_layer(request: axum::extract::Request, next: N
     }
     let message = provider_error_message(&text)
         .or_else(|| {
-            serde_json::from_str::<Value>(&text)
-                .ok()
-                .and_then(|value| {
-                    value_string(value.get("error").and_then(|error| error.get("message")))
-                        .or_else(|| value_string(value.get("message")))
-                })
+            serde_json::from_str::<Value>(&text).ok().and_then(|value| {
+                value_string(value.get("error").and_then(|error| error.get("message")))
+                    .or_else(|| value_string(value.get("message")))
+            })
         })
         .unwrap_or_else(|| default_error_message(status));
     let payload = anthropic_error_value(status, &message);
     let encoded = serde_json::to_vec(&payload).unwrap_or_else(|_| b"{}".to_vec());
     parts.headers.remove(header::CONTENT_LENGTH);
-    parts
-        .headers
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    parts.headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
     Response::from_parts(parts, Body::from(encoded))
 }
-
 
 fn anthropic_stream_from_response(response: &Value, requested_model: &str) -> String {
     let message = responses_to_anthropic(response, requested_model);
@@ -6635,7 +6793,10 @@ fn render_buffered_success(
         return BufferedReply {
             status: StatusCode::BAD_GATEWAY,
             headers: vec![("content-type".into(), "application/json".into())],
-            body: Bytes::from(json!({"error": {"code": "invalid_tool_arguments", "message": message}}).to_string()),
+            body: Bytes::from(
+                json!({"error": {"code": "invalid_tool_arguments", "message": message}})
+                    .to_string(),
+            ),
         };
     }
     if messages {
@@ -6741,7 +6902,10 @@ impl ChatResponseStreamState {
         }
         for tool in &mut self.tool_calls {
             if let Err(message) = self.chat_tools.restore_item(tool) {
-                return sse_frame("response.failed", &json!({"type": "response.failed", "response": {"id": self.response_id, "status": "failed", "error": {"code": "invalid_tool_arguments", "message": message}}}));
+                return sse_frame(
+                    "response.failed",
+                    &json!({"type": "response.failed", "response": {"id": self.response_id, "status": "failed", "error": {"code": "invalid_tool_arguments", "message": message}}}),
+                );
             }
         }
         output.extend(self.tool_calls.clone());
@@ -6757,8 +6921,14 @@ impl ChatResponseStreamState {
         let mut out = String::new();
         if !self.reasoning.is_empty() {
             let item = output.first().cloned().unwrap_or_else(|| json!({}));
-            out.push_str(&sse_frame("response.output_item.added", &json!({"type": "response.output_item.added", "output_index": 0, "item": item})));
-            out.push_str(&sse_frame("response.output_item.done", &json!({"type": "response.output_item.done", "output_index": 0, "item": item})));
+            out.push_str(&sse_frame(
+                "response.output_item.added",
+                &json!({"type": "response.output_item.added", "output_index": 0, "item": item}),
+            ));
+            out.push_str(&sse_frame(
+                "response.output_item.done",
+                &json!({"type": "response.output_item.done", "output_index": 0, "item": item}),
+            ));
         }
         if self.content_started {
             out.push_str(&sse_frame("response.output_text.done", &json!({"type": "response.output_text.done", "item_id": self.output_item_id, "output_index": usize::from(!self.reasoning.is_empty()), "content_index": 0, "text": self.content})));
@@ -6766,15 +6936,22 @@ impl ChatResponseStreamState {
             out.push_str(&sse_frame("response.output_item.done", &json!({"type": "response.output_item.done", "output_index": usize::from(!self.reasoning.is_empty()), "item": {"id": self.output_item_id, "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": self.content}]}})));
         }
         for (index, tool) in self.tool_calls.iter().enumerate() {
-            let output_index = index + usize::from(!self.content.is_empty()) + usize::from(!self.reasoning.is_empty());
+            let output_index = index
+                + usize::from(!self.content.is_empty())
+                + usize::from(!self.reasoning.is_empty());
             let custom = tool["type"] == "custom_tool_call";
             let field = if custom { "input" } else { "arguments" };
-            let event = if custom { "response.custom_tool_call_input.done" } else { "response.function_call_arguments.done" };
+            let event = if custom {
+                "response.custom_tool_call_input.done"
+            } else {
+                "response.function_call_arguments.done"
+            };
             let mut added = tool.clone();
             added[field] = json!("");
             added["status"] = json!("in_progress");
             out.push_str(&sse_frame("response.output_item.added", &json!({"type": "response.output_item.added", "output_index": output_index, "item": added})));
-            let mut done = json!({"type": event, "item_id": tool["id"], "output_index": output_index});
+            let mut done =
+                json!({"type": event, "item_id": tool["id"], "output_index": output_index});
             done[field] = tool[field].clone();
             out.push_str(&sse_frame(event, &done));
             let mut completed = tool.clone();
@@ -6833,18 +7010,28 @@ impl ResponseChatStreamState {
         let item_id = value_string(event.get("item_id")).or_else(|| value_string(item.get("id")));
         let call_id = value_string(item.get("call_id"));
         let output_index = event.get("output_index").and_then(Value::as_u64);
-        let index = self.tools.iter().position(|tool| {
-            (item_id.is_some() && tool.item_id == item_id)
-                || (call_id.is_some() && tool.call_id == call_id)
-                || (output_index.is_some() && tool.output_index == output_index)
-        }).unwrap_or_else(|| {
-            self.tools.push(ResponseChatToolState::default());
-            self.tools.len() - 1
-        });
+        let index = self
+            .tools
+            .iter()
+            .position(|tool| {
+                (item_id.is_some() && tool.item_id == item_id)
+                    || (call_id.is_some() && tool.call_id == call_id)
+                    || (output_index.is_some() && tool.output_index == output_index)
+            })
+            .unwrap_or_else(|| {
+                self.tools.push(ResponseChatToolState::default());
+                self.tools.len() - 1
+            });
         let tool = &mut self.tools[index];
-        if item_id.is_some() { tool.item_id = item_id; }
-        if call_id.is_some() && !tool.introduced { tool.call_id = call_id; }
-        if output_index.is_some() { tool.output_index = output_index; }
+        if item_id.is_some() {
+            tool.item_id = item_id;
+        }
+        if call_id.is_some() && !tool.introduced {
+            tool.call_id = call_id;
+        }
+        if output_index.is_some() {
+            tool.output_index = output_index;
+        }
         if let Some(name) = value_string(item.get("name")).filter(|name| !name.is_empty()) {
             tool.name = Some(name);
         }
@@ -6865,7 +7052,10 @@ impl ResponseChatStreamState {
             deltas.push(json!({"tool_calls": [{"index": index, "function": {"arguments": &tool.arguments[tool.emitted..]}}]}));
             tool.emitted = tool.arguments.len();
         }
-        deltas.into_iter().map(|delta| self.chunk(delta, None)).collect()
+        deltas
+            .into_iter()
+            .map(|delta| self.chunk(delta, None))
+            .collect()
     }
 
     fn finish(&mut self) -> String {
@@ -6873,7 +7063,11 @@ impl ResponseChatStreamState {
             return String::new();
         }
         self.finished = true;
-        let reason = if self.tools.iter().any(|tool| tool.introduced) { "tool_calls" } else { "stop" };
+        let reason = if self.tools.iter().any(|tool| tool.introduced) {
+            "tool_calls"
+        } else {
+            "stop"
+        };
         let mut out = self.chunk(json!({}), Some(reason));
         out.push_str("data: [DONE]\n\n");
         out
@@ -7025,7 +7219,9 @@ impl SseStreamTransformer {
                 self.chat_response.content.push_str(&content);
                 output.push_str(&sse_frame("response.output_text.delta", &json!({"type": "response.output_text.delta", "item_id": self.chat_response.output_item_id, "output_index": usize::from(!self.chat_response.reasoning.is_empty()), "content_index": 0, "delta": content})));
             }
-            if let Some(reasoning) = raw_string(delta.get("reasoning_content")).filter(|text| !text.is_empty()) {
+            if let Some(reasoning) =
+                raw_string(delta.get("reasoning_content")).filter(|text| !text.is_empty())
+            {
                 self.chat_response.reasoning.push_str(&reasoning);
             }
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
@@ -7054,7 +7250,6 @@ impl SseStreamTransformer {
                                 .unwrap_or_default()
                                 .to_owned();
                             state["arguments"] = Value::String(format!("{previous}{arguments}"));
-
                         }
                     }
                 }
@@ -7106,20 +7301,33 @@ impl SseStreamTransformer {
                 return self.response_chat.chunk(json!({"content": text}), None);
             }
         }
-        if matches!(event_type, "response.output_item.added" | "response.output_item.done")
-            && value["item"]["type"] == "function_call"
+        if matches!(
+            event_type,
+            "response.output_item.added" | "response.output_item.done"
+        ) && value["item"]["type"] == "function_call"
         {
-            return self.response_chat.tool_event(value, event_type == "response.output_item.done");
+            return self
+                .response_chat
+                .tool_event(value, event_type == "response.output_item.done");
         }
-        if matches!(event_type, "response.function_call_arguments.delta" | "response.function_call_arguments.done") {
-            return self.response_chat.tool_event(value, event_type.ends_with(".done"));
+        if matches!(
+            event_type,
+            "response.function_call_arguments.delta" | "response.function_call_arguments.done"
+        ) {
+            return self
+                .response_chat
+                .tool_event(value, event_type.ends_with(".done"));
         }
         if event_type == "response.completed" {
             let mut output = String::new();
             if let Some(items) = value["response"]["output"].as_array() {
                 for (index, item) in items.iter().enumerate() {
                     if item["type"] == "function_call" {
-                        output.push_str(&self.response_chat.tool_event(&json!({"output_index": index, "item": item}), true));
+                        output.push_str(
+                            &self
+                                .response_chat
+                                .tool_event(&json!({"output_index": index, "item": item}), true),
+                        );
                     }
                 }
             }
@@ -9574,7 +9782,10 @@ fn model_entry_from_upstream(
     {
         entry["name"] = Value::String(display_name.to_owned());
         if let Some(metadata) = entry.get_mut("metadata").and_then(Value::as_object_mut) {
-            metadata.insert("display_name".to_owned(), Value::String(display_name.to_owned()));
+            metadata.insert(
+                "display_name".to_owned(),
+                Value::String(display_name.to_owned()),
+            );
         }
     }
     let metadata = entry
@@ -9776,10 +9987,7 @@ fn static_exposed_models(store: &StoreFile, config: &EdgeConfig) -> Vec<Value> {
         if targets.is_empty() {
             continue;
         }
-        let Some(provider) = providers_for_model(&targets[0], &models)
-            .into_iter()
-            .next()
-        else {
+        let Some(provider) = providers_for_model(&targets[0], &models).into_iter().next() else {
             continue;
         };
         upsert_model(
@@ -9896,8 +10104,11 @@ fn model_discovery_headers(account: &Account, config: &EdgeConfig) -> HeaderMap 
     let provider = normalize_provider(account);
     let mut headers = HeaderMap::new();
     set_header(&mut headers, "accept", "application/json");
-    let token = if provider == "ai-sdk" { config.internal_job_token.as_deref().unwrap_or("") }
-        else { account_inference_token(account) };
+    let token = if provider == "ai-sdk" {
+        config.internal_job_token.as_deref().unwrap_or("")
+    } else {
+        account_inference_token(account)
+    };
     if !token.is_empty() && !is_local_runtime(account) {
         set_header(&mut headers, "authorization", format!("Bearer {token}"));
     }
@@ -10094,7 +10305,10 @@ async fn exposed_models(state: &EdgeState, store: &StoreFile, force: bool) -> Ve
             }
         };
         for entry in entries {
-            if !catalog_entry_upstream_id(&entry).is_some_and(|id| team_model_allowed(account, id)) { continue; }
+            if !catalog_entry_upstream_id(&entry).is_some_and(|id| team_model_allowed(account, id))
+            {
+                continue;
+            }
             upsert_model(&mut models, entry);
         }
     }
@@ -10184,13 +10398,11 @@ fn codex_model_shape(model: &Value) -> Option<Value> {
         .and_then(|value| value.get("output_modalities"))
         .and_then(Value::as_array);
     if output_modalities.is_some_and(|modalities| {
-        !modalities
-            .iter()
-            .any(|value| {
-                value
-                    .as_str()
-                    .is_some_and(|value| value.eq_ignore_ascii_case("text"))
-            })
+        !modalities.iter().any(|value| {
+            value
+                .as_str()
+                .is_some_and(|value| value.eq_ignore_ascii_case("text"))
+        })
     }) {
         return None;
     }
@@ -10201,13 +10413,11 @@ fn codex_model_shape(model: &Value) -> Option<Value> {
     let provider = metadata.get("provider")?.as_str()?;
     let is_text_capable_ai_sdk_model = provider == "ai-sdk"
         && output_modalities.is_some_and(|modalities| {
-            modalities
-                .iter()
-                .any(|value| {
-                    value
-                        .as_str()
-                        .is_some_and(|value| value.eq_ignore_ascii_case("text"))
-                })
+            modalities.iter().any(|value| {
+                value
+                    .as_str()
+                    .is_some_and(|value| value.eq_ignore_ascii_case("text"))
+            })
         });
     if provider != "zai" && provider != "openai-compatible" && !is_text_capable_ai_sdk_model {
         return None;
@@ -10215,7 +10425,10 @@ fn codex_model_shape(model: &Value) -> Option<Value> {
     let id = model.get("id").and_then(Value::as_str)?;
     // Non-chat runtimes share the OpenAI-compatible model endpoint.
     if id.to_ascii_lowercase().split(['-', '_', '/']).any(|part| {
-        matches!(part, "tts" | "asr" | "whisper" | "kokoro" | "embed" | "embedding" | "rerank" | "reranker")
+        matches!(
+            part,
+            "tts" | "asr" | "whisper" | "kokoro" | "embed" | "embedding" | "rerank" | "reranker"
+        )
     }) {
         return None;
     }
@@ -10900,7 +11113,13 @@ async fn realtime_call_handler(State(state): State<EdgeState>, req: Request<Body
         if token_refresh::TokenRefreshManager::needs_refresh(&account, now_ms()) {
             match state
                 .token_refresh
-                .refresh(&state.webhook_client, &state.config, &state.store, &account, false)
+                .refresh(
+                    &state.webhook_client,
+                    &state.config,
+                    &state.store,
+                    &account,
+                    false,
+                )
                 .await
             {
                 Ok(refreshed) => account = refreshed,
@@ -11005,7 +11224,13 @@ async fn realtime_call_handler(State(state): State<EdgeState>, req: Request<Body
             {
                 match state
                     .token_refresh
-                    .refresh(&state.webhook_client, &state.config, &state.store, &account, true)
+                    .refresh(
+                        &state.webhook_client,
+                        &state.config,
+                        &state.store,
+                        &account,
+                        true,
+                    )
                     .await
                 {
                     Ok(refreshed) if refreshed.access_token != account.access_token => {
@@ -11222,7 +11447,13 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
     if token_refresh::TokenRefreshManager::needs_refresh(&account, now_ms()) {
         match state
             .token_refresh
-            .refresh(&state.webhook_client, &state.config, &state.store, &account, false)
+            .refresh(
+                &state.webhook_client,
+                &state.config,
+                &state.store,
+                &account,
+                false,
+            )
             .await
         {
             Ok(refreshed) => account = refreshed,
@@ -11376,7 +11607,13 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
         {
             match state
                 .token_refresh
-                .refresh(&state.webhook_client, &state.config, &state.store, &account, true)
+                .refresh(
+                    &state.webhook_client,
+                    &state.config,
+                    &state.store,
+                    &account,
+                    true,
+                )
                 .await
             {
                 Ok(refreshed) if refreshed.access_token != account.access_token => {
@@ -11878,7 +12115,10 @@ mod tests {
         );
         account.opencode_api_key = Some("{env:UNRELATED_SECRET}".to_owned());
         assert!(!account_usable(&account, "test", &HashMap::new()));
-        assert!(!model_discovery_headers(&account, &EdgeConfig::default()).contains_key("authorization"));
+        assert!(
+            !model_discovery_headers(&account, &EdgeConfig::default())
+                .contains_key("authorization")
+        );
     }
 
     use super::*;
@@ -11909,15 +12149,28 @@ mod tests {
         ordinary.id = "unrelated".to_owned();
         ordinary.multivibe_cloud = None;
         let store = StoreFile::default();
-        for model in ["multivibe/model", "multivibe/secured_preferred/model", "multivibe/secured_guaranteed/model", "multivibe/green_guaranteed/model"] {
+        for model in [
+            "multivibe/model",
+            "multivibe/secured_preferred/model",
+            "multivibe/secured_guaranteed/model",
+            "multivibe/green_guaranteed/model",
+        ] {
             let routes = routes_for_model(&store, model, "default", &[]);
             assert_eq!(routes.len(), 1);
             assert_eq!(routes[0].model, model);
-            let accounts = select_accounts(&[ordinary.clone(), cloud.clone()], &routes[0], &HashMap::new(), &HashMap::new());
+            let accounts = select_accounts(
+                &[ordinary.clone(), cloud.clone()],
+                &routes[0],
+                &HashMap::new(),
+                &HashMap::new(),
+            );
             assert_eq!(accounts.len(), 1);
             assert_eq!(accounts[0].id, "cloud");
         }
-        assert_eq!(claude_code_routing_model("multivibe/secured_guaranteed/claude-model", true), "multivibe/secured_guaranteed/claude-model");
+        assert_eq!(
+            claude_code_routing_model("multivibe/secured_guaranteed/claude-model", true),
+            "multivibe/secured_guaranteed/claude-model"
+        );
     }
 
     #[test]
@@ -11940,16 +12193,39 @@ mod tests {
         cloud.multivibe_cloud = Some(true);
         let routes = routes_for_model(&StoreFile::default(), model, "remote-default", &[]);
         assert_eq!(routes.len(), 1);
-        let selected = select_accounts(&[cloud.clone(), local.clone()], &routes[0], &HashMap::new(), &HashMap::new());
-        assert_eq!(selected.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), vec!["managed-local"]);
+        let selected = select_accounts(
+            &[cloud.clone(), local.clone()],
+            &routes[0],
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(
+            selected.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+            vec!["managed-local"]
+        );
         assert!(select_accounts(&[cloud], &routes[0], &HashMap::new(), &HashMap::new()).is_empty());
-        for origin in ["https://127.0.0.1:11434", "http://localhost:11434", "http://192.168.1.2:11434", "http://127.0.0.1:1234", "http://user:secret@127.0.0.1:11434", "http://127.0.0.1:11434/v1", "http://127.0.0.1:11434/?x=1"] {
+        for origin in [
+            "https://127.0.0.1:11434",
+            "http://localhost:11434",
+            "http://192.168.1.2:11434",
+            "http://127.0.0.1:1234",
+            "http://user:secret@127.0.0.1:11434",
+            "http://127.0.0.1:11434/v1",
+            "http://127.0.0.1:11434/?x=1",
+        ] {
             let mut unsafe_account = local.clone();
             unsafe_account.base_url = Some(origin.to_owned());
-            assert!(!local_preparation_route_allowed(&unsafe_account, &routes[0]), "{origin}");
+            assert!(
+                !local_preparation_route_allowed(&unsafe_account, &routes[0]),
+                "{origin}"
+            );
         }
         let mut unconfirmed = local.clone();
-        unconfirmed.local_runtime.as_mut().unwrap().confirmed_model_ids = vec!["another-model".to_owned()];
+        unconfirmed
+            .local_runtime
+            .as_mut()
+            .unwrap()
+            .confirmed_model_ids = vec!["another-model".to_owned()];
         assert!(!local_preparation_route_allowed(&unconfirmed, &routes[0]));
         let mut remapped = routes[0].clone();
         remapped.model = "remote-model".to_owned();
@@ -12040,17 +12316,15 @@ mod tests {
             &HashMap::new(),
         );
         assert_eq!(
-            selected.iter().map(|value| value.id.as_str()).collect::<Vec<_>>(),
+            selected
+                .iter()
+                .map(|value| value.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["local-runtime-omlx"]
         );
         // The reported regression: when discovery drops the model, the request
         // must not be redirected to a ChatGPT account.
-        let routes = routes_for_model(
-            &StoreFile::default(),
-            "Qwen3.8-27B-4bit",
-            "default",
-            &[],
-        );
+        let routes = routes_for_model(&StoreFile::default(), "Qwen3.8-27B-4bit", "default", &[]);
         assert!(routes.is_empty());
     }
 
@@ -12104,12 +12378,21 @@ mod tests {
             .unwrap();
         assert_eq!(qwen["metadata"]["runtime"], "omlx");
         assert_eq!(qwen["metadata"]["upstream_model_id"], "Qwen3.8-27B-4bit");
-        assert_eq!(qwen["metadata"]["account_ids"], json!(["local-runtime-omlx"]));
+        assert_eq!(
+            qwen["metadata"]["account_ids"],
+            json!(["local-runtime-omlx"])
+        );
         let kokoro = models
             .iter()
-            .filter(|entry| entry["metadata"]["upstream_model_id"] == "mlx-community/Kokoro-82M-bf16")
+            .filter(|entry| {
+                entry["metadata"]["upstream_model_id"] == "mlx-community/Kokoro-82M-bf16"
+            })
             .collect::<Vec<_>>();
-        assert_eq!(kokoro.len(), 2, "the same model on two runtimes stays two entries");
+        assert_eq!(
+            kokoro.len(),
+            2,
+            "the same model on two runtimes stays two entries"
+        );
         let response = models_list_response(&models, json!({}));
         assert!(
             response["data"]
@@ -12120,7 +12403,8 @@ mod tests {
         );
         let native = response["models"].as_array().unwrap();
         assert!(native.iter().any(|entry| {
-            entry["slug"] == "omlx/Qwen3.8-27B-4bit" && entry["display_name"] == "omlx/Qwen3.8-27B-4bit"
+            entry["slug"] == "omlx/Qwen3.8-27B-4bit"
+                && entry["display_name"] == "omlx/Qwen3.8-27B-4bit"
         }));
     }
 
@@ -12147,7 +12431,11 @@ mod tests {
             assert_eq!(routes.len(), 1, "{requested}");
             assert_eq!(routes[0].requested_model, requested, "{requested}");
             assert_eq!(routes[0].model, "Qwen3.8-27B-4bit", "{requested}");
-            assert_eq!(routes[0].account_ids, vec![account_id.to_owned()], "{requested}");
+            assert_eq!(
+                routes[0].account_ids,
+                vec![account_id.to_owned()],
+                "{requested}"
+            );
         }
         store.model_aliases.push(ModelAlias {
             id: "fast".to_owned(),
@@ -12210,8 +12498,13 @@ mod tests {
 
     #[test]
     fn codex_catalog_includes_local_chat_but_not_audio_models() {
-        let models = ["Qwen3.8-27B-4bit", "Kokoro-82M-bf16", "Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16", "whisper-large-v3-turbo-asr-4bit"]
-            .map(|id| json!({"id": id, "metadata": {"provider": "openai-compatible"}}));
+        let models = [
+            "Qwen3.8-27B-4bit",
+            "Kokoro-82M-bf16",
+            "Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16",
+            "whisper-large-v3-turbo-asr-4bit",
+        ]
+        .map(|id| json!({"id": id, "metadata": {"provider": "openai-compatible"}}));
         let response = models_list_response(&models, json!({}));
         assert_eq!(response["data"].as_array().unwrap().len(), 4);
         let native = response["models"].as_array().unwrap();
@@ -12239,11 +12532,14 @@ mod tests {
             .iter()
             .map(|model| model["slug"].as_str().unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(slugs, [
-            "deepseek/deepseek-v4-flash",
-            "deepseek/deepseek-v4-flash-vision-exp",
-            "image-captioner",
-        ]);
+        assert_eq!(
+            slugs,
+            [
+                "deepseek/deepseek-v4-flash",
+                "deepseek/deepseek-v4-flash-vision-exp",
+                "image-captioner",
+            ]
+        );
     }
 
     #[test]
@@ -12294,37 +12590,94 @@ mod tests {
         sdk.provider = Some("ai-sdk".to_owned());
         sdk.sdk_provider = Some("anthropic".to_owned());
         sdk.access_token = "provider-secret-never-sent-to-adapter".to_owned();
-        fs::write(&store_path, serde_json::to_vec(&store_with_accounts(vec![sdk])).unwrap()).await.unwrap();
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![sdk])).unwrap(),
+        )
+        .await
+        .unwrap();
         let mut config = EdgeConfig::default();
-        config.store_path = store_path.clone(); config.jobs_path = jobs_path.clone();
-        config.node_control_plane_url = adapter_url; config.internal_job_token = Some("adapter-secret".to_owned());
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.node_control_plane_url = adapter_url;
+        config.internal_job_token = Some("adapter-secret".to_owned());
         config.configured_api_keys = vec![("test".to_owned(), "proxy-secret".to_owned())];
         let state = EdgeState::new(config).await.unwrap();
         let (edge_url, edge_task) = start_server(build_router(state)).await;
         let client = reqwest::Client::new();
-        let catalog: Value = client.get(format!("{edge_url}/v1/models")).bearer_auth("proxy-secret").send().await.unwrap().json().await.unwrap();
-        let model = catalog["data"].as_array().unwrap().iter().find(|model| model["id"] == "anthropic/test").unwrap();
+        let catalog: Value = client
+            .get(format!("{edge_url}/v1/models"))
+            .bearer_auth("proxy-secret")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let model = catalog["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["id"] == "anthropic/test")
+            .unwrap();
         assert_eq!(model["metadata"]["provider"], "ai-sdk");
         assert_eq!(model["metadata"]["sdk_provider"], "anthropic");
         assert_eq!(model["metadata"]["context_window"], 200000);
         assert_eq!(model["metadata"]["pricing"]["input"], 3);
         assert_eq!(model["name"], "Anthropic Test");
         assert_eq!(model["metadata"]["display_name"], "Anthropic Test");
-        let native = catalog["models"].as_array().unwrap().iter().find(|model| model["slug"] == "anthropic/test").unwrap();
-        assert_eq!(native["display_name"], "Anthropic Test", "Codex shows the provider display name");
+        let native = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["slug"] == "anthropic/test")
+            .unwrap();
+        assert_eq!(
+            native["display_name"], "Anthropic Test",
+            "Codex shows the provider display name"
+        );
         for (path, payload) in [
-            ("/v1/chat/completions", json!({"model": "anthropic/test", "messages": [{"role": "user", "content": "Hello"}]})),
-            ("/v1/responses", json!({"model": "anthropic/test", "input": "Hello"})),
-            ("/v1/responses", json!({"model": "anthropic/test", "input": "Hello", "stream": true})),
-            ("/v1/messages", json!({"model": "anthropic/test", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50})),
+            (
+                "/v1/chat/completions",
+                json!({"model": "anthropic/test", "messages": [{"role": "user", "content": "Hello"}]}),
+            ),
+            (
+                "/v1/responses",
+                json!({"model": "anthropic/test", "input": "Hello"}),
+            ),
+            (
+                "/v1/responses",
+                json!({"model": "anthropic/test", "input": "Hello", "stream": true}),
+            ),
+            (
+                "/v1/messages",
+                json!({"model": "anthropic/test", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}),
+            ),
         ] {
-            let response = client.post(format!("{edge_url}{path}")).bearer_auth("proxy-secret").json(&payload).send().await.unwrap();
+            let response = client
+                .post(format!("{edge_url}{path}"))
+                .bearer_auth("proxy-secret")
+                .json(&payload)
+                .send()
+                .await
+                .unwrap();
             assert_eq!(response.status(), StatusCode::OK, "{path}");
             assert!(response.text().await.unwrap().contains("Hi"), "{path}");
         }
-        assert_eq!(client.get(format!("{edge_url}/internal/ai-sdk/sdk-account/v1/models")).bearer_auth("adapter-secret").send().await.unwrap().status(), StatusCode::NOT_FOUND);
-        edge_task.abort(); adapter_task.abort();
-        let _ = fs::remove_file(store_path).await; let _ = fs::remove_file(jobs_path).await;
+        assert_eq!(
+            client
+                .get(format!("{edge_url}/internal/ai-sdk/sdk-account/v1/models"))
+                .bearer_auth("adapter-secret")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        edge_task.abort();
+        adapter_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
     }
 
     #[tokio::test]
@@ -12355,7 +12708,12 @@ mod tests {
         let jobs_path = temporary_path("local-runtime-jobs");
         let mut local = local_runtime_account("local-runtime-omlx", "omlx", &["Qwen3.8-27B-4bit"]);
         local.base_url = Some(runtime_url.clone());
-        fs::write(&store_path, serde_json::to_vec(&store_with_accounts(vec![local])).unwrap()).await.unwrap();
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![local])).unwrap(),
+        )
+        .await
+        .unwrap();
         let mut config = EdgeConfig::default();
         config.store_path = store_path.clone();
         config.jobs_path = jobs_path.clone();
@@ -12380,7 +12738,10 @@ mod tests {
             .expect("discovered local model must expose a runtime-prefixed id");
         assert_eq!(model["metadata"]["runtime"], "omlx");
         assert_eq!(model["metadata"]["upstream_model_id"], "Qwen3.8-27B-4bit");
-        assert_eq!(model["metadata"]["account_ids"], json!(["local-runtime-omlx"]));
+        assert_eq!(
+            model["metadata"]["account_ids"],
+            json!(["local-runtime-omlx"])
+        );
         assert_eq!(model["metadata"]["context_window"], 65536);
         assert_eq!(model["metadata"]["display_name"], "Qwen3.8 27B");
         let native = catalog["models"]
@@ -12488,18 +12849,27 @@ mod tests {
     #[test]
     fn account_selection_respects_subscription_credits() {
         let mut high = account("high");
-        high.usage = Some(serde_json::from_value(json!({
-            "credits": { "usedPercent": 10 },
-            "tools": { "usedPercent": 100 }
-        })).unwrap());
+        high.usage = Some(
+            serde_json::from_value(json!({
+                "credits": { "usedPercent": 10 },
+                "tools": { "usedPercent": 100 }
+            }))
+            .unwrap(),
+        );
         let mut low = account("low");
-        low.usage = Some(serde_json::from_value(json!({
-            "credits": { "usedPercent": 90 }
-        })).unwrap());
+        low.usage = Some(
+            serde_json::from_value(json!({
+                "credits": { "usedPercent": 90 }
+            }))
+            .unwrap(),
+        );
         let mut exhausted = account("exhausted");
-        exhausted.usage = Some(serde_json::from_value(json!({
-            "monthly": { "usedPercent": 100 }
-        })).unwrap());
+        exhausted.usage = Some(
+            serde_json::from_value(json!({
+                "monthly": { "usedPercent": 100 }
+            }))
+            .unwrap(),
+        );
         let route = RouteCandidate {
             requested_model: "test".to_owned(),
             model: "test".to_owned(),
@@ -12508,7 +12878,9 @@ mod tests {
         };
         assert_eq!(account_headroom(&high), Some(90.0));
         let ordered = select_accounts(
-            &[high, low, exhausted], &route, &HashMap::new(),
+            &[high, low, exhausted],
+            &route,
+            &HashMap::new(),
             &HashMap::from([("openai".to_owned(), "high".to_owned())]),
         );
         assert_eq!(ordered.first().map(|value| value.id.as_str()), Some("high"));
@@ -12716,22 +13088,33 @@ mod tests {
         let destination_calls = Arc::new(AtomicUsize::new(0));
         let counter = destination_calls.clone();
         let routes = Router::new()
-            .route("/redirect", post(|| async { axum::response::Redirect::temporary("/done") }))
-            .route("/done", post(move || {
-                let counter = counter.clone();
-                async move {
-                    counter.fetch_add(1, AtomicOrdering::SeqCst);
-                    StatusCode::NO_CONTENT
-                }
-            }));
+            .route(
+                "/redirect",
+                post(|| async { axum::response::Redirect::temporary("/done") }),
+            )
+            .route(
+                "/done",
+                post(move || {
+                    let counter = counter.clone();
+                    async move {
+                        counter.fetch_add(1, AtomicOrdering::SeqCst);
+                        StatusCode::NO_CONTENT
+                    }
+                }),
+            );
         let (url, task) = start_server(routes).await;
         let mut config = EdgeConfig::default();
         config.store_path = temporary_path("redirect-accounts");
         config.jobs_path = temporary_path("redirect-jobs");
         config.legacy_jobs_db_path = None;
         let state = EdgeState::new(config).await.unwrap();
-        let response = state.webhook_client.post(format!("{url}/redirect"))
-            .body("request").send().await.unwrap();
+        let response = state
+            .webhook_client
+            .post(format!("{url}/redirect"))
+            .body("request")
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
         assert_eq!(destination_calls.load(AtomicOrdering::SeqCst), 0);
         task.abort();
@@ -13289,14 +13672,13 @@ mod tests {
 
         timeout(Duration::from_secs(2), async {
             loop {
-                if fs::read_to_string(&trace_path)
-                    .await
-                    .is_ok_and(|contents| contents.lines().any(|line| {
+                if fs::read_to_string(&trace_path).await.is_ok_and(|contents| {
+                    contents.lines().any(|line| {
                         serde_json::from_str::<Value>(line).is_ok_and(|trace| {
                             trace["traceKind"] == "client-request" && trace["status"] == 499
                         })
-                    }))
-                {
+                    })
+                }) {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -13379,7 +13761,10 @@ mod tests {
                         .lines()
                         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
                         .collect::<Vec<_>>();
-                    if traces.iter().any(|trace| trace["traceKind"] == "client-request") {
+                    if traces
+                        .iter()
+                        .any(|trace| trace["traceKind"] == "client-request")
+                    {
                         break traces;
                     }
                 }
@@ -13528,16 +13913,20 @@ mod tests {
         assert_eq!(reasoning["type"], "reasoning");
         assert_ne!(reasoning["encrypted_content"], "opaque provider reasoning");
 
-        let continued = responses_to_chat_completions(&json!({
-            "model": "deepseek-v4-flash",
-            "input": [
-                reasoning,
-                response["output"][1],
-                response["output"][2],
-                {"type": "function_call_output", "call_id": "call-1", "output": "one"},
-                {"type": "function_call_output", "call_id": "call-2", "output": "two"}
-            ]
-        }), false);
+        let continued = responses_to_chat_completions(
+            &json!({
+                "model": "deepseek-v4-flash",
+                "input": [
+                    reasoning,
+                    response["output"][1],
+                    response["output"][2],
+                    {"type": "function_call_output", "call_id": "call-1", "output": "one"},
+                    {"type": "function_call_output", "call_id": "call-2", "output": "two"}
+                ]
+            }),
+            false,
+            false,
+        );
         let assistant = &continued["messages"][0];
         assert_eq!(assistant["reasoning_content"], "opaque provider reasoning");
         assert_eq!(assistant["tool_calls"].as_array().unwrap().len(), 2);
@@ -13547,25 +13936,92 @@ mod tests {
 
     #[test]
     fn reasoning_is_preserved_on_commentary_and_calls() {
-        let result = responses_to_chat_completions(&json!({"input": [
-            {"type":"reasoning", "encrypted_content":encode_reasoning_content("think")},
-            {"type":"message", "role":"assistant", "content":"Checking now"},
-            {"type":"function_call", "call_id":"one", "name":"check", "arguments":"{}"},
-            {"type":"function_call_output", "call_id":"one", "output":"ok"},
-            {"type":"message", "role":"user", "content":"Next"},
-            {"type":"message", "role":"assistant", "content":"Unrelated"}
-        ]}), false);
+        let result = responses_to_chat_completions(
+            &json!({"input": [
+                {"type":"reasoning", "encrypted_content":encode_reasoning_content("think")},
+                {"type":"message", "role":"assistant", "content":"Checking now"},
+                {"type":"function_call", "call_id":"one", "name":"check", "arguments":"{}"},
+                {"type":"function_call_output", "call_id":"one", "output":"ok"},
+                {"type":"message", "role":"user", "content":"Next"},
+                {"type":"message", "role":"assistant", "content":"Unrelated"}
+            ]}),
+            false,
+            false,
+        );
         assert_eq!(result["messages"][0]["reasoning_content"], "think");
         assert_eq!(result["messages"][1]["reasoning_content"], "think");
         assert!(result["messages"][4].get("reasoning_content").is_none());
     }
 
     #[test]
+    fn tool_continuation_without_reasoning_gets_a_placeholder() {
+        let converted = responses_to_chat_completions(
+            &json!({"model": "deepseek/deepseek-flash", "input": [
+                {"type": "message", "role": "user", "content": "Have you fixed it?"},
+                {"type": "function_call", "call_id": "call-1", "name": "exec_command", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call-1", "output": "merge ok"},
+                {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Merged. Running tests."}]},
+                {"type": "function_call", "call_id": "call-2", "name": "exec_command", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call-2", "output": "tests failed"}
+            ]}),
+            false,
+            true,
+        );
+        let messages = converted["messages"].as_array().unwrap();
+        for message in messages {
+            if message["role"] == "assistant" {
+                assert!(
+                    message["reasoning_content"]
+                        .as_str()
+                        .is_some_and(|text| !text.is_empty()),
+                    "assistant message without reasoning placeholder: {message}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reasoning_continuation_repair_only_applies_to_open_tool_turns() {
+        // A history closed by a user message never needs the repair.
+        let closed = responses_to_chat_completions(
+            &json!({"input": [
+                {"type": "function_call", "call_id": "call-1", "name": "run", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call-1", "output": "ok"},
+                {"type": "message", "role": "user", "content": "thanks"}
+            ]}),
+            false,
+            true,
+        );
+        assert!(closed["messages"][0].get("reasoning_content").is_none());
+
+        // An existing marker is never overwritten by the placeholder.
+        let preserved = responses_to_chat_completions(
+            &json!({"input": [
+                {"type": "reasoning", "encrypted_content": encode_reasoning_content("real reasoning")},
+                {"type": "function_call", "call_id": "call-1", "name": "run", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call-1", "output": "ok"}
+            ]}),
+            false,
+            true,
+        );
+        assert_eq!(
+            preserved["messages"][0]["reasoning_content"],
+            "real reasoning"
+        );
+    }
+
+    #[test]
     fn chat_sse_to_responses_preserves_reasoning_for_continuation() {
-        let mut converter = SseStreamTransformer::new(StreamTransform::ChatToResponse, "deepseek-v4-flash");
+        let mut converter =
+            SseStreamTransformer::new(StreamTransform::ChatToResponse, "deepseek-v4-flash");
+        // The terminal frame is held until the usage chunk that follows
+        // `finish_reason` arrives, so the reasoning item is only observable
+        // after this provider-realistic usage frame.
         let output = converter.push(br#"data: {"object":"chat.completion.chunk","choices":[{"delta":{"reasoning_content":"think"},"finish_reason":null}]}
 
 data: {"object":"chat.completion.chunk","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}
+
+data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}
 
 "#);
         assert!(output.contains("mv-reasoning-v1:"));
@@ -13612,6 +14068,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 ]}
             ]}),
             false,
+            false,
         );
         let tool = &converted["messages"][1];
         assert_eq!(tool["role"], "tool");
@@ -13620,16 +14077,19 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         let follow_up = &converted["messages"][2];
         assert_eq!(follow_up["role"], "user");
         assert_eq!(follow_up["content"][1]["type"], "image_url");
-        assert!(follow_up["content"][1]["image_url"]["url"]
-            .as_str()
-            .unwrap()
-            .ends_with(&base64));
+        assert!(
+            follow_up["content"][1]["image_url"]["url"]
+                .as_str()
+                .unwrap()
+                .ends_with(&base64)
+        );
 
         let text_only = responses_to_chat_completions(
             &json!({"model": "deepseek/deepseek-flash", "input": [
                 {"type": "function_call", "call_id": "call-text", "name": "run", "arguments": "{}"},
                 {"type": "function_call_output", "call_id": "call-text", "output": [{"type": "text", "text": "ok"}]}
             ]}),
+            false,
             false,
         );
         assert_eq!(text_only["messages"][1]["content"], "ok");
@@ -13691,6 +14151,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 "tool_choice": {"type": "function", "name": "lookup"}
             }),
             false,
+            false,
         );
 
         assert_eq!(
@@ -13705,7 +14166,9 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
 
     #[test]
     fn custom_tool_stream_restores_split_json_and_emits_item_lifecycle() {
-        let (_, adapter) = chat_tools::ChatTools::prepare(&json!({"tools": [{"type": "custom", "name": "exec"}]})).unwrap();
+        let (_, adapter) =
+            chat_tools::ChatTools::prepare(&json!({"tools": [{"type": "custom", "name": "exec"}]}))
+                .unwrap();
         let mut converter = SseStreamTransformer::new(StreamTransform::ChatToResponse, "glm-test");
         converter.chat_response.chat_tools = adapter;
         let mut stream = String::new();
@@ -13741,9 +14204,12 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         let body = json!({"tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object"}}], "tool_choice": "required",
             "input": [{"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": "{}"}, {"type": "function_call_output", "call_id": "call_1", "output": "result"}]});
         assert!(validate_chat_tool_contract(&body).is_ok());
-        let converted = responses_to_chat_completions(&body, false);
+        let converted = responses_to_chat_completions(&body, false, false);
         assert_eq!(converted["tool_choice"], "required");
-        assert_eq!(converted["messages"][0]["tool_calls"][0]["id"], converted["messages"][1]["tool_call_id"]);
+        assert_eq!(
+            converted["messages"][0]["tool_calls"][0]["id"],
+            converted["messages"][1]["tool_call_id"]
+        );
         assert_eq!(converted["messages"][1]["content"], "result");
     }
 
@@ -13780,7 +14246,12 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         provider.provider = Some("openai-compatible".to_owned());
         provider.base_url = Some(url);
         provider.upstream_mode = Some("chat/completions".to_owned());
-        fs::write(&store_path, serde_json::to_vec(&store_with_accounts(vec![provider])).unwrap()).await.unwrap();
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![provider])).unwrap(),
+        )
+        .await
+        .unwrap();
         let mut config = EdgeConfig::default();
         config.store_path = store_path.clone();
         config.jobs_path = jobs_path.clone();
@@ -13798,7 +14269,12 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
             assert_eq!(response.status(), StatusCode::OK);
             let result: Value = response.json().await.unwrap();
             if turn == 0 {
-                let call = result["output"].as_array().unwrap().iter().find(|v| v["type"] == "function_call").unwrap();
+                let call = result["output"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|v| v["type"] == "function_call")
+                    .unwrap();
                 assert_eq!(call["call_id"], "call_lookup");
                 input.as_array_mut().unwrap().push(call.clone());
                 input.as_array_mut().unwrap().push(json!({"type": "function_call_output", "call_id": "call_lookup", "output": "42"}));
@@ -13806,9 +14282,15 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 assert!(result.to_string().contains("The result is 42."));
             }
         }
-        let rejected = client.post(format!("{edge_url}/v1/responses")).bearer_auth("test-key")
-            .json(&json!({"model": "glm-test", "input": "test", "tools": [{"type": "file_search"}]}))
-            .send().await.unwrap();
+        let rejected = client
+            .post(format!("{edge_url}/v1/responses"))
+            .bearer_auth("test-key")
+            .json(
+                &json!({"model": "glm-test", "input": "test", "tools": [{"type": "file_search"}]}),
+            )
+            .send()
+            .await
+            .unwrap();
         assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
         assert_eq!(calls.load(AtomicOrdering::SeqCst), 2);
         edge_task.abort();
@@ -13853,7 +14335,12 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         let provider_url = url.clone();
         provider.base_url = Some(url);
         provider.upstream_mode = Some("chat/completions".to_owned());
-        fs::write(&store_path, serde_json::to_vec(&store_with_accounts(vec![provider])).unwrap()).await.unwrap();
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![provider])).unwrap(),
+        )
+        .await
+        .unwrap();
         let mut config = EdgeConfig::default();
         config.zai_base_url = provider_url;
         config.zai_upstream_path = "/v1/chat/completions".to_owned();
@@ -13872,10 +14359,18 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                     "tools": [{"type": "custom", "name": "lookup", "format": {"type": "text"}}, {"type": "web_search", "external_web_access": false}]}))
                 .send().await.unwrap();
             assert_eq!(response.status(), StatusCode::OK);
-            assert_eq!(response.headers()["x-multivibe-unavailable-tools"], "web_search");
+            assert_eq!(
+                response.headers()["x-multivibe-unavailable-tools"],
+                "web_search"
+            );
             let result: Value = response.json().await.unwrap();
             if turn == 0 {
-                let call = result["output"].as_array().unwrap().iter().find(|v| v["type"] == "custom_tool_call").unwrap();
+                let call = result["output"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|v| v["type"] == "custom_tool_call")
+                    .unwrap();
                 assert_eq!(call["call_id"], "call_lookup");
                 assert_eq!(call["name"], "lookup");
                 assert_eq!(call["input"], "print(42)");
@@ -13885,9 +14380,15 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 assert!(result.to_string().contains("The result is 42."));
             }
         }
-        let rejected = client.post(format!("{edge_url}/v1/responses")).bearer_auth("test-key")
-            .json(&json!({"model": "glm-test", "input": "test", "tools": [{"type": "file_search"}]}))
-            .send().await.unwrap();
+        let rejected = client
+            .post(format!("{edge_url}/v1/responses"))
+            .bearer_auth("test-key")
+            .json(
+                &json!({"model": "glm-test", "input": "test", "tools": [{"type": "file_search"}]}),
+            )
+            .send()
+            .await
+            .unwrap();
         assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
         assert_eq!(calls.load(AtomicOrdering::SeqCst), 2);
         edge_task.abort();
@@ -14011,19 +14512,28 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         ] {
             output.push_str(&converter.transform_response_event(&event));
         }
-        let chunks: Vec<Value> = output.lines().filter_map(|line| line.strip_prefix("data: "))
-            .filter_map(|data| serde_json::from_str(data).ok()).collect();
+        let chunks: Vec<Value> = output
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .filter_map(|data| serde_json::from_str(data).ok())
+            .collect();
         let mut calls: Vec<Value> = Vec::new();
         for chunk in &chunks {
             if let Some(deltas) = chunk["choices"][0]["delta"]["tool_calls"].as_array() {
                 for delta in deltas {
                     let index = delta["index"].as_u64().unwrap() as usize;
                     if index == calls.len() {
-                        assert!(delta["function"]["name"].is_string(), "first delta must name the tool");
+                        assert!(
+                            delta["function"]["name"].is_string(),
+                            "first delta must name the tool"
+                        );
                         calls.push(delta.clone());
                     } else {
                         assert!(delta.get("id").is_none());
-                        let args = calls[index]["function"]["arguments"].as_str().unwrap().to_owned()
+                        let args = calls[index]["function"]["arguments"]
+                            .as_str()
+                            .unwrap()
+                            .to_owned()
                             + delta["function"]["arguments"].as_str().unwrap();
                         calls[index]["function"]["arguments"] = json!(args);
                     }
@@ -14035,7 +14545,10 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         assert_eq!(calls[0]["function"]["arguments"], "{\"cmd\":\"pwd\"}");
         assert_eq!(calls[1]["id"], "call_b");
         assert_eq!(calls[1]["function"]["arguments"], "{}");
-        assert_eq!(chunks.last().unwrap()["choices"][0]["finish_reason"], "tool_calls");
+        assert_eq!(
+            chunks.last().unwrap()["choices"][0]["finish_reason"],
+            "tool_calls"
+        );
         assert!(converter.response_chat.finish().is_empty());
     }
 
@@ -14048,7 +14561,9 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
             {"type":"function_call","id":"fc_b","call_id":"call_b","name":"lookup","arguments":"{}"}
         ]}}));
         let chat = chat_from_sse(&output, "test");
-        let calls = chat["choices"][0]["message"]["tool_calls"].as_array().unwrap();
+        let calls = chat["choices"][0]["message"]["tool_calls"]
+            .as_array()
+            .unwrap();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0]["function"]["name"], "shell");
         assert_eq!(calls[0]["function"]["arguments"], "{}");
@@ -16537,10 +17052,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         assert_eq!(keys["proxyApiKeys"].as_array().unwrap().len(), 2);
         assert_eq!(keys["proxyApiKeys"][0]["source"], "environment");
         assert_eq!(keys["proxyApiKeys"][1]["source"], "dashboard");
-        assert_eq!(
-            keys["proxyApiKeys"][1]["createdAt"],
-            1_788_803_484_000_u64
-        );
+        assert_eq!(keys["proxyApiKeys"][1]["createdAt"], 1_788_803_484_000_u64);
         let keys_json = keys.to_string();
         assert!(!keys_json.contains("mv_environment_secret_5678"));
         assert!(!keys_json.contains("mv_managed_secret_1234"));
@@ -16554,10 +17066,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
             .json()
             .await
             .unwrap();
-        assert_eq!(
-            policies["applicationPolicies"][0]["fairnessWeight"],
-            2.5
-        );
+        assert_eq!(policies["applicationPolicies"][0]["fairnessWeight"], 2.5);
         assert_eq!(
             policies["applicationPolicies"][0]["webhooks"][0]["createdAt"],
             1_788_803_485_000_u64
@@ -16820,14 +17329,21 @@ mod team_provider_policy_tests {
     use super::*;
     #[test]
     fn team_models_restrict_execution_and_missing_selection_denies() {
-        let mut account = Account { enabled: true, access_token: "test-token".into(), ..Default::default() };
+        let mut account = Account {
+            enabled: true,
+            access_token: "test-token".into(),
+            ..Default::default()
+        };
         let blocked = HashMap::new();
         assert!(account_usable(&account, "any", &blocked));
-        account.multivibe_team = Some(TeamProviderPolicy { models: vec!["selected-model".into()] });
+        account.multivibe_team = Some(TeamProviderPolicy {
+            models: vec!["selected-model".into()],
+        });
         assert!(account_usable(&account, "selected-model", &blocked));
         assert!(!account_usable(&account, "other-model", &blocked));
         assert!(!account_usable(&account, "SELECTED-MODEL", &blocked));
-        account.multivibe_team = Some(serde_json::from_value(json!({"providerId":"legacy"})).unwrap());
+        account.multivibe_team =
+            Some(serde_json::from_value(json!({"providerId":"legacy"})).unwrap());
         assert!(!account_usable(&account, "selected-model", &blocked));
     }
     #[test]
@@ -16835,12 +17351,19 @@ mod team_provider_policy_tests {
         let mut account = Account::default();
         let config = EdgeConfig::default();
         let before = account_model_source_signature(&account, &config);
-        account.multivibe_team = Some(TeamProviderPolicy { models: vec!["selected".into()] });
+        account.multivibe_team = Some(TeamProviderPolicy {
+            models: vec!["selected".into()],
+        });
         assert_ne!(before, account_model_source_signature(&account, &config));
         let mut store = StoreFile::default();
         store.accounts.push(account);
         let before = catalog_signature(&store, &config);
-        store.accounts[0].multivibe_team.as_mut().unwrap().models.clear();
+        store.accounts[0]
+            .multivibe_team
+            .as_mut()
+            .unwrap()
+            .models
+            .clear();
         assert_ne!(before, catalog_signature(&store, &config));
     }
 }
@@ -16853,8 +17376,8 @@ mod context_length_tests {
 
     #[test]
     fn context_overflow_is_detected_across_provider_wording() {
-        let body =
-            json!({"error": {"message": VLLM_OVERFLOW, "type": "invalid_request_error"}}).to_string();
+        let body = json!({"error": {"message": VLLM_OVERFLOW, "type": "invalid_request_error"}})
+            .to_string();
         assert!(is_context_length_error(StatusCode::BAD_REQUEST, &body));
 
         for message in [
@@ -16915,7 +17438,8 @@ mod context_length_tests {
 
     #[test]
     fn upstream_error_without_a_provider_body_still_gets_a_coded_envelope() {
-        let value = normalize_provider_error_body(StatusCode::BAD_GATEWAY, "<html>bad gateway</html>");
+        let value =
+            normalize_provider_error_body(StatusCode::BAD_GATEWAY, "<html>bad gateway</html>");
         assert_eq!(value["error"]["code"], "server_error");
         assert_eq!(value["error"]["type"], "api_error");
         assert_eq!(value["error"]["param"], Value::Null);
@@ -17199,7 +17723,9 @@ mod provider_error_tests {
         assert!(is_reasoning_content_required_error(
             "Missing `reasoning_content` field in the thinking mode"
         ));
-        assert!(!is_reasoning_content_required_error("reasoning_content accepted"));
+        assert!(!is_reasoning_content_required_error(
+            "reasoning_content accepted"
+        ));
     }
 
     #[test]

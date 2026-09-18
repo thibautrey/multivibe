@@ -20,7 +20,11 @@ export function managedProviderRequest(grant: Readonly<ExecutionGrant>, body: Ui
       throw Error("execution_output_limit_mismatch");
     }
     const outputLimit = outputLimits[0] ?? grant.maximumOutputTokens;
-    const upstream = grant.operation === "responses" ? responsesToChatCompletionsPayload(parsed) : { ...parsed };
+    const upstream = grant.operation === "responses"
+      ? responsesToChatCompletionsPayload(parsed, {
+          ensureReasoningContinuation: grant.providerId === "deepseek",
+        })
+      : { ...parsed };
     // Grants currently authorize standard service only. Omission would let
     // OpenAI inherit the provider project's potentially different pricing tier.
     delete upstream.service_tier;

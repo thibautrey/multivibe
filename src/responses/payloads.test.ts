@@ -43,8 +43,8 @@ test("keeps text-only tool output in a single tool message", () => {
   });
 
   assert.equal(converted.messages[1].content, "ok");
-  assert.equal(converted.messages[2].content, "plain text");
-  assert.equal(converted.messages.length, 3);
+  assert.equal(converted.messages[3].content, "plain text");
+  assert.equal(converted.messages.length, 4);
 });
 
 test("keeps custom tool call output images as image parts", () => {
@@ -65,4 +65,45 @@ test("keeps custom tool call output images as image parts", () => {
   assert.equal(converted.messages[0].content, "");
   assert.equal(converted.messages[1].role, "user");
   assert.equal(converted.messages[1].content[1].type, "image_url");
+});
+
+test("repairs a pending tool turn that lost its reasoning marker", () => {
+  const body = {
+    model: "deepseek/deepseek-flash",
+    stream: true,
+    input: [
+      { type: "message", role: "user", content: "Have you fixed it?" },
+      { type: "function_call", call_id: "call-1", name: "exec_command", arguments: "{}" },
+      { type: "function_call_output", call_id: "call-1", output: "merge ok" },
+      { type: "message", role: "assistant", content: "Merged. Running tests." },
+      { type: "function_call", call_id: "call-2", name: "exec_command", arguments: "{}" },
+      { type: "function_call_output", call_id: "call-2", output: "tests failed" },
+    ],
+  };
+
+  const plain = responsesToChatCompletionsPayload(body);
+  assert.ok(!JSON.stringify(plain.messages).includes("reasoning_content"));
+
+  const repaired = responsesToChatCompletionsPayload(body, {
+    ensureReasoningContinuation: true,
+  });
+  for (const message of repaired.messages) {
+    if (message.role === "assistant") {
+      assert.ok(typeof message.reasoning_content === "string" && message.reasoning_content);
+    }
+  }
+
+  const closed = responsesToChatCompletionsPayload(
+    {
+      model: "deepseek/deepseek-flash",
+      stream: true,
+      input: [
+        { type: "function_call", call_id: "call-1", name: "exec_command", arguments: "{}" },
+        { type: "function_call_output", call_id: "call-1", output: "ok" },
+        { type: "message", role: "user", content: "thanks" },
+      ],
+    },
+    { ensureReasoningContinuation: true },
+  );
+  assert.equal(closed.messages[0].reasoning_content, undefined);
 });

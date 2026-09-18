@@ -281,7 +281,30 @@ export function chatCompletionsToResponsesPayload(
   return payload;
 }
 
-export function responsesToChatCompletionsPayload(body: any) {
+/**
+ * DeepSeek's thinking mode rejects a request that ends on a tool result when
+ * any assistant message of the pending turn lacks `reasoning_content`, even
+ * when the model itself omitted reasoning for that generation. The provider
+ * accepts a placeholder, so repair the continuation instead of failing the
+ * turn. Non-continuation requests stay byte-identical to what the client sent.
+ */
+const REASONING_CONTINUATION_PLACEHOLDER =
+  "(reasoning content was not emitted for this assistant turn)";
+
+function ensureReasoningContinuation(messages: any[]) {
+  const last = messages[messages.length - 1];
+  if (last?.role !== "tool") return;
+  for (const message of messages) {
+    if (message?.role !== "assistant") continue;
+    if (typeof message.reasoning_content === "string" && message.reasoning_content) continue;
+    message.reasoning_content = REASONING_CONTINUATION_PLACEHOLDER;
+  }
+}
+
+export function responsesToChatCompletionsPayload(
+  body: any,
+  options?: { ensureReasoningContinuation?: boolean },
+) {
   const payload = { ...(body ?? {}) };
   const input = Array.isArray(payload.input) ? payload.input : [];
   const messages: any[] = [];
@@ -377,6 +400,8 @@ export function responsesToChatCompletionsPayload(body: any) {
 
     messages.push({ role, content });
   }
+
+  if (options?.ensureReasoningContinuation) ensureReasoningContinuation(messages);
 
   const out: any = {
     model: payload.model,
