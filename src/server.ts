@@ -11,6 +11,8 @@ import { readFile as readTeamIdentity } from "node:fs/promises";
 import { TeamMachineSharing } from "./team-machine-sharing.js";
 import { getHostMenuProviderActivity } from "./host/menu-bar.js";
 import { automaticRouterManifest, createAutomaticRouter } from "./automatic-router.js";
+import { codingEconomyManifest, createCodingEconomy } from "./coding-economy.js";
+import { syncVirtualModelAliases } from "./virtual-model-registry.js";
 import { createAuthRateLimiter } from "./auth-rate-limit.js";
 import { createSdkAdapterRouter } from "./ai-sdk/routes.js";
 import { SDK_INTERNAL_TOKEN } from "./ai-sdk/connection.js";
@@ -260,6 +262,7 @@ const moduleManager = new ModuleManager(
   !MULTIVIBE_CONTROL_PLANE,
 );
 moduleManager.registerBuiltin(automaticRouterManifest, createAutomaticRouter());
+moduleManager.registerBuiltin(codingEconomyManifest, createCodingEconomy());
 const traceManager = createTraceManager({
   onCompleted: async (trace) => {
     const principal = trace.application
@@ -269,7 +272,9 @@ const traceManager = createTraceManager({
     await teamSync.recordTrace(trace, principal);
     if (!trace.clientRequestId) return;
     // Never expose trace bodies, credentials, account details, or headers to analytics hooks.
-    const value = { traceId: trace.id, traceKind: trace.traceKind, model: trace.resolvedModel ?? trace.model,
+    // `requestedModel` is the model the client named (for example a virtual model id);
+    // `model` is the model that actually served the attempt.
+    const value = { traceId: trace.id, traceKind: trace.traceKind, requestedModel: trace.model, model: trace.resolvedModel ?? trace.model,
       status: trace.status, usageStatus: trace.usageStatus, costUsd: trace.costUsd,
       tokensInput: trace.tokensInput, tokensOutput: trace.tokensOutput,
       tokensInputCached: trace.tokensInputCached, tokensInputCacheWrite: trace.tokensInputCacheWrite,
@@ -294,6 +299,13 @@ await Promise.all([
   traceManager.initialize(),
   moduleManager.initialize(),
 ]);
+// Reconcile virtual models declared by bundled modules once the store and the
+// module locks are loaded, so a restart can never leave a stale managed alias
+// behind or publish an alias for a disabled module.
+if (!MULTIVIBE_CONTROL_PLANE) {
+  try { await syncVirtualModelAliases(store, moduleManager); }
+  catch (error) { console.warn("Virtual model synchronization failed", error instanceof Error ? error.message : String(error)); }
+}
 const attemptManagedTeamEnrollment = async () => {
   try { await managedTeamEnrollment.enrollIfPresent(); }
   catch (error) { Sentry.captureException(error, { tags: { subsystem: "managed-team-enrollment" } }); }

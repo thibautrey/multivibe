@@ -28,7 +28,7 @@ Node.js execution, even though the version number has not changed.
 | `context.conversation`, `sessionId`, `internal`, and `services` are available at `request.received`. | Feature-detect optional capabilities; distinguish observed history from a prediction about future messages. |
 | `services.listModels()`, `complete()`, and optional `completeWithUsage()` use configured instance models. | Use the broker rather than `fetch`; handle missing pricing and cancelled or failed inference. |
 | Settings pages render `settingsSchema`; model fields use `format: "multivibe-model"`. | Supply titles/descriptions and save the entire settings object. No custom plugin page scripts are loaded. |
-| `request.completed` delivers sanitized, read-only trace telemetry. | Deduplicate with `traceId`; filter `traceKind` for the metric you want. It is not an exactly-once billing event. |
+| `request.completed` delivers sanitized, read-only trace telemetry, now including `requestedModel` (the model the client named, such as a virtual model id) beside `model` (the model that served the attempt). | Deduplicate with `traceId`; filter `traceKind` for the metric you want. It is not an exactly-once billing event. |
 | `/admin/modules/:id/analytics` exposes retained event aggregates. | Record finite numeric metrics with stable event IDs; do not treat rolling totals as lifetime totals. |
 | Module views include `execution`; `/admin/modules` includes `inferencePluginsSupported`. | Distinguish installed sandbox code from trusted host built-ins and unsupported inference profiles. |
 | Enabling Automatic model router exposes `multivibe/autorouter`. | Clients opt in with that model ID. Explicit models are unchanged; the old `routeModel` setting is ignored. |
@@ -98,7 +98,7 @@ types at build time, but installed code must be JavaScript.
 | `request.beforeUpstream` | Provider-ready request payload after model/provider selection and protocol conversion. May run again for retries. |
 | `response.received` | Buffered upstream text, which may be JSON or SSE text. Invoked on the implemented buffered response paths; do not assume it transforms live streaming chunks. |
 | `response.beforeClient` | Parsed response object on the buffered native Responses-stream-to-JSON path. Not a universal final-response interceptor. |
-| `request.completed` | Sanitized completed trace object after persistence, including telemetry from streaming requests. Read-only and best effort. |
+| `request.completed` | Sanitized completed trace object after persistence, including telemetry from streaming requests. Carries `requestedModel` and `model` so a virtual model id can be attributed to a role. Read-only and best effort. |
 | `stream.open` | Accepted hook name, but no current invocation site. |
 | `request.error` | Accepted hook name, but no current invocation site. Use completion status telemetry where available. |
 
