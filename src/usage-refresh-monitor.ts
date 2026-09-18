@@ -8,6 +8,8 @@ import {
 import { ensureValidToken } from "./account-utils.js";
 import type { OAuthConfig } from "./oauth.js";
 import {
+  CREDIT_BALANCE_REFRESH_INTERVAL_MS,
+  hasCreditBalanceSnapshot,
   isUsageRefreshNeeded,
   normalizeProvider,
 } from "./quota.js";
@@ -26,6 +28,8 @@ export type UsageRefreshMonitorOptions = {
   opencodeBaseUrl?: string;
   xaiBaseUrl?: string;
   intervalMs?: number;
+  /** Wake interval for the dedicated credit-balance pass. */
+  balanceIntervalMs?: number;
   maxConcurrentRefreshes?: number;
   coordinator?: UsageRefreshCoordinator;
   logger?: {
@@ -45,7 +49,24 @@ export type UsageRefreshMonitor = {
   start(): void;
   stop(): void;
   refreshNow(): Promise<UsageRefreshCycleResult>;
+  /** Refresh only credit-balance accounts whose snapshot reached its shorter TTL. */
+  refreshBalancesNow(): Promise<UsageRefreshCycleResult>;
 };
+
+/**
+ * Pay-as-you-go balances move with each billed call, so they are polled between
+ * the (slower) subscription cycles. Waking at half the TTL guarantees a due
+ * balance is picked up on the next tick instead of the one after.
+ */
+export function creditBalanceWakeIntervalMs(
+  intervalMs = CREDIT_BALANCE_REFRESH_INTERVAL_MS,
+): number {
+  const configured =
+    Number.isFinite(intervalMs) && intervalMs > 0
+      ? Math.floor(intervalMs)
+      : CREDIT_BALANCE_REFRESH_INTERVAL_MS;
+  return Math.max(30_000, Math.floor(configured / 2));
+}
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
@@ -223,19 +244,25 @@ export function createUsageRefreshMonitor(
     options.intervalMs > 0
       ? Math.max(1, Math.floor(options.intervalMs))
       : USAGE_REFRESH_INTERVAL_MS;
+  const balanceWakeMs = creditBalanceWakeIntervalMs(options.balanceIntervalMs);
   let timer: NodeJS.Timeout | undefined;
   let cyclePromise: Promise<UsageRefreshCycleResult> | undefined;
+  let balanceTimer: NodeJS.Timeout | undefined;
+  let balanceCyclePromise: Promise<UsageRefreshCycleResult> | undefined;
 
-  const refreshNow = (): Promise<UsageRefreshCycleResult> => {
-    if (cyclePromise) return cyclePromise;
+  const runCycle = (select: (account: Account) => boolean) => {
     const cycle = (async () => {
       const accounts = (await options.store.listAccounts()).filter(
-        (account) =>
-          !account.state?.scheduledWeeklyReset &&
-          isUsageRefreshNeeded(account),
+        (account) => !account.state?.scheduledWeeklyReset && select(account),
       );
       return refreshWithConcurrency(accounts, options, coordinator);
     })();
+    return cycle;
+  };
+
+  const refreshNow = (): Promise<UsageRefreshCycleResult> => {
+    if (cyclePromise) return cyclePromise;
+    const cycle = runCycle(isUsageRefreshNeeded);
     cyclePromise = cycle;
     void cycle.finally(() => {
       if (cyclePromise === cycle) cyclePromise = undefined;
@@ -243,13 +270,32 @@ export function createUsageRefreshMonitor(
     return cycle;
   };
 
+  const refreshBalancesNow = (): Promise<UsageRefreshCycleResult> => {
+    if (balanceCyclePromise) return balanceCyclePromise;
+    const cycle = runCycle(
+      (account) =>
+        hasCreditBalanceSnapshot(account) && isUsageRefreshNeeded(account),
+    );
+    balanceCyclePromise = cycle;
+    void cycle.finally(() => {
+      if (balanceCyclePromise === cycle) balanceCyclePromise = undefined;
+    }).catch(() => undefined);
+    return cycle;
+  };
+
+  const reportCycleFailure = (error: any) => {
+    options.logger?.error?.(
+      "background usage refresh cycle failed:",
+      error?.message ?? String(error),
+    );
+  };
+
   const runScheduledCycle = () => {
-    void refreshNow().catch((error: any) => {
-      options.logger?.error?.(
-        "background usage refresh cycle failed:",
-        error?.message ?? String(error),
-      );
-    });
+    void refreshNow().catch(reportCycleFailure);
+  };
+
+  const runBalanceCycle = () => {
+    void refreshBalancesNow().catch(reportCycleFailure);
   };
 
   return {
@@ -257,13 +303,19 @@ export function createUsageRefreshMonitor(
       if (timer) return;
       timer = setInterval(runScheduledCycle, intervalMs);
       timer.unref?.();
+      balanceTimer = setInterval(runBalanceCycle, balanceWakeMs);
+      balanceTimer.unref?.();
       runScheduledCycle();
+      runBalanceCycle();
     },
     stop() {
       if (timer) clearInterval(timer);
+      if (balanceTimer) clearInterval(balanceTimer);
       timer = undefined;
+      balanceTimer = undefined;
     },
     refreshNow,
+    refreshBalancesNow,
   };
 }
 

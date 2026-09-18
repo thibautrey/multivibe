@@ -17,6 +17,13 @@ import {
 import { openCodeUsageUrl, openCodeInferenceToken, openCodeAccountHeaders } from "./opencode.js";
 
 export const USAGE_CACHE_TTL_MS = Number(process.env.USAGE_CACHE_TTL_MS ?? 300_000);
+// A pay-as-you-go provider exposes an absolute balance that moves on every
+// billed call and has no reset instant to wait for, so it is refreshed sooner
+// than a subscription quota window.
+export const CREDIT_BALANCE_REFRESH_INTERVAL_MS = (() => {
+  const value = Number(process.env.CREDIT_BALANCE_REFRESH_INTERVAL_MS ?? 120_000);
+  return Number.isFinite(value) && value >= 30_000 ? value : 120_000;
+})();
 const USAGE_TIMEOUT_MS = Number(process.env.USAGE_TIMEOUT_MS ?? 10_000);
 const BLOCK_FALLBACK_MS = Number(process.env.BLOCK_FALLBACK_MS ?? 30 * 60_000);
 const FIVE_HOUR_WINDOW_SECONDS = 5 * 60 * 60;
@@ -48,6 +55,22 @@ export function tracksSubscriptionQuota(
   // subscription allowance to query. Request token telemetry is independent
   // of this quota snapshot and remains available through tracing.
   return account.localRuntime === undefined && account.multivibeCloud !== true;
+}
+
+/**
+ * True when the snapshot reports spendable credit rather than a quota window.
+ * Such an account must never be treated as a subscription percentage.
+ */
+export function hasCreditBalanceSnapshot(
+  account: Pick<Account, "usage">,
+): boolean {
+  const balance = account.usage?.balance;
+  return (
+    typeof balance?.remaining === "number" &&
+    Number.isFinite(balance.remaining) &&
+    typeof balance.unit === "string" &&
+    balance.unit.trim() !== ""
+  );
 }
 
 function safePct(v?: number): number {
@@ -676,10 +699,13 @@ export function isUsageRefreshNeeded(
     (resetAt) =>
       typeof resetAt === "number" && Number.isFinite(resetAt) && resetAt <= now,
   );
+  const ttl = hasCreditBalanceSnapshot(account)
+    ? CREDIT_BALANCE_REFRESH_INTERVAL_MS
+    : USAGE_CACHE_TTL_MS;
   return (
     resetDue ||
     !account.usage ||
-    now - account.usage.fetchedAt >= USAGE_CACHE_TTL_MS
+    now - account.usage.fetchedAt >= ttl
   );
 }
 

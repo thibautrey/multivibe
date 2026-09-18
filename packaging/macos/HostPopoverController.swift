@@ -117,7 +117,7 @@ final class HostPopoverController: NSViewController {
         }
         quotaProviders = summary?.providers ?? []
         if quotaProviders.isEmpty, let accounts = summary?.accounts, !accounts.isEmpty {
-            quotaProviders = [ProviderQuota(id: "legacy", displayName: "Accounts", accounts: accounts, windows: [])]
+            quotaProviders = [ProviderQuota(id: "legacy", displayName: "Accounts", accounts: accounts, windows: [], balance: nil)]
         }
         accountSection.orientation = .vertical
         accountSection.alignment = .leading
@@ -197,8 +197,12 @@ final class HostPopoverController: NSViewController {
             return
         }
         accountSection.addArrangedSubview(sectionLabel("CAPACITY REMAINING"))
-        let cells: [NSView] = (selected?.windows ?? []).map { window in
+        var cells: [NSView] = (selected?.windows ?? []).map { window in
             quotaCell(title: window.label, value: window.remainingPercent, detail: accountCount(window.accountCount))
+        }
+        // A provider that bills from credits shows the absolute balance it reported.
+        if let balance = selected?.balance {
+            cells.append(balanceCell(title: "Credit", balance: balance))
         }
         if !cells.isEmpty {
             let container = card()
