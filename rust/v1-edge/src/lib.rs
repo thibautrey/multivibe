@@ -1558,6 +1558,10 @@ fn payload_has_image(body: &Value) -> bool {
                     .get("content")
                     .and_then(Value::as_array)
                     .is_some_and(|content| content.iter().any(value_type_has_image))
+                || item
+                    .get("output")
+                    .and_then(Value::as_array)
+                    .is_some_and(|output| output.iter().any(value_type_has_image))
         })
 }
 
@@ -1772,6 +1776,45 @@ fn response_image_to_chat(value: &Value) -> Option<Value> {
         image_url.insert("detail".to_owned(), Value::String(detail));
     }
     Some(json!({"type": "image_url", "image_url": Value::Object(image_url)}))
+}
+
+/// Splits a Responses tool output into Chat Completions tool text plus image
+/// parts. Serializing an image into the tool text turns a screenshot into
+/// hundreds of thousands of base64 tokens and overflows the model context.
+fn tool_output_to_chat(value: Option<&Value>) -> (String, Vec<Value>) {
+    let Some(value) = value else {
+        return (String::new(), Vec::new());
+    };
+    let parts: Vec<&Value> = match value {
+        Value::Array(items) => items.iter().collect(),
+        Value::Null => Vec::new(),
+        single => vec![single],
+    };
+    let mut texts: Vec<String> = Vec::new();
+    let mut images: Vec<Value> = Vec::new();
+    for part in parts {
+        if let Some(text) = part.as_str() {
+            texts.push(text.to_owned());
+            continue;
+        }
+        if matches!(
+            part.get("type").and_then(Value::as_str),
+            Some("text" | "input_text" | "output_text")
+        ) {
+            if let Some(text) = value_string(part.get("text")) {
+                texts.push(text);
+            }
+            continue;
+        }
+        if let Some(image) = response_image_to_chat(part) {
+            images.push(image);
+            continue;
+        }
+        if !part.is_null() {
+            texts.push(json_string(part));
+        }
+    }
+    (texts.join("\n"), images)
 }
 
 fn input_content(value: Option<&Value>, role: &str) -> Vec<Value> {
@@ -2077,11 +2120,26 @@ fn responses_to_chat_completions(body: &Value, client_stream: bool) -> Value {
                         }
                     }
                     Some("function_call_output") | Some("custom_tool_call_output") => {
+                        let tool_call_id = value_string(item.get("call_id"))
+                            .or_else(|| value_string(item.get("id")))
+                            .unwrap_or_else(|| new_id("call"));
+                        let (text, images) = tool_output_to_chat(item.get("output"));
                         messages.push(json!({
                             "role": "tool",
-                            "tool_call_id": value_string(item.get("call_id")).or_else(|| value_string(item.get("id"))).unwrap_or_else(|| new_id("call")),
-                            "content": item.get("output").map(|value| if let Some(text) = value.as_str() { text.to_owned() } else { json_string(value) }).unwrap_or_default(),
+                            "tool_call_id": tool_call_id,
+                            "content": text,
                         }));
+                        // Several OpenAI-compatible runtimes require string tool
+                        // content, so image output travels as its own user turn
+                        // instead of being flattened into base64 tool text.
+                        if !images.is_empty() {
+                            let mut parts = vec![json!({
+                                "type": "text",
+                                "text": "Image output from the previous tool call.",
+                            })];
+                            parts.extend(images);
+                            messages.push(json!({"role": "user", "content": parts}));
+                        }
                     }
                     _ => {
                         let role = if item.get("role").and_then(Value::as_str) == Some("assistant")
@@ -2725,6 +2783,26 @@ fn response_to_chat(value: &Value, model: &str) -> Value {
 
 fn sse_frame(event: &str, data: &Value) -> String {
     format!("event: {event}\ndata: {}\n\n", data)
+}
+
+/// Maps a Chat Completions `usage` object onto the Responses usage shape the
+/// Codex client reads for its context meter and auto-compaction.
+fn chat_usage_to_response_usage(usage: &Value) -> Value {
+    let input = usage
+        .get("input_tokens")
+        .or_else(|| usage.get("prompt_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output = usage
+        .get("output_tokens")
+        .or_else(|| usage.get("completion_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let total = usage
+        .get("total_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(input + output);
+    json!({"input_tokens": input, "output_tokens": output, "total_tokens": total})
 }
 
 fn response_completed_sse(value: &Value) -> String {
@@ -6612,6 +6690,8 @@ struct ChatResponseStreamState {
     created_sent: bool,
     content_started: bool,
     completed_sent: bool,
+    finish_pending: bool,
+    usage: Option<Value>,
     tool_calls: Vec<Value>,
 }
 
@@ -6637,6 +6717,16 @@ impl ChatResponseStreamState {
         )
     }
 
+    /// A provider can report `finish_reason` one chunk before it reports usage.
+    /// Hold the terminal frame until that usage arrives (or the stream ends) so
+    /// the client still receives real token accounting.
+    fn finish_if_ready(&mut self, mut output: String) -> String {
+        if self.finish_pending && self.usage.is_some() {
+            output.push_str(&self.finish());
+        }
+        output
+    }
+
     fn finish(&mut self) -> String {
         if self.completed_sent {
             return String::new();
@@ -6658,7 +6748,12 @@ impl ChatResponseStreamState {
         if output.is_empty() {
             output.push(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": ""}]}));
         }
-        let response = json!({"id": self.response_id, "object": "response", "created_at": self.created, "model": self.model, "status": "completed", "output": output, "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}});
+        let usage = self
+            .usage
+            .as_ref()
+            .map(chat_usage_to_response_usage)
+            .unwrap_or_else(|| json!({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}));
+        let response = json!({"id": self.response_id, "object": "response", "created_at": self.created, "model": self.model, "status": "completed", "output": output, "usage": usage});
         let mut out = String::new();
         if !self.reasoning.is_empty() {
             let item = output.first().cloned().unwrap_or_else(|| json!({}));
@@ -6907,13 +7002,16 @@ impl SseStreamTransformer {
         if value.get("object").and_then(Value::as_str) != Some("chat.completion.chunk") {
             return String::new();
         }
+        if let Some(usage) = value.get("usage").filter(|usage| usage.is_object()) {
+            self.chat_response.usage = Some(usage.clone());
+        }
         let mut output = self.chat_response.created_frame();
         let choice = value
             .get("choices")
             .and_then(Value::as_array)
             .and_then(|choices| choices.first());
         let Some(choice) = choice else {
-            return output;
+            return self.chat_response.finish_if_ready(output);
         };
         if let Some(delta) = choice.get("delta") {
             if let Some(content) =
@@ -6969,13 +7067,10 @@ impl SseStreamTransformer {
             .and_then(|choice| value_string(choice.get("finish_reason")))
         {
             if reason != "" {
-                output.push_str(&self.chat_response.finish());
+                self.chat_response.finish_pending = true;
             }
         }
-        if let Some(usage) = value.get("usage") {
-            let _ = usage;
-        }
-        output
+        self.chat_response.finish_if_ready(output)
     }
 
     fn transform_response_event(&mut self, value: &Value) -> String {
@@ -13476,6 +13571,69 @@ data: {"object":"chat.completion.chunk","choices":[{"delta":{"tool_calls":[{"ind
         assert!(output.contains("mv-reasoning-v1:"));
         assert!(output.contains("\"type\":\"reasoning\""));
         assert!(output.contains("call-1"));
+    }
+
+    #[test]
+    fn chat_sse_usage_reaches_the_client_response() {
+        let mut converter =
+            SseStreamTransformer::new(StreamTransform::ChatToResponse, "deepseek-flash");
+        let streamed = converter.push(
+            br#"data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"},"finish_reason":null}]}
+
+data: {"object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"stop"}]}
+
+data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":1234,"completion_tokens":56,"total_tokens":1290}}
+
+"#,
+        );
+        let finished = format!("{streamed}{}", converter.finish());
+        let frame = finished
+            .split("\n\n")
+            .find(|frame| frame.contains("response.completed"))
+            .expect("terminal response frame");
+        let data = frame
+            .lines()
+            .find(|line| line.starts_with("data:"))
+            .expect("completed data line");
+        let payload: Value = serde_json::from_str(data.trim_start_matches("data:").trim()).unwrap();
+        assert_eq!(payload["response"]["usage"]["input_tokens"], 1234);
+        assert_eq!(payload["response"]["usage"]["output_tokens"], 56);
+        assert_eq!(payload["response"]["usage"]["total_tokens"], 1290);
+    }
+
+    #[test]
+    fn tool_output_images_stay_image_parts() {
+        let base64 = "A".repeat(64);
+        let converted = responses_to_chat_completions(
+            &json!({"model": "deepseek/deepseek-flash", "input": [
+                {"type": "function_call", "call_id": "call-img", "name": "view_image", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call-img", "output": [
+                    {"type": "input_image", "image_url": format!("data:image/png;base64,{base64}")}
+                ]}
+            ]}),
+            false,
+        );
+        let tool = &converted["messages"][1];
+        assert_eq!(tool["role"], "tool");
+        assert_eq!(tool["content"].as_str().unwrap(), "");
+        assert!(!tool["content"].as_str().unwrap().contains(&base64));
+        let follow_up = &converted["messages"][2];
+        assert_eq!(follow_up["role"], "user");
+        assert_eq!(follow_up["content"][1]["type"], "image_url");
+        assert!(follow_up["content"][1]["image_url"]["url"]
+            .as_str()
+            .unwrap()
+            .ends_with(&base64));
+
+        let text_only = responses_to_chat_completions(
+            &json!({"model": "deepseek/deepseek-flash", "input": [
+                {"type": "function_call", "call_id": "call-text", "name": "run", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call-text", "output": [{"type": "text", "text": "ok"}]}
+            ]}),
+            false,
+        );
+        assert_eq!(text_only["messages"][1]["content"], "ok");
+        assert_eq!(text_only["messages"].as_array().unwrap().len(), 2);
     }
 
     #[test]

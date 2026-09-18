@@ -602,6 +602,91 @@ test("Codex synchronizes its managed catalog when MultiVibe models change at run
   assert.equal((await manager.uninstall("openai-codex")).apiKeyId, "key-live");
 });
 
+test("Codex catalog keeps the context window advertised for a native entry", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-native-context-window-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const home = path.join(root, "home");
+  const bin = path.join(home, "bin");
+  await fs.mkdir(path.join(home, ".codex"), { recursive: true });
+  await fs.mkdir(bin, { recursive: true });
+  await fs.writeFile(path.join(bin, "codex"), "binary", { mode: 0o755 });
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  // The native Codex entry ships no window for a third-party provider model,
+  // while /v1/models advertises one. Codex cannot auto-compact without a
+  // window, so the advertised value must survive the native entry.
+  globalThis.fetch = async () => Response.json({
+    data: [
+      {
+        id: "deepseek/deepseek-flash",
+        metadata: { context_window: 1_000_000, input_modalities: ["text", "image"] },
+      },
+      {
+        id: "gpt-5.6-sol",
+        metadata: { context_window: 999_999, input_modalities: ["text"] },
+      },
+    ],
+    models: [
+      {
+        slug: "deepseek/deepseek-flash",
+        display_name: "DeepSeek V4.1 Flash",
+        description: "AI SDK model DeepSeek V4.1 Flash",
+        supported_reasoning_levels: [],
+        shell_type: "shell_command",
+        visibility: "list",
+        supported_in_api: true,
+        priority: 100,
+        base_instructions: "",
+        support_verbosity: false,
+        truncation_policy: { mode: "tokens", limit: 10000 },
+        experimental_supported_tools: [],
+      },
+      {
+        slug: "gpt-5.6-sol",
+        display_name: "GPT-5.6-Sol",
+        description: "OpenAI model",
+        supported_reasoning_levels: [],
+        shell_type: "shell_command",
+        visibility: "list",
+        supported_in_api: true,
+        priority: 1,
+        base_instructions: "",
+        support_verbosity: true,
+        truncation_policy: { mode: "tokens", limit: 10000 },
+        context_window: 272000,
+        max_context_window: 872000,
+        supports_parallel_tool_calls: true,
+        input_modalities: ["text"],
+        experimental_supported_tools: [],
+      },
+    ],
+  });
+  const manager = new HostHarnessIntegrationManager({
+    homeDirectory: home,
+    statePath: path.join(home, ".multivibe", "harnesses.json"),
+    baseUrl: "http://127.0.0.1:1455",
+    apiKeyForId: () => "mv_live",
+    definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
+    executableDirectories: [bin],
+  });
+  await manager.install("openai-codex", {
+    apiKeyId: "key-live",
+    apiKey: "mv_live",
+    application: "harness-openai-codex",
+  });
+  const catalog = JSON.parse(
+    await fs.readFile(path.join(home, ".codex", "multivibe-models.json"), "utf8"),
+  );
+  const providerModel = catalog.models.find((model: any) => model.slug === "deepseek/deepseek-flash");
+  assert.equal(providerModel.context_window, 1_000_000);
+  assert.equal(providerModel.max_context_window, 1_000_000);
+  assert.deepEqual(providerModel.input_modalities, ["text", "image"]);
+  // A native window still wins over the advertised value.
+  const nativeModel = catalog.models.find((model: any) => model.slug === "gpt-5.6-sol");
+  assert.equal(nativeModel.context_window, 272000);
+  assert.equal(nativeModel.max_context_window, 872000);
+});
+
 test("Codex live synchronization survives unrelated config.toml edits", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-live-catalog-user-edit-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
