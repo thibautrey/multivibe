@@ -8,6 +8,19 @@ export type HostMenuBarQuotaWindow = {
   resetAt?: number;
 };
 
+/**
+ * Absolute spendable credit reported by a pay-as-you-go provider. It is never
+ * converted to a percentage because the provider exposes no reliable total.
+ */
+export type HostMenuBarBalance = {
+  remaining: number;
+  unit: string;
+};
+
+export type HostMenuBarProviderBalance = HostMenuBarBalance & {
+  accountCount: number;
+};
+
 export type HostMenuBarAccount = {
   displayName: string;
   enabled: boolean;
@@ -17,6 +30,7 @@ export type HostMenuBarAccount = {
   fiveHour?: HostMenuBarQuotaWindow;
   weekly?: HostMenuBarQuotaWindow;
   monthly?: HostMenuBarQuotaWindow;
+  balance?: HostMenuBarBalance;
 };
 
 export type HostMenuBarQuotaAggregate = {
@@ -37,6 +51,7 @@ export type HostMenuBarProvider = {
   displayName: string;
   accounts: HostMenuBarAccount[];
   windows: Array<{ label: string; remainingPercent: number; accountCount: number }>;
+  balance?: HostMenuBarProviderBalance;
 };
 
 export function hostMenuProviderId(account: Pick<Account, "provider" | "sdkProvider">): string {
@@ -126,6 +141,33 @@ function finiteNonNegativeInteger(value: unknown): number | undefined {
   return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : undefined;
 }
 
+function balanceSnapshot(balance?: { remaining?: number; unit?: string }): HostMenuBarBalance | undefined {
+  const remaining = finiteNumber(balance?.remaining);
+  const unit = typeof balance?.unit === "string" ? balance.unit.trim() : "";
+  if (remaining === undefined || !unit) return undefined;
+  return { remaining, unit };
+}
+
+/**
+ * Credit-only providers report an absolute balance instead of quota windows.
+ * Amounts are summed only when every account shares one unit; mixing currencies
+ * would produce a number no provider ever reported.
+ */
+function providerBalance(accounts: Account[]): HostMenuBarProviderBalance | undefined {
+  const entries = accounts.flatMap((account) => {
+    const balance = balanceSnapshot(account.usage?.balance);
+    return balance ? [balance] : [];
+  });
+  if (!entries.length) return undefined;
+  const unit = entries[0].unit;
+  if (!entries.every((entry) => entry.unit === unit)) return undefined;
+  return {
+    remaining: entries.reduce((sum, entry) => sum + entry.remaining, 0),
+    unit,
+    accountCount: entries.length,
+  };
+}
+
 function quotaWindow(window?: UsageWindow): HostMenuBarQuotaWindow | undefined {
   const usedPercent = finiteNumber(window?.usedPercent);
   if (usedPercent === undefined) return undefined;
@@ -184,8 +226,9 @@ export function buildHostMenuBarAccountsSummary(
     const fiveHour = quotaWindow(account.usage?.primary);
     const weekly = quotaWindow(account.usage?.secondary);
     const monthly = quotaWindow(account.usage?.monthly);
+    const balance = balanceSnapshot(account.usage?.balance);
     const fetchedAt = finiteNumber(account.usage?.fetchedAt);
-    const hasQuota = Boolean(fiveHour || weekly || monthly);
+    const hasQuota = Boolean(fiveHour || weekly || monthly || balance);
     return {
       displayName: email
         ? provider === "openai" ? email : `${name} · ${email}`
@@ -201,6 +244,7 @@ export function buildHostMenuBarAccountsSummary(
       ...(fiveHour ? { fiveHour } : {}),
       ...(weekly ? { weekly } : {}),
       ...(monthly ? { monthly } : {}),
+      ...(balance ? { balance } : {}),
     };
   });
   const accounts = mapAccounts(selectedAccounts);
@@ -211,6 +255,7 @@ export function buildHostMenuBarAccountsSummary(
   }
   const providers = [...providerGroups].map(([id, group]) => ({
     id, displayName: providerName(group[0]), accounts: mapAccounts(group), windows: providerWindows(group),
+    balance: providerBalance(group),
   }));
   const fiveHourRemainingPercent = averageRemaining(accounts.map((account) => account.fiveHour));
   const weeklyRemainingPercent = averageRemaining(accounts.map((account) => account.weekly));

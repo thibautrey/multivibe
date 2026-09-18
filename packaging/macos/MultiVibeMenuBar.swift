@@ -177,7 +177,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         guard let button = statusItem.button else { return }
         let now = Date().timeIntervalSince1970
         let providers = summary?.providers ?? []
-        let eligible = providers.filter { !$0.windows.isEmpty || $0.id == quotaSelection.pin }
+        let eligible = providers.filter { !$0.windows.isEmpty || $0.balance != nil || $0.id == quotaSelection.pin }
         quotaSelection.update(ids: eligible.map(\.id), activity: providerActivity, now: now)
         var title = ""
         var tooltip = "MultiVibe Host — \(statusText)"
@@ -185,7 +185,15 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         statusItem.length = NSStatusItem.variableLength
         if operational, let provider = eligible.first(where: { $0.id == quotaSelection.selected }) {
             let values = provider.windows.map { "\($0.label):\(Int($0.remainingPercent.rounded()))%" }.joined(separator: "  ")
-            let quota = values.isEmpty ? "Quota unavailable" : values
+            // Credit-only providers expose an absolute balance, not a quota window.
+            let quota: String
+            if !values.isEmpty {
+                quota = values
+            } else if let balance = provider.balance {
+                quota = creditBalanceText(remaining: balance.remaining, unit: balance.unit)
+            } else {
+                quota = "Quota unavailable"
+            }
             title = "  " + (now - quotaSelection.changedAt < 3 ? "\(provider.displayName) · " : "") + quota
             tooltip = "\(provider.displayName) — \(quota)"
         } else {

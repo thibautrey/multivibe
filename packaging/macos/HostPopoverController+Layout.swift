@@ -247,7 +247,13 @@ extension HostPopoverController {
         let updated = label(updatedText, size: 10, color: MenuBarPalette.muted)
         updated.lineBreakMode = .byTruncatingTail
         updated.maximumNumberOfLines = 1
-        if visibleQuotaWindows.isEmpty { contentViews.append(updated) }
+        if visibleQuotaWindows.isEmpty {
+            // Credit-only providers report an absolute balance instead of windows.
+            if let balance = account.balance, !unsupported {
+                contentViews.append(compactBalance(balance))
+            }
+            contentViews.append(updated)
+        }
         name.toolTip = account.displayName + " · " + updatedText
         name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         state.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -290,6 +296,37 @@ extension HostPopoverController {
         stack.alignment = .leading
         stack.spacing = 4
         bar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        return stack
+    }
+
+    func compactBalance(_ balance: CreditBalance) -> NSView {
+        let text = creditBalanceText(remaining: balance.remaining, unit: balance.unit)
+        let titleLabel = label("Credit", size: 10, weight: .semibold, color: MenuBarPalette.muted)
+        let value = label(text, size: 14, weight: .medium, color: MenuBarPalette.text)
+        value.font = .monospacedDigitSystemFont(ofSize: 14, weight: .medium)
+        value.setAccessibilityLabel("Credit")
+        value.setAccessibilityValue(text)
+        let stack = NSStackView(views: [titleLabel, value])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 2
+        return stack
+    }
+
+    /// Provider-level credit card: no quota bar, because a balance has no total.
+    func balanceCell(title: String, balance: ProviderQuota.Balance) -> NSView {
+        let titleLabel = label(title, size: 11, weight: .semibold, color: MenuBarPalette.muted)
+        let valueLabel = label(creditBalanceText(remaining: balance.remaining, unit: balance.unit), size: 24, weight: .semibold, color: MenuBarPalette.text)
+        valueLabel.font = .monospacedDigitSystemFont(ofSize: 22, weight: .semibold)
+        let detailLabel = label(accountCount(balance.accountCount), size: 10, color: MenuBarPalette.muted)
+        let heading = NSStackView(views: [titleLabel, NSView(), valueLabel])
+        heading.orientation = .horizontal
+        heading.alignment = .firstBaseline
+        let stack = NSStackView(views: [heading, detailLabel])
+        heading.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 5
         return stack
     }
 
