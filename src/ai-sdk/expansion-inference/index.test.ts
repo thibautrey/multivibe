@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createOpenAICompatibleModel } from "../transports/openai-compatible.js";
 import { ACCESS, CATALOGS, PROVIDERS, QUOTA_FETCHERS } from "./index.js";
 
 test("expansion inference metadata is complete and uses fixed HTTPS endpoints", () => {
@@ -19,8 +19,9 @@ test("expansion inference metadata is complete and uses fixed HTTPS endpoints", 
 for (const provider of PROVIDERS) test(`${provider.name} uses compatible chat transport`, async () => {
   const catalogModel = CATALOGS[provider.id].models[0];
   let requests = 0;
-  const sdk = createOpenAICompatible({
-    name: provider.id,
+  const model = createOpenAICompatibleModel({
+    provider: provider.id,
+    modelId: catalogModel.id,
     apiKey: "test-key",
     baseURL: provider.baseURL,
     fetch: async (input, init) => {
@@ -35,7 +36,7 @@ for (const provider of PROVIDERS) test(`${provider.name} uses compatible chat tr
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } });
     },
   });
-  const result = await sdk.languageModel(catalogModel.id).doGenerate({
+  const result = await model.doGenerate({
     prompt: [{ role: "user", content: [{ type: "text", text: "Hello" }] }],
   });
   assert.equal(requests, 1);

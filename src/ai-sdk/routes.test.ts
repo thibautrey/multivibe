@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import express from "express";
 import type { AddressInfo } from "node:net";
-import type { LanguageModelV4 } from "@ai-sdk/provider";
+import type { SdkModel } from "./model.js";
 import { createSdkAdapterRouter } from "./routes.js";
 import type { LiveModelCatalogSource } from "./live-model-catalog.js";
 import type { Account } from "../types.js";
@@ -17,7 +17,7 @@ async function server(run: (url: string, account: Account, calls: () => number) 
       controller.enqueue({type: "text-delta", id: "text", delta: "Hi"});
       controller.enqueue({type: "finish", usage: {inputTokens: {total: 1}, outputTokens: {total: 2}}, finishReason: {unified: "stop"}}); controller.close();
     }})};},
-  } as unknown as LanguageModelV4)}));
+  } as unknown as SdkModel)}));
   const listener = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve) => listener.once("listening", resolve));
   try {await run(`http://127.0.0.1:${(listener.address() as AddressInfo).port}/internal/ai-sdk/account/v1`, account, () => calls);}

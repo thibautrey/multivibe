@@ -1,18 +1,18 @@
-import type { LanguageModelV4CallOptions, LanguageModelV4GenerateResult, LanguageModelV4Prompt, LanguageModelV4StreamPart, LanguageModelV4Usage } from "@ai-sdk/provider";
+import { SdkInputError, type SdkCallOptions, type SdkGenerateResult, type SdkPrompt, type SdkStreamPart, type SdkUsage } from "./model.js";
 import { randomUUID } from "node:crypto";
 
-export class SdkInputError extends Error {}
+export { SdkInputError } from "./model.js";
 const invalid = (message: string): never => { throw new SdkInputError(message); };
 const requiredString = (value: unknown, label: string): string => typeof value === "string" && value.length > 0 ? value : invalid(`${label} required`);
 
-export function sdkCallOptions(body: any, signal: AbortSignal): LanguageModelV4CallOptions {
+export function sdkCallOptions(body: any, signal: AbortSignal): SdkCallOptions {
   if (!Array.isArray(body?.messages) || !body.messages.length) invalid("messages must be a nonempty array");
   if (body.n !== undefined && body.n !== 1) invalid("Only n=1 is supported for these providers");
   for (const key of ["audio", "modalities", "logprobs", "top_logprobs", "functions", "function_call"]) {
     if (body[key] !== undefined) invalid(`${key} is not supported by this adapter`);
   }
   const toolNames = new Map<string, string>();
-  const prompt: LanguageModelV4Prompt = [];
+  const prompt: SdkPrompt = [];
   for (let messageIndex = 0; messageIndex < body.messages.length; messageIndex++) {
     const message = body.messages[messageIndex];
     if (!message || typeof message !== "object") invalid("Invalid message");
@@ -28,7 +28,7 @@ export function sdkCallOptions(body: any, signal: AbortSignal): LanguageModelV4C
       if (typeof message.content !== "string") invalid("Tool results must contain text");
       prompt.push({ role: "tool", content: [{ type: "tool-result", toolCallId: id, toolName, output: { type: "text", value: message.content } }] });
     } else if (message.role === "user") {
-      const content: Extract<LanguageModelV4Prompt[number], {role: "user"}>["content"] = [];
+      const content: Extract<SdkPrompt[number], {role: "user"}>["content"] = [];
       const parts = typeof message.content === "string" ? [{type: "text", text: message.content}] : message.content;
       if (!Array.isArray(parts)) invalid("User messages must contain text or image parts");
       for (const part of parts) {
@@ -47,7 +47,7 @@ export function sdkCallOptions(body: any, signal: AbortSignal): LanguageModelV4C
       }
       prompt.push({ role: "user", content });
     } else if (message.role === "assistant") {
-      const content: Extract<LanguageModelV4Prompt[number], {role: "assistant"}>["content"] = [];
+      const content: Extract<SdkPrompt[number], {role: "assistant"}>["content"] = [];
       const assistantParts = typeof message.content === "string"
         ? (message.content ? [{ type: "text", text: message.content }] : [])
         : message.content == null
@@ -86,7 +86,7 @@ export function sdkCallOptions(body: any, signal: AbortSignal): LanguageModelV4C
       if (content.length > 0) prompt.push({ role: "assistant", content });
     } else invalid("Unsupported message role");
   }
-  const options: LanguageModelV4CallOptions = { prompt, abortSignal: signal };
+  const options: SdkCallOptions = { prompt, abortSignal: signal };
   for (const [source, target] of Object.entries({ temperature: "temperature", top_p: "topP", frequency_penalty: "frequencyPenalty", presence_penalty: "presencePenalty", seed: "seed" }) ) {
     if (body[source] !== undefined) {
       if (typeof body[source] !== "number" || !Number.isFinite(body[source])) invalid(`${source} must be finite`);
@@ -135,7 +135,7 @@ export function sdkCallOptions(body: any, signal: AbortSignal): LanguageModelV4C
 }
 
 /** Public conversion must not turn unknown billing measurements into zero. */
-export function chatUsage(usage: LanguageModelV4Usage) {
+export function chatUsage(usage: SdkUsage) {
   const input = usage.inputTokens.total, output = usage.outputTokens.total;
   const valid = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
   if (!valid(input) || !valid(output) || !Number.isSafeInteger(input + output)) return null;
@@ -155,7 +155,7 @@ export function chatUsage(usage: LanguageModelV4Usage) {
   };
 }
 const finishReason = (reason: string) => ({ "tool-calls": "tool_calls", "content-filter": "content_filter", other: "stop" }[reason] ?? reason);
-export function chatResult(model: string, result: LanguageModelV4GenerateResult, validateUsage?: (usage: LanguageModelV4Usage) => boolean) {
+export function chatResult(model: string, result: SdkGenerateResult, validateUsage?: (usage: SdkUsage) => boolean) {
   if (result.finishReason.unified === "error") throw new Error("Provider generation failed");
   const tools = result.content.filter((part) => part.type === "tool-call");
   const text = result.content.filter((part) => part.type === "text").map((part) => part.text).join("");
@@ -170,7 +170,7 @@ export function chatResult(model: string, result: LanguageModelV4GenerateResult,
 }
 
 /** Incremental translation; no buffering of the generated answer or execution of tools. */
-export async function* chatStream(model: string, stream: ReadableStream<LanguageModelV4StreamPart>, includeUsage: boolean, validateUsage?: (usage: LanguageModelV4Usage) => boolean): AsyncGenerator<string> {
+export async function* chatStream(model: string, stream: ReadableStream<SdkStreamPart>, includeUsage: boolean, validateUsage?: (usage: SdkUsage) => boolean): AsyncGenerator<string> {
   const id = `chatcmpl-${randomUUID()}`, created = Math.floor(Date.now()/1000);
   const chunk = (delta: any, finish: string | null = null) => `data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model, choices: [{index: 0, delta, finish_reason: finish}] })}\n\n`;
   const tools = new Map<string, number>();

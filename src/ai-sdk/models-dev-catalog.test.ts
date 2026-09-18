@@ -67,7 +67,7 @@ test("filters deprecated and non-text models and maps provider ids", async () =>
 
 test("persists the snapshot on disk and reloads it without fetching", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "multivibe-models-dev-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }));
   const cachePath = path.join(root, "models-dev.json");
   const first = runtimeCatalog((async () => Response.json(payload)) as typeof fetch, cachePath);
   assert.equal(await first.refresh(), true);
@@ -87,7 +87,7 @@ test("persists the snapshot on disk and reloads it without fetching", async (t) 
 
 test("keeps the last good snapshot when a refresh fails", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "multivibe-models-dev-failure-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }));
   let mode: "ok" | "fail" = "ok";
   const catalog = runtimeCatalog((async () => mode === "ok" ? Response.json(payload) : new Response("nope", { status: 503 })) as typeof fetch, path.join(root, "cache.json"));
   assert.equal(await catalog.refresh(), true);
@@ -99,7 +99,7 @@ test("keeps the last good snapshot when a refresh fails", async (t) => {
 
 test("ignores an invalid persisted cache", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "multivibe-models-dev-invalid-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }));
   const cachePath = path.join(root, "cache.json");
   await writeFile(cachePath, "{ not json");
   const catalog = runtimeCatalog((async () => Response.json(payload)) as typeof fetch, cachePath);

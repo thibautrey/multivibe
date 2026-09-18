@@ -32,7 +32,7 @@ try {
     const response=await account.chatCompletions(body,AbortSignal.timeout(1000),{token:'fixture',originalBody:body});
     assert.equal((await response.json()).usage.total_tokens,7);assert.equal(calls,1);
    `],{cwd:output,stdio:"inherit"});
-   assert.match(await readFile(join(output,"native-third-party-notices.txt"),"utf8"),/@ai-sdk\/anthropic@4\.0\.49/);
+   assert.equal((await readFile(join(output,"native-third-party-notices.txt"),"utf8")).trim(),"");
   }
   assert.ok(!files.some(file=>file==="server.js"||file.startsWith("node_modules/")));
  }

@@ -1,7 +1,7 @@
 import {googleUsageEligible} from "./google-usage.js";
 import express from "express";
 import { timingSafeEqual } from "node:crypto";
-import type { LanguageModelV4 } from "@ai-sdk/provider";
+import type { SdkModel } from "./model.js";
 import type { Account } from "../types.js";
 import { sdkAccountModels, sdkModelId } from "./catalog.js";
 import { LiveModelCatalog } from "./live-model-catalog.js";
@@ -128,7 +128,7 @@ function nonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-/** The provider's own structured error object, when the SDK exposes one. */
+/** The provider's own structured error object, when the transport exposes one. */
 function providerErrorSource(error: unknown): Record<string, unknown> | undefined {
   if (!error || typeof error !== "object") return undefined;
   const value = error as Record<string, unknown>;
@@ -190,7 +190,7 @@ export function normalizeProviderError(error: unknown, status: number): Record<s
 export function createSdkAdapterRouter(options: {
   store: { listAccounts(): Promise<Account[]> };
   internalToken: string;
-  createModel?: (account: Account, model: string) => LanguageModelV4;
+  createModel?: (account: Account, model: string) => SdkModel;
   liveModelCatalog?: LiveModelCatalogSource;
   modelsDevCatalog?: ModelsDevCatalog;
 }) {

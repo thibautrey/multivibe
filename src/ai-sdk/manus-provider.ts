@@ -1,14 +1,11 @@
-import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4GenerateResult, LanguageModelV4StreamPart, LanguageModelV4Usage } from "@ai-sdk/provider";
+import { unknownUsage, type SdkModel, type SdkCallOptions, type SdkGenerateResult, type SdkStreamPart, type SdkUsage } from "./model.js";
 import { setTimeout as delay } from "node:timers/promises";
 import type { UsageSnapshot } from "../types.js";
 import { SdkInputError } from "./protocol.js";
 
 export const MANUS_PROVIDER = { id: "manus", name: "Manus", adapter: "manus", baseURL: "https://api.manus.ai/v2" } as const;
 export const MANUS_MODELS = ["standard", "lite", "max"].map((id) => ({ id, name: `Manus ${id}`, input: ["text"], tools: false }));
-const UNKNOWN_USAGE: LanguageModelV4Usage = {
-  inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
-  outputTokens: { total: undefined, text: undefined, reasoning: undefined },
-};
+const UNKNOWN_USAGE: SdkUsage = unknownUsage();
 
 async function request(path: string, token: string, signal: AbortSignal, fetchImpl: typeof fetch, body?: unknown) {
   const response = await fetchImpl(`${MANUS_PROVIDER.baseURL}/${path}`, {
@@ -42,8 +39,8 @@ export async function fetchManusUsage(token: string, signal?: AbortSignal, fetch
 }
 
 /** Each completion is a private asynchronous Manus task, using text history. */
-export function createManusModel(token: string, modelId: string, fetchImpl: typeof fetch = fetch, pollMs = 2_000): LanguageModelV4 {
-  const generate = async (options: LanguageModelV4CallOptions): Promise<LanguageModelV4GenerateResult> => {
+export function createManusModel(token: string, modelId: string, fetchImpl: typeof fetch = fetch, pollMs = 2_000): SdkModel {
+  const generate = async (options: SdkCallOptions): Promise<SdkGenerateResult> => {
     if (!MANUS_MODELS.some(({ id }) => id === modelId)) throw new SdkInputError("Choose a Manus profile: standard, lite, or max");
     if (options.tools?.length || options.toolChoice && options.toolChoice.type !== "none" ||
         options.responseFormat?.type === "json" || options.maxOutputTokens !== undefined ||
@@ -114,7 +111,7 @@ export function createManusModel(token: string, modelId: string, fetchImpl: type
       // Manus returns task events, not token deltas. Buffer the task result and
       // then serialize it through the normal SSE codec without fake token counts.
       const result = await generate(options);
-      return { stream: new ReadableStream<LanguageModelV4StreamPart>({ start(controller) {
+      return { stream: new ReadableStream<SdkStreamPart>({ start(controller) {
         controller.enqueue({ type: "stream-start", warnings: [] });
         controller.enqueue({ type: "text-start", id: "answer" });
         for (const part of result.content) if (part.type === "text") controller.enqueue({ type: "text-delta", id: "answer", delta: part.text });

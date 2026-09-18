@@ -4,7 +4,7 @@ import { createSdkModel } from "./models.js";
 import { sdkCallOptions, chatResult } from "./protocol.js";
 import type { Account } from "../types.js";
 
-for (const provider of ["anthropic", "google", "groq", "mammouth"]) test(`uses the real ${provider} SDK request and response codec`, async () => {
+for (const provider of ["anthropic", "google", "groq", "mammouth"]) test(`uses the native ${provider} request and response codec`, async () => {
   const account: Account = {id: "account", provider: "ai-sdk", sdkProvider: provider, accessToken: "account-key", enabled: true};
   let requests = 0;
   const mockFetch: typeof fetch = async (input, init) => {
@@ -36,7 +36,7 @@ for (const provider of ["anthropic", "google", "groq", "mammouth"]) test(`uses t
   assert.equal(result.usage.total_tokens, 7);
 });
 
-test("Mammouth streams through the compatible SDK with the upstream model ID", async () => {
+test("Mammouth streams through the compatible transport with the upstream model ID", async () => {
   const account: Account = { id: "mammouth", provider: "ai-sdk", sdkProvider: "mammouth", accessToken: "key", enabled: true };
   const model = createSdkModel(account, "mammouth-recommended", async (input, init) => {
     assert.equal(String(input), "https://api.mammouth.ai/v1/chat/completions");
