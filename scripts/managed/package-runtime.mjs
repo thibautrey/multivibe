@@ -19,14 +19,15 @@ while(queue.length) {
   if(relative(sourceRoot,file)==="managed/native-anthropic.js") {
     if(entry!=="injector")throw Error("Native credential codec cannot enter Core package");
     const bundle=await build({entryPoints:[file],bundle:true,write:false,format:"esm",platform:"node",target:"node22",metafile:true});
-    // Only this reviewed codec and its pinned schema/SDK dependencies can be bundled.
-    const allowed=new Set(["@ai-sdk/anthropic","@ai-sdk/provider","@ai-sdk/provider-utils","@workflow/serde","@standard-schema/spec","@standard-schema/utils","eventsource-parser","secure-json-parse","zod"]);
+    // Only this reviewed codec and its self-contained transport sources can be bundled.
+    const allowed=new Set([]);
     const packages=new Set();
+    const allowedSources=['dist/managed/model-policy.js','dist/managed/native-anthropic.js','dist/ai-sdk/anthropic-model.js','dist/ai-sdk/protocol.js','dist/ai-sdk/model.js','dist/ai-sdk/transport-utils.js','dist/ai-sdk/transports/anthropic.js'];
     for(const input of Object.keys(bundle.metafile.inputs)) {
       const match=input.match(/node_modules\/((?:@[^/]+\/)?[^/]+)/);
       if(match)packages.add(match[1]);
       if(match&&!allowed.has(match[1]))throw Error(`Unreviewed native codec dependency ${match[1]}`);
-      if(!match&&!['dist/managed/model-policy.js','dist/managed/native-anthropic.js','dist/ai-sdk/anthropic-model.js','dist/ai-sdk/protocol.js'].includes(input))throw Error(`Unreviewed native codec source ${input}`);
+      if(!match&&!allowedSources.includes(input))throw Error(`Unreviewed native codec source ${input}`);
     }
     const notices=[];
     for(const name of [...packages].sort()) {
@@ -35,12 +36,6 @@ while(queue.length) {
       let license;
       for(const filename of ["LICENSE","LICENSE.md","LICENSE.txt","license","license.md"]) {
         try{license=await readFile(resolve(directory,filename),"utf8");break;}catch(error){if(error.code!=="ENOENT")throw error;}
-      }
-      // provider-utils 5.0.36 omits its license file. Its package declares the
-      // same Apache-2.0 Vercel repository as the pinned Anthropic package.
-      if(!license&&name==="@ai-sdk/provider-utils"&&metadata.version==="5.0.36"
-        &&metadata.license==="Apache-2.0"&&metadata.repository?.url==="https://github.com/vercel/ai") {
-        license=await readFile(resolve("node_modules/@ai-sdk/anthropic/LICENSE"),"utf8");
       }
       if(!license)throw Error(`Missing bundled dependency license ${name}`);
       notices.push(`${name}@${metadata.version} (${metadata.license})\n${license}`);

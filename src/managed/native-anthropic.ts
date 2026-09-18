@@ -1,12 +1,12 @@
 import {managedModelAllowed, type ManagedModelPolicy} from "./model-policy.js";
 import {createAnthropicCodec} from "../ai-sdk/anthropic-model.js";
 import {sdkCallOptions,chatResult,chatStream} from "../ai-sdk/protocol.js";
-import type {LanguageModelV4Usage} from "@ai-sdk/provider";
+import type {SdkUsage} from "../ai-sdk/model.js";
 import type {ManagedProviderAccount} from "./executor.js";
 
-/** Validate native financial evidence before the shared SDK presentation codec.
- * SDK totals can deliberately exclude advisor or other separately priced work. */
-export function nativeAnthropicUsageEligible(usage:LanguageModelV4Usage):boolean {
+/** Validate native financial evidence before the shared model presentation codec.
+ * Protocol totals can deliberately exclude advisor or other separately priced work. */
+export function nativeAnthropicUsageEligible(usage:SdkUsage):boolean {
  const raw=usage.raw;
  if(!raw||typeof raw!=="object"||Array.isArray(raw))return false;
  const allowed=new Set(["input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens",
@@ -66,7 +66,7 @@ export function createManagedAnthropicAccount(options:{
    if(String(input)!=="https://api.anthropic.com/v1/messages"||init?.method!=="POST"||typeof init.body!=="string")throw Error("native_managed_destination_invalid");
    const native=JSON.parse(init.body);
    if(native.model!==body.model||native.max_tokens!==body.max_tokens||(native.stream??false)!==(body.stream??false))throw Error("native_managed_projection_invalid");
-   // Fence before credential access; neither SDK retries nor parser failures can
+   // Fence before credential access; neither transport retries nor parser failures can
    // obtain another provider invocation within this attempt.
    dispatched=true;
    signal.throwIfAborted();
@@ -80,7 +80,7 @@ export function createManagedAnthropicAccount(options:{
    const reader=response.body?.getReader();
    if(!reader)return response;
    let received=0;
-   // Bound raw provider bytes before the SDK buffers/parses them. The outer
+   // Bound raw provider bytes before the transport buffers/parses them. The outer
    // managed response bound applies after conversion and cannot protect this.
    return new Response(new ReadableStream<Uint8Array>({
     async pull(controller){try{
@@ -93,7 +93,7 @@ export function createManagedAnthropicAccount(options:{
     async cancel(){await reader.cancel();reader.releaseLock();}
    }),{status:response.status,headers:response.headers});
   };
-  // A nonsecret placeholder prevents the SDK from consulting ambient keys.
+  // A nonsecret placeholder prevents the transport from consulting ambient keys.
   // Only the fixed guarded fetch can replace it with an actual credential.
   const model=createAnthropicCodec(body.model,"managed-placeholder","https://api.anthropic.com/v1",guardedFetch);
   const params=sdkCallOptions(body,signal);

@@ -1,4 +1,4 @@
-import { decompress } from "@foxglove/wasm-zstd";
+import { zstdDecompressSync } from "node:zlib";
 import express from "express";
 import { REQUEST_BODY_LIMIT } from "../config.js";
 import {
@@ -112,7 +112,9 @@ export function createBodyParserMiddleware() {
 
         let bodyBuffer: Buffer;
         try {
-          bodyBuffer = decompress(rawBody, requestBodyLimitBytes);
+          // The pinned runtime's core zstd decoder enforces the same output
+          // bound as the previous wasm decoder and throws ERR_BUFFER_TOO_LARGE.
+          bodyBuffer = zstdDecompressSync(rawBody, { maxOutputLength: requestBodyLimitBytes });
         } catch {
           res.status(400).json({
             error: {

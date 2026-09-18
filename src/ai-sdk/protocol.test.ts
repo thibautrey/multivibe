@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { LanguageModelV4StreamPart, LanguageModelV4Usage } from "@ai-sdk/provider";
+import type { SdkStreamPart, SdkUsage } from "./model.js";
 import { sdkCallOptions, chatStream, chatResult } from "./protocol.js";
 import { sdkAccountModels, sdkModelId, sdkProviderCatalog } from "./catalog.js";
 import { SDK_PROVIDERS, validateSdkAccount } from "./providers.js";
 import type { Account } from "../types.js";
 
-const usage: LanguageModelV4Usage = {inputTokens: {total: 12, noCache: 8, cacheRead: 4, cacheWrite: 0}, outputTokens: {total: 3, text: 2, reasoning: 1}};
+const usage: SdkUsage = {inputTokens: {total: 12, noCache: 8, cacheRead: 4, cacheWrite: 0}, outputTokens: {total: 3, text: 2, reasoning: 1}};
 
 test("translates tool history, images, structured output and generation controls", () => {
   const signal = new AbortController().signal;
@@ -71,7 +71,7 @@ test("repairs truncated tool history for strict OpenAI-compatible providers", ()
 });
 
 test("streams text and function arguments incrementally without repeating completed tool calls", async () => {
-  const parts: LanguageModelV4StreamPart[] = [
+  const parts: SdkStreamPart[] = [
     {type: "text-delta", id: "text", delta: "Hello"},
     {type: "tool-input-start", id: "call", toolName: "lookup"},
     {type: "tool-input-delta", id: "call", delta: '{"q":'},
@@ -79,7 +79,7 @@ test("streams text and function arguments incrementally without repeating comple
     {type: "tool-call", toolCallId: "call", toolName: "lookup", input: '{"q":"test"}'},
     {type: "finish", usage, finishReason: {unified: "tool-calls", raw: "tool_use"}},
   ];
-  const stream = new ReadableStream<LanguageModelV4StreamPart>({start(controller) {parts.forEach((part) => controller.enqueue(part)); controller.close();}});
+  const stream = new ReadableStream<SdkStreamPart>({start(controller) {parts.forEach((part) => controller.enqueue(part)); controller.close();}});
   const frames: string[] = [];
   for await (const frame of chatStream("anthropic/test", stream, true)) frames.push(frame);
   assert.equal(frames.at(-1), "data: [DONE]\n\n");
@@ -93,7 +93,7 @@ test("streams text and function arguments incrementally without repeating comple
 });
 
 test("does not fabricate completion for truncated provider streams", async () => {
-  const stream = new ReadableStream<LanguageModelV4StreamPart>({start(controller) {controller.close();}});
+  const stream = new ReadableStream<SdkStreamPart>({start(controller) {controller.close();}});
   await assert.rejects(async () => {for await (const _frame of chatStream("google/test", stream, false)) {}}, /before a finish/);
 });
 
@@ -125,7 +125,7 @@ test("JSON and streaming preserve missing usage and positive cache writes",async
  ]){
   const result=chatResult("anthropic/test",{content:[],usage:measured,finishReason:{unified:"stop",raw:"stop"},warnings:[]});
   assert.equal(result.usage,null);
-  const stream=new ReadableStream<LanguageModelV4StreamPart>({start(controller){controller.enqueue({type:"finish",usage:measured,finishReason:{unified:"stop",raw:"stop"}});controller.close();}});
+  const stream=new ReadableStream<SdkStreamPart>({start(controller){controller.enqueue({type:"finish",usage:measured,finishReason:{unified:"stop",raw:"stop"}});controller.close();}});
   const frames=[];for await(const frame of chatStream("anthropic/test",stream,true))frames.push(frame);
   assert.equal(JSON.parse(frames.at(-2)!.slice(6)).usage,null);
  }

@@ -1,5 +1,5 @@
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4GenerateResult, LanguageModelV4StreamPart, LanguageModelV4Usage } from "@ai-sdk/provider";
+import { unknownUsage, type SdkModel, type SdkCallOptions, type SdkGenerateResult, type SdkStreamPart, type SdkUsage } from "../model.js";
+import { createOpenAICompatibleModel } from "../transports/openai-compatible.js";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Account, UsageSnapshot } from "../../types.js";
 import { SdkInputError } from "../protocol.js";
@@ -97,10 +97,7 @@ export const ACCESS: Record<string, { paid: boolean; free: boolean; note: string
 /** No provider in this batch documents a stable inference-key quota denominator. */
 export const QUOTA_FETCHERS: Record<string, (account: Account, signal: AbortSignal) => Promise<UsageSnapshot>> = {};
 
-const UNKNOWN_USAGE: LanguageModelV4Usage = {
-  inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
-  outputTokens: { total: undefined, text: undefined, reasoning: undefined },
-};
+const UNKNOWN_USAGE: SdkUsage = unknownUsage();
 
 async function replicateRequest(path: string, token: string, signal: AbortSignal, fetchImpl: typeof fetch, method = "GET", body?: unknown) {
   const response = await fetchImpl(`https://api.replicate.com/v1/${path}`, {
@@ -113,8 +110,8 @@ async function replicateRequest(path: string, token: string, signal: AbortSignal
 }
 
 /** Adapter for the verified prompt/output schema of Replicate's official Llama 3 70B Instruct model. */
-export function createReplicateModel(token: string, modelId: string, fetchImpl: typeof fetch = fetch, pollMs = 1_000): LanguageModelV4 {
-  const generate = async (options: LanguageModelV4CallOptions): Promise<LanguageModelV4GenerateResult> => {
+export function createReplicateModel(token: string, modelId: string, fetchImpl: typeof fetch = fetch, pollMs = 1_000): SdkModel {
+  const generate = async (options: SdkCallOptions): Promise<SdkGenerateResult> => {
     const hasProviderOptions = options.providerOptions !== undefined && Object.keys(options.providerOptions).length > 0;
     if (modelId !== "meta/meta-llama-3-70b-instruct") throw new SdkInputError("Choose the reviewed Replicate model meta/meta-llama-3-70b-instruct");
     if (options.tools?.length || options.toolChoice && options.toolChoice.type !== "none" || options.responseFormat?.type === "json" ||
@@ -163,7 +160,7 @@ export function createReplicateModel(token: string, modelId: string, fetchImpl: 
     specificationVersion: "v4", provider: "replicate", modelId, supportedUrls: {}, doGenerate: generate,
     async doStream(options) {
       const result = await generate(options);
-      return { stream: new ReadableStream<LanguageModelV4StreamPart>({ start(controller) {
+      return { stream: new ReadableStream<SdkStreamPart>({ start(controller) {
         controller.enqueue({ type: "stream-start", warnings: [] });
         controller.enqueue({ type: "text-start", id: "answer" });
         for (const part of result.content) if (part.type === "text") controller.enqueue({ type: "text-delta", id: "answer", delta: part.text });
@@ -175,17 +172,14 @@ export function createReplicateModel(token: string, modelId: string, fetchImpl: 
   };
 }
 
-export function createFalModel(token: string, model: string, fetchImpl: typeof fetch = fetch): LanguageModelV4 {
-  const keyAuthFetch: typeof fetch = (input, init) => {
-    const headers = new Headers(init?.headers);
-    headers.set("authorization", `Key ${token}`);
-    return fetchImpl(input, { ...init, headers });
-  };
-  return createOpenAICompatible({
-    name: "fal",
-    apiKey: "fal-key-auth-is-applied-by-fetch-wrapper",
+export function createFalModel(token: string, model: string, fetchImpl: typeof fetch = fetch): SdkModel {
+  return createOpenAICompatibleModel({
+    provider: "fal",
+    modelId: model,
+    apiKey: token,
+    authScheme: "Key",
     baseURL: "https://fal.run/openrouter/router/openai/v1",
-    fetch: keyAuthFetch,
+    fetch: fetchImpl,
     includeUsage: true,
-  }).languageModel(model);
+  });
 }
