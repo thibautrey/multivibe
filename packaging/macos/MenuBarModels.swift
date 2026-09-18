@@ -14,6 +14,12 @@ struct QuotaWindow: Decodable {
     let resetAt: Double?
 }
 
+/// Absolute spendable credit for a pay-as-you-go provider. Never a percentage.
+struct CreditBalance: Decodable {
+    let remaining: Double
+    let unit: String
+}
+
 struct MenuBarAccount: Decodable {
     let displayName: String
     let enabled: Bool
@@ -23,6 +29,7 @@ struct MenuBarAccount: Decodable {
     let fiveHour: QuotaWindow?
     let weekly: QuotaWindow?
     let monthly: QuotaWindow?
+    let balance: CreditBalance?
 }
 
 struct MenuBarQuota: Decodable {
@@ -38,10 +45,16 @@ struct ProviderQuota: Decodable {
         let remainingPercent: Double
         let accountCount: Int
     }
+    struct Balance: Decodable {
+        let remaining: Double
+        let unit: String
+        let accountCount: Int
+    }
     let id: String
     let displayName: String
     let accounts: [MenuBarAccount]
     let windows: [Window]
+    let balance: Balance?
 }
 
 struct ProviderActivity: Decodable {

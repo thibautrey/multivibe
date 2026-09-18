@@ -69,3 +69,25 @@ check(selection.selected == "zai", "stale activity cannot hijack the stable sele
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("native menu bar shows a provider credit balance when there is no quota window", () => {
+  const source = readMacOSMenuSourceSync();
+  const start = source.indexOf("func renderQuota()");
+  const end = source.indexOf("func render()", start);
+  const renderQuota = source.slice(start, end);
+
+  assert.match(renderQuota, /!\$0\.windows\.isEmpty \|\| \$0\.balance != nil/u);
+  assert.match(renderQuota, /else if let balance = provider\.balance \{/u);
+  assert.match(
+    renderQuota,
+    /creditBalanceText\(remaining: balance\.remaining, unit: balance\.unit\)/u,
+  );
+  assert.match(source, /func creditBalanceText\(remaining: Double, unit: String\) -> String/u);
+  assert.match(source, /case "USD": return "\$" \+ amount/u);
+  assert.match(source, /func compactBalance\(_ balance: CreditBalance\) -> NSView/u);
+  assert.match(
+    source,
+    /func balanceCell\(title: String, balance: ProviderQuota\.Balance\) -> NSView/u,
+  );
+  assert.match(source, /cells\.append\(balanceCell\(title: "Credit", balance: balance\)\)/u);
+});

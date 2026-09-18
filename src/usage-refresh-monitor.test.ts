@@ -208,3 +208,43 @@ test("persists failed quota snapshots but counts them as failed rather than refr
   assert.equal(accounts[0].usage?.primary?.usedPercent, 50);
   monitor.stop();
 });
+
+test("credit-balance wake interval stays below the subscription cycle", async () => {
+  const { creditBalanceWakeIntervalMs } = await import("./usage-refresh-monitor.js");
+  assert.equal(creditBalanceWakeIntervalMs(120_000), 60_000);
+  assert.equal(creditBalanceWakeIntervalMs(40_000), 30_000);
+  assert.equal(creditBalanceWakeIntervalMs(Number.NaN), 60_000);
+});
+
+test("balance pass refreshes only pay-as-you-go credit accounts", async () => {
+  const now = Date.now();
+  const accounts = [
+    account({
+      id: "credit",
+      provider: "ai-sdk",
+      sdkProvider: "deepseek",
+      usage: {
+        fetchedAt: now - 130_000,
+        quotaStatus: "available",
+        balance: { remaining: 20, unit: "USD" },
+      },
+    }),
+    account({
+      id: "subscription",
+      usage: { fetchedAt: now - 400_000, primary: { usedPercent: 10 } },
+    }),
+  ];
+  const probed: string[] = [];
+  const coordinator = new UsageRefreshCoordinator(async (value) => {
+    probed.push(value.id);
+    value.usage = { fetchedAt: Date.now() };
+    return value;
+  });
+  const monitor = createUsageRefreshMonitor(monitorOptions(storeFor(accounts), coordinator));
+
+  const result = await monitor.refreshBalancesNow();
+  monitor.stop();
+
+  assert.deepEqual(result, { checked: 1, refreshed: 1, failed: 0, skipped: 0 });
+  assert.deepEqual(probed, ["credit"]);
+});
