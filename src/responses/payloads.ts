@@ -53,6 +53,52 @@ function responseImagePartToChatPart(part: any): any | null {
   return { type: "image_url", image_url: imageUrl };
 }
 
+/**
+ * Splits a Responses tool output into Chat Completions tool text plus image
+ * parts. Serializing an image into the tool text would turn a screenshot into
+ * hundreds of thousands of base64 tokens and overflow the model context.
+ */
+function toolOutputToChatMessages(toolCallId: string, output: any): any[] {
+  const parts = Array.isArray(output)
+    ? output
+    : output === undefined || output === null
+      ? []
+      : [output];
+  const texts: string[] = [];
+  const images: any[] = [];
+  for (const part of parts) {
+    if (typeof part === "string") {
+      texts.push(part);
+      continue;
+    }
+    if (typeof part?.text === "string") {
+      texts.push(part.text);
+      continue;
+    }
+    const image = responseImagePartToChatPart(part);
+    if (image) {
+      images.push(image);
+      continue;
+    }
+    if (part !== undefined && part !== null) texts.push(JSON.stringify(part));
+  }
+  const converted: any[] = [
+    { role: "tool", tool_call_id: toolCallId, content: texts.join("\n") },
+  ];
+  // Several OpenAI-compatible runtimes require string tool content, so image
+  // output travels as its own user turn instead of base64 tool text.
+  if (images.length) {
+    converted.push({
+      role: "user",
+      content: [
+        { type: "text", text: "Image output from the previous tool call." },
+        ...images,
+      ],
+    });
+  }
+  return converted;
+}
+
 export function inspectAssistantPayload(payload: any): {
   assistantEmptyOutput?: boolean;
   assistantFinishReason?: string;
@@ -281,15 +327,12 @@ export function responsesToChatCompletionsPayload(body: any) {
     }
 
     if (item?.type === "function_call_output") {
-      messages.push({
-        role: "tool",
-        tool_call_id:
+      messages.push(
+        ...toolOutputToChatMessages(
           item.call_id ?? item.id ?? `call_${randomUUID().replace(/-/g, "").slice(0, 24)}`,
-        content:
-          typeof item.output === "string"
-            ? item.output
-            : JSON.stringify(item.output ?? ""),
-      });
+          item.output,
+        ),
+      );
       continue;
     }
 
@@ -304,15 +347,12 @@ export function responsesToChatCompletionsPayload(body: any) {
     }
 
     if (item?.type === "custom_tool_call_output") {
-      messages.push({
-        role: "tool",
-        tool_call_id:
+      messages.push(
+        ...toolOutputToChatMessages(
           item.call_id ?? item.id ?? `call_${randomUUID().replace(/-/g, "").slice(0, 24)}`,
-        content:
-          typeof item.output === "string"
-            ? item.output
-            : JSON.stringify(item.output ?? ""),
-      });
+          item.output,
+        ),
+      );
       continue;
     }
 

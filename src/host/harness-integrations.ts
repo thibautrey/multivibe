@@ -584,16 +584,31 @@ function renderCodexToml(current: string | null, context: HarnessContext): strin
   return `${rootBlock}\n\n${value ? `${value}\n\n` : ""}${providerBlock}\n${agentsBlock ? `\n${agentsBlock}\n` : ""}`;
 }
 
+function positiveInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
 function renderCodexModelCatalog(context: HarnessContext): string {
   const nativeModels = new Map((context.codexModels ?? []).map((model) => [model.slug, model]));
   const models = requireModelIds(context).map((id, index) => {
     const nativeModel = nativeModels.get(id);
     const modalities = context.modelInputModalities?.[id];
     const contextWindow = context.modelContextWindows?.[id];
-    if (nativeModel) return {
-      ...nativeModel,
-      ...(modalities && !Array.isArray(nativeModel.input_modalities) ? { input_modalities: modalities } : {}),
-    };
+    if (nativeModel) {
+      // A native Codex entry omits the window for models Codex does not ship,
+      // such as third-party provider models. Codex cannot auto-compact without
+      // a window, so the value advertised by /v1/models fills that hole instead
+      // of being shadowed by the native entry.
+      const advertised = positiveInteger(contextWindow);
+      const currentWindow = positiveInteger(nativeModel.context_window);
+      const currentMaxWindow = positiveInteger(nativeModel.max_context_window);
+      return {
+        ...nativeModel,
+        ...(modalities && !Array.isArray(nativeModel.input_modalities) ? { input_modalities: modalities } : {}),
+        ...(advertised !== undefined && currentWindow === undefined ? { context_window: advertised } : {}),
+        ...(advertised !== undefined && currentMaxWindow === undefined ? { max_context_window: advertised } : {}),
+      };
+    }
     return ({
     slug: id,
     display_name: context.modelNames?.[id] ?? id,
