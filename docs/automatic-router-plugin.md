@@ -23,6 +23,18 @@ unchanged. The former `routeModel` setting is ignored and hidden. The virtual
 name resolves before capacity admission and is never sent to a provider.
 `GET /v1/models/multivibe%2Fautorouter` retrieves its metadata.
 
+**Current wiring note (2026-09-18).** The virtual-model middleware that
+resolved `multivibe/autorouter` before admission was part of the legacy
+TypeScript inference proxy and has no call site since that proxy was removed
+(`d423cf5`). The plugin, its manifest, and its admin catalog entry still exist,
+but the name is not resolved on the native Rust inference path, so a request
+naming `multivibe/autorouter` is not routed by this plugin today. Treat the
+paragraph below as the intended behaviour, not as verified current behaviour, and
+confirm before relying on it. The cost-optimized coding module deliberately does
+**not** depend on this middleware: it publishes managed routing aliases, which the
+native edge resolves before provider selection. See
+[cost-optimized coding](coding-economy.md).
+
 JavaScript lifecycle plugins run in the JavaScript inference profile. Native
 Rust inference does not execute these hooks; enabling them there is rejected.
 WebSocket, compact, rich multimodal and provider-specific features are not

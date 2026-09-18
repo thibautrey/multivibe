@@ -7,14 +7,65 @@ import { getSessionId } from "./responses/payloads.js";
 import { extractCodexSessionId } from "./codex-projects.js";
 import { inspectModuleConversation } from "./module-conversation.js";
 import { AUTOMATIC_ROUTER_MODEL, AUTOMATIC_ROUTER_PLUGIN } from "./automatic-router-model.js";
+import { resolveVirtualModels } from "./virtual-model-registry.js";
 
 function activeRouter(manager?: ModuleManager) {
   return manager?.list?.().find((entry) => entry.id === AUTOMATIC_ROUTER_PLUGIN && entry.enabled && entry.loaded && entry.healthy && !entry.restartRequired);
 }
 
-/** Merge after cached discovery: plugin enable/disable must be visible immediately. */
+/**
+ * Merge after cached discovery: plugin enable/disable must be visible immediately.
+ * Virtual models declared by bundled modules are appended from the same registry
+ * that reconciles their managed routing aliases.
+ */
 export function withVirtualModels(models: ExposedModel[], manager?: ModuleManager): ExposedModel[] {
-  const physical = models.filter((model) => model.id !== AUTOMATIC_ROUTER_MODEL);
+  const declared = new Set(
+    resolveVirtualModels(manager).map((descriptor) => descriptor.id),
+  );
+  const physical = models.filter((model) => model.id !== AUTOMATIC_ROUTER_MODEL && !declared.has(model.id));
+  const registry = resolveVirtualModels(manager, new Set(physical.map((model) => model.id)));
+  const virtual: ExposedModel[] = registry
+    .filter((descriptor) => descriptor.status === "ready" && descriptor.target)
+    .map((descriptor) => {
+      const target = physical.find((model) => model.id === descriptor.target);
+      return {
+        id: descriptor.id,
+        object: "model" as const,
+        created: 0,
+        owned_by: "multivibe",
+        metadata: {
+          provider: "openai-compatible" as const,
+          is_virtual: true,
+          plugin_id: descriptor.moduleId,
+          catalog_source: "plugin",
+          context_window: target?.metadata.context_window ?? null,
+          max_output_tokens: null,
+          supports_tools: target?.metadata.supports_tools ?? false,
+          supported_tool_types: target?.metadata.supported_tool_types ?? [],
+          supports_reasoning: false,
+          input_modalities: ["text"],
+          alias_targets: [descriptor.target!],
+        },
+        codexModelInfo: {
+          slug: descriptor.id,
+          display_name: descriptor.id,
+          description: descriptor.description ?? "Provided by MultiVibe Host.",
+          visibility: "list",
+          supported_in_api: true,
+          base_instructions: "",
+          supported_reasoning_levels: [],
+          shell_type: "shell_command",
+          priority: 100,
+          support_verbosity: false,
+          truncation_policy: { mode: "tokens", limit: target?.metadata.context_window ?? 10000 },
+          experimental_supported_tools: [],
+        },
+      };
+    });
+  return [...virtual, ...withRouterEntry(physical, manager)];
+}
+
+function withRouterEntry(physical: ExposedModel[], manager?: ModuleManager): ExposedModel[] {
   const plugin = activeRouter(manager);
   if (!plugin) return physical;
   const targets = [plugin.settings.economyModel, plugin.settings.balancedModel, plugin.settings.advancedModel].map((id) => physical.find((model) => model.id === id));

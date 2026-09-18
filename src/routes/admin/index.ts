@@ -116,6 +116,9 @@ import {
   HostHarnessIntegrationError,
   type HostHarnessIntegrationManager,
 } from "../../host/harness-integrations.js";
+import { CODING_ECONOMY_ALIAS_DESCRIPTION, CODING_ECONOMY_PLUGIN } from "../../coding-economy-model.js";
+import { buildTaskLedger, buildTaskLedgerEntry } from "../../task-ledger.js";
+import { resolveVirtualModels, syncVirtualModelAliases } from "../../virtual-model-registry.js";
 import {
   unavailableProviderWorkerEstimate,
   type ProviderWorkerEstimateClient,
@@ -715,6 +718,30 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
   });
 
+  // Opt-in only. Enabling writes a managed `[agents]` block plus the parent
+  // delegation contract into ~/.codex/config.toml; disabling removes exactly
+  // that block and leaves the previous file restorable.
+  router.post("/host-harnesses/:id/coding-economy", async (req, res) => {
+    res.setHeader("cache-control", "no-store");
+    if (!options.hostApplication || !options.hostHarnessIntegrations) {
+      return res.status(404).json({ error: "Harness integrations are available only in MultiVibe Host" });
+    }
+    try {
+      const harness = await options.hostHarnessIntegrations.setCodexCodingEconomy(
+        String(req.params.id ?? ""),
+        Boolean(req.body?.enabled),
+        {
+          workerModel: typeof req.body?.workerModel === "string" ? req.body.workerModel : "",
+          reasoningEffort: typeof req.body?.reasoningEffort === "string" ? req.body.reasoningEffort : "",
+        },
+      );
+      return res.json({ harness });
+    } catch (error: any) {
+      const status = error instanceof HostHarnessIntegrationError ? error.status : 500;
+      return res.status(status).json({ error: error?.message ?? "Coding economy update failed" });
+    }
+  });
+
   router.get("/modules/:id/analytics", (req, res) => {
     if (!moduleManager) return res.status(503).json({ error: "Module manager is unavailable" });
     try { return res.json(moduleManager.analytics(req.params.id)); }
@@ -797,9 +824,104 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       if (req.body?.enabled && MULTIVIBE_CONTROL_PLANE) throw new Error("JavaScript inference plugins require the JavaScript inference profile; native Rust inference does not run these hooks");
       if ("enabled" in (req.body ?? {})) result = await moduleManager.setEnabled(req.params.id, Boolean(req.body.enabled));
       if ("settings" in (req.body ?? {})) result = await moduleManager.setSettings(req.params.id, req.body.settings);
-      return res.json({ module: result ?? moduleManager.list().find((entry) => entry.id === req.params.id) });
+      // Declared virtual models are reconciled on every module change so a
+      // disabled or misconfigured module cannot leave a routable alias behind.
+      let virtualModels;
+      try { virtualModels = await syncVirtualModelAliases(store, moduleManager, await catalogModelIds()); }
+      catch { virtualModels = undefined; }
+      return res.json({ module: result ?? moduleManager.list().find((entry) => entry.id === req.params.id), virtualModels });
     } catch (error) {
       return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+
+  const catalogModelIds = async (): Promise<Set<string>> =>
+    new Set((await discoverModels(store, openaiBaseUrl, mistralBaseUrl, zaiBaseUrl)).map((model) => model.id));
+
+  const codingEconomyModule = () =>
+    moduleManager?.list().find((entry) => entry.id === CODING_ECONOMY_PLUGIN);
+
+  /** Accounts billed by plan quota, and accounts served by local runtimes. */
+  const accountClassSets = async () => {
+    const accounts = await store.listAccounts();
+    const subscription = new Set<string>();
+    const local = new Set<string>();
+    for (const account of accounts) {
+      const usage = account.usage;
+      if (account.chatgptAccountId || usage?.primary || usage?.secondary || usage?.allowances?.length) {
+        subscription.add(account.id);
+      }
+      if (account.location === "local" || account.localRuntime) local.add(account.id);
+    }
+    return { subscription, local };
+  };
+
+  const codingEconomyLedgerOptions = async () => {
+    const settings = (codingEconomyModule()?.settings ?? {}) as Record<string, unknown>;
+    const { subscription, local } = await accountClassSets();
+    return {
+      parentModel: typeof settings.parentModel === "string" && settings.parentModel.trim() ? settings.parentModel.trim() : undefined,
+      subscriptionAccountIds: subscription,
+      localAccountIds: local,
+    };
+  };
+
+  router.get("/coding-economy", async (_req, res) => {
+    res.setHeader("cache-control", "no-store");
+    if (!moduleManager) return res.status(503).json({ error: "Module manager is unavailable" });
+    try {
+      const catalog = await catalogModelIds();
+      const module = codingEconomyModule();
+      return res.json({
+        module: module ? { id: module.id, name: module.manifest?.name, enabled: module.enabled, healthy: module.healthy, settings: module.settings } : null,
+        virtualModels: resolveVirtualModels(moduleManager, catalog),
+        managedAliases: (await store.listModelAliases())
+          .filter((alias) => alias.description === CODING_ECONOMY_ALIAS_DESCRIPTION)
+          .map((alias) => ({ id: alias.id, enabled: alias.enabled, targets: alias.rules.flatMap((rule) => rule.candidates.map((candidate) => candidate.model)) })),
+        measurementOnly: "Delegation is decided by the coding harness. MultiVibe configures the models and records evidence; it never blocks or rewrites a request.",
+      });
+    } catch (error: any) {
+      return res.status(500).json({ error: error?.message ?? "Coding economy status failed" });
+    }
+  });
+
+  router.post("/coding-economy/sync", async (_req, res) => {
+    res.setHeader("cache-control", "no-store");
+    if (!moduleManager) return res.status(503).json({ error: "Module manager is unavailable" });
+    try {
+      return res.json(await syncVirtualModelAliases(store, moduleManager, await catalogModelIds()));
+    } catch (error: any) {
+      return res.status(500).json({ error: error?.message ?? "Virtual model synchronization failed" });
+    }
+  });
+
+  router.get("/coding-economy/tasks", async (req, res) => {
+    res.setHeader("cache-control", "no-store");
+    try {
+      const limit = Math.max(1, Math.min(2_000, Number(req.query.limit ?? 500) || 500));
+      const traces = await traceManager.readTracesLegacy(Number.MAX_SAFE_INTEGER);
+      const options = await codingEconomyLedgerOptions();
+      const tasks = buildTaskLedger(traces, { ...options, limit });
+      return res.json({
+        tasks,
+        costKinds: ["measuredApiCashUsd", "estimatedSubscriptionQuotaUnits", "localComputeTokens", "counterfactualSavingsUsd"],
+        note: "Measured API cash is reconcilable against provider pricing. Subscription-quota units are estimated in tokens. Local compute consumes hardware, not cash. Counterfactual savings are a model-repriced estimate, never a measured saving. Unknown values stay unknown.",
+      });
+    } catch (error: any) {
+      return res.status(500).json({ error: error?.message ?? "Task ledger failed" });
+    }
+  });
+
+  router.get("/coding-economy/tasks/:taskId", async (req, res) => {
+    res.setHeader("cache-control", "no-store");
+    try {
+      const traces = await traceManager.readTracesLegacy(Number.MAX_SAFE_INTEGER);
+      const task = buildTaskLedgerEntry(traces, String(req.params.taskId), await codingEconomyLedgerOptions());
+      if (!task) return res.status(404).json({ error: "not found" });
+      return res.json({ task });
+    } catch (error: any) {
+      return res.status(500).json({ error: error?.message ?? "Task ledger failed" });
     }
   });
 
