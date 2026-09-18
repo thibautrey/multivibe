@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
+import { readMacOSMenuSourceSync } from "./macos-menu-sources.mjs";
 
-const source = readFileSync(new URL("../../packaging/macos/MultiVibeMenuBar.swift", import.meta.url), "utf8");
+const source = readMacOSMenuSourceSync();
 
 test("macOS menu quit stops the background Host service", () => {
-  assert.match(source, /private func stopHostService\(\)[\s\S]*runLaunchctl\(\["bootout", hostLaunchAgentService\]\)/u);
-  assert.match(source, /@objc private func quitApplication\(\) \{\s*stopHostService\(\)\s*NSApplication\.shared\.terminate/u);
+  assert.match(source, /func stopHostService\(\)[\s\S]*runLaunchctl\(\["bootout", hostLaunchAgentService\]\)/u);
+  assert.match(source, /@objc func quitApplication\(\) \{\s*stopHostService\(\)\s*NSApplication\.shared\.terminate/u);
 });
 
 test("macOS launch-at-login preference controls both UI and Host service", () => {

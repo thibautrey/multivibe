@@ -1,14 +1,15 @@
 import test from "node:test";
+import { readMacOSMenuSourceSync } from "./macos-menu-sources.mjs";
 import assert from "node:assert/strict";
-import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 
 test("native menu bar sizes the status item to its visible quota", () => {
-  const source = readFileSync(new URL("../../packaging/macos/MultiVibeMenuBar.swift", import.meta.url), "utf8");
-  const start = source.indexOf("private func renderQuota()");
-  const end = source.indexOf("private func render()", start);
+  const source = readMacOSMenuSourceSync();
+  const start = source.indexOf("func renderQuota()");
+  const end = source.indexOf("func render()", start);
   const renderQuota = source.slice(start, end);
 
   assert.match(renderQuota, /statusItem\.length = NSStatusItem\.variableLength/u);
@@ -16,15 +17,15 @@ test("native menu bar sizes the status item to its visible quota", () => {
 });
 
 test("reset-credit increases use a brief unthrottled menu-bar popup", () => {
-  const source = readFileSync(new URL("../../packaging/macos/MultiVibeMenuBar.swift", import.meta.url), "utf8");
+  const source = readMacOSMenuSourceSync();
   assert.match(source, /next\.kind == "reset-credit-increased"/);
   assert.match(source, /closeNotification\(after: next\.kind == "reset-credit-increased" \? 5 : 8\)/);
 });
 
 test("native quota selection changes only for activity, pins, and removal", { skip: process.platform !== "darwin" }, () => {
-  const source = readFileSync(new URL("../../packaging/macos/MultiVibeMenuBar.swift", import.meta.url), "utf8");
-  const start = source.indexOf("private struct ProviderActivity:");
-  const end = source.indexOf("private struct MenuBarGitHubStarPrompt", start);
+  const source = readMacOSMenuSourceSync();
+  const start = source.indexOf("struct ProviderActivity:");
+  const end = source.indexOf("struct MenuBarGitHubStarPrompt", start);
   const dir = mkdtempSync(join(tmpdir(), "multivibe-quota-test-"));
   try {
     const file = join(dir, "main.swift");
