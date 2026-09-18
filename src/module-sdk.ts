@@ -13,6 +13,23 @@ export const MODULE_HOOKS = [
 export type ModuleHookName = (typeof MODULE_HOOKS)[number];
 export type ModuleFailurePolicy = "open" | "closed";
 
+/**
+ * A client-facing model contributed by a bundled module. Modules never resolve
+ * these names themselves; the host maps each declaration onto a managed,
+ * exactly-reversible routing alias so the name resolves before provider
+ * selection while requests keep their messages and cache keys untouched.
+ */
+export type ModuleVirtualModel = {
+  /** Client-facing model id, for example `multivibe/coding-worker`. */
+  id: string;
+  /** Settings key whose value holds the concrete target model id. */
+  targetSetting: string;
+  /** Role attributed to usage recorded for this model. */
+  role?: "parent" | "worker";
+  /** Human-readable purpose, surfaced in the model catalog. */
+  description?: string;
+};
+
 export type ModuleManifest = {
   id: string;
   name: string;
@@ -31,6 +48,8 @@ export type ModuleManifest = {
   homepage?: string;
   settingsSchema?: Record<string, unknown>;
   defaultSettings?: Record<string, unknown>;
+  /** Virtual models this bundled module contributes to the instance catalog. */
+  virtualModels?: readonly ModuleVirtualModel[];
 };
 
 export type ModuleConversation = {

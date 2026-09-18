@@ -13,6 +13,25 @@ const CODEX_PROVIDER_BLOCK_START = "# >>> MultiVibe Host Codex provider >>>";
 const CODEX_PROVIDER_BLOCK_END = "# <<< MultiVibe Host Codex provider <<<";
 const CODEX_MODEL_CATALOG_RELATIVE_PATH = ".codex/multivibe-models.json";
 const MODEL_CATALOG_CONFIGURATION_REVISION = 2;
+type CodexManagedBlockKind = "managed" | "root" | "provider" | "agents";
+
+const CODEX_AGENTS_BLOCK_START = "# >>> MultiVibe Host coding economy >>>";
+const CODEX_AGENTS_BLOCK_END = "# <<< MultiVibe Host coding economy <<<";
+
+/**
+ * Delegation contract injected as developer instructions when the coding
+ * economy profile is enabled. It states what the parent owns, what may be
+ * delegated, and that only real artifacts count as evidence.
+ */
+export const CODEX_CODING_ECONOMY_GUIDANCE = [
+  "Cost-optimized coding is enabled through MultiVibe.",
+  "You own every task: understand the request, inspect the repository, produce a bounded implementation contract, and accept or reject the result.",
+  "Delegate implementation only as a bounded work package for one worker subagent, passing: objective; allowed paths; invariants; acceptance criteria; required checks; and escalation conditions.",
+  "Keep ambiguous debugging, architecture changes, authorization, security boundaries, and destructive migrations on the parent path.",
+  "The worker must stop and return control on missing requirements, unexpected architecture, repeated failed edits, contradictory tests, or scope growth. Allow at most one bounded repair cycle before taking over.",
+  "Verify the actual files and the harness-produced test evidence at the exact revision you reviewed. A worker saying tests passed is not evidence. If files changed after review, the acceptance is stale.",
+  "Never assume delegation is cheaper: a cold worker context can cost more than continuing on an already-cached parent context. Delegate only when the work package is small enough to pay for itself.",
+].join(" ");
 
 export type HostHarnessCategory = "cli" | "editor" | "agent" | "framework" | "service";
 
@@ -34,6 +53,8 @@ export type HostHarnessView = {
   projectTracking?: "installed" | "not-installed" | "unavailable";
   effectiveProvider?: string;
   effectiveBaseUrl?: string;
+  /** Codex-only: whether the cost-optimized coding profile is enabled. */
+  codexCodingEconomy?: { enabled: boolean; workerModel?: string; reasoningEffort?: string };
 };
 
 export type HarnessContext = {
@@ -46,6 +67,8 @@ export type HarnessContext = {
   /** Provider-published display names keyed by model id. */
   modelNames?: Record<string, string>;
   homeDirectory?: string;
+  /** Present only when the operator enabled the cost-optimized coding profile. */
+  codingEconomy?: { workerModel: string; reasoningEffort?: string };
 };
 
 type HarnessInspection = {
@@ -99,6 +122,8 @@ type ManagedFileState = {
 type HarnessState = {
   schemaVersion: typeof STATE_SCHEMA_VERSION;
   installations: Record<string, InstallationState>;
+  /** Codex-only opt-in for the parent/worker coding economy profile. */
+  codexCodingEconomy?: { enabled: boolean; workerModel: string; reasoningEffort?: string };
 };
 
 export class HostHarnessIntegrationError extends Error {
@@ -473,29 +498,52 @@ function isCodexMarker(line: string, marker: string): boolean {
   return line.trim() === marker;
 }
 
+function codexBlockEnd(kind: CodexManagedBlockKind): string {
+  if (kind === "managed") return MANAGED_BLOCK_END;
+  if (kind === "root") return CODEX_ROOT_BLOCK_END;
+  if (kind === "agents") return CODEX_AGENTS_BLOCK_END;
+  return CODEX_PROVIDER_BLOCK_END;
+}
+
+/**
+ * Removes only what MultiVibe wrote. Content an operator inserted between a
+ * matched pair of markers is preserved, so the coding-economy block strips its
+ * own `[agents]` table and delegation guidance but never a hand-written
+ * developer_instructions value.
+ */
 function stripCodexManagedContent(value: string): string {
   const output: string[] = [];
   let table = "";
   let insideManagedBlock = false;
+  let blockKind: CodexManagedBlockKind | undefined;
   let skippingProvider = false;
-  let blockEnd: string | undefined;
   for (const line of value.split(/\r?\n/)) {
-    if (!insideManagedBlock && (
-      isCodexMarker(line, MANAGED_BLOCK_START) ||
-      isCodexMarker(line, CODEX_ROOT_BLOCK_START) ||
-      isCodexMarker(line, CODEX_PROVIDER_BLOCK_START)
-    )) {
-      insideManagedBlock = true;
-      blockEnd = isCodexMarker(line, MANAGED_BLOCK_START)
-        ? MANAGED_BLOCK_END
-        : isCodexMarker(line, CODEX_ROOT_BLOCK_START) ? CODEX_ROOT_BLOCK_END : CODEX_PROVIDER_BLOCK_END;
-      continue;
-    }
-    if (insideManagedBlock && blockEnd && isCodexMarker(line, blockEnd)) {
+    if (!insideManagedBlock) {
+      const kind: CodexManagedBlockKind | undefined =
+        isCodexMarker(line, MANAGED_BLOCK_START) ? "managed"
+        : isCodexMarker(line, CODEX_ROOT_BLOCK_START) ? "root"
+        : isCodexMarker(line, CODEX_AGENTS_BLOCK_START) ? "agents"
+        : isCodexMarker(line, CODEX_PROVIDER_BLOCK_START) ? "provider"
+        : undefined;
+      if (kind) {
+        insideManagedBlock = true;
+        blockKind = kind;
+        continue;
+      }
+    } else if (blockKind && isCodexMarker(line, codexBlockEnd(blockKind))) {
       insideManagedBlock = false;
-      blockEnd = undefined;
+      blockKind = undefined;
       skippingProvider = false;
       continue;
+    }
+    if (insideManagedBlock) {
+      if (blockKind === "agents" && /^\s*(?:\[agents\]\s*$|default_subagent_(?:model|reasoning_effort)\s*=)/.test(line)) continue;
+      if (blockKind !== "agents" && /^\s*model_provider\s*=/.test(line)) continue;
+      if (blockKind !== "agents" && /^\s*(?:model_catalog_json|openai_base_url)\s*=/.test(line)) continue;
+      if (blockKind !== "agents" && /^\s*developer_instructions\s*=/.test(line)) {
+        const assigned = line.slice(line.indexOf("=") + 1).trim();
+        if (assigned === jsonString(CODEX_CODING_ECONOMY_GUIDANCE)) continue;
+      }
     }
     const tableMatch = matchTomlTableHeader(line);
     if (tableMatch) {
@@ -519,10 +567,21 @@ function renderCodexToml(current: string | null, context: HarnessContext): strin
   const value = stripCodexManagedContent(current ?? "").trim();
   if (!context.homeDirectory) throw new HostHarnessIntegrationError("Codex home directory is unavailable", 500);
   const catalogPath = path.join(context.homeDirectory, CODEX_MODEL_CATALOG_RELATIVE_PATH);
-  const rootBlock = `${CODEX_ROOT_BLOCK_START}\nmodel_provider = "multivibe"\nmodel_catalog_json = ${jsonString(catalogPath)}\n${CODEX_ROOT_BLOCK_END}`;
+  const codingEconomy = context.codingEconomy;
+  // Root keys must precede every table header, so the delegation guidance is
+  // emitted with the root block while `[agents]` is appended as a table.
+  const rootKeys = [
+    'model_provider = "multivibe"',
+    `model_catalog_json = ${jsonString(catalogPath)}`,
+    ...(codingEconomy ? [`developer_instructions = ${jsonString(CODEX_CODING_ECONOMY_GUIDANCE)}`] : []),
+  ].join("\n");
+  const rootBlock = `${CODEX_ROOT_BLOCK_START}\n${rootKeys}\n${CODEX_ROOT_BLOCK_END}`;
   // The built-in OpenAI provider uses OpenAI login credentials, not the proxy key.
   const providerBlock = `${CODEX_PROVIDER_BLOCK_START}\n[model_providers.multivibe]\nname = "MultiVibe Host"\nbase_url = ${jsonString(`${context.baseUrl}/v1`)}\nwire_api = "responses"\nexperimental_bearer_token = ${jsonString(context.apiKey)}\n${CODEX_PROVIDER_BLOCK_END}`;
-  return `${rootBlock}\n\n${value ? `${value}\n\n` : ""}${providerBlock}\n`;
+  const agentsBlock = codingEconomy
+    ? `${CODEX_AGENTS_BLOCK_START}\n[agents]\ndefault_subagent_model = ${jsonString(codingEconomy.workerModel)}\n${codingEconomy.reasoningEffort ? `default_subagent_reasoning_effort = ${jsonString(codingEconomy.reasoningEffort)}\n` : ""}${CODEX_AGENTS_BLOCK_END}`
+    : "";
+  return `${rootBlock}\n\n${value ? `${value}\n\n` : ""}${providerBlock}\n${agentsBlock ? `\n${agentsBlock}\n` : ""}`;
 }
 
 function renderCodexModelCatalog(context: HarnessContext): string {
@@ -1173,6 +1232,7 @@ export class HostHarnessIntegrationManager {
         baseUrl: this.baseUrl,
         apiKey: credential.apiKey,
         homeDirectory: this.homeDirectory,
+        codingEconomy: this.codexCodingEconomyContext(id, state),
       };
       const preparedContext = definition.configuration.prepare
         ? { ...context, ...(await definition.configuration.prepare(context)) }
@@ -1235,6 +1295,7 @@ export class HostHarnessIntegrationManager {
         baseUrl: this.baseUrl,
         apiKey: credential.apiKey,
         homeDirectory: this.homeDirectory,
+        codingEconomy: this.codexCodingEconomyContext(id, state),
       };
       const preparedContext = definition.configuration.prepare
         ? { ...context, ...(await definition.configuration.prepare(context)) }
@@ -1268,6 +1329,106 @@ export class HostHarnessIntegrationManager {
         await this.writeState(state);
       } catch (error) {
         await restoreTracking?.();
+        await writeAtomic(configPath, current.content, current.mode);
+        await auxiliary.restore();
+        throw error;
+      }
+      return this.view(definition, state);
+    });
+  }
+
+  /** Codex context carrying the stored coding-economy opt-in, when enabled. */
+  private codexCodingEconomyContext(id: string, state: HarnessState): HarnessContext["codingEconomy"] {
+    if (id !== "openai-codex") return undefined;
+    const current = state.codexCodingEconomy;
+    if (!current?.enabled || !current.workerModel) return undefined;
+    return {
+      workerModel: current.workerModel,
+      ...(current.reasoningEffort ? { reasoningEffort: current.reasoningEffort } : {}),
+    };
+  }
+
+  /**
+   * Enables or disables the Codex cost-optimized coding profile. The managed
+   * block is rewritten exactly like a repair, so unrelated keys and the exact
+   * pre-install file remain restorable. Disabling removes only this block.
+   */
+  async setCodexCodingEconomy(
+    id: string,
+    enabled: boolean,
+    options: { workerModel?: string; reasoningEffort?: string } = {},
+  ): Promise<HostHarnessView> {
+    return this.serial(async () => {
+      if (id !== "openai-codex") {
+        throw new HostHarnessIntegrationError("The cost-optimized coding profile is available only for OpenAI Codex", 409);
+      }
+      const definition = this.definition(id);
+      if (!definition.configuration) {
+        throw new HostHarnessIntegrationError("The cost-optimized coding profile is available only for OpenAI Codex", 409);
+      }
+      const workerModel = String(options.workerModel ?? "").trim();
+      if (enabled && (!workerModel || /\s/.test(workerModel) || workerModel.length > 200)) {
+        throw new HostHarnessIntegrationError("A worker model id is required (no whitespace, at most 200 characters)", 400);
+      }
+      const reasoningEffort = String(options.reasoningEffort ?? "").trim();
+      if (enabled && reasoningEffort && !["minimal", "low", "medium", "high", "xhigh"].includes(reasoningEffort)) {
+        throw new HostHarnessIntegrationError("Unsupported reasoning effort", 400);
+      }
+      const state = await this.readState();
+      const installation = state.installations[id];
+      if (!installation) throw new HostHarnessIntegrationError(`${definition.name} is not managed by MultiVibe Host`, 409);
+      const apiKey = this.apiKeyForId(installation.apiKeyId);
+      if (!apiKey) {
+        throw new HostHarnessIntegrationError("The managed API key for this harness is unavailable; repair the integration first", 409);
+      }
+      const configPath = await this.safeConfigPath(definition.configuration.relativePath);
+      const current = await readBounded(configPath);
+      if (!current) throw new HostHarnessIntegrationError(`~/${definition.configuration.relativePath} is missing`, 409);
+      const inspection = definition.configuration.inspect
+        ? definition.configuration.inspect(current.content, this.baseUrl, undefined, this.homeDirectory)
+        : { configured: false, repairable: true };
+      if (!inspection.repairable) {
+        throw new HostHarnessIntegrationError(inspection.configurationIssue ?? `~/${definition.configuration.relativePath} cannot be edited safely`, 409);
+      }
+      const previous = state.codexCodingEconomy;
+      const retainedWorker = workerModel || previous?.workerModel || "";
+      const retainedEffort = reasoningEffort || previous?.reasoningEffort;
+      state.codexCodingEconomy = {
+        enabled,
+        workerModel: retainedWorker,
+        ...(retainedEffort ? { reasoningEffort: retainedEffort } : {}),
+      };
+      const context: HarnessContext = {
+        baseUrl: this.baseUrl,
+        apiKey,
+        homeDirectory: this.homeDirectory,
+        codingEconomy: this.codexCodingEconomyContext(id, state),
+      };
+      const preparedContext = definition.configuration.prepare
+        ? { ...context, ...(await definition.configuration.prepare(context)) }
+        : context;
+      const rendered = definition.configuration.render(current.content, preparedContext);
+      const auxiliary = await this.writeAuxiliaryFiles(
+        definition.configuration,
+        preparedContext,
+        installation.auxiliaryFiles,
+      );
+      try {
+        await writeAtomic(configPath, rendered, current.mode);
+      } catch (error) {
+        await auxiliary.restore();
+        throw error;
+      }
+      try {
+        state.installations[id] = {
+          ...installation,
+          installedSha256: sha256(rendered),
+          installedAt: Date.now(),
+          ...(auxiliary.states.length ? { auxiliaryFiles: auxiliary.states } : {}),
+        };
+        await this.writeState(state);
+      } catch (error) {
+        state.codexCodingEconomy = previous;
         await writeAtomic(configPath, current.content, current.mode);
         await auxiliary.restore();
         throw error;
@@ -1415,6 +1576,15 @@ export class HostHarnessIntegrationManager {
       detected,
       detectedBy: Array.from(new Set(detectedBy)),
       ...(definition.id === "openai-codex" ? { projectTracking: await this.projectTrackingStatus() } : {}),
+      ...(definition.id === "openai-codex" && state.codexCodingEconomy
+        ? {
+            codexCodingEconomy: {
+              enabled: Boolean(state.codexCodingEconomy.enabled),
+              ...(state.codexCodingEconomy.workerModel ? { workerModel: state.codexCodingEconomy.workerModel } : {}),
+              ...(state.codexCodingEconomy.reasoningEffort ? { reasoningEffort: state.codexCodingEconomy.reasoningEffort } : {}),
+            },
+          }
+        : {}),
       configured,
       managed: Boolean(installation),
       drifted,
