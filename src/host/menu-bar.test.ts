@@ -185,3 +185,97 @@ test("provider groups separate SDK providers and incompatible quota periods", ()
   recordHostMenuProviderUsage(accounts[2], 200);
   assert.deepEqual(getHostMenuProviderActivity(), { providerId: "ai-sdk:anthropic", usedAt: 200 });
 });
+
+test("buildHostMenuBarAccountsSummary reports spendable credit for pay-as-you-go providers", () => {
+  const now = 1_800_000_000_000;
+  const summary = buildHostMenuBarAccountsSummary([
+    {
+      id: "deepseek-one",
+      provider: "ai-sdk",
+      sdkProvider: "deepseek",
+      accessToken: "deepseek-secret",
+      enabled: true,
+      usage: {
+        fetchedAt: now,
+        quotaStatus: "available",
+        balance: { remaining: 87.5, unit: "USD" },
+      },
+    },
+    {
+      id: "deepseek-two",
+      provider: "ai-sdk",
+      sdkProvider: "deepseek",
+      accessToken: "deepseek-secret",
+      enabled: true,
+      usage: {
+        fetchedAt: now,
+        quotaStatus: "available",
+        balance: { remaining: 12.25, unit: "USD" },
+      },
+    },
+  ], now);
+
+  const provider = summary.providers.find((entry) => entry.id === "ai-sdk:deepseek");
+  assert.ok(provider, "credit provider is missing from the summary");
+  assert.deepEqual(provider.windows, []);
+  assert.deepEqual(provider.balance, { remaining: 99.75, unit: "USD", accountCount: 2 });
+  assert.equal(summary.accounts[0].balance?.remaining, 87.5);
+  assert.equal(summary.accounts[0].usageStatus, "available");
+  assert.equal(summary.quota.fiveHourAccountCount, 0);
+  assert.equal(JSON.stringify(summary).includes("deepseek-secret"), false);
+});
+
+test("buildHostMenuBarAccountsSummary never sums credit balances in mixed units", () => {
+  const now = 1_800_000_000_000;
+  const summary = buildHostMenuBarAccountsSummary([
+    {
+      id: "deepseek-usd",
+      provider: "ai-sdk",
+      sdkProvider: "deepseek",
+      accessToken: "secret",
+      enabled: true,
+      usage: { fetchedAt: now, quotaStatus: "available", balance: { remaining: 5, unit: "USD" } },
+    },
+    {
+      id: "deepseek-cny",
+      provider: "ai-sdk",
+      sdkProvider: "deepseek",
+      accessToken: "secret",
+      enabled: true,
+      usage: { fetchedAt: now, quotaStatus: "available", balance: { remaining: 30, unit: "CNY" } },
+    },
+  ], now);
+
+  const provider = summary.providers.find((entry) => entry.id === "ai-sdk:deepseek");
+  assert.equal(provider?.balance, undefined);
+  assert.equal(summary.accounts.length, 2);
+  assert.equal(summary.accounts[0].balance?.unit, "USD");
+  assert.equal(summary.accounts[1].balance?.unit, "CNY");
+});
+
+test("buildHostMenuBarAccountsSummary ignores blank or non-finite balances", () => {
+  const now = 1_800_000_000_000;
+  const summary = buildHostMenuBarAccountsSummary([
+    {
+      id: "poe-blank-unit",
+      provider: "ai-sdk",
+      sdkProvider: "poe",
+      accessToken: "secret",
+      enabled: true,
+      usage: { fetchedAt: now, quotaStatus: "available", balance: { remaining: 10, unit: "  " } },
+    },
+    {
+      id: "poe-nan",
+      provider: "ai-sdk",
+      sdkProvider: "poe",
+      accessToken: "secret",
+      enabled: true,
+      usage: { fetchedAt: now, quotaStatus: "available", balance: { remaining: Number.NaN, unit: "points" } },
+    },
+  ], now);
+
+  const provider = summary.providers.find((entry) => entry.id === "ai-sdk:poe");
+  assert.equal(provider?.balance, undefined);
+  assert.equal(summary.accounts[0].balance, undefined);
+  assert.equal(summary.accounts[0].usageStatus, "pending");
+});

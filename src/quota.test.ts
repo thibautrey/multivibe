@@ -598,3 +598,50 @@ test("selection avoids exhausted monthly quotas and balances credit-only account
   low.usage!.credits = { usedPercent: 90 };
   for (let i = 0; i < 3; i++) assert.equal(chooseAccount([high, low])?.id, high.id);
 });
+
+test("credit-balance snapshots refresh sooner than subscription quota windows", async () => {
+  const {
+    CREDIT_BALANCE_REFRESH_INTERVAL_MS,
+    USAGE_CACHE_TTL_MS,
+    hasCreditBalanceSnapshot,
+  } = await import("./quota.js");
+  const now = Date.now();
+  assert.ok(CREDIT_BALANCE_REFRESH_INTERVAL_MS < USAGE_CACHE_TTL_MS);
+  const credit: Account = {
+    id: "deepseek",
+    provider: "ai-sdk",
+    sdkProvider: "deepseek",
+    accessToken: "api-key",
+    enabled: true,
+    usage: {
+      fetchedAt: now,
+      quotaStatus: "available",
+      balance: { remaining: 12.5, unit: "USD" },
+    },
+  };
+  assert.equal(hasCreditBalanceSnapshot(credit), true);
+  assert.equal(isUsageRefreshNeeded(credit, now), false);
+  assert.equal(
+    isUsageRefreshNeeded(credit, now + CREDIT_BALANCE_REFRESH_INTERVAL_MS - 1),
+    false,
+  );
+  assert.equal(
+    isUsageRefreshNeeded(credit, now + CREDIT_BALANCE_REFRESH_INTERVAL_MS),
+    true,
+  );
+
+  // The same age is still fresh for a subscription quota window.
+  const subscription = account("openai-window", 10, 10);
+  assert.equal(
+    isUsageRefreshNeeded(subscription, now + CREDIT_BALANCE_REFRESH_INTERVAL_MS),
+    false,
+  );
+  assert.equal(
+    hasCreditBalanceSnapshot({ usage: { fetchedAt: now, balance: { remaining: 5, unit: "  " } } }),
+    false,
+  );
+  assert.equal(
+    hasCreditBalanceSnapshot({ usage: { fetchedAt: now, balance: { remaining: Number.NaN, unit: "USD" } } }),
+    false,
+  );
+});
