@@ -25,6 +25,7 @@ services:
       - OAUTH_STATE_PATH=/data/oauth-state.json
       - TRACE_FILE_PATH=/data/requests-trace.jsonl
       - V1_EDGE_JOBS_PATH=/data/v1-edge-jobs.json
+      - V1_EDGE_MODELS_CACHE_PATH=/data/v1-edge-models-cache.json
       - REQUEST_BODY_LIMIT=${REQUEST_BODY_LIMIT:-500mb}
       - CHATGPT_BASE_URL=https://chatgpt.com
       - REALTIME_PROVIDER=${REALTIME_PROVIDER:-openai}

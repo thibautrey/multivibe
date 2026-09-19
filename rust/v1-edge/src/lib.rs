@@ -97,6 +97,10 @@ pub struct EdgeConfig {
     pub node_control_plane_url: String,
     pub store_path: PathBuf,
     pub jobs_path: PathBuf,
+    /// Persisted snapshot of the models discovered from remote providers.
+    /// `None` keeps discovery in memory only; the default environment
+    /// resolves a path beside the account store.
+    pub models_cache_path: Option<PathBuf>,
     pub legacy_jobs_db_path: Option<PathBuf>,
     pub trace_path: Option<PathBuf>,
     pub trace_include_body: bool,
@@ -158,6 +162,7 @@ impl Default for EdgeConfig {
             node_control_plane_url: "http://127.0.0.1:1456".to_owned(),
             store_path: PathBuf::from("/data/accounts.json"),
             jobs_path: PathBuf::from("/data/v1-edge-jobs.json"),
+            models_cache_path: None,
             legacy_jobs_db_path: Some(PathBuf::from("/data/jobs.sqlite")),
             trace_path: None,
             trace_include_body: false,
@@ -232,6 +237,9 @@ impl EdgeConfig {
         let jobs_path = env("V1_EDGE_JOBS_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|| store_path.with_file_name("v1-edge-jobs.json"));
+        let models_cache_path = env("V1_EDGE_MODELS_CACHE_PATH")
+            .map(PathBuf::from)
+            .or_else(|| Some(store_path.with_file_name("v1-edge-models-cache.json")));
         let legacy_jobs_db_path = env("JOBS_DB_PATH")
             .map(PathBuf::from)
             .or(defaults.legacy_jobs_db_path.clone());
@@ -268,6 +276,7 @@ impl EdgeConfig {
                 .unwrap_or(defaults.node_control_plane_url),
             store_path,
             jobs_path,
+            models_cache_path,
             legacy_jobs_db_path,
             trace_path: env("TRACE_FILE_PATH").map(PathBuf::from),
             trace_include_body: env("TRACE_INCLUDE_BODY")
@@ -3669,8 +3678,37 @@ struct ModelCatalogCache {
     last_attempt_at: u64,
     next_refresh_at: u64,
     consecutive_failures: u32,
-    models: Vec<Value>,
     accounts: HashMap<String, AccountModelCatalogCache>,
+    /// When the persisted snapshot was read back into memory after a restart.
+    restored_at: u64,
+    /// Digest of the last successfully written snapshot, so an unchanged
+    /// catalog is not rewritten on every refresh window.
+    persisted_digest: Option<String>,
+}
+
+/// Version of the on-disk remote-model catalog. Bump when the shape changes.
+const MODEL_CATALOG_CACHE_VERSION: u32 = 1;
+const MODEL_CATALOG_CACHE_MAX_BYTES: u64 = 8 * 1024 * 1024;
+const MODEL_CATALOG_CACHE_MAX_MODELS_PER_ACCOUNT: usize = 2_000;
+const MODEL_CATALOG_CACHE_MAX_MODELS: usize = 10_000;
+
+/// Persisted last-successful model lists for accounts that are not local
+/// runtimes. Local runtime models come from the store itself, so only remote
+/// providers need a disk snapshot to survive a restart.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedModelCatalog {
+    version: u32,
+    accounts: Vec<PersistedAccountModels>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedAccountModels {
+    account_id: String,
+    source_signature: String,
+    fetched_at: u64,
+    models: Vec<Value>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -4929,7 +4967,7 @@ impl EdgeState {
             max_response_bytes: config.idempotency_max_response_bytes,
         });
         let capacity_version = Arc::new(AtomicU64::new(1));
-        Ok(Self {
+        let state = Self {
             store: AccountStore::new(config.store_path.clone()),
             jobs: Arc::new(
                 JobManager::new_with_legacy(
@@ -4959,7 +4997,35 @@ impl EdgeState {
             capacity_version,
             job_runner_started: Arc::new(AtomicBool::new(false)),
             dashboard: Arc::new(dashboard::DashboardState::default()),
-        })
+        };
+        state.restore_model_catalog_cache().await;
+        Ok(state)
+    }
+
+    /// Seed the in-memory catalog from the last successful snapshot so a
+    /// restart serves the known provider models immediately instead of an
+    /// empty list while the first discovery round runs.
+    async fn restore_model_catalog_cache(&self) {
+        let Some(path) = self.config.models_cache_path.clone() else {
+            return;
+        };
+        let Some(persisted) = load_model_catalog_cache(&path).await else {
+            return;
+        };
+        let mut cache = self.model_catalog.lock().await;
+        for entry in persisted.accounts {
+            cache.accounts.insert(
+                entry.account_id,
+                AccountModelCatalogCache {
+                    source_signature: entry.source_signature,
+                    last_success_at: entry.fetched_at,
+                    last_attempt_at: 0,
+                    models: entry.models,
+                    last_error: None,
+                },
+            );
+        }
+        cache.restored_at = now_ms();
     }
 
     pub fn start_job_runner(&self) -> Option<tokio::task::JoinHandle<()>> {
@@ -10234,29 +10300,137 @@ async fn discover_account_models(
     }
 }
 
+/// Read the persisted remote-model snapshot. An unreadable, oversized, or
+/// malformed file is treated as absent so a restart still starts cleanly.
+async fn load_model_catalog_cache(path: &std::path::Path) -> Option<PersistedModelCatalog> {
+    let metadata = fs::metadata(path).await.ok()?;
+    if !metadata.is_file() || metadata.len() > MODEL_CATALOG_CACHE_MAX_BYTES {
+        return None;
+    }
+    let raw = fs::read(path).await.ok()?;
+    let parsed = serde_json::from_slice::<PersistedModelCatalog>(&raw).ok()?;
+    if parsed.version != MODEL_CATALOG_CACHE_VERSION {
+        return None;
+    }
+    let mut accounts = Vec::new();
+    let mut total = 0_usize;
+    for account in parsed.accounts {
+        if account.account_id.is_empty()
+            || account.source_signature.is_empty()
+            || account.models.is_empty()
+        {
+            continue;
+        }
+        let models = account
+            .models
+            .into_iter()
+            .filter(|model| {
+                model
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty())
+            })
+            .take(MODEL_CATALOG_CACHE_MAX_MODELS_PER_ACCOUNT)
+            .collect::<Vec<_>>();
+        if models.is_empty() {
+            continue;
+        }
+        total += models.len();
+        if total > MODEL_CATALOG_CACHE_MAX_MODELS {
+            break;
+        }
+        accounts.push(PersistedAccountModels {
+            account_id: account.account_id,
+            source_signature: account.source_signature,
+            fetched_at: account.fetched_at,
+            models,
+        });
+    }
+    if accounts.is_empty() {
+        return None;
+    }
+    Some(PersistedModelCatalog {
+        version: MODEL_CATALOG_CACHE_VERSION,
+        accounts,
+    })
+}
+
+/// Atomically replace the persisted snapshot. Failures are reported to the
+/// caller, which keeps serving the catalog from memory.
+async fn persist_model_catalog_cache(
+    path: &std::path::Path,
+    raw: Vec<u8>,
+) -> Result<(), String> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "cannot create model cache directory {}: {error}",
+                    parent.display()
+                )
+            })?;
+        }
+        let temporary = path.with_extension(format!("tmp-{}", Uuid::new_v4().simple()));
+        let result = (|| -> Result<(), String> {
+            let mut options = std::fs::OpenOptions::new();
+            options.create_new(true).write(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            let mut file = options.open(&temporary).map_err(|error| {
+                format!(
+                    "cannot create temporary model cache {}: {error}",
+                    temporary.display()
+                )
+            })?;
+            file.write_all(&raw).map_err(|error| {
+                format!("cannot write model cache {}: {error}", temporary.display())
+            })?;
+            file.sync_all().map_err(|error| {
+                format!("cannot sync model cache {}: {error}", temporary.display())
+            })?;
+            drop(file);
+            std::fs::rename(&temporary, &path).map_err(|error| {
+                format!("cannot replace model cache {}: {error}", path.display())
+            })?;
+            #[cfg(unix)]
+            if let Some(parent) = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+            {
+                std::fs::File::open(parent)
+                    .and_then(|directory| directory.sync_all())
+                    .map_err(|error| {
+                        format!(
+                            "cannot sync model cache directory {}: {error}",
+                            parent.display()
+                        )
+                    })?;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        result
+    })
+    .await
+    .map_err(|error| format!("model cache persistence task failed: {error}"))?
+}
+
 fn model_catalog_retry_delay(ttl: Duration, consecutive_failures: u32) -> Duration {
     let exponent = consecutive_failures.saturating_sub(1).min(4);
     let seconds = 60_u64.saturating_mul(1_u64 << exponent);
     Duration::from_secs(seconds).min(ttl.max(Duration::from_secs(1)))
 }
 
-async fn exposed_models(state: &EdgeState, store: &StoreFile, force: bool) -> Vec<Value> {
-    let _refresh_guard = state.model_catalog_refresh.lock().await;
-    let signature = catalog_signature(store, &state.config);
-    let now = now_ms();
-    {
-        let cache = state.model_catalog.lock().await;
-        if !force
-            && cache.signature == signature
-            && cache.next_refresh_at > now
-            && !cache.models.is_empty()
-        {
-            return cache.models.clone();
-        }
-    }
-
-    let mut models = static_exposed_models(store, &state.config);
-    let active_accounts = store
+/// Accounts whose models the edge can discover: every enabled account with
+/// usable credentials, plus the local runtimes found on this machine.
+fn active_model_accounts(store: &StoreFile) -> Vec<Account> {
+    store
         .accounts
         .iter()
         .filter(|account| {
@@ -10264,71 +10438,245 @@ async fn exposed_models(state: &EdgeState, store: &StoreFile, force: bool) -> Ve
                 && (!account_inference_token(account).is_empty() || is_local_runtime(account))
         })
         .cloned()
-        .collect::<Vec<_>>();
+        .collect()
+}
+
+/// A refresh is due when the account configuration changed, the refresh window
+/// expired, or the caller asked for a forced revalidation.
+fn model_catalog_refresh_due(
+    cache: &ModelCatalogCache,
+    signature: &str,
+    now: u64,
+    force: bool,
+) -> bool {
+    force || cache.signature != signature || cache.next_refresh_at <= now
+}
+
+/// True when an active account has nothing this process can serve: either it
+/// was never discovered here or its configuration changed since the last
+/// attempt. Those callers wait for one discovery round instead of being served
+/// an incomplete catalog. Remote accounts restored from the persisted snapshot
+/// do not wait; a provider that already failed keeps its last known list while
+/// the background refresh retries, so an unavailable provider never adds its
+/// timeout to a request.
+fn model_catalog_missing_accounts(
+    cache: &ModelCatalogCache,
+    accounts: &[Account],
+    config: &EdgeConfig,
+) -> bool {
+    accounts.iter().any(|account| {
+        let signature = account_model_source_signature(account, config);
+        let Some(entry) = cache.accounts.get(&account.id) else {
+            // Nothing persisted and nothing discovered in this process.
+            return true;
+        };
+        // A changed configuration invalidates the cached list, and an account
+        // tried without success has nothing to serve yet.
+        entry.source_signature != signature
+            || (entry.models.is_empty() && entry.last_attempt_at == 0)
+    })
+}
+
+/// Merge one account's discovered entries under the team policy the routing
+/// layer applies, so the exposed catalog and the routing catalog agree.
+fn merge_account_models(models: &mut Vec<Value>, account: &Account, entries: &[Value]) {
+    for entry in entries {
+        if !catalog_entry_upstream_id(entry).is_some_and(|id| team_model_allowed(account, id)) {
+            continue;
+        }
+        upsert_model(models, entry.clone());
+    }
+}
+
+/// The catalog a caller can be served right now: static models (proxy models,
+/// local runtimes, aliases) plus every cached account list.
+fn cached_exposed_models(
+    cache: &ModelCatalogCache,
+    store: &StoreFile,
+    config: &EdgeConfig,
+    accounts: &[Account],
+) -> Vec<Value> {
+    let mut models = static_exposed_models(store, config);
+    for account in accounts {
+        if let Some(entry) = cache.accounts.get(&account.id) {
+            merge_account_models(&mut models, account, &entry.models);
+        }
+    }
+    models
+}
+
+/// Serialized snapshot of the discovered remote lists. Local runtimes are
+/// skipped: they are re-detected from the store and must not pin a stale list.
+fn model_catalog_persisted_payload(
+    cache: &ModelCatalogCache,
+    store: &StoreFile,
+) -> Option<(String, Vec<u8>)> {
+    let mut accounts = Vec::new();
+    let mut total = 0_usize;
+    for account in store
+        .accounts
+        .iter()
+        .filter(|account| account.enabled && !is_local_runtime(account))
+    {
+        let Some(entry) = cache.accounts.get(&account.id) else {
+            continue;
+        };
+        if entry.models.is_empty() || entry.source_signature.is_empty() {
+            continue;
+        }
+        let models = entry
+            .models
+            .iter()
+            .take(MODEL_CATALOG_CACHE_MAX_MODELS_PER_ACCOUNT)
+            .cloned()
+            .collect::<Vec<_>>();
+        total += models.len();
+        if total > MODEL_CATALOG_CACHE_MAX_MODELS {
+            break;
+        }
+        accounts.push(PersistedAccountModels {
+            account_id: account.id.clone(),
+            source_signature: entry.source_signature.clone(),
+            fetched_at: entry.last_success_at,
+            models,
+        });
+    }
+    if accounts.is_empty() {
+        return None;
+    }
+    let mut raw = serde_json::to_vec(&PersistedModelCatalog {
+        version: MODEL_CATALOG_CACHE_VERSION,
+        accounts,
+    })
+    .ok()?;
+    raw.push(b'\n');
+    if raw.len() as u64 > MODEL_CATALOG_CACHE_MAX_BYTES {
+        return None;
+    }
+    let digest = Sha256::digest(&raw)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Some((digest, raw))
+}
+
+/// One discovery round for every active account. Failed accounts keep their
+/// last successful list; a fully successful round extends the refresh window.
+async fn refresh_model_catalog(
+    state: &EdgeState,
+    store: &StoreFile,
+    accounts: &[Account],
+    signature: String,
+    now: u64,
+) -> Vec<Value> {
     let discovered = join_all(
-        active_accounts
+        accounts
             .iter()
             .map(|account| discover_account_models(state, account)),
     )
     .await;
-
-    let active_ids = active_accounts
+    let active_ids = accounts
         .iter()
         .map(|account| account.id.clone())
         .collect::<HashSet<_>>();
-    let mut cache = state.model_catalog.lock().await;
-    cache
-        .accounts
-        .retain(|account_id, _| active_ids.contains(account_id));
-    let mut failed = 0_u32;
-    for (account, discovery) in active_accounts.iter().zip(discovered) {
-        let source_signature = account_model_source_signature(account, &state.config);
-        let account_cache = cache.accounts.entry(account.id.clone()).or_default();
-        if account_cache.source_signature != source_signature {
-            *account_cache = AccountModelCatalogCache {
-                source_signature: source_signature.clone(),
-                ..AccountModelCatalogCache::default()
-            };
+    let (models, persisted) = {
+        let mut cache = state.model_catalog.lock().await;
+        cache
+            .accounts
+            .retain(|account_id, _| active_ids.contains(account_id));
+        let mut failed = 0_u32;
+        for (account, discovery) in accounts.iter().zip(discovered) {
+            let source_signature = account_model_source_signature(account, &state.config);
+            let account_cache = cache.accounts.entry(account.id.clone()).or_default();
+            if account_cache.source_signature != source_signature {
+                *account_cache = AccountModelCatalogCache {
+                    source_signature: source_signature.clone(),
+                    ..AccountModelCatalogCache::default()
+                };
+            }
+            account_cache.last_attempt_at = now;
+            match discovery {
+                Ok(entries) => {
+                    account_cache.last_success_at = now;
+                    account_cache.models = entries;
+                    account_cache.last_error = None;
+                }
+                Err(error) => {
+                    failed += 1;
+                    account_cache.last_error = Some(error);
+                }
+            }
         }
-        account_cache.last_attempt_at = now;
-        let entries = match discovery {
-            Ok(entries) => {
-                account_cache.last_success_at = now;
-                account_cache.models = entries.clone();
-                account_cache.last_error = None;
-                entries
+        cache.signature = signature;
+        cache.last_attempt_at = now;
+        if failed == 0 {
+            cache.fetched_at = now;
+            cache.consecutive_failures = 0;
+            cache.next_refresh_at =
+                now.saturating_add(state.config.models_cache_ttl.as_millis() as u64);
+        } else {
+            cache.consecutive_failures = cache.consecutive_failures.saturating_add(1);
+            cache.next_refresh_at = now.saturating_add(
+                model_catalog_retry_delay(state.config.models_cache_ttl, cache.consecutive_failures)
+                    .as_millis() as u64,
+            );
+        }
+        let models = cached_exposed_models(&cache, store, &state.config, accounts);
+        let persisted = model_catalog_persisted_payload(&cache, store).filter(|(digest, _)| {
+            cache.persisted_digest.as_deref() != Some(digest.as_str())
+        });
+        (models, persisted)
+    };
+    if let Some((digest, raw)) = persisted {
+        if let Some(path) = state.config.models_cache_path.clone() {
+            match persist_model_catalog_cache(&path, raw).await {
+                Ok(()) => state.model_catalog.lock().await.persisted_digest = Some(digest),
+                Err(error) => {
+                    eprintln!("[model-cache] could not persist discovered models: {error}");
+                }
             }
-            Err(error) => {
-                failed += 1;
-                account_cache.last_error = Some(error);
-                account_cache.models.clone()
-            }
-        };
-        for entry in entries {
-            if !catalog_entry_upstream_id(&entry).is_some_and(|id| team_model_allowed(account, id))
-            {
-                continue;
-            }
-            upsert_model(&mut models, entry);
         }
     }
-
-    cache.signature = signature;
-    cache.last_attempt_at = now;
-    if failed == 0 {
-        cache.fetched_at = now;
-        cache.consecutive_failures = 0;
-        cache.next_refresh_at =
-            now.saturating_add(state.config.models_cache_ttl.as_millis() as u64);
-    } else {
-        cache.consecutive_failures = cache.consecutive_failures.saturating_add(1);
-        cache.next_refresh_at = now.saturating_add(
-            model_catalog_retry_delay(state.config.models_cache_ttl, cache.consecutive_failures)
-                .as_millis() as u64,
-        );
-    }
-    cache.models = models.clone();
     models
+}
+
+/// Exposed model catalog for a request.
+///
+/// A warm cache is served immediately. A due refresh runs behind the response,
+/// so a client that starts with the proxy never waits on provider discovery
+/// and never sees an empty provider list after a restart. Only when an active
+/// remote account has no usable cached list at all does the caller wait for a
+/// discovery round, which is the first-run behavior.
+async fn exposed_models(state: &EdgeState, store: &StoreFile, force: bool) -> Vec<Value> {
+    let now = now_ms();
+    let signature = catalog_signature(store, &state.config);
+    let accounts = active_model_accounts(store);
+    let (due, missing) = {
+        let cache = state.model_catalog.lock().await;
+        (
+            model_catalog_refresh_due(&cache, &signature, now, force),
+            model_catalog_missing_accounts(&cache, &accounts, &state.config),
+        )
+    };
+    if due && (force || missing) {
+        let _refresh_guard = state.model_catalog_refresh.lock().await;
+        return refresh_model_catalog(state, store, &accounts, signature, now).await;
+    }
+    if due && let Ok(refresh_guard) = state.model_catalog_refresh.clone().try_lock_owned() {
+        // Serve the cached catalog now and revalidate behind the response.
+        let background = state.clone();
+        tokio::spawn(async move {
+            let _refresh_guard = refresh_guard;
+            let Ok(store) = background.store.snapshot().await else {
+                return;
+            };
+            let signature = catalog_signature(&store, &background.config);
+            let accounts = active_model_accounts(&store);
+            let _ = refresh_model_catalog(&background, &store, &accounts, signature, now_ms()).await;
+        });
+    }
+    let cache = state.model_catalog.lock().await;
+    cached_exposed_models(&cache, store, &state.config, &accounts)
 }
 
 async fn model_catalog_metadata(state: &EdgeState) -> Value {
@@ -10355,7 +10703,10 @@ async fn model_catalog_metadata(state: &EdgeState) -> Value {
         "refreshedAt": (cache.fetched_at > 0).then_some(cache.fetched_at),
         "lastAttemptAt": (cache.last_attempt_at > 0).then_some(cache.last_attempt_at),
         "nextRefreshAt": (cache.next_refresh_at > 0).then_some(cache.next_refresh_at),
-        "stale": cache.consecutive_failures > 0,
+        "restoredAt": (cache.restored_at > 0).then_some(cache.restored_at),
+        // A restored catalog has not been revalidated in this process yet, so
+        // it is reported as stale until the first discovery round completes.
+        "stale": cache.consecutive_failures > 0 || cache.last_attempt_at == 0,
         "accounts": accounts,
     })
 }
@@ -16116,6 +16467,367 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         upstream_task.abort();
         let _ = fs::remove_file(store_path).await;
         let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn remote_model_catalog_survives_a_restart_without_waiting_for_discovery() {
+        let discovery_mode = Arc::new(AtomicUsize::new(0));
+        let mode = discovery_mode.clone();
+        let upstream = Router::new().route(
+            "/backend-api/codex/models",
+            get(move || {
+                let mode = mode.clone();
+                async move {
+                    if mode.load(AtomicOrdering::Relaxed) == 0 {
+                        json_response(
+                            StatusCode::OK,
+                            json!({"models": [{"slug": "gpt-persisted"}]}),
+                        )
+                    } else {
+                        json_response(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            json!({"error": "discovery unavailable"}),
+                        )
+                    }
+                }
+            }),
+        );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+
+        let store_path = temporary_path("model-cache-restart");
+        let jobs_path = temporary_path("model-cache-restart-jobs");
+        let cache_path = temporary_path("model-cache-restart-cache");
+        let mut store = store_with_accounts(vec![account("openai-1")]);
+        store.accounts.push(local_runtime_account(
+            "local-runtime-omlx",
+            "omlx",
+            &["Qwen3.8-27B-4bit"],
+        ));
+        fs::write(&store_path, serde_json::to_vec(&store).unwrap())
+            .await
+            .unwrap();
+
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.models_cache_path = Some(cache_path.clone());
+        config.chatgpt_base_url = upstream_url.clone();
+        config.configured_api_keys = vec![("restart-app".to_owned(), "edge-secret".to_owned())];
+        config.models_cache_ttl = Duration::from_secs(60);
+
+        let state = EdgeState::new(config.clone()).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let client = reqwest::Client::new();
+        let first: Value = client
+            .get(format!("{edge_url}/v1/models"))
+            .header("authorization", "Bearer edge-secret")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(
+            first["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|model| model["id"] == "gpt-persisted")
+        );
+        edge_task.abort();
+
+        // Only the remote account is persisted: local runtime models already
+        // come from the store and must not pin a stale snapshot.
+        let persisted: Value =
+            serde_json::from_slice(&fs::read(&cache_path).await.unwrap()).unwrap();
+        assert_eq!(persisted["version"], 1);
+        let accounts = persisted["accounts"].as_array().unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0]["accountId"], "openai-1");
+        assert_eq!(accounts[0]["models"][0]["id"], "gpt-persisted");
+        assert_eq!(accounts[0]["sourceSignature"].as_str().unwrap().len(), 64);
+
+        // Restart while the provider refuses discovery: the persisted list is
+        // served immediately instead of an empty catalog, and the failed
+        // refresh keeps serving it.
+        discovery_mode.store(1, AtomicOrdering::Relaxed);
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let restored: Value = client
+            .get(format!("{edge_url}/v1/models"))
+            .header("authorization", "Bearer edge-secret")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(
+            restored["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|model| model["id"] == "gpt-persisted")
+        );
+        assert!(restored["catalog"]["restoredAt"].as_u64().is_some());
+        let after_failed_refresh: Value = client
+            .get(format!("{edge_url}/v1/models"))
+            .header("authorization", "Bearer edge-secret")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(
+            after_failed_refresh["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|model| model["id"] == "gpt-persisted")
+        );
+
+        edge_task.abort();
+        upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+        let _ = fs::remove_file(cache_path).await;
+    }
+
+    #[tokio::test]
+    async fn restored_remote_catalog_is_served_without_waiting_for_a_slow_provider() {
+        let discovery_requests = Arc::new(AtomicUsize::new(0));
+        let requests = discovery_requests.clone();
+        let upstream = Router::new().route(
+            "/backend-api/codex/models",
+            get(move || {
+                let requests = requests.clone();
+                async move {
+                    requests.fetch_add(1, AtomicOrdering::Relaxed);
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    json_response(StatusCode::OK, json!({"models": [{"slug": "gpt-fresh"}]}))
+                }
+            }),
+        );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+
+        let store_path = temporary_path("model-cache-slow");
+        let jobs_path = temporary_path("model-cache-slow-jobs");
+        let cache_path = temporary_path("model-cache-slow-cache");
+        let target = account("openai-1");
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![target.clone()])).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.models_cache_path = Some(cache_path.clone());
+        config.chatgpt_base_url = upstream_url;
+        config.configured_api_keys = vec![("slow-app".to_owned(), "edge-secret".to_owned())];
+        config.models_cache_ttl = Duration::from_secs(60);
+        fs::write(
+            &cache_path,
+            serde_json::to_vec(&json!({
+                "version": 1,
+                "accounts": [{
+                    "accountId": "openai-1",
+                    "sourceSignature": account_model_source_signature(&target, &config),
+                    "fetchedAt": now_ms(),
+                    "models": [{"id": "gpt-restored", "object": "model", "metadata": {"provider": "openai"}}]
+                }]
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let started = Instant::now();
+        let catalog: Value = reqwest::Client::new()
+            .get(format!("{edge_url}/v1/models"))
+            .header("authorization", "Bearer edge-secret")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let elapsed = started.elapsed();
+        assert!(
+            catalog["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|model| model["id"] == "gpt-restored"),
+            "the restored catalog must be exposed"
+        );
+        assert!(
+            elapsed < Duration::from_millis(1_500),
+            "a restored catalog must not wait for provider discovery: {elapsed:?}"
+        );
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if discovery_requests.load(AtomicOrdering::Relaxed) >= 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the due refresh must still run behind the response");
+
+        edge_task.abort();
+        upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+        let _ = fs::remove_file(cache_path).await;
+    }
+
+    /// The exact reported case: the DeepSeek list comes from the adapter and
+    /// used to be missing for the first minute after a restart, because the
+    /// adapter was not answering yet when the edge started.
+    #[tokio::test]
+    async fn restored_ai_sdk_provider_models_survive_a_restart() {
+        let adapter_mode = Arc::new(AtomicUsize::new(0));
+        let mode = adapter_mode.clone();
+        let adapter = Router::new().route(
+            "/internal/ai-sdk/deepseek-account/v1/models",
+            get(move || {
+                let mode = mode.clone();
+                async move {
+                    if mode.load(AtomicOrdering::Relaxed) == 0 {
+                        json_response(
+                            StatusCode::OK,
+                            json!({"data": [
+                                {"id": "deepseek/deepseek-flash", "name": "DeepSeek Flash"},
+                                {"id": "deepseek/deepseek-v4-pro", "name": "DeepSeek V4 Pro"}
+                            ]}),
+                        )
+                    } else {
+                        json_response(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            json!({"error": "adapter still starting"}),
+                        )
+                    }
+                }
+            }),
+        );
+        let (adapter_url, adapter_task) = start_server(adapter).await;
+
+        let store_path = temporary_path("sdk-model-cache");
+        let jobs_path = temporary_path("sdk-model-cache-jobs");
+        let cache_path = temporary_path("sdk-model-cache-file");
+        let mut sdk = account("deepseek-account");
+        sdk.provider = Some("ai-sdk".to_owned());
+        sdk.sdk_provider = Some("deepseek".to_owned());
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![sdk])).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.models_cache_path = Some(cache_path.clone());
+        config.node_control_plane_url = adapter_url;
+        config.internal_job_token = Some("adapter-secret".to_owned());
+        config.configured_api_keys = vec![("test".to_owned(), "proxy-secret".to_owned())];
+        config.models_cache_ttl = Duration::from_secs(60);
+
+        let state = EdgeState::new(config.clone()).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let client = reqwest::Client::new();
+        let first: Value = client
+            .get(format!("{edge_url}/v1/models"))
+            .bearer_auth("proxy-secret")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let first_ids = first["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|model| model["id"].as_str())
+            .collect::<Vec<_>>();
+        assert!(first_ids.contains(&"deepseek/deepseek-flash"), "{first_ids:?}");
+        assert!(first_ids.contains(&"deepseek/deepseek-v4-pro"), "{first_ids:?}");
+        edge_task.abort();
+
+        let persisted: Value =
+            serde_json::from_slice(&fs::read(&cache_path).await.unwrap()).unwrap();
+        assert_eq!(persisted["accounts"][0]["accountId"], "deepseek-account");
+
+        // The adapter is not answering yet on this restart; the previously
+        // discovered DeepSeek list must still reach the client immediately.
+        adapter_mode.store(1, AtomicOrdering::Relaxed);
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let restored: Value = client
+            .get(format!("{edge_url}/v1/models"))
+            .bearer_auth("proxy-secret")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let restored_ids = restored["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|model| model["id"].as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            restored_ids.contains(&"deepseek/deepseek-flash"),
+            "{restored_ids:?}"
+        );
+        assert!(
+            restored_ids.contains(&"deepseek/deepseek-v4-pro"),
+            "{restored_ids:?}"
+        );
+        assert!(restored["catalog"]["restoredAt"].as_u64().is_some());
+
+        edge_task.abort();
+        adapter_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+        let _ = fs::remove_file(cache_path).await;
+    }
+
+    #[tokio::test]
+    async fn unusable_model_catalog_cache_is_ignored() {
+        let path = temporary_path("model-cache-invalid");
+        fs::write(&path, b"{ not json").await.unwrap();
+        assert!(load_model_catalog_cache(&path).await.is_none());
+        fs::write(
+            &path,
+            serde_json::to_vec(&json!({"version": 99, "accounts": []})).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(load_model_catalog_cache(&path).await.is_none());
+        fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "version": 1,
+                "accounts": [{"accountId": "openai-1", "sourceSignature": "sig", "fetchedAt": 1, "models": [{"object": "model"}]}]
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(load_model_catalog_cache(&path).await.is_none());
+        let _ = fs::remove_file(&path).await;
     }
 
     #[tokio::test]
