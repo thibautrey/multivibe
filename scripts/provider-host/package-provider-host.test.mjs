@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { argumentsFrom, archiveBundle, commandInvocation, validateOllamaWindowsFiles } from "./package-provider-host.mjs";
+import { argumentsFrom, archiveBundle, commandInvocation, submitMacNotarization, validateOllamaWindowsFiles } from "./package-provider-host.mjs";
 
 const packager = fileURLToPath(new URL("./package-provider-host.mjs", import.meta.url));
 const verifier = fileURLToPath(new URL("./verify-provider-host.mjs", import.meta.url));
@@ -213,4 +213,76 @@ test("the checksum-verified Ollama Windows inventory is accepted", async () => {
     assert.throws(() => validateOllamaWindowsFiles([...fixture.files, unexpected]), /unexpected runtime file/);
   }
   assert.throws(() => validateOllamaWindowsFiles(fixture.files.filter(file => file !== "lib/ollama/llama-server.exe")), /missing a required runtime executable/);
+});
+
+const notaryID = "266f98c8-abb9-4420-9527-b1522ca23444";
+const notaryAccepted = JSON.stringify({ id: notaryID, status: "Accepted" });
+const notaryCrash = (stdout = "") => Object.assign(new Error("xcrun failed with SIGBUS"), { signal: "SIGBUS", stdout });
+
+test("notarization separates upload and wait and preserves the submission ID", async () => {
+  const calls = [];
+  const id = await submitMacNotarization("Host.dmg", "release", async (program, args) => {
+    calls.push({ program, args });
+    return args[1] === "submit" ? `Submission ID received\n  id: ${notaryID}\n` : notaryAccepted;
+  });
+  assert.equal(id, notaryID);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0], { program: "xcrun", args: ["notarytool", "submit", "Host.dmg",
+    "--keychain-profile", "release", "--no-wait", "--no-progress", "--no-s3-acceleration"] });
+  assert.deepEqual(calls[1].args, ["notarytool", "wait", notaryID, "--keychain-profile", "release",
+    "--timeout", "15m", "--output-format", "json"]);
+});
+
+test("SIGBUS after submission and during wait resumes without another upload", async () => {
+  const actions = [];
+  await submitMacNotarization("Host.dmg", "release", async (_program, args) => {
+    actions.push(args[1]);
+    if (args[1] === "submit") throw notaryCrash(`  id: ${notaryID}\n`);
+    assert.equal(args[2], notaryID);
+    if (actions.length === 2) throw notaryCrash();
+    return notaryAccepted;
+  });
+  assert.deepEqual(actions, ["submit", "wait", "wait"]);
+});
+
+test("notarization stops after three crashed waits", async () => {
+  let waits = 0;
+  await assert.rejects(submitMacNotarization("Host.zip", "release", async (_program, args) => {
+    if (args[1] === "submit") return `id: ${notaryID}`;
+    waits += 1;
+    throw notaryCrash();
+  }), /could not be verified: xcrun failed with SIGBUS/);
+  assert.equal(waits, 3);
+});
+
+test("notarization fails closed for rejection, timeout, malformed results and mismatched IDs", async (t) => {
+  for (const result of [
+    JSON.stringify({ id: notaryID, status: "Invalid" }),
+    JSON.stringify({ id: notaryID, status: "In Progress" }),
+    JSON.stringify({ id: "another-submission", status: "Accepted" }),
+    "not JSON",
+    new Error("wait timed out"),
+  ]) {
+    await t.test(String(result), async () => {
+      let calls = 0;
+      await assert.rejects(submitMacNotarization("Host.dmg", "release", async () => {
+        if (++calls === 1) return `id: ${notaryID}`;
+        if (result instanceof Error) throw result;
+        return result;
+      }));
+      assert.equal(calls, 2);
+    });
+  }
+});
+
+test("submission without an ID or with an ordinary failure is not retried", async () => {
+  for (const result of ["", notaryCrash(), new Error("authentication failed")]) {
+    let calls = 0;
+    await assert.rejects(submitMacNotarization("Host.dmg", "release", async () => {
+      calls += 1;
+      if (result instanceof Error) throw result;
+      return result;
+    }));
+    assert.equal(calls, 1);
+  }
 });

@@ -164,10 +164,10 @@ async function command(program, args, options = {}) {
       }
     });
     child.once("error", reject);
-    child.once("exit", (code, signal) => {
+    child.once("close", (code, signal) => {
       if (outputExceeded) reject(new Error(`${program} produced excessive output`));
       else if (code === 0) resolve(output.trim());
-      else reject(new Error(`${program} failed with ${signal ?? `exit ${code}`}`));
+      else reject(Object.assign(new Error(`${program} failed with ${signal ?? `exit ${code}`}`), { code, signal, stdout: output }));
     });
   });
 }
@@ -564,17 +564,54 @@ async function createMacApplicationIcon(work, destination) {
   await chmod(destination, 0o444);
 }
 
+// Keep normal submit output: unlike JSON it exposes the submission ID before
+// upload/wait completes, allowing recovery when Apple's client crashes.
+export async function submitMacNotarization(file, profile, run = command) {
+  const credentials = ["--keychain-profile", profile];
+  let output;
+  try {
+    output = await run("xcrun", ["notarytool", "submit", file, ...credentials,
+      "--no-wait", "--no-progress", "--no-s3-acceleration"], { capture: true });
+  } catch (error) {
+    if (error.signal !== "SIGBUS") throw error;
+    output = error.stdout ?? "";
+    // An ID is not proof of a completed upload. Only an Accepted response
+    // below permits stapling; never blindly resubmit an ambiguous upload.
+  }
+  const id = output.match(/^\s*id:\s*([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\s*$/imu)?.[1];
+  if (!id) throw new Error("notarytool submit returned no submission ID; notarization cannot be verified");
+  console.log(`Notarization submission: ${id}`);
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    let result;
+    try {
+      result = await run("xcrun", ["notarytool", "wait", id, ...credentials,
+        "--timeout", "15m", "--output-format", "json"], { capture: true });
+    } catch (error) {
+      if (error.signal === "SIGBUS" && attempt < 3) {
+        console.warn(`notarytool wait crashed; resuming submission ${id} (attempt ${attempt + 1}/3)`);
+        continue;
+      }
+      throw new Error(`Notarization ${id} could not be verified: ${error.message}`, { cause: error });
+    }
+    const report = JSON.parse(result);
+    if (report.id?.toLowerCase() !== id.toLowerCase() || report.status !== "Accepted") {
+      throw new Error(`Notarization ${id} was not accepted (status: ${report.status ?? "missing"})`);
+    }
+    return id;
+  }
+}
+
 async function notarizeMacApplication(application, profile, work) {
   const submission = path.join(work, "notary-submission.zip");
   await command("ditto", ["-c", "-k", "--keepParent", application, submission]);
-  await command("xcrun", ["notarytool", "submit", submission, "--keychain-profile", profile, "--wait"]);
+  await submitMacNotarization(submission, profile);
   await command("xcrun", ["stapler", "staple", application]);
   await command("xcrun", ["stapler", "validate", application]);
   await command("spctl", ["--assess", "--type", "execute", "--verbose=2", application]);
 }
 
 async function notarizeMacDiskImage(diskImage, profile) {
-  await command("xcrun", ["notarytool", "submit", diskImage, "--keychain-profile", profile, "--wait"]);
+  await submitMacNotarization(diskImage, profile);
   await command("xcrun", ["stapler", "staple", diskImage]);
   await command("xcrun", ["stapler", "validate", diskImage]);
   await command("spctl", ["--assess", "--type", "open", "--context", "context:primary-signature", "--verbose=2", diskImage]);
