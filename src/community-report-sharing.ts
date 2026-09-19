@@ -122,7 +122,7 @@ export function assertCommunityReportPayload(value: unknown): CommunityReportPay
     }
     const known = ["modelId", "scope", "requests", "succeeded", "failed", "inputTokens", "outputTokens",
       "cachedInputTokens", "reasoningTokens", "timeToFirstToken", "latency", "outputTokensPerSecond",
-      "contextHistogram", "contextTimeToFirstToken"];
+      "context", "contextTimeToFirstToken"];
     if (Object.keys(entry).length !== known.length || Object.keys(entry).some((key) => !known.includes(key))) {
       throw new Error("community report model entry fields are invalid");
     }
@@ -138,10 +138,12 @@ export function assertCommunityReportPayload(value: unknown): CommunityReportPay
         throw new Error("community report metric samples do not reconcile");
       }
     }
-    if (!Array.isArray(entry.contextHistogram) || entry.contextHistogram.length !== COMMUNITY_CONTEXT_BUCKETS.length) {
+    const context = entry.context;
+    if (!isObject(context) || !Array.isArray(context.histogram) || context.histogram.length !== COMMUNITY_CONTEXT_BUCKETS.length
+      || Object.keys(context).length !== 1) {
       throw new Error("community report context histogram is invalid");
     }
-    if ((entry.contextHistogram as number[]).reduce((sum, count) => sum + count, 0) !== entry.requests) {
+    if ((context.histogram as number[]).reduce((sum, count) => sum + count, 0) !== entry.requests) {
       throw new Error("community report context counts do not reconcile");
     }
     if (!Array.isArray(entry.contextTimeToFirstToken)) throw new Error("community report context latency is invalid");
