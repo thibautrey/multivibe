@@ -16704,8 +16704,12 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                         json_response(
                             StatusCode::OK,
                             json!({"data": [
-                                {"id": "deepseek/deepseek-flash", "name": "DeepSeek Flash"},
-                                {"id": "deepseek/deepseek-v4-pro", "name": "DeepSeek V4 Pro"}
+                                {"id": "deepseek/deepseek-flash", "name": "DeepSeek Flash", "owned_by": "deepseek",
+                                 "context_window": 131072, "supports_tools": true,
+                                 "input_modalities": ["text"], "output_modalities": ["text"]},
+                                {"id": "deepseek/deepseek-v4-pro", "name": "DeepSeek V4 Pro", "owned_by": "deepseek",
+                                 "context_window": 131072, "supports_tools": true,
+                                 "input_modalities": ["text"], "output_modalities": ["text"]}
                             ]}),
                         )
                     } else {
@@ -16796,6 +16800,24 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
             "{restored_ids:?}"
         );
         assert!(restored["catalog"]["restoredAt"].as_u64().is_some());
+        // The restored entries stay byte-identical to the discovered ones, so
+        // Codex keeps seeing the same provider metadata it had before restart.
+        let flash = restored["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["id"] == "deepseek/deepseek-flash")
+            .unwrap();
+        assert_eq!(flash["metadata"]["context_window"], 131072);
+        assert_eq!(flash["metadata"]["sdk_provider"], "deepseek");
+        let native = restored["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["slug"] == "deepseek/deepseek-flash")
+            .expect("Codex must list the restored DeepSeek model");
+        assert_eq!(native["display_name"], "DeepSeek Flash");
+        assert_eq!(native["visibility"], "list");
 
         edge_task.abort();
         adapter_task.abort();
