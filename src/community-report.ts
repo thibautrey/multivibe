@@ -40,7 +40,7 @@ export type CommunityReportModelEntry = Readonly<{
   timeToFirstToken: CommunityReportMetric;
   latency: CommunityReportMetric;
   outputTokensPerSecond: CommunityReportMetric;
-  contextHistogram: readonly number[];
+  context: Readonly<{ histogram: readonly number[] }>;
   contextTimeToFirstToken: readonly Readonly<{ bucket: CommunityContextBucket; samples: number; histogram: readonly number[] }>[];
 }>;
 
@@ -203,7 +203,7 @@ export function buildCommunityReportModels(
       timeToFirstToken: Object.freeze({ samples: accumulator.ttftSamples, histogram: Object.freeze([...accumulator.ttft]) }),
       latency: Object.freeze({ samples: accumulator.latencySamples, histogram: Object.freeze([...accumulator.latency]) }),
       outputTokensPerSecond: Object.freeze({ samples: accumulator.speedSamples, histogram: Object.freeze([...accumulator.speed]) }),
-      contextHistogram: Object.freeze([...accumulator.context]),
+      context: Object.freeze({ histogram: Object.freeze([...accumulator.context]) }),
       contextTimeToFirstToken: Object.freeze([...accumulator.contextTtft.entries()]
         .sort(([left], [right]) => COMMUNITY_CONTEXT_BUCKETS.indexOf(left) - COMMUNITY_CONTEXT_BUCKETS.indexOf(right))
         .map(([bucket, histogram]) => Object.freeze({

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { assertCommunityReportPayload } from "./community-report-sharing.js";
 import {
   COMMUNITY_CONTEXT_BUCKETS,
   COMMUNITY_LATENCY_UPPER_BOUNDS,
@@ -52,7 +53,7 @@ test("community report aggregates only locally executed completed traffic with k
   assert.equal(entry.outputTokens, 400);
   assert.equal(entry.timeToFirstToken.samples, 2);
   assert.equal(entry.latency.samples, 2);
-  assert.equal(entry.contextHistogram.reduce((sum, count) => sum + count, 0), 2);
+  assert.equal(entry.context.histogram.reduce((sum, count) => sum + count, 0), 2);
   assert.equal(entry.timeToFirstToken.histogram.length, COMMUNITY_LATENCY_UPPER_BOUNDS.length + 1);
   assert.equal(entry.outputTokensPerSecond.histogram.length, COMMUNITY_SPEED_UPPER_BOUNDS.length + 1);
   assert.equal(entry.outputTokensPerSecond.samples, 2);
@@ -114,4 +115,57 @@ test("synthetic benchmark results are bounded, deduplicated by digest and mapped
   assert.equal(readSyntheticBenchmarkResults({ schema_version: "other" }, allowlist, new Set()).length, 0);
   assert.equal(runtimeFamilyFromRuntimeId("llama-cpp-adapter-v1"), "llama-cpp");
   assert.equal(runtimeFamilyFromRuntimeId("vLLM"), "vllm");
+});
+
+test("the outbound payload keeps the exact wire shape Cloud validates", () => {
+  const models = buildCommunityReportModels([trace()], allowlist);
+  const digest = `sha256:${"d".repeat(64)}`;
+  const syntheticBenchmarks = readSyntheticBenchmarkResults({
+    schema_version: "provider-runtime-benchmark-store-v1",
+    results: [{
+      result_digest: digest, model_id: "hf:public/model", runtime_id: "ollama-managed",
+      passed: true, successful_runs: 3, completed_at: "2026-09-01T21:01:25.032Z",
+      time_to_first_token_milliseconds: { samples: 3, minimum: 100, p50: 120, p95: 180, maximum: 200 },
+      prefill_milliseconds: { samples: 3, minimum: 10, p50: 20, p95: 25, maximum: 30 },
+      tokens_per_second_milli: { samples: 3, minimum: 1_000, p50: 42_500, p95: 50_000, maximum: 52_000 },
+      memory: { sampled_peak_bytes: { samples: 3, minimum: 1, p50: 8_589_934_592, p95: 8_600_000_000, maximum: 8_700_000_000 } },
+    }],
+  }, allowlist, new Set());
+  const payload = {
+    schemaVersion: 2 as const,
+    eventId: "6f1c0f0e-8f4a-4a1e-9f6b-1f2c3d4e5f60",
+    periodStart: "2026-09-01T00:00:00.000Z",
+    periodEnd: "2026-09-02T00:00:00.000Z",
+    host: {
+      acceleratorKind: "cuda" as const,
+      acceleratorName: "NVIDIA GeForce RTX 4090",
+      acceleratorMemoryBytes: 24 * 1024 ** 3,
+      hostMemoryBytes: 64 * 1024 ** 3,
+      os: "linux" as const,
+      architecture: "amd64" as const,
+      machineModel: "",
+    },
+    models,
+    syntheticBenchmarks,
+  };
+  assert.doesNotThrow(() => assertCommunityReportPayload(payload));
+  const model = models[0]!;
+  const synthetic = syntheticBenchmarks[0]!;
+  // These lists mirror Cloud's validateCommunityReport/validateModelEntry exactly.
+  assert.deepEqual(Object.keys(payload).sort(), ["eventId", "host", "models", "periodEnd", "periodStart", "schemaVersion", "syntheticBenchmarks"]);
+  assert.deepEqual(Object.keys(payload.host).sort(), ["acceleratorKind", "acceleratorMemoryBytes", "acceleratorName", "architecture", "hostMemoryBytes", "machineModel", "os"]);
+  assert.deepEqual(Object.keys(model).sort(), [
+    "cachedInputTokens", "context", "contextTimeToFirstToken", "failed", "inputTokens", "latency",
+    "modelId", "outputTokens", "outputTokensPerSecond", "reasoningTokens", "requests", "scope",
+    "succeeded", "timeToFirstToken",
+  ]);
+  assert.deepEqual(Object.keys(model.context).sort(), ["histogram"]);
+  assert.deepEqual(Object.keys(model.timeToFirstToken).sort(), ["histogram", "samples"]);
+  assert.deepEqual(Object.keys(model.latency).sort(), ["histogram", "samples"]);
+  assert.deepEqual(Object.keys(model.outputTokensPerSecond).sort(), ["histogram", "samples"]);
+  assert.deepEqual(Object.keys(model.contextTimeToFirstToken[0]!).sort(), ["bucket", "histogram", "samples"]);
+  assert.deepEqual(Object.keys(synthetic).sort(), [
+    "completedAt", "modelId", "outputTokensPerSecond", "peakMemoryBytes", "prefillP50Ms",
+    "resultDigest", "runtimeFamily", "samples", "ttftP50Ms", "ttftP95Ms",
+  ]);
 });
