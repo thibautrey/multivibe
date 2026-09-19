@@ -250,6 +250,17 @@ export class AccountStore {
         this.inMemorySettings.anonymousUsageSharingEnabled = false;
       }
     }
+    if ("communityBenchmarksSharingEnabled" in patch) {
+      if (patch.communityBenchmarksSharingEnabled === true) {
+        this.inMemorySettings.communityBenchmarksSharingEnabled = true;
+        if (!this.inMemorySettings.communityBenchmarksSharingEnabledAt) {
+          this.inMemorySettings.communityBenchmarksSharingEnabledAt = this.clock().toISOString();
+        }
+      } else {
+        delete this.inMemorySettings.communityBenchmarksSharingEnabled;
+        delete this.inMemorySettings.communityBenchmarksSharingEnabledAt;
+      }
+    }
     if (!this.inMemorySettings.defaultPassthroughAccountId) {
       delete this.inMemorySettings.defaultPassthroughAccountId;
     }

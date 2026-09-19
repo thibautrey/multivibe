@@ -155,6 +155,7 @@ export type AdminRoutesOptions = {
   smartRouting?: SmartRoutingCoordinator;
   usageRefreshCoordinator?: UsageRefreshCoordinator;
   anonymousUsageSharing?: AnonymousUsageSharingController;
+  communityBenchmarks?: AnonymousUsageSharingController;
   providerAgent?: ProviderAgentControl;
   localPreparation?: LocalModelPreparation;
   hostApplication?: boolean;
@@ -1704,7 +1705,15 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       defaultPassthroughAccountId?: string | undefined;
       imageRequestModelOverride?: string | undefined;
       anonymousUsageSharingEnabled?: boolean;
+      communityBenchmarksSharingEnabled?: boolean;
     } = {};
+
+    if ("communityBenchmarksSharingEnabled" in body) {
+      if (typeof body.communityBenchmarksSharingEnabled !== "boolean") {
+        return res.status(400).json({ error: "communityBenchmarksSharingEnabled must be a boolean" });
+      }
+      patch.communityBenchmarksSharingEnabled = body.communityBenchmarksSharingEnabled;
+    }
 
     if ("anonymousUsageSharingEnabled" in body) {
       if (typeof body.anonymousUsageSharingEnabled !== "boolean") {
@@ -1766,6 +1775,15 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       } catch {
         return res.status(500).json({
           error: "Anonymous usage sharing was disabled, but its unsent state could not be removed",
+        });
+      }
+    }
+    if ("communityBenchmarksSharingEnabled" in patch && options.communityBenchmarks) {
+      try {
+        await options.communityBenchmarks.applySettings(settings);
+      } catch {
+        return res.status(500).json({
+          error: "Community benchmark sharing was changed, but its unsent state could not be updated",
         });
       }
     }

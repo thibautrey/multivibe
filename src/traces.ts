@@ -10,6 +10,7 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { normalizeTraceHeaders } from "./trace-headers.js";
 import { sessionKeyFor } from "./session-identity.js";
+import type { CommunityReportTrace } from "./community-report.js";
 import type { CodexProjectAttribution } from "./codex-projects.js";
 import type {
   AccountSelectionReason,
@@ -1950,6 +1951,42 @@ export function createTraceManager(config: TraceManagerConfig) {
       .sort((left, right) => right.outputTokens - left.outputTokens || left.modelId.localeCompare(right.modelId));
   }
 
+  /**
+   * Projects the completed traces of one window for the opt-in community
+   * report. It returns only bounded aggregate inputs, never prompts, outputs,
+   * projects or account identifiers.
+   */
+  async function collectCommunityReportTraces(
+    sinceMs: number,
+    untilMs: number,
+    limit = 50_000,
+  ): Promise<CommunityReportTrace[]> {
+    await syncExternalTraces();
+    const selected: CommunityReportTrace[] = [];
+    await scanStatsHistory((trace) => {
+      if (selected.length >= limit) return;
+      const completedAt = trace.completedAt ?? trace.at;
+      if (trace.lifecycleState !== "completed" || completedAt < sinceMs || completedAt >= untilMs) return;
+      if (trace.executionLocation !== "local" && trace.executionLocation !== "personal-cluster") return;
+      selected.push({
+        lifecycleState: trace.lifecycleState,
+        isError: trace.isError,
+        provider: trace.provider,
+        model: trace.model,
+        requestedModel: trace.requestedModel,
+        resolvedModel: trace.resolvedModel,
+        executionLocation: trace.executionLocation,
+        latencyMs: trace.latencyMs,
+        ttftMs: trace.ttftMs,
+        tokensInput: trace.tokensInput,
+        tokensOutput: trace.tokensOutput,
+        tokensInputCached: trace.tokensInputCached,
+        tokensReasoning: trace.tokensReasoning,
+      });
+    });
+    return selected;
+  }
+
   async function seedStatsHistoryIfMissing() {
     await syncExternalTraces();
     for (const entry of traceCache) {
@@ -2318,6 +2355,7 @@ export function createTraceManager(config: TraceManagerConfig) {
     readStatsHistory,
     readStatsHistoryRange,
     aggregateAnonymousOutputTokens,
+    collectCommunityReportTraces,
     seedStatsHistoryIfMissing,
     compactTraceStorageIfNeeded,
     getTraceStats,
