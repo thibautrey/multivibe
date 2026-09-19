@@ -256,6 +256,21 @@ function TracingTabContent(props: Props) {
     }
   };
 
+  const setCommunityBenchmarksSharing = async (enabled: boolean) => {
+    setSharingBusy(true);
+    setSharingNotice(null);
+    try {
+      await patchSettings({ communityBenchmarksSharingEnabled: enabled });
+      setSharingNotice(enabled
+        ? "Community benchmarks sharing is enabled. The first report covers the next completed day."
+        : "Community benchmarks sharing stopped and unsent data was deleted.");
+    } catch (error: any) {
+      setSharingNotice(error?.message ?? String(error));
+    } finally {
+      setSharingBusy(false);
+    }
+  };
+
   const formatTokenChartValue = (value: number | string | undefined) => formatTokenCount(Number(value ?? 0));
 
   const formatTooltipValue = (value: any) => formatTokenChartValue(value?.[0] ?? value ?? 0);
@@ -347,6 +362,32 @@ function TracingTabContent(props: Props) {
             </label>
             <small id="anonymous-usage-sharing-default" className="muted">Uncheck to stop sharing and delete unsent data.</small>
             <span className="muted" role="status" aria-live="polite">{sharingNotice}</span>
+          </div>
+        </div>
+        <div className="trace-sharing-setting">
+          <div>
+            <h2>Publish community model benchmarks</h2>
+            <p id="community-benchmarks-description" className="muted">
+              Off by default. When enabled, MultiVibe reports one daily aggregate for this machine: the model IDs you ran
+              locally, request and token counts, latency and time-to-first-token distributions, the context sizes you used,
+              plus already-measured synthetic runtime benchmark results. It never includes prompts, responses, project or
+              account names, host names, serial numbers or an installation identifier. Your machine is reduced to a public
+              hardware profile before anything is stored, and results are published only in aggregate.
+            </p>
+          </div>
+          <div className="trace-sharing-action">
+            <label className="inline" htmlFor="community-benchmarks-sharing-enabled">
+              <input
+                id="community-benchmarks-sharing-enabled"
+                type="checkbox"
+                checked={settings.communityBenchmarksSharingEnabled === true}
+                disabled={sharingBusy}
+                aria-describedby="community-benchmarks-description community-benchmarks-default"
+                onChange={(event) => void setCommunityBenchmarksSharing(event.target.checked)}
+              />
+              <span>Share community benchmarks</span>
+            </label>
+            <small id="community-benchmarks-default" className="muted">Uncheck to stop reporting and delete unsent data.</small>
           </div>
         </div>
       </section>

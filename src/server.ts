@@ -1,3 +1,8 @@
+import { COMMUNITY_BENCHMARKS_API_BASE_URL, COMMUNITY_BENCHMARKS_ENABLED, COMMUNITY_BENCHMARKS_STATE_PATH, COMMUNITY_BENCHMARK_STORE_PATH } from "./config.js";
+import { createCommunityReportSharingWorker } from "./community-report-sharing.js";
+import { communityHostFromCapability, detectCommunityHost } from "./community-host-profile.js";
+import { totalmem } from "node:os";
+import fs from "node:fs/promises";
 import { LocalModelPreparation } from './local-model-preparation.js';
 import { HostLocalPreparationDriver } from './local-preparation-driver.js';
 import { createLocalPreparationResolver } from './local-preparation-preflight.js';
@@ -463,6 +468,33 @@ const anonymousUsageSharing = createAnonymousUsageSharingWorker({
   apiBaseUrl: ANONYMOUS_USAGE_API_BASE_URL,
 });
 void anonymousUsageSharing.start();
+// Opt-in community benchmarks report. The machine descriptor prefers the
+// supervised Provider Agent capability and falls back to bounded local
+// detection; nothing is ever sent while the operator setting is off.
+const communityReportSharing = COMMUNITY_BENCHMARKS_ENABLED
+  ? createCommunityReportSharingWorker({
+      settingsStore: store,
+      traceSource: traceManager,
+      hostProvider: async () => {
+        if (providerAgent.enabled) {
+          try {
+            const capability = await providerAgent.getCapability();
+            const fromCapability = communityHostFromCapability(capability, totalmem());
+            if (fromCapability) return fromCapability;
+          } catch {
+            // Fall through to bounded local detection.
+          }
+        }
+        return detectCommunityHost();
+      },
+      benchmarkStore: {
+        read: async () => JSON.parse(await fs.readFile(COMMUNITY_BENCHMARK_STORE_PATH, "utf8")),
+      },
+      statePath: COMMUNITY_BENCHMARKS_STATE_PATH,
+      apiBaseUrl: COMMUNITY_BENCHMARKS_API_BASE_URL,
+    })
+  : undefined;
+void communityReportSharing?.start();
 startScheduledWeeklyResetMonitor({
   store,
   oauthConfig,
@@ -506,6 +538,7 @@ const adminRouter = createAdminRouter({
   smartRouting,
   usageRefreshCoordinator,
   anonymousUsageSharing,
+  communityBenchmarks: communityReportSharing,
   providerAgent,
   localPreparation,
   hostApplication: MULTIVIBE_HOST_APPLICATION,
@@ -859,6 +892,7 @@ async function shutdown(signal: NodeJS.Signals) {
   hostHarnessIntegrations?.stopCatalogSynchronization();
   usageRefreshMonitor.stop();
   anonymousUsageSharing.stop();
+  communityReportSharing?.stop();
   await providerAgent.stop();
   console.log(`received ${signal}, flushing persistent state`);
   server.close(async (error) => {

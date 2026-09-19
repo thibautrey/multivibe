@@ -491,6 +491,8 @@ export type StoreSettings = {
   imageRequestModelOverride?: string;
   anonymousUsageSharingEnabled?: boolean;
   anonymousUsageSharingEnabledAt?: string;
+  communityBenchmarksSharingEnabled?: boolean;
+  communityBenchmarksSharingEnabledAt?: string;
 };
 
 export type ModuleView = {

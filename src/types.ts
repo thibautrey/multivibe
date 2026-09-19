@@ -248,6 +248,9 @@ export type StoreSettings = {
   imageRequestModelOverride?: string;
   anonymousUsageSharingEnabled?: boolean;
   anonymousUsageSharingEnabledAt?: string;
+  /** Opt-in community benchmarks report (schema v2). Absent means disabled. */
+  communityBenchmarksSharingEnabled?: boolean;
+  communityBenchmarksSharingEnabledAt?: string;
   multivibeCloudDisconnectedAt?: number;
   /** Private OAuth credentials for the local MultiVibe Cloud connection. */
   multivibeCloud?: {
