@@ -16,6 +16,14 @@ admin business logic and the authenticated internal AI SDK adapter. The legacy
 TypeScript public proxy has been removed; Node cannot fall back to JavaScript
 inference if the native edge is unavailable.
 
+The edge keeps the last successful model list of every remote provider
+account in `v1-edge-models-cache.json` beside the account store (override with
+`V1_EDGE_MODELS_CACHE_PATH`). A restart therefore serves the models a client
+already knows instead of an empty provider list, and the due refresh runs
+behind the response. Local runtimes are excluded: their models already come
+from the store and are detected on this machine. `GET /v1/models?refresh=true`
+still forces a discovery round.
+
 The Chat Completions bridge supports function tools. Unsupported tool dialects
 receive `unsupported_tool_contract` rather than being silently discarded.
 Custom tools need an explicit adapter before they can be used on this bridge.
