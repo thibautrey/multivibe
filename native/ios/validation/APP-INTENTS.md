@@ -1,6 +1,6 @@
 # Native App Intents
 
-MultiVibe exposes 22 App Intents on iOS 18+, including 10 featured App Shortcuts.
+MultiVibe exposes 21 App Intents on iOS 18+, including 10 featured App Shortcuts.
 Apple Foundation Local execution additionally requires a compatible device, OS,
 downloaded model and an available Foundation Models session. No remote fallback.
 
@@ -17,7 +17,7 @@ downloaded model and an available Foundation Models session. No remote fallback.
 | Generation | Stop response |
 
 The first four original intents remain compatible. All actions require local device
-authentication and foreground the app. Siri phrases are French. All 22 actions are
+authentication and foreground the app. Siri phrases are French. All 21 actions are
 available to the Shortcuts catalog; only 10 are featured by the AppShortcutsProvider.
 
 Example workflows in Shortcuts:
