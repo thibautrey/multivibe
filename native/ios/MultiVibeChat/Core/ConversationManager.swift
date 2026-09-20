@@ -152,11 +152,11 @@ import Network
         defer { if modelLoadRevision == loadRevision { isLoadingModels = false } }
         do {
             let credentials = try await validSession()
-            let available = try await services.models(credentials.accessToken)
+            let remoteModels = try await services.models(credentials.accessToken)
             guard sessionRevision == accountRevision, modelLoadRevision == loadRevision else { return }
             // Sending can begin while this request is in flight; never switch its model.
             guard !isStreaming else { return }
-            let available = [LocalModel.option] + available.filter { $0.id != LocalModel.id }
+            let available = [LocalModel.option] + remoteModels.filter { $0.id != LocalModel.id }
             models = available
             if !selectedModel.isEmpty {
                 if !available.contains(where: { $0.id == selectedModel }) { selectedModel = "" }
