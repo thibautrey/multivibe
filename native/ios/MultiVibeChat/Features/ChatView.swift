@@ -185,6 +185,9 @@ struct ChatView: View {
                         Button("Se connecter") { manager.authenticationPresented = true }.accessibilityIdentifier("openAuthentication")
                     }
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Mémoire", systemImage: "brain") { manager.memoryPresented = true }.accessibilityIdentifier("chatMemory")
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button("Nouvelle conversation", systemImage: "square.and.pencil") { manager.newConversation() }
                 }
@@ -422,9 +425,12 @@ struct NativePrivacyView: View {
                     Text("L’accès web est demandé une seule fois par conversation. Autoriser permet les lectures HTTPS ; refuser conserve les outils hors ligne. Les sites reçoivent votre adresse IP et les URL demandées, sans les identifiants ni cookies de votre compte MultiVibe. Le modèle reste sur l’appareil.")
                     Text("Le calendrier et les rappels nécessitent une activation explicite et les autorisations iOS. Leur accès est en lecture seule.")
                 }
+                Section("Mémoire") {
+                    Text("La mémoire est locale par défaut. Les souvenirs sont validés explicitement avec leur source. L’option Synchroniser la mémoire envoie les souvenirs validés, leurs citations et les oublis au compte ; elle est distincte de la synchronisation des conversations. Les modèles distants ne reçoivent pas automatiquement les souvenirs. Ce stockage serveur n’est pas chiffré de bout en bout.")
+                }
                 Section("Historique") {
                     Text("L’app conserve une copie des conversations sur cet appareil. La synchronisation automatique, activée avec votre confirmation, envoie les conversations du compte au retour du réseau et télécharge celles du compte. Les conversations invitées nécessitent un import explicite. Les documents importés restent sur cet appareil ; les passages cités dans une réponse font partie de la conversation synchronisée. Ce stockage n’est pas chiffré de bout en bout.")
-                    Text("Supprimer une conversation dans l’app retire sa copie locale. Cela ne constitue pas une suppression de compte ni une demande d’effacement de toutes les données détenues par le service.")
+                    Text("Supprimer une conversation dans l’app retire sa copie locale et oublie les souvenirs qui en proviennent. Cela ne constitue pas une suppression de compte ni une demande d’effacement de toutes les données détenues par le service.")
                 }
                 Section("Dictée, lecture et raccourcis") {
                     Text("La dictée exige la reconnaissance sur l’appareil : l’app ne transmet pas l’enregistrement audio à MultiVibe. Vérifiez le texte avant d’appuyer sur Envoyer. La lecture vocale utilise la synthèse vocale du système.")

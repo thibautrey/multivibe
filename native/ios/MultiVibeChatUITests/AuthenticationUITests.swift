@@ -162,3 +162,26 @@ final class LocalInternetUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "refusé pour cette conversation")).firstMatch.waitForExistence(timeout: 5))
     }
 }
+
+@MainActor final class MemoryUITests: XCTestCase {
+    func testExplicitMemoryCanBeReviewedAndForgottenOffline() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-local-agent-ui-fixture", "-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR"]
+        app.launch()
+        let open = app.buttons["chatMemory"]
+        XCTAssertTrue(open.waitForExistence(timeout: 10)); open.tap()
+        app.buttons["addMemory"].tap()
+        let topic = app.textFields["memoryTopic"]
+        XCTAssertTrue(topic.waitForExistence(timeout: 5)); topic.tap(); topic.typeText("Boisson")
+        let text = app.descendants(matching: .any).matching(identifier: "memoryText").firstMatch
+        text.tap(); text.typeText("Je prefere le cafe")
+        app.buttons["confirmMemory"].tap()
+        XCTAssertTrue(app.staticTexts["Je prefere le cafe"].firstMatch.waitForExistence(timeout: 5))
+        app.buttons["Source et date"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Rôle initial : user"].waitForExistence(timeout: 5))
+        app.buttons["Oublier"].firstMatch.tap()
+        app.buttons.matching(identifier: "Oublier").element(boundBy: 1).tap()
+        XCTAssertFalse(app.staticTexts["Je prefere le cafe"].exists)
+    }
+}

@@ -41,6 +41,14 @@ struct MemoryView: View {
                                     Text("Identifiant mémoire : " + item.id.uuidString).font(.caption)
                                 }
                             }
+                            if item.conflicting {
+                                DisclosureGroup("Versions à comparer") {
+                                    ForEach(manager.memoryRecords.filter { $0.id == item.id && $0.state != .deleted }, id: \.version) { version in
+                                        Text(version.text + " — " + version.updatedAt.formatted())
+                                    }
+                                    Text("Corrigez le souvenir avec la version exacte à conserver, puis confirmez.")
+                                }
+                            }
                             HStack {
                                 Button(item.memory.state == .proposed ? "Valider" : "Corriger") { manager.editMemory(item) }
                                 Spacer()
