@@ -80,7 +80,12 @@ enum MemoryPolicy {
         for record in records where record.valid {
             if deleted.contains(record.id) { continue }
             // A duplicate revision must be identical. Quarantine malformed collisions.
-            if let previous = unique[record.version], previous != record { continue }
+            if let previous = unique[record.version], previous != record {
+                var quarantined = previous
+                quarantined.state = .proposed
+                unique[record.version] = quarantined
+                continue
+            }
             unique[record.version] = record
         }
         var result = Array(unique.values)
@@ -99,7 +104,10 @@ enum MemoryPolicy {
             let superseded = Set(versions.flatMap(\.ancestors))
             let leaves = versions.filter { !superseded.contains($0.version) }
             guard let latest = leaves.sorted(by: { $0.updatedAt > $1.updatedAt }).first else { continue }
-            let distinct = Set(leaves.map { $0.topicKey + "|" + $0.text + "|" + $0.state.rawValue })
+            let distinct = Set(leaves.map {
+                $0.topicKey + "|" + $0.text + "|" + $0.state.rawValue + "|" + $0.kind.rawValue
+                    + "|" + String($0.expiresAt?.timeIntervalSince1970 ?? 0)
+            })
             items.append(MemoryItem(memory: latest, conflicting: distinct.count > 1))
         }
         let confirmed = Dictionary(grouping: items.filter { $0.memory.state == .confirmed }, by: { $0.memory.topicKey })
