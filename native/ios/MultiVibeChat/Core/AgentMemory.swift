@@ -38,7 +38,7 @@ struct AgentMemory: Codable, Equatable, Identifiable, Sendable {
             && !text.isEmpty && text.count <= 600 && scope.count <= 80 && ancestors.count <= 100
             && evidence != nil && !(evidence?.quote.isEmpty ?? true) && (evidence?.quote.count ?? 0) <= 4000
             && (evidence?.priorQuote?.count ?? 0) <= 4000
-            && (evidence?.origin != .userMessage || evidence?.sourceRole == "user")
+            && (evidence?.origin == .userConfirmation || evidence?.sourceRole == "user")
             && !ancestors.contains(version) && updatedAt.timeIntervalSince1970.isFinite
             && (evidence?.date.timeIntervalSince1970.isFinite ?? false)
             && (kind != .temporary || expiresAt != nil)
@@ -110,7 +110,7 @@ enum MemoryPolicy {
             })
             items.append(MemoryItem(memory: latest, conflicting: distinct.count > 1))
         }
-        let confirmed = Dictionary(grouping: items.filter { $0.memory.state == .confirmed }, by: { $0.memory.topicKey })
+        let confirmed = Dictionary(grouping: items.filter { $0.memory.state == .confirmed && ($0.memory.expiresAt.map { $0 > Date() } ?? true) }, by: { $0.memory.topicKey })
         let conflicts = Set(confirmed.filter { Set($0.value.map { normalized($0.memory.text) }).count > 1 }.keys)
         return items.map { item in
             var result = item; result.conflicting = result.conflicting || conflicts.contains(item.memory.topicKey); return result

@@ -64,6 +64,7 @@ import XCTest
         let draft = MemoryDraft(text: "Je préfère le français", evidence: MemoryEvidence(origin: .userEntry,
             quote: "Je préfère le français", date: Date(), sourceRole: "user"), topic: "Langue")
         XCTAssertTrue(manager.saveMemory(draft))
+        XCTAssertEqual(manager.memoryItems.first?.memory.evidence?.origin, .userEntry)
         let restored = ConversationManager(services: services); await restored.restore()
         XCTAssertEqual(restored.memoryItems.count, 1)
         let id = restored.memoryItems[0].id
@@ -101,6 +102,16 @@ import XCTest
         let result = try await workspace.execute(action: "search_conversations", query: "Rex", documentID: "", text: "", lhs: 0, rhs: 0)
         XCTAssertTrue(result.contains("rôle assistant"))
         XCTAssertTrue(result.contains("jamais une preuve"))
+    }
+
+    func testExpiredDifferentMemoryDoesNotConflictWithCurrentObservation() {
+        var old = memory("Lyon", topic: "Ville"); old.kind = .temporary; old.expiresAt = .distantPast
+        var current = memory("Paris", topic: "Ville"); current.kind = .temporary; current.expiresAt = .distantFuture
+        let items = MemoryPolicy.items([old, current])
+        XCTAssertTrue(items.first { $0.id == current.id }!.usable(now: Date()))
+        var forged = memory()
+        forged.evidence?.origin = .userEntry; forged.evidence?.sourceRole = "assistant"
+        XCTAssertFalse(forged.valid)
     }
 
     func testRepeatedAssistantGuessesCannotBecomeValidatedProposals() async throws {

@@ -863,7 +863,8 @@ import Network
             memoryError = "Ce souvenir a été oublié. Créez-en un nouveau si nécessaire."; return false
         }
         var evidence = draft.evidence
-        evidence.origin = draft.replaces == nil && evidence.sourceRole == "user" && draft.text == evidence.quote ? .userMessage : .userConfirmation
+        evidence.origin = draft.replaces == nil && evidence.sourceRole == "user" && draft.text == evidence.quote
+            ? (evidence.origin == .userEntry ? .userEntry : .userMessage) : .userConfirmation
         if evidence.origin == .userConfirmation {
             evidence.priorQuote = evidence.quote
             evidence.quote = draft.text
