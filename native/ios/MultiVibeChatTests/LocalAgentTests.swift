@@ -190,3 +190,27 @@ import XCTest
         XCTAssertEqual(manager.current?.messages.last?.content, "")
     }
 }
+
+@MainActor final class AppleFoundationDeviceTests: XCTestCase {
+    /// Runs real Apple inference on supported hardware. Simulator/disabled models are
+    /// explicitly skipped; a skip is not evidence of a successful local model run.
+    func testRealAppleModelCompletesTwoDependentToolCalls() async throws {
+        if let reason = LocalModel.unavailableReason { throw XCTSkip(reason) }
+        actor Evidence {
+            var events: [LocalAgentEvent] = []
+            var answer = ""
+            func record(_ event: LocalAgentEvent) { events.append(event) }
+            func output(_ text: String) { answer = text }
+        }
+        let evidence = Evidence()
+        let workspace = LocalAgentWorkspace(conversations: [], documents: [], event: { await evidence.record($0) }, saveDocument: { _ in
+            XCTFail("This request does not authorize creating a document")
+        })
+        try await LocalAgent.respond(messages: [ChatMessage(role: "user", content: "Utilise obligatoirement l’outil local_workspace avec action add, lhs 137 et rhs 286. Puis utilise le résultat obtenu dans un second appel avec action multiply et rhs 7. Donne le résultat final en français.")], workspace: workspace, onText: { await evidence.output($0) })
+        let events = await evidence.events
+        let answer = await evidence.answer
+        XCTAssertTrue(events.contains { $0.tool == "add" })
+        XCTAssertTrue(events.contains { $0.tool == "multiply" })
+        XCTAssertTrue(answer.replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "\u{202f}", with: "").contains("2961"), answer)
+    }
+}
