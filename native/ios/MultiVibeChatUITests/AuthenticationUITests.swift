@@ -131,12 +131,9 @@ final class AuthenticationUITests: XCTestCase {
 
 final class LocalInternetUITests: XCTestCase {
     func testLocalWebPermissionCanBeDeniedOnceWithoutSigningIn() throws {
-        #if targetEnvironment(simulator)
-        throw XCTSkip("Requires a physical device with Apple Intelligence ready")
-        #else
         continueAfterFailure = false
         let app = XCUIApplication()
-        app.launchArguments = ["-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR"]
+        app.launchArguments = ["-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR", "-local-agent-ui-fixture"]
         app.launch()
         let newConversation = app.buttons["Nouvelle conversation"].firstMatch
         XCTAssertTrue(newConversation.waitForExistence(timeout: 10))
@@ -162,6 +159,6 @@ final class LocalInternetUITests: XCTestCase {
         app.buttons["Envoyer"].tap()
         XCTAssertTrue(stop.waitForNonExistence(timeout: 40))
         XCTAssertFalse(deny.exists, "A refusal must not trigger another prompt in this conversation")
-        #endif
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "refusé pour cette conversation")).firstMatch.waitForExistence(timeout: 5))
     }
 }
