@@ -53,7 +53,8 @@ actor ChatAPI {
         let (data, response) = try await session.data(for: request("history", body: body, token: token))
         try validate(response, data: data)
         let saved = try JSONDecoder().decode(AccountHistorySnapshot.self, from: data)
-        guard saved.accountId == snapshot.accountId, saved.revision == snapshot.revision + 1 else { throw APIError.invalidResponse }
+        guard saved.accountId == snapshot.accountId, saved.revision == snapshot.revision + 1,
+              snapshot.memory == nil || saved.memory == snapshot.memory else { throw APIError.invalidResponse }
         return saved
     }
     func authenticationConfiguration() async throws -> NativeAuthConfiguration {

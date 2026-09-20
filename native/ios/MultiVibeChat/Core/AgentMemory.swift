@@ -9,6 +9,7 @@ struct MemoryEvidence: Codable, Equatable, Sendable {
     var conversationID: UUID?
     var messageID: UUID?
     var sourceRole: String
+    var priorQuote: String?
 }
 
 /// Immutable revisions; summaries and assistant output cannot confirm themselves.
@@ -35,7 +36,11 @@ struct AgentMemory: Codable, Equatable, Identifiable, Sendable {
         if state == .deleted { return text.isEmpty && evidence == nil }
         return !topic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && topic.count <= 80
             && !text.isEmpty && text.count <= 600 && scope.count <= 80 && ancestors.count <= 100
-            && evidence != nil && (evidence?.quote.count ?? 0) <= 4000
+            && evidence != nil && !(evidence?.quote.isEmpty ?? true) && (evidence?.quote.count ?? 0) <= 4000
+            && (evidence?.priorQuote?.count ?? 0) <= 4000
+            && (evidence?.origin != .userMessage || evidence?.sourceRole == "user")
+            && !ancestors.contains(version) && updatedAt.timeIntervalSince1970.isFinite
+            && (evidence?.date.timeIntervalSince1970.isFinite ?? false)
             && (kind != .temporary || expiresAt != nil)
     }
     var topicKey: String { MemoryPolicy.normalized(scope) + "|" + MemoryPolicy.normalized(topic) }
@@ -119,7 +124,7 @@ enum MemoryPolicy {
 /// SQLite is a rebuildable, account-scoped retrieval index. The protected history
 /// journal is authoritative, so an interrupted index update cannot invent/lose a memory.
 @MainActor final class MemoryIndex {
-    private var db: OpaquePointer?
+    nonisolated(unsafe) private var db: OpaquePointer?
     init(url: URL?) throws {
         if let url {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)

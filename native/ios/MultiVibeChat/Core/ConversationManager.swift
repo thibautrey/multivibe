@@ -844,6 +844,7 @@ import Network
     @discardableResult func saveMemory(_ draft: MemoryDraft) -> Bool {
         guard !isRestoring, !isStreaming, !isSynchronizing else { return false }
         let old = memoryRecords
+        let oldBaseline = memoryBaseline; let oldSnapshot = historySnapshot; let oldPending = pendingHistorySave
         let related = memoryItems.filter { $0.memory.topicKey == MemoryPolicy.normalized(draft.scope) + "|" + MemoryPolicy.normalized(draft.topic) }
         if related.contains(where: { $0.memory.id != draft.replaces && $0.memory.text != draft.text }) && !draft.resolveConflicts {
             memoryError = "Un souvenir différent existe pour ce sujet. Choisissez explicitement de le remplacer."; return false
@@ -854,6 +855,11 @@ import Network
         }
         var evidence = draft.evidence
         evidence.origin = draft.replaces == nil && evidence.sourceRole == "user" && draft.text == evidence.quote ? .userMessage : .userConfirmation
+        if evidence.origin == .userConfirmation {
+            evidence.priorQuote = evidence.quote
+            evidence.quote = draft.text
+            evidence.date = Date()
+        }
         var memory = AgentMemory(id: existing?.id ?? UUID(), topic: draft.topic.trimmingCharacters(in: .whitespacesAndNewlines),
             text: draft.text.trimmingCharacters(in: .whitespacesAndNewlines), kind: draft.kind,
             scope: draft.scope.trimmingCharacters(in: .whitespacesAndNewlines), state: .confirmed, evidence: evidence,
@@ -864,15 +870,16 @@ import Network
             for item in related where item.memory.id != memory.id { forgetMemoryRecords(item.memory.id) }
         }
         memoryRecords.append(memory)
-        if !persist() { memoryRecords = old; return false }
+        if !persist() { memoryRecords = old; memoryBaseline = oldBaseline; historySnapshot = oldSnapshot; pendingHistorySave = oldPending; return false }
         refreshMemoryIndex(); memoryDraft = nil; scheduleAutomaticSync()
         return true
     }
     @discardableResult func forgetMemory(_ id: UUID) -> Bool {
         guard !isRestoring, !isStreaming, !isSynchronizing else { return false }
         let old = memoryRecords
+        let oldBaseline = memoryBaseline; let oldSnapshot = historySnapshot; let oldPending = pendingHistorySave
         forgetMemoryRecords(id)
-        guard persist() else { memoryRecords = old; return false }
+        guard persist() else { memoryRecords = old; memoryBaseline = oldBaseline; historySnapshot = oldSnapshot; pendingHistorySave = oldPending; return false }
         refreshMemoryIndex(); scheduleAutomaticSync(); return true
     }
     private func forgetMemoryRecords(_ id: UUID) {
@@ -889,7 +896,7 @@ import Network
         guard session != nil, !isSynchronizing, !isStreaming, !isRestoring else { return }
         let previous = memorySyncEnabled
         memorySyncEnabled = enabled
-        if !enabled { historySnapshot?.memory = nil; memoryBaseline = [] }
+        if !enabled { historySnapshot?.memory = nil; memoryBaseline = []; pendingHistorySave?.memory = nil; pendingHistorySave?.snapshot.memory = nil }
         if !persist() { memorySyncEnabled = previous; return }
         if enabled { Task { await self.synchronizeHistory() } }
     }
