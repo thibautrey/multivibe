@@ -52,11 +52,10 @@ enum APIError: LocalizedError {
         switch self {
         case .authenticationRequired: "Connectez-vous à MultiVibe pour continuer."
         case .invalidResponse: "La réponse du serveur est invalide. Réessayez."
+        case .server(503, "memory_sync_not_supported"):
+            "Le serveur ne prend pas encore en charge la mémoire. Vos souvenirs restent sur cet appareil."
         case .server(let status, let code):
-            if code == "memory_sync_not_supported" {
-                return "Le serveur ne prend pas encore en charge la mémoire. Vos souvenirs restent sur cet appareil."
-            }
-            return switch status {
+            switch status {
             case 401: "Connexion refusée ou expirée. Vérifiez vos identifiants."
             case 402: "Votre compte ne dispose pas de crédits suffisants."
             case 429: "Trop de demandes. Patientez avant de réessayer."
