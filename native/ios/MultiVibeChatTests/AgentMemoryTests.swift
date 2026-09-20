@@ -107,7 +107,7 @@ import XCTest
         var remote = AccountHistorySnapshot(accountId: "a", revision: 1, conversations: [], memory: [record])
         let services = isolatedServices(load: { NativeSession(accessToken: "t", refreshToken: "r", expiresAt: .distantFuture, accountId: "a") },
             readHistory: { _ in remote }, saveHistory: { snapshot, _ in
-                var saved = snapshot; saved.revision += 1; remote = saved; return saved
+                var saved = snapshot; saved.revision += 1; saved.memory = snapshot.memory ?? remote.memory; remote = saved; return saved
             })
         let manager = ConversationManager(services: services); await manager.restore()
         await manager.synchronizeHistory()
