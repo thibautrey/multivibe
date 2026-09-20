@@ -7,7 +7,7 @@ import SwiftUI
             ChatEntryView()
             .environment(manager)
             .tint(MultiVibeTheme.accent)
-            .task { await manager.restore() }
+            .task { await manager.restoreForNativeEntry(); if manager.session != nil { await manager.reloadModels() } }
             .onOpenURL { url in
                 guard let request = PasswordRecoveryRequest(url: url) else { return }
                 manager.voice.silence()
