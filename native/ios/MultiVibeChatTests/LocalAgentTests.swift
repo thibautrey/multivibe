@@ -65,7 +65,7 @@ import XCTest
         let document = LocalDocument(name: "Facture", text: "Total: 42")
         let workspace = LocalAgentWorkspace(conversations: [], documents: [document], event: { _ in }, saveDocument: { _ in })
         let read = try await workspace.execute(action: "read_document", query: "", documentID: document.id.uuidString, text: "", lhs: 0, rhs: 0)
-        XCTAssertEqual(read, "Total: 42")
+        XCTAssertTrue(read.hasSuffix("Total: 42"))
         do {
             _ = try await workspace.execute(action: "read_document", query: "", documentID: "/etc/passwd", text: "", lhs: 0, rhs: 0)
             XCTFail("Arbitrary paths must not be readable")

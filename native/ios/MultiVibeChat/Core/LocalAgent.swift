@@ -84,7 +84,12 @@ actor LocalAgentWorkspace {
             guard let id = UUID(uuidString: documentID), let document = documents.first(where: { $0.id == id }) else { throw LocalAgentError.documentMissing }
             // query optionally selects a relevant passage rather than stuffing a whole file into context.
             let lines = document.text.components(separatedBy: .newlines)
-            return String(lines.filter { query.isEmpty || $0.localizedCaseInsensitiveContains(query) }.joined(separator: "\n").prefix(2400))
+                .filter { query.isEmpty || $0.localizedCaseInsensitiveContains(query) }
+            guard lhs.isFinite, lhs >= 0, lhs < 100_001 else { throw LocalAgentError.invalidInput }
+            let offset = Int(lhs)
+            let text = lines.joined(separator: "\n")
+            let part = String(text.dropFirst(offset).prefix(2000))
+            return "Characters \(offset)..<\(offset + part.count) of \(text.count). Use lhs=\(offset + part.count) to read the next page.\n\(part)"
         case "search_conversations":
             guard !query.isEmpty else { throw LocalAgentError.invalidInput }
             return String(conversations.flatMap { conversation in
@@ -124,7 +129,7 @@ private struct WorkspaceTool: Tool {
         @Guide(description: "Search text, or title for create_document; otherwise empty") var query: String
         @Guide(description: "Exact document UUID from list_documents, otherwise empty") var documentID: String
         @Guide(description: "Text to save for create_document; otherwise empty") var text: String
-        @Guide(description: "First calculator operand, otherwise 0") var lhs: Double
+        @Guide(description: "First calculator operand, or character offset for read_document (start at 0), otherwise 0") var lhs: Double
         @Guide(description: "Second calculator operand, otherwise 0") var rhs: Double
     }
     func call(arguments: Arguments) async throws -> String {

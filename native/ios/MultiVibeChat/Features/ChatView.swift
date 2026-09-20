@@ -279,7 +279,7 @@ struct ChatView: View {
                 } else {
                     Button("Envoyer", systemImage: "arrow.up.circle.fill") { if manager.send(text) { text = "" } }
                         .font(.title).frame(minWidth: 44, minHeight: 44)
-                        .disabled(manager.selectedModel.isEmpty || manager.isSynchronizing)
+                        .disabled(manager.selectedModel.isEmpty || (manager.isSynchronizing && manager.selectedModel != LocalModel.id))
                 }
             }.labelStyle(.iconOnly).buttonStyle(.plain)
         }
