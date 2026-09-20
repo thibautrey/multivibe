@@ -74,3 +74,28 @@ or production migration is performed by this implementation task.
 
 Local test logs use `/tmp/MULTIVIBE-4-*.log`. Physical iPhone behavior and live
 production synchronization remain separate from simulator/local-server evidence.
+
+### Recorded local proof — 2026-09-20
+
+Final main-branch iOS 26.5 simulator test run: 99 unit tests passed, two
+hardware-specific tests explicitly skipped, and MemoryUITests passed the full
+create/confirm/source/forget UI flow. Log: /tmp/MULTIVIBE-4-tests.log.
+The final real Apple-model Mac run used the production SQLite index/tool code:
+RIGEL-8931 was recovered from memory, GPS used only the requested location tool,
+and website retrieval required one permission. A live example.com GET returned 200.
+Log: /tmp/MULTIVIBE-4-model-mac.log. Generated prose did not consistently include
+the memory UUID; provenance is therefore attached by the app through exact
+retrieved revision IDs, independently tested through history projection and forgetting.
+
+Cloud main built successfully. Twelve HTTP/validation tests and one actual
+PostgreSQL migration/storage integration test passed without skips. Logs:
+ /tmp/MULTIVIBE-4-cloud-build.log, /tmp/MULTIVIBE-4-cloud-tests.log,
+ /tmp/MULTIVIBE-4-postgres.log.
+The identity migration bundle verifier passed. The disposable PostgreSQL
+container, task simulators and temporary DerivedData were removed.
+
+Known limits: lexical retrieval is not semantic search, topic-based conflict checks
+cannot detect every contradiction, and a generative model may still misinterpret
+evidence. The app does not claim zero hallucinations. Physical iPhone validation
+and production account sync have not been performed. No push, release or production
+migration was made.
