@@ -114,7 +114,7 @@ struct MemoryEditor: View {
                     if let error = manager.memoryError { Text(error).foregroundStyle(.red) }
                     Button("Je confirme cette information") {
                         if draft.evidence.quote.isEmpty { draft.evidence.quote = draft.text; draft.evidence.date = Date() }
-                        if manager.saveMemory(draft) { dismiss() }
+                        if manager.saveMemory(draft) { manager.memoryDraft = nil }
                     }.disabled(draft.topic.trimmingCharacters(in: .whitespaces).isEmpty || draft.text.isEmpty)
                         .accessibilityIdentifier("confirmMemory")
                 }
