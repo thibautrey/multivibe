@@ -180,6 +180,7 @@ final class LocalInternetUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["ORION4729"].firstMatch.waitForExistence(timeout: 5))
         app.buttons["Source et date"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["Rôle initial : user"].waitForExistence(timeout: 5))
+        app.buttons["Source et date"].firstMatch.tap()
         app.buttons["Oublier"].firstMatch.tap()
         XCTAssertTrue(app.buttons["Confirmer l’oubli"].waitForExistence(timeout: 5))
         app.buttons["Confirmer l’oubli"].tap()
