@@ -12,7 +12,7 @@ final class AuthenticationUITests: XCTestCase {
         // AppleInterfaceStyle launch arguments do not reliably override UIKit traits.
         app.launch()
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "Message").firstMatch.waitForExistence(timeout: 15))
-        let login = app.buttons["openAuthentication"]
+        let login = app.buttons["openAuthentication"].firstMatch
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: login)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 15), .completed)
         login.tap()
@@ -32,18 +32,11 @@ final class AuthenticationUITests: XCTestCase {
         let message = app.descendants(matching: .any).matching(identifier: "Message").firstMatch
         XCTAssertTrue(message.waitForExistence(timeout: 15))
         XCTAssertFalse(app.textFields["Adresse e-mail"].exists)
-        XCTAssertFalse(app.buttons["guestSend"].isEnabled)
+        XCTAssertTrue(app.staticTexts["Calcul sur cet iPhone · sans Internet"].exists)
         XCTAssertFalse(app.staticTexts["Connectez-vous pour envoyer un message."].exists)
-        let send = app.buttons["guestSend"]
-        XCTAssertLessThan(abs(message.frame.midY - send.frame.midY), 12)
-        XCTAssertGreaterThanOrEqual(send.frame.minX, message.frame.maxX)
-        let capture = XCTAttachment(screenshot: app.screenshot())
-        capture.name = "guest-composer"
-        capture.lifetime = .keepAlways
-        add(capture)
         message.tap()
         message.typeText("Bonjour MultiVibe")
-        app.buttons["guestSend"].tap()
+        app.buttons["openAuthentication"].firstMatch.tap()
         XCTAssertTrue(app.textFields["Adresse e-mail"].waitForExistence(timeout: 5))
         app.buttons["Fermer la connexion"].tap()
         XCTAssertTrue(message.waitForExistence(timeout: 5))
