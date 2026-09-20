@@ -18,14 +18,13 @@ struct LocalWebResponse: Sendable {
 }
 
 enum LocalWebError: LocalizedError {
-    case invalidURL, denied, unsupportedContent, tooLarge, redirectLimit
+    case invalidURL, denied, unsupportedContent, tooLarge
     var errorDescription: String? {
         switch self {
         case .invalidURL: "Utilisez une URL HTTPS publique, sans identifiant ni mot de passe."
         case .denied: "L’accès à Internet a été refusé pour cette conversation. Continuez avec les outils hors ligne."
         case .unsupportedContent: "Ce contenu ne peut pas être lu comme une page web, du texte ou du JSON."
         case .tooLarge: "Cette page dépasse la limite de lecture de 256 Ko."
-        case .redirectLimit: "Cette page effectue trop de redirections."
         }
     }
 }
