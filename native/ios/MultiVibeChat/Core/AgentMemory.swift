@@ -53,6 +53,12 @@ struct AgentMemory: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// Recorded by the app at retrieval time, never parsed from generated prose.
+struct MemoryReference: Codable, Equatable, Identifiable, Sendable {
+    var id: UUID // exact memory revision consulted
+    var memoryID: UUID
+}
+
 struct MemoryItem: Identifiable, Sendable {
     var memory: AgentMemory
     var conflicting: Bool

@@ -919,6 +919,18 @@ import Network
         do { guard let memoryIndex else { throw MemoryError.storage }; try memoryIndex.rebuild(memoryItems); memoryError = nil }
         catch { memoryError = MemoryError.storage.localizedDescription; memoryIndex = nil }
     }
+    func source(for reference: MemoryReference) -> AgentMemory? {
+        guard !memoryRecords.contains(where: { $0.id == reference.memoryID && $0.state == .deleted }) else { return nil }
+        return memoryRecords.first { $0.id == reference.memoryID && $0.version == reference.id && $0.state == .confirmed }
+    }
+    private func recordMemoryReference(_ record: AgentMemory) {
+        guard let activeReply, let i = conversations.firstIndex(where: { $0.id == activeReply.conversation }),
+              let j = conversations[i].messages.firstIndex(where: { $0.id == activeReply.message }) else { return }
+        let reference = MemoryReference(id: record.version, memoryID: record.id)
+        var references = conversations[i].messages[j].memoryReferences ?? []
+        if !references.contains(reference), references.count < 36 { references.append(reference) }
+        conversations[i].messages[j].memoryReferences = references
+    }
     private func memoryTool(action: String, query: String, text: String, conversation: UUID,
                             source: ChatMessage?, generation: UUID, account: UUID) throws -> String {
         guard generationRevision == generation, sessionRevision == account else { throw CancellationError() }
@@ -933,6 +945,7 @@ import Network
             for item in candidates {
                 let source = MemoryPolicy.render(item)
                 if rendered.count + source.count > 3600 { break }
+                recordMemoryReference(item.memory)
                 rendered += (rendered.isEmpty ? "" : "\n\n") + source
             }
             if action == "context_memory", rendered.isEmpty, !conflicts { return "" }
@@ -943,6 +956,7 @@ import Network
                   item.usable(now: Date()), item.memory.scope.isEmpty || MemoryPolicy.normalized(item.memory.scope) == MemoryPolicy.normalized(scope) else {
                 return "Souvenir absent, expiré ou contradictoire. Revérifiez auprès de l’utilisateur ou de l’outil approprié."
             }
+            recordMemoryReference(item.memory)
             return MemoryPolicy.render(item)
         case "propose_memory":
             guard let source, source.role == "user", !text.isEmpty, text.count <= 600, !query.isEmpty, query.count <= 80,

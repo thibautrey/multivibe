@@ -8,6 +8,7 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     enum Completion: String, Codable, Sendable { case streaming, completed, stopped, failed }
     // Optional for compatibility with conversations saved before completion tracking.
     var localEvents: [LocalAgentEvent]?
+    var memoryReferences: [MemoryReference]?
     var completion: Completion?
     var canRetry: Bool { role == "assistant" && (completion == .stopped || completion == .failed) }
 }
@@ -224,7 +225,10 @@ struct AccountHistorySnapshot: Codable, Sendable {
             let events = try message["multivibeLocalEvents"].map {
                 try JSONDecoder().decode([LocalAgentEvent].self, from: JSONEncoder().encode($0))
             }
-            messages.append(ChatMessage(id: localID, role: role, content: text, localEvents: events, completion: completion))
+            let references = try message["multivibeMemoryReferences"].map {
+                try JSONDecoder().decode([MemoryReference].self, from: JSONEncoder().encode($0))
+            }
+            messages.append(ChatMessage(id: localID, role: role, content: text, localEvents: events, memoryReferences: references, completion: completion))
             if node["parentId"] == .null { cursor = nil }
             else if let parent = node["parentId"]?.string { cursor = parent }
             else { throw APIError.invalidResponse }
@@ -270,6 +274,9 @@ extension AccountHistorySnapshot {
             ]
             if let events = message.localEvents {
                 node["multivibeLocalEvents"] = try JSONDecoder().decode(HistoryJSON.self, from: JSONEncoder().encode(events))
+            }
+            if let references = message.memoryReferences {
+                node["multivibeMemoryReferences"] = try JSONDecoder().decode(HistoryJSON.self, from: JSONEncoder().encode(references))
             }
             if message.role == "assistant" {
                 let complete = message.completion == .completed

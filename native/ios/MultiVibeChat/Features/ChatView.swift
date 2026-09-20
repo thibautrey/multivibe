@@ -97,6 +97,20 @@ struct ChatView: View {
                                                 ForEach(events) { event in Text(event.detail).font(.caption) }
                                             }
                                         }
+                                        if let references = message.memoryReferences, !references.isEmpty {
+                                            DisclosureGroup("Souvenirs consultés (\(references.count))") {
+                                                ForEach(references) { reference in
+                                                    if let source = manager.source(for: reference), let evidence = source.evidence {
+                                                        VStack(alignment: .leading) {
+                                                            Text(source.topic).font(.caption.bold())
+                                                            Text(evidence.quote).font(.caption).textSelection(.enabled)
+                                                            Text(evidence.date.formatted()).font(.caption2)
+                                                            Text("Source déclarée ou confirmée par vous ; pas une vérification externe.").font(.caption2)
+                                                        }
+                                                    } else { Text("Source oubliée ou indisponible sur cet appareil.").font(.caption) }
+                                                }
+                                            }
+                                        }
                                         HStack(spacing: 4) {
                                             if !message.content.isEmpty {
                                                 Button("Lire à voix haute", systemImage: "speaker.wave.2") { voice.speak(message.content) }

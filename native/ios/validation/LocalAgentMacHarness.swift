@@ -63,7 +63,7 @@ actor Recorder {
         let memoryTools = await memoryRecorder.tools
         let memoryAnswer = await memoryRecorder.answer
         print("MEMORY_TOOLS=\(memoryTools) ANSWER=\(memoryAnswer)")
-        guard memoryTools.contains("context_memory") || memoryTools.contains("search_memory"), memoryAnswer.contains("RIGEL-8931"), memoryAnswer.contains(remembered.id.uuidString) else { exit(1) }
+        guard memoryTools.contains("context_memory") || memoryTools.contains("search_memory"), memoryAnswer.contains("RIGEL-8931") else { exit(1) }
         let live = try await LocalWebFetch.fetch(url: URL(string: "https://example.com")!, method: "GET")
         guard live.status == 200, live.text.contains("Example Domain") else { exit(1) }
         print("LIVE_HTTPS_GET=200 HTML_EXTRACTION=PASS")

@@ -26,7 +26,9 @@ from backup and protected by iOS file protection. The most relevant scoped match
 up to three complete scoped matches are returned by an explicit memory search, with source quotations and dates. Missing/expired/proposed/
 conflicting memories are never indexed as usable facts. Source messages and raw
 conversation search explicitly distinguish user statements from assistant guesses.
-No model fine-tuning or recursive summary is involved.
+No model fine-tuning or recursive summary is involved. The app records the exact
+memory revisions retrieved and exposes their original quotations/dates under
+**Souvenirs consultés** on the response. Generated citation text is not trusted.
 
 The index is not used by remote models. Excerpts repeated in a conversation can
 still be included in that conversation's existing opt-in history synchronization.
