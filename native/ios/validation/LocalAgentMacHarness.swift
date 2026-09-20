@@ -49,10 +49,13 @@ actor Recorder {
                 quote: "Le code de mon observatoire est RIGEL-8931", date: Date(), sourceRole: "user"))
         try index.rebuild(MemoryPolicy.items([remembered]))
         let memoryWorkspace = LocalAgentWorkspace(conversations: [], documents: [],
-            event: { await memoryRecorder.record($0) }, saveDocument: { _ in }, memory: { action, _, _ in
+            event: { await memoryRecorder.record($0) }, saveDocument: { _ in }, memory: { action, query, _ in
                 guard action == "search_memory" || action == "read_memory" else { return "Proposition non validée." }
                 return try await MainActor.run {
-                    try index.search("observatoire", scope: "").map(MemoryPolicy.render).joined(separator: "\n")
+                    if action == "read_memory" {
+                        return UUID(uuidString: query) == remembered.id ? MemoryPolicy.render(MemoryPolicy.items([remembered])[0]) : "Souvenir absent."
+                    }
+                    return try index.search(query, scope: "").map(MemoryPolicy.render).joined(separator: "\n")
                 }
             })
         try await LocalAgent.respond(messages: [ChatMessage(role: "user", content: "Quel est le code que je t’ai demandé de retenir pour mon observatoire ? Consulte ta mémoire.")],
@@ -60,7 +63,7 @@ actor Recorder {
         let memoryTools = await memoryRecorder.tools
         let memoryAnswer = await memoryRecorder.answer
         print("MEMORY_TOOLS=\(memoryTools) ANSWER=\(memoryAnswer)")
-        guard memoryTools.contains("search_memory"), memoryAnswer.contains("RIGEL-8931") else { exit(1) }
+        guard memoryTools.contains("search_memory"), memoryAnswer.contains("RIGEL-8931"), memoryAnswer.contains(remembered.id.uuidString) else { exit(1) }
         let live = try await LocalWebFetch.fetch(url: URL(string: "https://example.com")!, method: "GET")
         guard live.status == 200, live.text.contains("Example Domain") else { exit(1) }
         print("LIVE_HTTPS_GET=200 HTML_EXTRACTION=PASS")
