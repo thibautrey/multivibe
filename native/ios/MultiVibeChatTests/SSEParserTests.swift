@@ -73,7 +73,7 @@ final class NativeTransportTests: XCTestCase {
 
 @MainActor final class ConversationSelectionTests: XCTestCase {
     func testSelectionRestoresModelAndStopsGeneration() {
-        let manager = ConversationManager()
+        let manager = ConversationManager(services: isolatedServices())
         manager.session = nil // Never persist to a real account in this test.
         let first = Conversation(model: "first")
         let second = Conversation(model: "second")
@@ -87,7 +87,7 @@ final class NativeTransportTests: XCTestCase {
         XCTAssertEqual(manager.selectedModel, "second")
     }
     func testUnavailableModelRequiresExplicitReplacement() {
-        let manager = ConversationManager()
+        let manager = ConversationManager(services: isolatedServices())
         manager.session = nil
         let conversation = Conversation(model: "removed")
         manager.models = [ModelOption(id: "available")]
@@ -97,7 +97,7 @@ final class NativeTransportTests: XCTestCase {
         XCTAssertEqual(manager.selectedModel, "")
     }
     func testReselectingSameConversationDoesNotStopGeneration() {
-        let manager = ConversationManager()
+        let manager = ConversationManager(services: isolatedServices())
         manager.session = nil
         let conversation = Conversation(model: "first")
         manager.conversations = [conversation]
@@ -110,7 +110,7 @@ final class NativeTransportTests: XCTestCase {
 
 @MainActor final class ShortcutPreparationTests: XCTestCase {
     func testNewConversationWaitsForForegroundConsumption() {
-        let manager = ConversationManager()
+        let manager = ConversationManager(services: isolatedServices())
         manager.session = nil
         manager.prepareShortcut(.newConversation)
         XCTAssertTrue(manager.wantsNewConversation)
@@ -119,7 +119,7 @@ final class NativeTransportTests: XCTestCase {
         XCTAssertFalse(manager.isStreaming)
     }
     func testLatestShortcutReplacesEarlierPendingActions() {
-        let manager = ConversationManager()
+        let manager = ConversationManager(services: isolatedServices())
         manager.session = nil
         manager.prepareShortcut(.dictation)
         manager.prepareShortcut(.voiceConversation)
@@ -133,7 +133,7 @@ final class NativeTransportTests: XCTestCase {
         XCTAssertTrue(manager.wantsNewConversation)
     }
     func testAssistantActivationWaitsForAuthenticatedVoicePresentation() {
-        let manager = ConversationManager()
+        let manager = ConversationManager(services: isolatedServices())
         manager.session = nil
         manager.prepareShortcut(.assistantVoiceConversation)
         XCTAssertTrue(manager.wantsVoiceConversation)
@@ -146,7 +146,7 @@ final class NativeTransportTests: XCTestCase {
         XCTAssertFalse(manager.wantsImmediateVoiceCapture)
     }
     func testShortcutDraftIsBoundedAndNeverSentAutomatically() {
-        let manager = ConversationManager()
+        let manager = ConversationManager(services: isolatedServices())
         manager.session = nil
         manager.prepareShortcut(.draft(String(repeating: "é", count: 40_000)))
         XCTAssertEqual(manager.pendingDraft?.count, 32_000)
@@ -165,7 +165,7 @@ final class NativeTransportTests: XCTestCase {
         let old = session("old", expired: true), renewed = session("renewed")
         var cleared = false
         var revoked: [String] = []
-        let services = SessionServices(load: { old }, save: { _ in throw APIError.invalidResponse },
+        let services = isolatedServices(load: { old }, save: { _ in throw APIError.invalidResponse },
             clear: { cleared = true }, refresh: { _ in renewed }, revoke: { revoked.append($0) }, models: { _ in [] })
         let manager = ConversationManager(services: services)
         manager.prepareShortcut(.draft("must not survive"))
@@ -181,7 +181,7 @@ final class NativeTransportTests: XCTestCase {
     func testRejectedSignInPersistenceRevokesNewSessionAndPreservesCurrentAccount() async {
         let current = session("current"), incoming = session("incoming", account: "other")
         var revoked: [String] = []
-        let services = SessionServices(load: { current }, save: { _ in throw APIError.invalidResponse },
+        let services = isolatedServices(load: { current }, save: { _ in throw APIError.invalidResponse },
             clear: { XCTFail("Existing session must not be erased") },
             refresh: { _ in XCTFail("No refresh expected"); return current },
             revoke: { revoked.append($0) }, models: { _ in XCTFail("No model request expected"); return [] })
@@ -195,7 +195,7 @@ final class NativeTransportTests: XCTestCase {
     func testConcurrentRefreshPersistsOnlyOnce() async throws {
         let old = session("old", expired: true), renewed = session("renewed")
         var saves = 0, refreshes = 0
-        let services = SessionServices(load: { old }, save: { _ in saves += 1 }, clear: {},
+        let services = isolatedServices(load: { old }, save: { _ in saves += 1 }, clear: {},
             refresh: { _ in refreshes += 1; await Task.yield(); return renewed }, revoke: { _ in }, models: { _ in [] })
         let manager = ConversationManager(services: services)
         let first = Task { try await manager.validSession() }
@@ -212,7 +212,7 @@ final class NativeTransportTests: XCTestCase {
         let newAccount = session("new-account", account: "different-test-account")
         var continuation: CheckedContinuation<NativeSession, Never>?
         var saved: [String] = [], revoked: [String] = []
-        let services = SessionServices(load: { old }, save: { saved.append($0.refreshToken) }, clear: {},
+        let services = isolatedServices(load: { old }, save: { saved.append($0.refreshToken) }, clear: {},
             refresh: { _ in await withCheckedContinuation { continuation = $0 } },
             revoke: { revoked.append($0) }, models: { _ in [] })
         let manager = ConversationManager(services: services)
@@ -251,7 +251,7 @@ final class PasswordResetLinkTests: XCTestCase {
     func testFailedTailRetryDoesNotDuplicatePrompt() async throws {
         let session = NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: "retry-fixture")
         var inputs: [[ChatMessage]] = []
-        let services = SessionServices(writeHistory: { _, _ in }, load: { session }, stream: { _, messages, _, delta in
+        let services = isolatedServices(writeHistory: { _, _ in }, load: { session }, stream: { _, messages, _, delta in
             inputs.append(messages)
             await delta(inputs.count == 1 ? "partial" : "complete")
             if inputs.count == 1 { throw APIError.invalidResponse }
@@ -280,7 +280,7 @@ final class PasswordResetLinkTests: XCTestCase {
     func testStopRejectsLateDeltasAndMarksOriginalConversation() async throws {
         let session = NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: "stop-fixture")
         var resume: CheckedContinuation<Void, Never>?
-        let services = SessionServices(writeHistory: { _, _ in }, load: { session }, stream: { _, _, _, delta in
+        let services = isolatedServices(writeHistory: { _, _ in }, load: { session }, stream: { _, _, _, delta in
             await delta("partial")
             await withCheckedContinuation { resume = $0 }
             await delta("must not appear")
@@ -357,7 +357,7 @@ final class SharedHistoryStatusTests: XCTestCase {
         var remote = AccountHistorySnapshot(accountId: session.accountId, revision: 0, conversations: [])
         var resume: CheckedContinuation<Void, Never>?
         var writes = 0
-        let services = SessionServices(writeHistory: { _, _ in }, load: { session },
+        let services = isolatedServices(writeHistory: { _, _ in }, load: { session },
             readHistory: { _ in remote }, saveHistory: { snapshot, _ in
                 writes += 1
                 if writes == 1 { await withCheckedContinuation { resume = $0 } }
@@ -390,7 +390,7 @@ final class SharedHistoryStatusTests: XCTestCase {
         let session = NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: UUID().uuidString)
         var remote = AccountHistorySnapshot(accountId: session.accountId, revision: 0, conversations: [])
         var writes = 0
-        let services = SessionServices(writeHistory: { _, _ in }, load: { session },
+        let services = isolatedServices(writeHistory: { _, _ in }, load: { session },
             readHistory: { _ in remote }, saveHistory: { snapshot, _ in
                 writes += 1; remote = snapshot; remote.revision += 1; return remote
             }, models: { _ in [ModelOption(id: "fixture")] })
@@ -419,7 +419,7 @@ final class SharedHistoryStatusTests: XCTestCase {
         let session = NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: UUID().uuidString)
         var remote = AccountHistorySnapshot(accountId: session.accountId, revision: 0, conversations: [])
         var writes = 0
-        let services = SessionServices(writeHistory: { _, _ in }, load: { session },
+        let services = isolatedServices(writeHistory: { _, _ in }, load: { session },
             readHistory: { _ in remote }, saveHistory: { snapshot, _ in
                 writes += 1; remote = snapshot; remote.revision += 1
                 throw APIError.invalidResponse
@@ -442,7 +442,7 @@ final class SharedHistoryStatusTests: XCTestCase {
     func testLocalPersistenceFailurePreventsRemoteWrite() async {
         let session = NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: UUID().uuidString)
         var writes = 0
-        let services = SessionServices(writeHistory: { _, _ in throw APIError.invalidResponse }, load: { session },
+        let services = isolatedServices(writeHistory: { _, _ in throw APIError.invalidResponse }, load: { session },
             readHistory: { _ in AccountHistorySnapshot(accountId: session.accountId, revision: 0, conversations: []) },
             saveHistory: { snapshot, _ in writes += 1; return snapshot }, models: { _ in [] })
         let manager = ConversationManager(services: services)
@@ -459,7 +459,7 @@ final class SharedHistoryStatusTests: XCTestCase {
     func testInvalidRemoteProjectionNeverTriggersSave() async {
         let session = NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: UUID().uuidString)
         var writes = 0
-        let services = SessionServices(writeHistory: { _, _ in }, load: { session },
+        let services = isolatedServices(writeHistory: { _, _ in }, load: { session },
             readHistory: { _ in AccountHistorySnapshot(accountId: session.accountId, revision: 0,
                 conversations: [.object(["id": .string("malformed")])]) },
             saveHistory: { snapshot, _ in writes += 1; return snapshot }, models: { _ in [] })
@@ -685,7 +685,7 @@ final class MessageMarkdownTests: XCTestCase {
     func testRetryAfterOfflinePreservesConversation() async {
         let credentials = session()
         var calls = 0
-        let manager = ConversationManager(services: SessionServices(load: { credentials }, models: { _ in
+        let manager = ConversationManager(services: isolatedServices(load: { credentials }, models: { _ in
             calls += 1
             if calls == 1 { throw APIError.invalidResponse }
             return [ModelOption(id: "chosen")]
@@ -702,7 +702,7 @@ final class MessageMarkdownTests: XCTestCase {
     }
     func testRemovedModelRequiresUserSelection() async {
         let credentials = session()
-        let manager = ConversationManager(services: SessionServices(load: { credentials }, models: { _ in [ModelOption(id: "new")] }))
+        let manager = ConversationManager(services: isolatedServices(load: { credentials }, models: { _ in [ModelOption(id: "new")] }))
         let conversation = Conversation(model: "old")
         manager.conversations = [conversation]; manager.selection = conversation.id
         manager.selectedModel = "old"
@@ -712,7 +712,7 @@ final class MessageMarkdownTests: XCTestCase {
     }
     func testEmptyRemoteCatalogStillOffersLocalModel() async {
         let credentials = session()
-        let manager = ConversationManager(services: SessionServices(load: { credentials }, models: { _ in [] }))
+        let manager = ConversationManager(services: isolatedServices(load: { credentials }, models: { _ in [] }))
         await manager.reloadModels()
         XCTAssertNil(manager.modelsError)
         XCTAssertEqual(manager.models.map(\.id), [LocalModel.id])
@@ -721,7 +721,7 @@ final class MessageMarkdownTests: XCTestCase {
         let credentials = session()
         var pending: CheckedContinuation<[ModelOption], Never>?
         var calls = 0
-        let manager = ConversationManager(services: SessionServices(load: { credentials }, clear: {}, revoke: { _ in }, models: { _ in
+        let manager = ConversationManager(services: isolatedServices(load: { credentials }, clear: {}, revoke: { _ in }, models: { _ in
             calls += 1
             return await withCheckedContinuation { pending = $0 }
         }))

@@ -4,7 +4,7 @@ import XCTest
 @MainActor final class LocalAgentTests: XCTestCase {
     func testGuestLocalRunUsesToolsWithoutAuthenticationOrNetwork() async throws {
         var saved: [Data] = []
-        let services = SessionServices(writeHistory: { data, _ in saved.append(data) }, load: { nil },
+        let services = isolatedServices(writeHistory: { data, _ in saved.append(data) }, load: { nil },
             refresh: { _ in XCTFail("Local run must not refresh credentials"); throw APIError.invalidResponse },
             stream: { _, _, _, _ in XCTFail("Local model must never reach remote inference") },
             readLocalHistory: { _ in throw CocoaError(.fileReadNoSuchFile) },
@@ -27,7 +27,7 @@ import XCTest
 
     func testGuestHistoryRestoresWithoutNetwork() async throws {
         var storage: [String: Data] = [:]
-        let services = SessionServices(writeHistory: { storage[$1.lastPathComponent] = $0 }, load: { nil },
+        let services = isolatedServices(writeHistory: { storage[$1.lastPathComponent] = $0 }, load: { nil },
             readLocalHistory: { url in
                 guard let data = storage[url.lastPathComponent] else { throw CocoaError(.fileReadNoSuchFile) }; return data
             },
@@ -43,7 +43,7 @@ import XCTest
     }
 
     func testUnavailableLocalModelDoesNotCreateOrSendMessage() async {
-        let manager = ConversationManager(services: SessionServices(writeHistory: { _, _ in }, load: { nil },
+        let manager = ConversationManager(services: isolatedServices(writeHistory: { _, _ in }, load: { nil },
             readLocalHistory: { _ in throw CocoaError(.fileReadNoSuchFile) }, localAvailability: { "Modèle absent" },
             localRespond: { _, _, _ in XCTFail("Unavailable model must not run") }))
         await manager.restore()
@@ -53,7 +53,7 @@ import XCTest
     }
 
     func testWriteFailurePreventsInference() async {
-        let manager = ConversationManager(services: SessionServices(writeHistory: { _, _ in throw CocoaError(.fileWriteOutOfSpace) },
+        let manager = ConversationManager(services: isolatedServices(writeHistory: { _, _ in throw CocoaError(.fileWriteOutOfSpace) },
             load: { nil }, readLocalHistory: { _ in throw CocoaError(.fileReadNoSuchFile) }, localAvailability: { nil },
             localRespond: { _, _, _ in XCTFail("Unsaved request must not execute") }))
         await manager.restore()
@@ -86,7 +86,7 @@ import XCTest
     }
     func testExpiredAccountCanRunLocalWithoutRefresh() async {
         let account = credentials(UUID().uuidString, expired: true)
-        let manager = ConversationManager(services: SessionServices(writeHistory: { _, _ in }, load: { account },
+        let manager = ConversationManager(services: isolatedServices(writeHistory: { _, _ in }, load: { account },
             refresh: { _ in XCTFail("Offline inference must not refresh"); throw APIError.invalidResponse },
             stream: { _, _, _, _ in XCTFail("No remote inference") },
             readLocalHistory: { _ in throw CocoaError(.fileReadNoSuchFile) }, localAvailability: { nil },
@@ -99,7 +99,7 @@ import XCTest
     }
     func testCorruptLocalStorageCannotBeOverwrittenByNewRun() async {
         var writes = 0
-        let manager = ConversationManager(services: SessionServices(writeHistory: { _, _ in writes += 1 }, load: { nil },
+        let manager = ConversationManager(services: isolatedServices(writeHistory: { _, _ in writes += 1 }, load: { nil },
             readLocalHistory: { _ in Data("not JSON".utf8) }, localAvailability: { nil },
             localRespond: { _, _, _ in XCTFail("Unreadable history must be preserved") }, monitorConnectivity: false))
         await manager.restore()
@@ -109,7 +109,7 @@ import XCTest
     }
     func testGuestImportIsExplicitAccountScopedAndIdempotent() async throws {
         var files: [String: Data] = [:]
-        let services = SessionServices(writeHistory: { files[$1.lastPathComponent] = $0 }, load: { nil }, save: { _ in }, clear: {}, revoke: { _ in },
+        let services = isolatedServices(writeHistory: { files[$1.lastPathComponent] = $0 }, load: { nil }, save: { _ in }, clear: {}, revoke: { _ in },
             readLocalHistory: { url in
                 guard let data = files[url.lastPathComponent] else { throw CocoaError(.fileReadNoSuchFile) }; return data
             }, localAvailability: { nil }, localRespond: { _, _, output in await output("Privé") }, monitorConnectivity: false, models: { _ in [] })
@@ -135,7 +135,7 @@ import XCTest
         let account = credentials(UUID().uuidString)
         var remote = AccountHistorySnapshot(accountId: account.accountId, revision: 0, conversations: [])
         var writes = 0
-        let services = SessionServices(writeHistory: { _, _ in }, load: { account },
+        let services = isolatedServices(writeHistory: { _, _ in }, load: { account },
             readHistory: { _ in remote }, saveHistory: { snapshot, _ in writes += 1; remote = snapshot; remote.revision += 1; return remote },
             stream: { _, _, _, _ in XCTFail("Sync cannot trigger remote inference") },
             readLocalHistory: { _ in throw CocoaError(.fileReadNoSuchFile) }, localAvailability: { nil },
@@ -172,7 +172,7 @@ import XCTest
             func release() { continuation?.resume() }
         }
         let gate = Gate()
-        let manager = ConversationManager(services: SessionServices(writeHistory: { _, _ in }, load: { nil },
+        let manager = ConversationManager(services: isolatedServices(writeHistory: { _, _ in }, load: { nil },
             readLocalHistory: { _ in throw CocoaError(.fileReadNoSuchFile) }, localAvailability: { nil },
             localRespond: { _, workspace, output in
                 await gate.wait()
@@ -213,4 +213,29 @@ import XCTest
         XCTAssertTrue(events.contains { $0.tool == "multiply" })
         XCTAssertTrue(answer.replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "\u{202f}", with: "").contains("2961"), answer)
     }
+}
+
+
+/// No test may read the user's account/guest history or touch their Keychain.
+@MainActor func isolatedServices(
+    writeHistory: @escaping (Data, URL) throws -> Void = { _, _ in },
+    load: @escaping () -> NativeSession? = { nil },
+    save: @escaping (NativeSession) throws -> Void = { _ in },
+    clear: @escaping () -> Void = {},
+    refresh: @escaping @MainActor (NativeSession) async throws -> NativeSession = { _ in throw APIError.invalidResponse },
+    revoke: @escaping @MainActor (String) async throws -> Void = { _ in },
+    readHistory: @escaping @MainActor (String) async throws -> AccountHistorySnapshot = { _ in throw APIError.invalidResponse },
+    saveHistory: @escaping @MainActor (AccountHistorySnapshot, String) async throws -> AccountHistorySnapshot = { _, _ in throw APIError.invalidResponse },
+    stream: @escaping @MainActor (String, [ChatMessage], String, @Sendable (String) async -> Void) async throws -> Void = { _, _, _, _ in throw APIError.invalidResponse },
+    readLocalHistory: @escaping @MainActor (URL) throws -> Data = { _ in throw CocoaError(.fileReadNoSuchFile) },
+    localAvailability: @escaping @MainActor () -> String? = { "Unavailable test model" },
+    localRespond: @escaping @Sendable ([ChatMessage], LocalAgentWorkspace, @escaping @Sendable (String) async -> Void) async throws -> Void = { _, _, _ in throw APIError.invalidResponse },
+    monitorConnectivity: Bool = false,
+    syncDelay: @escaping @Sendable (Int) async throws -> Void = { _ in await Task.yield() },
+    models: @escaping @MainActor (String) async throws -> [ModelOption] = { _ in [] }
+) -> SessionServices {
+    SessionServices(writeHistory: writeHistory, load: load, save: save, clear: clear,
+        refresh: refresh, revoke: revoke, readHistory: readHistory, saveHistory: saveHistory,
+        stream: stream, readLocalHistory: readLocalHistory, localAvailability: localAvailability,
+        localRespond: localRespond, monitorConnectivity: monitorConnectivity, syncDelay: syncDelay, models: models)
 }
