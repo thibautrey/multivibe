@@ -925,7 +925,7 @@ import Network
         let scope = conversations.first { $0.id == conversation }?.memoryScope ?? ""
         switch action {
         case "context_memory", "search_memory":
-            guard let memoryIndex else { return MemoryError.storage.localizedDescription }
+            guard let memoryIndex else { return action == "context_memory" ? "" : MemoryError.storage.localizedDescription }
             let matches = try memoryIndex.search(query, scope: scope)
             let conflicts = memoryItems.contains { $0.conflicting && ($0.memory.scope.isEmpty || MemoryPolicy.normalized($0.memory.scope) == MemoryPolicy.normalized(scope)) }
             let candidates = action == "context_memory" ? Array(matches.prefix(1)) : matches
@@ -935,6 +935,7 @@ import Network
                 if rendered.count + source.count > 3600 { break }
                 rendered += (rendered.isEmpty ? "" : "\n\n") + source
             }
+            if action == "context_memory", rendered.isEmpty, !conflicts { return "" }
             return (conflicts ? "Des souvenirs contradictoires sont exclus. Demandez de les résoudre dans Mémoire.\n" : "")
                 + (rendered.isEmpty ? "Aucun souvenir validé, non expiré et pertinent. Ne rien déduire de cette absence." : rendered)
         case "read_memory":
