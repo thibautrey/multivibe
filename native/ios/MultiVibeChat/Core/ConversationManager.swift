@@ -563,7 +563,8 @@ import Network
     }
     private func recordLocalEvent(_ event: LocalAgentEvent, generation: UUID, account: UUID) {
         guard generationRevision == generation, sessionRevision == account else { return }
-        localEvents.append(event)
+        if let index = localEvents.firstIndex(where: { $0.id == event.id }) { localEvents[index] = event }
+        else { localEvents.append(event) }
         if let activeReply, let i = conversations.firstIndex(where: { $0.id == activeReply.conversation }),
            let j = conversations[i].messages.firstIndex(where: { $0.id == activeReply.message }) {
             conversations[i].messages[j].localEvents = localEvents
