@@ -166,6 +166,17 @@ import Network
     private var generationRevision = UUID()
     var current: Conversation? { conversations.first { $0.id == selection } }
 
+    private var initialRestoration: Task<Void, Never>?
+    /// App launch and entity resolution share one local-only restoration. Resolving
+    /// a Shortcut parameter must not start model discovery or history sync.
+    func restoreForNativeEntry() async {
+        if let task = initialRestoration { await task.value; return }
+        guard isRestoring else { return }
+        let task = Task { await self.restore(loadRemoteModels: false) }
+        initialRestoration = task
+        await task.value
+    }
+
     func restore(loadRemoteModels: Bool = true) async {
         let restoration = UUID()
         restorationRevision = restoration
