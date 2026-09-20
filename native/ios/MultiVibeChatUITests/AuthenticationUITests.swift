@@ -128,3 +128,40 @@ final class AuthenticationUITests: XCTestCase {
         XCTAssertTrue(app.buttons["submitAuthentication"].waitForExistence(timeout: 5))
     }
 }
+
+final class LocalInternetUITests: XCTestCase {
+    func testLocalWebPermissionCanBeDeniedOnceWithoutSigningIn() throws {
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Requires a physical device with Apple Intelligence ready")
+        #else
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR"]
+        app.launch()
+        let newConversation = app.buttons["Nouvelle conversation"].firstMatch
+        XCTAssertTrue(newConversation.waitForExistence(timeout: 10))
+        newConversation.tap()
+        let message = app.descendants(matching: .any).matching(identifier: "Message").firstMatch
+        XCTAssertTrue(message.waitForExistence(timeout: 10))
+        message.tap()
+        message.typeText("Utilise maintenant local_workspace, action fetch_website, query https://example.com, lhs 0. Consulte cette page et résume son contenu.")
+        app.buttons["Envoyer"].tap()
+        let deny = app.buttons["denyConversationInternet"]
+        XCTAssertTrue(deny.waitForExistence(timeout: 40), "The first network call must ask permission")
+        XCTAssertFalse(app.textFields["Adresse e-mail"].exists)
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "local-internet-consent"
+        capture.lifetime = .keepAlways
+        add(capture)
+        deny.tap()
+        XCTAssertTrue(deny.waitForNonExistence(timeout: 5))
+        let stop = app.buttons["Arrêter"]
+        XCTAssertTrue(stop.waitForNonExistence(timeout: 40))
+        message.tap()
+        message.typeText("Utilise encore fetch_website sur https://example.com.")
+        app.buttons["Envoyer"].tap()
+        XCTAssertTrue(stop.waitForNonExistence(timeout: 40))
+        XCTAssertFalse(deny.exists, "A refusal must not trigger another prompt in this conversation")
+        #endif
+    }
+}
