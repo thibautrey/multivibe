@@ -2,7 +2,7 @@ import AppIntents
 
 struct NewConversationIntent: AppIntent {
     static let title: LocalizedStringResource = "Nouvelle conversation MultiVibe"
-    static let description = IntentDescription("Ouvre MultiVibe pour commencer une conversation. Une connexion est nécessaire.")
+    static let description = IntentDescription("Ouvre MultiVibe pour commencer une conversation. Le modèle local fonctionne sans compte et sans Internet.")
     static let openAppWhenRun = true
     static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
     @MainActor func perform() async throws -> some IntentResult {

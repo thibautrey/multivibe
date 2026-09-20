@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import CryptoKit
+import Network
 
 /// Injectable boundary so rotation races can be exercised without real tokens,
 /// network requests, or changes to the user's Keychain.
@@ -20,12 +21,26 @@ import CryptoKit
     var stream: @MainActor (String, [ChatMessage], String, @Sendable (String) async -> Void) async throws -> Void = {
         try await ChatAPI.shared.stream(model: $0, messages: $1, token: $2, onDelta: $3)
     }
+    var readLocalHistory: @MainActor (URL) throws -> Data = { try Data(contentsOf: $0) }
+    var localAvailability: @MainActor () -> String? = { LocalModel.unavailableReason }
+    var localRespond: @Sendable ([ChatMessage], LocalAgentWorkspace, @escaping @Sendable (String) async -> Void) async throws -> Void = {
+        try await LocalAgent.respond(messages: $0, workspace: $1, onText: $2)
+    }
     var models: @MainActor (String) async throws -> [ModelOption] = { try await ChatAPI.shared.models(token: $0) }
 }
 
 @MainActor @Observable final class ConversationManager {
     static let shared = ConversationManager()
     private let services: SessionServices
+    var localUnavailableReason: String? { services.localAvailability() }
+    var localDocuments: [LocalDocument] = []
+    var localEvents: [LocalAgentEvent] = []
+    var automaticSync = false
+    var authenticationPresented = false
+    private let networkMonitor = NWPathMonitor()
+    private var monitoringNetwork = false
+    private var online = false
+    private var syncTask: Task<Void, Never>?
     var session: NativeSession?
     init(services: SessionServices = SessionServices()) {
         self.services = services
@@ -67,8 +82,12 @@ import CryptoKit
         var conversationIDs: [String: UUID]
         var messageIDs: [String: UUID]
     }
+    private var importedGuestIDs: Set<UUID> = []
     private var pendingHistorySave: PendingHistorySave?
     private struct HistoryCache: Codable {
+        var documents: [LocalDocument]?
+        var importedGuestIDs: Set<UUID>?
+        var automaticSync: Bool?
         var conversations: [Conversation]
         var snapshot: AccountHistorySnapshot?
         var pending: PendingHistorySave?
@@ -86,6 +105,7 @@ import CryptoKit
     var passwordRecovery: PasswordRecoveryRequest?
     private var activeReply: (conversation: UUID, message: UUID)?
     private var generation: Task<Void, Never>?
+    private var generationDeadline: Task<Void, Never>?
     private var refreshTask: Task<NativeSession, Error>?
     private var refreshRevision = UUID()
     private var sessionRevision = UUID()
@@ -96,14 +116,16 @@ import CryptoKit
         let restoration = UUID()
         restorationRevision = restoration
         isRestoring = true
-        defer { if restorationRevision == restoration { isRestoring = false } }
-        guard session != nil else { return }
-        let revision = sessionRevision
+        defer { if restorationRevision == restoration { isRestoring = false; scheduleAutomaticSync() } }
+        startNetworkMonitoring()
+        models = [LocalModel.option]
+        selectedModel = LocalModel.id
         do {
-            let session = try await validSession()
-            guard sessionRevision == revision else { return }
-            if let data = try? Data(contentsOf: historyURL(session.accountId)) {
+            if let data = try? services.readLocalHistory(storageURL()) {
                 if let cache = try? JSONDecoder().decode(HistoryCache.self, from: data) {
+                    localDocuments = cache.documents ?? []
+                    automaticSync = cache.automaticSync ?? false
+                    importedGuestIDs = cache.importedGuestIDs ?? []
                     conversations = cache.conversations
                     pendingHistorySave = cache.pending
                     historySnapshot = cache.snapshot; historyBaseline = cache.baseline
@@ -116,8 +138,8 @@ import CryptoKit
                     }
                 }
             }
-            await reloadModels()
-        } catch { if sessionRevision == revision { self.error = error.localizedDescription } }
+            if session != nil { Task { await self.reloadModels() } }
+        } catch { self.error = error.localizedDescription }
     }
     /// Explicit network recovery without re-reading or replacing local history.
     func reloadModels() async {
@@ -134,6 +156,7 @@ import CryptoKit
             guard sessionRevision == accountRevision, modelLoadRevision == loadRevision else { return }
             // Sending can begin while this request is in flight; never switch its model.
             guard !isStreaming else { return }
+            let available = [LocalModel.option] + available.filter { $0.id != LocalModel.id }
             models = available
             if !selectedModel.isEmpty {
                 if !available.contains(where: { $0.id == selectedModel }) { selectedModel = "" }
@@ -227,7 +250,7 @@ import CryptoKit
         resetHistorySync()
         self.session = session
         error = nil; models = []; selectedModel = ""
-        conversations = []; selection = nil
+        conversations = []; localDocuments = []; automaticSync = false; selection = nil
         await restore()
     }
     /// Keep only the latest foreground request while authentication restores.
@@ -253,7 +276,8 @@ import CryptoKit
     @discardableResult func send(_ text: String) -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isStreaming, !isSynchronizing else { return false }
-        guard session != nil else { error = APIError.authenticationRequired.localizedDescription; return false }
+        guard session != nil || selectedModel == LocalModel.id else { error = APIError.authenticationRequired.localizedDescription; return false }
+        if selectedModel == LocalModel.id, let reason = localUnavailableReason { error = reason; return false }
         guard !selectedModel.isEmpty else { error = APIError.noModel.localizedDescription; return false }
         if current == nil { newConversation() }
         guard let id = selection, let index = conversations.firstIndex(where: { $0.id == id }) else { return false }
@@ -264,7 +288,7 @@ import CryptoKit
     }
     /// Retry only the current tail, never truncate later turns or duplicate the prompt.
     @discardableResult func retry(conversation id: UUID, message: UUID) -> Bool {
-        guard !isStreaming, !isSynchronizing, session != nil, selection == id,
+        guard !isStreaming, !isSynchronizing, selection == id,
               let index = conversations.firstIndex(where: { $0.id == id }),
               let last = conversations[index].messages.last, last.id == message, last.canRetry,
               conversations[index].messages.dropLast().last?.role == "user",
@@ -280,22 +304,44 @@ import CryptoKit
         conversations[index].messages.append(reply)
         activeReply = (id, reply.id)
         completedReply = nil
-        isStreaming = true; error = nil; persist()
+        localEvents = []
+        isStreaming = true; error = nil
+        guard persist() else { isStreaming = false; setReplyCompletion(.failed); activeReply = nil; return false }
         let revision = generationRevision
         let accountRevision = sessionRevision
         let model = selectedModel
+        if model == LocalModel.id {
+            generationDeadline = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(120)) } catch { return }
+                guard let self, self.generationRevision == revision, self.sessionRevision == accountRevision else { return }
+                self.stop(); self.error = LocalAgentError.budget.localizedDescription
+            }
+        }
         generation = Task {
             defer {
                 if generationRevision == revision && sessionRevision == accountRevision {
-                    isStreaming = false; generation = nil; activeReply = nil; persist()
+                    generationDeadline?.cancel(); generationDeadline = nil
+                    isStreaming = false; generation = nil; activeReply = nil; persist(); scheduleAutomaticSync()
                 }
             }
             do {
-                let session = try await validSession()
-                try Task.checkCancellation()
-                guard generationRevision == revision && sessionRevision == accountRevision else { return }
-                try await services.stream(model, input, session.accessToken) { delta in
-                    await self.append(delta, conversation: id, message: reply.id, generation: revision, account: accountRevision)
+                if model == LocalModel.id {
+                    let workspace = LocalAgentWorkspace(conversations: conversations, documents: localDocuments,
+                        event: { event in
+                            await self.recordLocalEvent(event, generation: revision, account: accountRevision)
+                        }, saveDocument: { document in
+                            try await self.saveLocalDocument(document, generation: revision, account: accountRevision)
+                        })
+                    try await services.localRespond(input, workspace) { delta in
+                        await self.append(delta, conversation: id, message: reply.id, generation: revision, account: accountRevision)
+                    }
+                } else {
+                    let session = try await validSession()
+                    try Task.checkCancellation()
+                    guard generationRevision == revision && sessionRevision == accountRevision else { return }
+                    try await services.stream(model, input, session.accessToken) { delta in
+                        await self.append(delta, conversation: id, message: reply.id, generation: revision, account: accountRevision)
+                    }
                 }
                 try Task.checkCancellation()
                 guard generationRevision == revision && sessionRevision == accountRevision else { return }
@@ -332,13 +378,14 @@ import CryptoKit
         activeReply = nil
         completedReply = nil
         generationRevision = UUID()
+        generationDeadline?.cancel(); generationDeadline = nil
         generation?.cancel(); generation = nil
         isStreaming = false
         persist()
     }
     func delete(_ id: UUID) {
         if selection == id { stop(); selection = nil }
-        conversations.removeAll { $0.id == id }; persist()
+        conversations.removeAll { $0.id == id }; persist(); scheduleAutomaticSync()
     }
     func logout() async {
         voice.silence()
@@ -353,6 +400,8 @@ import CryptoKit
         resetHistorySync()
         services.clear(); session = nil; conversations = []; selection = nil
         models = []; selectedModel = ""; wantsNewConversation = false; wantsVoice = false; wantsVoiceConversation = false; wantsImmediateVoiceCapture = false; pendingDraft = nil; error = nil
+        localDocuments = []; automaticSync = false
+        await restore()
         if let previous {
             do {
                 // Do not cancel a possibly committed server rotation. Await it and
@@ -368,6 +417,8 @@ import CryptoKit
         }
     }
     private func resetHistorySync() {
+        syncTask?.cancel(); syncTask = nil
+        importedGuestIDs = []
         pendingHistorySave = nil
         historySnapshot = nil; historyBaseline = []; historyConversationIDs = [:]; historyMessageIDs = [:]
         historyStatus = nil; hasHistoryConflict = false
@@ -482,16 +533,94 @@ import CryptoKit
             if sessionRevision == accountRevision { historyStatus = "Synchronisation non terminée. Vos conversations locales sont conservées. " + error.localizedDescription }
         }
     }
+    private func storageURL() throws -> URL {
+        if let session { return try historyURL(session.accountId) }
+        return try guestHistoryURL()
+    }
+    private func guestHistoryURL() throws -> URL {
+        let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        return directory.appendingPathComponent("history-guest.json")
+    }
+    private func recordLocalEvent(_ event: LocalAgentEvent, generation: UUID, account: UUID) {
+        guard generationRevision == generation, sessionRevision == account else { return }
+        localEvents.append(event)
+        if let activeReply, let i = conversations.firstIndex(where: { $0.id == activeReply.conversation }),
+           let j = conversations[i].messages.firstIndex(where: { $0.id == activeReply.message }) {
+            conversations[i].messages[j].localEvents = localEvents
+            persist()
+        }
+    }
+    private func saveLocalDocument(_ document: LocalDocument, generation: UUID, account: UUID) throws {
+        guard generationRevision == generation, sessionRevision == account else { throw CancellationError() }
+        localDocuments.append(document)
+        guard persist() else { localDocuments.removeAll { $0.id == document.id }; throw LocalAgentError.unavailable("Enregistrement du document impossible.") }
+    }
+    func importDocument(name: String, text: String) throws {
+        guard !isRestoring, !isStreaming, text.utf8.count <= 100_000 else { throw LocalAgentError.invalidInput }
+        let document = LocalDocument(name: String(name.prefix(120)), text: text)
+        localDocuments.append(document)
+        guard persist() else { localDocuments.removeAll { $0.id == document.id }; throw LocalAgentError.unavailable("Enregistrement du document impossible.") }
+    }
+    /// Explicit copy into the signed-in account. Guest originals remain available after logout.
+    func importGuestHistory() {
+        guard session != nil, !isRestoring, !isStreaming, !isSynchronizing else { return }
+        do {
+            let cache = try JSONDecoder().decode(HistoryCache.self, from: services.readLocalHistory(guestHistoryURL()))
+            let previous = conversations
+            let imported = importedGuestIDs
+            for original in cache.conversations where !importedGuestIDs.contains(original.id) {
+                var copy = original
+                copy.id = UUID()
+                conversations.append(copy)
+                importedGuestIDs.insert(original.id)
+            }
+            guard persist() else { conversations = previous; importedGuestIDs = imported; return }
+            historyStatus = "Conversations invitées copiées dans ce compte. Les originaux restent sur cet appareil."
+            scheduleAutomaticSync()
+        } catch { historyStatus = "Aucun historique invité lisible à importer." }
+    }
+    func disableAutomaticSync() {
+        automaticSync = false; syncTask?.cancel(); syncTask = nil; persist()
+    }
+    func enableAutomaticSync() {
+        guard session != nil else { authenticationPresented = true; return }
+        automaticSync = true
+        if persist() { scheduleAutomaticSync() }
+    }
+    func foreground() {
+        scheduleAutomaticSync()
+    }
+    private func startNetworkMonitoring() {
+        guard !monitoringNetwork else { return }
+        monitoringNetwork = true
+        networkMonitor.pathUpdateHandler = { [weak self] path in
+            let reachable = path.status == .satisfied
+            Task { @MainActor [weak self] in
+                self?.online = reachable
+                if reachable { self?.scheduleAutomaticSync() }
+            }
+        }
+        networkMonitor.start(queue: DispatchQueue(label: "cloud.multivibe.chat.connectivity"))
+    }
+    private func scheduleAutomaticSync() {
+        guard automaticSync, online, session != nil, !isRestoring, !isStreaming, !hasHistoryConflict else { return }
+        syncTask?.cancel()
+        syncTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            guard let self, !Task.isCancelled else { return }
+            await self.synchronizeHistory()
+        }
+    }
     private func historyURL(_ account: String) throws -> URL {
         // Hash account identifiers rather than accepting path components from a server.
         let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         return directory.appendingPathComponent("history-" + SHA256.hash(data: Data(account.utf8)).map { String(format: "%02x", $0) }.joined() + ".json")
     }
     @discardableResult private func persist() -> Bool {
-        guard let session else { return false }
+        guard !isRestoring else { return false }
         do {
-            let url = try historyURL(session.accountId)
-            try services.writeHistory(JSONEncoder().encode(HistoryCache(conversations: conversations,
+            let url = try storageURL()
+            try services.writeHistory(JSONEncoder().encode(HistoryCache(documents: localDocuments, importedGuestIDs: importedGuestIDs, automaticSync: automaticSync, conversations: conversations,
                 snapshot: historySnapshot, pending: pendingHistorySave, baseline: historyBaseline,
                 conversationIDs: historyConversationIDs, messageIDs: historyMessageIDs)), url)
             return true

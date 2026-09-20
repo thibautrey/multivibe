@@ -1,5 +1,6 @@
 import AVFoundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ChatView: View {
     @Environment(ConversationManager.self) private var manager
@@ -9,11 +10,13 @@ struct ChatView: View {
     @State private var preferredColumn: NavigationSplitViewColumn = .detail
     @State private var search = ""
     @State private var conversationToDelete: Conversation?
+    @State private var confirmGuestImport = false
     @State private var confirmHistorySync = false
     @State private var confirmHistoryConflict = false
     @State private var retryTarget: RetryTarget?
     private struct RetryTarget { let conversation: UUID; let message: UUID }
     @State private var voicePresented = false
+    @State private var documentsPresented = false
     @State private var privacyPresented = false
     @State private var followsLatest = true
     @State private var userScrolling = false
@@ -46,11 +49,25 @@ struct ChatView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) { Button("Nouvelle conversation", systemImage: "square.and.pencil") { manager.newConversation() } }
                 ToolbarItem(placement: .secondaryAction) {
-                    Button("Synchroniser l’historique", systemImage: "arrow.triangle.2.circlepath") { confirmHistorySync = true }
+                    Button("Synchroniser l’historique", systemImage: "arrow.triangle.2.circlepath") {
+                        if manager.session == nil { manager.authenticationPresented = true } else { confirmHistorySync = true }
+                    }
                         .disabled(manager.isSynchronizing || manager.isStreaming || manager.isRestoring)
                 }
+                ToolbarItem(placement: .secondaryAction) {
+                    if manager.session != nil {
+                        Button("Importer les conversations invitées") { confirmGuestImport = true }
+                        if manager.automaticSync { Button("Désactiver la synchronisation automatique") { manager.disableAutomaticSync() } }
+                    }
+                }
                 ToolbarItem(placement: .secondaryAction) { Button("Confidentialité et données", systemImage: "hand.raised") { privacyPresented = true } }
-                ToolbarItem(placement: .bottomBar) { Button("Déconnexion") { Task { await manager.logout() } } }
+                ToolbarItem(placement: .bottomBar) {
+                    if manager.session != nil { Button("Déconnexion") { Task { await manager.logout() } } }
+                    else { Button("Se connecter") { manager.authenticationPresented = true }.accessibilityIdentifier("openAuthentication") }
+                }
+                ToolbarItem(placement: .secondaryAction) {
+                    Button("Documents locaux", systemImage: "doc") { documentsPresented = true }
+                }
             }
         } detail: {
             VStack(spacing: 0) {
@@ -68,11 +85,16 @@ struct ChatView: View {
                                             .background(MultiVibeTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 22))
                                             .padding(.leading, 36)
                                     } else {
-                                        if message.content.isEmpty { ProgressView("MultiVibe réfléchit…") }
+                                        if message.content.isEmpty && message.completion == .streaming { ProgressView("MultiVibe réfléchit…") }
                                         else { NativeMessageContent(content: message.content) }
                                         if let completion = message.completion, completion != .completed {
                                             Text(completion == .streaming ? "Réponse en cours" : completion == .stopped ? "Réponse arrêtée" : "Réponse interrompue")
                                                 .font(.caption).foregroundStyle(.secondary)
+                                        }
+                                        if let events = message.localEvents, !events.isEmpty {
+                                            DisclosureGroup("Étapes locales (\(events.count))") {
+                                                ForEach(events) { event in Text(event.detail).font(.caption) }
+                                            }
                                         }
                                         HStack(spacing: 4) {
                                             if !message.content.isEmpty {
@@ -124,6 +146,15 @@ struct ChatView: View {
                     }
                     }
                 }
+                if manager.selectedModel == LocalModel.id {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Label("Calcul sur cet iPhone · sans Internet", systemImage: "iphone")
+                        if let reason = manager.localUnavailableReason { Text(reason).foregroundStyle(.secondary) }
+                        if manager.isStreaming {
+                            ForEach(manager.localEvents.suffix(3)) { event in Text(event.detail).font(.caption) }
+                        }
+                    }.font(.caption).padding(.horizontal).accessibilityIdentifier("localModelStatus")
+                }
                 if voice.speaking {
                     Button("Arrêter la lecture", systemImage: "stop.circle") { voice.silence() }.padding(.horizontal)
                 }
@@ -144,6 +175,11 @@ struct ChatView: View {
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    if manager.session == nil {
+                        Button("Se connecter") { manager.authenticationPresented = true }.accessibilityIdentifier("openAuthentication")
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button("Nouvelle conversation", systemImage: "square.and.pencil") { manager.newConversation() }
                 }
@@ -173,11 +209,20 @@ struct ChatView: View {
         } message: {
             Text("La réponse partielle sera remplacée. Votre message ne sera pas ajouté une seconde fois. Cette nouvelle demande peut consommer des crédits.")
         }
-        .confirmationDialog("Synchroniser avec votre compte ?", isPresented: $confirmHistorySync, titleVisibility: .visible) {
-            Button("Synchroniser") { Task { await manager.synchronizeHistory() } }
+        .confirmationDialog("Copier l’historique invité dans ce compte ?", isPresented: $confirmGuestImport, titleVisibility: .visible) {
+            Button("Importer") { manager.importGuestHistory() }
             Button("Annuler", role: .cancel) {}
         } message: {
-            Text("Les conversations de cet appareil seront envoyées à MultiVibe et celles de votre compte seront téléchargées. Elles ne sont pas chiffrées de bout en bout. Les modifications concurrentes ne seront pas écrasées automatiquement.")
+            Text("Les conversations invitées seront copiées dans le compte connecté et envoyées au serveur si la synchronisation est activée. Les originaux restent sur cet appareil.")
+        }
+        .confirmationDialog("Synchroniser avec votre compte ?", isPresented: $confirmHistorySync, titleVisibility: .visible) {
+            Button("Activer la synchronisation automatique") {
+                manager.enableAutomaticSync()
+                Task { await manager.synchronizeHistory() }
+            }
+            Button("Annuler", role: .cancel) {}
+        } message: {
+            Text("Les conversations de ce compte seront synchronisées avec MultiVibe maintenant et au retour du réseau. Les échanges invités restent séparés tant que vous ne les importez pas. Elles ne sont pas chiffrées de bout en bout. Les modifications concurrentes ne seront pas écrasées automatiquement.")
         }
         .confirmationDialog("Conserver les versions du compte et les copies locales ?", isPresented: $confirmHistoryConflict, titleVisibility: .visible) {
             Button("Conserver les deux versions") { Task { await manager.synchronizeHistory(keepingBothVersions: true) } }
@@ -185,6 +230,7 @@ struct ChatView: View {
         } message: {
             Text("Les conversations modifiées sur cet appareil seront ajoutées comme copies locales. Les versions du compte seront conservées ; les suppressions locales ne seront pas appliquées au compte pendant cette résolution.")
         }
+        .sheet(isPresented: $documentsPresented) { LocalDocumentsView() }
         .sheet(isPresented: $privacyPresented) { NativePrivacyView() }
         .sheet(isPresented: $voicePresented) { VoiceConversationView() }
         .onChange(of: manager.selection) { _, _ in text = "" }
@@ -192,7 +238,7 @@ struct ChatView: View {
         .onChange(of: manager.wantsNewConversation) { _, _ in consumeIntent() }
         .onChange(of: manager.wantsVoiceConversation) { _, _ in consumeIntent() }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { voice.silence() } else { consumeIntent() }
+            if phase != .active { voice.silence(); if manager.selectedModel == LocalModel.id { manager.stop() } } else { manager.foreground(); consumeIntent() }
         }
         .onAppear { consumeIntent() }
         .onChange(of: manager.wantsVoice) { _, _ in consumeIntent() }
@@ -244,7 +290,7 @@ struct ChatView: View {
     }
 
     private func consumeIntent() {
-        guard scenePhase == .active, manager.session != nil, !manager.isRestoring else { return }
+        guard scenePhase == .active, !manager.isRestoring else { return }
         if manager.wantsNewConversation {
             manager.wantsNewConversation = false
             manager.newConversation()
@@ -338,7 +384,7 @@ struct VoiceConversationView: View {
     }
     private var canStartAssistantCapture: Bool {
         manager.wantsImmediateVoiceCapture && scenePhase == .active &&
-            manager.session != nil && !manager.isRestoring && !manager.isStreaming
+            !manager.isRestoring && !manager.isStreaming
     }
     private var status: String {
         if voice.recording { return "À votre écoute" }
@@ -359,10 +405,10 @@ struct NativePrivacyView: View {
             List {
                 Section("Compte et messages envoyés") {
                     Text("Votre adresse e-mail et vos identifiants sont transmis pour créer votre compte ou vous connecter. Les jetons de connexion sont conservés dans le trousseau de cet appareil.")
-                    Text("Envoyer un message transmet son contenu et le contexte de la conversation à MultiVibe pour obtenir la réponse du modèle choisi. L’utilisation du service peut consommer les crédits de votre compte.")
+                    Text("Apple Foundation Local traite les messages sur cet appareil, sans compte et sans Internet. Les modèles distants transmettent le message et son contexte à MultiVibe et peuvent consommer des crédits. Aucun basculement vers un modèle distant n’est automatique.")
                 }
                 Section("Historique") {
-                    Text("L’app conserve une copie des conversations sur cet appareil. La synchronisation avec votre compte nécessite votre confirmation ; elle envoie les conversations locales et télécharge celles du compte. Ce stockage n’est pas chiffré de bout en bout.")
+                    Text("L’app conserve une copie des conversations sur cet appareil. La synchronisation automatique, activée avec votre confirmation, envoie les conversations du compte au retour du réseau et télécharge celles du compte. Les conversations invitées nécessitent un import explicite. Les documents importés restent sur cet appareil ; les passages cités dans une réponse font partie de la conversation synchronisée. Ce stockage n’est pas chiffré de bout en bout.")
                     Text("Supprimer une conversation dans l’app retire sa copie locale. Cela ne constitue pas une suppression de compte ni une demande d’effacement de toutes les données détenues par le service.")
                 }
                 Section("Dictée, lecture et raccourcis") {
@@ -471,4 +517,45 @@ struct ChatWelcomeView: View {
         }.buttonStyle(.plain)
     }
 
+}
+
+
+struct LocalDocumentsView: View {
+    @Environment(ConversationManager.self) private var manager
+    @Environment(\.dismiss) private var dismiss
+    @State private var importing = false
+    @State private var failure: String?
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text("Ces fichiers sont disponibles hors ligne pour Apple Foundation Local. Importez un fichier texte de 100 Ko maximum. Les documents restent sur cet appareil.")
+                    Button("Importer un document texte", systemImage: "square.and.arrow.down") { importing = true }
+                        .disabled(manager.isStreaming)
+                    if let failure { Text(failure).foregroundStyle(.red) }
+                }
+                ForEach(manager.localDocuments) { document in
+                    NavigationLink(document.name) {
+                        ScrollView { Text(document.text).textSelection(.enabled).padding() }
+                            .navigationTitle(document.name)
+                            .toolbar { ShareLink(item: document.text) { Label("Partager", systemImage: "square.and.arrow.up") } }
+                    }
+                }
+            }
+            .navigationTitle("Documents locaux")
+            .toolbar { Button("Terminé") { dismiss() } }
+            .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText]) { result in
+                do {
+                    let url = try result.get()
+                    let granted = url.startAccessingSecurityScopedResource()
+                    defer { if granted { url.stopAccessingSecurityScopedResource() } }
+                    let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                    guard size <= 100_000 else { throw LocalAgentError.invalidInput }
+                    let data = try Data(contentsOf: url)
+                    guard data.count <= 100_000, let text = String(data: data, encoding: .utf8) else { throw LocalAgentError.invalidInput }
+                    try manager.importDocument(name: url.lastPathComponent, text: text)
+                } catch { failure = error.localizedDescription }
+            }
+        }
+    }
 }
