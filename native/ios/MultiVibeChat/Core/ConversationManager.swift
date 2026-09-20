@@ -840,7 +840,7 @@ import Network
         guard !isRestoring, !isStreaming, !isSynchronizing else { return }
         memoryDraft = MemoryDraft(text: String(message.content.prefix(600)),
             evidence: MemoryEvidence(origin: message.role == "user" ? .userMessage : .userConfirmation,
-                quote: String(message.content.prefix(4000)), date: current?.updatedAt ?? Date(),
+                quote: String(message.content.prefix(4000)), date: Date(),
                 conversationID: current?.memorySourceID ?? selection, messageID: message.id, sourceRole: message.role),
             scope: current?.memoryScope ?? "")
     }
