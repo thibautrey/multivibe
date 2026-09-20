@@ -74,3 +74,34 @@ Ces vérifications ne sont pas déclarées réussies par cette liste. La suppres
 de compte, la finalisation de la révocation Apple, la validation visuelle et
 physique, ainsi que la configuration de production restent ouvertes. L'état
 faisant autorité est `IMPLEMENTATION-STATUS.md` : **non prêt pour publication**.
+
+## Apple Foundation Local
+
+The iOS app offers `apple-foundation-local` alongside the account model catalog.
+It uses Apple's on-device `SystemLanguageModel` on iOS 26+ with Apple Intelligence
+available and its model downloaded. The app still supports iOS 18 for remote chat.
+Local inference is available without creating or signing into a MultiVibe account;
+it does not send completion requests or require a valid access token. There is no
+implicit remote fallback.
+
+The native model/tool loop can search saved conversations, list/read imported
+UTF-8 text documents (100 KB each), perform arithmetic, obtain the current date,
+and create new local text documents that can be inspected/shared from Documents
+locaux. Tool calls share a 12-call and 120-second budget. Context overflow can
+restart with bounded successful tool observations twice, without resetting the
+budget. Created documents are deduplicated by title and contents. This is an
+app-scoped workspace, not access to arbitrary iPhone files, apps or web browsing.
+
+History is written atomically with complete file protection and excluded from
+backups. Guest storage is separate from hashed account storage. Sign-in does not
+import guest data implicitly; Importer les conversations invitées copies it into
+the signed-in account without deleting the guest originals. Documents remain
+local; conversation text, including quotations from documents, is synchronized.
+
+After enabling automatic history synchronization, connectivity restoration and
+foregrounding trigger the existing account-scoped revision-checked history API.
+Transient failures receive bounded retries. Concurrent edits require preserving
+both versions explicitly; the app never silently overwrites another device.
+Suspension stops local generation and retains the partial conversation/tool trace;
+Réessayer explicitly restarts the request with the current local workspace.
+There is no promise of continuous background inference on iOS.
