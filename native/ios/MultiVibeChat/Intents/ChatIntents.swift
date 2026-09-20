@@ -50,6 +50,12 @@ struct VoiceConversationIntent: AppIntent {
 
 struct MultiVibeShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
+        AppShortcut(intent: PrepareLocalMultiVibeIntent(), phrases: ["Ouvrir le modèle local de \(.applicationName)"], shortTitle: "Agent local", systemImageName: "iphone")
+        AppShortcut(intent: OpenMultiVibeScreenIntent(), phrases: ["Ouvrir un écran de \(.applicationName)"], shortTitle: "Ouvrir un écran", systemImageName: "square.grid.2x2")
+        AppShortcut(intent: FindMultiVibeConversationsIntent(), phrases: ["Rechercher dans \(.applicationName)"], shortTitle: "Rechercher", systemImageName: "magnifyingglass")
+        AppShortcut(intent: ProposeMultiVibeMemoryIntent(), phrases: ["Retenir avec \(.applicationName)"], shortTitle: "Proposer un souvenir", systemImageName: "brain")
+        AppShortcut(intent: StopMultiVibeResponseIntent(), phrases: ["Arrêter la réponse de \(.applicationName)"], shortTitle: "Arrêter la réponse", systemImageName: "stop.circle")
+        AppShortcut(intent: StopMultiVibeAudioIntent(), phrases: ["Arrêter l’audio de \(.applicationName)"], shortTitle: "Arrêter l’audio", systemImageName: "speaker.slash")
         AppShortcut(intent: VoiceConversationIntent(), phrases: ["Parler avec \(.applicationName)"], shortTitle: "Conversation vocale", systemImageName: "waveform")
         AppShortcut(intent: NewConversationIntent(), phrases: ["Nouvelle conversation dans \(.applicationName)"], shortTitle: "Nouvelle conversation", systemImageName: "bubble.left.and.bubble.right")
         AppShortcut(intent: DictateInMultiVibeIntent(), phrases: ["Dicter dans \(.applicationName)"], shortTitle: "Dicter un message", systemImageName: "mic")

@@ -269,6 +269,8 @@ struct ChatView: View {
             if phase != .active { voice.silence(); if phase == .background && manager.selectedModel == LocalModel.id { manager.stop() } } else { manager.foreground(); consumeIntent() }
         }
         .onAppear { consumeIntent() }
+        .onChange(of: manager.nativeShortcut) { _, _ in consumeIntent() }
+        .onChange(of: manager.isRestoring) { _, _ in consumeIntent() }
         .onChange(of: manager.wantsVoice) { _, _ in consumeIntent() }
         .onChange(of: manager.pendingDraft) { _, _ in consumeIntent() }
         .onDisappear { voice.silence() }
@@ -319,6 +321,23 @@ struct ChatView: View {
 
     private func consumeIntent() {
         guard scenePhase == .active, !manager.isRestoring else { return }
+        do {
+            if let request = try manager.applyNativeShortcut() {
+                voice.silence()
+                voicePresented = false; documentsPresented = false; privacyPresented = false
+                manager.memoryPresented = false
+                switch request.destination {
+                case .history: preferredColumn = .sidebar
+                case .documents: documentsPresented = true
+                case .memory: manager.memoryPresented = true
+                case .privacy: privacyPresented = true
+                case .synchronization:
+                    if manager.session == nil { manager.authenticationPresented = true }
+                    else { confirmHistorySync = true }
+                case nil: preferredColumn = .detail
+                }
+            }
+        } catch { manager.error = error.localizedDescription }
         if manager.wantsNewConversation {
             manager.wantsNewConversation = false
             manager.newConversation()

@@ -106,6 +106,18 @@ import Network
     private(set) var completedReply: UUID?
     let voice = VoiceController()
     enum ShortcutRequest { case newConversation, dictation, draft(String), voiceConversation, assistantVoiceConversation }
+    enum NativeDestination: String, Equatable { case history, documents, memory, privacy, synchronization }
+    struct NativeShortcut: Equatable {
+        var id = UUID()
+        var destination: NativeDestination?
+        var conversationID: UUID?
+        var accountID: String?
+        var localDraft: String?
+        var memoryText: String?
+        var documentName: String?
+        var documentText: String?
+    }
+    var nativeShortcut: NativeShortcut?
     var wantsNewConversation = false
     var wantsVoice = false
     var wantsImmediateVoiceCapture = false
@@ -266,7 +278,8 @@ import Network
                     models = []; selectedModel = ""
                     localDocuments = []; automaticSync = false
                     await restore(loadRemoteModels: false)
-                    wantsNewConversation = false; wantsVoice = false
+                    nativeShortcut = nil
+        wantsNewConversation = false; wantsVoice = false
                     wantsVoiceConversation = false; wantsImmediateVoiceCapture = false; pendingDraft = nil
                     self.error = "Impossible de sauvegarder la session dans le Trousseau. Reconnectez-vous."
                     do { try await services.revoke(renewed.refreshToken) }
@@ -292,6 +305,7 @@ import Network
         return renewed
     }
     func accept(_ session: NativeSession) async throws {
+        nativeShortcut = nil
         do { try services.save(session) }
         catch {
             // All sign-in paths issue a real server session before persistence.
@@ -326,6 +340,46 @@ import Network
             wantsVoiceConversation = true
             wantsImmediateVoiceCapture = true
         }
+    }
+    /// Foreground-only handoff. Account identity and selected IDs are revalidated
+    /// after restoration, never trusted from cached Shortcuts entity labels.
+    func queueNativeShortcut(_ request: NativeShortcut) {
+        prepareShortcut(.draft(""))
+        pendingDraft = nil
+        nativeShortcut = request
+    }
+    func applyNativeShortcut() throws -> NativeShortcut? {
+        guard !isRestoring, storageLoaded else { return nil }
+        guard let request = nativeShortcut else { return nil }
+        nativeShortcut = nil
+        guard request.accountID == session?.accountId else { throw NativeShortcutError.missing }
+        guard !isStreaming, !isSynchronizing else { throw NativeShortcutError.busy }
+        if let id = request.conversationID {
+            guard conversations.contains(where: { $0.id == id }) else { throw NativeShortcutError.missing }
+            selection = id
+        }
+        if let draft = request.localDraft {
+            if let reason = localUnavailableReason { throw LocalAgentError.unavailable(reason) }
+            selectedModel = LocalModel.id
+            newConversation()
+            pendingDraft = String(draft.prefix(32_000))
+        }
+        if let text = request.memoryText {
+            let text = String(text.prefix(600)).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { throw NativeShortcutError.empty }
+            memoryDraft = MemoryDraft(text: text, evidence: MemoryEvidence(origin: .userEntry,
+                quote: text, date: Date(), sourceRole: "user"))
+        }
+        if let name = request.documentName, let text = request.documentText {
+            try importDocument(name: name, text: text)
+        }
+        return request
+    }
+    func shortcutConversation(_ id: UUID, accountID: String?) throws -> Conversation {
+        guard !isRestoring, storageLoaded else { throw NativeShortcutError.notReady }
+        guard accountID == session?.accountId,
+              let conversation = conversations.first(where: { $0.id == id }) else { throw NativeShortcutError.missing }
+        return conversation
     }
     func newConversation() {
         guard !isRestoring, storageLoaded else { return }
@@ -480,6 +534,7 @@ import Network
         refreshMemoryIndex(); scheduleAutomaticSync()
     }
     func logout() async {
+        nativeShortcut = nil
         voice.silence()
         let previous = session
         let inFlightRefresh = refreshTask

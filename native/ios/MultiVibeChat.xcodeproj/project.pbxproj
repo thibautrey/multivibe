@@ -16,6 +16,7 @@
 		61EEC9C8DB8522810F721117 /* ChatAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EC3EFFD60CE2939BD5BCD88 /* ChatAPI.swift */; };
 		726A7A3E670153E53166E796 /* SSEParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42EEE3F6ED3F93F3854EAC51 /* SSEParserTests.swift */; };
 		77407A84E21962A60F63DC56 /* MultiVibeChatApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00217B9D7702B72A5569309F /* MultiVibeChatApp.swift */; };
+		7A74361E398770E2EA5D9736 /* NativeIntentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E7A1B6F2486B8877A908300 /* NativeIntentTests.swift */; };
 		8C1A0F4BD94755906DAE4B90 /* MemoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74D766009C5F24AF210383CA /* MemoryView.swift */; };
 		8FD1D22653DBCCB2B45A4CEA /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B36277A8CFF4EC17A06D2FC /* Models.swift */; };
 		915752F0CA99F9CFC83278C1 /* LocalAgentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3319D8F58B7782A53C37AF9B /* LocalAgentTests.swift */; };
@@ -25,6 +26,7 @@
 		C74FEFADAC73275DB726E5A6 /* AuthenticationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA4393E98F397246F4A41196 /* AuthenticationView.swift */; };
 		D82AAFC3C8F507B521619C45 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B3F9F268516DD34F81AB7817 /* Assets.xcassets */; };
 		D93DCB45C9AFA5ED65425AE5 /* AgentMemoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B34FCAA84CB37FAFCB223316 /* AgentMemoryTests.swift */; };
+		E93F3E946B9434ED4C5BFD94 /* NativeIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC28D33BB97A4F1A6581EB4F /* NativeIntents.swift */; };
 		EDD89E16CC7EEE5F49D07739 /* ChatIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 626C77A820035BB712EF6520 /* ChatIntents.swift */; };
 		FE9F141E961C8316B702D426 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D23AAC6A6C06292DD31EC37 /* ChatView.swift */; };
 /* End PBXBuildFile section */
@@ -53,6 +55,7 @@
 		42EEE3F6ED3F93F3854EAC51 /* SSEParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSEParserTests.swift; sourceTree = "<group>"; };
 		4B001301568AC61EB8AE8F59 /* LocalWebFetch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalWebFetch.swift; sourceTree = "<group>"; };
 		4D23AAC6A6C06292DD31EC37 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		4E7A1B6F2486B8877A908300 /* NativeIntentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeIntentTests.swift; sourceTree = "<group>"; };
 		4EC3EFFD60CE2939BD5BCD88 /* ChatAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatAPI.swift; sourceTree = "<group>"; };
 		626C77A820035BB712EF6520 /* ChatIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatIntents.swift; sourceTree = "<group>"; };
 		6636026081D44F2E5870C485 /* LocalDeviceData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalDeviceData.swift; sourceTree = "<group>"; };
@@ -66,6 +69,7 @@
 		A69AFB0001BDEA3472C4FE21 /* MultiVibeChatTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = MultiVibeChatTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B34FCAA84CB37FAFCB223316 /* AgentMemoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentMemoryTests.swift; sourceTree = "<group>"; };
 		B3F9F268516DD34F81AB7817 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		BC28D33BB97A4F1A6581EB4F /* NativeIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeIntents.swift; sourceTree = "<group>"; };
 		C40B5C17410BA2068BAC1E38 /* MultiVibeChatUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = MultiVibeChatUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		CA4393E98F397246F4A41196 /* AuthenticationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticationView.swift; sourceTree = "<group>"; };
 		D7577716199F102273754156 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
@@ -79,6 +83,7 @@
 			isa = PBXGroup;
 			children = (
 				626C77A820035BB712EF6520 /* ChatIntents.swift */,
+				BC28D33BB97A4F1A6581EB4F /* NativeIntents.swift */,
 			);
 			path = Intents;
 			sourceTree = "<group>";
@@ -173,6 +178,7 @@
 			children = (
 				B34FCAA84CB37FAFCB223316 /* AgentMemoryTests.swift */,
 				3319D8F58B7782A53C37AF9B /* LocalAgentTests.swift */,
+				4E7A1B6F2486B8877A908300 /* NativeIntentTests.swift */,
 				42EEE3F6ED3F93F3854EAC51 /* SSEParserTests.swift */,
 			);
 			path = MultiVibeChatTests;
@@ -296,6 +302,7 @@
 			files = (
 				D93DCB45C9AFA5ED65425AE5 /* AgentMemoryTests.swift in Sources */,
 				915752F0CA99F9CFC83278C1 /* LocalAgentTests.swift in Sources */,
+				7A74361E398770E2EA5D9736 /* NativeIntentTests.swift in Sources */,
 				726A7A3E670153E53166E796 /* SSEParserTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -316,6 +323,7 @@
 				8C1A0F4BD94755906DAE4B90 /* MemoryView.swift in Sources */,
 				8FD1D22653DBCCB2B45A4CEA /* Models.swift in Sources */,
 				77407A84E21962A60F63DC56 /* MultiVibeChatApp.swift in Sources */,
+				E93F3E946B9434ED4C5BFD94 /* NativeIntents.swift in Sources */,
 				3498F2842AD2073C13C61F4C /* SecureStore.swift in Sources */,
 				0A4A1A84E6560C97F714C2C9 /* VoiceController.swift in Sources */,
 			);
