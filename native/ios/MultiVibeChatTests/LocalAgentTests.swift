@@ -345,3 +345,20 @@ import XCTest
         XCTAssertEqual(text, "Hello & world")
     }
 }
+
+final class PublicWebFetchDeviceTests: XCTestCase {
+    func testNativeHTTPSGetAndHeadReadPublicWebsite() async throws {
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Public HTTP integration is exercised on the physical device")
+        #else
+        let url = try LocalWebFetch.validatedURL("https://example.com")
+        let get = try await LocalWebFetch.fetch(url: url, method: "GET")
+        XCTAssertEqual(get.status, 200)
+        XCTAssertTrue(get.text.contains("Example Domain"))
+        XCTAssertFalse(get.text.contains("<html"))
+        let head = try await LocalWebFetch.fetch(url: url, method: "HEAD")
+        XCTAssertEqual(head.status, 200)
+        XCTAssertTrue(head.text.contains("Content-Type:"))
+        #endif
+    }
+}
