@@ -336,6 +336,30 @@ import XCTest
         let restored = try snapshot.projectedConversation(at: 0, id: conversation.id, messageIDs: &ids)
         XCTAssertNil(restored.internetPermission)
     }
+    func testConcurrentCallsShareOneApprovalAndPersistFailureNeverAllowsNetwork() async {
+        var failWrites = false
+        var services = isolatedServices(writeHistory: { _, _ in if failWrites { throw CocoaError(.fileWriteOutOfSpace) } },
+            localAvailability: { nil }, localRespond: { _, workspace, output in
+                async let first = workspace.execute(action: "fetch_website", query: "https://example.com/a", documentID: "", text: "", lhs: 0, rhs: 0)
+                async let second = workspace.execute(action: "fetch_website", query: "https://example.com/b", documentID: "", text: "", lhs: 0, rhs: 0)
+                let values = try await [first, second]
+                await output(values.joined(separator: "\n"))
+            })
+        services.webFetch = { _, _ in XCTFail("Unsaved approval cannot authorize HTTP"); throw APIError.invalidResponse }
+        let manager = ConversationManager(services: services)
+        await manager.restore()
+        XCTAssertTrue(manager.send("Deux pages"))
+        await waitForPrompt(manager)
+        let requestID = manager.internetApproval?.id
+        for _ in 0..<30 { await Task.yield() }
+        XCTAssertEqual(manager.internetApproval?.id, requestID)
+        failWrites = true
+        manager.resolveInternetApproval(allow: true)
+        await waitForCompletion(manager)
+        XCTAssertNil(manager.internetApproval)
+        XCTAssertNil(manager.current?.internetPermission)
+        XCTAssertFalse(manager.isStreaming)
+    }
     func testHTTPPolicyAndHTMLExtraction() throws {
         for url in ["http://example.com", "file:///etc/passwd", "https://user:pass@example.com", "https://127.0.0.1", "https://192.168.1.149", "https://device.local", "https://localhost", "https://[::1]", "https://example.com:8200"] {
             XCTAssertThrowsError(try LocalWebFetch.validatedURL(url), url)
