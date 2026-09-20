@@ -51,9 +51,10 @@ struct MemoryView: View {
                             }
                             HStack {
                                 Button(item.memory.state == .proposed ? "Valider" : "Corriger") { manager.editMemory(item) }
+                                    .frame(minHeight: 44)
                                 Spacer()
-                                Button("Oublier", role: .destructive) { forget = item }
-                            }
+                                Button("Oublier", role: .destructive) { forget = item }.frame(minHeight: 44)
+                            }.buttonStyle(.borderless)
                         }.accessibilityElement(children: .contain)
                     }
                     if manager.memoryItems.isEmpty { Text("Aucun souvenir enregistré. Utilisez « Retiens ceci : … » ou le bouton Retenir d’un message.") }
