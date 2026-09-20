@@ -105,3 +105,26 @@ both versions explicitly; the app never silently overwrites another device.
 Suspension stops local generation and retains the partial conversation/tool trace;
 Réessayer explicitly restarts the request with the current local workspace.
 There is no promise of continuous background inference on iOS.
+
+### Optional Internet tools
+
+`fetch_website` performs HTTPS GET and extracts readable HTML/text/JSON/XML;
+`http_head` retrieves status and content metadata. Both are native URLSession
+tools, not a shell or arbitrary curl command execution. The first attempted
+request presents a native permission sheet. Allow or Deny is persisted once per
+conversation on this device, including across relaunches. Concurrent calls share
+one prompt. New conversations ask independently. Consent is never accepted from
+server history; guest imports are new conversations and ask again.
+
+No HTTP request occurs before consent. A denied conversation can continue with
+local tools. Approved requests use ephemeral sessions without cookies or saved
+credentials, keep TLS validation, validate redirects, allow only GET/HEAD, limit
+responses to 256 KiB and cache at most four URLs per run. Page content is treated
+as untrusted evidence. The model always stays local. This permission is separate
+from account-history synchronization. Human approval time is excluded from the
+run deadline; Stop cancels a pending prompt.
+
+Calendar and reminders are optional read-only tools enabled from Outils locaux
+via iOS permission prompts. They read EventKit's local stores; they do not modify
+events/reminders. Their text can appear in conversation responses and therefore
+in synced history if history sync is enabled.
