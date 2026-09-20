@@ -22,6 +22,8 @@ import XCTest
         let merged = MemoryPolicy.merge([correction], [original])
         XCTAssertEqual(MemoryPolicy.items(merged).first?.memory.text, correction.text)
         let deleted = correction.tombstone()
+        let otherDeletion = correction.tombstone()
+        XCTAssertEqual(MemoryPolicy.merge([deleted], [otherDeletion]), MemoryPolicy.merge([otherDeletion], [deleted]))
         let forgotten = MemoryPolicy.merge([deleted], merged)
         XCTAssertTrue(MemoryPolicy.items(forgotten).isEmpty)
         XCTAssertTrue(forgotten.allSatisfy { $0.text.isEmpty && $0.evidence == nil })
