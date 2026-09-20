@@ -101,4 +101,26 @@ import XCTest
         XCTAssertEqual(manager.selection, id)
     }
 
+    func testCancelledOldShortcutDoesNotStopNewConversation() async throws {
+        let manager = ConversationManager(services: isolatedServices(localAvailability: { nil }, localRespond: { _, _, _ in
+            try await Task.sleep(for: .seconds(10))
+        }))
+        await manager.restore(loadRemoteModels: false)
+        let oldTask = Task { try await manager.askLocalFromShortcut("Ancienne demande") }
+        while !manager.isStreaming { await Task.yield() }
+        manager.newConversation()
+        XCTAssertTrue(manager.send("Nouvelle demande"))
+        oldTask.cancel()
+        _ = try? await oldTask.value
+        XCTAssertTrue(manager.isStreaming)
+        XCTAssertEqual(manager.current?.messages.first?.content, "Nouvelle demande")
+        manager.stop()
+    }
+    func testUnavailableStorageCannotBeQueried() async {
+        let manager = ConversationManager(services: isolatedServices(readLocalHistory: { _ in throw CocoaError(.fileReadNoPermission) }))
+        await manager.restoreForNativeEntry()
+        XCTAssertFalse(manager.nativeDataReady)
+        XCTAssertThrowsError(try manager.shortcutConversation(UUID(), accountID: nil))
+    }
+
 }

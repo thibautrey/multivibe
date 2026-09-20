@@ -403,6 +403,7 @@ import Network
         return conversation
     }
     func askLocalFromShortcut(_ prompt: String) async throws -> String {
+        try Task.checkCancellation()
         guard !isRestoring, storageLoaded else { throw NativeShortcutError.notReady }
         guard !isStreaming, !isSynchronizing else { throw NativeShortcutError.busy }
         guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
