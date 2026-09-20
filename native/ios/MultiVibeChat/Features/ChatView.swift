@@ -160,7 +160,7 @@ struct ChatView: View {
                 }
                 if let error = voice.error { Text(error).font(.callout).foregroundStyle(.red).padding() }
                 if let error = manager.error { Text(error).font(.callout).foregroundStyle(.red).padding() }
-                if let error = manager.modelsError {
+                if let error = manager.modelsError, manager.selectedModel != LocalModel.id {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(error).font(.callout)
                         Button("Réessayer le chargement des modèles", systemImage: "arrow.clockwise") {
@@ -168,7 +168,7 @@ struct ChatView: View {
                         }.disabled(manager.isLoadingModels || manager.isStreaming)
                     }.padding(.horizontal)
                 }
-                if manager.isLoadingModels { ProgressView("Chargement des modèles…").padding(.horizontal) }
+                if manager.isLoadingModels && manager.selectedModel != LocalModel.id { ProgressView("Chargement des modèles…").padding(.horizontal) }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) { composer }
             .background(MultiVibeTheme.background)
@@ -207,7 +207,7 @@ struct ChatView: View {
             }
             Button("Annuler", role: .cancel) { retryTarget = nil }
         } message: {
-            Text("La réponse partielle sera remplacée. Votre message ne sera pas ajouté une seconde fois. Cette nouvelle demande peut consommer des crédits.")
+            Text(manager.current?.model == LocalModel.id ? "La réponse partielle sera remplacée et la demande sera reprise sur cet iPhone. Les documents déjà créés sont conservés." : "La réponse partielle sera remplacée. Votre message ne sera pas ajouté une seconde fois. Cette nouvelle demande peut consommer des crédits.")
         }
         .confirmationDialog("Copier l’historique invité dans ce compte ?", isPresented: $confirmGuestImport, titleVisibility: .visible) {
             Button("Importer") { manager.importGuestHistory() }

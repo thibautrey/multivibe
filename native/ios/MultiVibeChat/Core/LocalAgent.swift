@@ -53,6 +53,7 @@ enum LocalAgentError: LocalizedError {
 actor LocalAgentWorkspace {
     private var calls = 0
     private var evidence: [String] = []
+    private var creating = Set<String>()
     private let deadline: Date
     private let conversations: [Conversation]
     private var documents: [LocalDocument]
@@ -70,10 +71,22 @@ actor LocalAgentWorkspace {
         try Task.checkCancellation()
         guard calls < 12, Date() < deadline else { throw LocalAgentError.budget }
         calls += 1
-        await event(LocalAgentEvent(tool: action, detail: "Étape \(calls) : \(action)"))
-        let result = try await perform(action: action, query: query, documentID: documentID, text: text, lhs: lhs, rhs: rhs)
-        evidence.append("\(action) (\(query.prefix(100))): \(result.prefix(400))")
-        return result
+        let labels = ["list_documents": "Liste des documents", "read_document": "Lecture d’un document",
+            "search_conversations": "Recherche dans l’historique", "create_document": "Création d’un document",
+            "add": "Addition", "subtract": "Soustraction", "multiply": "Multiplication", "divide": "Division", "current_date": "Date actuelle"]
+        var update = LocalAgentEvent(tool: action, detail: "Étape \(calls) : \(labels[action] ?? "Outil local")")
+        await event(update)
+        do {
+            let result = try await perform(action: action, query: query, documentID: documentID, text: text, lhs: lhs, rhs: rhs)
+            evidence.append("\(action) (\(query.prefix(100))): \(result.prefix(400))")
+            update.detail += " — terminé"
+            await event(update)
+            return result
+        } catch {
+            update.detail += " — interrompu"
+            await event(update)
+            throw error
+        }
     }
     func compactEvidence() -> String { evidence.suffix(6).joined(separator: "\n") }
     private func perform(action: String, query: String, documentID: String, text: String, lhs: Double, rhs: Double) async throws -> String {
@@ -101,6 +114,9 @@ actor LocalAgentWorkspace {
             if let existing = documents.first(where: { $0.name == query && $0.text == text }) {
                 return "Document déjà enregistré : \(existing.name) (\(existing.id.uuidString))."
             }
+            let creationKey = query + "\u{0}" + text
+            guard creating.insert(creationKey).inserted else { throw LocalAgentError.invalidInput }
+            defer { creating.remove(creationKey) }
             let document = LocalDocument(name: query, text: text)
             try Task.checkCancellation()
             try await saveDocument(document)
