@@ -171,7 +171,7 @@ import Network
             } else if let current {
                 selectedModel = available.contains(where: { $0.id == current.model }) ? current.model : ""
             } else { selectedModel = available.first?.id ?? "" }
-            if available.isEmpty { modelsError = "Aucun modèle disponible pour ce compte. Vous pouvez réessayer." }
+
         } catch {
             if sessionRevision == accountRevision, modelLoadRevision == loadRevision {
                 modelsError = "Impossible de charger les modèles. Vérifiez votre connexion puis réessayez."
@@ -210,11 +210,14 @@ import Network
                     sessionRevision = UUID()
                     resetModelLoading()
                     let failedRevision = sessionRevision
+                    isRestoring = true
                     services.clear()
                     session = nil
                     conversations = []; selection = nil
                     resetHistorySync()
                     models = []; selectedModel = ""
+                    localDocuments = []; automaticSync = false
+                    await restore(loadRemoteModels: false)
                     wantsNewConversation = false; wantsVoice = false
                     wantsVoiceConversation = false; wantsImmediateVoiceCapture = false; pendingDraft = nil
                     self.error = "Impossible de sauvegarder la session dans le Trousseau. Reconnectez-vous."
@@ -277,14 +280,17 @@ import Network
         }
     }
     func newConversation() {
+        guard !isRestoring, storageLoaded else { return }
         stop()
         let conversation = Conversation(model: selectedModel)
         conversations.insert(conversation, at: 0); selection = conversation.id
+        persist()
     }
     @discardableResult func send(_ text: String) -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isRestoring, !isStreaming, !isSynchronizing else { return false }
         guard session != nil || selectedModel == LocalModel.id else { error = APIError.authenticationRequired.localizedDescription; return false }
+        guard storageLoaded else { error = "L’historique local n’a pas pu être ouvert. Il est conservé sans modification. Relancez l’app après avoir déverrouillé l’appareil."; return false }
         if selectedModel == LocalModel.id, let reason = localUnavailableReason { error = reason; return false }
         guard !selectedModel.isEmpty else { error = APIError.noModel.localizedDescription; return false }
         if current == nil { newConversation() }
@@ -400,6 +406,7 @@ import Network
         let previous = session
         let inFlightRefresh = refreshTask
         stop()
+        isRestoring = true
         refreshRevision = UUID()
         refreshTask = nil
         sessionRevision = UUID()
@@ -431,7 +438,7 @@ import Network
         historySnapshot = nil; historyBaseline = []; historyConversationIDs = [:]; historyMessageIDs = [:]
         historyStatus = nil; hasHistoryConflict = false
     }
-    /// Explicit synchronization: no upload of legacy local history without a tap.
+    /// Account-scoped synchronization; automatic invocation requires persisted opt-in.
     /// Never resolve concurrent edits by silently choosing one device's snapshot.
     func synchronizeHistory(keepingBothVersions: Bool = false, automatic: Bool = false) async {
         guard !isSynchronizing, !isStreaming, !isRestoring, storageLoaded, session != nil, !automatic || automaticSync else { return }
