@@ -167,8 +167,8 @@ import Network
     var current: Conversation? { conversations.first { $0.id == selection } }
 
     private var initialRestoration: Task<Void, Never>?
-    /// App launch and entity resolution share one local-only restoration. Resolving
-    /// a Shortcut parameter must not start model discovery or history sync.
+    /// App launch and entity resolution share one restoration without remote model
+    /// discovery. Existing opt-in automatic history sync keeps its normal policy.
     func restoreForNativeEntry() async {
         if let task = initialRestoration { await task.value; return }
         guard isRestoring else { return }
