@@ -44,14 +44,14 @@ struct MultiVibeConversationQuery: EntityStringQuery {
     @MainActor func entities(for identifiers: [String]) async throws -> [MultiVibeConversationEntity] {
         let manager = ConversationManager.shared
         await manager.restoreForNativeEntry()
-        guard !manager.isRestoring else { return [] }
+        guard manager.nativeDataReady else { return [] }
         return manager.conversations.map { MultiVibeConversationEntity($0, accountID: manager.session?.accountId) }
             .filter { identifiers.contains($0.id) }
     }
     @MainActor func entities(matching string: String) async throws -> [MultiVibeConversationEntity] {
         let manager = ConversationManager.shared
         await manager.restoreForNativeEntry()
-        guard !manager.isRestoring else { throw NativeShortcutError.notReady }
+        guard manager.nativeDataReady else { throw NativeShortcutError.notReady }
         return Array(manager.conversations.filter { string.isEmpty || $0.title.localizedCaseInsensitiveContains(string) }
             .prefix(50)).map { MultiVibeConversationEntity($0, accountID: manager.session?.accountId) }
     }
@@ -76,14 +76,14 @@ struct MultiVibeDocumentQuery: EntityStringQuery {
     @MainActor func entities(for identifiers: [String]) async throws -> [MultiVibeDocumentEntity] {
         let manager = ConversationManager.shared
         await manager.restoreForNativeEntry()
-        guard !manager.isRestoring else { return [] }
+        guard manager.nativeDataReady else { return [] }
         return manager.localDocuments.map { MultiVibeDocumentEntity($0, accountID: manager.session?.accountId) }
             .filter { identifiers.contains($0.id) }
     }
     @MainActor func entities(matching string: String) async throws -> [MultiVibeDocumentEntity] {
         let manager = ConversationManager.shared
         await manager.restoreForNativeEntry()
-        guard !manager.isRestoring else { throw NativeShortcutError.notReady }
+        guard manager.nativeDataReady else { throw NativeShortcutError.notReady }
         return Array(manager.localDocuments.filter { string.isEmpty || $0.name.localizedCaseInsensitiveContains(string) }
             .prefix(50)).map { MultiVibeDocumentEntity($0, accountID: manager.session?.accountId) }
     }
@@ -220,7 +220,7 @@ struct GetMultiVibeDocumentIntent: AppIntent {
     @MainActor func perform() async throws -> some IntentResult & ReturnsValue<String> {
         let manager = ConversationManager.shared
         await manager.restoreForNativeEntry()
-        guard !manager.isRestoring else { throw NativeShortcutError.notReady }
+        guard manager.nativeDataReady else { throw NativeShortcutError.notReady }
         guard document.accountID == manager.session?.accountId,
               let current = manager.localDocuments.first(where: { $0.id == document.documentID }) else { throw NativeShortcutError.missing }
         return .result(value: current.text)
