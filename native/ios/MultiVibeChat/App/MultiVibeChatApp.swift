@@ -32,8 +32,12 @@ struct ChatEntryView: View {
         }
         .sheet(isPresented: $manager.authenticationPresented) {
             AuthenticationView().presentationDragIndicator(.visible)
+                .sheet(item: $manager.passwordRecovery) { request in
+                    PasswordRecoveryView(initialEmail: request.email, initialLink: request.link)
+                }
         }
-        .sheet(item: $manager.passwordRecovery) { request in
+        .sheet(item: Binding(get: { manager.authenticationPresented ? nil : manager.passwordRecovery },
+                             set: { manager.passwordRecovery = $0 })) { request in
             PasswordRecoveryView(initialEmail: request.email, initialLink: request.link)
         }
         .onChange(of: manager.session?.accountId) { _, account in
