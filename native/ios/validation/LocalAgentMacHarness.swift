@@ -42,6 +42,18 @@ actor Recorder {
         let deviceAnswer = await deviceRecorder.answer
         print("DEVICE_TOOLS=\(deviceTools) ANSWER=\(deviceAnswer)")
         guard deviceTools.contains("current_location"), deviceAnswer.contains("48.8566") else { exit(1) }
+        let memoryRecorder = Recorder()
+        let memoryWorkspace = LocalAgentWorkspace(conversations: [], documents: [],
+            event: { await memoryRecorder.record($0) }, saveDocument: { _ in }, memory: { action, _, _ in
+                guard action == "search_memory" || action == "read_memory" else { return "Proposition non validée." }
+                return "[mémoire 10000000-0000-4000-8000-000000000001] Code de mon observatoire : RIGEL-8931. Source : déclaration explicite utilisateur du 20 septembre 2026, citation exacte : Le code de mon observatoire est RIGEL-8931. Souvenir validé, non expiré."
+            })
+        try await LocalAgent.respond(messages: [ChatMessage(role: "user", content: "Quel est le code que je t’ai demandé de retenir pour mon observatoire ? Consulte ta mémoire.")],
+            workspace: memoryWorkspace, onText: { await memoryRecorder.output($0) })
+        let memoryTools = await memoryRecorder.tools
+        let memoryAnswer = await memoryRecorder.answer
+        print("MEMORY_TOOLS=\(memoryTools) ANSWER=\(memoryAnswer)")
+        guard memoryTools.contains("search_memory"), memoryAnswer.contains("RIGEL-8931") else { exit(1) }
         let live = try await LocalWebFetch.fetch(url: URL(string: "https://example.com")!, method: "GET")
         guard live.status == 200, live.text.contains("Example Domain") else { exit(1) }
         print("LIVE_HTTPS_GET=200 HTML_EXTRACTION=PASS")
