@@ -26,6 +26,7 @@ import Network
     var localRespond: @Sendable ([ChatMessage], LocalAgentWorkspace, @escaping @Sendable (String) async -> Void) async throws -> Void = {
         try await LocalAgent.respond(messages: $0, workspace: $1, onText: $2)
     }
+    var webFetch: @Sendable (URL, String) async throws -> LocalWebResponse = { try await LocalWebFetch.fetch(url: $0, method: $1) }
     var monitorConnectivity = true
     var syncDelay: @Sendable (Int) async throws -> Void = { attempt in try await Task.sleep(for: .seconds(min(60, 2 << attempt))) }
     var models: @MainActor (String) async throws -> [ModelOption] = { try await ChatAPI.shared.models(token: $0) }
@@ -37,8 +38,14 @@ import Network
     var localUnavailableReason: String? { services.localAvailability() }
     var localDocuments: [LocalDocument] = []
     var localEvents: [LocalAgentEvent] = []
+    var calendarEnabled = false
+    var remindersEnabled = false
     var automaticSync = false
     var authenticationPresented = false
+    private(set) var internetApproval: InternetApprovalRequest?
+    private var internetWaiters: [CheckedContinuation<Bool, Never>] = []
+    private var generationExpiresAt: Date?
+    private var approvalStartedAt: Date?
     private let networkMonitor = NWPathMonitor()
     private var monitoringNetwork = false
     private var online = false
@@ -88,6 +95,8 @@ import Network
     private var storageLoaded = false
     private var pendingHistorySave: PendingHistorySave?
     private struct HistoryCache: Codable {
+        var calendarEnabled: Bool?
+        var remindersEnabled: Bool?
         var documents: [LocalDocument]?
         var importedGuestSnapshots: [UUID: Conversation]?
         var automaticSync: Bool?
@@ -124,12 +133,15 @@ import Network
         models = [LocalModel.option]
         selectedModel = LocalModel.id
         storageLoaded = false
+        calendarEnabled = false; remindersEnabled = false
         do {
             let data: Data?
             do { data = try services.readLocalHistory(storageURL()) }
             catch CocoaError.fileReadNoSuchFile { data = nil }
             if let data {
                 if let cache = try? JSONDecoder().decode(HistoryCache.self, from: data) {
+                    calendarEnabled = cache.calendarEnabled ?? false
+                    remindersEnabled = cache.remindersEnabled ?? false
                     localDocuments = cache.documents ?? []
                     automaticSync = cache.automaticSync ?? false
                     importedGuestSnapshots = cache.importedGuestSnapshots ?? [:]
@@ -325,11 +337,8 @@ import Network
         let accountRevision = sessionRevision
         let model = selectedModel
         if model == LocalModel.id {
-            generationDeadline = Task { [weak self] in
-                do { try await Task.sleep(for: .seconds(120)) } catch { return }
-                guard let self, self.generationRevision == revision, self.sessionRevision == accountRevision else { return }
-                self.stop(); self.error = LocalAgentError.budget.localizedDescription
-            }
+            generationExpiresAt = Date().addingTimeInterval(120)
+            armGenerationDeadline(generation: revision, account: accountRevision)
         }
         generation = Task {
             defer {
@@ -340,12 +349,17 @@ import Network
             }
             do {
                 if model == LocalModel.id {
-                    let workspace = LocalAgentWorkspace(conversations: conversations, documents: localDocuments,
+                    let deviceData = await LocalDeviceData.snapshot(calendar: calendarEnabled, reminders: remindersEnabled)
+                    try Task.checkCancellation()
+                    guard generationRevision == revision && sessionRevision == accountRevision else { return }
+                    let workspace = LocalAgentWorkspace(conversations: conversations, documents: localDocuments, deviceData: deviceData,
                         event: { event in
                             await self.recordLocalEvent(event, generation: revision, account: accountRevision)
                         }, saveDocument: { document in
                             try await self.saveLocalDocument(document, generation: revision, account: accountRevision)
-                        })
+                        }, authorizeInternet: { url in
+                            try await self.requestInternet(url: url, conversation: id, generation: revision, account: accountRevision)
+                        }, webFetch: services.webFetch)
                     try await services.localRespond(input, workspace) { delta in
                         await self.append(delta, conversation: id, message: reply.id, generation: revision, account: accountRevision)
                     }
@@ -392,6 +406,8 @@ import Network
         activeReply = nil
         completedReply = nil
         generationRevision = UUID()
+        cancelInternetApproval()
+        generationExpiresAt = nil
         generationDeadline?.cancel(); generationDeadline = nil
         generation?.cancel(); generation = nil
         isStreaming = false
@@ -525,7 +541,10 @@ import Network
                 guard let key = merged.conversations[index].object?["id"]?.string, remoteIDs.insert(key).inserted else { throw APIError.invalidResponse }
                 let id = conversationIDs[key] ?? UUID()
                 conversationIDs[key] = id
-                projected.append(try merged.projectedConversation(at: index, id: id, messageIDs: &messageIDs))
+                var conversation = try merged.projectedConversation(at: index, id: id, messageIDs: &messageIDs)
+                // Internet consent belongs to this device and conversation, never to a server payload.
+                conversation.internetPermission = conversations.first { $0.id == id }?.internetPermission
+                projected.append(conversation)
             }
             hasHistoryConflict = false; pendingHistorySave = nil
             historySnapshot = merged; historyConversationIDs = conversationIDs; historyMessageIDs = messageIDs
@@ -552,6 +571,55 @@ import Network
         } catch {
             if sessionRevision == accountRevision { historyStatus = "Synchronisation non terminée. Vos conversations locales sont conservées. " + error.localizedDescription }
         }
+    }
+    private func armGenerationDeadline(generation: UUID, account: UUID) {
+        generationDeadline?.cancel()
+        let remaining = max(0, generationExpiresAt?.timeIntervalSinceNow ?? 0)
+        generationDeadline = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(remaining)) } catch { return }
+            guard let self, self.generationRevision == generation, self.sessionRevision == account else { return }
+            self.stop(); self.error = LocalAgentError.budget.localizedDescription
+        }
+    }
+    private func requestInternet(url: URL, conversation: UUID, generation: UUID, account: UUID) async throws -> Bool {
+        try Task.checkCancellation()
+        guard generationRevision == generation, sessionRevision == account,
+              let index = conversations.firstIndex(where: { $0.id == conversation }) else { throw CancellationError() }
+        if let decision = conversations[index].internetPermission { return decision == .allowed }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                internetWaiters.append(continuation)
+                if internetApproval == nil {
+                    generationDeadline?.cancel(); generationDeadline = nil
+                    approvalStartedAt = Date()
+                    internetApproval = InternetApprovalRequest(conversation: conversation, url: url)
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                guard self?.generationRevision == generation, self?.sessionRevision == account else { return }
+                self?.cancelInternetApproval()
+            }
+        }
+    }
+    func resolveInternetApproval(allow: Bool) {
+        guard let request = internetApproval,
+              let index = conversations.firstIndex(where: { $0.id == request.conversation }) else { return }
+        conversations[index].internetPermission = allow ? .allowed : .denied
+        let saved = persist()
+        if !saved { conversations[index].internetPermission = nil }
+        if let started = approvalStartedAt, let expiry = generationExpiresAt {
+            generationExpiresAt = expiry.addingTimeInterval(Date().timeIntervalSince(started))
+            armGenerationDeadline(generation: generationRevision, account: sessionRevision)
+        }
+        internetApproval = nil; approvalStartedAt = nil
+        let waiters = internetWaiters; internetWaiters = []
+        for waiter in waiters { waiter.resume(returning: allow && saved) }
+    }
+    private func cancelInternetApproval() {
+        internetApproval = nil; approvalStartedAt = nil
+        let waiters = internetWaiters; internetWaiters = []
+        for waiter in waiters { waiter.resume(returning: false) }
     }
     private func storageURL() throws -> URL {
         if let session { return try historyURL(session.accountId) }
@@ -592,6 +660,7 @@ import Network
             for original in cache.conversations where importedGuestSnapshots[original.id] != original {
                 var copy = original
                 copy.id = UUID()
+                copy.internetPermission = nil
                 conversations.append(copy)
                 importedGuestSnapshots[original.id] = original
             }
@@ -599,6 +668,24 @@ import Network
             historyStatus = "Conversations invitées copiées dans ce compte. Les originaux restent sur cet appareil."
             scheduleAutomaticSync()
         } catch { historyStatus = "Aucun historique invité lisible à importer." }
+    }
+    func setCalendarEnabled(_ enabled: Bool) async {
+        let revision = sessionRevision
+        do {
+            let allowed = enabled ? try await LocalDeviceData.authorizeCalendar() : false
+            guard sessionRevision == revision else { return }
+            calendarEnabled = allowed; persist()
+            if enabled && !allowed { error = "Autorisez l’accès au calendrier dans les réglages iOS." }
+        } catch { if sessionRevision == revision { self.error = error.localizedDescription } }
+    }
+    func setRemindersEnabled(_ enabled: Bool) async {
+        let revision = sessionRevision
+        do {
+            let allowed = enabled ? try await LocalDeviceData.authorizeReminders() : false
+            guard sessionRevision == revision else { return }
+            remindersEnabled = allowed; persist()
+            if enabled && !allowed { error = "Autorisez l’accès aux rappels dans les réglages iOS." }
+        } catch { if sessionRevision == revision { self.error = error.localizedDescription } }
     }
     func disableAutomaticSync() {
         automaticSync = false; syncTask?.cancel(); syncTask = nil; persist()
@@ -650,7 +737,7 @@ import Network
         guard !isRestoring, storageLoaded else { return false }
         do {
             let url = try storageURL()
-            try services.writeHistory(JSONEncoder().encode(HistoryCache(documents: localDocuments, importedGuestSnapshots: importedGuestSnapshots, automaticSync: automaticSync, conversations: conversations,
+            try services.writeHistory(JSONEncoder().encode(HistoryCache(calendarEnabled: calendarEnabled, remindersEnabled: remindersEnabled, documents: localDocuments, importedGuestSnapshots: importedGuestSnapshots, automaticSync: automaticSync, conversations: conversations,
                 snapshot: historySnapshot, pending: pendingHistorySave, baseline: historyBaseline,
                 conversationIDs: historyConversationIDs, messageIDs: historyMessageIDs)), url)
             return true
