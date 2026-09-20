@@ -144,7 +144,7 @@ final class LocalInternetUITests: XCTestCase {
         let message = app.descendants(matching: .any).matching(identifier: "Message").firstMatch
         XCTAssertTrue(message.waitForExistence(timeout: 10))
         message.tap()
-        message.typeText("Utilise maintenant local_workspace, action fetch_website, query https://example.com, lhs 0. Consulte cette page et résume son contenu.")
+        message.typeText("Lis la page https://example.com avec ton outil fetch_website (GET, offset 0) et résume son contenu en français.")
         app.buttons["Envoyer"].tap()
         let deny = app.buttons["denyConversationInternet"]
         XCTAssertTrue(deny.waitForExistence(timeout: 40), "The first network call must ask permission")
