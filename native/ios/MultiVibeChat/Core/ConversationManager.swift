@@ -603,25 +603,24 @@ import Network
             self.stop(); self.error = LocalAgentError.budget.localizedDescription
         }
     }
-    private var deviceReadCount = 0
-    private var deviceReadStarted: Date?
+    private var deviceReads: [UUID: (count: Int, started: Date)] = [:]
     private func readDeviceData(action: String, query: String, generation: UUID, account: UUID) async throws -> String {
         try Task.checkCancellation()
         guard generationRevision == generation, sessionRevision == account else { throw CancellationError() }
-        if deviceReadCount == 0 {
-            deviceReadStarted = Date()
+        if deviceReads[generation] == nil {
+            deviceReads[generation] = (0, Date())
             generationDeadline?.cancel(); generationDeadline = nil
         }
-        deviceReadCount += 1
+        deviceReads[generation]!.count += 1
         defer {
-            deviceReadCount -= 1
-            if deviceReadCount == 0 {
+            deviceReads[generation]!.count -= 1
+            if deviceReads[generation]!.count == 0 {
                 if generationRevision == generation, sessionRevision == account,
-                   let started = deviceReadStarted, let expiry = generationExpiresAt {
+                   let started = deviceReads[generation]?.started, let expiry = generationExpiresAt {
                     generationExpiresAt = expiry.addingTimeInterval(Date().timeIntervalSince(started))
                     armGenerationDeadline(generation: generation, account: account)
                 }
-                deviceReadStarted = nil
+                deviceReads[generation] = nil
             }
         }
         let result = try await LocalDeviceData.read(action: action, query: query)
