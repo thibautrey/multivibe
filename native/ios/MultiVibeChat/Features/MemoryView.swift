@@ -37,7 +37,7 @@ struct MemoryView: View {
                                     Text(evidence.quote).textSelection(.enabled)
                                     if let prior = evidence.priorQuote { Text("Avant votre confirmation : " + prior) }
                                     Text("Rôle initial : " + evidence.sourceRole)
-                                    Text(evidence.date.formatted()).font(.caption)
+                                    Text("Noté ou confirmé le " + evidence.date.formatted()).font(.caption)
                                     Text("Identifiant mémoire : " + item.id.uuidString).font(.caption)
                                 }
                             }

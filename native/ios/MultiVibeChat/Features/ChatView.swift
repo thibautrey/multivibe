@@ -104,7 +104,7 @@ struct ChatView: View {
                                                         VStack(alignment: .leading) {
                                                             Text(source.topic).font(.caption.bold())
                                                             Text(evidence.quote).font(.caption).textSelection(.enabled)
-                                                            Text(evidence.date.formatted()).font(.caption2)
+                                                            Text("Noté ou confirmé le " + evidence.date.formatted()).font(.caption2)
                                                             Text("Source déclarée ou confirmée par vous ; pas une vérification externe.").font(.caption2)
                                                         }
                                                     } else { Text("Source oubliée ou indisponible sur cet appareil.").font(.caption) }
