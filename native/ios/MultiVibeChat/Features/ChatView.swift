@@ -66,7 +66,7 @@ struct ChatView: View {
                     else { Button("Se connecter") { manager.authenticationPresented = true }.accessibilityIdentifier("openAuthentication") }
                 }
                 ToolbarItem(placement: .secondaryAction) {
-                    Button("Documents locaux", systemImage: "doc") { documentsPresented = true }
+                    Button("Documents et outils locaux", systemImage: "doc") { documentsPresented = true }
                 }
             }
         } detail: {
@@ -148,7 +148,7 @@ struct ChatView: View {
                 }
                 if manager.selectedModel == LocalModel.id {
                     VStack(alignment: .leading, spacing: 5) {
-                        Label("Calcul sur cet iPhone · sans Internet", systemImage: "iphone")
+                        Label(manager.current?.internetPermission == .allowed ? "Calcul sur cet iPhone · Internet autorisé" : "Calcul sur cet iPhone · accès web sur autorisation", systemImage: "iphone")
                         if let reason = manager.localUnavailableReason { Text(reason).foregroundStyle(.secondary) }
                         if manager.isStreaming {
                             ForEach(manager.localEvents.suffix(3)) { event in Text(event.detail).font(.caption) }
@@ -185,6 +185,10 @@ struct ChatView: View {
                 }
             }
 
+        }
+        .sheet(item: Binding(get: { manager.internetApproval }, set: { _ in })) { request in
+            InternetPermissionView(request: request)
+                .interactiveDismissDisabled()
         }
         .alert("Supprimer cette conversation ?", isPresented: Binding(
             get: { conversationToDelete != nil },
@@ -534,6 +538,11 @@ struct LocalDocumentsView: View {
                         .disabled(manager.isStreaming)
                     if let failure { Text(failure).foregroundStyle(.red) }
                 }
+                Section("Données de l’iPhone") {
+                    Text("Lecture seule par le modèle local. Les passages repris dans une réponse font partie de l’historique si vous activez sa synchronisation.")
+                    Toggle("Lire le calendrier", isOn: Binding(get: { manager.calendarEnabled }, set: { enabled in Task { await manager.setCalendarEnabled(enabled) } }))
+                    Toggle("Lire les rappels", isOn: Binding(get: { manager.remindersEnabled }, set: { enabled in Task { await manager.setRemindersEnabled(enabled) } }))
+                }.disabled(manager.isStreaming)
                 ForEach(manager.localDocuments) { document in
                     NavigationLink(document.name) {
                         ScrollView { Text(document.text).textSelection(.enabled).padding() }
@@ -542,7 +551,7 @@ struct LocalDocumentsView: View {
                     }
                 }
             }
-            .navigationTitle("Documents locaux")
+            .navigationTitle("Outils locaux")
             .toolbar { Button("Terminé") { dismiss() } }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText]) { result in
                 do {
@@ -557,5 +566,27 @@ struct LocalDocumentsView: View {
                 } catch { failure = error.localizedDescription }
             }
         }
+    }
+}
+
+
+struct InternetPermissionView: View {
+    @Environment(ConversationManager.self) private var manager
+    let request: InternetApprovalRequest
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 20) {
+                Label("Autoriser l’accès à Internet ?", systemImage: "network").font(.title2.bold())
+                Text("L’agent souhaite consulter \(request.url.host ?? "un site web").")
+                Text("Les sites contactés recevront votre adresse IP et les URL demandées. Le modèle continue de fonctionner sur cet iPhone.")
+                Text("Votre choix est mémorisé pour cette conversation, y compris pour les autres sites demandés. Il ne change pas la synchronisation de l’historique.").foregroundStyle(.secondary)
+                Button("Autoriser pour cette conversation") { manager.resolveInternetApproval(allow: true) }
+                    .buttonStyle(.borderedProminent).accessibilityIdentifier("allowConversationInternet")
+                Button("Rester hors ligne") { manager.resolveInternetApproval(allow: false) }
+                    .buttonStyle(.bordered).accessibilityIdentifier("denyConversationInternet")
+                Button("Arrêter la demande", role: .cancel) { manager.stop() }
+                Spacer()
+            }.padding().navigationTitle("Accès Internet").navigationBarTitleDisplayMode(.inline)
+        }.presentationDetents([.medium, .large])
     }
 }

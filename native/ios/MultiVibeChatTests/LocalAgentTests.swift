@@ -239,3 +239,109 @@ import XCTest
         stream: stream, readLocalHistory: readLocalHistory, localAvailability: localAvailability,
         localRespond: localRespond, monitorConnectivity: monitorConnectivity, syncDelay: syncDelay, models: models)
 }
+
+@MainActor final class InternetConsentTests: XCTestCase {
+    actor FetchRecorder {
+        var count = 0
+        func fetch(_ url: URL, _ method: String) -> LocalWebResponse {
+            count += 1
+            return LocalWebResponse(url: url, status: 200, contentType: "text/plain", text: "Public information")
+        }
+    }
+    private func waitForPrompt(_ manager: ConversationManager) async {
+        for _ in 0..<2000 { if manager.internetApproval != nil || !manager.isStreaming { break }; await Task.yield() }
+    }
+    private func waitForCompletion(_ manager: ConversationManager) async {
+        for _ in 0..<2000 { if !manager.isStreaming { break }; await Task.yield() }
+    }
+    func testAllowAsksOnceAcrossToolCallsAndTurnsAndPersists() async throws {
+        var storage: Data?
+        let fetched = FetchRecorder()
+        var services = isolatedServices(writeHistory: { data, _ in storage = data },
+            readLocalHistory: { _ in guard let storage else { throw CocoaError(.fileReadNoSuchFile) }; return storage },
+            localAvailability: { nil })
+        services.localRespond = { _, workspace, output in
+            for url in ["https://example.com/one", "https://example.org/two"] {
+                _ = try await workspace.execute(action: "fetch_website", query: url, documentID: "", text: "", lhs: 0, rhs: 0)
+            }
+            await output("Finished")
+        }
+        services.webFetch = { await fetched.fetch($0, $1) }
+        let manager = ConversationManager(services: services)
+        await manager.restore()
+        XCTAssertTrue(manager.send("Consulte deux sites"))
+        await waitForPrompt(manager)
+        XCTAssertNotNil(manager.internetApproval)
+        let before = await fetched.count
+        XCTAssertEqual(before, 0, "No HTTP request before consent")
+        manager.resolveInternetApproval(allow: true)
+        await waitForCompletion(manager)
+        XCTAssertFalse(manager.isStreaming)
+        XCTAssertNil(manager.internetApproval)
+        XCTAssertEqual(manager.current?.internetPermission, .allowed)
+        XCTAssertTrue(manager.send("Encore"))
+        await waitForCompletion(manager)
+        XCTAssertNil(manager.internetApproval)
+        let after = await fetched.count
+        XCTAssertEqual(after, 4)
+        let restored = ConversationManager(services: services)
+        await restored.restore()
+        XCTAssertEqual(restored.conversations.first?.internetPermission, .allowed)
+        manager.newConversation()
+        XCTAssertTrue(manager.send("Autre conversation"))
+        await waitForPrompt(manager)
+        XCTAssertNotNil(manager.internetApproval)
+        manager.stop()
+    }
+    func testDenyIsRememberedAndNoRequestsAreMade() async throws {
+        var services = isolatedServices(localAvailability: { nil }, localRespond: { _, workspace, output in
+            let result = try await workspace.execute(action: "fetch_website", query: "https://example.com", documentID: "", text: "", lhs: 0, rhs: 0)
+            await output(result)
+        })
+        services.webFetch = { _, _ in XCTFail("Denied conversation must never fetch"); throw APIError.invalidResponse }
+        let manager = ConversationManager(services: services)
+        await manager.restore()
+        XCTAssertTrue(manager.send("Consulte ce site"))
+        await waitForPrompt(manager)
+        XCTAssertNotNil(manager.internetApproval)
+        manager.resolveInternetApproval(allow: false)
+        await waitForCompletion(manager)
+        XCTAssertEqual(manager.current?.internetPermission, .denied)
+        XCTAssertTrue(manager.send("Essaie encore"))
+        await waitForCompletion(manager)
+        XCTAssertNil(manager.internetApproval)
+        XCTAssertFalse(manager.isStreaming)
+        XCTAssertTrue(manager.current?.messages.last?.content.contains("refusé") == true)
+    }
+    func testStopDismissesPendingConsentWithoutPersistingADecision() async {
+        let manager = ConversationManager(services: isolatedServices(localAvailability: { nil }, localRespond: { _, workspace, output in
+            _ = try await workspace.execute(action: "fetch_website", query: "https://example.com", documentID: "", text: "", lhs: 0, rhs: 0)
+            await output("Should not appear")
+        }))
+        await manager.restore()
+        XCTAssertTrue(manager.send("Consulte ce site"))
+        await waitForPrompt(manager)
+        XCTAssertNotNil(manager.internetApproval)
+        manager.stop()
+        await waitForCompletion(manager)
+        XCTAssertNil(manager.internetApproval)
+        XCTAssertNil(manager.current?.internetPermission)
+        XCTAssertEqual(manager.current?.messages.last?.completion, .stopped)
+    }
+    func testPermissionDoesNotTravelThroughServerHistory() throws {
+        let conversation = Conversation(internetPermission: .allowed, model: LocalModel.id)
+        var snapshot = AccountHistorySnapshot(accountId: "fixture", revision: 0, conversations: [])
+        var ids: [String: UUID] = [:]
+        try snapshot.store(conversation, serverID: conversation.id.uuidString, messageIDs: &ids)
+        let restored = try snapshot.projectedConversation(at: 0, id: conversation.id, messageIDs: &ids)
+        XCTAssertNil(restored.internetPermission)
+    }
+    func testHTTPPolicyAndHTMLExtraction() throws {
+        for url in ["http://example.com", "file:///etc/passwd", "https://user:pass@example.com", "https://127.0.0.1", "https://192.168.1.149", "https://device.local", "https://localhost", "https://[::1]", "https://example.com:8200"] {
+            XCTAssertThrowsError(try LocalWebFetch.validatedURL(url), url)
+        }
+        XCTAssertEqual(try LocalWebFetch.validatedURL("https://example.com/page?q=hello").host, "example.com")
+        let text = LocalWebFetch.readableHTML("<html><script>secret()</script><style>hidden</style><p>Hello &amp; world</p></html>")
+        XCTAssertEqual(text, "Hello & world")
+    }
+}

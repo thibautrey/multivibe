@@ -14,6 +14,7 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
 struct Conversation: Codable, Identifiable, Equatable, Sendable {
     var id: UUID = UUID()
     var title = "Nouvelle conversation"
+    var internetPermission: ConversationInternetPermission?
     var model: String = ""
     var messages: [ChatMessage] = []
     var updatedAt = Date()
