@@ -288,7 +288,7 @@ import Network
     }
     @discardableResult func send(_ text: String) -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isRestoring, !isStreaming, !isSynchronizing else { return false }
+        guard !text.isEmpty, !isRestoring, !isStreaming, !isSynchronizing || selectedModel == LocalModel.id else { return false }
         guard session != nil || selectedModel == LocalModel.id else { error = APIError.authenticationRequired.localizedDescription; return false }
         guard storageLoaded else { error = "L’historique local n’a pas pu être ouvert. Il est conservé sans modification. Relancez l’app après avoir déverrouillé l’appareil."; return false }
         if selectedModel == LocalModel.id, let reason = localUnavailableReason { error = reason; return false }
@@ -302,7 +302,7 @@ import Network
     }
     /// Retry only the current tail, never truncate later turns or duplicate the prompt.
     @discardableResult func retry(conversation id: UUID, message: UUID) -> Bool {
-        guard !isStreaming, !isSynchronizing, selection == id,
+        guard !isStreaming, !isSynchronizing || current?.model == LocalModel.id, selection == id,
               let index = conversations.firstIndex(where: { $0.id == id }),
               let last = conversations[index].messages.last, last.id == message, last.canRetry,
               conversations[index].messages.dropLast().last?.role == "user",
@@ -433,6 +433,7 @@ import Network
     }
     private func resetHistorySync() {
         syncTask?.cancel(); syncTask = nil
+        isSynchronizing = false
         importedGuestSnapshots = [:]
         pendingHistorySave = nil
         historySnapshot = nil; historyBaseline = []; historyConversationIDs = [:]; historyMessageIDs = [:]
@@ -443,8 +444,8 @@ import Network
     func synchronizeHistory(keepingBothVersions: Bool = false, automatic: Bool = false) async {
         guard !isSynchronizing, !isStreaming, !isRestoring, storageLoaded, session != nil, !automatic || automaticSync else { return }
         isSynchronizing = true
-        defer { isSynchronizing = false }
         let accountRevision = sessionRevision
+        defer { if sessionRevision == accountRevision { isSynchronizing = false } }
         let local = conversations
         do {
             let session = try await validSession()
