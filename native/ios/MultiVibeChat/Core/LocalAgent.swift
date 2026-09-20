@@ -182,8 +182,14 @@ private struct WorkspaceTool: Tool {
         @Guide(description: "Second calculator operand, otherwise 0") var rhs: Double
     }
     func call(arguments: Arguments) async throws -> String {
-        try await workspace.execute(action: arguments.action, query: arguments.query,
-            documentID: arguments.documentID, text: arguments.text, lhs: arguments.lhs, rhs: arguments.rhs)
+        do {
+            return try await workspace.execute(action: arguments.action, query: arguments.query,
+                documentID: arguments.documentID, text: arguments.text, lhs: arguments.lhs, rhs: arguments.rhs)
+        } catch LocalAgentError.documentMissing {
+            return "Tool error: no imported document has that UUID. Use list_documents to find valid document IDs. For a website URL, call the separate fetch_website tool instead."
+        } catch LocalAgentError.invalidInput {
+            return "Tool error: invalid arguments. Check the action and parameters before retrying. Website URLs must use fetch_website, not read_document."
+        }
     }
 }
 
