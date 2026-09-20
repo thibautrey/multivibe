@@ -66,6 +66,7 @@ struct ChatView: View {
                     else { Button("Se connecter") { manager.authenticationPresented = true }.accessibilityIdentifier("openAuthentication") }
                 }
                 ToolbarItem(placement: .secondaryAction) {
+                    Button("Mémoire", systemImage: "brain") { manager.memoryPresented = true }.accessibilityIdentifier("openMemory")
                     Button("Documents et outils locaux", systemImage: "doc") { documentsPresented = true }
                 }
             }
@@ -108,6 +109,10 @@ struct ChatView: View {
                                             }
                                         }.labelStyle(.iconOnly).buttonStyle(.borderless).controlSize(.large)
                                             .foregroundStyle(.secondary)
+                                    }
+                                    if !message.content.isEmpty {
+                                        Button("Retenir", systemImage: "brain") { manager.draftMemory(from: message) }
+                                            .font(.caption).disabled(manager.isStreaming || manager.isSynchronizing)
                                     }
                                 }.frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
 
@@ -234,6 +239,8 @@ struct ChatView: View {
         } message: {
             Text("Les conversations modifiées sur cet appareil seront ajoutées comme copies locales. Les versions du compte seront conservées ; les suppressions locales ne seront pas appliquées au compte pendant cette résolution.")
         }
+        .sheet(isPresented: $manager.memoryPresented) { MemoryView() }
+        .sheet(item: Binding(get: { manager.memoryPresented ? nil : manager.memoryDraft }, set: { manager.memoryDraft = $0 })) { draft in MemoryEditor(draft: draft) }
         .sheet(isPresented: $documentsPresented) { LocalDocumentsView() }
         .sheet(isPresented: $privacyPresented) { NativePrivacyView() }
         .sheet(isPresented: $voicePresented) { VoiceConversationView() }

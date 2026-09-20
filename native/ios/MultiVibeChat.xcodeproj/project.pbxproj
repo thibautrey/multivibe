@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		003956616649C28F8B135B88 /* LocalWebFetch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B001301568AC61EB8AE8F59 /* LocalWebFetch.swift */; };
+		036E2BC5E7BD23973C3C4181 /* AgentMemory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68DE1C2DEDCA28B710DD6C5D /* AgentMemory.swift */; };
 		0A4A1A84E6560C97F714C2C9 /* VoiceController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82F71476C40CB1762E352DF5 /* VoiceController.swift */; };
 		1C8F8986E4465808FAB30AF7 /* LocalDeviceData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6636026081D44F2E5870C485 /* LocalDeviceData.swift */; };
 		3498F2842AD2073C13C61F4C /* SecureStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD2222EAEE8931D5CFBC41BA /* SecureStore.swift */; };
@@ -15,6 +16,7 @@
 		61EEC9C8DB8522810F721117 /* ChatAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EC3EFFD60CE2939BD5BCD88 /* ChatAPI.swift */; };
 		726A7A3E670153E53166E796 /* SSEParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42EEE3F6ED3F93F3854EAC51 /* SSEParserTests.swift */; };
 		77407A84E21962A60F63DC56 /* MultiVibeChatApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00217B9D7702B72A5569309F /* MultiVibeChatApp.swift */; };
+		8C1A0F4BD94755906DAE4B90 /* MemoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74D766009C5F24AF210383CA /* MemoryView.swift */; };
 		8FD1D22653DBCCB2B45A4CEA /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B36277A8CFF4EC17A06D2FC /* Models.swift */; };
 		915752F0CA99F9CFC83278C1 /* LocalAgentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3319D8F58B7782A53C37AF9B /* LocalAgentTests.swift */; };
 		91ABE914998A0252BC864813 /* AuthenticationUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73484D90F6B8C690FC806EBB /* AuthenticationUITests.swift */; };
@@ -22,6 +24,7 @@
 		AB19983233E7FE9F37CFDDDC /* LocalAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10A5C9556D7CAFE2EE22707 /* LocalAgent.swift */; };
 		C74FEFADAC73275DB726E5A6 /* AuthenticationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA4393E98F397246F4A41196 /* AuthenticationView.swift */; };
 		D82AAFC3C8F507B521619C45 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B3F9F268516DD34F81AB7817 /* Assets.xcassets */; };
+		D93DCB45C9AFA5ED65425AE5 /* AgentMemoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B34FCAA84CB37FAFCB223316 /* AgentMemoryTests.swift */; };
 		EDD89E16CC7EEE5F49D07739 /* ChatIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 626C77A820035BB712EF6520 /* ChatIntents.swift */; };
 		FE9F141E961C8316B702D426 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D23AAC6A6C06292DD31EC37 /* ChatView.swift */; };
 /* End PBXBuildFile section */
@@ -53,12 +56,15 @@
 		4EC3EFFD60CE2939BD5BCD88 /* ChatAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatAPI.swift; sourceTree = "<group>"; };
 		626C77A820035BB712EF6520 /* ChatIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatIntents.swift; sourceTree = "<group>"; };
 		6636026081D44F2E5870C485 /* LocalDeviceData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalDeviceData.swift; sourceTree = "<group>"; };
+		68DE1C2DEDCA28B710DD6C5D /* AgentMemory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentMemory.swift; sourceTree = "<group>"; };
 		73484D90F6B8C690FC806EBB /* AuthenticationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticationUITests.swift; sourceTree = "<group>"; };
+		74D766009C5F24AF210383CA /* MemoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryView.swift; sourceTree = "<group>"; };
 		82F71476C40CB1762E352DF5 /* VoiceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceController.swift; sourceTree = "<group>"; };
 		9A8B15C5C36771B67C287720 /* MultiVibeChat.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MultiVibeChat.entitlements; sourceTree = "<group>"; };
 		9B36277A8CFF4EC17A06D2FC /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		A10A5C9556D7CAFE2EE22707 /* LocalAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalAgent.swift; sourceTree = "<group>"; };
 		A69AFB0001BDEA3472C4FE21 /* MultiVibeChatTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = MultiVibeChatTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B34FCAA84CB37FAFCB223316 /* AgentMemoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentMemoryTests.swift; sourceTree = "<group>"; };
 		B3F9F268516DD34F81AB7817 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		C40B5C17410BA2068BAC1E38 /* MultiVibeChatUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = MultiVibeChatUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		CA4393E98F397246F4A41196 /* AuthenticationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticationView.swift; sourceTree = "<group>"; };
@@ -93,6 +99,7 @@
 			children = (
 				CA4393E98F397246F4A41196 /* AuthenticationView.swift */,
 				4D23AAC6A6C06292DD31EC37 /* ChatView.swift */,
+				74D766009C5F24AF210383CA /* MemoryView.swift */,
 				82F71476C40CB1762E352DF5 /* VoiceController.swift */,
 			);
 			path = Features;
@@ -131,6 +138,7 @@
 		A61722CD3AFEF006161E3043 /* Core */ = {
 			isa = PBXGroup;
 			children = (
+				68DE1C2DEDCA28B710DD6C5D /* AgentMemory.swift */,
 				4EC3EFFD60CE2939BD5BCD88 /* ChatAPI.swift */,
 				ED63046FBAF333333E159086 /* ConversationManager.swift */,
 				A10A5C9556D7CAFE2EE22707 /* LocalAgent.swift */,
@@ -163,6 +171,7 @@
 		EB53AE013465F9A3A0975BF0 /* MultiVibeChatTests */ = {
 			isa = PBXGroup;
 			children = (
+				B34FCAA84CB37FAFCB223316 /* AgentMemoryTests.swift */,
 				3319D8F58B7782A53C37AF9B /* LocalAgentTests.swift */,
 				42EEE3F6ED3F93F3854EAC51 /* SSEParserTests.swift */,
 			);
@@ -285,6 +294,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D93DCB45C9AFA5ED65425AE5 /* AgentMemoryTests.swift in Sources */,
 				915752F0CA99F9CFC83278C1 /* LocalAgentTests.swift in Sources */,
 				726A7A3E670153E53166E796 /* SSEParserTests.swift in Sources */,
 			);
@@ -294,6 +304,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				036E2BC5E7BD23973C3C4181 /* AgentMemory.swift in Sources */,
 				C74FEFADAC73275DB726E5A6 /* AuthenticationView.swift in Sources */,
 				61EEC9C8DB8522810F721117 /* ChatAPI.swift in Sources */,
 				EDD89E16CC7EEE5F49D07739 /* ChatIntents.swift in Sources */,
@@ -302,6 +313,7 @@
 				AB19983233E7FE9F37CFDDDC /* LocalAgent.swift in Sources */,
 				1C8F8986E4465808FAB30AF7 /* LocalDeviceData.swift in Sources */,
 				003956616649C28F8B135B88 /* LocalWebFetch.swift in Sources */,
+				8C1A0F4BD94755906DAE4B90 /* MemoryView.swift in Sources */,
 				8FD1D22653DBCCB2B45A4CEA /* Models.swift in Sources */,
 				77407A84E21962A60F63DC56 /* MultiVibeChatApp.swift in Sources */,
 				3498F2842AD2073C13C61F4C /* SecureStore.swift in Sources */,

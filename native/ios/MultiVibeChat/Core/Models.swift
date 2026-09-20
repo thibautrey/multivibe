@@ -15,6 +15,7 @@ struct Conversation: Codable, Identifiable, Equatable, Sendable {
     var id: UUID = UUID()
     var title = "Nouvelle conversation"
     var internetPermission: ConversationInternetPermission?
+    var memoryScope: String?
     var model: String = ""
     var messages: [ChatMessage] = []
     var updatedAt = Date()
@@ -187,6 +188,7 @@ struct AccountHistorySnapshot: Codable, Sendable {
     var revision: Int
     var conversations: [HistoryJSON]
     var folders: [HistoryJSON]?
+    var memory: [AgentMemory]?
 
     /// Display only the selected branch. Keep the raw snapshot alongside this
     /// projection: web identifiers need not be UUIDs and must never be rewritten.
@@ -224,7 +226,7 @@ struct AccountHistorySnapshot: Codable, Sendable {
             else if let parent = node["parentId"]?.string { cursor = parent }
             else { throw APIError.invalidResponse }
         }
-        return Conversation(id: id, title: title, model: item["model"]?.string ?? "", messages: messages.reversed(), updatedAt: Date(timeIntervalSince1970: timestamp / 1000))
+        return Conversation(id: id, title: title, memoryScope: item["multivibeMemoryScope"]?.string, model: item["model"]?.string ?? "", messages: messages.reversed(), updatedAt: Date(timeIntervalSince1970: timestamp / 1000))
     }
 }
 
@@ -279,6 +281,7 @@ extension AccountHistorySnapshot {
         item["id"] = .string(serverID); item["title"] = .string(conversation.title)
         item["updatedAt"] = .number(conversation.updatedAt.timeIntervalSince1970 * 1000)
         item["model"] = .string(conversation.model)
+        if let scope = conversation.memoryScope { item["multivibeMemoryScope"] = .string(scope) }
         if item["renamed"] == nil { item["renamed"] = .bool(false) }
         if item["draft"] == nil { item["draft"] = .string("") }
         item["repository"] = .object(repository)

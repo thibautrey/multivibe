@@ -1,0 +1,127 @@
+import XCTest
+@testable import MultiVibeChat
+
+@MainActor final class AgentMemoryTests: XCTestCase {
+    private func memory(_ text: String = "Je préfère le français", topic: String = "Langue", scope: String = "") -> AgentMemory {
+        AgentMemory(topic: topic, text: text, kind: .preference, scope: scope, state: .confirmed,
+            evidence: MemoryEvidence(origin: .userMessage, quote: text, date: Date(), sourceRole: "user"))
+    }
+    func testProposalsExpiredAndContradictionsAreExcluded() throws {
+        var proposed = memory(); proposed.state = .proposed
+        var expired = memory("Adresse ancienne", topic: "Adresse"); expired.kind = .temporary; expired.expiresAt = .distantPast
+        let a = memory(), b = memory("Je préfère l’anglais")
+        let items = MemoryPolicy.items([proposed, expired, a, b])
+        XCTAssertEqual(items.filter { $0.usable(now: Date()) }.count, 0)
+        XCTAssertTrue(items.first { $0.id == a.id }!.conflicting)
+        let index = try MemoryIndex(url: nil); try index.rebuild(items)
+        XCTAssertTrue(try index.search("français anglais Adresse", scope: "").isEmpty)
+    }
+    func testCorrectionDoesNotAccumulateOldFactsAndDeleteWinsAgainstOfflineCopy() throws {
+        let original = memory()
+        var correction = original; correction.version = UUID(); correction.ancestors = [original.version]; correction.text = "Je préfère l’anglais"
+        let merged = MemoryPolicy.merge([correction], [original])
+        XCTAssertEqual(MemoryPolicy.items(merged).first?.memory.text, correction.text)
+        let deleted = correction.tombstone()
+        let forgotten = MemoryPolicy.merge([deleted], merged)
+        XCTAssertTrue(MemoryPolicy.items(forgotten).isEmpty)
+        XCTAssertTrue(forgotten.allSatisfy { $0.text.isEmpty && $0.evidence == nil })
+    }
+    func testConcurrentCorrectionsRequireHumanResolution() {
+        let original = memory()
+        var a = original; a.version = UUID(); a.ancestors = [original.version]; a.text = "Anglais"
+        var b = original; b.version = UUID(); b.ancestors = [original.version]; b.text = "Italien"
+        let item = MemoryPolicy.items(MemoryPolicy.merge([original, a], [b])).first!
+        XCTAssertTrue(item.conflicting)
+        XCTAssertFalse(item.usable(now: Date()))
+    }
+    func testSearchHandlesAccentsQuotesScopeAndSources() throws {
+        let index = try MemoryIndex(url: nil)
+        let global = memory("Je préfère le café", topic: "Boisson")
+        let project = memory("Voyage à Rome", topic: "Destination", scope: "Vacances")
+        try index.rebuild(MemoryPolicy.items([global, project]))
+        XCTAssertEqual(try index.search("cafe \" OR *", scope: "").map(\.id), [global.id])
+        XCTAssertTrue(try index.search("Rome", scope: "").isEmpty)
+        XCTAssertEqual(try index.search("Rome", scope: "vacances").map(\.id), [project.id])
+        let rendered = MemoryPolicy.render(MemoryPolicy.items([global])[0])
+        XCTAssertTrue(rendered.contains(global.evidence!.quote))
+        XCTAssertTrue(rendered.contains(global.id.uuidString))
+    }
+    func testSQLitePersistsAndForgettingClearsIndex() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let record = memory()
+        do { let index = try MemoryIndex(url: url); try index.rebuild(MemoryPolicy.items([record])) }
+        let restored = try MemoryIndex(url: url)
+        XCTAssertEqual(try restored.search("français", scope: "").count, 1)
+        try restored.rebuild([])
+        XCTAssertTrue(try restored.search("français", scope: "").isEmpty)
+    }
+    func testManagerSaveRestoreCorrectionAndForget() async throws {
+        var storage: Data?
+        let services = isolatedServices(writeHistory: { data, _ in storage = data },
+            readLocalHistory: { _ in guard let storage else { throw CocoaError(.fileReadNoSuchFile) }; return storage })
+        let manager = ConversationManager(services: services); await manager.restore()
+        let draft = MemoryDraft(text: "Je préfère le français", evidence: MemoryEvidence(origin: .userEntry,
+            quote: "Je préfère le français", date: Date(), sourceRole: "user"), topic: "Langue")
+        XCTAssertTrue(manager.saveMemory(draft))
+        let restored = ConversationManager(services: services); await restored.restore()
+        XCTAssertEqual(restored.memoryItems.count, 1)
+        let id = restored.memoryItems[0].id
+        restored.editMemory(restored.memoryItems[0])
+        var edit = restored.memoryDraft!; edit.text = "Je préfère l’anglais"
+        XCTAssertTrue(restored.saveMemory(edit))
+        XCTAssertEqual(restored.memoryItems[0].memory.text, edit.text)
+        XCTAssertTrue(restored.forgetMemory(id))
+        let forgotten = ConversationManager(services: services); await forgotten.restore()
+        XCTAssertTrue(forgotten.memoryItems.isEmpty)
+        XCTAssertFalse(String(decoding: storage!, as: UTF8.self).contains("anglais"))
+    }
+    func testFailedPersistenceNeverMakesMemoryUsable() async {
+        let manager = ConversationManager(services: isolatedServices(writeHistory: { _, _ in throw MemoryError.storage }))
+        await manager.restore()
+        XCTAssertFalse(manager.saveMemory(MemoryDraft(text: "Paris", evidence: MemoryEvidence(origin: .userEntry,
+            quote: "Paris", date: Date(), sourceRole: "user"), topic: "Ville")))
+        XCTAssertTrue(manager.memoryItems.isEmpty)
+    }
+    func testGuestMemoryIsNotImportedOnAccountSwitch() async throws {
+        var disk: [String: Data] = [:]
+        let manager = ConversationManager(services: isolatedServices(writeHistory: { disk[$1.lastPathComponent] = $0 },
+            readLocalHistory: { url in guard let data = disk[url.lastPathComponent] else { throw CocoaError(.fileReadNoSuchFile) }; return data }))
+        await manager.restore()
+        XCTAssertTrue(manager.saveMemory(MemoryDraft(text: "Invité", evidence: MemoryEvidence(origin: .userEntry,
+            quote: "Invité", date: Date(), sourceRole: "user"), topic: "Identité")))
+        try await manager.accept(NativeSession(accessToken: "test", refreshToken: "test", expiresAt: .distantFuture, accountId: "account"))
+        XCTAssertTrue(manager.memoryItems.isEmpty)
+        await manager.logout()
+        XCTAssertEqual(manager.memoryItems.count, 1)
+    }
+    func testAssistantHistoryIsLabelledAndCannotCreateConfirmedMemory() async throws {
+        let workspace = LocalAgentWorkspace(conversations: [Conversation(messages: [ChatMessage(role: "assistant", content: "Votre chien est Rex")])],
+            documents: [], event: { _ in }, saveDocument: { _ in })
+        let result = try await workspace.execute(action: "search_conversations", query: "Rex", documentID: "", text: "", lhs: 0, rhs: 0)
+        XCTAssertTrue(result.contains("rôle assistant"))
+        XCTAssertTrue(result.contains("jamais une preuve"))
+    }
+    func testOptionalSyncMergesTombstonesAndRejectsOldBackendWithoutLosingLocalMemory() async throws {
+        let record = memory()
+        var remote = AccountHistorySnapshot(accountId: "a", revision: 1, conversations: [], memory: [record])
+        let services = isolatedServices(load: { NativeSession(accessToken: "t", refreshToken: "r", expiresAt: .distantFuture, accountId: "a") },
+            readHistory: { _ in remote }, saveHistory: { snapshot, _ in
+                var saved = snapshot; saved.revision += 1; remote = saved; return saved
+            })
+        let manager = ConversationManager(services: services); await manager.restore()
+        await manager.synchronizeHistory()
+        XCTAssertTrue(manager.memoryItems.isEmpty, "No consent must not import memory")
+        manager.setMemorySync(true)
+        for _ in 0..<100 { await Task.yield() }
+        XCTAssertEqual(manager.memoryItems.count, 1)
+        XCTAssertTrue(manager.forgetMemory(record.id))
+        await manager.synchronizeHistory()
+        XCTAssertEqual(remote.memory?.first?.state, .deleted)
+        remote.memory = [record]
+        remote.revision += 1
+        await manager.synchronizeHistory()
+        XCTAssertTrue(manager.memoryItems.isEmpty)
+        XCTAssertEqual(remote.memory?.first?.state, .deleted)
+    }
+}

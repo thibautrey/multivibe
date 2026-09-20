@@ -27,6 +27,7 @@ import Network
         try await LocalAgent.respond(messages: $0, workspace: $1, onText: $2)
     }
     var webFetch: @Sendable (URL, String) async throws -> LocalWebResponse = { try await LocalWebFetch.fetch(url: $0, method: $1) }
+    var memoryIndex: @MainActor (URL) throws -> MemoryIndex = { try MemoryIndex(url: $0) }
     var monitorConnectivity = true
     var syncDelay: @Sendable (Int) async throws -> Void = { attempt in try await Task.sleep(for: .seconds(min(60, 2 << attempt))) }
     var models: @MainActor (String) async throws -> [ModelOption] = { try await ChatAPI.shared.models(token: $0) }
@@ -45,7 +46,7 @@ import Network
                     await output(result)
                 }, webFetch: { url, _ in
                     LocalWebResponse(url: url, status: 200, contentType: "text/plain", text: "EXAMPLE-FETCH-SUCCEEDED")
-                }, monitorConnectivity: false))
+                }, memoryIndex: { _ in try MemoryIndex(url: nil) }, monitorConnectivity: false))
         }
         #endif
         return ConversationManager()
@@ -57,6 +58,15 @@ import Network
     var calendarEnabled = false
     var remindersEnabled = false
     var automaticSync = false
+    var memorySyncEnabled = false
+    private(set) var memoryRecords: [AgentMemory] = []
+    private var memoryBaseline: [AgentMemory] = []
+    private var memoryIndex: MemoryIndex?
+    var memoryError: String?
+    var memoryPresented = false
+    var memoryDraft: MemoryDraft?
+    var memoryItems: [MemoryItem] { MemoryPolicy.items(memoryRecords) }
+
     var authenticationPresented = false
     private(set) var internetApproval: InternetApprovalRequest?
     private var internetWaiters: [CheckedContinuation<Bool, Never>] = []
@@ -103,6 +113,7 @@ import Network
     var pendingDraft: String?
     private struct PendingHistorySave: Codable {
         var snapshot: AccountHistorySnapshot
+        var memory: [AgentMemory]?
         var local: [Conversation]
         var conversationIDs: [String: UUID]
         var messageIDs: [String: UUID]
@@ -111,6 +122,9 @@ import Network
     private var storageLoaded = false
     private var pendingHistorySave: PendingHistorySave?
     private struct HistoryCache: Codable {
+        var memory: [AgentMemory]?
+        var memoryBaseline: [AgentMemory]?
+        var memorySyncEnabled: Bool?
         var calendarEnabled: Bool?
         var remindersEnabled: Bool?
         var documents: [LocalDocument]?
@@ -149,6 +163,7 @@ import Network
         models = [LocalModel.option]
         selectedModel = LocalModel.id
         storageLoaded = false
+        memoryRecords = []; memoryBaseline = []; memoryIndex = nil; memoryDraft = nil; memorySyncEnabled = false; memoryError = nil
         calendarEnabled = false; remindersEnabled = false
         do {
             let data: Data?
@@ -156,6 +171,7 @@ import Network
             catch CocoaError.fileReadNoSuchFile { data = nil }
             if let data {
                 if let cache = try? JSONDecoder().decode(HistoryCache.self, from: data) {
+                    memoryRecords = cache.memory ?? []; memoryBaseline = cache.memoryBaseline ?? []; memorySyncEnabled = cache.memorySyncEnabled ?? false
                     calendarEnabled = cache.calendarEnabled ?? false
                     remindersEnabled = cache.remindersEnabled ?? false
                     localDocuments = cache.documents ?? []
@@ -174,6 +190,10 @@ import Network
                 }
             }
             storageLoaded = true
+            do {
+                memoryIndex = try services.memoryIndex(storageURL().deletingPathExtension().appendingPathExtension("memory.sqlite"))
+                try memoryIndex?.rebuild(memoryItems)
+            } catch { memoryError = MemoryError.storage.localizedDescription }
             if loadRemoteModels && session != nil { Task { await self.reloadModels() } }
         } catch { self.error = error.localizedDescription }
     }
@@ -326,6 +346,14 @@ import Network
         conversations[index].model = selectedModel
         conversations[index].messages.append(ChatMessage(role: "user", content: text))
         if conversations[index].messages.count == 1 { conversations[index].title = String(text.prefix(70)) }
+        if let remembered = MemoryCommand.remember(text) {
+            let source = conversations[index].messages.last!
+            memoryDraft = MemoryDraft(text: remembered, evidence: MemoryEvidence(origin: .userMessage, quote: source.content,
+                date: Date(), conversationID: id, messageID: source.id, sourceRole: "user"), scope: current?.memoryScope ?? "")
+            conversations[index].messages.append(ChatMessage(role: "assistant", content: "Validez le souvenir et sa source dans la fiche Mémoire avant son utilisation.", completion: .completed))
+            return persist()
+        }
+        if MemoryCommand.isForget(text) { memoryPresented = true; return persist() }
         return startReply(conversation: id, index: index)
     }
     /// Retry only the current tail, never truncate later turns or duplicate the prompt.
@@ -379,7 +407,10 @@ import Network
                             try await self.readDeviceData(action: action, query: query, generation: revision, account: accountRevision)
                         }, allowedDeviceActions: LocalDeviceScope.actions(for: input.last?.content ?? ""), authorizeInternet: { url in
                             try await self.requestInternet(url: url, conversation: id, generation: revision, account: accountRevision)
-                        }, webFetch: services.webFetch)
+                        }, webFetch: services.webFetch, memory: { action, query, text in
+                            try await self.memoryTool(action: action, query: query, text: text, conversation: id,
+                                source: input.last, generation: revision, account: accountRevision)
+                        })
                     try await services.localRespond(input, workspace) { delta in
                         await self.append(delta, conversation: id, message: reply.id, generation: revision, account: accountRevision)
                     }
@@ -485,12 +516,18 @@ import Network
         let accountRevision = sessionRevision
         defer { if sessionRevision == accountRevision { isSynchronizing = false } }
         let local = conversations
+        let localMemory = memoryRecords
+        let syncMemory = memorySyncEnabled
         do {
             let session = try await validSession()
-            let remote = try await services.readHistory(session.accessToken)
+            var remote = try await services.readHistory(session.accessToken)
+            if syncMemory {
+                guard remote.memory != nil else { throw APIError.server(503, "memory_sync_not_supported") }
+                guard remote.memory!.count <= 1000, remote.memory!.allSatisfy(\.valid) else { throw APIError.invalidResponse }
+            } else { remote.memory = nil }
             guard sessionRevision == accountRevision, !isStreaming, conversations == local else { return }
             try Task.checkCancellation()
-            guard !automatic || automaticSync else { return }
+            guard (!automatic || automaticSync), memorySyncEnabled == syncMemory else { return }
             guard remote.accountId == session.accountId else { throw APIError.invalidResponse }
             // Validate the downloaded projection before any mutating request.
             var validationIDs: [String: UUID] = [:]
@@ -506,8 +543,10 @@ import Network
                remote.revision == pending.snapshot.revision + 1,
                remote.accountId == pending.snapshot.accountId,
                remote.conversations == pending.snapshot.conversations,
-               remote.folders == pending.snapshot.folders {
+               remote.folders == pending.snapshot.folders,
+               remote.memory == pending.snapshot.memory {
                 historySnapshot = remote; historyBaseline = pending.local
+                if syncMemory { memoryBaseline = pending.memory ?? [] }
                 historyConversationIDs = pending.conversationIDs; historyMessageIDs = pending.messageIDs
                 pendingHistorySave = nil
                 guard persist() else { throw APIError.server(0, "history_cache_write_failed") }
@@ -520,9 +559,10 @@ import Network
                 return
             }
             var merged = remote
+            if syncMemory { merged.memory = MemoryPolicy.merge(localMemory.filter { $0.state != .proposed }, remote.memory ?? []) }
             var conversationIDs = historyConversationIDs
             var messageIDs = historyMessageIDs
-            if historySnapshot == nil || local != historyBaseline {
+            if historySnapshot == nil || local != historyBaseline || (syncMemory && merged.memory != remote.memory) {
                 let localIDs = Set(local.map(\.id))
                 let deleted = conflict ? Set<UUID>() : Set(historyBaseline.map(\.id)).subtracting(localIDs)
                 merged.conversations.removeAll { item in
@@ -546,13 +586,17 @@ import Network
                     conversationIDs[key] = conversation.id
                     try merged.store(conversation, serverID: key, messageIDs: &messageIDs)
                 }
-                pendingHistorySave = PendingHistorySave(snapshot: merged, local: local,
+                pendingHistorySave = PendingHistorySave(snapshot: merged, memory: syncMemory ? merged.memory : nil, local: local,
                     conversationIDs: conversationIDs, messageIDs: messageIDs)
                 // Persist recovery evidence before making the consequential request.
                 guard persist() else { throw APIError.server(0, "history_cache_write_failed") }
                 try Task.checkCancellation()
                 guard !automatic || automaticSync else { return }
                 merged = try await services.saveHistory(merged, session.accessToken)
+                if !syncMemory { merged.memory = nil }
+                if syncMemory {
+                    guard let records = merged.memory, records.count <= 1000, records.allSatisfy(\.valid) else { throw APIError.invalidResponse }
+                }
                 // A confirmed save is a new baseline even if the user edited locally
                 // while it was in flight. Never apply it to a different account.
                 guard sessionRevision == accountRevision else { return }
@@ -567,6 +611,11 @@ import Network
                 // Internet consent belongs to this device and conversation, never to a server payload.
                 conversation.internetPermission = conversations.first { $0.id == id }?.internetPermission
                 projected.append(conversation)
+            }
+            if syncMemory && memorySyncEnabled {
+                memoryRecords = MemoryPolicy.merge(memoryRecords, merged.memory ?? [])
+                memoryBaseline = merged.memory ?? []
+                refreshMemoryIndex()
             }
             hasHistoryConflict = false; pendingHistorySave = nil
             historySnapshot = merged; historyConversationIDs = conversationIDs; historyMessageIDs = messageIDs
@@ -774,10 +823,122 @@ import Network
                 do { try await services.syncDelay(attempt) } catch { return }
                 guard !Task.isCancelled, online, automaticSync, sessionRevision == revision, !hasHistoryConflict else { return }
                 await synchronizeHistory(automatic: true)
-                if historySnapshot != nil, pendingHistorySave == nil, conversations == historyBaseline { return }
+                if historySnapshot != nil, pendingHistorySave == nil, conversations == historyBaseline, !memorySyncEnabled || memoryRecords.filter({ $0.state != .proposed }) == memoryBaseline { return }
             }
         }
     }
+    func draftMemory(from message: ChatMessage) {
+        guard !isRestoring, !isStreaming, !isSynchronizing else { return }
+        memoryDraft = MemoryDraft(text: String(message.content.prefix(600)),
+            evidence: MemoryEvidence(origin: message.role == "user" ? .userMessage : .userConfirmation,
+                quote: String(message.content.prefix(4000)), date: current?.updatedAt ?? Date(),
+                conversationID: selection, messageID: message.id, sourceRole: message.role),
+            scope: current?.memoryScope ?? "")
+    }
+    func editMemory(_ item: MemoryItem) {
+        guard let evidence = item.memory.evidence else { return }
+        memoryDraft = MemoryDraft(id: item.memory.id, text: item.memory.text, evidence: evidence,
+            topic: item.memory.topic, kind: item.memory.kind, scope: item.memory.scope, expiresAt: item.memory.expiresAt,
+            replaces: item.memory.id)
+    }
+    @discardableResult func saveMemory(_ draft: MemoryDraft) -> Bool {
+        guard !isRestoring, !isStreaming, !isSynchronizing else { return false }
+        let old = memoryRecords
+        let related = memoryItems.filter { $0.memory.topicKey == MemoryPolicy.normalized(draft.scope) + "|" + MemoryPolicy.normalized(draft.topic) }
+        if related.contains(where: { $0.memory.id != draft.replaces && $0.memory.text != draft.text }) && !draft.resolveConflicts {
+            memoryError = "Un souvenir différent existe pour ce sujet. Choisissez explicitement de le remplacer."; return false
+        }
+        let existing = draft.replaces.flatMap { id in memoryRecords.first { $0.id == id && $0.state != .deleted } }
+        if let id = draft.replaces, memoryRecords.contains(where: { $0.id == id && $0.state == .deleted }) {
+            memoryError = "Ce souvenir a été oublié. Créez-en un nouveau si nécessaire."; return false
+        }
+        var evidence = draft.evidence
+        evidence.origin = draft.replaces == nil && evidence.sourceRole == "user" && draft.text == evidence.quote ? .userMessage : .userConfirmation
+        var memory = AgentMemory(id: existing?.id ?? UUID(), topic: draft.topic.trimmingCharacters(in: .whitespacesAndNewlines),
+            text: draft.text.trimmingCharacters(in: .whitespacesAndNewlines), kind: draft.kind,
+            scope: draft.scope.trimmingCharacters(in: .whitespacesAndNewlines), state: .confirmed, evidence: evidence,
+            expiresAt: draft.kind == .temporary ? draft.expiresAt : nil)
+        memory.ancestors = memoryRecords.filter { $0.id == memory.id }.map(\.version)
+        guard memory.valid, memoryRecords.count < 1000 else { memoryError = MemoryError.invalid.localizedDescription; return false }
+        if draft.resolveConflicts {
+            for item in related where item.memory.id != memory.id { forgetMemoryRecords(item.memory.id) }
+        }
+        memoryRecords.append(memory)
+        if !persist() { memoryRecords = old; return false }
+        refreshMemoryIndex(); memoryDraft = nil; scheduleAutomaticSync()
+        return true
+    }
+    @discardableResult func forgetMemory(_ id: UUID) -> Bool {
+        guard !isRestoring, !isStreaming, !isSynchronizing else { return false }
+        let old = memoryRecords
+        forgetMemoryRecords(id)
+        guard persist() else { memoryRecords = old; return false }
+        refreshMemoryIndex(); scheduleAutomaticSync(); return true
+    }
+    private func forgetMemoryRecords(_ id: UUID) {
+        guard let record = memoryRecords.first(where: { $0.id == id }) else { return }
+        let tombstone = record.tombstone()
+        memoryRecords.removeAll { $0.id == id }; memoryRecords.append(tombstone)
+        // Remove forgotten content from cached remote/recovery payloads too.
+        memoryBaseline.removeAll { $0.id == id }
+        historySnapshot?.memory?.removeAll { $0.id == id }
+        pendingHistorySave?.memory?.removeAll { $0.id == id }
+        pendingHistorySave?.snapshot.memory?.removeAll { $0.id == id }
+    }
+    func setMemorySync(_ enabled: Bool) {
+        guard session != nil, !isSynchronizing, !isStreaming, !isRestoring else { return }
+        let previous = memorySyncEnabled
+        memorySyncEnabled = enabled
+        if !enabled { historySnapshot?.memory = nil; memoryBaseline = [] }
+        if !persist() { memorySyncEnabled = previous; return }
+        if enabled { Task { await self.synchronizeHistory() } }
+    }
+    func setMemoryScope(_ scope: String) {
+        guard !isStreaming, !isSynchronizing, let id = selection,
+              let index = conversations.firstIndex(where: { $0.id == id }) else { return }
+        conversations[index].memoryScope = String(scope.prefix(80)); persist()
+    }
+    private func refreshMemoryIndex() {
+        do { guard let memoryIndex else { throw MemoryError.storage }; try memoryIndex.rebuild(memoryItems); memoryError = nil }
+        catch { memoryError = MemoryError.storage.localizedDescription; memoryIndex = nil }
+    }
+    private func memoryTool(action: String, query: String, text: String, conversation: UUID,
+                            source: ChatMessage?, generation: UUID, account: UUID) throws -> String {
+        guard generationRevision == generation, sessionRevision == account else { throw CancellationError() }
+        let scope = conversations.first { $0.id == conversation }?.memoryScope ?? ""
+        switch action {
+        case "search_memory":
+            guard let memoryIndex else { return MemoryError.storage.localizedDescription }
+            let matches = try memoryIndex.search(query, scope: scope)
+            let conflicts = memoryItems.contains { $0.conflicting && ($0.memory.scope.isEmpty || MemoryPolicy.normalized($0.memory.scope) == MemoryPolicy.normalized(scope)) }
+            let rendered = matches.map(MemoryPolicy.render).joined(separator: "\n\n")
+            return (conflicts ? "Des souvenirs contradictoires sont exclus. Demandez de les résoudre dans Mémoire.\n" : "")
+                + (rendered.isEmpty ? "Aucun souvenir validé, non expiré et pertinent. Ne rien déduire de cette absence." : String(rendered.prefix(3600)))
+        case "read_memory":
+            guard let id = UUID(uuidString: query), let item = memoryItems.first(where: { $0.id == id }),
+                  item.usable(now: Date()), item.memory.scope.isEmpty || MemoryPolicy.normalized(item.memory.scope) == MemoryPolicy.normalized(scope) else {
+                return "Souvenir absent, expiré ou contradictoire. Revérifiez auprès de l’utilisateur ou de l’outil approprié."
+            }
+            return MemoryPolicy.render(item)
+        case "propose_memory":
+            guard let source, source.role == "user", !text.isEmpty, text.count <= 600, !query.isEmpty, query.count <= 80,
+                  source.content.count <= 4000, source.content.contains(text) else {
+                return "Proposition refusée : utilisez une citation exacte du dernier message utilisateur, jamais une réponse assistant ou une inférence."
+            }
+            if memoryRecords.contains(where: { $0.evidence?.messageID == source.id && $0.text == text }) {
+                return "Cette proposition existe déjà. Elle doit être validée dans Mémoire."
+            }
+            guard memoryRecords.count < 1000 else { return "Mémoire pleine. Gérez les souvenirs dans Mémoire." }
+            let record = AgentMemory(topic: query, text: text, kind: .preference, scope: scope, state: .proposed,
+                evidence: MemoryEvidence(origin: .userMessage, quote: source.content, date: Date(),
+                    conversationID: conversation, messageID: source.id, sourceRole: "user"))
+            memoryRecords.append(record)
+            guard persist() else { memoryRecords.removeAll { $0.id == record.id }; throw MemoryError.storage }
+            return "Proposition enregistrée, NON utilisable et NON confirmée. Invitez l’utilisateur à la valider dans Mémoire."
+        default: return "Outil mémoire inconnu."
+        }
+    }
+
     private func historyURL(_ account: String) throws -> URL {
         // Hash account identifiers rather than accepting path components from a server.
         let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
@@ -787,7 +948,7 @@ import Network
         guard !isRestoring, storageLoaded else { return false }
         do {
             let url = try storageURL()
-            try services.writeHistory(JSONEncoder().encode(HistoryCache(calendarEnabled: calendarEnabled, remindersEnabled: remindersEnabled, documents: localDocuments, importedGuestSnapshots: importedGuestSnapshots, automaticSync: automaticSync, conversations: conversations,
+            try services.writeHistory(JSONEncoder().encode(HistoryCache(memory: memoryRecords, memoryBaseline: memoryBaseline, memorySyncEnabled: memorySyncEnabled, calendarEnabled: calendarEnabled, remindersEnabled: remindersEnabled, documents: localDocuments, importedGuestSnapshots: importedGuestSnapshots, automaticSync: automaticSync, conversations: conversations,
                 snapshot: historySnapshot, pending: pendingHistorySave, baseline: historyBaseline,
                 conversationIDs: historyConversationIDs, messageIDs: historyMessageIDs)), url)
             return true
