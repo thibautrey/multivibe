@@ -468,7 +468,15 @@ import Network
     }
     func delete(_ id: UUID) {
         if selection == id { stop(); selection = nil }
-        conversations.removeAll { $0.id == id }; persist(); scheduleAutomaticSync()
+        let oldConversations = conversations; let oldMemory = memoryRecords
+        let oldBaseline = memoryBaseline; let oldSnapshot = historySnapshot; let oldPending = pendingHistorySave
+        for memoryID in Set(memoryRecords.filter { $0.evidence?.conversationID == id }.map(\.id)) { forgetMemoryRecords(memoryID) }
+        conversations.removeAll { $0.id == id }
+        guard persist() else {
+            conversations = oldConversations; memoryRecords = oldMemory; memoryBaseline = oldBaseline
+            historySnapshot = oldSnapshot; pendingHistorySave = oldPending; return
+        }
+        refreshMemoryIndex(); scheduleAutomaticSync()
     }
     func logout() async {
         voice.silence()
