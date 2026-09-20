@@ -81,13 +81,13 @@ The iOS app offers `apple-foundation-local` alongside the account model catalog.
 It uses Apple's on-device `SystemLanguageModel` on iOS 26+ with Apple Intelligence
 available and its model downloaded. The app still supports iOS 18 for remote chat.
 Local inference is available without creating or signing into a MultiVibe account;
-it does not send completion requests or require a valid access token. There is no
+it does not send remote completion requests or require a valid access token. There is no
 implicit remote fallback.
 
 The native model/tool loop can search saved conversations, list/read imported
 UTF-8 text documents (100 KB each), perform arithmetic, obtain the current date,
-and create new local text documents that can be inspected/shared from Documents
-locaux. Tool calls share a 12-call and 120-second budget. Context overflow can
+and create new local text documents that can be inspected/shared from Outils
+locaux. Optional calendar, reminders and consent-gated web tools are described below. Tool calls share a 12-call and 120-second budget. Context overflow can
 restart with bounded successful tool observations twice, without resetting the
 budget. Created documents are deduplicated by title and contents. This is an
 app-scoped workspace, not access to arbitrary iPhone files, apps or web browsing.

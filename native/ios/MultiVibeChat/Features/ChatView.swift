@@ -587,6 +587,6 @@ struct InternetPermissionView: View {
                 Button("Arrêter la demande", role: .cancel) { manager.stop() }
                 Spacer()
             }.padding().navigationTitle("Accès Internet").navigationBarTitleDisplayMode(.inline)
-        }.presentationDetents([.medium, .large])
+        }.presentationDetents([.large])
     }
 }
