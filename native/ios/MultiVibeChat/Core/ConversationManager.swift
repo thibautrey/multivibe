@@ -924,13 +924,19 @@ import Network
         guard generationRevision == generation, sessionRevision == account else { throw CancellationError() }
         let scope = conversations.first { $0.id == conversation }?.memoryScope ?? ""
         switch action {
-        case "search_memory":
+        case "context_memory", "search_memory":
             guard let memoryIndex else { return MemoryError.storage.localizedDescription }
             let matches = try memoryIndex.search(query, scope: scope)
             let conflicts = memoryItems.contains { $0.conflicting && ($0.memory.scope.isEmpty || MemoryPolicy.normalized($0.memory.scope) == MemoryPolicy.normalized(scope)) }
-            let rendered = matches.map(MemoryPolicy.render).joined(separator: "\n\n")
+            let candidates = action == "context_memory" ? Array(matches.prefix(1)) : matches
+            var rendered = ""
+            for item in candidates {
+                let source = MemoryPolicy.render(item)
+                if rendered.count + source.count > 3600 { break }
+                rendered += (rendered.isEmpty ? "" : "\n\n") + source
+            }
             return (conflicts ? "Des souvenirs contradictoires sont exclus. Demandez de les résoudre dans Mémoire.\n" : "")
-                + (rendered.isEmpty ? "Aucun souvenir validé, non expiré et pertinent. Ne rien déduire de cette absence." : String(rendered.prefix(3600)))
+                + (rendered.isEmpty ? "Aucun souvenir validé, non expiré et pertinent. Ne rien déduire de cette absence." : rendered)
         case "read_memory":
             guard let id = UUID(uuidString: query), let item = memoryItems.first(where: { $0.id == id }),
                   item.usable(now: Date()), item.memory.scope.isEmpty || MemoryPolicy.normalized(item.memory.scope) == MemoryPolicy.normalized(scope) else {

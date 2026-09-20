@@ -50,7 +50,7 @@ actor Recorder {
         try index.rebuild(MemoryPolicy.items([remembered]))
         let memoryWorkspace = LocalAgentWorkspace(conversations: [], documents: [],
             event: { await memoryRecorder.record($0) }, saveDocument: { _ in }, memory: { action, query, _ in
-                guard action == "search_memory" || action == "read_memory" else { return "Proposition non validée." }
+                guard action == "context_memory" || action == "search_memory" || action == "read_memory" else { return "Proposition non validée." }
                 return try await MainActor.run {
                     if action == "read_memory" {
                         return UUID(uuidString: query) == remembered.id ? MemoryPolicy.render(MemoryPolicy.items([remembered])[0]) : "Souvenir absent."
@@ -63,7 +63,7 @@ actor Recorder {
         let memoryTools = await memoryRecorder.tools
         let memoryAnswer = await memoryRecorder.answer
         print("MEMORY_TOOLS=\(memoryTools) ANSWER=\(memoryAnswer)")
-        guard memoryTools.contains("search_memory"), memoryAnswer.contains("RIGEL-8931"), memoryAnswer.contains(remembered.id.uuidString) else { exit(1) }
+        guard memoryTools.contains("context_memory") || memoryTools.contains("search_memory"), memoryAnswer.contains("RIGEL-8931"), memoryAnswer.contains(remembered.id.uuidString) else { exit(1) }
         let live = try await LocalWebFetch.fetch(url: URL(string: "https://example.com")!, method: "GET")
         guard live.status == 200, live.text.contains("Example Domain") else { exit(1) }
         print("LIVE_HTTPS_GET=200 HTML_EXTRACTION=PASS")

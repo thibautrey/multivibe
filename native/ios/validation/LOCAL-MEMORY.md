@@ -22,8 +22,8 @@ require human review. Model instructions require clarification rather than infer
 
 A protected, atomic account/guest history journal is the durable source of truth.
 An account-scoped SQLite FTS5 index is rebuilt from eligible records; it is excluded
-from backup and protected by iOS file protection. Only three scoped matches are
-returned per search, with source quotations and dates. Missing/expired/proposed/
+from backup and protected by iOS file protection. The most relevant scoped match is supplied at the start of each local request;
+up to three complete scoped matches are returned by an explicit memory search, with source quotations and dates. Missing/expired/proposed/
 conflicting memories are never indexed as usable facts. Source messages and raw
 conversation search explicitly distinguish user statements from assistant guesses.
 No model fine-tuning or recursive summary is involved.
