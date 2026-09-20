@@ -112,15 +112,20 @@ struct MemoryEditor: View {
                 Section {
                     Toggle("Remplacer les souvenirs contradictoires du même sujet et projet", isOn: $draft.resolveConflicts)
                     if let error = manager.memoryError { Text(error).foregroundStyle(.red) }
-                    Button("Je confirme cette information") {
-                        if draft.evidence.quote.isEmpty { draft.evidence.quote = draft.text; draft.evidence.date = Date() }
-                        if manager.saveMemory(draft) { manager.memoryDraft = nil }
-                    }.disabled(draft.topic.trimmingCharacters(in: .whitespaces).isEmpty || draft.text.isEmpty)
-                        .accessibilityIdentifier("confirmMemory")
+
                 }
             }
             .navigationTitle(draft.replaces == nil ? "Retenir une information" : "Corriger le souvenir")
-            .toolbar { Button("Annuler") { manager.memoryDraft = nil; dismiss() } }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Annuler") { manager.memoryDraft = nil } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Valider") {
+                        if draft.evidence.quote.isEmpty { draft.evidence.quote = draft.text; draft.evidence.date = Date() }
+                        _ = manager.saveMemory(draft)
+                    }.disabled(draft.topic.trimmingCharacters(in: .whitespaces).isEmpty || draft.text.isEmpty)
+                        .accessibilityLabel("Je confirme cette information").accessibilityIdentifier("confirmMemory")
+                }
+            }
         }
     }
 }
