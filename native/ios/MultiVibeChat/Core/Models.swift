@@ -15,6 +15,7 @@ struct Conversation: Codable, Identifiable, Equatable, Sendable {
     var id: UUID = UUID()
     var title = "Nouvelle conversation"
     var internetPermission: ConversationInternetPermission?
+    var memorySourceID: UUID?
     var memoryScope: String?
     var model: String = ""
     var messages: [ChatMessage] = []
@@ -226,7 +227,7 @@ struct AccountHistorySnapshot: Codable, Sendable {
             else if let parent = node["parentId"]?.string { cursor = parent }
             else { throw APIError.invalidResponse }
         }
-        return Conversation(id: id, title: title, memoryScope: item["multivibeMemoryScope"]?.string, model: item["model"]?.string ?? "", messages: messages.reversed(), updatedAt: Date(timeIntervalSince1970: timestamp / 1000))
+        return Conversation(id: id, title: title, memorySourceID: item["multivibeSourceID"]?.string.flatMap(UUID.init(uuidString:)), memoryScope: item["multivibeMemoryScope"]?.string, model: item["model"]?.string ?? "", messages: messages.reversed(), updatedAt: Date(timeIntervalSince1970: timestamp / 1000))
     }
 }
 
@@ -278,6 +279,7 @@ extension AccountHistorySnapshot {
             parent = .string(id)
         }
         repository["messages"] = .array(entries); repository["headId"] = parent
+        item["multivibeSourceID"] = .string((conversation.memorySourceID ?? conversation.id).uuidString)
         item["id"] = .string(serverID); item["title"] = .string(conversation.title)
         item["updatedAt"] = .number(conversation.updatedAt.timeIntervalSince1970 * 1000)
         item["model"] = .string(conversation.model)
