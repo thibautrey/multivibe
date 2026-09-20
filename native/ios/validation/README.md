@@ -34,3 +34,23 @@ DerivedData, compiler caches and the task's disposable simulator were removed.
 No push, App Store release or server deployment was performed. Live account sync
 and real Calendar/Reminders permission behavior have not been exercised; their
 implementation is compiled, with synchronization covered by injected services.
+
+On-demand device data extension (2026-09-20): calendar, reminders, contacts and
+one-shot GPS use native iOS permissions only when called for an explicitly named
+source in the current user request. The app checks French/English source wording
+before reaching the permission API; ambiguous requests require clarification.
+A model-only instruction was insufficient: a real-model location probe also tried
+unrelated sources, motivating the app-owned gate and its regression test.
+Apple Mail inbox reading has no public iOS permission/API; the tool explains that
+messages must be imported or pasted. No mailbox connector or sending was added.
+Location uses no geocoding/network service, and reports coordinates and accuracy.
+System inactive transitions no longer cancel inference; backgrounding still does.
+
+The real Apple-model Mac harness selected current_location and reproduced injected
+coordinates, while web consent and live HTTPS checks also passed. This proves
+model/tool wiring, not real GPS acquisition or native iPhone permission behavior.
+The first iOS 27 simulator launch failed before tests; iOS 26.5 successfully ran
+82 unit tests (two hardware-only skips) and all eight UI tests before the final
+source-scope gate. The final gate passed 83 unit tests (two hardware-only skips), including its additional focused regression.
+Logs: /tmp/MULTIVIBE-3-tests.log, /tmp/MULTIVIBE-3-final-tests.log,
+and /tmp/MULTIVIBE-3-model-mac.log. Physical permission flows remain unverified.
