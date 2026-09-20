@@ -343,6 +343,8 @@ import Network
         generation = Task {
             defer {
                 if generationRevision == revision && sessionRevision == accountRevision {
+                    cancelInternetApproval()
+                    generationExpiresAt = nil
                     generationDeadline?.cancel(); generationDeadline = nil
                     isStreaming = false; generation = nil; activeReply = nil; persist(); scheduleAutomaticSync()
                 }
