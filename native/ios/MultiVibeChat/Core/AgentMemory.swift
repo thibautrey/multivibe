@@ -96,7 +96,7 @@ enum MemoryPolicy {
         }
         var result = Array(unique.values)
         for id in deleted {
-            if let tombstone = records.first(where: { $0.id == id && $0.state == .deleted }) {
+            if let tombstone = records.filter({ $0.id == id && $0.state == .deleted }).sorted(by: { $0.version.uuidString < $1.version.uuidString }).first {
                 result.append(tombstone)
             }
         }
