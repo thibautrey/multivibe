@@ -63,3 +63,10 @@ App Intents metadata. UI fixtures exercise the production foreground route, not
 Siri's speech recognition or the Shortcuts application. Physical Siri, installed
 Shortcuts execution, locked-device authentication and Action button invocation
 remain device acceptance checks.
+
+
+Local verification on 20 September 2026: all 111 runnable unit tests and two UI
+tests passed on iOS 26.5 simulator (two hardware tests skipped). Xcode extracted
+21 actions, 10 featured shortcuts and two entities. Log:
+`/tmp/MULTIVIBE-5-tests.log`. Dependencies and execution were validated on main;
+the worktree received source inspection and `git diff --check`.

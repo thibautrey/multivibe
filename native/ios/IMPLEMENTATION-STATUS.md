@@ -24,8 +24,10 @@ in older entries are superseded by this summary and subsequent validation entrie
   IDs, folders and unknown fields are retained. Revision conflicts require explicit
   keep-both consent; exact pending writes are persisted before POST for lost-response
   recovery. No automatic upload, last-write-wins overwrite, or E2EE claim.
-- Foreground device-authenticated App Intents: new conversation, dictation, draft,
-  and voice sheet. Drafting never sends a message. Optional compile-gated
+- 21 foreground device-authenticated App Intents, including composable local
+  inference, conversations, documents, memory review and voice; 10 featured
+  shortcuts. See [APP-INTENTS.md](validation/APP-INTENTS.md). Drafting never
+  sends a message. Optional compile-gated
   `.assistant.activate` adapter; no side-button entitlement enabled.
 - Mandatory on-device dictation, editable transcript, explicit Send and local speech
   playback. This is push-to-talk, **not full-duplex realtime voice**.
@@ -553,3 +555,17 @@ lifecycle integration remain outstanding.
   it shows the association diagnostic, not a browser or successful sign-in.
   Worktree checks: `git diff --check` passed; no dependency-backed builds were run
   in the worktree. No push was performed.
+
+
+### Native actions — 20 September 2026
+
+- Xcode-generated metadata verifies 21 actions, 10 featured shortcuts and two
+  account-scoped entities. Assistant activation remains disabled.
+- Main-branch iOS 26.5 simulator validation: 113 unit test invocations, two
+  hardware tests skipped, zero failures; two cold-launch UI tests passed.
+  Log: /tmp/MULTIVIBE-5-tests.log.
+- New coverage includes protected storage failure, account mismatch, deleted
+  entities, local model unavailability, pending restoration, explicit memory
+  review, local document import, local inference response, cancellation and
+  preservation of a subsequent run, and prepared draft navigation.
+- No push, release, deployment or physical Siri/Shortcuts acceptance performed.
