@@ -95,7 +95,7 @@ struct LocalDeviceSnapshot: Sendable {
 
 
 /// One-shot foreground location. No geocoder/network call or continuous tracking.
-@MainActor private final class LocalLocationRequest: NSObject, CLLocationManagerDelegate {
+@MainActor private final class LocalLocationRequest: NSObject, @preconcurrency CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     private var pending: CheckedContinuation<String, Error>?
     private var timeout: Task<Void, Never>?
