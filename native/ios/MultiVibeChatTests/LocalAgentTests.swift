@@ -13,7 +13,8 @@ import XCTest
         }
         let reads = Reads()
         let workspace = LocalAgentWorkspace(conversations: [], documents: [], event: { _ in },
-            saveDocument: { _ in }, readDevice: { await reads.read($0, $1) })
+            saveDocument: { _ in }, readDevice: { await reads.read($0, $1) },
+            allowedDeviceActions: ["read_calendar", "read_reminders", "read_contacts", "current_location", "read_mail"])
         _ = try await workspace.execute(action: "current_date", query: "", documentID: "", text: "", lhs: 0, rhs: 0)
         let before = await reads.count()
         XCTAssertEqual(before, 0)
@@ -25,6 +26,18 @@ import XCTest
         XCTAssertEqual(after, 5)
         let result = try await workspace.execute(action: "add", query: "", documentID: "", text: "", lhs: 2, rhs: 3)
         XCTAssertEqual(result, "5.0")
+    }
+
+    func testLocationRequestCannotPromptForContacts() async throws {
+        let scope = LocalDeviceScope.actions(for: "Where are we?")
+        XCTAssertEqual(scope, ["current_location"])
+        XCTAssertEqual(LocalDeviceScope.actions(for: "Où sommes-nous ?"), ["current_location"])
+        XCTAssertEqual(LocalDeviceScope.actions(for: "Lis mon calendrier et mes rappels"), ["read_calendar", "read_reminders"])
+        let workspace = LocalAgentWorkspace(conversations: [], documents: [], event: { _ in }, saveDocument: { _ in },
+            readDevice: { _, _ in XCTFail("Unrelated data must never reach native permissions"); return "" },
+            allowedDeviceActions: scope)
+        let result = try await workspace.execute(action: "read_contacts", query: "", documentID: "", text: "", lhs: 0, rhs: 0)
+        XCTAssertTrue(result.contains("Aucune permission"))
     }
 
     func testMailExplainsPlatformLimitWithoutPermission() async throws {

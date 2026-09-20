@@ -48,6 +48,24 @@ enum LocalAgentError: LocalizedError {
     }
 }
 
+/// App-owned scope: model tool selection alone must not prompt for unrelated personal data.
+/// Ambiguous follow-ups ask for an explicit request instead of widening access.
+enum LocalDeviceScope {
+    static func actions(for request: String) -> Set<String> {
+        let text = request.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+        let patterns = [
+            "read_calendar": #"\b(calendar|calendrier|agenda|appointments?|rendez-vous|events?|evenements?)\b"#,
+            "read_reminders": #"\b(reminders?|rappels?|todo|to-do)\b"#,
+            "read_contacts": #"\b(contacts?|address book|carnet d.adresses|phone number|numero de telephone)\b"#,
+            "current_location": #"\b(where am i|where are we|where are you|location|position|gps|coordinates|coordonnees|ou suis.je|ou sommes.nous|ou on est|ou est.on|localis\w*)\b"#,
+            "read_mail": #"\b(mails?|emails?|e-mails?|courriels?|inbox|boite mail)\b"#
+        ]
+        return Set(patterns.compactMap { action, pattern in
+            text.range(of: pattern, options: .regularExpression) == nil ? nil : action
+        })
+    }
+}
+
 /// A run has a bounded tool budget, read-only snapshots, and app-owned output creation.
 /// Web access is gated by a conversation decision. No shell, arbitrary file paths, or credentials.
 actor LocalAgentWorkspace {
@@ -57,6 +75,7 @@ actor LocalAgentWorkspace {
     private var deadline: Date
     private let conversations: [Conversation]
     private var documents: [LocalDocument]
+    private let allowedDeviceActions: Set<String>
     private let deviceData: LocalDeviceSnapshot
     private let readDevice: (@Sendable (String, String) async throws -> String)?
     private let authorizeInternet: @Sendable (URL) async throws -> Bool
@@ -69,10 +88,12 @@ actor LocalAgentWorkspace {
          saveDocument: @escaping @Sendable (LocalDocument) async throws -> Void,
          deadline: Date = Date().addingTimeInterval(120),
          readDevice: (@Sendable (String, String) async throws -> String)? = nil,
+         allowedDeviceActions: Set<String> = [],
          authorizeInternet: @escaping @Sendable (URL) async throws -> Bool = { _ in false },
          webFetch: @escaping @Sendable (URL, String) async throws -> LocalWebResponse = { try await LocalWebFetch.fetch(url: $0, method: $1) }) {
         self.conversations = conversations; self.documents = documents; self.deviceData = deviceData
         self.event = event; self.saveDocument = saveDocument; self.deadline = deadline
+        self.allowedDeviceActions = allowedDeviceActions
         self.readDevice = readDevice
         self.authorizeInternet = authorizeInternet; self.webFetch = webFetch
     }
@@ -161,6 +182,9 @@ actor LocalAgentWorkspace {
             return String(result)
         case "read_calendar", "read_reminders", "read_contacts", "current_location", "read_mail":
             if let readDevice {
+                guard allowedDeviceActions.contains(action) else {
+                    return "Accès non demandé : demandez à l’utilisateur de préciser explicitement la source souhaitée. Aucune permission demandée et aucune donnée lue."
+                }
                 let started = Date()
                 defer { deadline = deadline.addingTimeInterval(Date().timeIntervalSince(started)) }
                 let result = try await readDevice(action, query)
