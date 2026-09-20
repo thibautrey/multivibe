@@ -215,7 +215,10 @@ struct AccountHistorySnapshot: Codable, Sendable {
             messageIDs[key] = localID
             let status = message["status"]?.object?["type"]?.string
             let completion: ChatMessage.Completion? = role != "assistant" ? nil : status == "complete" ? .completed : status == "incomplete" ? .stopped : nil
-            messages.append(ChatMessage(id: localID, role: role, content: text, completion: completion))
+            let events = try message["multivibeLocalEvents"].map {
+                try JSONDecoder().decode([LocalAgentEvent].self, from: JSONEncoder().encode($0))
+            }
+            messages.append(ChatMessage(id: localID, role: role, content: text, localEvents: events, completion: completion))
             if node["parentId"] == .null { cursor = nil }
             else if let parent = node["parentId"]?.string { cursor = parent }
             else { throw APIError.invalidResponse }
@@ -259,6 +262,9 @@ extension AccountHistorySnapshot {
                 "createdAt": .string(ISO8601DateFormatter().string(from: conversation.updatedAt)),
                 "content": .array([.object(["type": .string("text"), "text": .string(message.content)])])
             ]
+            if let events = message.localEvents {
+                node["multivibeLocalEvents"] = try JSONDecoder().decode(HistoryJSON.self, from: JSONEncoder().encode(events))
+            }
             if message.role == "assistant" {
                 let complete = message.completion == .completed
                 node["status"] = .object(["type": .string(complete ? "complete" : "incomplete"),
