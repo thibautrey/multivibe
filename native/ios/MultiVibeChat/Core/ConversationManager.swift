@@ -26,6 +26,8 @@ import Network
     var localRespond: @Sendable ([ChatMessage], LocalAgentWorkspace, @escaping @Sendable (String) async -> Void) async throws -> Void = {
         try await LocalAgent.respond(messages: $0, workspace: $1, onText: $2)
     }
+    var monitorConnectivity = true
+    var syncDelay: @Sendable (Int) async throws -> Void = { attempt in try await Task.sleep(for: .seconds(min(60, 2 << attempt))) }
     var models: @MainActor (String) async throws -> [ModelOption] = { try await ChatAPI.shared.models(token: $0) }
 }
 
@@ -82,11 +84,12 @@ import Network
         var conversationIDs: [String: UUID]
         var messageIDs: [String: UUID]
     }
-    private var importedGuestIDs: Set<UUID> = []
+    private var importedGuestSnapshots: [UUID: Conversation] = [:]
+    private var storageLoaded = false
     private var pendingHistorySave: PendingHistorySave?
     private struct HistoryCache: Codable {
         var documents: [LocalDocument]?
-        var importedGuestIDs: Set<UUID>?
+        var importedGuestSnapshots: [UUID: Conversation]?
         var automaticSync: Bool?
         var conversations: [Conversation]
         var snapshot: AccountHistorySnapshot?
@@ -112,7 +115,7 @@ import Network
     private var generationRevision = UUID()
     var current: Conversation? { conversations.first { $0.id == selection } }
 
-    func restore() async {
+    func restore(loadRemoteModels: Bool = true) async {
         let restoration = UUID()
         restorationRevision = restoration
         isRestoring = true
@@ -120,12 +123,16 @@ import Network
         startNetworkMonitoring()
         models = [LocalModel.option]
         selectedModel = LocalModel.id
+        storageLoaded = false
         do {
-            if let data = try? services.readLocalHistory(storageURL()) {
+            let data: Data?
+            do { data = try services.readLocalHistory(storageURL()) }
+            catch CocoaError.fileReadNoSuchFile { data = nil }
+            if let data {
                 if let cache = try? JSONDecoder().decode(HistoryCache.self, from: data) {
                     localDocuments = cache.documents ?? []
                     automaticSync = cache.automaticSync ?? false
-                    importedGuestIDs = cache.importedGuestIDs ?? []
+                    importedGuestSnapshots = cache.importedGuestSnapshots ?? [:]
                     conversations = cache.conversations
                     pendingHistorySave = cache.pending
                     historySnapshot = cache.snapshot; historyBaseline = cache.baseline
@@ -138,7 +145,8 @@ import Network
                     }
                 }
             }
-            if session != nil { Task { await self.reloadModels() } }
+            storageLoaded = true
+            if loadRemoteModels && session != nil { Task { await self.reloadModels() } }
         } catch { self.error = error.localizedDescription }
     }
     /// Explicit network recovery without re-reading or replacing local history.
@@ -275,7 +283,7 @@ import Network
     }
     @discardableResult func send(_ text: String) -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isStreaming, !isSynchronizing else { return false }
+        guard !text.isEmpty, !isRestoring, !isStreaming, !isSynchronizing else { return false }
         guard session != nil || selectedModel == LocalModel.id else { error = APIError.authenticationRequired.localizedDescription; return false }
         if selectedModel == LocalModel.id, let reason = localUnavailableReason { error = reason; return false }
         guard !selectedModel.isEmpty else { error = APIError.noModel.localizedDescription; return false }
@@ -418,15 +426,15 @@ import Network
     }
     private func resetHistorySync() {
         syncTask?.cancel(); syncTask = nil
-        importedGuestIDs = []
+        importedGuestSnapshots = [:]
         pendingHistorySave = nil
         historySnapshot = nil; historyBaseline = []; historyConversationIDs = [:]; historyMessageIDs = [:]
         historyStatus = nil; hasHistoryConflict = false
     }
     /// Explicit synchronization: no upload of legacy local history without a tap.
     /// Never resolve concurrent edits by silently choosing one device's snapshot.
-    func synchronizeHistory(keepingBothVersions: Bool = false) async {
-        guard !isSynchronizing, !isStreaming, !isRestoring, session != nil else { return }
+    func synchronizeHistory(keepingBothVersions: Bool = false, automatic: Bool = false) async {
+        guard !isSynchronizing, !isStreaming, !isRestoring, storageLoaded, session != nil, !automatic || automaticSync else { return }
         isSynchronizing = true
         defer { isSynchronizing = false }
         let accountRevision = sessionRevision
@@ -435,6 +443,8 @@ import Network
             let session = try await validSession()
             let remote = try await services.readHistory(session.accessToken)
             guard sessionRevision == accountRevision, !isStreaming, conversations == local else { return }
+            try Task.checkCancellation()
+            guard !automatic || automaticSync else { return }
             guard remote.accountId == session.accountId else { throw APIError.invalidResponse }
             // Validate the downloaded projection before any mutating request.
             var validationIDs: [String: UUID] = [:]
@@ -494,6 +504,8 @@ import Network
                     conversationIDs: conversationIDs, messageIDs: messageIDs)
                 // Persist recovery evidence before making the consequential request.
                 guard persist() else { throw APIError.server(0, "history_cache_write_failed") }
+                try Task.checkCancellation()
+                guard !automatic || automaticSync else { return }
                 merged = try await services.saveHistory(merged, session.accessToken)
                 // A confirmed save is a new baseline even if the user edited locally
                 // while it was in flight. Never apply it to a different account.
@@ -567,14 +579,14 @@ import Network
         do {
             let cache = try JSONDecoder().decode(HistoryCache.self, from: services.readLocalHistory(guestHistoryURL()))
             let previous = conversations
-            let imported = importedGuestIDs
-            for original in cache.conversations where !importedGuestIDs.contains(original.id) {
+            let imported = importedGuestSnapshots
+            for original in cache.conversations where importedGuestSnapshots[original.id] != original {
                 var copy = original
                 copy.id = UUID()
                 conversations.append(copy)
-                importedGuestIDs.insert(original.id)
+                importedGuestSnapshots[original.id] = original
             }
-            guard persist() else { conversations = previous; importedGuestIDs = imported; return }
+            guard persist() else { conversations = previous; importedGuestSnapshots = imported; return }
             historyStatus = "Conversations invitées copiées dans ce compte. Les originaux restent sur cet appareil."
             scheduleAutomaticSync()
         } catch { historyStatus = "Aucun historique invité lisible à importer." }
@@ -591,24 +603,33 @@ import Network
         scheduleAutomaticSync()
     }
     private func startNetworkMonitoring() {
-        guard !monitoringNetwork else { return }
+        guard services.monitorConnectivity, !monitoringNetwork else { return }
         monitoringNetwork = true
         networkMonitor.pathUpdateHandler = { [weak self] path in
             let reachable = path.status == .satisfied
             Task { @MainActor [weak self] in
-                self?.online = reachable
-                if reachable { self?.scheduleAutomaticSync() }
+                self?.connectivityChanged(reachable)
             }
         }
         networkMonitor.start(queue: DispatchQueue(label: "cloud.multivibe.chat.connectivity"))
     }
+    func connectivityChanged(_ reachable: Bool) {
+        online = reachable
+        if reachable { scheduleAutomaticSync() }
+        else { syncTask?.cancel(); syncTask = nil }
+    }
     private func scheduleAutomaticSync() {
         guard automaticSync, online, session != nil, !isRestoring, !isStreaming, !hasHistoryConflict else { return }
         syncTask?.cancel()
+        let revision = sessionRevision
         syncTask = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(2)) } catch { return }
-            guard let self, !Task.isCancelled else { return }
-            await self.synchronizeHistory()
+            guard let self else { return }
+            for attempt in 0..<5 {
+                do { try await services.syncDelay(attempt) } catch { return }
+                guard !Task.isCancelled, online, automaticSync, sessionRevision == revision, !hasHistoryConflict else { return }
+                await synchronizeHistory(automatic: true)
+                if historySnapshot != nil, pendingHistorySave == nil, conversations == historyBaseline { return }
+            }
         }
     }
     private func historyURL(_ account: String) throws -> URL {
@@ -617,10 +638,10 @@ import Network
         return directory.appendingPathComponent("history-" + SHA256.hash(data: Data(account.utf8)).map { String(format: "%02x", $0) }.joined() + ".json")
     }
     @discardableResult private func persist() -> Bool {
-        guard !isRestoring else { return false }
+        guard !isRestoring, storageLoaded else { return false }
         do {
             let url = try storageURL()
-            try services.writeHistory(JSONEncoder().encode(HistoryCache(documents: localDocuments, importedGuestIDs: importedGuestIDs, automaticSync: automaticSync, conversations: conversations,
+            try services.writeHistory(JSONEncoder().encode(HistoryCache(documents: localDocuments, importedGuestSnapshots: importedGuestSnapshots, automaticSync: automaticSync, conversations: conversations,
                 snapshot: historySnapshot, pending: pendingHistorySave, baseline: historyBaseline,
                 conversationIDs: historyConversationIDs, messageIDs: historyMessageIDs)), url)
             return true

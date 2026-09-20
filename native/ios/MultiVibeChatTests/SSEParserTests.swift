@@ -257,6 +257,7 @@ final class PasswordResetLinkTests: XCTestCase {
             if inputs.count == 1 { throw APIError.invalidResponse }
         })
         let manager = ConversationManager(services: services)
+        await manager.restore(loadRemoteModels: false)
         manager.models = [ModelOption(id: "fixture")]; manager.selectedModel = "fixture"
         XCTAssertTrue(manager.send("hello"))
         for _ in 0..<1000 { if !manager.isStreaming { break }; await Task.yield() }
@@ -285,6 +286,7 @@ final class PasswordResetLinkTests: XCTestCase {
             await delta("must not appear")
         })
         let manager = ConversationManager(services: services)
+        await manager.restore(loadRemoteModels: false)
         manager.models = [ModelOption(id: "fixture")]; manager.selectedModel = "fixture"
         XCTAssertTrue(manager.send("hello"))
         for _ in 0..<1000 { if resume != nil { break }; await Task.yield() }
@@ -708,12 +710,12 @@ final class MessageMarkdownTests: XCTestCase {
         XCTAssertEqual(manager.selectedModel, "")
         XCTAssertEqual(manager.current?.model, "old")
     }
-    func testEmptyCatalogHasRetryableExplanation() async {
+    func testEmptyRemoteCatalogStillOffersLocalModel() async {
         let credentials = session()
         let manager = ConversationManager(services: SessionServices(load: { credentials }, models: { _ in [] }))
         await manager.reloadModels()
-        XCTAssertNotNil(manager.modelsError)
-        XCTAssertTrue(manager.models.isEmpty)
+        XCTAssertNil(manager.modelsError)
+        XCTAssertEqual(manager.models.map(\.id), [LocalModel.id])
     }
     func testLateCatalogCannotRestoreLoggedOutAccount() async throws {
         let credentials = session()
@@ -732,7 +734,7 @@ final class MessageMarkdownTests: XCTestCase {
         continuation.resume(returning: [ModelOption(id: "stale")])
         await task.value
         XCTAssertNil(manager.session)
-        XCTAssertTrue(manager.models.isEmpty)
+        XCTAssertEqual(manager.models.map(\.id), [LocalModel.id])
         XCTAssertNil(manager.modelsError)
         XCTAssertFalse(manager.isLoadingModels)
     }

@@ -28,7 +28,9 @@ import XCTest
     func testGuestHistoryRestoresWithoutNetwork() async throws {
         var storage: [String: Data] = [:]
         let services = SessionServices(writeHistory: { storage[$1.lastPathComponent] = $0 }, load: { nil },
-            readLocalHistory: { url in try XCTUnwrap(storage[url.lastPathComponent]) },
+            readLocalHistory: { url in
+                guard let data = storage[url.lastPathComponent] else { throw CocoaError(.fileReadNoSuchFile) }; return data
+            },
             localAvailability: { nil }, localRespond: { _, _, output in await output("Réponse locale") })
         let first = ConversationManager(services: services)
         await first.restore()
