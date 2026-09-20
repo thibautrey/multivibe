@@ -382,6 +382,8 @@ import Network
                 quote: text, date: Date(), sourceRole: "user"))
         }
         if let name = request.documentName, let text = request.documentText {
+            guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw NativeShortcutError.empty }
             try importDocument(name: name, text: text)
         }
         return request
@@ -392,6 +394,40 @@ import Network
               let conversation = conversations.first(where: { $0.id == id }) else { throw NativeShortcutError.missing }
         return conversation
     }
+    func askLocalFromShortcut(_ prompt: String) async throws -> String {
+        guard !isRestoring, storageLoaded else { throw NativeShortcutError.notReady }
+        guard !isStreaming, !isSynchronizing else { throw NativeShortcutError.busy }
+        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              prompt.count <= 32_000 else { throw LocalAgentError.invalidInput }
+        if let reason = localUnavailableReason { throw LocalAgentError.unavailable(reason) }
+        prepareShortcut(.draft(""))
+        pendingDraft = nil
+        selectedModel = LocalModel.id
+        newConversation()
+        let account = sessionRevision
+        guard let conversation = selection, send(prompt) else { throw NativeShortcutError.busy }
+        let reply = current?.messages.last?.id
+        do {
+            let deadline = Date().addingTimeInterval(125)
+            while isStreaming {
+                try Task.checkCancellation()
+                guard sessionRevision == account, selection == conversation else { throw CancellationError() }
+                guard Date() < deadline else { throw LocalAgentError.budget }
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            guard sessionRevision == account, selection == conversation,
+                  let result = current?.messages.last, result.id == reply,
+                  result.role == "assistant", result.completion == .completed,
+                  !result.content.isEmpty else { throw NativeShortcutError.noReply }
+            return result.content
+        } catch {
+            // Never stop a different run started while this intent was suspended.
+            if sessionRevision == account, selection == conversation,
+               current?.messages.last?.id == reply { stop() }
+            throw error
+        }
+    }
+
     func newConversation() {
         guard !isRestoring, storageLoaded else { return }
         stop()

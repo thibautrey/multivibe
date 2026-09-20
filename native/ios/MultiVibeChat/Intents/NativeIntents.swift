@@ -260,3 +260,78 @@ struct StopMultiVibeAudioIntent: AppIntent {
         return .result()
     }
 }
+
+struct AskLocalMultiVibeIntent: AppIntent {
+    static let title: LocalizedStringResource = "Demander à Apple Foundation Local"
+    static let description = IntentDescription("Envoie une demande au modèle local et retourne la réponse au raccourci. Gardez MultiVibe ouvert. Les outils demandent leurs autorisations habituelles ; aucun modèle distant n’est utilisé.")
+    static let openAppWhenRun = true
+    static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
+    @Parameter(title: "Demande") var prompt: String
+    static var parameterSummary: some ParameterSummary { Summary("Demander localement \(\.$prompt)") }
+    @MainActor func perform() async throws -> some IntentResult & ReturnsValue<String> {
+        let manager = ConversationManager.shared
+        await manager.restoreForNativeEntry()
+        return .result(value: try await manager.askLocalFromShortcut(prompt))
+    }
+}
+
+struct ReadMultiVibeReplyAloudIntent: AppIntent {
+    static let title: LocalizedStringResource = "Lire une réponse MultiVibe à voix haute"
+    static let openAppWhenRun = true
+    static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
+    @Parameter(title: "Conversation") var conversation: MultiVibeConversationEntity
+    @MainActor func perform() async throws -> some IntentResult {
+        let manager = ConversationManager.shared
+        await manager.restoreForNativeEntry()
+        let current = try manager.shortcutConversation(conversation.conversationID, accountID: conversation.accountID)
+        guard let reply = current.messages.last(where: { $0.role == "assistant" && $0.completion == .completed && !$0.content.isEmpty }) else {
+            throw NativeShortcutError.noReply
+        }
+        manager.voice.speak(reply.content)
+        return .result()
+    }
+}
+
+struct ImportMultiVibeFileIntent: AppIntent {
+    static let title: LocalizedStringResource = "Importer un fichier texte dans MultiVibe"
+    static let description = IntentDescription("Importe un fichier UTF-8 de 100 Ko maximum dans les documents locaux. Les PDF et fichiers binaires ne sont pas pris en charge par cette action.")
+    static let openAppWhenRun = true
+    static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
+    @Parameter(title: "Fichier texte", supportedContentTypes: [.plainText]) var file: IntentFile
+    @MainActor func perform() async throws -> some IntentResult {
+        let data = file.data
+        guard data.count <= 100_000, let text = String(data: data, encoding: .utf8),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw LocalAgentError.invalidInput }
+        let manager = ConversationManager.shared
+        manager.queueNativeShortcut(.init(destination: .documents, accountID: manager.session?.accountId, documentName: file.filename, documentText: text))
+        return .result()
+    }
+}
+
+enum MultiVibeDeviceRequest: String, AppEnum {
+    case calendar, reminders, contacts, location
+    static let typeDisplayRepresentation: TypeDisplayRepresentation = "Données de cet appareil"
+    static let caseDisplayRepresentations: [Self: DisplayRepresentation] = [
+        .calendar: "Calendrier", .reminders: "Rappels", .contacts: "Contacts", .location: "Position actuelle"
+    ]
+    var prompt: String {
+        switch self {
+        case .calendar: "Consulte mon calendrier et présente mes prochains rendez-vous."
+        case .reminders: "Consulte mes rappels et présente ce qu’il me reste à faire."
+        case .contacts: "Recherche dans mes contacts : "
+        case .location: "Obtiens ma position actuelle."
+        }
+    }
+}
+struct PrepareMultiVibeDeviceRequestIntent: AppIntent {
+    static let title: LocalizedStringResource = "Préparer une demande sur les données iOS"
+    static let description = IntentDescription("Prépare une demande locale. Après l’envoi, iOS demandera l’autorisation d’accès aux données si nécessaire.")
+    static let openAppWhenRun = true
+    static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
+    @Parameter(title: "Données") var source: MultiVibeDeviceRequest
+    @MainActor func perform() async throws -> some IntentResult {
+        let manager = ConversationManager.shared
+        manager.queueNativeShortcut(.init(accountID: manager.session?.accountId, localDraft: source.prompt))
+        return .result()
+    }
+}
