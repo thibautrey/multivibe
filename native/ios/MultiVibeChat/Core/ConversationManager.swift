@@ -590,6 +590,9 @@ import Network
         if let decision = conversations[index].internetPermission { return decision == .allowed }
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
+                guard !Task.isCancelled, generationRevision == generation, sessionRevision == account else {
+                    continuation.resume(returning: false); return
+                }
                 internetWaiters.append(continuation)
                 if internetApproval == nil {
                     generationDeadline?.cancel(); generationDeadline = nil
