@@ -242,7 +242,7 @@ struct ChatView: View {
         .onChange(of: manager.wantsNewConversation) { _, _ in consumeIntent() }
         .onChange(of: manager.wantsVoiceConversation) { _, _ in consumeIntent() }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { voice.silence(); if manager.selectedModel == LocalModel.id { manager.stop() } } else { manager.foreground(); consumeIntent() }
+            if phase != .active { voice.silence(); if phase == .background && manager.selectedModel == LocalModel.id { manager.stop() } } else { manager.foreground(); consumeIntent() }
         }
         .onAppear { consumeIntent() }
         .onChange(of: manager.wantsVoice) { _, _ in consumeIntent() }
@@ -544,8 +544,10 @@ struct LocalDocumentsView: View {
                 }
                 Section("Données de l’iPhone") {
                     Text("Lecture seule par le modèle local. Les passages repris dans une réponse font partie de l’historique si vous activez sa synchronisation.")
-                    Toggle("Lire le calendrier", isOn: Binding(get: { manager.calendarEnabled }, set: { enabled in Task { await manager.setCalendarEnabled(enabled) } }))
-                    Toggle("Lire les rappels", isOn: Binding(get: { manager.remindersEnabled }, set: { enabled in Task { await manager.setRemindersEnabled(enabled) } }))
+                    Text("L’agent demande la permission iOS lorsqu’une requête nécessite le calendrier, les rappels, les contacts ou la position. Les autorisations se gèrent dans Réglages iOS. Apple Mail ne permet pas la lecture de la boîte : importez le message dans les documents.").font(.footnote)
+                    Button("Ouvrir les autorisations iOS") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                    }
                 }.disabled(manager.isStreaming)
                 ForEach(manager.localDocuments) { document in
                     NavigationLink(document.name) {

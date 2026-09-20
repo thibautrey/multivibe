@@ -2,6 +2,37 @@ import XCTest
 @testable import MultiVibeChat
 
 @MainActor final class LocalAgentTests: XCTestCase {
+    func testDeviceToolsAreLazyAndDenialIsRecoverable() async throws {
+        actor Reads {
+            var actions: [String] = []
+            func read(_ action: String, _ query: String) -> String {
+                actions.append(action)
+                return "Accès refusé"
+            }
+            func count() -> Int { actions.count }
+        }
+        let reads = Reads()
+        let workspace = LocalAgentWorkspace(conversations: [], documents: [], event: { _ in },
+            saveDocument: { _ in }, readDevice: { await reads.read($0, $1) })
+        _ = try await workspace.execute(action: "current_date", query: "", documentID: "", text: "", lhs: 0, rhs: 0)
+        let before = await reads.count()
+        XCTAssertEqual(before, 0)
+        for action in ["read_calendar", "read_reminders", "read_contacts", "current_location", "read_mail"] {
+            let result = try await workspace.execute(action: action, query: "", documentID: "", text: "", lhs: 0, rhs: 0)
+            XCTAssertEqual(result, "Accès refusé")
+        }
+        let after = await reads.count()
+        XCTAssertEqual(after, 5)
+        let result = try await workspace.execute(action: "add", query: "", documentID: "", text: "", lhs: 2, rhs: 3)
+        XCTAssertEqual(result, "5.0")
+    }
+
+    func testMailExplainsPlatformLimitWithoutPermission() async throws {
+        let result = try await LocalDeviceData.read(action: "read_mail", query: "")
+        XCTAssertTrue(result.contains("Aucun mail"))
+        XCTAssertTrue(result.contains("Importez"))
+    }
+
     func testGuestLocalRunUsesToolsWithoutAuthenticationOrNetwork() async throws {
         var saved: [Data] = []
         let services = isolatedServices(writeHistory: { data, _ in saved.append(data) }, load: { nil },
