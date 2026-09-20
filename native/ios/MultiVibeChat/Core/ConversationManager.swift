@@ -33,7 +33,8 @@ import Network
 }
 
 @MainActor @Observable final class ConversationManager {
-    static let shared: ConversationManager = {
+    static let shared = makeShared()
+    private static func makeShared() -> ConversationManager {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-local-agent-ui-fixture") {
             // Deterministic UI transport: no account, disk data, live inference, or network.
@@ -48,7 +49,7 @@ import Network
         }
         #endif
         return ConversationManager()
-    }()
+    }
     private let services: SessionServices
     var localUnavailableReason: String? { services.localAvailability() }
     var localDocuments: [LocalDocument] = []
