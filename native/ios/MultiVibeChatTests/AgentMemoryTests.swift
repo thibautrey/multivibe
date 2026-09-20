@@ -102,6 +102,61 @@ import XCTest
         XCTAssertTrue(result.contains("rôle assistant"))
         XCTAssertTrue(result.contains("jamais une preuve"))
     }
+
+    func testRepeatedAssistantGuessesCannotBecomeValidatedProposals() async throws {
+        let services = isolatedServices(localAvailability: { nil }, localRespond: { _, workspace, output in
+            for _ in 0..<5 {
+                let rejected = try await workspace.execute(action: "propose_memory", query: "Chien", documentID: "",
+                    text: "Votre chien est Rex", lhs: 0, rhs: 0)
+                XCTAssertTrue(rejected.contains("refusée"))
+            }
+            let proposed = try await workspace.execute(action: "propose_memory", query: "Boisson", documentID: "",
+                text: "Je préfère le café", lhs: 0, rhs: 0)
+            XCTAssertTrue(proposed.contains("NON confirmée"))
+            let search = try await workspace.execute(action: "search_memory", query: "café", documentID: "", text: "", lhs: 0, rhs: 0)
+            XCTAssertTrue(search.contains("Aucun souvenir"))
+            await output("Proposition à valider")
+        })
+        let manager = ConversationManager(services: services); await manager.restore()
+        XCTAssertTrue(manager.send("Je préfère le café"))
+        for _ in 0..<1000 { if !manager.isStreaming { break }; await Task.yield() }
+        XCTAssertEqual(manager.memoryItems.count, 1)
+        XCTAssertEqual(manager.memoryItems.first?.memory.state, .proposed)
+    }
+    func testSourceDeletionForgetsMemoryAndStableIdentitySurvivesProjection() async throws {
+        let manager = ConversationManager(services: isolatedServices()); await manager.restore()
+        manager.newConversation()
+        let id = manager.selection!
+        let source = MemoryEvidence(origin: .userMessage, quote: "Français", date: Date(), conversationID: id, sourceRole: "user")
+        XCTAssertTrue(manager.saveMemory(MemoryDraft(text: "Français", evidence: source, topic: "Langue")))
+        var remote = AccountHistorySnapshot(accountId: "a", revision: 1, conversations: [])
+        var ids: [String: UUID] = [:]
+        try remote.store(manager.current!, serverID: "server", messageIDs: &ids)
+        let projected = try remote.projectedConversation(at: 0, id: UUID(), messageIDs: &ids)
+        XCTAssertEqual(projected.memorySourceID, id)
+        manager.conversations = [projected]; manager.selection = projected.id
+        manager.delete(projected.id)
+        XCTAssertTrue(manager.memoryItems.isEmpty)
+        XCTAssertEqual(manager.memoryRecords.first?.state, .deleted)
+    }
+    func testOldServerCannotSilentlyAcknowledgeMemorySync() async throws {
+        var managerServices = isolatedServices(load: { NativeSession(accessToken: "t", refreshToken: "r", expiresAt: .distantFuture, accountId: "a") },
+            readHistory: { _ in AccountHistorySnapshot(accountId: "a", revision: 0, conversations: []) })
+        managerServices.saveHistory = { _, _ in XCTFail("Old server must never receive memory"); throw APIError.invalidResponse }
+        let manager = ConversationManager(services: managerServices); await manager.restore()
+        XCTAssertTrue(manager.saveMemory(MemoryDraft(text: "Français", evidence: MemoryEvidence(origin: .userEntry,
+            quote: "Français", date: Date(), sourceRole: "user"), topic: "Langue")))
+        manager.setMemorySync(true)
+        for _ in 0..<1000 { if manager.historyStatus != nil { break }; await Task.yield() }
+        XCTAssertEqual(manager.memoryItems.count, 1)
+        XCTAssertNotNil(manager.historyStatus)
+    }
+    func testMalformedSameRevisionIsQuarantined() {
+        let a = memory()
+        var b = a; b.text = "Un autre fait"
+        let merged = MemoryPolicy.merge([a], [b])
+        XCTAssertFalse(MemoryPolicy.items(merged).contains { $0.usable(now: Date()) })
+    }
     func testOptionalSyncMergesTombstonesAndRejectsOldBackendWithoutLosingLocalMemory() async throws {
         let record = memory()
         var remote = AccountHistorySnapshot(accountId: "a", revision: 1, conversations: [], memory: [record])
