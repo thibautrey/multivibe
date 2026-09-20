@@ -35,7 +35,7 @@ actor Recorder {
             event: { await deviceRecorder.record($0) }, saveDocument: { _ in },
             readDevice: { action, _ in
                 action == "current_location" ? "GPS observation: latitude 48.8566, longitude 2.3522, accuracy 100 m." : "Access denied."
-            })
+            }, allowedDeviceActions: LocalDeviceScope.actions(for: "Where are we?"))
         try await LocalAgent.respond(messages: [ChatMessage(role: "user", content: "Where are we? Give me our current GPS coordinates.")],
             workspace: deviceWorkspace, onText: { await deviceRecorder.output($0) })
         let deviceTools = await deviceRecorder.tools

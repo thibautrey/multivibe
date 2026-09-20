@@ -377,7 +377,7 @@ import Network
                             try await self.saveLocalDocument(document, generation: revision, account: accountRevision)
                         }, readDevice: { action, query in
                             try await self.readDeviceData(action: action, query: query, generation: revision, account: accountRevision)
-                        }, authorizeInternet: { url in
+                        }, allowedDeviceActions: LocalDeviceScope.actions(for: input.last?.content ?? ""), authorizeInternet: { url in
                             try await self.requestInternet(url: url, conversation: id, generation: revision, account: accountRevision)
                         }, webFetch: services.webFetch)
                     try await services.localRespond(input, workspace) { delta in
