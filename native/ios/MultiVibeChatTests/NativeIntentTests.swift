@@ -63,4 +63,42 @@ import XCTest
         XCTAssertEqual(manager.localDocuments.first?.text, "Texte local")
         XCTAssertTrue(manager.conversations.isEmpty)
     }
+    func testLocalInferenceReturnsCompletedReplyWithoutRemoteTransport() async throws {
+        var services = isolatedServices(localAvailability: { nil }, localRespond: { _, _, output in
+            await output("Réponse locale")
+        })
+        services.stream = { _, _, _, _ in XCTFail("No remote fallback") }
+        let manager = ConversationManager(services: services)
+        await manager.restore(loadRemoteModels: false)
+        let reply = try await manager.askLocalFromShortcut("Bonjour")
+        XCTAssertEqual(reply, "Réponse locale")
+        XCTAssertEqual(manager.current?.model, LocalModel.id)
+        XCTAssertEqual(manager.current?.messages.first?.content, "Bonjour")
+    }
+    func testCancelledShortcutStopsOnlyItsOwnRun() async throws {
+        let services = isolatedServices(localAvailability: { nil }, localRespond: { _, _, _ in
+            try await Task.sleep(for: .seconds(10))
+        })
+        let manager = ConversationManager(services: services)
+        await manager.restore(loadRemoteModels: false)
+        let task = Task { try await manager.askLocalFromShortcut("Bonjour") }
+        while !manager.isStreaming { await Task.yield() }
+        task.cancel()
+        do { _ = try await task.value; XCTFail("Cancellation must throw") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertFalse(manager.isStreaming)
+        XCTAssertEqual(manager.current?.messages.last?.completion, .stopped)
+    }
+    func testNativeColdStartLoadsOnlyOnce() async {
+        var reads = 0
+        let services = isolatedServices(readLocalHistory: { _ in reads += 1; throw CocoaError(.fileReadNoSuchFile) })
+        let manager = ConversationManager(services: services)
+        await manager.restoreForNativeEntry()
+        manager.newConversation()
+        let id = manager.selection
+        await manager.restoreForNativeEntry()
+        XCTAssertEqual(reads, 1)
+        XCTAssertEqual(manager.selection, id)
+    }
+
 }
