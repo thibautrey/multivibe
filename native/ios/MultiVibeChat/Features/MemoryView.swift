@@ -26,7 +26,7 @@ struct MemoryView: View {
                     }
                 }
                 Section("Souvenirs") {
-                    ForEach(manager.memoryItems.filter { search.isEmpty || $0.memory.text.localizedCaseInsensitiveContains(search) || $0.memory.topic.localizedCaseInsensitiveContains(search) }) { item in
+                    ForEach(manager.memoryItems.filter { search.isEmpty || $0.id.uuidString.localizedCaseInsensitiveContains(search) || $0.memory.text.localizedCaseInsensitiveContains(search) || $0.memory.topic.localizedCaseInsensitiveContains(search) }) { item in
                         VStack(alignment: .leading, spacing: 6) {
                             Text(item.memory.topic).font(.headline)
                             Text(item.memory.text)
@@ -59,6 +59,7 @@ struct MemoryView: View {
                     if manager.memoryItems.isEmpty { Text("Aucun souvenir enregistré. Utilisez « Retiens ceci : … » ou le bouton Retenir d’un message.") }
                 }
                 Section("Synchronisation") {
+                    if let status = manager.historyStatus { Text(status).font(.caption) }
                     if manager.session == nil { Text("Mémoire invitée locale. Elle n’est pas copiée automatiquement dans un compte.") }
                     else {
                         Toggle("Synchroniser la mémoire", isOn: Binding(get: { manager.memorySyncEnabled }, set: {

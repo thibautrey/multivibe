@@ -145,7 +145,7 @@ enum MemoryPolicy {
             var values = URLResourceValues(); values.isExcludedFromBackup = true
             var protected = url; try protected.setResourceValues(values)
         }
-        guard sqlite3_open(url?.path ?? ":memory:", &db) == SQLITE_OK else { throw MemoryError.storage }
+        guard sqlite3_open(url?.path ?? ":memory:", &db) == SQLITE_OK else { sqlite3_close(db); db = nil; throw MemoryError.storage }
         do {
             try exec("PRAGMA journal_mode=DELETE; PRAGMA secure_delete=ON; PRAGMA temp_store=MEMORY;")
             try exec("CREATE VIRTUAL TABLE IF NOT EXISTS memories USING fts5(id UNINDEXED, topic, text, scope UNINDEXED, payload UNINDEXED, tokenize='unicode61 remove_diacritics 2');")
@@ -165,7 +165,7 @@ enum MemoryPolicy {
                 defer { sqlite3_finalize(statement) }
                 let memory = item.memory
                 let payload = String(decoding: try JSONEncoder().encode(memory), as: UTF8.self)
-                for (index, value) in [memory.id.uuidString, memory.topic, memory.text, memory.scope, payload].enumerated() {
+                for (index, value) in [memory.id.uuidString, memory.topic, memory.text, MemoryPolicy.normalized(memory.scope), payload].enumerated() {
                     sqlite3_bind_text(statement, Int32(index + 1), value, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
                 }
                 guard sqlite3_step(statement) == SQLITE_DONE else { throw MemoryError.storage }
@@ -180,9 +180,10 @@ enum MemoryPolicy {
         guard !tokens.isEmpty else { return [] }
         let expression = tokens.prefix(12).map { "\"" + $0 + "\"" }.joined(separator: " OR ")
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT payload FROM memories WHERE memories MATCH ? ORDER BY bm25(memories) LIMIT 50", -1, &statement, nil) == SQLITE_OK else { throw MemoryError.storage }
+        guard sqlite3_prepare_v2(db, "SELECT payload FROM memories WHERE memories MATCH ? AND (scope = '' OR scope = ?) ORDER BY bm25(memories) LIMIT 50", -1, &statement, nil) == SQLITE_OK else { throw MemoryError.storage }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_text(statement, 1, expression, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        sqlite3_bind_text(statement, 2, MemoryPolicy.normalized(scope), -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
         var results: [MemoryItem] = []
         while sqlite3_step(statement) == SQLITE_ROW {
             guard let raw = sqlite3_column_text(statement, 0) else { continue }
