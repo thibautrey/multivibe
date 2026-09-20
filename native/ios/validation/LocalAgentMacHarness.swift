@@ -1,7 +1,7 @@
 import Foundation
 struct ModelOption: Sendable { let id: String; var name: String? }
-struct ChatMessage: Sendable { var role: String; var content: String }
-struct Conversation: Sendable { var title: String; var messages: [ChatMessage] }
+struct ChatMessage: Sendable { var id = UUID(); var role: String; var content: String }
+struct Conversation: Sendable { var id = UUID(); var updatedAt = Date(); var title: String; var messages: [ChatMessage] }
 struct LocalDeviceSnapshot: Sendable { var calendar = "Not authorized"; var reminders = "Not authorized" }
 enum APIError: Error { case invalidResponse }
 actor Recorder {
