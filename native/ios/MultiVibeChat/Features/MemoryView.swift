@@ -35,6 +35,7 @@ struct MemoryView: View {
                             if let evidence = item.memory.evidence {
                                 DisclosureGroup("Source et date") {
                                     Text(evidence.quote).textSelection(.enabled)
+                                    if let prior = evidence.priorQuote { Text("Avant votre confirmation : " + prior) }
                                     Text("Rôle initial : " + evidence.sourceRole)
                                     Text(evidence.date.formatted()).font(.caption)
                                     Text("Identifiant mémoire : " + item.id.uuidString).font(.caption)
