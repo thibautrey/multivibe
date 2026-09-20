@@ -175,13 +175,14 @@ final class LocalInternetUITests: XCTestCase {
         let topic = app.textFields["memoryTopic"]
         XCTAssertTrue(topic.waitForExistence(timeout: 5)); topic.tap(); topic.typeText("Boisson")
         let text = app.descendants(matching: .any).matching(identifier: "memoryText").firstMatch
-        text.tap(); text.typeText("Je prefere le cafe")
+        text.tap(); text.typeText("ORION4729")
         app.buttons["confirmMemory"].tap()
-        XCTAssertTrue(app.staticTexts["Je prefere le cafe"].firstMatch.waitForExistence(timeout: 5))
+        print(app.debugDescription)
+        XCTAssertTrue(app.staticTexts["ORION4729"].firstMatch.waitForExistence(timeout: 5))
         app.buttons["Source et date"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["Rôle initial : user"].waitForExistence(timeout: 5))
         app.buttons["Oublier"].firstMatch.tap()
         app.buttons.matching(identifier: "Oublier").element(boundBy: 1).tap()
-        XCTAssertFalse(app.staticTexts["Je prefere le cafe"].exists)
+        XCTAssertFalse(app.staticTexts["ORION4729"].exists)
     }
 }
