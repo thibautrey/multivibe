@@ -7,6 +7,7 @@ validation_build="$(mktemp -d /private/tmp/multivibe-local-agent-validation.XXXX
 trap 'python3 -c '\''import shutil,sys; shutil.rmtree(sys.argv[1])'\'' "$validation_build"' EXIT
 xcrun swiftc -parse-as-library -target arm64-apple-macos27.0 \
   -module-cache-path "$validation_build/cache" \
+  "$validation_root/MultiVibeChat/Core/AgentMemory.swift" \
   "$validation_root/MultiVibeChat/Core/LocalAgent.swift" \
   "$validation_root/MultiVibeChat/Core/LocalWebFetch.swift" \
   "$validation_root/validation/LocalAgentMacHarness.swift" \

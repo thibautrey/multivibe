@@ -18,7 +18,7 @@ actor Recorder {
     func output(_ text: String) { answer = text }
 }
 @main struct Harness {
-    static func main() async {
+    @MainActor static func main() async {
       do {
         if let reason = LocalModel.unavailableReason { print("MODEL_UNAVAILABLE: \(reason)"); exit(2) }
         let recorder = Recorder()
@@ -43,10 +43,17 @@ actor Recorder {
         print("DEVICE_TOOLS=\(deviceTools) ANSWER=\(deviceAnswer)")
         guard deviceTools.contains("current_location"), deviceAnswer.contains("48.8566") else { exit(1) }
         let memoryRecorder = Recorder()
+        let index = try MemoryIndex(url: nil)
+        let remembered = AgentMemory(topic: "Code observatoire", text: "Le code de mon observatoire est RIGEL-8931",
+            kind: .preference, state: .confirmed, evidence: MemoryEvidence(origin: .userMessage,
+                quote: "Le code de mon observatoire est RIGEL-8931", date: Date(), sourceRole: "user"))
+        try index.rebuild(MemoryPolicy.items([remembered]))
         let memoryWorkspace = LocalAgentWorkspace(conversations: [], documents: [],
             event: { await memoryRecorder.record($0) }, saveDocument: { _ in }, memory: { action, _, _ in
                 guard action == "search_memory" || action == "read_memory" else { return "Proposition non validée." }
-                return "[mémoire 10000000-0000-4000-8000-000000000001] Code de mon observatoire : RIGEL-8931. Source : déclaration explicite utilisateur du 20 septembre 2026, citation exacte : Le code de mon observatoire est RIGEL-8931. Souvenir validé, non expiré."
+                return try await MainActor.run {
+                    try index.search("observatoire", scope: "").map(MemoryPolicy.render).joined(separator: "\n")
+                }
             })
         try await LocalAgent.respond(messages: [ChatMessage(role: "user", content: "Quel est le code que je t’ai demandé de retenir pour mon observatoire ? Consulte ta mémoire.")],
             workspace: memoryWorkspace, onText: { await memoryRecorder.output($0) })
