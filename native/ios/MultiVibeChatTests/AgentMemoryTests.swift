@@ -114,6 +114,29 @@ import XCTest
         XCTAssertFalse(forged.valid)
     }
 
+    func testSourceReferencesAreRecordedByAppWithoutTrustingGeneratedCitations() async throws {
+        let services = isolatedServices(localAvailability: { nil }, localRespond: { _, workspace, output in
+            let memory = try await workspace.execute(action: "context_memory", query: "café", documentID: "", text: "", lhs: 0, rhs: 0)
+            XCTAssertTrue(memory.contains("café"))
+            await output("Vous préférez le café")
+        })
+        let manager = ConversationManager(services: services); await manager.restore()
+        XCTAssertTrue(manager.saveMemory(MemoryDraft(text: "Je préfère le café", evidence: MemoryEvidence(origin: .userEntry,
+            quote: "Je préfère le café", date: Date(), sourceRole: "user"), topic: "Boisson")))
+        let record = manager.memoryItems[0].memory
+        XCTAssertTrue(manager.send("Quelle boisson, café ou thé ?"))
+        for _ in 0..<1000 { if !manager.isStreaming { break }; await Task.yield() }
+        let references = try XCTUnwrap(manager.current?.messages.last?.memoryReferences)
+        XCTAssertEqual(references, [MemoryReference(id: record.version, memoryID: record.id)])
+        var snapshot = AccountHistorySnapshot(accountId: "a", revision: 1, conversations: [])
+        var ids: [String: UUID] = [:]
+        try snapshot.store(manager.current!, serverID: "test", messageIDs: &ids)
+        let restored = try snapshot.projectedConversation(at: 0, id: UUID(), messageIDs: &ids)
+        XCTAssertEqual(restored.messages.last?.memoryReferences, references)
+        XCTAssertTrue(manager.forgetMemory(record.id))
+        XCTAssertNil(manager.source(for: references[0]))
+    }
+
     func testRepeatedAssistantGuessesCannotBecomeValidatedProposals() async throws {
         let services = isolatedServices(localAvailability: { nil }, localRespond: { _, workspace, output in
             for _ in 0..<5 {
