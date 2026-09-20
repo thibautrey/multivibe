@@ -39,7 +39,7 @@ import Network
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-local-agent-ui-fixture") {
             // Deterministic UI transport: no account, disk data, live inference, or network.
-            return ConversationManager(services: SessionServices(writeHistory: { _, _ in }, load: { nil },
+            let manager = ConversationManager(services: SessionServices(writeHistory: { _, _ in }, load: { nil },
                 readLocalHistory: { _ in throw CocoaError(.fileReadNoSuchFile) }, localAvailability: { nil },
                 localRespond: { _, workspace, output in
                     let result = try await workspace.execute(action: "fetch_website", query: "https://example.com", documentID: "", text: "", lhs: 0, rhs: 0)
@@ -47,6 +47,13 @@ import Network
                 }, webFetch: { url, _ in
                     LocalWebResponse(url: url, status: 200, contentType: "text/plain", text: "EXAMPLE-FETCH-SUCCEEDED")
                 }, memoryIndex: { _ in try MemoryIndex(url: nil) }, monitorConnectivity: false))
+            if ProcessInfo.processInfo.arguments.contains("-native-intent-local-draft") {
+                manager.queueNativeShortcut(.init(localDraft: "NATIVE-SHORTCUT-DRAFT"))
+            }
+            if ProcessInfo.processInfo.arguments.contains("-native-intent-memory") {
+                manager.queueNativeShortcut(.init(memoryText: "NATIVE-SHORTCUT-MEMORY"))
+            }
+            return manager
         }
         #endif
         return ConversationManager()
