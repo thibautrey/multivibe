@@ -204,7 +204,7 @@ final class LocalInternetUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-local-agent-ui-fixture", "-native-intent-memory"]
         app.launch()
-        XCTAssertTrue(app.buttons["Valider"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["confirmMemory"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts["EXAMPLE-FETCH-SUCCEEDED"].exists)
     }
 }

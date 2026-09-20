@@ -139,6 +139,7 @@ import Network
     }
     private var importedGuestSnapshots: [UUID: Conversation] = [:]
     private var storageLoaded = false
+    var nativeDataReady: Bool { !isRestoring && storageLoaded }
     private var pendingHistorySave: PendingHistorySave?
     private struct HistoryCache: Codable {
         var memory: [AgentMemory]?
