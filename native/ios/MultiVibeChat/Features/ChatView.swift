@@ -7,6 +7,7 @@ struct ChatView: View {
     @Environment(\.scenePhase) private var scenePhase
     private var voice: VoiceController { manager.voice }
     @State private var text = ""
+    @State private var shortcutDraftConversation: UUID?
     @State private var preferredColumn: NavigationSplitViewColumn = .detail
     @State private var search = ""
     @State private var conversationToDelete: Conversation?
@@ -261,7 +262,9 @@ struct ChatView: View {
         .sheet(isPresented: $documentsPresented) { LocalDocumentsView() }
         .sheet(isPresented: $privacyPresented) { NativePrivacyView() }
         .sheet(isPresented: $voicePresented) { VoiceConversationView() }
-        .onChange(of: manager.selection) { _, _ in text = "" }
+        .onChange(of: manager.selection) { _, selection in
+            if shortcutDraftConversation != selection { text = "" }
+        }
         .onChange(of: voice.transcript) { _, value in if !voicePresented { text = value } }
         .onChange(of: manager.wantsNewConversation) { _, _ in consumeIntent() }
         .onChange(of: manager.wantsVoiceConversation) { _, _ in consumeIntent() }
@@ -345,7 +348,10 @@ struct ChatView: View {
         if manager.wantsVoiceConversation {
             manager.wantsVoiceConversation = false; voice.silence(); voicePresented = true
         }
-        if let draft = manager.pendingDraft { text = draft; manager.pendingDraft = nil }
+        if let draft = manager.pendingDraft {
+            shortcutDraftConversation = manager.selection
+            text = draft; manager.pendingDraft = nil
+        }
         if manager.wantsVoice {
             manager.wantsVoice = false
             Task { await voice.start() }

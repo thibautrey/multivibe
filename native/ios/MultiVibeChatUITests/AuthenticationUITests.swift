@@ -187,3 +187,24 @@ final class LocalInternetUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["ORION4729"].exists)
     }
 }
+
+
+@MainActor final class NativeShortcutUITests: XCTestCase {
+    func testColdLocalDraftSurvivesNavigationAndDoesNotSend() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-local-agent-ui-fixture", "-native-intent-local-draft"]
+        app.launch()
+        let draft = app.textFields.matching(NSPredicate(format: "value == %@", "NATIVE-SHORTCUT-DRAFT")).firstMatch
+        let editor = app.textViews.matching(NSPredicate(format: "value == %@", "NATIVE-SHORTCUT-DRAFT")).firstMatch
+        XCTAssertTrue(draft.waitForExistence(timeout: 10) || editor.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Envoyer"].exists)
+        XCTAssertFalse(app.staticTexts["EXAMPLE-FETCH-SUCCEEDED"].exists)
+    }
+    func testColdMemoryShortcutOpensReview() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-local-agent-ui-fixture", "-native-intent-memory"]
+        app.launch()
+        XCTAssertTrue(app.buttons["Confirmer"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["EXAMPLE-FETCH-SUCCEEDED"].exists)
+    }
+}
