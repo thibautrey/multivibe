@@ -45,5 +45,9 @@
 	<string>Autorisez le modèle local à consulter vos événements sur cet iPhone lorsque vous lui demandez de vous aider à organiser votre journée.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>Autorisez le modèle local à consulter vos rappels sur cet iPhone. MultiVibe ne les modifie pas.</string>
+<key>NSContactsUsageDescription</key>
+<string>Rechercher vos contacts sur cet iPhone lorsque vous le demandez à l’agent local.</string>
+<key>NSLocationWhenInUseUsageDescription</key>
+<string>Indiquer votre position lorsque vous le demandez à l’agent local.</string>
 </dict>
 </plist>

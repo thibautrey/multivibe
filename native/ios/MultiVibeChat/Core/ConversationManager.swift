@@ -367,7 +367,7 @@ import Network
             }
             do {
                 if model == LocalModel.id {
-                    let deviceData = await LocalDeviceData.snapshot(calendar: calendarEnabled, reminders: remindersEnabled)
+                    let deviceData = LocalDeviceSnapshot()
                     try Task.checkCancellation()
                     guard generationRevision == revision && sessionRevision == accountRevision else { return }
                     let workspace = LocalAgentWorkspace(conversations: conversations, documents: localDocuments, deviceData: deviceData,
@@ -375,6 +375,8 @@ import Network
                             await self.recordLocalEvent(event, generation: revision, account: accountRevision)
                         }, saveDocument: { document in
                             try await self.saveLocalDocument(document, generation: revision, account: accountRevision)
+                        }, readDevice: { action, query in
+                            try await self.readDeviceData(action: action, query: query, generation: revision, account: accountRevision)
                         }, authorizeInternet: { url in
                             try await self.requestInternet(url: url, conversation: id, generation: revision, account: accountRevision)
                         }, webFetch: services.webFetch)
@@ -598,6 +600,32 @@ import Network
             guard let self, self.generationRevision == generation, self.sessionRevision == account else { return }
             self.stop(); self.error = LocalAgentError.budget.localizedDescription
         }
+    }
+    private var deviceReadCount = 0
+    private var deviceReadStarted: Date?
+    private func readDeviceData(action: String, query: String, generation: UUID, account: UUID) async throws -> String {
+        try Task.checkCancellation()
+        guard generationRevision == generation, sessionRevision == account else { throw CancellationError() }
+        if deviceReadCount == 0 {
+            deviceReadStarted = Date()
+            generationDeadline?.cancel(); generationDeadline = nil
+        }
+        deviceReadCount += 1
+        defer {
+            deviceReadCount -= 1
+            if deviceReadCount == 0 {
+                if generationRevision == generation, sessionRevision == account,
+                   let started = deviceReadStarted, let expiry = generationExpiresAt {
+                    generationExpiresAt = expiry.addingTimeInterval(Date().timeIntervalSince(started))
+                    armGenerationDeadline(generation: generation, account: account)
+                }
+                deviceReadStarted = nil
+            }
+        }
+        let result = try await LocalDeviceData.read(action: action, query: query)
+        try Task.checkCancellation()
+        guard generationRevision == generation, sessionRevision == account else { throw CancellationError() }
+        return result
     }
     private func requestInternet(url: URL, conversation: UUID, generation: UUID, account: UUID) async throws -> Bool {
         try Task.checkCancellation()
