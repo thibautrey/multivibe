@@ -83,7 +83,7 @@ struct MemoryView: View {
                 Button("Activer la synchronisation") { manager.setMemorySync(true) }
             }
             .confirmationDialog("Oublier ce souvenir ?", isPresented: Binding(get: { forget != nil }, set: { if !$0 { forget = nil } })) {
-                Button("Oublier", role: .destructive) { if let forget { _ = manager.forgetMemory(forget.id) }; forget = nil }
+                Button("Confirmer l’oubli", role: .destructive) { if let forget { _ = manager.forgetMemory(forget.id) }; forget = nil }
             } message: { Text("Le souvenir ne sera plus utilisé et sa suppression sera synchronisée si activée. Le message original dans l’historique reste conservé.") }
         }
     }
