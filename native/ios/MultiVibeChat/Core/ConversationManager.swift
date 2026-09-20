@@ -401,7 +401,9 @@ import Network
             } catch {
                 if generationRevision == revision && sessionRevision == accountRevision {
                     setReplyCompletion(.failed)
-                    self.error = error.localizedDescription
+                    self.error = model == LocalModel.id
+                        ? (error as? LocalAgentError)?.localizedDescription ?? "L’agent local n’a pas pu terminer cette demande. Réessayez avec une demande plus précise ; les étapes déjà enregistrées sont conservées."
+                        : error.localizedDescription
                 }
             }
         }
