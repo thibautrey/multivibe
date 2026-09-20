@@ -349,7 +349,7 @@ import Network
         if let remembered = MemoryCommand.remember(text) {
             let source = conversations[index].messages.last!
             memoryDraft = MemoryDraft(text: remembered, evidence: MemoryEvidence(origin: .userMessage, quote: source.content,
-                date: Date(), conversationID: id, messageID: source.id, sourceRole: "user"), scope: current?.memoryScope ?? "")
+                date: Date(), conversationID: current?.memorySourceID ?? id, messageID: source.id, sourceRole: "user"), scope: current?.memoryScope ?? "")
             conversations[index].messages.append(ChatMessage(role: "assistant", content: "Validez le souvenir et sa source dans la fiche Mémoire avant son utilisation.", completion: .completed))
             return persist()
         }
@@ -468,9 +468,10 @@ import Network
     }
     func delete(_ id: UUID) {
         if selection == id { stop(); selection = nil }
+        let sourceID = conversations.first(where: { $0.id == id })?.memorySourceID ?? id
         let oldConversations = conversations; let oldMemory = memoryRecords
         let oldBaseline = memoryBaseline; let oldSnapshot = historySnapshot; let oldPending = pendingHistorySave
-        for memoryID in Set(memoryRecords.filter { $0.evidence?.conversationID == id }.map(\.id)) { forgetMemoryRecords(memoryID) }
+        for memoryID in Set(memoryRecords.filter { $0.evidence?.conversationID == sourceID || $0.evidence?.conversationID == id }.map(\.id)) { forgetMemoryRecords(memoryID) }
         conversations.removeAll { $0.id == id }
         guard persist() else {
             conversations = oldConversations; memoryRecords = oldMemory; memoryBaseline = oldBaseline
@@ -840,7 +841,7 @@ import Network
         memoryDraft = MemoryDraft(text: String(message.content.prefix(600)),
             evidence: MemoryEvidence(origin: message.role == "user" ? .userMessage : .userConfirmation,
                 quote: String(message.content.prefix(4000)), date: current?.updatedAt ?? Date(),
-                conversationID: selection, messageID: message.id, sourceRole: message.role),
+                conversationID: current?.memorySourceID ?? selection, messageID: message.id, sourceRole: message.role),
             scope: current?.memoryScope ?? "")
     }
     func editMemory(_ item: MemoryItem) {
@@ -946,7 +947,7 @@ import Network
             guard memoryRecords.count < 1000 else { return "Mémoire pleine. Gérez les souvenirs dans Mémoire." }
             let record = AgentMemory(topic: query, text: text, kind: .preference, scope: scope, state: .proposed,
                 evidence: MemoryEvidence(origin: .userMessage, quote: source.content, date: Date(),
-                    conversationID: conversation, messageID: source.id, sourceRole: "user"))
+                    conversationID: conversations.first(where: { $0.id == conversation })?.memorySourceID ?? conversation, messageID: source.id, sourceRole: "user"))
             memoryRecords.append(record)
             guard persist() else { memoryRecords.removeAll { $0.id == record.id }; throw MemoryError.storage }
             return "Proposition enregistrée, NON utilisable et NON confirmée. Invitez l’utilisateur à la valider dans Mémoire."
