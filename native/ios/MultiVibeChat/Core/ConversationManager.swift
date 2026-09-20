@@ -33,7 +33,22 @@ import Network
 }
 
 @MainActor @Observable final class ConversationManager {
-    static let shared = ConversationManager()
+    static let shared: ConversationManager = {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-local-agent-ui-fixture") {
+            // Deterministic UI transport: no account, disk data, live inference, or network.
+            return ConversationManager(services: SessionServices(writeHistory: { _, _ in }, load: { nil },
+                readLocalHistory: { _ in throw CocoaError(.fileReadNoSuchFile) }, localAvailability: { nil },
+                localRespond: { _, workspace, output in
+                    let result = try await workspace.execute(action: "fetch_website", query: "https://example.com", documentID: "", text: "", lhs: 0, rhs: 0)
+                    await output(result)
+                }, webFetch: { url, _ in
+                    LocalWebResponse(url: url, status: 200, contentType: "text/plain", text: "EXAMPLE-FETCH-SUCCEEDED")
+                }, monitorConnectivity: false))
+        }
+        #endif
+        return ConversationManager()
+    }()
     private let services: SessionServices
     var localUnavailableReason: String? { services.localAvailability() }
     var localDocuments: [LocalDocument] = []
