@@ -112,6 +112,9 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
     ENDPOINTS[0].id;
   const [selectedId, setSelectedId] = useState(linkedEndpointId);
   const [view, setView] = useState<"request" | "reference">("request");
+  const [catalogOpen, setCatalogOpen] = useState(false);
+  const catalogToggleRef = useRef<HTMLButtonElement>(null);
+  const referenceRef = useRef<HTMLElement>(null);
   const [search, setSearch] = useState("");
   const [activeGroup, setActiveGroup] = useState<EndpointGroup | "All">("All");
   const [pathValues, setPathValues] = useState<Record<string, string>>({});
@@ -223,11 +226,11 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
     abortRef.current = null;
     setRunning(false);
     setSelectedId(endpoint.id);
-    if (window.innerWidth < 1120) {
+    setCatalogOpen(false);
+    if (window.matchMedia("(max-width: 980px)").matches) {
       window.requestAnimationFrame(() => {
-        document
-          .querySelector(".docs-reference")
-          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+        referenceRef.current?.focus({ preventScroll: true });
+        catalogToggleRef.current?.scrollIntoView({ behavior: "auto", block: "start" });
       });
     }
   }
@@ -355,7 +358,17 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
       </section>
 
       <section className="docs-shell">
-        <aside className="docs-catalog" aria-label="API endpoint catalog">
+        <button
+          ref={catalogToggleRef}
+          className="docs-catalog-toggle"
+          aria-expanded={catalogOpen}
+          aria-controls="docs-catalog"
+          onClick={() => setCatalogOpen((open) => !open)}
+        >
+          <span><small>Choose an endpoint</small><strong>{selected.title}</strong></span>
+          <span>{catalogOpen ? "Close" : "Browse"} <Icon name="chevron" /></span>
+        </button>
+        <aside id="docs-catalog" className={"docs-catalog" + (catalogOpen ? " is-open" : "")} aria-label="API endpoint catalog">
           <div className="docs-search">
             <Icon name="search" />
             <input
@@ -383,6 +396,12 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
             </select>
           </label>
 
+          <div className="docs-catalog-status">
+            <span role="status">{filteredEndpoints.length} {filteredEndpoints.length === 1 ? "endpoint" : "endpoints"}</span>
+            {(search || activeGroup !== "All") && (
+              <button onClick={() => { setSearch(""); setActiveGroup("All"); }}>Clear filters</button>
+            )}
+          </div>
           <div className="docs-endpoint-list">
             {GROUPS.map((group) => {
               const endpoints = filteredEndpoints.filter(
@@ -423,7 +442,7 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
           </div>
         </aside>
 
-        <article className="docs-reference">
+        <article ref={referenceRef} className="docs-reference" tabIndex={-1} aria-label={selected.title}>
           <header className="docs-endpoint-header">
             <div className="docs-endpoint-route">
               <span className={methodClass(selected.method)}>
