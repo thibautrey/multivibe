@@ -105,8 +105,7 @@ struct ChatView: View {
                                             .background(MultiVibeTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 22))
                                             .padding(.leading, 36)
                                     } else {
-                                        if message.content.isEmpty && message.completion == .streaming { ProgressView("MultiVibe réfléchit…") }
-                                        else {
+                                        if !message.content.isEmpty || message.nativeContent != nil {
                                             VStack(alignment: .leading, spacing: 14) {
                                                 if let payload = message.nativeContent, payload.version == NativeContentPayload.currentVersion {
                                                     NativeContentView(payload: payload)
@@ -119,8 +118,8 @@ struct ChatView: View {
                                             .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(.primary.opacity(0.06)))
                                             .shadow(color: .black.opacity(0.05), radius: 18, y: 8)
                                         }
-                                        if let completion = message.completion, completion != .completed {
-                                            Text(completion == .streaming ? "Réponse en cours" : completion == .stopped ? "Réponse arrêtée" : "Réponse interrompue")
+                                        if let completion = message.completion, completion != .completed, completion != .streaming {
+                                            Text(completion == .stopped ? "Réponse arrêtée" : "Réponse interrompue")
                                                 .font(.caption).foregroundStyle(.secondary)
                                         }
                                         if let references = message.memoryReferences, !references.isEmpty {
