@@ -5441,7 +5441,12 @@ fn prepared_payload(
         && (normalize_provider(account) == "openai-compatible"
             || normalize_provider(account) == "opencode")
     {
+        let bonsai_effort = (route.model == "bonsai-2-27b")
+            .then(|| payload.get("reasoning_effort").cloned()).flatten();
         payload = sanitize_generic_chat_payload(&payload);
+        if let Some(effort) = bonsai_effort {
+            payload["reasoning_effort"] = effort;
+        }
     }
     payload
 }
