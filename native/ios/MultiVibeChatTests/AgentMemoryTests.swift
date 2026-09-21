@@ -2,6 +2,33 @@ import XCTest
 @testable import MultiVibeChat
 
 @MainActor final class AgentMemoryTests: XCTestCase {
+    func testAutomaticMemoryAddsUpdatesAndRejectsForgedSources() throws {
+        let message = ChatMessage(role: "user", content: "Je préfère le français")
+        let conversation = Conversation(messages: [message])
+        let change = AutomaticMemory.Change(topic: "Langue", text: message.content, kind: .preference,
+            messageID: message.id, quote: message.content)
+        let added = AutomaticMemory.apply([change], messages: [message], conversation: conversation, baseline: [], current: [])
+        XCTAssertEqual(added.count, 1)
+        XCTAssertEqual(added.first?.state, .confirmed)
+        let correction = ChatMessage(role: "user", content: "Je préfère désormais l’anglais")
+        var update = change; update.replaces = added[0].id; update.messageID = correction.id
+        update.text = correction.content; update.quote = correction.content
+        let updated = AutomaticMemory.apply([update], messages: [correction], conversation: conversation, baseline: added, current: added)
+        XCTAssertEqual(MemoryPolicy.items(updated).first?.memory.text, correction.content)
+        XCTAssertEqual(MemoryPolicy.items(updated).count, 1)
+        XCTAssertEqual(updated.last?.ancestors, [added[0].version])
+        let forgotten = [added[0].tombstone()]
+        XCTAssertEqual(AutomaticMemory.apply([update], messages: [correction], conversation: conversation,
+            baseline: added, current: forgotten), forgotten)
+        update.quote = "Une supposition inventée"
+        XCTAssertEqual(AutomaticMemory.apply([update], messages: [correction], conversation: conversation,
+            baseline: added, current: added), added)
+        XCTAssertTrue(AutomaticMemory.apply([change], messages: [ChatMessage(id: message.id, role: "assistant", content: message.content)],
+            conversation: conversation, baseline: [], current: []).isEmpty)
+        XCTAssertThrowsError(try AutomaticMemory.changes("not JSON"))
+        XCTAssertTrue(try AutomaticMemory.changes("[]").isEmpty)
+    }
+
     private func memory(_ text: String = "Je préfère le français", topic: String = "Langue", scope: String = "") -> AgentMemory {
         AgentMemory(topic: topic, text: text, kind: .preference, scope: scope, state: .confirmed,
             evidence: MemoryEvidence(origin: .userMessage, quote: text, date: Date(), sourceRole: "user"))
@@ -144,11 +171,11 @@ import XCTest
             for _ in 0..<5 {
                 let rejected = try await workspace.execute(action: "propose_memory", query: "Chien", documentID: "",
                     text: "Votre chien est Rex", lhs: 0, rhs: 0)
-                XCTAssertTrue(rejected.contains("refusée"))
+                XCTAssertTrue(rejected.contains("automatiquement"))
             }
             let proposed = try await workspace.execute(action: "propose_memory", query: "Boisson", documentID: "",
                 text: "Je préfère le café", lhs: 0, rhs: 0)
-            XCTAssertTrue(proposed.contains("NON confirmée"))
+            XCTAssertTrue(proposed.contains("automatiquement"))
             let search = try await workspace.execute(action: "search_memory", query: "café", documentID: "", text: "", lhs: 0, rhs: 0)
             XCTAssertTrue(search.contains("Aucun souvenir"))
             await output("Proposition à valider")
@@ -156,8 +183,7 @@ import XCTest
         let manager = ConversationManager(services: services); await manager.restore()
         XCTAssertTrue(manager.send("Je préfère le café"))
         for _ in 0..<1000 { if !manager.isStreaming { break }; await Task.yield() }
-        XCTAssertEqual(manager.memoryItems.count, 1)
-        XCTAssertEqual(manager.memoryItems.first?.memory.state, .proposed)
+        XCTAssertTrue(manager.memoryItems.isEmpty)
     }
     func testSourceDeletionForgetsMemoryAndStableIdentitySurvivesProjection() async throws {
         let manager = ConversationManager(services: isolatedServices()); await manager.restore()
