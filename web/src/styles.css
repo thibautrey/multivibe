@@ -3481,16 +3481,25 @@ body:has(> .modal-backdrop) {
 
 .trace-sharing-setting {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(250px, 0.4fr);
-  gap: 16px;
-  align-items: center;
-  padding: 12px 16px;
+  gap: 6px;
+  padding: 10px 16px;
   border-top: 1px solid var(--line);
 }
 
-.trace-sharing-setting h2 {
-  margin: 0 0 4px;
-  font-size: 1rem;
+.trace-sharing-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+}
+
+.trace-sharing-controls .inline {
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.trace-sharing-controls small {
+  font-weight: 400;
 }
 
 .trace-sharing-setting p {
@@ -3500,21 +3509,27 @@ body:has(> .modal-backdrop) {
   line-height: 1.4;
 }
 
-.trace-sharing-action {
-  display: grid;
-  gap: 4px;
-  justify-items: start;
+.trace-sharing-details {
+  font-size: 12px;
+  color: var(--muted);
 }
 
-.trace-sharing-action .inline {
-  align-items: center;
-  font-weight: 700;
+.trace-sharing-details summary {
+  width: fit-content;
+  cursor: pointer;
 }
 
-.trace-sharing-action small,
-.trace-sharing-action [role="status"] {
+.trace-sharing-details p {
+  margin-top: 8px;
+}
+
+.trace-sharing-notice {
   font-size: 11px;
   line-height: 1.25;
+}
+
+.trace-sharing-notice:empty {
+  display: none;
 }
 
 .trace-view-tab {
