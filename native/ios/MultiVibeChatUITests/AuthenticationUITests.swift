@@ -36,6 +36,8 @@ final class AuthenticationUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Connectez-vous pour envoyer un message."].exists)
         message.tap()
         message.typeText("Bonjour MultiVibe")
+        // Collapse the keyboard before interacting with the background toolbar.
+        message.swipeDown()
         for _ in 0..<3 {
             app.buttons["openAuthentication"].firstMatch.tap()
             XCTAssertTrue(app.textFields["Adresse e-mail"].waitForExistence(timeout: 5))
