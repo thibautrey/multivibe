@@ -176,7 +176,8 @@ final class LocalInternetUITests: XCTestCase {
         if !app.buttons["openMemory"].exists && more.exists { more.tap() }
         let open = app.buttons["openMemory"]
         XCTAssertTrue(open.waitForExistence(timeout: 10)); open.tap()
-        app.buttons["addMemory"].tap()
+        let add = app.buttons["addMemory"]
+        XCTAssertTrue(add.waitForExistence(timeout: 5)); add.tap()
         let topic = app.textFields["memoryTopic"]
         XCTAssertTrue(topic.waitForExistence(timeout: 5)); topic.tap(); topic.typeText("Boisson")
         let text = app.descendants(matching: .any).matching(identifier: "memoryText").firstMatch
