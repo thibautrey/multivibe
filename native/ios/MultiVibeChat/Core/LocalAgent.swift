@@ -51,6 +51,13 @@ enum LocalAgentError: LocalizedError {
 /// App-owned scope: model tool selection alone must not prompt for unrelated personal data.
 /// Ambiguous follow-ups ask for an explicit request instead of widening access.
 enum LocalDeviceScope {
+    static func actions(for messages: [ChatMessage]) -> Set<String> {
+        guard let current = messages.last(where: { $0.role == "user" }) else { return [] }
+        let currentActions = actions(for: current.content)
+        guard currentActions.isEmpty, isExplicitAuthorization(current.content) else { return currentActions }
+        return messages.dropLast().last(where: { $0.role == "user" }).map { actions(for: $0.content) } ?? []
+    }
+
     static func actions(for request: String) -> Set<String> {
         let text = request.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
         let patterns = [
@@ -63,6 +70,12 @@ enum LocalDeviceScope {
         return Set(patterns.compactMap { action, pattern in
             text.range(of: pattern, options: .regularExpression) == nil ? nil : action
         })
+    }
+
+    private static func isExplicitAuthorization(_ request: String) -> Bool {
+        let text = request.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+        let pattern = #"\b(je (t.|vous )?autorise|j.autorise|autorisation accordee|permission accordee|i (authorize|authorise|allow)|you (are|re) authorized|permission granted)\b"#
+        return text.range(of: pattern, options: .regularExpression) != nil
     }
 }
 

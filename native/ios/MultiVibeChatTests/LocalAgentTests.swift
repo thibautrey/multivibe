@@ -40,6 +40,29 @@ import XCTest
         XCTAssertTrue(result.contains("Aucune permission"))
     }
 
+    func testExplicitAuthorizationKeepsPreviousCalendarScope() {
+        let messages = [
+            ChatMessage(role: "user", content: "Il y a quoi dans mon calendrier cette semaine ?"),
+            ChatMessage(role: "assistant", content: "J’ai besoin de ton autorisation."),
+            ChatMessage(role: "user", content: "Je t’autorises")
+        ]
+        XCTAssertEqual(LocalDeviceScope.actions(for: messages), ["read_calendar"])
+    }
+
+    func testAuthorizationDoesNotWidenPreviousPersonalDataScope() {
+        let messages = [
+            ChatMessage(role: "user", content: "Lis mon calendrier"),
+            ChatMessage(role: "assistant", content: "J’ai besoin de ton autorisation."),
+            ChatMessage(role: "user", content: "Je t’autorise pour mes contacts")
+        ]
+        XCTAssertEqual(LocalDeviceScope.actions(for: messages), ["read_contacts"])
+        XCTAssertTrue(LocalDeviceScope.actions(for: [
+            ChatMessage(role: "user", content: "Lis mon calendrier"),
+            ChatMessage(role: "assistant", content: "D’accord."),
+            ChatMessage(role: "user", content: "Oui")
+        ]).isEmpty)
+    }
+
     func testMailExplainsPlatformLimitWithoutPermission() async throws {
         let result = try await LocalDeviceData.read(action: "read_mail", query: "")
         XCTAssertTrue(result.contains("Aucun mail"))
