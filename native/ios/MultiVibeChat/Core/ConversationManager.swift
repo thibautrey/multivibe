@@ -1010,7 +1010,11 @@ import Network
                       conversations[index].memoryScope == snapshot.memoryScope else { return }
                 let changes = try AutomaticMemory.changes(output)
                 // A manual forget or correction during inference always wins, even for proposed additions.
-                guard memoryRecords == baseline else { return }
+                guard memoryRecords == baseline else {
+                    conversations[index].memoryReviewedThrough = tail.id
+                    if !persist() { conversations[index].memoryReviewedThrough = snapshot.memoryReviewedThrough }
+                    return
+                }
                 let updated = AutomaticMemory.apply(changes, messages: messages, conversation: snapshot,
                     baseline: baseline, current: memoryRecords)
                 let old = memoryRecords
