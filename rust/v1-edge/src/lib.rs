@@ -2305,6 +2305,14 @@ fn responses_to_chat_completions(
     );
     output.insert("messages".to_owned(), Value::Array(messages));
     output.insert("stream".to_owned(), Value::Bool(client_stream));
+    if client_stream {
+        output.insert("stream_options".to_owned(), json!({"include_usage": true}));
+    }
+    if let Some(effort) = object.get("reasoning_effort")
+        .or_else(|| object.get("reasoning").and_then(|v| v.get("effort")))
+    {
+        output.insert("reasoning_effort".to_owned(), effort.clone());
+    }
     if let Some(tools) = object.get("tools").and_then(Value::as_array) {
         // Responses also carries built-in tools which are not valid Chat
         // Completions tools. Local OpenAI-compatible runtimes such as OMLX
@@ -9884,6 +9892,12 @@ fn model_entry_from_upstream(
             }
         }
     }
+    // llama.cpp reports the configured capacity separately from the training maximum.
+    if metadata.get("context_window").is_none_or(Value::is_null) {
+        if let Some(value) = upstream.pointer("/meta/n_ctx").and_then(Value::as_u64).filter(|v| *v > 0) {
+            metadata.insert("context_window".to_owned(), json!(value));
+        }
+    }
     for (destination, source) in [
         ("supports_reasoning", "supports_reasoning"),
         ("supports_tools", "supports_tools"),
@@ -10794,7 +10808,7 @@ fn codex_model_shape(model: &Value) -> Option<Value> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or(id);
-    Some(json!({
+    let mut info = json!({
         "slug": id,
         "display_name": display_name,
         "description": format!("{provider_name} model {display_name}"),
@@ -10807,7 +10821,22 @@ fn codex_model_shape(model: &Value) -> Option<Value> {
         "support_verbosity": false,
         "truncation_policy": {"mode": "tokens", "limit": 10000},
         "experimental_supported_tools": [],
-    }))
+    });
+    if let Some(window) = metadata.get("context_window").and_then(Value::as_u64).filter(|v| *v > 0) {
+        info["context_window"] = json!(window);
+        info["max_context_window"] = json!(window);
+    }
+    // Verified Bonsai template accepts exactly these efforts; none disables thinking.
+    if id == "bonsai-2-27b" {
+        info["default_reasoning_level"] = json!("none");
+        info["supported_reasoning_levels"] = json!([
+            {"effort":"none","description":"Direct answer without a thinking phase"},
+            {"effort":"low","description":"Brief reasoning"},
+            {"effort":"medium","description":"Standard reasoning"},
+            {"effort":"xhigh","description":"Extended reasoning"}
+        ]);
+    }
+    Some(info)
 }
 
 fn models_list_response(models: &[Value], catalog: Value) -> Value {
@@ -13102,6 +13131,7 @@ mod tests {
             .find(|entry| entry["slug"] == "omlx/Qwen3.8-27B-4bit")
             .expect("local model must stay visible to Codex");
         assert_eq!(native["display_name"], "Qwen3.8 27B");
+        assert_eq!(native["context_window"], 65536);
         for requested in ["omlx/Qwen3.8-27B-4bit", "Qwen3.8-27B-4bit"] {
             let response = client
                 .post(format!("{edge_url}/v1/chat/completions"))
@@ -14513,6 +14543,18 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
             converted["tool_choice"],
             json!({"type": "function", "function": {"name": "lookup"}})
         );
+    }
+
+    #[test]
+    fn chat_bridge_preserves_reasoning_and_requests_stream_usage() {
+        for effort in ["none", "low", "medium", "xhigh"] {
+            let result = responses_to_chat_completions(&json!({"input":"hello","reasoning":{"effort":effort}}), true, false);
+            assert_eq!(result["reasoning_effort"], effort);
+            assert_eq!(result["stream_options"]["include_usage"], true);
+        }
+        let result = responses_to_chat_completions(&json!({"input":"hello"}), false, false);
+        assert!(result.get("reasoning_effort").is_none());
+        assert!(result.get("stream_options").is_none());
     }
 
     #[test]
