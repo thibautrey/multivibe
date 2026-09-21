@@ -14551,6 +14551,20 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
     }
 
     #[test]
+    fn bonsai_runtime_metadata_and_prepared_payload_match_codex_settings() {
+        let entry = model_entry_from_upstream("bonsai-2-27b", "openai-compatible", "local", &json!({"meta":{"n_ctx":147456,"n_ctx_train":262144}}));
+        let info = codex_model_shape(&entry).unwrap();
+        assert_eq!(info["context_window"], 147456);
+        assert_eq!(info["default_reasoning_level"], "none");
+        let mut provider = account("local");
+        provider.provider = Some("openai-compatible".into());
+        let route = RouteCandidate {requested_model:"bonsai-2-27b".into(), model:"bonsai-2-27b".into(), provider:Some("openai-compatible".into()), account_ids:vec!["local".into()]};
+        let value = prepared_payload(&json!({"input":"hello","reasoning":{"effort":"none"}}), "/v1/responses", &provider, &route, None, true, false, &EdgeConfig::default());
+        assert_eq!(value["reasoning_effort"], "none");
+        assert_eq!(value["stream_options"]["include_usage"], true);
+    }
+
+    #[test]
     fn chat_bridge_preserves_reasoning_and_requests_stream_usage() {
         for effort in ["none", "low", "medium", "xhigh"] {
             let result = responses_to_chat_completions(&json!({"input":"hello","reasoning":{"effort":effort}}), true, false);

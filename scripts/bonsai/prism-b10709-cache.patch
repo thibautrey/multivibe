@@ -73,7 +73,7 @@
 +                            }
 +                            SLT_INF(*slot, "restored %zu recurrent checkpoints from slot snapshot\n", slot->prompt.checkpoints.size());
 +                        } else {
-+                            SLT_WRN(*slot, "legacy snapshot has no recurrent rewind checkpoints\n");
++                            SLT_WRN(*slot, "%s", "legacy snapshot has no recurrent rewind checkpoints\n");
 +                        }
 +
                      } catch (const std::exception & err) {
