@@ -702,6 +702,29 @@ final class MessageMarkdownTests: XCTestCase {
     }
 }
 
+@MainActor final class HomeSuggestionTests: XCTestCase {
+    private func defaults() -> UserDefaults {
+        let value = UserDefaults(suiteName: "HomeSuggestionTests-\(UUID().uuidString)")!
+        value.removePersistentDomain(forName: value.volatileDomainNames.first ?? "")
+        return value
+    }
+    func testDefaultsAndRoundTrip() {
+        let storage = defaults()
+        XCTAssertEqual(HomeSuggestionStore.load(from: storage), HomeSuggestion.defaults)
+        let custom = HomeSuggestion(id: UUID(), title: "Corriger", systemImage: "text.badge.checkmark", instruction: "Corrige les fautes et tournures de phrases", inputSource: .clipboard, behavior: .send)
+        HomeSuggestionStore.save([custom], to: storage)
+        XCTAssertEqual(HomeSuggestionStore.load(from: storage), [custom])
+    }
+    func testInvalidAndEmptyDataFallBackAndSaveIsBounded() {
+        let storage = defaults()
+        storage.set(Data("invalide".utf8), forKey: HomeSuggestionStore.key)
+        XCTAssertEqual(HomeSuggestionStore.load(from: storage), HomeSuggestion.defaults)
+        let values = (0..<20).map { HomeSuggestion(id: UUID(), title: "\($0)", systemImage: "sparkles", instruction: "Instruction", inputSource: .none, behavior: .prepare) }
+        HomeSuggestionStore.save(values, to: storage)
+        XCTAssertEqual(HomeSuggestionStore.load(from: storage).count, 12)
+    }
+}
+
 @MainActor final class ModelRecoveryTests: XCTestCase {
     private func session(_ name: String = "models-fixture") -> NativeSession {
         NativeSession(accessToken: name, refreshToken: name, expiresAt: .distantFuture, accountId: name)

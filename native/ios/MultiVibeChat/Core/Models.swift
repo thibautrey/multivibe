@@ -1,6 +1,39 @@
 import AuthenticationServices
 import Foundation
 
+struct HomeSuggestion: Codable, Identifiable, Equatable, Sendable {
+    enum InputSource: String, Codable, CaseIterable, Sendable { case none, clipboard }
+    enum Behavior: String, Codable, CaseIterable, Sendable { case prepare, send }
+    var id: UUID
+    var title: String
+    var systemImage: String
+    var instruction: String
+    var inputSource: InputSource
+    var behavior: Behavior
+
+    static let defaults: [HomeSuggestion] = [
+        .init(id: UUID(uuidString: "7FD514A0-2A15-48C4-A099-000000000001")!, title: "Trouver l’inspiration", systemImage: "lightbulb", instruction: "Aide-moi à trouver des idées pour", inputSource: .none, behavior: .prepare),
+        .init(id: UUID(uuidString: "7FD514A0-2A15-48C4-A099-000000000002")!, title: "M’aider à écrire", systemImage: "pencil.line", instruction: "Aide-moi à rédiger", inputSource: .none, behavior: .prepare),
+        .init(id: UUID(uuidString: "7FD514A0-2A15-48C4-A099-000000000003")!, title: "Comprendre un sujet", systemImage: "text.book.closed", instruction: "Explique-moi simplement", inputSource: .none, behavior: .prepare)
+    ]
+}
+
+@MainActor enum HomeSuggestionStore {
+    static let key = "cloud.multivibe.chat.home-suggestions-v1"
+    static func load(from defaults: UserDefaults = .standard) -> [HomeSuggestion] {
+        guard let data = defaults.data(forKey: key),
+              let values = try? JSONDecoder().decode([HomeSuggestion].self, from: data), !values.isEmpty else {
+            return HomeSuggestion.defaults
+        }
+        return Array(values.prefix(12))
+    }
+    static func save(_ values: [HomeSuggestion], to defaults: UserDefaults = .standard) {
+        let bounded = Array(values.prefix(12))
+        guard !bounded.isEmpty, let data = try? JSONEncoder().encode(bounded) else { return }
+        defaults.set(data, forKey: key)
+    }
+}
+
 struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     var id: UUID = UUID()
     var role: String
