@@ -62,7 +62,7 @@ extension HostPopoverController {
 
         primaryButton.image = NSImage(systemSymbolName: "arrow.up.right.square", accessibilityDescription: nil)
         primaryButton.imagePosition = .imageTrailing
-        let askButton = NSButton(title: "Demander…", target: self, action: #selector(didOpenAssistant))
+        let askButton = NSButton(title: "Ouvrir l’app", target: self, action: #selector(didOpenAssistant))
         styleButton(askButton, kind: .secondary)
         let actions = NSStackView(views: [primaryButton, askButton, NSView(), quitButton])
         actions.orientation = .horizontal

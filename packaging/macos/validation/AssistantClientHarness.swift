@@ -20,7 +20,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate {
         let original = client.defaultModel
         defer { client.defaultModel = original }
         let models = try await client.models()
-        precondition(models.map(\.id) == ["empty", "error", "normal", "redirect", "slow"])
+        precondition(models.map(\.id) == ["empty", "error", "normal", "redirect", "slow", "stream", "truncated"])
         client.defaultModel = "normal"
         let reply = try await client.ask("Bonjour")
         precondition(reply == "Réponse fixture")
@@ -34,6 +34,11 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate {
         try await Task.sleep(nanoseconds: 150_000_000)
         pending.cancel()
         do { _ = try await pending.value; fatalError("Cancellation ignored") } catch {}
+        let history = [["role": "user", "content": "Bonjour"], ["role": "assistant", "content": "Salut"], ["role": "user", "content": "Suite"]]
+        var updates: [String] = []
+        try await client.stream(history, model: "stream") { updates.append($0) }
+        precondition(updates == ["Bonjour ", "Bonjour été"])
+        do { try await client.stream(history, model: "truncated") { _ in }; fatalError("Truncated SSE accepted") } catch HostAssistantError.unavailable {}
         withExtendedLifetime(delegate) {}
         print("PASS models, default, response, input bounds, stale model, empty response, HTTP error, redirect rejection, cancellation")
     }

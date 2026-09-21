@@ -19,13 +19,21 @@ test('native assistant uses Host API with bounded input, model validation, cance
     if (req.headers.authorization !== 'Bearer fixture-only-token') { res.writeHead(401).end(); return; }
     res.setHeader('Content-Type', 'application/json');
     if (req.url === '/v1/models') {
-      res.end(JSON.stringify({ data: ['slow', 'redirect', 'normal', 'error', 'empty', 'normal'].map(id => ({id})) })); return;
+      res.end(JSON.stringify({ data: ['slow', 'redirect', 'normal', 'error', 'empty', 'normal', 'stream', 'truncated'].map(id => ({id})) })); return;
     }
     let text = ''; for await (const chunk of req) text += chunk;
     const body = JSON.parse(text); calls.push(body);
     if (body.model === 'redirect') { res.writeHead(307, { Location: '/leaked' }).end(); return; }
     if (body.model === 'error') { res.writeHead(503).end('{}'); return; }
     if (body.model === 'slow') { const timer = setTimeout(() => res.end('{}'), 2000); res.on('close', () => clearTimeout(timer)); return; }
+    if (body.stream) {
+      assert.deepEqual(body.messages, [{ role: 'user', content: 'Bonjour' }, { role: 'assistant', content: 'Salut' }, { role: 'user', content: 'Suite' }]);
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.write('data: {"choices":[{"delta":{"content":"Bonjour "}}]}\n\n');
+      res.write('data: {"choices":[{"delta":{"content":"été"}}]}\n\n');
+      if (body.model !== 'truncated') res.write('data: [DONE]\n\n');
+      res.end(); return;
+    }
     res.end(JSON.stringify({ choices: [{ message: { content: body.model === 'empty' ? '' : 'Réponse fixture' } }] }));
   });
   try {
@@ -35,7 +43,7 @@ test('native assistant uses Host API with bounded input, model validation, cance
     const { stdout } = await execute(binary, [String(server.address().port)]);
     assert.match(stdout, /PASS models/);
     assert.equal(leaked, false);
-    assert.equal(calls.length, 5);
+    assert.equal(calls.length, 7);
     assert.deepEqual(calls[0], { model: 'normal', stream: false, messages: [{ role: 'user', content: 'Bonjour' }] });
     console.log(stdout.trim());
   } finally {

@@ -68,15 +68,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         let app = NSApplication.shared
         let delegate = MultiVibeMenuBarApp()
         app.delegate = delegate
-#if DEBUG
-        if ProcessInfo.processInfo.environment["MULTIVIBE_HOST_MENU_PREVIEW"] == "1" {
-            app.setActivationPolicy(.regular)
-        } else {
-            app.setActivationPolicy(.accessory)
-        }
-#else
-        app.setActivationPolicy(.accessory)
-#endif
+        app.setActivationPolicy(.regular)
         app.run()
     }
 
@@ -85,6 +77,11 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         configureStatusItem()
         configureAssistantIntegration()
         configurePopover()
+        // Login launches keep the Host in the background; explicit launches open the chat.
+        let launchedAtLogin = NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
+        if !launchedAtLogin && ProcessInfo.processInfo.environment["MULTIVIBE_HOST_MENU_PREVIEW"] != "1" {
+            Task { @MainActor in self.showAssistant() }
+        }
         popoverController.selectQuotaProvider = { [weak self] id in
             guard let self else { return }
             self.quotaSelection.pin = id
