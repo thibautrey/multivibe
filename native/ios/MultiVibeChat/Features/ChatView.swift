@@ -33,7 +33,8 @@ struct ChatView: View {
     @State private var followsLatest = true
     @State private var userScrolling = false
     @State private var composerPresented = true
-    private static let compactComposerDetent = PresentationDetent.height(126)
+    private static let compactComposerHeight: CGFloat = 126
+    private static let compactComposerDetent = PresentationDetent.height(compactComposerHeight)
     private let latestMessageAnchor = "latest-message"
 
     var body: some View {
@@ -169,6 +170,7 @@ struct ChatView: View {
                         }.padding(.horizontal, 14).padding(.vertical, 18)
                             .animation(reduceMotion ? nil : .spring(duration: 0.38, bounce: 0.12), value: manager.current?.messages.count)
                     }
+                    .contentMargins(.bottom, composerPresented ? Self.compactComposerHeight : 0, for: .scrollContent)
                     .defaultScrollAnchor(.bottom)
                     .onScrollPhaseChange { _, phase in
                         userScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
@@ -305,7 +307,7 @@ struct ChatView: View {
             .presentationContentInteraction(.scrolls)
             .presentationBackgroundInteraction(.enabled(upThrough: Self.compactComposerDetent))
             .presentationCornerRadius(30)
-            .presentationBackground(.ultraThinMaterial)
+            .presentationBackground(.clear)
         }
         .onChange(of: modalIsActive) { _, active in
             if !active { Task { @MainActor in await Task.yield(); composerPresented = true } }
@@ -388,7 +390,8 @@ struct ChatView: View {
             }.labelStyle(.iconOnly).buttonStyle(.plain)
         }
         .padding(.horizontal, 18).padding(.top, 2).padding(.bottom, 6)
-        .frame(maxWidth: 760).frame(maxWidth: .infinity)
+        .frame(maxWidth: 760).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(.ultraThinMaterial, ignoresSafeAreaEdges: .all)
     }
 
     private func consumeIntent() {
