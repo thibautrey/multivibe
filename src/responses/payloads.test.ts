@@ -107,3 +107,46 @@ test("repairs a pending tool turn that lost its reasoning marker", () => {
   );
   assert.equal(closed.messages[0].reasoning_content, undefined);
 });
+
+test("repairs malformed tool arguments before forwarding", () => {
+  const converted = responsesToChatCompletionsPayload({
+    model: "deepseek/deepseek-flash",
+    stream: true,
+    input: [
+      {
+        type: "function_call",
+        call_id: "call-1",
+        name: "exec_command",
+        arguments: '{"zsh": zsh}',
+      },
+      {
+        type: "function_call_output",
+        call_id: "call-1",
+        output: "failed to parse function arguments",
+      },
+    ],
+  });
+  assert.equal(converted.messages[0].tool_calls[0].function.arguments, "{}");
+
+  const preserved = responsesToChatCompletionsPayload({
+    model: "deepseek/deepseek-flash",
+    stream: true,
+    input: [
+      { type: "function_call", call_id: "call-1", name: "exec_command", arguments: '{"cmd":"ls"}' },
+      { type: "function_call_output", call_id: "call-1", output: "ok" },
+    ],
+  });
+  assert.equal(preserved.messages[0].tool_calls[0].function.arguments, '{"cmd":"ls"}');
+
+  const objectArguments = responsesToChatCompletionsPayload({
+    model: "deepseek/deepseek-flash",
+    stream: true,
+    input: [
+      { type: "function_call", call_id: "call-1", name: "exec_command", arguments: { cmd: "ls" } },
+      { type: "function_call_output", call_id: "call-1", output: "ok" },
+    ],
+  });
+  assert.doesNotThrow(() =>
+    JSON.parse(objectArguments.messages[0].tool_calls[0].function.arguments),
+  );
+});

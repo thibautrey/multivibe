@@ -2168,6 +2168,18 @@ fn ensure_reasoning_continuation(messages: &mut [Value]) {
     }
 }
 
+/// Chat Completions requires tool-call arguments to be a JSON string. A model
+/// can emit malformed JSON for one call; the matching tool result already
+/// reports the parse failure, so forward `{}` instead of letting the malformed
+/// call fail every later request in the thread.
+fn repaired_tool_arguments(arguments: &str) -> String {
+    if serde_json::from_str::<Value>(arguments).is_ok() {
+        arguments.to_owned()
+    } else {
+        "{}".to_owned()
+    }
+}
+
 fn responses_to_chat_completions(
     body: &Value,
     client_stream: bool,
@@ -2197,12 +2209,21 @@ fn responses_to_chat_completions(
                         let id = value_string(item.get("call_id"))
                             .or_else(|| value_string(item.get("id")))
                             .unwrap_or_else(|| new_id("call"));
+                        let arguments = item
+                            .get("arguments")
+                            .map(|value| {
+                                value
+                                    .as_str()
+                                    .map(str::to_owned)
+                                    .unwrap_or_else(|| json_string(value))
+                            })
+                            .unwrap_or_else(|| "{}".to_owned());
                         let call = json!({
                             "id": id,
                             "type": "function",
                             "function": {
                                 "name": value_string(item.get("name")).unwrap_or_else(|| "unknown".to_owned()),
-                                "arguments": item.get("arguments").map(|value| value.as_str().map(str::to_owned).unwrap_or_else(|| json_string(value))).unwrap_or_else(|| "{}".to_owned()),
+                                "arguments": repaired_tool_arguments(&arguments),
                             }
                         });
                         if let Some(previous) = messages
@@ -14466,6 +14487,51 @@ mod tests {
             preserved["messages"][0]["reasoning_content"],
             "real reasoning"
         );
+    }
+
+    #[test]
+    fn malformed_tool_arguments_are_repaired_before_forwarding() {
+        let converted = responses_to_chat_completions(
+            &json!({"input": [
+                {"type": "message", "role": "user", "content": "go"},
+                {"type": "function_call", "call_id": "call-1", "name": "exec_command", "arguments": "{\"zsh\": zsh}"},
+                {"type": "function_call_output", "call_id": "call-1", "output": "failed to parse function arguments"}
+            ]}),
+            false,
+            false,
+        );
+        assert_eq!(
+            converted["messages"][1]["tool_calls"][0]["function"]["arguments"],
+            "{}"
+        );
+
+        // Valid arguments and object arguments are preserved as JSON strings.
+        let preserved = responses_to_chat_completions(
+            &json!({"input": [
+                {"type": "function_call", "call_id": "call-1", "name": "exec_command", "arguments": "{\"cmd\":\"ls\"}"},
+                {"type": "function_call_output", "call_id": "call-1", "output": "ok"}
+            ]}),
+            false,
+            false,
+        );
+        assert_eq!(
+            preserved["messages"][0]["tool_calls"][0]["function"]["arguments"],
+            "{\"cmd\":\"ls\"}"
+        );
+
+        let object_arguments = responses_to_chat_completions(
+            &json!({"input": [
+                {"type": "function_call", "call_id": "call-1", "name": "exec_command", "arguments": {"cmd": "ls"}},
+                {"type": "function_call_output", "call_id": "call-1", "output": "ok"}
+            ]}),
+            false,
+            false,
+        );
+        let arguments = object_arguments["messages"][0]["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(serde_json::from_str::<Value>(&arguments).is_ok());
     }
 
     #[test]

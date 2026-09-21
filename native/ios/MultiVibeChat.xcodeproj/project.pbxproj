@@ -50,7 +50,7 @@
 
 /* Begin PBXFileReference section */
 		00217B9D7702B72A5569309F /* MultiVibeChatApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiVibeChatApp.swift; sourceTree = "<group>"; };
-		26BC4D73E9F06A51A165F8E9 /* MultiVibeChat.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = MultiVibeChat.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		26BC4D73E9F06A51A165F8E9 /* MultiVibeChat.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MultiVibeChat.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3319D8F58B7782A53C37AF9B /* LocalAgentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalAgentTests.swift; sourceTree = "<group>"; };
 		42EEE3F6ED3F93F3854EAC51 /* SSEParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSEParserTests.swift; sourceTree = "<group>"; };
 		4B001301568AC61EB8AE8F59 /* LocalWebFetch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalWebFetch.swift; sourceTree = "<group>"; };
@@ -72,7 +72,7 @@
 		BC28D33BB97A4F1A6581EB4F /* NativeIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeIntents.swift; sourceTree = "<group>"; };
 		C40B5C17410BA2068BAC1E38 /* MultiVibeChatUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = MultiVibeChatUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		CA4393E98F397246F4A41196 /* AuthenticationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticationView.swift; sourceTree = "<group>"; };
-		D7577716199F102273754156 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		D7577716199F102273754156 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		DD2222EAEE8931D5CFBC41BA /* SecureStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureStore.swift; sourceTree = "<group>"; };
 		ED63046FBAF333333E159086 /* ConversationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationManager.swift; sourceTree = "<group>"; };
 		EE89CDEC6389DF7D57D2960C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -256,9 +256,6 @@
 					166FBE78ECDABB967CC778B0 = {
 						DevelopmentTeam = "";
 						TestTargetID = D823DF267AB00046A3ED4807;
-					};
-					D823DF267AB00046A3ED4807 = {
-						DevelopmentTeam = "";
 					};
 				};
 			};
@@ -489,6 +486,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MultiVibeChat/Resources/MultiVibeChat.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = 5E2CNR9H47;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MultiVibeChat/Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -507,6 +505,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MultiVibeChat/Resources/MultiVibeChat.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = 5E2CNR9H47;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MultiVibeChat/Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
