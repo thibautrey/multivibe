@@ -258,12 +258,12 @@ private struct WorkspaceTool: Tool {
 @available(iOS 26, *)
 private struct MemoryTool: Tool {
     let name = "long_term_memory"
-    let description = "Search validated long-term memory before answering about past preferences, projects or decisions. Read a memory by UUID to inspect its original source. Propose an exact quote from the current user message for human validation; proposals are never usable facts."
+    let description = "Search validated long-term memory before answering about past preferences, projects or decisions. Read a memory by UUID to inspect its original source. New information is reviewed automatically after the response."
     let workspace: LocalAgentWorkspace
     @Generable struct Arguments {
         @Guide(description: "Memory operation", .anyOf(["search_memory", "read_memory"])) var action: String
-        @Guide(description: "Search terms; memory UUID for read_memory; short topic for propose_memory") var query: String
-        @Guide(description: "Exact quote from current user message for propose_memory; empty otherwise") var text: String
+        @Guide(description: "Search terms; memory UUID for read_memory") var query: String
+        @Guide(description: "Leave empty") var text: String
     }
     func call(arguments: Arguments) async throws -> String {
         try await workspace.execute(action: arguments.action, query: arguments.query, documentID: "", text: arguments.text, lhs: 0, rhs: 0)
