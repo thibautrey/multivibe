@@ -1,14 +1,22 @@
 # Local memory
 
-Apple Foundation Local can call `long_term_memory` to search confirmed memories,
-inspect their original quotations or propose an exact quotation from the latest
-user message. Proposals are not facts and are never included in retrieval or sync.
-The model has no confirmation, correction or deletion tool.
+After each successfully completed response, a separate background request asks the
+same conversation model to identify useful user information and update existing
+memories. Apple Foundation uses a separate tool-free local session; remote models
+use the same model ID and account transport as the conversation. A new user turn
+cancels the preceding review. Failed/stopped responses do not trigger extraction.
 
-Use **Mémoire** in chat to add, review, correct or forget a memory. **Retenir** on
-a message and **Retiens ceci : …** open the confirmation form. **Oublie ceci**
-opens the memory list for explicit selection. Assistant text can only be retained
-after user confirmation, recorded as such rather than as an independent observation.
+The response must be a bounded JSON array with exact quotations and user message
+IDs. Assistant claims cannot supply evidence. Updates preserve memory identity and
+revision ancestry. Manual changes made during inference take priority. Invalid
+output and network failures leave existing memory untouched and are retried after
+a later successful exchange. The reviewed message marker is persisted with history.
+Reviews above the 48 KB input budget are rejected without marking them reviewed.
+
+Use **Mémoire** from the conversation-list menu to add, inspect, correct or forget
+information. The chat has no **Mémoire** toolbar button or **Retenir** message action.
+**Retiens ceci : …** is handled as a normal conversation message; **Oublie ceci**
+opens the memory list for explicit selection.
 
 ## Evidence and retrieval
 
@@ -30,8 +38,9 @@ No model fine-tuning or recursive summary is involved. The app records the exact
 memory revisions retrieved and exposes their original quotations/dates under
 **Souvenirs consultés** on the response. Generated citation text is not trusted.
 
-The index is not used by remote models. Excerpts repeated in a conversation can
-still be included in that conversation's existing opt-in history synchronization.
+The most relevant sourced memory is also supplied to the selected remote model.
+Remote background reviews send new conversation messages and memories in the same
+project scope to that model, independently of the optional history synchronization.
 A memory never grants Internet or native device permissions. Current location and
 other changing observations must be rechecked using their tools.
 
