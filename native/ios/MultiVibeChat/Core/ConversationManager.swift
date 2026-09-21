@@ -28,6 +28,8 @@ import Network
     }
     var webFetch: @Sendable (URL, String) async throws -> LocalWebResponse = { try await LocalWebFetch.fetch(url: $0, method: $1) }
     var memoryIndex: @MainActor (URL) throws -> MemoryIndex = { try MemoryIndex(url: $0) }
+    var reviewLocalMemory: @Sendable (String) async throws -> String = { try await LocalAgent.reviewMemory($0) }
+    var memoryReviewDelay: @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(2)) }
     var monitorConnectivity = true
     var syncDelay: @Sendable (Int) async throws -> Void = { attempt in try await Task.sleep(for: .seconds(min(60, 2 << attempt))) }
     var models: @MainActor (String) async throws -> [ModelOption] = { try await ChatAPI.shared.models(token: $0) }
@@ -72,6 +74,7 @@ import Network
     var memoryError: String?
     var memoryPresented = false
     var memoryDraft: MemoryDraft?
+    private var memoryReviews: [UUID: Task<Void, Never>] = [:]
     var memoryItems: [MemoryItem] { MemoryPolicy.items(memoryRecords) }
 
     var authenticationPresented = false
@@ -195,6 +198,7 @@ import Network
         models = [LocalModel.option]
         selectedModel = LocalModel.id
         storageLoaded = false
+        memoryReviews.values.forEach { $0.cancel() }; memoryReviews = [:]
         memoryRecords = []; memoryBaseline = []; memoryIndex = nil; memoryDraft = nil; memorySyncEnabled = false; memoryError = nil
         calendarEnabled = false; remindersEnabled = false
         do {
@@ -454,16 +458,10 @@ import Network
         guard !selectedModel.isEmpty else { error = APIError.noModel.localizedDescription; return false }
         if current == nil { newConversation() }
         guard let id = selection, let index = conversations.firstIndex(where: { $0.id == id }) else { return false }
+        memoryReviews[id]?.cancel(); memoryReviews[id] = nil
         conversations[index].model = selectedModel
         conversations[index].messages.append(ChatMessage(role: "user", content: text))
         if conversations[index].messages.count == 1 { conversations[index].title = String(text.prefix(70)) }
-        if let remembered = MemoryCommand.remember(text) {
-            let source = conversations[index].messages.last!
-            memoryDraft = MemoryDraft(text: remembered, evidence: MemoryEvidence(origin: .userMessage, quote: source.content,
-                date: Date(), conversationID: current?.memorySourceID ?? id, messageID: source.id, sourceRole: "user"), scope: current?.memoryScope ?? "")
-            conversations[index].messages.append(ChatMessage(role: "assistant", content: "Validez le souvenir et sa source dans la fiche Mémoire avant son utilisation.", completion: .completed))
-            return persist()
-        }
         if MemoryCommand.isForget(text) { memoryPresented = true; return persist() }
         return startReply(conversation: id, index: index)
     }
@@ -541,6 +539,7 @@ import Network
                 // Only a successfully terminated stream authorizes automatic playback.
                 setReplyCompletion(.completed)
                 completedReply = reply.id
+                scheduleMemoryReview(conversation: id)
             } catch is CancellationError {
                 if generationRevision == revision && sessionRevision == accountRevision { setReplyCompletion(.stopped) }
             } catch {
@@ -581,6 +580,7 @@ import Network
         persist()
     }
     func delete(_ id: UUID) {
+        memoryReviews[id]?.cancel(); memoryReviews[id] = nil
         if selection == id { stop(); selection = nil }
         let sourceID = conversations.first(where: { $0.id == id })?.memorySourceID ?? id
         let oldConversations = conversations; let oldMemory = memoryRecords
@@ -967,6 +967,65 @@ import Network
             }
         }
     }
+    private func scheduleMemoryReview(conversation id: UUID) {
+        guard let snapshot = conversations.first(where: { $0.id == id }),
+              let tail = snapshot.messages.last, tail.role == "assistant", tail.completion == .completed,
+              snapshot.memoryReviewedThrough != tail.id else { return }
+        memoryReviews[id]?.cancel()
+        let account = sessionRevision
+        let baseline = memoryRecords
+        let start = snapshot.memoryReviewedThrough.flatMap { marker in snapshot.messages.firstIndex { $0.id == marker } }.map { $0 + 1 } ?? 0
+        let messages = Array(snapshot.messages.dropFirst(start))
+        let existing = MemoryPolicy.items(baseline).filter { $0.memory.scope == (snapshot.memoryScope ?? "") }.map(\.memory)
+        memoryReviews[id] = Task {
+            do {
+                try await services.memoryReviewDelay()
+                try Task.checkCancellation()
+                guard sessionRevision == account else { return }
+                let encoder = JSONEncoder()
+                let payload = "Existing memories:\n" + String(decoding: try encoder.encode(existing), as: UTF8.self)
+                    + "\nConversation messages:\n" + String(decoding: try encoder.encode(messages), as: UTF8.self)
+                // Do not silently mark a truncated conversation as reviewed.
+                guard payload.utf8.count <= 48_000 else { throw MemoryError.invalid }
+                let output: String
+                if snapshot.model == LocalModel.id {
+                    output = try await services.reviewLocalMemory(payload)
+                } else {
+                    let credentials = try await validSession()
+                    try Task.checkCancellation()
+                    guard sessionRevision == account else { return }
+                    let buffer = MemoryReviewOutput()
+                    try await services.stream(snapshot.model, [ChatMessage(role: "system", content: AutomaticMemory.instructions),
+                        ChatMessage(role: "user", content: payload)], credentials.accessToken) { await buffer.append($0) }
+                    output = await buffer.value()
+                }
+                try Task.checkCancellation()
+                guard sessionRevision == account, !isRestoring,
+                      let index = conversations.firstIndex(where: { $0.id == id }),
+                      conversations[index].messages == snapshot.messages,
+                      conversations[index].memoryScope == snapshot.memoryScope else { return }
+                let changes = try AutomaticMemory.changes(output)
+                // A manual forget or correction during inference always wins, even for proposed additions.
+                guard memoryRecords == baseline else { return }
+                let updated = AutomaticMemory.apply(changes, messages: messages, conversation: snapshot,
+                    baseline: baseline, current: memoryRecords)
+                let old = memoryRecords
+                memoryRecords = updated
+                conversations[index].memoryReviewedThrough = tail.id
+                guard persist() else {
+                    memoryRecords = old
+                    conversations[index].memoryReviewedThrough = snapshot.memoryReviewedThrough
+                    return
+                }
+                refreshMemoryIndex(); scheduleAutomaticSync()
+            } catch is CancellationError {
+                // A newer user turn or account change superseded this review.
+            } catch {
+                if sessionRevision == account { memoryError = "La mise à jour automatique de la mémoire n’a pas abouti. Elle sera réessayée après le prochain échange." }
+            }
+        }
+    }
+
     func draftMemory(from message: ChatMessage) {
         guard !isRestoring, !isStreaming, !isSynchronizing else { return }
         memoryDraft = MemoryDraft(text: String(message.content.prefix(600)),
@@ -1090,20 +1149,7 @@ import Network
             recordMemoryReference(item.memory)
             return MemoryPolicy.render(item)
         case "propose_memory":
-            guard let source, source.role == "user", !text.isEmpty, text.count <= 600, !query.isEmpty, query.count <= 80,
-                  source.content.count <= 4000, source.content.contains(text) else {
-                return "Proposition refusée : utilisez une citation exacte du dernier message utilisateur, jamais une réponse assistant ou une inférence."
-            }
-            if memoryRecords.contains(where: { $0.evidence?.messageID == source.id && $0.text == text }) {
-                return "Cette proposition existe déjà. Elle doit être validée dans Mémoire."
-            }
-            guard memoryRecords.count < 1000 else { return "Mémoire pleine. Gérez les souvenirs dans Mémoire." }
-            let record = AgentMemory(topic: query, text: text, kind: .preference, scope: scope, state: .proposed,
-                evidence: MemoryEvidence(origin: .userMessage, quote: source.content, date: Date(),
-                    conversationID: conversations.first(where: { $0.id == conversation })?.memorySourceID ?? conversation, messageID: source.id, sourceRole: "user"))
-            memoryRecords.append(record)
-            guard persist() else { memoryRecords.removeAll { $0.id == record.id }; throw MemoryError.storage }
-            return "Proposition enregistrée, NON utilisable et NON confirmée. Invitez l’utilisateur à la valider dans Mémoire."
+            return "La mémoire est gérée automatiquement après la réponse. Aucune validation manuelle n’est nécessaire."
         default: return "Outil mémoire inconnu."
         }
     }

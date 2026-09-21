@@ -57,7 +57,7 @@ struct MemoryView: View {
                             }.buttonStyle(.borderless)
                         }.accessibilityElement(children: .contain)
                     }
-                    if manager.memoryItems.isEmpty { Text("Aucun souvenir enregistré. Utilisez « Retiens ceci : … » ou le bouton Retenir d’un message.") }
+                    if manager.memoryItems.isEmpty { Text("Les informations utiles sont retenues automatiquement après vos échanges. Vous pouvez les ajouter, les corriger ou les oublier ici.") }
                 }
                 Section("Synchronisation") {
                     if let status = manager.historyStatus { Text(status).font(.caption) }

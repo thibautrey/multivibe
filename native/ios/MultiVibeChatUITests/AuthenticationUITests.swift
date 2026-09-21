@@ -169,7 +169,12 @@ final class LocalInternetUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-local-agent-ui-fixture", "-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR"]
         app.launch()
-        let open = app.buttons["chatMemory"]
+        XCTAssertFalse(app.buttons["chatMemory"].exists)
+        let back = app.navigationBars.buttons.element(boundBy: 0)
+        if !app.buttons["openMemory"].exists && back.exists { back.tap() }
+        let more = app.buttons["More"]
+        if !app.buttons["openMemory"].exists && more.exists { more.tap() }
+        let open = app.buttons["openMemory"]
         XCTAssertTrue(open.waitForExistence(timeout: 10)); open.tap()
         app.buttons["addMemory"].tap()
         let topic = app.textFields["memoryTopic"]

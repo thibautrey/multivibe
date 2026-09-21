@@ -152,10 +152,6 @@ struct ChatView: View {
                                         }.labelStyle(.iconOnly).buttonStyle(.borderless).controlSize(.large)
                                             .foregroundStyle(.secondary)
                                     }
-                                    if !message.content.isEmpty {
-                                        Button("Retenir", systemImage: "brain") { manager.draftMemory(from: message) }
-                                            .font(.caption).disabled(manager.isStreaming || manager.isSynchronizing)
-                                    }
                                 }.frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
                                     .contextMenu {
                                         Button("Copier tout", systemImage: "doc.on.doc") {
@@ -235,9 +231,6 @@ struct ChatView: View {
                     if manager.session == nil {
                         Button("Se connecter") { manager.authenticationPresented = true }.accessibilityIdentifier("openAuthentication")
                     }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Mémoire", systemImage: "brain") { manager.memoryPresented = true }.accessibilityIdentifier("chatMemory")
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button("Nouvelle conversation", systemImage: "square.and.pencil") { manager.newConversation() }

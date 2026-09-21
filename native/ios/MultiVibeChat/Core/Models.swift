@@ -129,6 +129,7 @@ struct Conversation: Codable, Identifiable, Equatable, Sendable {
     var internetPermission: ConversationInternetPermission?
     var memorySourceID: UUID?
     var memoryScope: String?
+    var memoryReviewedThrough: UUID?
     var model: String = ""
     var messages: [ChatMessage] = []
     var updatedAt = Date()
@@ -344,7 +345,7 @@ struct AccountHistorySnapshot: Codable, Sendable {
             else if let parent = node["parentId"]?.string { cursor = parent }
             else { throw APIError.invalidResponse }
         }
-        return Conversation(id: id, title: title, memorySourceID: item["multivibeSourceID"]?.string.flatMap(UUID.init(uuidString:)), memoryScope: item["multivibeMemoryScope"]?.string, model: item["model"]?.string ?? "", messages: messages.reversed(), updatedAt: Date(timeIntervalSince1970: timestamp / 1000))
+        return Conversation(id: id, title: title, memorySourceID: item["multivibeSourceID"]?.string.flatMap(UUID.init(uuidString:)), memoryScope: item["multivibeMemoryScope"]?.string, memoryReviewedThrough: item["multivibeMemoryReviewedThrough"]?.string.flatMap(UUID.init(uuidString:)), model: item["model"]?.string ?? "", messages: messages.reversed(), updatedAt: Date(timeIntervalSince1970: timestamp / 1000))
     }
 }
 
@@ -403,6 +404,7 @@ extension AccountHistorySnapshot {
         item["id"] = .string(serverID); item["title"] = .string(conversation.title)
         item["updatedAt"] = .number(conversation.updatedAt.timeIntervalSince1970 * 1000)
         item["model"] = .string(conversation.model)
+        if let reviewed = conversation.memoryReviewedThrough { item["multivibeMemoryReviewedThrough"] = .string(reviewed.uuidString) }
         if let scope = conversation.memoryScope { item["multivibeMemoryScope"] = .string(scope) }
         if item["renamed"] == nil { item["renamed"] = .bool(false) }
         if item["draft"] == nil { item["draft"] = .string("") }
