@@ -39,7 +39,7 @@ final class AuthenticationUITests: XCTestCase {
         // Collapse the keyboard before interacting with the background toolbar.
         message.swipeDown()
         for _ in 0..<3 {
-            app.buttons["openAuthentication"].firstMatch.tap()
+            app.buttons.matching(identifier: "openAuthentication").matching(NSPredicate(format: "hittable == true")).firstMatch.tap()
             XCTAssertTrue(app.textFields["Adresse e-mail"].waitForExistence(timeout: 5))
             app.buttons["Fermer la connexion"].tap()
             XCTAssertTrue(message.waitForExistence(timeout: 5))
