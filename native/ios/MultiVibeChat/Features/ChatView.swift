@@ -237,6 +237,12 @@ struct ChatView: View {
             }
 
         }
+        .overlay {
+            if manager.isStreaming {
+                AgentThinkingGlow()
+                    .transition(.opacity.animation(reduceMotion ? nil : .easeOut(duration: 0.45)))
+            }
+        }
         .sheet(item: Binding(get: { manager.internetApproval }, set: { _ in })) { request in
             InternetPermissionView(request: request)
                 .interactiveDismissDisabled()
@@ -1010,6 +1016,63 @@ struct LocalDocumentsView: View {
                 } catch { failure = error.localizedDescription }
             }
         }
+    }
+}
+
+private struct AgentThinkingGlow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { timeline in
+            let time = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate
+            GeometryReader { proxy in
+                let radius = min(52.0, min(proxy.size.width, proxy.size.height) * 0.08)
+                let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+                let pulse = 0.88 + sin(time * 1.35) * 0.12
+                let drift = Angle.degrees(time * 14 + sin(time * 0.43) * 24)
+                let counterDrift = Angle.degrees(-time * 9 + cos(time * 0.57) * 31)
+
+                ZStack {
+                    shape.inset(by: 3)
+                        .strokeBorder(glowGradient(angle: drift), lineWidth: 3.5 + sin(time * 0.9) * 1.2)
+                        .blur(radius: reduceTransparency ? 0 : 1.6)
+                        .opacity(reduceTransparency ? 0.82 : 0.95)
+
+                    shape.inset(by: 1)
+                        .strokeBorder(glowGradient(angle: counterDrift), lineWidth: 9)
+                        .blur(radius: reduceTransparency ? 0 : 8)
+                        .opacity(reduceTransparency ? 0.25 : 0.48 * pulse)
+
+                    if !reduceTransparency {
+                        shape.inset(by: 7)
+                            .strokeBorder(glowGradient(angle: drift + .degrees(110)), lineWidth: 16)
+                            .blur(radius: 17)
+                            .opacity(0.2 + cos(time * 1.1) * 0.045)
+                    }
+                }
+                .blendMode(reduceTransparency ? .normal : .plusLighter)
+            }
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private func glowGradient(angle: Angle) -> AngularGradient {
+        AngularGradient(
+            colors: [
+                MultiVibeTheme.accent.opacity(0.25),
+                MultiVibeTheme.accent,
+                Color(red: 0.45, green: 0.97, blue: 0.73),
+                MultiVibeTheme.warmAccent.opacity(0.92),
+                MultiVibeTheme.accent.opacity(0.32),
+                MultiVibeTheme.warmAccent.opacity(0.6),
+                MultiVibeTheme.accent
+            ],
+            center: .center,
+            angle: angle
+        )
     }
 }
 
