@@ -47,7 +47,8 @@ import XCTest
             }, models: { _ in [ModelOption(id: "same-model")] })
         services.memoryReviewDelay = { await Task.yield() }
         let manager = ConversationManager(services: services)
-        await manager.restore()
+        await manager.restore(loadRemoteModels: false)
+        await manager.reloadModels()
         manager.selectedModel = "same-model"
         XCTAssertTrue(manager.send("Je préfère le français"))
         for _ in 0..<3000 { if manager.memoryItems.count == 1 { break }; await Task.yield() }

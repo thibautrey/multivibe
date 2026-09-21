@@ -41,6 +41,10 @@ struct ChatView: View {
         @Bindable var manager = manager
         NavigationSplitView(preferredCompactColumn: $preferredColumn) {
             List(selection: $manager.selection) {
+                Section {
+                    Button("Mémoire", systemImage: "brain") { manager.memoryPresented = true }.accessibilityIdentifier("openMemory")
+                }
+
                 ForEach(manager.conversations.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }) { conversation in
                     Label(conversation.title, systemImage: conversation.id == manager.selection ? "bubble.left.fill" : "bubble.left")
                         .font(.body.weight(conversation.id == manager.selection ? .semibold : .regular)).tag(conversation.id)
@@ -82,7 +86,6 @@ struct ChatView: View {
                     else { Button("Se connecter") { manager.authenticationPresented = true }.accessibilityIdentifier("openAuthentication") }
                 }
                 ToolbarItem(placement: .secondaryAction) {
-                    Button("Mémoire", systemImage: "brain") { manager.memoryPresented = true }.accessibilityIdentifier("openMemory")
                     Button("Documents et outils locaux", systemImage: "doc") { documentsPresented = true }
                 }
             }
