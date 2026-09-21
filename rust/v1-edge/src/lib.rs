@@ -2864,11 +2864,7 @@ fn chat_to_response(value: &Value, fallback_model: &str) -> Value {
         "model": value.get("model").cloned().unwrap_or_else(|| Value::String(fallback_model.to_owned())),
         "status": "completed",
         "output": output,
-        "usage": {
-            "input_tokens": usage.get("prompt_tokens").or_else(|| usage.get("input_tokens")).and_then(Value::as_u64).unwrap_or(0),
-            "output_tokens": usage.get("completion_tokens").or_else(|| usage.get("output_tokens")).and_then(Value::as_u64).unwrap_or(0),
-            "total_tokens": usage.get("total_tokens").and_then(Value::as_u64).unwrap_or(0),
-        }
+        "usage": chat_usage_to_response_usage(&usage)
     })
 }
 
@@ -2950,7 +2946,26 @@ fn chat_usage_to_response_usage(usage: &Value) -> Value {
         .get("total_tokens")
         .and_then(Value::as_u64)
         .unwrap_or(input + output);
-    json!({"input_tokens": input, "output_tokens": output, "total_tokens": total})
+    let mut result = json!({"input_tokens": input, "output_tokens": output, "total_tokens": total});
+    if let Some(details) = usage.get("input_tokens_details").or_else(|| usage.get("prompt_tokens_details")) {
+        result["input_tokens_details"] = details.clone();
+    }
+    if let Some(details) = usage.get("output_tokens_details").or_else(|| usage.get("completion_tokens_details")) {
+        result["output_tokens_details"] = details.clone();
+    }
+    result
+}
+
+#[test]
+fn chat_usage_preserves_cache_details() {
+    let usage = chat_usage_to_response_usage(&json!({
+        "prompt_tokens": 81946, "completion_tokens": 3,
+        "prompt_tokens_details": {"cached_tokens": 81924},
+        "completion_tokens_details": {"reasoning_tokens": 0}
+    }));
+    assert_eq!(usage["input_tokens_details"]["cached_tokens"], 81924);
+    assert_eq!(usage["output_tokens_details"]["reasoning_tokens"], 0);
+    assert_eq!(usage["total_tokens"], 81949);
 }
 
 fn response_completed_sse(value: &Value) -> String {
