@@ -318,7 +318,7 @@ import XCTest
     SessionServices(writeHistory: writeHistory, load: load, save: save, clear: clear,
         refresh: refresh, revoke: revoke, readHistory: readHistory, saveHistory: saveHistory,
         stream: stream, readLocalHistory: readLocalHistory, localAvailability: localAvailability,
-        localRespond: localRespond, memoryIndex: { _ in try MemoryIndex(url: nil) }, monitorConnectivity: monitorConnectivity, syncDelay: syncDelay, models: models)
+        localRespond: localRespond, memoryIndex: { _ in try MemoryIndex(url: nil) }, reviewLocalMemory: { _ in "[]" }, monitorConnectivity: monitorConnectivity, syncDelay: syncDelay, models: models)
 }
 
 @MainActor final class InternetConsentTests: XCTestCase {
