@@ -11,7 +11,7 @@ const run = (program, args) => execFileSync(program, args, { encoding: 'utf8', s
 export async function buildMacOSNative({ binary, resources, architecture = 'arm64', minimum = '13.0' }) {
   const temporary = await mkdtemp(path.join(tmpdir(), 'multivibe-native-'));
   try {
-    const developer = run('xcode-select', ['-p']);
+    const developer = process.env.DEVELOPER_DIR || run('xcode-select', ['-p']);
     const toolchain = path.join(developer, 'Toolchains/XcodeDefault.xctoolchain');
     const sdk = run('xcrun', ['--sdk', 'macosx', '--show-sdk-path']);
     const version = run('xcodebuild', ['-version']).split(/\s+/u).at(-1);
@@ -28,16 +28,17 @@ export async function buildMacOSNative({ binary, resources, architecture = 'arm6
     const constantList = path.join(temporary, 'constants');
     await writeFile(sourceList, `${sources.join('\n')}\n`);
     await writeFile(constantList, `${constants}\n`);
+    const contents = path.dirname(resources);
+    const appInfo = run('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(contents, 'Info.plist')]);
+    const info = JSON.parse(appInfo);
     const output = run('xcrun', ['appintentsmetadataprocessor', '--output', resources, '--toolchain-dir', toolchain,
-      '--module-name', 'MultiVibeHost', '--sdk-root', sdk, '--xcode-version', version, '--platform-family', 'macOS',
+      '--module-name', 'MultiVibeHost', '--bundle-identifier', info.CFBundleIdentifier, '--binary-file', binary,
+      '--compile-time-extraction', '--deployment-aware-processing', '--no-app-shortcuts-localization', '--sdk-root', sdk, '--xcode-version', version, '--platform-family', 'macOS',
       '--deployment-target', minimum, '--target-triple', target, '--source-file-list', sourceList, '--swift-const-vals-list', constantList]);
     console.log(output);
     await stat(path.join(resources, 'Metadata.appintents', 'extract.actionsdata'));
-    const contents = path.dirname(resources);
     const extension = path.join(contents, 'PlugIns', 'MultiVibeShare.appex', 'Contents');
     await mkdir(path.join(extension, 'MacOS'), { recursive: true });
-    const appInfo = run('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(contents, 'Info.plist')]);
-    const info = JSON.parse(appInfo);
     const template = await readFile(path.join(sourceDirectory, 'share/Info.plist'), 'utf8');
     await writeFile(path.join(extension, 'Info.plist'), template
       .replaceAll('__MULTIVIBE_VERSION__', info.CFBundleShortVersionString)

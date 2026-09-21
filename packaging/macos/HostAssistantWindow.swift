@@ -110,6 +110,14 @@ extension MultiVibeMenuBarApp {
         NSApplication.shared.servicesMenu = services
         applicationMenu.addItem(withTitle: "Quitter MultiVibe Host", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         applicationItem.submenu = applicationMenu; mainMenu.addItem(applicationItem)
+        let editItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Édition")
+        for (title, selector, key) in [
+            ("Annuler", "undo:", "z"), ("Couper", "cut:", "x"),
+            ("Copier", "copy:", "c"), ("Coller", "paste:", "v"),
+            ("Tout sélectionner", "selectAll:", "a")
+        ] { editMenu.addItem(withTitle: title, action: Selector(selector), keyEquivalent: key) }
+        editItem.submenu = editMenu; mainMenu.addItem(editItem)
         NSApplication.shared.mainMenu = mainMenu
         HostAppShortcuts.updateAppShortcutParameters()
     }
