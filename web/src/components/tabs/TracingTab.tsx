@@ -342,31 +342,38 @@ function TracingTabContent(props: Props) {
         </div>
         </div>
         <div className="trace-sharing-setting">
-          <div>
-            <h2>Help rank useful self-hosted models</h2>
-            <p id="anonymous-usage-sharing-description" className="muted">
-              MultiVibe shares only anonymous daily model usage totals—never your prompts, responses, or personal data.
-            </p>
-          </div>
-          <div className="trace-sharing-action">
+          <div className="trace-sharing-controls">
             <label className="inline" htmlFor="anonymous-usage-sharing-enabled">
               <input
                 id="anonymous-usage-sharing-enabled"
                 type="checkbox"
                 checked={settings.anonymousUsageSharingEnabled !== false}
                 disabled={sharingBusy}
-                aria-describedby="anonymous-usage-sharing-description anonymous-usage-sharing-default"
+                aria-describedby="trace-sharing-summary"
                 onChange={(event) => void setAnonymousUsageSharing(event.target.checked)}
               />
               <span>Share anonymous demand</span>
             </label>
-            <small id="anonymous-usage-sharing-default" className="muted">Uncheck to stop sharing and delete unsent data.</small>
-            <span className="muted" role="status" aria-live="polite">{sharingNotice}</span>
+            <label className="inline" htmlFor="community-benchmarks-sharing-enabled">
+              <input
+                id="community-benchmarks-sharing-enabled"
+                type="checkbox"
+                checked={settings.communityBenchmarksSharingEnabled === true}
+                disabled={sharingBusy}
+                aria-describedby="trace-sharing-summary"
+                onChange={(event) => void setCommunityBenchmarksSharing(event.target.checked)}
+              />
+              <span>Share community benchmarks <small className="muted">(off by default)</small></span>
+            </label>
           </div>
-        </div>
-        <div className="trace-sharing-setting">
-          <div>
-            <h2>Publish community model benchmarks</h2>
+          <p id="trace-sharing-summary" className="muted">
+            Anonymous daily totals. No prompts or responses. Turning off deletes unsent data.
+          </p>
+          <details className="trace-sharing-details">
+            <summary>Privacy details</summary>
+            <p id="anonymous-usage-sharing-description" className="muted">
+              MultiVibe shares only anonymous daily model usage totals—never your prompts, responses, or personal data.
+            </p>
             <p id="community-benchmarks-description" className="muted">
               Off by default. When enabled, MultiVibe reports one daily aggregate for this machine: the model IDs you ran
               locally, request and token counts, latency and time-to-first-token distributions, the context sizes you used,
@@ -374,21 +381,8 @@ function TracingTabContent(props: Props) {
               account names, host names, serial numbers or an installation identifier. Your machine is reduced to a public
               hardware profile before anything is stored, and results are published only in aggregate.
             </p>
-          </div>
-          <div className="trace-sharing-action">
-            <label className="inline" htmlFor="community-benchmarks-sharing-enabled">
-              <input
-                id="community-benchmarks-sharing-enabled"
-                type="checkbox"
-                checked={settings.communityBenchmarksSharingEnabled === true}
-                disabled={sharingBusy}
-                aria-describedby="community-benchmarks-description community-benchmarks-default"
-                onChange={(event) => void setCommunityBenchmarksSharing(event.target.checked)}
-              />
-              <span>Share community benchmarks</span>
-            </label>
-            <small id="community-benchmarks-default" className="muted">Uncheck to stop reporting and delete unsent data.</small>
-          </div>
+          </details>
+          <span className="muted trace-sharing-notice" role="status" aria-live="polite">{sharingNotice}</span>
         </div>
       </section>
 
