@@ -47,3 +47,29 @@ Validation must cover:
 
 Never leave the active Host in drain mode while using it to run the investigation.
 Do not overwrite unrelated working-tree changes or active inference requests.
+
+## Live validation (2026-09-21, MULTIVIBE-21)
+
+Captured Codex requests (196 real tools), routed through the installed Host:
+
+| Case | Input tokens | Reused tokens | Elapsed |
+| --- | ---: | ---: | ---: |
+| Cold | 81945 | 0 | 288.922 s |
+| Changed final question + reversed declaration order | 81946 | 81924 | 1.285 s |
+| Same request after Bonsai stop/start and slot restore | 81946 | 81942 | 1.245 s |
+
+The final Responses SSE usage reports `input_tokens_details.cached_tokens=81942`.
+The server saved/restored 16 recurrent checkpoints. These measurements establish
+actual reuse, not simply a populated slot. The cold and warm runs predated the
+usage-detail forwarding fix; their reused counts came from server logs.
+
+The deployed library lives in `/opt/bonsai/bin/MULTIVIBE-21`, alongside symlinks to
+the original pinned runtime libraries. The launcher and compose backups use the
+`.pre-MULTIVIBE-21` suffix. Reverting to the old runtime discards rewind persistence.
+The Host helper backup is under its Application Support `backups/MULTIVIBE-21`.
+On this 147456-token configuration, startup can fall back from pipeline parallelism
+when its extra CUDA compute buffer does not fit; the measured restored run succeeded
+with that fallback. This is not a promise of concurrent long-context capacity.
+
+Main-branch validation: `cargo test -p multivibe-v1-edge --locked --offline`:
+121 tests passed; release build passed. No captured prompt or token array is included.
