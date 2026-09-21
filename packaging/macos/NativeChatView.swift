@@ -108,7 +108,9 @@ private enum ChatPalette {
             Picker("Modèle", selection: model) {
                 Text(loading ? "Chargement…" : "Choisir un modèle").tag("")
                 if let selected = store.current?.model, !selected.isEmpty, !models.contains(where: { $0.id == selected }) { Text("\(selected) — indisponible").tag(selected) }
-                ForEach(models) { Text($0.id).tag($0.id) }
+                ForEach(models) { model in
+                    Label(model.displayName, systemImage: model.local == true ? "apple.logo" : "network").tag(model.id)
+                }
             }.labelsHidden().frame(maxWidth: 300).disabled(store.generating == store.selection)
             Button { Task { await loadModels() } } label: { Image(systemName: "arrow.clockwise") }.help("Actualiser les modèles").disabled(loading)
         }.padding(16)
@@ -184,7 +186,12 @@ private enum ChatPalette {
         }.padding(8).background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 18))
             .overlay(RoundedRectangle(cornerRadius: 18).stroke(ChatPalette.accent.opacity(store.generating == store.selection ? 0.6 : 0.15), lineWidth: 1))
             .padding(.horizontal, 20).padding(.top, 8)
-            .safeAreaInset(edge: .bottom) { Text("Les messages et documents sont transmis au modèle choisi via le Host.").font(.caption2).foregroundStyle(.secondary).padding(.vertical, 8) }
+            .safeAreaInset(edge: .bottom) {
+                Text(model.wrappedValue == AppleFoundationModel.id
+                     ? "Apple Foundation traite cette conversation localement sur ce Mac."
+                     : "Les messages et documents sont transmis au modèle choisi via le Host.")
+                    .font(.caption2).foregroundStyle(.secondary).padding(.vertical, 8)
+            }
     }
     private func markdown(_ text: String) -> AttributedString {
         (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
@@ -192,7 +199,12 @@ private enum ChatPalette {
     private func loadModels() async {
         guard !loading else { return }
         loading = true; defer { loading = false }
-        do { models = try await HostAssistantClient.shared.models() }
+        do {
+            models = try await HostAssistantClient.shared.models()
+            if store.current?.model.isEmpty == true, let first = models.first {
+                model.wrappedValue = first.id
+            }
+        }
         catch { store.error = error.localizedDescription }
     }
     private func openDashboard() { (NSApplication.shared.delegate as? MultiVibeMenuBarApp)?.openDashboard() }

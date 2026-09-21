@@ -5,7 +5,8 @@ struct HostModelEntity: AppEntity {
     static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "Modèle MultiVibe")
     static let defaultQuery = HostModelQuery()
     let id: String
-    var displayRepresentation: DisplayRepresentation { DisplayRepresentation(title: "\(id)") }
+    let name: String
+    var displayRepresentation: DisplayRepresentation { DisplayRepresentation(title: "\(name)", subtitle: "\(id)") }
 }
 
 struct HostModelQuery: EntityStringQuery {
@@ -13,20 +14,23 @@ struct HostModelQuery: EntityStringQuery {
         try await suggestedEntities().filter { identifiers.contains($0.id) }
     }
     @MainActor func entities(matching string: String) async throws -> [HostModelEntity] {
-        try await suggestedEntities().filter { $0.id.localizedCaseInsensitiveContains(string) }
+        try await suggestedEntities().filter {
+            $0.id.localizedCaseInsensitiveContains(string) || $0.name.localizedCaseInsensitiveContains(string)
+        }
     }
     @MainActor func suggestedEntities() async throws -> [HostModelEntity] {
-        try await HostAssistantClient.shared.models().map { HostModelEntity(id: $0.id) }
+        try await HostAssistantClient.shared.models().map { HostModelEntity(id: $0.id, name: $0.displayName) }
     }
     @MainActor func defaultResult() async -> HostModelEntity? {
         let id = HostAssistantClient.shared.defaultModel
-        return id.isEmpty ? nil : HostModelEntity(id: id)
+        guard !id.isEmpty else { return nil }
+        return (try? await suggestedEntities().first { $0.id == id })
     }
 }
 
 struct AskMultiVibeHostIntent: AppIntent {
     static let title: LocalizedStringResource = "Demander à MultiVibe"
-    static let description = IntentDescription("Envoie votre question au modèle choisi via MultiVibe Host et retourne sa réponse. Le fournisseur du modèle reçoit le texte.")
+    static let description = IntentDescription("Interroge le modèle choisi. Apple Foundation s’exécute sur ce Mac ; les autres modèles passent par MultiVibe Host et leur fournisseur reçoit le texte.")
     static let openAppWhenRun = true
     static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
     @Parameter(title: "Question") var question: String
@@ -80,7 +84,7 @@ struct HostAppShortcuts: AppShortcutsProvider {
 
 struct AskHostTextFileIntent: AppIntent {
     static let title: LocalizedStringResource = "Interroger un fichier texte avec MultiVibe"
-    static let description = IntentDescription("Envoie un fichier texte UTF-8 et votre question au modèle choisi. Maximum 32 000 caractères au total.")
+    static let description = IntentDescription("Interroge un fichier texte UTF-8 avec le modèle choisi. Apple Foundation traite le texte sur ce Mac ; les autres modèles le transmettent via le Host. Maximum 32 000 caractères au total.")
     static let openAppWhenRun = true
     static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
     @Parameter(title: "Fichier texte") var file: IntentFile
