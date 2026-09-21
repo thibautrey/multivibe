@@ -36,11 +36,32 @@ final class AuthenticationUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Connectez-vous pour envoyer un message."].exists)
         message.tap()
         message.typeText("Bonjour MultiVibe")
-        app.buttons["openAuthentication"].firstMatch.tap()
-        XCTAssertTrue(app.textFields["Adresse e-mail"].waitForExistence(timeout: 5))
-        app.buttons["Fermer la connexion"].tap()
-        XCTAssertTrue(message.waitForExistence(timeout: 5))
-        XCTAssertEqual(message.value as? String, "Bonjour MultiVibe")
+        for _ in 0..<3 {
+            app.buttons["openAuthentication"].firstMatch.tap()
+            XCTAssertTrue(app.textFields["Adresse e-mail"].waitForExistence(timeout: 5))
+            app.buttons["Fermer la connexion"].tap()
+            XCTAssertTrue(message.waitForExistence(timeout: 5))
+            XCTAssertEqual(message.value as? String, "Bonjour MultiVibe")
+            XCTAssertFalse(app.buttons["showComposerSheet"].exists)
+        }
+    }
+
+    func testNewConversationFromHistoryAlwaysShowsComposer() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR"]
+        app.launch()
+        let message = app.descendants(matching: .any).matching(identifier: "Message").firstMatch
+        XCTAssertTrue(message.waitForExistence(timeout: 15))
+        for _ in 0..<3 {
+            // The native split view exposes history through its leading back button.
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+            let newConversation = app.buttons["Nouvelle conversation"].firstMatch
+            XCTAssertTrue(newConversation.waitForExistence(timeout: 5))
+            newConversation.tap()
+            XCTAssertTrue(message.waitForExistence(timeout: 5))
+            XCTAssertFalse(app.buttons["showComposerSheet"].exists)
+        }
     }
 
     func testDarkLoginKeepsNativeSecureFieldsAndDismissal() {
