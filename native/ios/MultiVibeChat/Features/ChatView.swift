@@ -301,8 +301,8 @@ struct ChatView: View {
             }
         }
         .sheet(item: $selectionContent) { SelectableMessageSheet(message: $0) }
-        .sheet(isPresented: Binding(get: { composerPresented && !modalIsActive }, set: { presented in
-            if !presented && !modalIsActive { composerPresented = false }
+        .sheet(isPresented: Binding(get: { composerPresented && preferredColumn == .detail && !modalIsActive }, set: { presented in
+            if !presented && preferredColumn == .detail && !modalIsActive { composerPresented = false }
         })) {
             composer
             .presentationDetents([Self.compactComposerDetent])
