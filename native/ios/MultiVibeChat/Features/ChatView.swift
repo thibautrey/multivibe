@@ -874,10 +874,14 @@ struct ChatWelcomeView: View {
             }.padding(16).background(.background.opacity(0.7), in: RoundedRectangle(cornerRadius: 18))
         }
         .buttonStyle(.plain)
-        .onLongPressGesture(minimumDuration: 0.45) {
-            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            edit(suggestion)
-        }
+        // Recognize a hold before Button consumes it as an ordinary activation.
+        .highPriorityGesture(
+            LongPressGesture(minimumDuration: 0.45)
+                .onEnded { _ in
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    edit(suggestion)
+                }
+        )
         .accessibilityAction(named: "Modifier cette suggestion") { edit(suggestion) }
     }
 }
