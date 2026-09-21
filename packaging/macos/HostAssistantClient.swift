@@ -65,6 +65,59 @@ final class HostAssistantClient {
         return data
     }
 
+    /// SSE completion with the complete conversation, bounded output and no credential redirects.
+    func stream(_ messages: [[String: String]], model: String, update: @MainActor (String) -> Void) async throws {
+        guard !messages.isEmpty, messages.count <= 500,
+              messages.allSatisfy({ ["user", "assistant"].contains($0["role"] ?? "") }),
+              messages.reduce(0, { $0 + ($1["content"]?.utf8.count ?? 0) }) <= 1_000_000 else { throw HostAssistantError.invalidInput }
+        guard try await models().contains(where: { $0.id == model }) else { throw HostAssistantError.missingModel }
+        let (base, key) = try await connection()
+        guard base.scheme == "http", base.host == "127.0.0.1" else { throw HostAssistantError.unavailable }
+        var request = URLRequest(url: base.appendingPathComponent("v1/chat/completions"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 180
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["model": model, "stream": true, "messages": messages])
+        let config = URLSessionConfiguration.ephemeral
+        config.httpShouldSetCookies = false
+        config.timeoutIntervalForResource = 300
+        let session = URLSession(configuration: config, delegate: HostAssistantNoRedirect(), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        let (bytes, response) = try await session.bytes(for: request)
+        guard let http = response as? HTTPURLResponse else { throw HostAssistantError.unavailable }
+        guard (200..<300).contains(http.statusCode) else { throw HostAssistantError.rejected(http.statusCode) }
+        struct Chunk: Decodable {
+            struct Choice: Decodable {
+                struct Delta: Decodable { let content: String? }
+                let delta: Delta
+                let finish_reason: String?
+            }
+            let choices: [Choice]
+        }
+        var result = "", line = Data(), total = 0, finished = false
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            total += 1
+            guard total <= 8_000_000, line.count <= 1_000_000 else { throw HostAssistantError.invalidInput }
+            if byte != 10 { line.append(byte); continue }
+            let value = String(decoding: line, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            line.removeAll(keepingCapacity: true)
+            guard value.hasPrefix("data:") else { continue }
+            let payload = String(value.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+            if payload == "[DONE]" { finished = true; break }
+            let chunk = try JSONDecoder().decode(Chunk.self, from: Data(payload.utf8))
+            if let choice = chunk.choices.first {
+                if let text = choice.delta.content { result += text; update(result) }
+                if choice.finish_reason != nil { finished = true }
+            }
+        }
+        try Task.checkCancellation()
+        guard finished else { throw HostAssistantError.unavailable }
+        guard !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw HostAssistantError.emptyReply }
+    }
+
     func models() async throws -> [HostAssistantModel] {
         struct Catalog: Decodable { let data: [HostAssistantModel] }
         let data = try await request("v1/models")

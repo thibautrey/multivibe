@@ -45,7 +45,7 @@
   <key>LSMinimumSystemVersion</key>
   <string>__MULTIVIBE_MACOS_MINIMUM_VERSION__</string>
   <key>LSUIElement</key>
-  <true/>
+  <false/>
   <key>LSMultipleInstancesProhibited</key>
   <true/>
   <key>NSHighResolutionCapable</key>

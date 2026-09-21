@@ -1525,7 +1525,7 @@ async function validateMacDiskImage(diskImage, work, options) {
     const workerHandoffScheme = await command("plutil", ["-extract", "CFBundleURLTypes.0.CFBundleURLSchemes.0", "raw", "-o", "-",
       path.join(application, "Contents", "Info.plist")], { capture: true, captureLimit: 4096 });
     if (plistVersion !== metadata.version || bundleIdentifier !== "cloud.multivibe.host" ||
-      bundleExecutable !== "MultiVibe Host" || bundleIcon !== "MultiVibe.icns" || menuBarOnly !== "true" ||
+      bundleExecutable !== "MultiVibe Host" || bundleIcon !== "MultiVibe.icns" || menuBarOnly !== "false" ||
       minimumSystemVersion !== "13.0" || workerHandoffScheme !== "multivibe") {
       throw new Error("provider-host disk image application identity is invalid");
     }
