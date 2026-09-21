@@ -35,6 +35,13 @@
       </array>
     </dict>
   </array>
+  <key>NSServices</key>
+  <array><dict>
+    <key>NSMenuItem</key><dict><key>default</key><string>Demander à MultiVibe</string></dict>
+    <key>NSMessage</key><string>askSelection</string>
+    <key>NSPortName</key><string>MultiVibe Host</string>
+    <key>NSSendTypes</key><array><string>NSStringPboardType</string></array>
+  </dict></array>
   <key>LSMinimumSystemVersion</key>
   <string>__MULTIVIBE_MACOS_MINIMUM_VERSION__</string>
   <key>LSUIElement</key>
