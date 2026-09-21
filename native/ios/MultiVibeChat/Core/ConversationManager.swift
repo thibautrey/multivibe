@@ -84,7 +84,8 @@ import Network
     private var online = false
     private var syncTask: Task<Void, Never>?
     var session: NativeSession?
-    init(services: SessionServices = SessionServices()) {
+    init(services suppliedServices: SessionServices? = nil) {
+        let services = suppliedServices ?? SessionServices()
         self.services = services
         session = services.load()
     }
