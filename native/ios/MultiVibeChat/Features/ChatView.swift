@@ -33,8 +33,7 @@ struct ChatView: View {
     @State private var followsLatest = true
     @State private var userScrolling = false
     @State private var composerPresented = true
-    @State private var composerDetent: PresentationDetent = Self.compactComposerDetent
-    private static let compactComposerDetent = PresentationDetent.height(168)
+    private static let compactComposerDetent = PresentationDetent.height(126)
     private let latestMessageAnchor = "latest-message"
 
     var body: some View {
@@ -300,27 +299,11 @@ struct ChatView: View {
         .sheet(isPresented: Binding(get: { composerPresented && !modalIsActive }, set: { presented in
             if !presented && !modalIsActive { composerPresented = false }
         })) {
-            VStack(spacing: 0) {
-                composer
-                if composerDetent != Self.compactComposerDetent {
-                    Divider().padding(.top, 8)
-                    VStack(alignment: .leading, spacing: 12) {
-                        Label("Saisie", systemImage: "text.cursor").font(.headline)
-                        Text("Rédigez une demande, choisissez le modèle ou démarrez une conversation vocale. Faites glisser la feuille vers le bas pour retrouver toute la conversation.")
-                            .font(.callout).foregroundStyle(.secondary)
-                        if manager.isStreaming, !manager.localEvents.isEmpty {
-                            DisclosureGroup("Travail en cours") {
-                                ForEach(manager.localEvents.suffix(3)) { Text($0.detail).font(.caption) }
-                            }
-                        }
-                    }.padding(20)
-                    Spacer(minLength: 0)
-                }
-            }
-            .presentationDetents([Self.compactComposerDetent, .medium, .large], selection: $composerDetent)
+            composer
+            .presentationDetents([Self.compactComposerDetent])
             .presentationDragIndicator(.visible)
-            .presentationContentInteraction(.resizes)
-            .presentationBackgroundInteraction(.enabled(upThrough: .large))
+            .presentationContentInteraction(.scrolls)
+            .presentationBackgroundInteraction(.enabled(upThrough: Self.compactComposerDetent))
             .presentationCornerRadius(30)
             .presentationBackground(.ultraThinMaterial)
         }
@@ -373,7 +356,7 @@ struct ChatView: View {
         @Bindable var manager = manager
         return VStack(alignment: .leading, spacing: 12) {
             TextField("Que souhaitez-vous savoir ?", text: $text, axis: .vertical)
-                .accessibilityLabel("Message").lineLimit(1...8).padding(.horizontal, 6).padding(.top, 6)
+                .accessibilityLabel("Message").lineLimit(1...4).padding(.horizontal, 6).padding(.top, 2)
             HStack(spacing: 8) {
                 Menu {
                     Picker("Modèle", selection: $manager.selectedModel) {
@@ -404,7 +387,7 @@ struct ChatView: View {
                 }
             }.labelStyle(.iconOnly).buttonStyle(.plain)
         }
-        .padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 12)
+        .padding(.horizontal, 18).padding(.top, 2).padding(.bottom, 6)
         .frame(maxWidth: 760).frame(maxWidth: .infinity)
     }
 
