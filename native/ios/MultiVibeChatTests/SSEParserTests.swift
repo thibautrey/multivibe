@@ -864,3 +864,45 @@ final class NativeSSOFailureTests: XCTestCase {
         XCTAssertEqual(NativeSSOFailure.message(for: error), "Presentation failed")
     }
 }
+
+@MainActor final class NativeSSOCallbackTests: XCTestCase {
+    private let state = "expected-state-123456"
+    private let code = String(repeating: "a", count: 43)
+    private func callback(_ query: String) -> URL {
+        URL(string: "https://auth.multivibe.cloud/oauth/callback/ios?" + query)!
+    }
+    func testValidCodeCanBeExchanged() throws {
+        XCTAssertEqual(try NativeSSOController.authorizationCode(from: callback("state=\(state)&code=\(code)"), expectedState: state), code)
+    }
+    func testServerRejectionHasAnActionableMessage() {
+        for (value, expected) in [("access_denied", NativeSSOFailure.accessDenied),
+                                  ("invalid_request", .authorizationRejected),
+                                  ("server_error", .serverUnavailable),
+                                  ("temporarily_unavailable", .serverUnavailable),
+                                  ("secret-untrusted-message", .authorizationRejected)] {
+            XCTAssertThrowsError(try NativeSSOController.authorizationCode(from: callback("state=\(state)&error=\(value)"), expectedState: state)) {
+                XCTAssertEqual($0.localizedDescription, expected.localizedDescription)
+            }
+        }
+    }
+    func testStateIsValidatedBeforeErrors() {
+        XCTAssertThrowsError(try NativeSSOController.authorizationCode(from: callback("state=wrong&error=access_denied"), expectedState: state)) {
+            XCTAssertEqual($0.localizedDescription, NativeSSOFailure.callbackStateMismatch.localizedDescription)
+        }
+    }
+    func testAmbiguousAndMalformedCallbacksRemainRejected() {
+        for query in ["state=\(state)&state=\(state)&code=\(code)",
+                      "state=\(state)&code=\(code)&code=\(code)",
+                      "state=\(state)&code=\(code)&error=access_denied",
+                      "state=\(state)&error=access_denied&error=server_error",
+                      "state=\(state)&error=", "state=\(state)&code=short"] {
+            XCTAssertThrowsError(try NativeSSOController.authorizationCode(from: callback(query), expectedState: state))
+        }
+        for base in ["http://auth.multivibe.cloud/oauth/callback/ios",
+                     "https://evil.example/oauth/callback/ios",
+                     "https://auth.multivibe.cloud:443/oauth/callback/ios",
+                     "https://auth.multivibe.cloud/oauth/callback/other"] {
+            XCTAssertThrowsError(try NativeSSOController.authorizationCode(from: URL(string: "\(base)?state=\(state)&code=\(code)")!, expectedState: state))
+        }
+    }
+}

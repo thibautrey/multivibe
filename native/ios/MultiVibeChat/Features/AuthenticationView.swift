@@ -460,11 +460,25 @@ struct PasswordRecoveryView: View {
 
 enum NativeSSOFailure: LocalizedError {
     case presentationUnavailable
+    case invalidCallback, callbackStateMismatch, accessDenied, serverUnavailable, authorizationRejected
 
     static let associationMessage = "La connexion SSO est indisponible : le domaine auth.multivibe.cloud n’est pas associé à cette application. La configuration du serveur et la signature de l’app doivent être vérifiées."
 
     var errorDescription: String? {
-        "Impossible d’ouvrir la fenêtre de connexion sécurisée. Réessayez depuis l’application au premier plan."
+        switch self {
+        case .presentationUnavailable:
+            "Impossible d’ouvrir la fenêtre de connexion sécurisée. Réessayez depuis l’application au premier plan."
+        case .invalidCallback:
+            "Le retour de connexion SSO est invalide. Relancez la connexion."
+        case .callbackStateMismatch:
+            "Cette tentative de connexion SSO ne correspond plus à la demande initiale. Relancez la connexion."
+        case .accessDenied:
+            "La connexion SSO a été refusée. Vérifiez les autorisations puis réessayez."
+        case .serverUnavailable:
+            "Le service de connexion SSO est temporairement indisponible. Réessayez dans un instant."
+        case .authorizationRejected:
+            "MultiVibe n’a pas pu finaliser l’autorisation SSO. Réessayez."
+        }
     }
 
     static func message(for error: Error) -> String {
@@ -540,18 +554,7 @@ enum NativeSSOFailure: LocalizedError {
             }
         }
         try Task.checkCancellation()
-        guard let parsed = URLComponents(url: callback, resolvingAgainstBaseURL: false),
-              parsed.scheme == "https", parsed.host == "auth.multivibe.cloud", parsed.port == nil,
-              parsed.user == nil, parsed.password == nil, parsed.path == "/oauth/callback/ios", parsed.fragment == nil else {
-            throw APIError.invalidResponse
-        }
-        let fields = parsed.queryItems ?? []
-        guard fields.filter({ $0.name == "state" }).count == 1,
-              fields.first(where: { $0.name == "state" })?.value == state,
-              fields.filter({ $0.name == "code" }).count == 1,
-              !fields.contains(where: { $0.name == "error" }),
-              let code = fields.first(where: { $0.name == "code" })?.value,
-              code.range(of: "^[A-Za-z0-9_-]{43}$", options: .regularExpression) != nil else { throw APIError.invalidResponse }
+        let code = try Self.authorizationCode(from: callback, expectedState: state)
         let issued = try await ChatAPI.shared.exchangeAuthorizationCode(code, verifier: verifier)
         if Task.isCancelled {
             // Cleanup must not inherit cancellation from the sign-in task.
@@ -559,6 +562,33 @@ enum NativeSSOFailure: LocalizedError {
             throw CancellationError()
         }
         return issued
+    }
+    static func authorizationCode(from callback: URL, expectedState state: String) throws -> String {
+        guard let parsed = URLComponents(url: callback, resolvingAgainstBaseURL: false),
+              parsed.scheme == "https", parsed.host == "auth.multivibe.cloud", parsed.port == nil,
+              parsed.user == nil, parsed.password == nil, parsed.path == "/oauth/callback/ios", parsed.fragment == nil else {
+            throw NativeSSOFailure.invalidCallback
+        }
+        let fields = parsed.queryItems ?? []
+        guard fields.filter({ $0.name == "state" }).count == 1,
+              fields.first(where: { $0.name == "state" })?.value == state else {
+            throw NativeSSOFailure.callbackStateMismatch
+        }
+        let errors = fields.filter { $0.name == "error" }
+        if errors.count == 1, !fields.contains(where: { $0.name == "code" }),
+           let error = errors.first?.value, !error.isEmpty {
+            // Only map known protocol errors. Never display arbitrary callback text.
+            switch error {
+            case "access_denied": throw NativeSSOFailure.accessDenied
+            case "server_error", "temporarily_unavailable": throw NativeSSOFailure.serverUnavailable
+            default: throw NativeSSOFailure.authorizationRejected
+            }
+        }
+        guard fields.filter({ $0.name == "code" }).count == 1,
+              !fields.contains(where: { $0.name == "error" }),
+              let code = fields.first(where: { $0.name == "code" })?.value,
+              code.range(of: "^[A-Za-z0-9_-]{43}$", options: .regularExpression) != nil else { throw NativeSSOFailure.invalidCallback }
+        return code
     }
     func cancel() {
         authentication?.cancel()
