@@ -17,3 +17,5 @@ data/*
 .claude/
 assets/brand/.DS_Store
 native/ios/.DS_Store
+artifacts/local-macos/*.dmg
+artifacts/.DS_Store
