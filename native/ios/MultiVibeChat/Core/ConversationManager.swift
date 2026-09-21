@@ -176,6 +176,7 @@ import Network
     private var refreshRevision = UUID()
     private var sessionRevision = UUID()
     private var generationRevision = UUID()
+    var historyConversations: [Conversation] { conversations.filter { !$0.messages.isEmpty } }
     var current: Conversation? { conversations.first { $0.id == selection } }
 
     private var initialRestoration: Task<Void, Never>?
@@ -444,7 +445,12 @@ import Network
 
     func newConversation() {
         guard !isRestoring, storageLoaded else { return }
+        if current?.messages.isEmpty == true { return }
         stop()
+        if let unused = conversations.first(where: { $0.messages.isEmpty }) {
+            selection = unused.id
+            return
+        }
         let conversation = Conversation(model: selectedModel)
         conversations.insert(conversation, at: 0); selection = conversation.id
         persist()

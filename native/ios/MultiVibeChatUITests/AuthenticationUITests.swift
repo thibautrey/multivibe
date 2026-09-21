@@ -55,14 +55,20 @@ final class AuthenticationUITests: XCTestCase {
         app.launch()
         let message = app.descendants(matching: .any).matching(identifier: "Message").firstMatch
         XCTAssertTrue(message.waitForExistence(timeout: 15))
+        app.buttons["Nouvelle conversation"].firstMatch.tap()
+        message.tap()
+        message.typeText("Brouillon conservé")
+        message.swipeDown()
         for _ in 0..<3 {
             // The native split view exposes history through its leading back button.
             app.navigationBars.buttons.element(boundBy: 0).tap()
             let newConversation = app.buttons["Nouvelle conversation"].firstMatch
             XCTAssertTrue(newConversation.waitForExistence(timeout: 5))
+            XCTAssertFalse(app.cells.staticTexts["Nouvelle conversation"].exists)
             newConversation.tap()
             XCTAssertTrue(message.waitForExistence(timeout: 5))
             XCTAssertFalse(app.buttons["showComposerSheet"].exists)
+            XCTAssertEqual(message.value as? String, "Brouillon conservé")
         }
     }
 

@@ -2,6 +2,50 @@ import XCTest
 @testable import MultiVibeChat
 
 @MainActor final class NativeIntentTests: XCTestCase {
+    func testRepeatedNewConversationReusesUnusedConversation() async throws {
+        let manager = ConversationManager(services: isolatedServices())
+        await manager.restore(loadRemoteModels: false)
+        manager.newConversation()
+        let id = try XCTUnwrap(manager.selection)
+        manager.newConversation()
+        manager.newConversation()
+        XCTAssertEqual(manager.selection, id)
+        XCTAssertEqual(manager.conversations.count, 1)
+        XCTAssertTrue(manager.historyConversations.isEmpty)
+    }
+
+    func testNewConversationReusesDraftAfterOpeningUsedConversation() async throws {
+        let manager = ConversationManager(services: isolatedServices())
+        await manager.restore(loadRemoteModels: false)
+        manager.newConversation()
+        let usedID = try XCTUnwrap(manager.selection)
+        manager.conversations[0].messages.append(ChatMessage(role: "user", content: "Bonjour"))
+        XCTAssertEqual(manager.historyConversations.map(\.id), [usedID])
+        manager.newConversation()
+        let draftID = try XCTUnwrap(manager.selection)
+        XCTAssertNotEqual(draftID, usedID)
+        manager.selection = usedID
+        manager.newConversation()
+        XCTAssertEqual(manager.selection, draftID)
+        XCTAssertEqual(manager.conversations.count, 2)
+        XCTAssertEqual(manager.historyConversations.map(\.id), [usedID])
+    }
+
+    func testFirstSendMakesDraftVisibleInHistory() async throws {
+        let manager = ConversationManager(services: isolatedServices(localAvailability: { nil },
+            localRespond: { _, _, output in await output("Réponse") }))
+        await manager.restore(loadRemoteModels: false)
+        manager.selectedModel = LocalModel.id
+        manager.newConversation()
+        let id = try XCTUnwrap(manager.selection)
+        XCTAssertFalse(manager.send("   "))
+        XCTAssertTrue(manager.historyConversations.isEmpty)
+        XCTAssertTrue(manager.send("Bonjour"))
+        XCTAssertEqual(manager.historyConversations.map(\.id), [id])
+        XCTAssertEqual(manager.current?.messages.first?.content, "Bonjour")
+        manager.stop()
+    }
+
     func testDeferredLocalRequestAndNoImplicitSend() async throws {
         let manager = ConversationManager(services: isolatedServices(localAvailability: { nil }))
         manager.queueNativeShortcut(.init(localDraft: "Bonjour"))

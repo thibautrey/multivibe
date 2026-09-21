@@ -46,7 +46,7 @@ struct ChatView: View {
                     Button("Mémoire", systemImage: "brain") { manager.memoryPresented = true }.accessibilityIdentifier("openMemory")
                 }
 
-                ForEach(manager.conversations.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }) { conversation in
+                ForEach(manager.historyConversations.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }) { conversation in
                     Label(conversation.title, systemImage: conversation.id == manager.selection ? "bubble.left.fill" : "bubble.left")
                         .font(.body.weight(conversation.id == manager.selection ? .semibold : .regular)).tag(conversation.id)
                         .swipeActions(allowsFullSwipe: false) {
@@ -68,7 +68,7 @@ struct ChatView: View {
                 }.padding().background(.regularMaterial)
             }
             .toolbar {
-                ToolbarItem(placement: .primaryAction) { Button("Nouvelle conversation", systemImage: "square.and.pencil") { manager.newConversation() } }
+                ToolbarItem(placement: .primaryAction) { Button("Nouvelle conversation", systemImage: "square.and.pencil") { openNewConversation() } }
                 ToolbarItem(placement: .secondaryAction) {
                     Button("Synchroniser l’historique", systemImage: "arrow.triangle.2.circlepath") {
                         if manager.session == nil { manager.authenticationPresented = true } else { confirmHistorySync = true }
@@ -232,7 +232,7 @@ struct ChatView: View {
                     }
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Nouvelle conversation", systemImage: "square.and.pencil") { manager.newConversation() }
+                    Button("Nouvelle conversation", systemImage: "square.and.pencil") { openNewConversation() }
                 }
             }
 
@@ -417,6 +417,12 @@ struct ChatView: View {
         .background(.ultraThinMaterial, ignoresSafeAreaEdges: .all)
     }
 
+    private func openNewConversation() {
+        manager.newConversation()
+        preferredColumn = .detail
+        composerPresented = true
+    }
+
     private func consumeIntent() {
         guard scenePhase == .active, !manager.isRestoring else { return }
         do {
@@ -438,7 +444,7 @@ struct ChatView: View {
         } catch { manager.error = error.localizedDescription }
         if manager.wantsNewConversation {
             manager.wantsNewConversation = false
-            manager.newConversation()
+            openNewConversation()
         }
         if manager.wantsVoiceConversation {
             manager.wantsVoiceConversation = false; voice.silence(); voicePresented = true
