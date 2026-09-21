@@ -6,6 +6,8 @@ import MapKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+private struct SelectableMessage: Identifiable { let id: UUID; let text: String }
+
 struct ChatView: View {
     @Environment(ConversationManager.self) private var manager
     @Environment(\.scenePhase) private var scenePhase
@@ -24,6 +26,10 @@ struct ChatView: View {
     @State private var voicePresented = false
     @State private var documentsPresented = false
     @State private var privacyPresented = false
+    @State private var suggestions = HomeSuggestionStore.load()
+    @State private var suggestionsPresented = false
+    @State private var highlightedSuggestion: UUID?
+    @State private var selectionContent: SelectableMessage?
     @State private var followsLatest = true
     @State private var userScrolling = false
     private let latestMessageAnchor = "latest-message"
@@ -148,6 +154,16 @@ struct ChatView: View {
                                             .font(.caption).disabled(manager.isStreaming || manager.isSynchronizing)
                                     }
                                 }.frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
+                                    .contextMenu {
+                                        Button("Copier tout", systemImage: "doc.on.doc") {
+                                            UIPasteboard.general.setItems([["public.utf8-plain-text": message.content]], options: [.localOnly: true])
+                                            UINotificationFeedbackGenerator().notificationOccurred(.success)
+                                        }
+                                        Button("Sélectionner le texte", systemImage: "selection.pin.in.out") {
+                                            selectionContent = SelectableMessage(id: message.id, text: message.content)
+                                        }
+                                        ShareLink(item: message.content) { Label("Partager", systemImage: "square.and.arrow.up") }
+                                    }
                                     .transition(.opacity.combined(with: .move(edge: .bottom)))
 
                             }
@@ -282,6 +298,12 @@ struct ChatView: View {
         .sheet(isPresented: $documentsPresented) { LocalDocumentsView() }
         .sheet(isPresented: $privacyPresented) { NativePrivacyView() }
         .sheet(isPresented: $voicePresented) { VoiceConversationView() }
+        .sheet(isPresented: $suggestionsPresented) {
+            SuggestionsEditor(suggestions: $suggestions, highlighted: highlightedSuggestion) {
+                HomeSuggestionStore.save(suggestions)
+            }
+        }
+        .sheet(item: $selectionContent) { SelectableMessageSheet(message: $0) }
         .onChange(of: manager.selection) { _, selection in
             if shortcutDraftConversation != selection { text = "" }
         }
@@ -299,7 +321,25 @@ struct ChatView: View {
         .onDisappear { voice.silence() }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in voice.silence() }
     }
-    private var welcome: some View { ChatWelcomeView(text: $text) }
+    private var welcome: some View {
+        ChatWelcomeView(text: $text, suggestions: suggestions, execute: executeSuggestion, edit: { suggestion in
+            highlightedSuggestion = suggestion.id
+            suggestionsPresented = true
+        })
+    }
+
+    private func executeSuggestion(_ suggestion: HomeSuggestion) {
+        var prompt = suggestion.instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        if suggestion.inputSource == .clipboard {
+            guard let clipboard = UIPasteboard.general.string, !clipboard.isEmpty else {
+                text = prompt; return
+            }
+            prompt += prompt.isEmpty ? clipboard : ": " + clipboard
+        } else if suggestion.behavior == .prepare { prompt += prompt.isEmpty ? "" : " " }
+        if suggestion.behavior == .send, manager.send(prompt) { text = "" }
+        else { text = prompt }
+    }
+
 
     private var composer: some View {
         @Bindable var manager = manager
@@ -495,6 +535,7 @@ struct NativePrivacyView: View {
                 Section("Dictée, lecture et raccourcis") {
                     Text("La dictée exige la reconnaissance sur l’appareil : l’app ne transmet pas l’enregistrement audio à MultiVibe. Vérifiez le texte avant d’appuyer sur Envoyer. La lecture vocale utilise la synthèse vocale du système.")
                     Text("Les raccourcis préparent une action dans l’app au premier plan. Ils n’envoient pas automatiquement votre brouillon. Partager un message utilise la feuille de partage iOS ; vous choisissez sa destination.")
+                    Text("Les suggestions personnalisées restent sur cet iPhone. Une suggestion configurée avec le presse-papiers le lit uniquement lorsque vous touchez ce bouton ; iOS peut alors demander votre autorisation de coller.")
                 }
                 Section("Documents du service") {
                     if let configuration, configuration.hasValidDocuments,
@@ -782,9 +823,11 @@ private struct ContactController: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: UINavigationController, context: Context) {}
 }
 
-/// Shared welcome for signed-out and authenticated empty chats. Suggestions only edit a draft.
 struct ChatWelcomeView: View {
     @Binding var text: String
+    let suggestions: [HomeSuggestion]
+    let execute: (HomeSuggestion) -> Void
+    let edit: (HomeSuggestion) -> Void
     var body: some View {
         ScrollView {
             VStack(spacing: 28) {
@@ -796,25 +839,116 @@ struct ChatWelcomeView: View {
                 Text("Une idée, une question, un premier brouillon.")
                     .foregroundStyle(.secondary).multilineTextAlignment(.center)
                 VStack(spacing: 10) {
-                    suggestion("Trouver l’inspiration", icon: "lightbulb", draft: "Aide-moi à trouver des idées pour ")
-                    suggestion("M’aider à écrire", icon: "pencil.line", draft: "Aide-moi à rédiger ")
-                    suggestion("Comprendre un sujet", icon: "text.book.closed", draft: "Explique-moi simplement ")
+                    ForEach(suggestions) { suggestionButton($0) }
                 }.padding(.top, 8)
+                Text("Maintenez une suggestion pour personnaliser cette liste.")
+                    .font(.caption).foregroundStyle(.tertiary)
             }.frame(maxWidth: 560).padding(24).frame(maxWidth: .infinity)
         }.scrollDismissesKeyboard(.interactively)
     }
 
-    private func suggestion(_ title: String, icon: String, draft: String) -> some View {
-        Button { text = draft } label: {
+    private func suggestionButton(_ suggestion: HomeSuggestion) -> some View {
+        Button { execute(suggestion) } label: {
             HStack(spacing: 14) {
-                Image(systemName: icon).foregroundStyle(MultiVibeTheme.accent).frame(width: 24)
-                Text(title).foregroundStyle(.primary)
+                Image(systemName: suggestion.systemImage).foregroundStyle(MultiVibeTheme.accent).frame(width: 24)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(suggestion.title).foregroundStyle(.primary)
+                    if suggestion.inputSource == .clipboard { Label("Utilise le presse-papiers", systemImage: "doc.on.clipboard").font(.caption2).foregroundStyle(.secondary) }
+                }
                 Spacer()
-                Image(systemName: "arrow.up.left").font(.caption).foregroundStyle(.secondary)
+                Image(systemName: suggestion.behavior == .send ? "arrow.up.circle.fill" : "arrow.up.left").font(.caption).foregroundStyle(.secondary)
             }.padding(16).background(.background.opacity(0.7), in: RoundedRectangle(cornerRadius: 18))
-        }.buttonStyle(.plain)
+        }
+        .buttonStyle(.plain)
+        .onLongPressGesture(minimumDuration: 0.45) {
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            edit(suggestion)
+        }
+        .accessibilityAction(named: "Modifier cette suggestion") { edit(suggestion) }
     }
+}
 
+private struct SuggestionsEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var suggestions: [HomeSuggestion]
+    let highlighted: UUID?
+    let save: () -> Void
+    @State private var editing: HomeSuggestion?
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text("Les suggestions et les instructions restent sur cet iPhone. Le presse-papiers n’est lu que lorsque vous touchez un bouton configuré pour l’utiliser.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                Section("Suggestions") {
+                    ForEach(suggestions) { item in
+                        Button { editing = item } label: {
+                            HStack { Image(systemName: item.systemImage).frame(width: 28).foregroundStyle(MultiVibeTheme.accent); VStack(alignment: .leading) { Text(item.title).foregroundStyle(.primary); Text(item.instruction).font(.caption).foregroundStyle(.secondary).lineLimit(2) }; Spacer(); Image(systemName: "chevron.right").foregroundStyle(.tertiary) }
+                        }
+                    }
+                    .onDelete { suggestions.remove(atOffsets: $0); save() }
+                    .onMove { suggestions.move(fromOffsets: $0, toOffset: $1); save() }
+                }
+            }
+            .scrollContentBackground(.hidden).background(MultiVibeTheme.softAccent.ignoresSafeArea())
+            .navigationTitle("Suggestions")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Terminé") { save(); dismiss() } }
+                ToolbarItemGroup(placement: .primaryAction) {
+                    EditButton()
+                    Button("Ajouter", systemImage: "plus") {
+                        editing = .init(id: UUID(), title: "Nouvelle suggestion", systemImage: "sparkles", instruction: "", inputSource: .none, behavior: .prepare)
+                    }.disabled(suggestions.count >= 12)
+                }
+            }
+            .sheet(item: $editing) { item in
+                SuggestionEditor(item: item) { updated in
+                    if let index = suggestions.firstIndex(where: { $0.id == updated.id }) { suggestions[index] = updated }
+                    else if suggestions.count < 12 { suggestions.append(updated) }
+                    save(); editing = nil
+                }
+            }
+            .onAppear { if let highlighted, let value = suggestions.first(where: { $0.id == highlighted }) { editing = value } }
+        }
+    }
+}
+
+private struct SuggestionEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @State var item: HomeSuggestion
+    let save: (HomeSuggestion) -> Void
+    var valid: Bool { !item.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !item.instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Bouton") { TextField("Titre", text: $item.title); TextField("Icône SF Symbols", text: $item.systemImage) }
+                Section("Requête") {
+                    TextField("Instructions", text: $item.instruction, axis: .vertical).lineLimit(2...6)
+                    Picker("Contenu ajouté", selection: $item.inputSource) { Text("Aucun").tag(HomeSuggestion.InputSource.none); Text("Presse-papiers").tag(HomeSuggestion.InputSource.clipboard) }
+                    Picker("Au toucher", selection: $item.behavior) { Text("Préparer le message").tag(HomeSuggestion.Behavior.prepare); Text("Envoyer immédiatement").tag(HomeSuggestion.Behavior.send) }
+                }
+                if item.inputSource == .clipboard { Section { Text("La requête sera composée sous la forme « Instructions : contenu du presse-papiers ». iOS peut demander l’autorisation de coller.").font(.footnote) } }
+            }
+            .navigationTitle("Modifier la suggestion")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("Enregistrer") { save(item); dismiss() }.disabled(!valid) } }
+        }
+    }
+}
+
+private struct SelectableMessageSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let message: SelectableMessage
+    var body: some View {
+        NavigationStack {
+            ScrollView { Text(message.text).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled).padding(20) }
+                .navigationTitle("Sélectionner le texte")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Terminé") { dismiss() } }
+                    ToolbarItem(placement: .primaryAction) { Button("Copier tout", systemImage: "doc.on.doc") { UIPasteboard.general.string = message.text } }
+                }
+        }
+    }
 }
 
 
