@@ -14524,7 +14524,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         converter.chat_response.chat_tools = adapter;
         let mut stream = String::new();
         for chunk in [
-            json!({"index": 0, "id": "call_exec", "function": {"name": "mv_tool_0", "arguments": "{\"input\":\"print("}}),
+            json!({"index": 0, "id": "call_exec", "function": {"name": chat_tools::stable_alias(None, "exec", true), "arguments": "{\"input\":\"print("}}),
             json!({"index": 0, "function": {"arguments": " "}}),
             json!({"index": 0, "function": {"arguments": "42)\"}"}}),
         ] {
@@ -14534,7 +14534,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         assert!(stream.contains("response.output_item.added"));
         assert!(stream.contains("response.custom_tool_call_input.done"));
         assert!(stream.contains("response.output_item.done"));
-        assert!(!stream.contains("mv_tool_0"));
+        assert!(!stream.contains("mv_tool_"));
         assert!(!stream.contains("response.function_call_arguments.delta"));
         let result = response_from_sse(&stream, "glm-test");
         assert_eq!(result["output"][0]["type"], "custom_tool_call");
@@ -14663,7 +14663,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                     assert_eq!(body["tools"].as_array().unwrap().len(), 1);
                     assert!(body["messages"][0]["content"].as_str().unwrap().contains("web_search tool is unavailable"));
                     assert_eq!(body["tools"][0]["type"], "function");
-                    assert_eq!(body["tools"][0]["function"]["name"], "mv_tool_0");
+                    assert_eq!(body["tools"][0]["function"]["name"], chat_tools::stable_alias(None, "lookup", true));
                     assert!(body["tools"][0].get("name").is_none());
                     let returned = body["messages"].as_array().unwrap().iter().any(|m| m["role"] == "tool");
                     let message = if returned {
@@ -14671,7 +14671,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                         assert!(messages.iter().any(|m| m["tool_call_id"] == "call_lookup" && m["content"] == "42"));
                         json!({"role": "assistant", "content": "The result is 42."})
                     } else {
-                        json!({"role": "assistant", "content": null, "tool_calls": [{"id": "call_lookup", "type": "function", "function": {"name": "mv_tool_0", "arguments": "{\"input\":\"print(42)\"}"}}]})
+                        json!({"role": "assistant", "content": null, "tool_calls": [{"id": "call_lookup", "type": "function", "function": {"name": chat_tools::stable_alias(None, "lookup", true), "arguments": "{\"input\":\"print(42)\"}"}}]})
                     };
                     Json(json!({"id": "chat_test", "object": "chat.completion", "model": "glm-test", "created": 1,
                         "choices": [{"index": 0, "message": message, "finish_reason": if returned { "stop" } else { "tool_calls" }}],

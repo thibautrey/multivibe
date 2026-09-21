@@ -1,5 +1,13 @@
 //! Request-scoped adaptation of client tools for function-only providers.
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+
+/// Identity-only aliases survive tool reordering and changes to unrelated tools.
+pub(crate) fn stable_alias(namespace: Option<&str>, name: &str, custom: bool) -> String {
+    let identity =
+        serde_json::to_vec(&(namespace, name, custom)).expect("tool identity serializes");
+    format!("mv_tool_{:x}", Sha256::digest(identity))[..56].to_owned()
+}
 
 #[derive(Clone, Default)]
 pub(crate) struct ChatTools {
@@ -87,6 +95,17 @@ impl ChatTools {
                 "{instructions}\n\nProvider capability notice: the native Responses web_search tool is unavailable on this upstream. All advertised client function tools remain available. If web research is needed, use an available client search/browser tool; if none is available, explain that limitation. Do not claim to have searched or fabricate search results."
             ));
         }
+        // Only declaration order changes; message order and every tool schema stay intact.
+        // Sort by the emitted identity, so requests with the same tools serialize equally.
+        flattened.sort_by(|a, b| {
+            let name = |tool: &Value| {
+                tool.get("function").unwrap_or(tool)["name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned()
+            };
+            name(a).cmp(&name(b))
+        });
         body["tools"] = Value::Array(flattened);
         if let Some(choice) = body.get_mut("tool_choice") {
             let name = choice["name"].as_str().unwrap_or("");
@@ -157,7 +176,7 @@ impl ChatTools {
             output.push(tool.clone());
             return Ok(());
         }
-        let alias = format!("mv_tool_{}", self.entries.len());
+        let alias = stable_alias(namespace, name, custom);
         let mut converted = source.clone();
         converted["description"] = json!(format!(
             "Tool {}{}: {}",
@@ -235,6 +254,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tool_permutations_have_identical_payloads_and_stable_history() {
+        let a = json!({"type":"namespace","name":"a","tools":[
+            {"type":"function","name":"lookup","parameters":{"type":"object"}},
+            {"type":"custom","name":"exec"}]});
+        let b = json!({"type":"namespace","name":"b","tools":[
+            {"type":"function","name":"lookup","description":"different namespace"}]});
+        let ordinary = json!({"type":"function","name":"ordinary"});
+        let input = json!([{"type":"custom_tool_call","name":"exec","namespace":"a","input":"raw","call_id":"c"}]);
+        let first = json!({"tools":[a,b,ordinary],"input":input,"tool_choice":{"type":"custom","name":"exec","namespace":"a"}});
+        let mut second = first.clone();
+        second["tools"].as_array_mut().unwrap().reverse();
+        second["tools"][2]["tools"]
+            .as_array_mut()
+            .unwrap()
+            .reverse();
+        let (x, ax) = ChatTools::prepare(&first).unwrap();
+        let (y, ay) = ChatTools::prepare(&second).unwrap();
+        assert_eq!(x, y);
+        assert_ne!(
+            stable_alias(Some("a"), "lookup", false),
+            stable_alias(Some("b"), "lookup", false)
+        );
+        let mut extended = first.clone();
+        extended["tools"]
+            .as_array_mut()
+            .unwrap()
+            .insert(0, json!({"type":"custom","name":"new_tool"}));
+        let (z, _) = ChatTools::prepare(&extended).unwrap();
+        assert_eq!(x["input"], z["input"]);
+        assert_eq!(x["tool_choice"], z["tool_choice"]);
+        for tool in x["tools"].as_array().unwrap() {
+            assert!(z["tools"].as_array().unwrap().contains(tool));
+        }
+        let mut output = x["input"][0].clone();
+        ax.restore_item(&mut output).unwrap();
+        assert_eq!(output, input[0]);
+        let mut other = y["input"][0].clone();
+        ay.restore_item(&mut other).unwrap();
+        assert_eq!(other, input[0]);
+    }
+
+    #[test]
     fn custom_and_namespaced_tools_round_trip_without_losing_raw_input() {
         let raw = "print(\"été\\n\")\n";
         let body = json!({"tools": [
@@ -250,13 +311,21 @@ mod tests {
         ]});
         let (adapted, adapter) = ChatTools::prepare(&body).unwrap();
         assert_eq!(adapted["tools"].as_array().unwrap().len(), 3);
-        assert_eq!(adapted["tools"][0], body["tools"][0]);
-        assert_eq!(adapted["tool_choice"]["name"], "mv_tool_0");
+        assert!(
+            adapted["tools"]
+                .as_array()
+                .unwrap()
+                .contains(&body["tools"][0])
+        );
+        assert_eq!(
+            adapted["tool_choice"]["name"],
+            stable_alias(Some("functions"), "exec", true)
+        );
         assert_eq!(adapted["input"][1], body["input"][1]);
         let mut item = adapted["input"][0].clone();
         adapter.restore_item(&mut item).unwrap();
         assert_eq!(item, body["input"][0]);
-        let mut function = json!({"type": "function_call", "name": "mv_tool_1", "arguments": "{}"});
+        let mut function = json!({"type": "function_call", "name": stable_alias(Some("functions"), "wait", false), "arguments": "{}"});
         adapter.restore_item(&mut function).unwrap();
         assert_eq!(function["name"], "wait");
         assert_eq!(function["namespace"], "functions");
@@ -283,7 +352,12 @@ mod tests {
                 }
                 let (adapted, adapter) = ChatTools::prepare(&body).unwrap();
                 assert_eq!(adapted["tools"].as_array().unwrap().len(), 3);
-                assert_eq!(adapted["tools"][0], body["tools"][0]);
+                assert!(
+                    adapted["tools"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&body["tools"][0])
+                );
                 assert_eq!(adapted["tool_choice"], choice);
                 assert!(
                     adapted["instructions"]
@@ -330,11 +404,11 @@ mod tests {
         let (_, adapter) =
             ChatTools::prepare(&json!({"tools": [{"type": "custom", "name": "exec"}]})).unwrap();
         for arguments in ["broken", "{}", "{\"input\":42}"] {
-            assert!(adapter.restore_item(&mut json!({"type": "function_call", "name": "mv_tool_0", "arguments": arguments})).is_err());
+            assert!(adapter.restore_item(&mut json!({"type": "function_call", "name": stable_alias(None, "exec", true), "arguments": arguments})).is_err());
         }
         assert!(
             ChatTools::prepare(&json!({"tools": [
-                {"type": "custom", "name": "exec"}, {"type": "function", "name": "mv_tool_0"}
+                {"type": "custom", "name": "exec"}, {"type": "function", "name": stable_alias(None, "exec", true)}
             ]}))
             .is_err()
         );
