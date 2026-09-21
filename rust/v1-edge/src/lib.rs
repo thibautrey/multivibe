@@ -2498,6 +2498,18 @@ fn is_claude_code_request(headers: &HeaderMap) -> bool {
         && header_value(headers, "x-app").is_some_and(|value| value.eq_ignore_ascii_case("cli"))
 }
 
+fn is_codex_catalog_request(headers: &HeaderMap) -> bool {
+    if header_value(headers, "x-multivibe-client")
+        .is_some_and(|value| value.eq_ignore_ascii_case("openai-codex"))
+    {
+        return true;
+    }
+    header_value(headers, "user-agent").is_some_and(|value| {
+        let value = value.to_ascii_lowercase();
+        value.starts_with("codex_cli_rs/") || value.starts_with("codex/")
+    })
+}
+
 fn claude_code_model(requested_model: &str) -> String {
     let requested = requested_model.to_ascii_lowercase();
     if requested.contains("haiku") || requested.contains("fast") {
@@ -10859,6 +10871,26 @@ fn codex_model_shape(model: &Value) -> Option<Value> {
     Some(info)
 }
 
+fn model_is_openai(model: &Value) -> bool {
+    let metadata = model.get("metadata");
+    metadata
+        .and_then(|value| value.get("provider"))
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case("openai"))
+        || metadata
+            .and_then(|value| value.get("sdk_provider"))
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.eq_ignore_ascii_case("openai"))
+}
+
+fn models_for_client(models: &[Value], headers: &HeaderMap) -> Vec<Value> {
+    let mut ordered = models.to_vec();
+    if is_codex_catalog_request(headers) {
+        ordered.sort_by_key(|model| !model_is_openai(model));
+    }
+    ordered
+}
+
 fn models_list_response(models: &[Value], catalog: Value) -> Value {
     let data = models.iter().map(openai_model_shape).collect::<Vec<_>>();
     let native = models
@@ -10900,6 +10932,7 @@ async fn list_models_handler(
         );
     }
     let models = exposed_models(&state, &store, query.refresh.unwrap_or(false)).await;
+    let models = models_for_client(&models, &headers);
     let catalog = model_catalog_metadata(&state).await;
     json_response(StatusCode::OK, models_list_response(&models, catalog))
 }
@@ -12940,6 +12973,30 @@ mod tests {
                 "image-captioner",
             ]
         );
+    }
+
+    #[test]
+    fn codex_catalog_requests_prefer_openai_models_stably() {
+        let models = vec![
+            json!({"id": "glm-5", "metadata": {"provider": "zai"}}),
+            json!({"id": "gpt-5.6-luna", "metadata": {"provider": "openai"}}),
+            json!({"id": "deepseek/deepseek-v4-pro", "metadata": {"provider": "ai-sdk", "sdk_provider": "deepseek"}}),
+            json!({"id": "openai/gpt-5", "metadata": {"provider": "ai-sdk", "sdk_provider": "openai"}}),
+            json!({"id": "gpt-5.5", "metadata": {"provider": "openai"}}),
+        ];
+        let mut codex = HeaderMap::new();
+        set_header(&mut codex, "x-multivibe-client", "openai-codex");
+        let ordered = models_for_client(&models, &codex);
+        assert_eq!(
+            ordered.iter().map(|model| model["id"].as_str().unwrap()).collect::<Vec<_>>(),
+            ["gpt-5.6-luna", "openai/gpt-5", "gpt-5.5", "glm-5", "deepseek/deepseek-v4-pro"]
+        );
+
+        let unchanged = models_for_client(&models, &HeaderMap::new());
+        assert_eq!(unchanged, models);
+        let mut user_agent = HeaderMap::new();
+        set_header(&mut user_agent, "user-agent", "codex_cli_rs/0.151.0");
+        assert_eq!(models_for_client(&models, &user_agent), ordered);
     }
 
     #[test]

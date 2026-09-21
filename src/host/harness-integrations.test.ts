@@ -89,7 +89,10 @@ function mockCodexModelCatalog(
 ) {
   const originalFetch = globalThis.fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
-  globalThis.fetch = async () => Response.json({ data: modelIds.map((id) => ({ id, metadata: { input_modalities: modalities[id], context_window: contextWindows[id] } })), models });
+  globalThis.fetch = async (_input, init) => {
+    assert.equal(new Headers(init?.headers).get("x-multivibe-client"), "openai-codex");
+    return Response.json({ data: modelIds.map((id) => ({ id, metadata: { input_modalities: modalities[id], context_window: contextWindows[id] } })), models });
+  };
 }
 
 test("detects without executing, installs privately, and restores the exact previous file", async (t) => {

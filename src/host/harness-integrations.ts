@@ -60,6 +60,7 @@ export type HostHarnessView = {
 export type HarnessContext = {
   baseUrl: string;
   apiKey: string;
+  clientId?: string;
   modelIds?: readonly string[];
   codexModels?: readonly Record<string, unknown>[];
   modelInputModalities?: Record<string, string[]>;
@@ -217,6 +218,7 @@ async function discoverMultiVibeModelCatalog(context: HarnessContext): Promise<D
       headers: {
         accept: "application/json",
         authorization: `Bearer ${context.apiKey}`,
+        ...(context.clientId ? { "x-multivibe-client": context.clientId } : {}),
       },
       redirect: "error",
     });
@@ -1095,7 +1097,12 @@ export class HostHarnessIntegrationManager {
         ? definition.configuration.inspect(config.content, this.baseUrl, apiKey, this.homeDirectory)
         : { configured: definition.configuration.isConfigured(config.content, this.baseUrl) };
       if (!inspection.configured) return false;
-      const context: HarnessContext = { baseUrl: this.baseUrl, apiKey, homeDirectory: this.homeDirectory };
+      const context: HarnessContext = {
+        baseUrl: this.baseUrl,
+        apiKey,
+        clientId: definition.id,
+        homeDirectory: this.homeDirectory,
+      };
       const preparedContext = definition.configuration.prepare
         ? { ...context, ...(await definition.configuration.prepare(context)) }
         : context;
@@ -1246,6 +1253,7 @@ export class HostHarnessIntegrationManager {
       const context: HarnessContext = {
         baseUrl: this.baseUrl,
         apiKey: credential.apiKey,
+        clientId: id,
         homeDirectory: this.homeDirectory,
         codingEconomy: this.codexCodingEconomyContext(id, state),
       };
@@ -1309,6 +1317,7 @@ export class HostHarnessIntegrationManager {
       const context: HarnessContext = {
         baseUrl: this.baseUrl,
         apiKey: credential.apiKey,
+        clientId: id,
         homeDirectory: this.homeDirectory,
         codingEconomy: this.codexCodingEconomyContext(id, state),
       };
@@ -1416,6 +1425,7 @@ export class HostHarnessIntegrationManager {
       const context: HarnessContext = {
         baseUrl: this.baseUrl,
         apiKey,
+        clientId: id,
         homeDirectory: this.homeDirectory,
         codingEconomy: this.codexCodingEconomyContext(id, state),
       };
