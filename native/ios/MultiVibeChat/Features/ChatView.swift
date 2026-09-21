@@ -33,6 +33,7 @@ struct ChatView: View {
     @State private var followsLatest = true
     @State private var userScrolling = false
     @State private var composerPresented = true
+    @FocusState private var composerFocused: Bool
     private static let compactComposerHeight: CGFloat = 126
     private static let compactComposerDetent = PresentationDetent.height(compactComposerHeight)
     private let latestMessageAnchor = "latest-message"
@@ -367,12 +368,20 @@ struct ChatView: View {
         else { text = prompt }
     }
 
+    private func sendComposerMessage() {
+        guard manager.send(text) else { return }
+        text = ""
+        composerFocused = false
+    }
 
     private var composer: some View {
         @Bindable var manager = manager
         return VStack(alignment: .leading, spacing: 12) {
             TextField("Que souhaitez-vous savoir ?", text: $text, axis: .vertical)
-                .accessibilityLabel("Message").lineLimit(1...4).padding(.horizontal, 6).padding(.top, 2)
+                .focused($composerFocused)
+                .submitLabel(.send)
+                .onSubmit(sendComposerMessage)
+                .accessibilityLabel("Message").lineLimit(1...4).padding(.horizontal, 6)
             HStack(spacing: 8) {
                 Menu {
                     Picker("Modèle", selection: $manager.selectedModel) {
@@ -397,14 +406,14 @@ struct ChatView: View {
                     Button("Conversation vocale", systemImage: "waveform.circle.fill") { voice.silence(); voicePresented = true }
                         .font(.title).frame(minWidth: 44, minHeight: 44)
                 } else {
-                    Button("Envoyer", systemImage: "arrow.up.circle.fill") { if manager.send(text) { text = "" } }
+                    Button("Envoyer", systemImage: "arrow.up.circle.fill") { sendComposerMessage() }
                         .font(.title).frame(minWidth: 44, minHeight: 44)
                         .disabled(manager.selectedModel.isEmpty || (manager.isSynchronizing && manager.selectedModel != LocalModel.id))
                 }
             }.labelStyle(.iconOnly).buttonStyle(.plain)
         }
-        .padding(.horizontal, 18).padding(.top, 2).padding(.bottom, 6)
-        .frame(maxWidth: 760).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(.horizontal, 18).padding(.vertical, 10)
+        .frame(maxWidth: 760).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .background(.ultraThinMaterial, ignoresSafeAreaEdges: .all)
     }
 
@@ -1037,28 +1046,29 @@ private struct AgentThinkingGlow: View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { timeline in
             let time = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate
             GeometryReader { proxy in
-                let radius = min(52.0, min(proxy.size.width, proxy.size.height) * 0.08)
+                let shortSide = min(proxy.size.width, proxy.size.height)
+                let radius = min(64.0, max(44.0, shortSide * 0.13))
                 let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-                let pulse = 0.88 + sin(time * 1.35) * 0.12
-                let drift = Angle.degrees(time * 14 + sin(time * 0.43) * 24)
-                let counterDrift = Angle.degrees(-time * 9 + cos(time * 0.57) * 31)
+                let pulse = 0.82 + sin(time * 1.55) * 0.18
+                let drift = Angle.degrees(time * 18 + sin(time * 0.48) * 30)
+                let counterDrift = Angle.degrees(-time * 12 + cos(time * 0.63) * 38)
 
                 ZStack {
                     shape.inset(by: 3)
-                        .strokeBorder(glowGradient(angle: drift), lineWidth: 3.5 + sin(time * 0.9) * 1.2)
-                        .blur(radius: reduceTransparency ? 0 : 1.6)
-                        .opacity(reduceTransparency ? 0.82 : 0.95)
+                        .strokeBorder(glowGradient(angle: drift), lineWidth: 4.5 + sin(time * 1.1) * 1.5)
+                        .blur(radius: reduceTransparency ? 0 : 1.8)
+                        .opacity(reduceTransparency ? 0.88 : 1)
 
                     shape.inset(by: 1)
-                        .strokeBorder(glowGradient(angle: counterDrift), lineWidth: 9)
-                        .blur(radius: reduceTransparency ? 0 : 8)
-                        .opacity(reduceTransparency ? 0.25 : 0.48 * pulse)
+                        .strokeBorder(glowGradient(angle: counterDrift), lineWidth: 12)
+                        .blur(radius: reduceTransparency ? 0 : 10)
+                        .opacity(reduceTransparency ? 0.3 : 0.62 * pulse)
 
                     if !reduceTransparency {
-                        shape.inset(by: 7)
-                            .strokeBorder(glowGradient(angle: drift + .degrees(110)), lineWidth: 16)
-                            .blur(radius: 17)
-                            .opacity(0.2 + cos(time * 1.1) * 0.045)
+                        shape.inset(by: 8)
+                            .strokeBorder(glowGradient(angle: drift + .degrees(110)), lineWidth: 20)
+                            .blur(radius: 20)
+                            .opacity(0.27 + cos(time * 1.25) * 0.07)
                     }
                 }
                 .blendMode(reduceTransparency ? .normal : .plusLighter)
