@@ -123,11 +123,6 @@ struct ChatView: View {
                                             Text(completion == .streaming ? "Réponse en cours" : completion == .stopped ? "Réponse arrêtée" : "Réponse interrompue")
                                                 .font(.caption).foregroundStyle(.secondary)
                                         }
-                                        if let events = message.localEvents, !events.isEmpty {
-                                            DisclosureGroup("Étapes locales (\(events.count))") {
-                                                ForEach(events) { event in Text(event.detail).font(.caption) }
-                                            }
-                                        }
                                         if let references = message.memoryReferences, !references.isEmpty {
                                             DisclosureGroup("Souvenirs consultés (\(references.count))") {
                                                 ForEach(references) { reference in
