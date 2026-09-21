@@ -29,6 +29,35 @@ import XCTest
         XCTAssertTrue(try AutomaticMemory.changes("[]").isEmpty)
     }
 
+    func testCompletedRemoteReplyUsesSameModelForBackgroundMemory() async throws {
+        var calls: [String] = []
+        var source: ChatMessage?
+        var services = isolatedServices(load: { NativeSession(accessToken: "test", refreshToken: "test", expiresAt: .distantFuture, accountId: "a") },
+            stream: { model, messages, _, output in
+                calls.append(model)
+                if messages.first?.role == "system" {
+                    let message = try XCTUnwrap(source)
+                    let change = AutomaticMemory.Change(topic: "Langue", text: message.content, kind: .preference,
+                        messageID: message.id, quote: message.content)
+                    await output(String(decoding: try JSONEncoder().encode([change]), as: UTF8.self))
+                } else {
+                    source = messages.last
+                    await output("Entendu")
+                }
+            }, models: { _ in [ModelOption(id: "same-model")] })
+        services.memoryReviewDelay = { await Task.yield() }
+        let manager = ConversationManager(services: services)
+        await manager.restore()
+        manager.selectedModel = "same-model"
+        XCTAssertTrue(manager.send("Je préfère le français"))
+        for _ in 0..<3000 { if manager.memoryItems.count == 1 { break }; await Task.yield() }
+        XCTAssertEqual(calls, ["same-model", "same-model"])
+        XCTAssertEqual(manager.memoryItems.first?.memory.text, "Je préfère le français")
+        XCTAssertEqual(manager.current?.messages.count, 2)
+        XCTAssertNil(manager.memoryDraft)
+        XCTAssertEqual(manager.current?.memoryReviewedThrough, manager.current?.messages.last?.id)
+    }
+
     private func memory(_ text: String = "Je préfère le français", topic: String = "Langue", scope: String = "") -> AgentMemory {
         AgentMemory(topic: topic, text: text, kind: .preference, scope: scope, state: .confirmed,
             evidence: MemoryEvidence(origin: .userMessage, quote: text, date: Date(), sourceRole: "user"))
