@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>cloud.multivibe.host.share</string>
+<key>CFBundleName</key><string>MultiVibe</string>
+<key>CFBundleDisplayName</key><string>MultiVibe</string>
+<key>CFBundleExecutable</key><string>MultiVibeShare</string>
+<key>CFBundlePackageType</key><string>XPC!</string>
+<key>CFBundleVersion</key><string>__MULTIVIBE_BUILD__</string>
+<key>CFBundleShortVersionString</key><string>__MULTIVIBE_VERSION__</string>
+<key>LSMinimumSystemVersion</key><string>13.0</string>
+<key>NSExtension</key><dict>
+<key>NSExtensionPointIdentifier</key><string>com.apple.share-services</string>
+<key>NSExtensionPrincipalClass</key><string>MultiVibeShare.ShareViewController</string>
+<key>NSExtensionAttributes</key><dict><key>NSExtensionActivationRule</key><dict>
+<key>NSExtensionActivationSupportsText</key><true/>
+<key>NSExtensionActivationSupportsWebURLWithMaxCount</key><integer>5</integer>
+</dict></dict>
+</dict>
+</dict></plist>

@@ -42,7 +42,8 @@ test("native packages include the updater and platform schedulers", async () => 
     read("scripts/provider-host/verify-provider-host.mjs"), read("packaging/linux/uninstall.sh"),
   ]);
   assert.match(packager, /const macOSMinimumVersion = "13\.0"/u);
-  assert.match(packager, /apple-macos\$\{macOSMinimumVersion\}/u);
+  assert.match(packager, /minimum: macOSMinimumVersion/u);
+  assert.match(await read("scripts/provider-host/build-macos-native.mjs"), /apple-macos\$\{minimum\}/u);
   assert.match(macosInfo, /<key>LSMinimumSystemVersion<\/key>\s*<string>__MULTIVIBE_MACOS_MINIMUM_VERSION__<\/string>/u);
   assert.match(verifier, /minimumSystemVersion !== "13\.0"/u);
   assert.match(packager, /buildGo\(path\.join\(repositoryRoot, "host", "updater"\)/u);
