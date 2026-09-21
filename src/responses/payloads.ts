@@ -291,6 +291,23 @@ export function chatCompletionsToResponsesPayload(
 const REASONING_CONTINUATION_PLACEHOLDER =
   "(reasoning content was not emitted for this assistant turn)";
 
+/**
+ * Chat Completions requires tool-call arguments to be a JSON string. A model
+ * can emit malformed JSON for one call; the matching tool result already
+ * reports the parse failure, so forward `{}` instead of letting the malformed
+ * call fail every later request in the thread.
+ */
+function repairedToolArguments(arguments_: unknown): string {
+  const text =
+    typeof arguments_ === "string" ? arguments_ : JSON.stringify(arguments_ ?? {}) ?? "{}";
+  try {
+    JSON.parse(text);
+    return text;
+  } catch {
+    return "{}";
+  }
+}
+
 function ensureReasoningContinuation(messages: any[]) {
   const last = messages[messages.length - 1];
   if (last?.role !== "tool") return;
@@ -338,10 +355,7 @@ export function responsesToChatCompletionsPayload(
             type: "function",
             function: {
               name: item.name ?? "unknown",
-              arguments:
-                typeof item.arguments === "string"
-                  ? item.arguments
-                  : JSON.stringify(item.arguments ?? {}),
+              arguments: repairedToolArguments(item.arguments),
             },
           },
         ],

@@ -75,8 +75,12 @@ export function sdkCallOptions(body: any, signal: AbortSignal): SdkCallOptions {
         // tool result. Codex can send truncated history with only some results.
         if (!immediateToolResults.has(id)) continue;
         const name = requiredString(call.function?.name, "tool name");
+        // A historical assistant call can carry malformed JSON when the model
+        // emitted broken arguments; its tool result already reports the parse
+        // failure, so keep the turn alive with an empty input instead of
+        // rejecting every later request in the thread.
         let input: unknown;
-        try { input = JSON.parse(call.function.arguments); } catch { invalid("Tool arguments must be valid JSON"); }
+        try { input = JSON.parse(call.function.arguments); } catch { input = {}; }
         toolNames.set(id, name);
         content.push({ type: "tool-call", toolCallId: id, toolName: name, input });
       }

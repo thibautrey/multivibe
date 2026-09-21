@@ -70,6 +70,20 @@ test("repairs truncated tool history for strict OpenAI-compatible providers", ()
   assert.deepEqual(calls.map((call) => call.toolCallId), ["call_done"]);
 });
 
+test("keeps malformed historical tool arguments from failing later requests", () => {
+  const options = sdkCallOptions({ messages: [
+    {role: "user", content: "Start"},
+    {role: "assistant", content: null, tool_calls: [
+      {id: "call_broken", type: "function", function: {name: "exec_command", arguments: '{"zsh": zsh}'}},
+    ]},
+    {role: "tool", tool_call_id: "call_broken", content: "failed to parse function arguments"},
+  ] }, new AbortController().signal);
+
+  const call = (options.prompt[1].content as any[]).find((part) => part.type === "tool-call");
+  assert.equal(call.toolCallId, "call_broken");
+  assert.deepEqual(call.input, {});
+});
+
 test("streams text and function arguments incrementally without repeating completed tool calls", async () => {
   const parts: SdkStreamPart[] = [
     {type: "text-delta", id: "text", delta: "Hello"},
