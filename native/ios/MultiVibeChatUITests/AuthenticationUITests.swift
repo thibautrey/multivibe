@@ -24,7 +24,7 @@ final class AuthenticationUITests: XCTestCase {
         return app
     }
 
-    func testGuestChatOpensFirstAndRetainsDraftAfterDismissingLogin() throws {
+    func testGuestChatOpensFirstAndRetainsDraftAfterDismissingLogin() {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR"]
@@ -39,9 +39,7 @@ final class AuthenticationUITests: XCTestCase {
         // Collapse the keyboard before interacting with the background toolbar.
         message.swipeDown()
         for _ in 0..<3 {
-            let login = try XCTUnwrap(app.buttons.matching(identifier: "openAuthentication")
-                .allElementsBoundByIndex.first(where: { $0.isHittable }))
-            login.tap()
+            app.buttons["openAuthentication"].firstMatch.tap()
             XCTAssertTrue(app.textFields["Adresse e-mail"].waitForExistence(timeout: 5))
             app.buttons["Fermer la connexion"].tap()
             XCTAssertTrue(message.waitForExistence(timeout: 5))
