@@ -3,6 +3,12 @@ import Foundation
 
 struct HostAssistantModel: Codable, Identifiable, Hashable {
     let id: String
+    var name: String?
+    var local: Bool?
+    init(id: String, name: String? = nil, local: Bool? = nil) {
+        self.id = id; self.name = name; self.local = local
+    }
+    var displayName: String { name ?? id }
 }
 
 enum HostAssistantError: LocalizedError {
@@ -23,6 +29,10 @@ enum HostAssistantError: LocalizedError {
 final class HostAssistantClient {
     static let shared = HostAssistantClient()
     static let defaultModelKey = "assistantDefaultModel"
+    private let localModel: any AppleFoundationServing
+    init(localModel: any AppleFoundationServing = AppleFoundationModel()) {
+        self.localModel = localModel
+    }
     var defaultModel: String {
         get { UserDefaults.standard.string(forKey: Self.defaultModelKey) ?? "" }
         set { UserDefaults.standard.set(newValue, forKey: Self.defaultModelKey) }
@@ -66,11 +76,16 @@ final class HostAssistantClient {
     }
 
     /// SSE completion with the complete conversation, bounded output and no credential redirects.
-    func stream(_ messages: [[String: String]], model: String, update: @MainActor (String) -> Void) async throws {
+    func stream(_ messages: [[String: String]], model: String, update: @MainActor @escaping (String) -> Void) async throws {
         guard !messages.isEmpty, messages.count <= 500,
               messages.allSatisfy({ ["user", "assistant"].contains($0["role"] ?? "") }),
               messages.reduce(0, { $0 + ($1["content"]?.utf8.count ?? 0) }) <= 1_000_000 else { throw HostAssistantError.invalidInput }
-        guard try await models().contains(where: { $0.id == model }) else { throw HostAssistantError.missingModel }
+        if model == AppleFoundationModel.id {
+            guard await localModel.model != nil else { throw HostAssistantError.missingModel }
+            try await localModel.respond(messages: messages, update: update)
+            return
+        }
+        guard try await remoteModels().contains(where: { $0.id == model }) else { throw HostAssistantError.missingModel }
         let (base, key) = try await connection()
         guard base.scheme == "http", base.host == "127.0.0.1" else { throw HostAssistantError.unavailable }
         var request = URLRequest(url: base.appendingPathComponent("v1/chat/completions"))
@@ -118,17 +133,40 @@ final class HostAssistantClient {
         guard !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw HostAssistantError.emptyReply }
     }
 
-    func models() async throws -> [HostAssistantModel] {
+    private func remoteModels() async throws -> [HostAssistantModel] {
         struct Catalog: Decodable { let data: [HostAssistantModel] }
         let data = try await request("v1/models")
         return Array(Set(try JSONDecoder().decode(Catalog.self, from: data).data)).sorted { $0.id < $1.id }
+    }
+
+    func models() async throws -> [HostAssistantModel] {
+        let local = await localModel.model
+        // A local-only chat must remain immediately usable while the Host is stopped.
+        if let local, (NSApplication.shared.delegate as? MultiVibeMenuBarApp)?.operational != true {
+            return [local]
+        }
+        do {
+            var catalog = try await remoteModels()
+            if let local { catalog.removeAll { $0.id == local.id }; catalog.insert(local, at: 0) }
+            return catalog
+        } catch {
+            if let local { return [local] }
+            throw error
+        }
     }
 
     func ask(_ prompt: String, model: String? = nil) async throws -> String {
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, text.count <= 32_000 else { throw HostAssistantError.invalidInput }
         let selected = model ?? defaultModel
-        guard !selected.isEmpty, try await models().contains(where: { $0.id == selected }) else { throw HostAssistantError.missingModel }
+        guard !selected.isEmpty else { throw HostAssistantError.missingModel }
+        if selected == AppleFoundationModel.id {
+            var reply = ""
+            try await stream([["role": "user", "content": text]], model: selected) { reply = $0 }
+            guard !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw HostAssistantError.emptyReply }
+            return reply
+        }
+        guard try await remoteModels().contains(where: { $0.id == selected }) else { throw HostAssistantError.missingModel }
         let body = try JSONSerialization.data(withJSONObject: ["model": selected, "stream": false, "messages": [["role": "user", "content": text]]])
         struct Reply: Decodable {
             struct Choice: Decodable { struct Message: Decodable { let content: String? }; let message: Message }

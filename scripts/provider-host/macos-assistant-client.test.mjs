@@ -16,9 +16,10 @@ test('native assistant uses Host API with bounded input, model validation, cance
   const calls = [];
   const server = createServer(async (req, res) => {
     if (req.url === '/leaked') { leaked = true; res.end('{}'); return; }
-    if (req.headers.authorization !== 'Bearer fixture-only-token') { res.writeHead(401).end(); return; }
+    if (!['Bearer fixture-only-token', 'Bearer fixture-local-fallback-token'].includes(req.headers.authorization)) { res.writeHead(401).end(); return; }
     res.setHeader('Content-Type', 'application/json');
     if (req.url === '/v1/models') {
+      if (req.headers.authorization === 'Bearer fixture-local-fallback-token') { res.writeHead(503).end('{}'); return; }
       res.end(JSON.stringify({ data: ['slow', 'redirect', 'normal', 'error', 'empty', 'normal', 'stream', 'truncated'].map(id => ({id})) })); return;
     }
     let text = ''; for await (const chunk of req) text += chunk;
@@ -39,9 +40,9 @@ test('native assistant uses Host API with bounded input, model validation, cance
   try {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const binary = path.join(temporary, 'test');
-    await execute('xcrun', ['swiftc', '-parse-as-library', path.join(root, 'packaging/macos/HostAssistantClient.swift'), path.join(root, 'packaging/macos/validation/AssistantClientHarness.swift'), '-o', binary]);
+    await execute('xcrun', ['swiftc', '-parse-as-library', '-target', 'arm64-apple-macos13.0', path.join(root, 'packaging/macos/AppleFoundationModel.swift'), path.join(root, 'packaging/macos/HostAssistantClient.swift'), path.join(root, 'packaging/macos/validation/AssistantClientHarness.swift'), '-o', binary]);
     const { stdout } = await execute(binary, [String(server.address().port)]);
-    assert.match(stdout, /PASS models/);
+    assert.match(stdout, /PASS remote and Apple-local catalogs/);
     assert.equal(leaked, false);
     assert.equal(calls.length, 7);
     assert.deepEqual(calls[0], { model: 'normal', stream: false, messages: [{ role: 'user', content: 'Bonjour' }] });
