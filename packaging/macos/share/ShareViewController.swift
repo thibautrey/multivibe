@@ -22,8 +22,8 @@ final class ShareViewController: NSViewController {
             var texts: [String] = []
             for item in extensionContext?.inputItems as? [NSExtensionItem] ?? [] {
                 for provider in item.attachments ?? [] {
-                    let type = provider.hasItemConformingToTypeIdentifier(UTType.utf8PlainText.identifier)
-                        ? UTType.utf8PlainText.identifier : UTType.url.identifier
+                    let type = provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier)
+                        ? UTType.plainText.identifier : UTType.url.identifier
                     guard provider.hasItemConformingToTypeIdentifier(type) else { continue }
                     let value: NSSecureCoding? = await withCheckedContinuation { continuation in
                         provider.loadItem(forTypeIdentifier: type, options: nil) { value, _ in continuation.resume(returning: value) }
