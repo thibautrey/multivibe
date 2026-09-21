@@ -27,7 +27,13 @@ struct ChatEntryView: View {
     var body: some View {
         @Bindable var manager = manager
         Group {
-            if manager.isRestoring { ProgressView("Ouverture des conversations…") }
+            if manager.isRestoring {
+                VStack(spacing: 18) {
+                    Image("MultiVibeMark").resizable().scaledToFit().frame(width: 78, height: 78)
+                        .symbolEffect(.breathe, options: .repeating)
+                    ProgressView("Ouverture des conversations…")
+                }.frame(maxWidth: .infinity, maxHeight: .infinity).background(MultiVibeTheme.background)
+            }
             else { ChatView() }
         }
         .sheet(isPresented: $manager.authenticationPresented) {
@@ -59,4 +65,10 @@ enum MultiVibeTheme {
             ? UIColor(red: 0x07 / 255.0, green: 0x11 / 255.0, blue: 0x0f / 255.0, alpha: 1)
             : UIColor(red: 0xf5 / 255.0, green: 0xf7 / 255.0, blue: 0xf1 / 255.0, alpha: 1)
     })
+    static let card = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0x10 / 255.0, green: 0x20 / 255.0, blue: 0x1c / 255.0, alpha: 0.94)
+            : UIColor(white: 1, alpha: 0.9)
+    })
+    static let softAccent = LinearGradient(colors: [accent.opacity(0.16), accent.opacity(0.035)], startPoint: .topLeading, endPoint: .bottomTrailing)
 }

@@ -13,7 +13,7 @@ import XCTest
         }
         let reads = Reads()
         let workspace = LocalAgentWorkspace(conversations: [], documents: [], event: { _ in },
-            saveDocument: { _ in }, readDevice: { await reads.read($0, $1) },
+            saveDocument: { _ in }, readDevice: { LocalToolResult(await reads.read($0, $1)) },
             allowedDeviceActions: ["read_calendar", "read_reminders", "read_contacts", "current_location", "read_mail"])
         _ = try await workspace.execute(action: "current_date", query: "", documentID: "", text: "", lhs: 0, rhs: 0)
         let before = await reads.count()
@@ -34,7 +34,7 @@ import XCTest
         XCTAssertEqual(LocalDeviceScope.actions(for: "Où sommes-nous ?"), ["current_location"])
         XCTAssertEqual(LocalDeviceScope.actions(for: "Lis mon calendrier et mes rappels"), ["read_calendar", "read_reminders"])
         let workspace = LocalAgentWorkspace(conversations: [], documents: [], event: { _ in }, saveDocument: { _ in },
-            readDevice: { _, _ in XCTFail("Unrelated data must never reach native permissions"); return "" },
+            readDevice: { _, _ in XCTFail("Unrelated data must never reach native permissions"); return LocalToolResult("") },
             allowedDeviceActions: scope)
         let result = try await workspace.execute(action: "read_contacts", query: "", documentID: "", text: "", lhs: 0, rhs: 0)
         XCTAssertTrue(result.contains("Aucune permission"))
@@ -65,8 +65,22 @@ import XCTest
 
     func testMailExplainsPlatformLimitWithoutPermission() async throws {
         let result = try await LocalDeviceData.read(action: "read_mail", query: "")
-        XCTAssertTrue(result.contains("Aucun mail"))
-        XCTAssertTrue(result.contains("Importez"))
+        XCTAssertTrue(result.modelText.contains("Aucun mail"))
+        XCTAssertTrue(result.modelText.contains("Importez"))
+        XCTAssertTrue(result.blocks.isEmpty)
+    }
+
+    func testStructuredToolResultIsRenderedAndTextStillReachesModel() async throws {
+        actor Capture { var blocks: [NativeContentBlock] = []; func set(_ value: [NativeContentBlock]) { blocks = value } }
+        let capture = Capture()
+        let location = NativeContentBlock.Location(latitude: 43.6, longitude: 1.44, accuracy: 12, measuredAt: Date())
+        let workspace = LocalAgentWorkspace(conversations: [], documents: [], event: { _ in }, saveDocument: { _ in },
+            readDevice: { _, _ in LocalToolResult("Position lisible par le modèle", blocks: [.location(location)]) },
+            render: { await capture.set($0) }, allowedDeviceActions: ["current_location"])
+        let text = try await workspace.execute(action: "current_location", query: "", documentID: "", text: "", lhs: 0, rhs: 0)
+        XCTAssertEqual(text, "Position lisible par le modèle")
+        let rendered = await capture.blocks
+        XCTAssertEqual(rendered, [.location(location)])
     }
 
     func testGuestLocalRunUsesToolsWithoutAuthenticationOrNetwork() async throws {

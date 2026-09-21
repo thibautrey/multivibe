@@ -1,10 +1,15 @@
 import AVFoundation
+import ContactsUI
+import EventKit
+import EventKitUI
+import MapKit
 import SwiftUI
 import UniformTypeIdentifiers
 
 struct ChatView: View {
     @Environment(ConversationManager.self) private var manager
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var voice: VoiceController { manager.voice }
     @State private var text = ""
     @State private var shortcutDraftConversation: UUID?
@@ -28,14 +33,15 @@ struct ChatView: View {
         NavigationSplitView(preferredCompactColumn: $preferredColumn) {
             List(selection: $manager.selection) {
                 ForEach(manager.conversations.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }) { conversation in
-                    Label(conversation.title, systemImage: "bubble.left").tag(conversation.id)
+                    Label(conversation.title, systemImage: conversation.id == manager.selection ? "bubble.left.fill" : "bubble.left")
+                        .font(.body.weight(conversation.id == manager.selection ? .semibold : .regular)).tag(conversation.id)
                         .swipeActions(allowsFullSwipe: false) {
                             Button("Supprimer", role: .destructive) { conversationToDelete = conversation }
                         }
                 }
             }
             .scrollContentBackground(.hidden)
-            .background(MultiVibeTheme.background)
+            .background(MultiVibeTheme.softAccent.ignoresSafeArea())
             .searchable(text: $search, prompt: "Conversations sur cet appareil")
             .navigationTitle("")
             .safeAreaInset(edge: .bottom) {
@@ -88,7 +94,19 @@ struct ChatView: View {
                                             .padding(.leading, 36)
                                     } else {
                                         if message.content.isEmpty && message.completion == .streaming { ProgressView("MultiVibe réfléchit…") }
-                                        else { NativeMessageContent(content: message.content) }
+                                        else {
+                                            VStack(alignment: .leading, spacing: 14) {
+                                                if let payload = message.nativeContent, payload.version == NativeContentPayload.currentVersion {
+                                                    NativeContentView(payload: payload)
+                                                        .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
+                                                }
+                                                NativeMessageContent(content: message.content)
+                                            }
+                                            .padding(16)
+                                            .background(.background.opacity(0.82), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                                            .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(.primary.opacity(0.06)))
+                                            .shadow(color: .black.opacity(0.05), radius: 18, y: 8)
+                                        }
                                         if let completion = message.completion, completion != .completed {
                                             Text(completion == .streaming ? "Réponse en cours" : completion == .stopped ? "Réponse arrêtée" : "Réponse interrompue")
                                                 .font(.caption).foregroundStyle(.secondary)
@@ -130,10 +148,12 @@ struct ChatView: View {
                                             .font(.caption).disabled(manager.isStreaming || manager.isSynchronizing)
                                     }
                                 }.frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
+                                    .transition(.opacity.combined(with: .move(edge: .bottom)))
 
                             }
                             Color.clear.frame(height: 1).id(latestMessageAnchor)
-                        }.padding()
+                        }.padding(.horizontal, 14).padding(.vertical, 18)
+                            .animation(reduceMotion ? nil : .spring(duration: 0.38, bounce: 0.12), value: manager.current?.messages.count)
                     }
                     .defaultScrollAnchor(.bottom)
                     .onScrollPhaseChange { _, phase in
@@ -191,7 +211,7 @@ struct ChatView: View {
                 if manager.isLoadingModels && manager.selectedModel != LocalModel.id { ProgressView("Chargement des modèles…").padding(.horizontal) }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) { composer }
-            .background(MultiVibeTheme.background)
+            .background(MultiVibeTheme.softAccent.ignoresSafeArea())
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -316,8 +336,9 @@ struct ChatView: View {
                 }
             }.labelStyle(.iconOnly).buttonStyle(.plain)
         }
-        .padding(12).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28))
-        .overlay(RoundedRectangle(cornerRadius: 28).stroke(.primary.opacity(0.08), lineWidth: 1))
+        .padding(12).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous).stroke(.white.opacity(0.18), lineWidth: 1))
+        .shadow(color: .black.opacity(0.12), radius: 24, y: 10)
         .frame(maxWidth: 760).padding(.horizontal, 16).padding(.vertical, 10)
         .frame(maxWidth: .infinity).background(MultiVibeTheme.background)
     }
@@ -462,7 +483,7 @@ struct NativePrivacyView: View {
                 }
                 Section("Outils et Internet") {
                     Text("L’accès web est demandé une seule fois par conversation. Autoriser permet les lectures HTTPS ; refuser conserve les outils hors ligne. Les sites reçoivent votre adresse IP et les URL demandées, sans les identifiants ni cookies de votre compte MultiVibe. Le modèle reste sur l’appareil.")
-                    Text("Le calendrier et les rappels nécessitent une activation explicite et les autorisations iOS. Leur accès est en lecture seule.")
+                    Text("Le calendrier, les rappels et les contacts nécessitent une demande explicite et les autorisations iOS. Les cartes permettent ensuite d’ouvrir les fiches système et d’effectuer les modifications que vous choisissez. Une suppression demande toujours confirmation.")
                 }
                 Section("Mémoire") {
                     Text("La mémoire est locale par défaut. Les souvenirs sont validés explicitement avec leur source. L’option Synchroniser la mémoire envoie les souvenirs validés, leurs citations et les oublis au compte ; elle est distincte de la synchronisation des conversations. Les modèles distants ne reçoivent pas automatiquement les souvenirs. Ce stockage serveur n’est pas chiffré de bout en bout.")
@@ -487,6 +508,7 @@ struct NativePrivacyView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden).background(MultiVibeTheme.softAccent.ignoresSafeArea())
             .navigationTitle("Confidentialité")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Terminé") { dismiss() } } }
             .task { await load() }
@@ -523,6 +545,30 @@ private struct NativeMessageContent: View {
                         Text("•").accessibilityHidden(true)
                         Text(MessageBlock.inline(text)).textSelection(.enabled)
                     }
+                case .checklist(let text, let checked):
+                    Label { Text(MessageBlock.inline(text)).textSelection(.enabled) } icon: {
+                        Image(systemName: checked ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(checked ? MultiVibeTheme.accent : .secondary)
+                    }
+                case .quote(let text):
+                    Text(MessageBlock.inline(text)).italic().textSelection(.enabled)
+                        .padding(.leading, 12).overlay(alignment: .leading) {
+                            Capsule().fill(MultiVibeTheme.accent).frame(width: 3)
+                        }
+                case .table(let rows):
+                    ScrollView(.horizontal) {
+                        Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 9) {
+                            ForEach(Array(rows.enumerated()), id: \.offset) { row, cells in
+                                GridRow {
+                                    ForEach(Array(cells.enumerated()), id: \.offset) { _, cell in
+                                        Text(MessageBlock.inline(cell)).font(row == 0 ? .subheadline.bold() : .subheadline)
+                                            .padding(.vertical, 3).textSelection(.enabled)
+                                    }
+                                }
+                                if row == 0 { Divider().gridCellUnsizedAxes(.horizontal) }
+                            }
+                        }.padding(12)
+                    }.background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 14))
                 case .code(let text, let language):
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
@@ -542,6 +588,198 @@ private struct NativeMessageContent: View {
             }
         }
     }
+}
+
+private struct NativeContentView: View {
+    let payload: NativeContentPayload
+    var body: some View {
+        VStack(spacing: 12) {
+            ForEach(payload.blocks) { block in
+                switch block {
+                case .agenda(let title, let events): AgendaCard(title: title, events: events)
+                case .reminders(let title, let items): RemindersCard(title: title, items: items)
+                case .contacts(let title, let items): ContactsCard(title: title, items: items)
+                case .location(let location): LocationCard(location: location)
+                case .web(let source): WebSourceCard(source: source)
+                case .document(let document): DocumentResultCard(document: document)
+                }
+            }
+        }
+    }
+}
+
+private struct EditorialCard<Content: View>: View {
+    let icon: String
+    let title: String
+    @ViewBuilder let content: Content
+    init(icon: String, title: String, @ViewBuilder content: () -> Content) { self.icon = icon; self.title = title; self.content = content() }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            Label(title, systemImage: icon).font(.headline).foregroundStyle(MultiVibeTheme.accent)
+            content
+        }
+        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+        .background(MultiVibeTheme.card, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(MultiVibeTheme.accent.opacity(0.12)))
+    }
+}
+
+private struct AgendaCard: View {
+    let title: String
+    let events: [NativeContentBlock.CalendarEvent]
+    @State private var selected: String?
+    @State private var editing = false
+    var grouped: [(Date, [NativeContentBlock.CalendarEvent])] {
+        Dictionary(grouping: events) { Calendar.current.startOfDay(for: $0.start) }.sorted { $0.key < $1.key }
+    }
+    var body: some View {
+        EditorialCard(icon: "calendar", title: title) {
+            if events.isEmpty { ContentUnavailableView("Aucun événement", systemImage: "calendar.badge.checkmark") }
+            ForEach(grouped, id: \.0) { day, items in
+                Text(day.formatted(.dateTime.weekday(.wide).day().month())).font(.caption.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
+                ForEach(items) { event in
+                    Button { selected = event.id } label: {
+                        HStack(alignment: .top, spacing: 12) {
+                            RoundedRectangle(cornerRadius: 2).fill(MultiVibeTheme.accent).frame(width: 4, height: 44)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(event.title).font(.body.weight(.semibold)).foregroundStyle(.primary)
+                                Text(event.isAllDay ? "Toute la journée" : "\(event.start.formatted(date: .omitted, time: .shortened)) – \(event.end.formatted(date: .omitted, time: .shortened))")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                if let location = event.location, !location.isEmpty { Label(location, systemImage: "location").font(.caption2).foregroundStyle(.secondary) }
+                            }
+                            Spacer(); Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                        }.contentShape(Rectangle())
+                    }.buttonStyle(.plain).accessibilityHint("Ouvre la fiche native de l’événement")
+                }
+            }
+            Button("Nouvel événement", systemImage: "plus") { editing = true }.buttonStyle(.bordered)
+        }
+        .sheet(item: Binding(get: { selected.map(CalendarSelection.init) }, set: { selected = $0?.id })) { value in CalendarEventController(identifier: value.id) }
+        .sheet(isPresented: $editing) { CalendarEditController() }
+    }
+    private struct CalendarSelection: Identifiable { let id: String }
+}
+
+private struct RemindersCard: View {
+    let title: String
+    @State var items: [NativeContentBlock.Reminder]
+    @State private var editing = false
+    @State private var editingItem: NativeContentBlock.Reminder?
+    @State private var deletingItem: NativeContentBlock.Reminder?
+    init(title: String, items: [NativeContentBlock.Reminder]) { self.title = title; _items = State(initialValue: items) }
+    var body: some View {
+        EditorialCard(icon: "checklist", title: title) {
+            ForEach($items) { $item in
+                Button {
+                    item.isCompleted.toggle()
+                    let newValue = item.isCompleted
+                    Task { @MainActor in
+                        let store = EKEventStore()
+                        guard let reminder = store.calendarItem(withIdentifier: item.id) as? EKReminder else { return }
+                        reminder.isCompleted = newValue
+                        try? store.save(reminder, commit: true)
+                        UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    }
+                } label: {
+                    HStack { Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle").contentTransition(.symbolEffect(.replace)); VStack(alignment: .leading) { Text(item.title); Text(item.due?.formatted(date: .abbreviated, time: .shortened) ?? item.list).font(.caption).foregroundStyle(.secondary) }; Spacer() }
+                }.buttonStyle(.plain).foregroundStyle(item.isCompleted ? .secondary : .primary)
+                    .contextMenu {
+                        Button("Modifier", systemImage: "pencil") { editingItem = item }
+                        Button("Supprimer", systemImage: "trash", role: .destructive) { deletingItem = item }
+                    }
+            }
+            Button("Nouveau rappel", systemImage: "plus") { editing = true }.buttonStyle(.bordered)
+        }
+        .sheet(isPresented: $editing) { ReminderEditController(item: nil) }
+        .sheet(item: $editingItem) { ReminderEditController(item: $0) }
+        .confirmationDialog("Supprimer ce rappel ?", isPresented: Binding(get: { deletingItem != nil }, set: { if !$0 { deletingItem = nil } }), titleVisibility: .visible) {
+            Button("Supprimer", role: .destructive) {
+                guard let deletingItem else { return }
+                let store = EKEventStore()
+                if let reminder = store.calendarItem(withIdentifier: deletingItem.id) as? EKReminder { try? store.remove(reminder, commit: true) }
+                withAnimation(.snappy) { items.removeAll { $0.id == deletingItem.id } }
+                self.deletingItem = nil
+            }
+        }
+    }
+}
+
+private struct ContactsCard: View {
+    let title: String; let items: [NativeContentBlock.Contact]
+    @State private var selected: String?
+    @State private var creating = false
+    var body: some View {
+        EditorialCard(icon: "person.2", title: title) {
+            ForEach(items) { contact in Button { selected = contact.id } label: {
+                HStack { Text(String(contact.name.prefix(1))).font(.headline).frame(width: 38, height: 38).background(MultiVibeTheme.accent.opacity(0.14), in: Circle()); VStack(alignment: .leading) { Text(contact.name).fontWeight(.semibold); Text(contact.phones.first ?? contact.emails.first ?? "Fiche contact").font(.caption).foregroundStyle(.secondary) }; Spacer(); Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary) }
+            }.buttonStyle(.plain) }
+            Button("Nouveau contact", systemImage: "person.badge.plus") { creating = true }.buttonStyle(.bordered)
+        }
+        .sheet(item: Binding(get: { selected.map(ContactSelection.init) }, set: { selected = $0?.id })) { ContactController(identifier: $0.id) }
+        .sheet(isPresented: $creating) { ContactController(identifier: nil) }
+    }
+    private struct ContactSelection: Identifiable { let id: String }
+}
+
+private struct LocationCard: View {
+    let location: NativeContentBlock.Location
+    var coordinate: CLLocationCoordinate2D { .init(latitude: location.latitude, longitude: location.longitude) }
+    var body: some View { EditorialCard(icon: "map", title: "Position") {
+        Map(initialPosition: .region(.init(center: coordinate, span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02)))) { Marker("Position mesurée", coordinate: coordinate) }.frame(height: 190).clipShape(RoundedRectangle(cornerRadius: 14)).allowsHitTesting(false)
+        HStack { Text("Précision ±\(Int(location.accuracy)) m").font(.caption).foregroundStyle(.secondary); Spacer(); Button("Ouvrir dans Plans") { MKMapItem(placemark: .init(coordinate: coordinate)).openInMaps() } }
+    }}
+}
+
+private struct WebSourceCard: View { let source: NativeContentBlock.WebSource; var body: some View { EditorialCard(icon: "safari", title: source.url.host ?? "Source web") { Text(source.excerpt).font(.subheadline).lineLimit(4); Link("Ouvrir la source", destination: source.url); Text("HTTP \(source.status) · \(source.contentType)").font(.caption2).foregroundStyle(.secondary) } } }
+private struct DocumentResultCard: View { let document: NativeContentBlock.Document; var body: some View { EditorialCard(icon: "doc.text", title: document.name) { Text(document.excerpt).font(.subheadline).lineLimit(6).textSelection(.enabled); ShareLink(item: document.excerpt) { Label("Partager l’extrait", systemImage: "square.and.arrow.up") } } } }
+
+private struct CalendarEventController: UIViewControllerRepresentable {
+    let identifier: String
+    func makeUIViewController(context: Context) -> UINavigationController {
+        let store = EKEventStore()
+        guard let event = store.event(withIdentifier: identifier) else {
+            return UINavigationController(rootViewController: UIHostingController(rootView: ContentUnavailableView("Événement indisponible", systemImage: "calendar.badge.exclamationmark", description: Text("Il a peut-être été déplacé ou supprimé dans Calendrier."))))
+        }
+        let controller = EKEventViewController(); controller.event = event; controller.allowsEditing = true; controller.allowsCalendarPreview = true
+        return UINavigationController(rootViewController: controller)
+    }
+    func updateUIViewController(_ controller: UINavigationController, context: Context) {}
+}
+private struct CalendarEditController: UIViewControllerRepresentable {
+    @Environment(\.dismiss) private var dismiss
+    final class Coordinator: NSObject, EKEventEditViewDelegate { let dismiss: DismissAction; init(_ dismiss: DismissAction) { self.dismiss = dismiss }; func eventEditViewController(_ controller: EKEventEditViewController, didCompleteWith action: EKEventEditViewAction) { dismiss() } }
+    func makeCoordinator() -> Coordinator { Coordinator(dismiss) }
+    func makeUIViewController(context: Context) -> EKEventEditViewController { let controller = EKEventEditViewController(); controller.eventStore = EKEventStore(); controller.editViewDelegate = context.coordinator; return controller }
+    func updateUIViewController(_ controller: EKEventEditViewController, context: Context) {}
+}
+private struct ReminderEditController: UIViewControllerRepresentable {
+    @Environment(\.dismiss) private var dismiss
+    let item: NativeContentBlock.Reminder?
+    func makeUIViewController(context: Context) -> UINavigationController { UINavigationController(rootViewController: UIHostingController(rootView: ReminderCreator(dismiss: dismiss, item: item))) }
+    func updateUIViewController(_ controller: UINavigationController, context: Context) {}
+}
+private struct ReminderCreator: View {
+    let dismiss: DismissAction
+    let item: NativeContentBlock.Reminder?
+    @State private var title: String
+    init(dismiss: DismissAction, item: NativeContentBlock.Reminder?) { self.dismiss = dismiss; self.item = item; _title = State(initialValue: item?.title ?? "") }
+    var body: some View { Form { TextField("Titre", text: $title); Button(item == nil ? "Créer" : "Enregistrer") {
+        let store = EKEventStore()
+        let reminder = item.flatMap { store.calendarItem(withIdentifier: $0.id) as? EKReminder } ?? EKReminder(eventStore: store)
+        reminder.title = title
+        if reminder.calendar == nil { reminder.calendar = store.defaultCalendarForNewReminders() }
+        try? store.save(reminder, commit: true); dismiss()
+    }.disabled(title.trimmingCharacters(in: .whitespaces).isEmpty) }.navigationTitle(item == nil ? "Nouveau rappel" : "Modifier le rappel").toolbar { Button("Annuler") { dismiss() } } }
+}
+private struct ContactController: UIViewControllerRepresentable {
+    let identifier: String?
+    func makeUIViewController(context: Context) -> UINavigationController {
+        let controller: CNContactViewController
+        if let identifier, let contact = try? CNContactStore().unifiedContact(withIdentifier: identifier, keysToFetch: [CNContactViewController.descriptorForRequiredKeys()]) { controller = CNContactViewController(for: contact); controller.allowsEditing = true; controller.allowsActions = true }
+        else { controller = CNContactViewController(forNewContact: nil) }
+        return UINavigationController(rootViewController: controller)
+    }
+    func updateUIViewController(_ controller: UINavigationController, context: Context) {}
 }
 
 /// Shared welcome for signed-out and authenticated empty chats. Suggestions only edit a draft.
@@ -595,7 +833,7 @@ struct LocalDocumentsView: View {
                     if let failure { Text(failure).foregroundStyle(.red) }
                 }
                 Section("Données de l’iPhone") {
-                    Text("Lecture seule par le modèle local. Les passages repris dans une réponse font partie de l’historique si vous activez sa synchronisation.")
+                    Text("Le modèle local consulte ces données à votre demande. Les cartes interactives restent sur cet appareil ; seul leur résumé textuel fait partie de l’historique synchronisé.")
                     Text("L’agent demande la permission iOS lorsqu’une requête nécessite le calendrier, les rappels, les contacts ou la position. Les autorisations se gèrent dans Réglages iOS. Apple Mail ne permet pas la lecture de la boîte : importez le message dans les documents.").font(.footnote)
                     Button("Ouvrir les autorisations iOS") {
                         if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
@@ -609,6 +847,7 @@ struct LocalDocumentsView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden).background(MultiVibeTheme.softAccent.ignoresSafeArea())
             .navigationTitle("Outils locaux")
             .toolbar { Button("Terminé") { dismiss() } }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText]) { result in

@@ -653,6 +653,30 @@ final class VoiceSystemEventTests: XCTestCase {
 }
 
 final class MessageMarkdownTests: XCTestCase {
+    func testExplicitRichStructuresAreParsedWithoutGuessingEntities() {
+        XCTAssertEqual(MessageBlock.parse("- [x] Fait\n- [ ] À faire\n> Citation"), [.checklist("Fait", true), .checklist("À faire", false), .quote("Citation")])
+        XCTAssertEqual(MessageBlock.parse("Jour | Heure\n--- | ---\nLundi | 10h"), [.table([["Jour", "Heure"], ["Lundi", "10h"]])])
+        XCTAssertEqual(MessageBlock.parse("Rendez-vous demain à Toulouse"), [.prose("Rendez-vous demain à Toulouse")])
+    }
+
+    func testNativePayloadRoundTripsLocally() throws {
+        let block = NativeContentBlock.document(.init(id: UUID(), name: "Note", excerpt: "Texte"))
+        let message = ChatMessage(role: "assistant", content: "Résumé", nativeContent: .init(blocks: [block]), completion: .completed)
+        XCTAssertEqual(try JSONDecoder().decode(ChatMessage.self, from: JSONEncoder().encode(message)), message)
+    }
+    func testNativePayloadIsExcludedFromCloudHistory() throws {
+        let messageID = UUID()
+        let message = ChatMessage(id: messageID, role: "assistant", content: "Résumé synchronisable",
+            nativeContent: .init(blocks: [.location(.init(latitude: 43.6, longitude: 1.44, accuracy: 10, measuredAt: Date()))]), completion: .completed)
+        let conversation = Conversation(title: "Test", model: "local", messages: [message])
+        var snapshot = AccountHistorySnapshot(accountId: "account", revision: 0, conversations: [])
+        var ids: [String: UUID] = [:]
+        try snapshot.store(conversation, serverID: "conversation", messageIDs: &ids)
+        let encoded = String(decoding: try JSONEncoder().encode(snapshot), as: UTF8.self)
+        XCTAssertTrue(encoded.contains("Résumé synchronisable"))
+        XCTAssertFalse(encoded.contains("nativeContent"))
+        XCTAssertFalse(encoded.contains("43.6"))
+    }
     func testNativeBlocks() {
         XCTAssertEqual(MessageBlock.parse("# Titre\nBonjour **vous**\n\n- Premier\n+ Second"),
                        [.heading("Titre", 1), .prose("Bonjour **vous**"), .bullet("Premier"), .bullet("Second")])

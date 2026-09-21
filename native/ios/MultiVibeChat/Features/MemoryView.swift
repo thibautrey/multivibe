@@ -72,6 +72,8 @@ struct MemoryView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(MultiVibeTheme.softAccent.ignoresSafeArea())
             .disabled(manager.isStreaming || manager.isRestoring || manager.isSynchronizing)
             .searchable(text: $search, prompt: "Rechercher un souvenir")
             .navigationTitle("Mémoire")
@@ -117,6 +119,8 @@ struct MemoryEditor: View {
 
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(MultiVibeTheme.softAccent.ignoresSafeArea())
             .navigationTitle(draft.replaces == nil ? "Retenir une information" : "Corriger le souvenir")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { manager.memoryDraft = nil } }

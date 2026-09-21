@@ -515,6 +515,9 @@ import Network
                             try await self.saveLocalDocument(document, generation: revision, account: accountRevision)
                         }, readDevice: { action, query in
                             try await self.readDeviceData(action: action, query: query, generation: revision, account: accountRevision)
+                        }, render: { blocks in
+                            await self.appendNativeContent(blocks, conversation: id, message: reply.id,
+                                generation: revision, account: accountRevision)
                         }, allowedDeviceActions: LocalDeviceScope.actions(for: input), authorizeInternet: { url in
                             try await self.requestInternet(url: url, conversation: id, generation: revision, account: accountRevision)
                         }, webFetch: services.webFetch, memory: { action, query, text in
@@ -729,7 +732,13 @@ import Network
                 conversationIDs[key] = id
                 var conversation = try merged.projectedConversation(at: index, id: id, messageIDs: &messageIDs)
                 // Internet consent belongs to this device and conversation, never to a server payload.
-                conversation.internetPermission = conversations.first { $0.id == id }?.internetPermission
+                if let deviceConversation = conversations.first(where: { $0.id == id }) {
+                    conversation.internetPermission = deviceConversation.internetPermission
+                    let deviceMessages = Dictionary(uniqueKeysWithValues: deviceConversation.messages.map { ($0.id, $0.nativeContent) })
+                    for messageIndex in conversation.messages.indices {
+                        conversation.messages[messageIndex].nativeContent = deviceMessages[conversation.messages[messageIndex].id] ?? nil
+                    }
+                }
                 projected.append(conversation)
             }
             if syncMemory && memorySyncEnabled {
@@ -773,7 +782,7 @@ import Network
         }
     }
     private var deviceReads: [UUID: (count: Int, started: Date)] = [:]
-    private func readDeviceData(action: String, query: String, generation: UUID, account: UUID) async throws -> String {
+    private func readDeviceData(action: String, query: String, generation: UUID, account: UUID) async throws -> LocalToolResult {
         try Task.checkCancellation()
         guard generationRevision == generation, sessionRevision == account else { throw CancellationError() }
         if deviceReads[generation] == nil {
@@ -796,6 +805,16 @@ import Network
         try Task.checkCancellation()
         guard generationRevision == generation, sessionRevision == account else { throw CancellationError() }
         return result
+    }
+    private func appendNativeContent(_ blocks: [NativeContentBlock], conversation: UUID, message: UUID,
+                                     generation: UUID, account: UUID) {
+        guard generationRevision == generation, sessionRevision == account,
+              let i = conversations.firstIndex(where: { $0.id == conversation }),
+              let j = conversations[i].messages.firstIndex(where: { $0.id == message }) else { return }
+        var existing = conversations[i].messages[j].nativeContent?.blocks ?? []
+        existing.append(contentsOf: blocks.filter { block in !existing.contains(where: { $0.id == block.id }) })
+        conversations[i].messages[j].nativeContent = NativeContentPayload(blocks: existing)
+        persist()
     }
     private func requestInternet(url: URL, conversation: UUID, generation: UUID, account: UUID) async throws -> Bool {
         try Task.checkCancellation()
