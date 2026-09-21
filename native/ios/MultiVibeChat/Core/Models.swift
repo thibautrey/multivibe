@@ -9,8 +9,86 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     // Optional for compatibility with conversations saved before completion tracking.
     var localEvents: [LocalAgentEvent]?
     var memoryReferences: [MemoryReference]?
+    /// Rich, device-owned presentation data. Cloud history deliberately serializes only `content`.
+    var nativeContent: NativeContentPayload?
     var completion: Completion?
     var canRetry: Bool { role == "assistant" && (completion == .stopped || completion == .failed) }
+}
+
+struct NativeContentPayload: Codable, Equatable, Sendable {
+    static let currentVersion = 1
+    var version = currentVersion
+    var blocks: [NativeContentBlock]
+    init(blocks: [NativeContentBlock]) { self.blocks = Array(blocks.prefix(50)) }
+}
+
+enum NativeContentBlock: Codable, Equatable, Sendable, Identifiable {
+    struct CalendarEvent: Codable, Equatable, Sendable, Identifiable {
+        let id: String
+        let title: String
+        let start: Date
+        let end: Date
+        let calendar: String
+        let location: String?
+        let isAllDay: Bool
+    }
+    struct Reminder: Codable, Equatable, Sendable, Identifiable {
+        let id: String
+        let title: String
+        let due: Date?
+        var isCompleted: Bool
+        let list: String
+    }
+    struct Contact: Codable, Equatable, Sendable, Identifiable {
+        let id: String
+        let name: String
+        let phones: [String]
+        let emails: [String]
+    }
+    struct Location: Codable, Equatable, Sendable {
+        let latitude: Double
+        let longitude: Double
+        let accuracy: Double
+        let measuredAt: Date
+    }
+    struct WebSource: Codable, Equatable, Sendable {
+        let url: URL
+        let status: Int
+        let contentType: String
+        let excerpt: String
+    }
+    struct Document: Codable, Equatable, Sendable {
+        let id: UUID
+        let name: String
+        let excerpt: String
+    }
+
+    case agenda(title: String, events: [CalendarEvent])
+    case reminders(title: String, items: [Reminder])
+    case contacts(title: String, items: [Contact])
+    case location(Location)
+    case web(WebSource)
+    case document(Document)
+
+    var id: String {
+        switch self {
+        case .agenda(let title, let events): "agenda:\(title):\(events.first?.id ?? "empty")"
+        case .reminders(let title, let items): "reminders:\(title):\(items.first?.id ?? "empty")"
+        case .contacts(let title, let items): "contacts:\(title):\(items.first?.id ?? "empty")"
+        case .location(let value): "location:\(value.latitude):\(value.longitude)"
+        case .web(let value): "web:\(value.url.absoluteString)"
+        case .document(let value): "document:\(value.id.uuidString)"
+        }
+    }
+}
+
+struct LocalToolResult: Sendable {
+    let modelText: String
+    let blocks: [NativeContentBlock]
+    init(_ modelText: String, blocks: [NativeContentBlock] = []) {
+        self.modelText = modelText
+        self.blocks = blocks
+    }
 }
 struct Conversation: Codable, Identifiable, Equatable, Sendable {
     var id: UUID = UUID()
@@ -323,6 +401,9 @@ enum MessageBlock: Equatable {
     case prose(String)
     case heading(String, Int)
     case bullet(String)
+    case checklist(String, Bool)
+    case quote(String)
+    case table([[String]])
     case code(String, String)
 
     static func parse(_ source: String) -> [MessageBlock] {
@@ -335,7 +416,10 @@ enum MessageBlock: Equatable {
         func flushProse() {
             if !prose.isEmpty { result.append(.prose(prose.joined(separator: "\n"))); prose = [] }
         }
-        for line in source.components(separatedBy: "\n") {
+        let sourceLines = source.components(separatedBy: "\n")
+        var lineIndex = 0
+        while lineIndex < sourceLines.count {
+            let line = sourceLines[lineIndex]
             let leading = line.prefix(while: { $0 == " " }).count
             let candidate = line.dropFirst(min(leading, 3))
             let delimiter = candidate.first
@@ -346,27 +430,47 @@ enum MessageBlock: Equatable {
                     result.append(.code(code.joined(separator: "\n"), language))
                     code = []; fence = nil
                 } else { code.append(line) }
-                continue
+                lineIndex += 1; continue
             }
             if leading <= 3, let delimiter, delimiter == "`" || delimiter == "~", length >= 3 {
                 let info = String(candidate.dropFirst(length)).trimmingCharacters(in: .whitespaces)
                 if delimiter != "`" || !info.contains("`") {
                     flushProse(); fence = delimiter; fenceLength = length; language = String(info.prefix(80))
-                    continue
+                    lineIndex += 1; continue
                 }
+            }
+            if line.contains("|"), lineIndex + 1 < sourceLines.count,
+               sourceLines[lineIndex + 1].range(of: #"^\s*\|?\s*:?-{3,}"#, options: .regularExpression) != nil {
+                flushProse()
+                var rows: [[String]] = [tableCells(line)]
+                lineIndex += 2
+                while lineIndex < sourceLines.count, sourceLines[lineIndex].contains("|") {
+                    rows.append(tableCells(sourceLines[lineIndex])); lineIndex += 1
+                }
+                result.append(.table(rows)); continue
             }
             let hashes = candidate.prefix(while: { $0 == "#" }).count
             if leading <= 3, (1...6).contains(hashes), candidate.dropFirst(hashes).first == " " {
                 flushProse(); result.append(.heading(String(candidate.dropFirst(hashes + 1)), hashes))
+            } else if leading <= 3, candidate.range(of: #"^[-*+] \[[ xX]\] "#, options: .regularExpression) != nil {
+                flushProse(); result.append(.checklist(String(candidate.dropFirst(6)), candidate.dropFirst(3).first?.lowercased() == "x"))
+            } else if leading <= 3, candidate.hasPrefix("> ") {
+                flushProse(); result.append(.quote(String(candidate.dropFirst(2))))
             } else if leading <= 3, ["- ", "* ", "+ "].contains(where: { candidate.hasPrefix($0) }) {
                 flushProse(); result.append(.bullet(String(candidate.dropFirst(2))))
             } else if line.isEmpty {
                 flushProse()
             } else { prose.append(line) }
+            lineIndex += 1
         }
         if fence != nil { result.append(.code(code.joined(separator: "\n"), language)) }
         flushProse()
         return result
+    }
+
+    private static func tableCells(_ line: String) -> [String] {
+        line.trimmingCharacters(in: CharacterSet(charactersIn: " |")).split(separator: "|", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
     }
 
     /// Model text may propose links, but must not launch app/deep-link schemes.

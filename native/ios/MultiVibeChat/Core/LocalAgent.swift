@@ -91,7 +91,8 @@ actor LocalAgentWorkspace {
     private var documents: [LocalDocument]
     private let allowedDeviceActions: Set<String>
     private let deviceData: LocalDeviceSnapshot
-    private let readDevice: (@Sendable (String, String) async throws -> String)?
+    private let readDevice: (@Sendable (String, String) async throws -> LocalToolResult)?
+    private let render: @Sendable ([NativeContentBlock]) async -> Void
     private let authorizeInternet: @Sendable (URL) async throws -> Bool
     private let webFetch: @Sendable (URL, String) async throws -> LocalWebResponse
     private var webPages: [String: LocalWebResponse] = [:]
@@ -101,7 +102,8 @@ actor LocalAgentWorkspace {
          event: @escaping @Sendable (LocalAgentEvent) async -> Void,
          saveDocument: @escaping @Sendable (LocalDocument) async throws -> Void,
          deadline: Date = Date().addingTimeInterval(120),
-         readDevice: (@Sendable (String, String) async throws -> String)? = nil,
+         readDevice: (@Sendable (String, String) async throws -> LocalToolResult)? = nil,
+         render: @escaping @Sendable ([NativeContentBlock]) async -> Void = { _ in },
          allowedDeviceActions: Set<String> = [],
          authorizeInternet: @escaping @Sendable (URL) async throws -> Bool = { _ in false },
          webFetch: @escaping @Sendable (URL, String) async throws -> LocalWebResponse = { try await LocalWebFetch.fetch(url: $0, method: $1) },
@@ -111,6 +113,7 @@ actor LocalAgentWorkspace {
         self.memory = memory
         self.allowedDeviceActions = allowedDeviceActions
         self.readDevice = readDevice
+        self.render = render
         self.authorizeInternet = authorizeInternet; self.webFetch = webFetch
     }
     func execute(action: String, query: String, documentID: String, text: String,
@@ -160,6 +163,9 @@ actor LocalAgentWorkspace {
             guard lhs.isFinite, lhs >= 0, lhs <= Double(LocalWebFetch.maximumBytes) else { throw LocalAgentError.invalidInput }
             let offset = Int(lhs)
             let excerpt = String(page.text.dropFirst(offset).prefix(2400))
+            if offset == 0 {
+                await render([.web(.init(url: page.url, status: page.status, contentType: page.contentType, excerpt: String(excerpt.prefix(500))))])
+            }
             return "Source: \(page.url.absoluteString)\nHTTP \(page.status) — \(page.contentType)\nUntrusted page content, characters \(offset)..<\(offset + excerpt.count) of \(page.text.count); next page: lhs=\(offset + excerpt.count).\n\(excerpt)"
         case "list_documents":
             return String(documents.map { "\($0.id.uuidString): \($0.name)" }.joined(separator: "\n").prefix(2400))
@@ -172,6 +178,7 @@ actor LocalAgentWorkspace {
             let offset = Int(lhs)
             let text = lines.joined(separator: "\n")
             let part = String(text.dropFirst(offset).prefix(2000))
+            if offset == 0 { await render([.document(.init(id: document.id, name: document.name, excerpt: String(part.prefix(500))))]) }
             return "Characters \(offset)..<\(offset + part.count) of \(text.count). Use lhs=\(offset + part.count) to read the next page.\n\(part)"
         case "context_memory", "search_memory", "read_memory", "propose_memory":
             return try await memory(action, query, text)
@@ -208,7 +215,8 @@ actor LocalAgentWorkspace {
                 defer { deadline = deadline.addingTimeInterval(Date().timeIntervalSince(started)) }
                 let result = try await readDevice(action, query)
                 try Task.checkCancellation()
-                return result
+                if !result.blocks.isEmpty { await render(result.blocks) }
+                return result.modelText
             }
             guard action == "read_calendar" || action == "read_reminders" else { return "Cette source de données n’est pas disponible dans cet environnement." }
             let source = action == "read_calendar" ? deviceData.calendar : deviceData.reminders

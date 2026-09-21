@@ -198,7 +198,7 @@ struct AuthenticationView: View {
                 .frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
-            .background(MultiVibeTheme.background)
+            .background(MultiVibeTheme.softAccent.ignoresSafeArea())
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
