@@ -4,6 +4,7 @@ final class HostPopoverController: NSViewController {
     var selectQuotaProvider: ((String?) -> Void)?
     var pinnedQuotaProvider: String?
     var openDashboard: (() -> Void)?
+    var openAssistant: (() -> Void)?
     var configureWorker: (() -> Void)?
     var checkForUpdates: (() -> Void)?
     var installUpdate: (() -> Void)?
@@ -249,6 +250,7 @@ final class HostPopoverController: NSViewController {
         selectQuotaProvider?(id?.isEmpty == false ? id : nil)
     }
 
+    @objc func didOpenAssistant() { openAssistant?() }
     @objc func didOpenDashboard() { openDashboard?() }
     @objc func didConfigureWorker() { configureWorker?() }
     @objc func didCheckForUpdates() { checkForUpdates?() }

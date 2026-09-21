@@ -2,9 +2,11 @@ import Foundation
 
 struct HostCredentials: Decodable {
     let adminToken: String
+    let proxyAPIKey: String?
 
     enum CodingKeys: String, CodingKey {
         case adminToken = "admin_token"
+        case proxyAPIKey = "proxy_api_key"
     }
 }
 

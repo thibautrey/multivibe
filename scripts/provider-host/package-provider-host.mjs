@@ -24,6 +24,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { extractPreflightedTarArchive } from "./provider-host-tar-preflight.mjs";
 import { pruneProductionNativeDependencies } from "./provider-host-native-dependencies.mjs";
+import { buildMacOSNative } from "./build-macos-native.mjs";
 import { normalizeProviderDemandTrust } from "./verify-provider-host.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -170,15 +171,6 @@ async function command(program, args, options = {}) {
       else reject(Object.assign(new Error(`${program} failed with ${signal ?? `exit ${code}`}`), { code, signal, stdout: output }));
     });
   });
-}
-
-async function swiftSources(directory) {
-  const entries = await readdir(directory, { withFileTypes: true });
-  return entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".swift"))
-    .map((entry) => entry.name)
-    .sort()
-    .map((name) => path.join(directory, name));
 }
 
 async function sha256(file) {
@@ -534,6 +526,11 @@ async function signMacApplication(application, identity) {
   }
   await command("codesign", [
     "--force", "--sign", identity, "--options", "runtime", "--timestamp",
+    "--entitlements", path.join(repositoryRoot, "packaging", "macos", "share", "Share.entitlements"),
+    path.join(contents, "PlugIns", "MultiVibeShare.appex"),
+  ]);
+  await command("codesign", [
+    "--force", "--sign", identity, "--options", "runtime", "--timestamp",
     "--entitlements", path.join(repositoryRoot, "packaging", "macos", "MultiVibe.entitlements"),
     application,
   ]);
@@ -777,14 +774,12 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
   }
   if (menuBarDestination) {
     const swiftArchitecture = selectedTarget.goarch === "arm64" ? "arm64" : "x86_64";
-    const menuBarSources = await swiftSources(path.join(repositoryRoot, "packaging", "macos"));
-    await command("xcrun", [
-      "swiftc", "-parse-as-library", "-O", "-whole-module-optimization",
-      "-target", `${swiftArchitecture}-apple-macos${macOSMinimumVersion}`,
-      "-framework", "AppKit",
-      ...menuBarSources,
-      "-o", menuBarDestination,
-    ]);
+    await buildMacOSNative({
+      binary: menuBarDestination,
+      resources: path.join(macApplication, "Contents", "Resources"),
+      architecture: swiftArchitecture,
+      minimum: macOSMinimumVersion,
+    });
     await chmod(menuBarDestination, 0o555);
   }
 

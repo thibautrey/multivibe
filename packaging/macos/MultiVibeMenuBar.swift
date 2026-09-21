@@ -26,6 +26,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
     let popoverController = HostPopoverController()
     let notificationPopover = NSPopover()
     let notificationPopup = NotificationPopup()
+    var assistantWindows: [HostAssistantWindow] = []
     var refreshTimer: Timer?
     var quotaTimer: Timer?
     var quotaSelection = QuotaSelection(pin: UserDefaults.standard.string(forKey: "quotaProviderPin"))
@@ -82,6 +83,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
     func applicationDidFinishLaunching(_ notification: Notification) {
         didFinishLaunching = true
         configureStatusItem()
+        configureAssistantIntegration()
         configurePopover()
         popoverController.selectQuotaProvider = { [weak self] id in
             guard let self else { return }
@@ -143,6 +145,10 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         popover.contentSize = NSSize(width: 420, height: 570)
         popover.contentViewController = popoverController
         popover.delegate = self
+        popoverController.openAssistant = { [weak self] in
+            self?.popover.performClose(nil)
+            Task { @MainActor in self?.showAssistant() }
+        }
         popoverController.openDashboard = { [weak self] in
             self?.openDashboard()
         }
