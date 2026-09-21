@@ -32,7 +32,7 @@ final class AuthenticationUITests: XCTestCase {
         let message = app.descendants(matching: .any).matching(identifier: "Message").firstMatch
         XCTAssertTrue(message.waitForExistence(timeout: 15))
         XCTAssertFalse(app.textFields["Adresse e-mail"].exists)
-        XCTAssertTrue(app.descendants(matching: .any)["localModelStatus"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["localModelStatus"].exists)
         XCTAssertFalse(app.staticTexts["Connectez-vous pour envoyer un message."].exists)
         message.tap()
         message.typeText("Bonjour MultiVibe")

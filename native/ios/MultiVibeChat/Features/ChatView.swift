@@ -32,6 +32,9 @@ struct ChatView: View {
     @State private var selectionContent: SelectableMessage?
     @State private var followsLatest = true
     @State private var userScrolling = false
+    @State private var composerPresented = true
+    @State private var composerDetent: PresentationDetent = Self.compactComposerDetent
+    private static let compactComposerDetent = PresentationDetent.height(168)
     private let latestMessageAnchor = "latest-message"
 
     var body: some View {
@@ -202,15 +205,6 @@ struct ChatView: View {
                     }
                     }
                 }
-                if manager.selectedModel == LocalModel.id {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Label(manager.current?.internetPermission == .allowed ? "Calcul sur cet iPhone · Internet autorisé" : "Calcul sur cet iPhone · accès web sur autorisation", systemImage: "iphone")
-                        if let reason = manager.localUnavailableReason { Text(reason).foregroundStyle(.secondary) }
-                        if manager.isStreaming {
-                            ForEach(manager.localEvents.suffix(3)) { event in Text(event.detail).font(.caption) }
-                        }
-                    }.font(.caption).padding(.horizontal).accessibilityIdentifier("localModelStatus")
-                }
                 if voice.speaking {
                     Button("Arrêter la lecture", systemImage: "stop.circle") { voice.silence() }.padding(.horizontal)
                 }
@@ -226,7 +220,13 @@ struct ChatView: View {
                 }
                 if manager.isLoadingModels && manager.selectedModel != LocalModel.id { ProgressView("Chargement des modèles…").padding(.horizontal) }
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) { composer }
+            .overlay(alignment: .bottomTrailing) {
+                if !composerPresented {
+                    Button("Afficher la saisie", systemImage: "text.cursor") { composerPresented = true }
+                        .buttonStyle(.borderedProminent).labelStyle(.iconOnly).controlSize(.large)
+                        .padding(18).accessibilityIdentifier("showComposerSheet")
+                }
+            }
             .background(MultiVibeTheme.softAccent.ignoresSafeArea())
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
@@ -304,6 +304,36 @@ struct ChatView: View {
             }
         }
         .sheet(item: $selectionContent) { SelectableMessageSheet(message: $0) }
+        .sheet(isPresented: Binding(get: { composerPresented && !modalIsActive }, set: { presented in
+            if !presented && !modalIsActive { composerPresented = false }
+        })) {
+            VStack(spacing: 0) {
+                composer
+                if composerDetent != Self.compactComposerDetent {
+                    Divider().padding(.top, 8)
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label("Saisie", systemImage: "text.cursor").font(.headline)
+                        Text("Rédigez une demande, choisissez le modèle ou démarrez une conversation vocale. Faites glisser la feuille vers le bas pour retrouver toute la conversation.")
+                            .font(.callout).foregroundStyle(.secondary)
+                        if manager.isStreaming, !manager.localEvents.isEmpty {
+                            DisclosureGroup("Travail en cours") {
+                                ForEach(manager.localEvents.suffix(3)) { Text($0.detail).font(.caption) }
+                            }
+                        }
+                    }.padding(20)
+                    Spacer(minLength: 0)
+                }
+            }
+            .presentationDetents([Self.compactComposerDetent, .medium, .large], selection: $composerDetent)
+            .presentationDragIndicator(.visible)
+            .presentationContentInteraction(.resizes)
+            .presentationBackgroundInteraction(.enabled(upThrough: .large))
+            .presentationCornerRadius(30)
+            .presentationBackground(.ultraThinMaterial)
+        }
+        .onChange(of: modalIsActive) { _, active in
+            if !active { Task { @MainActor in await Task.yield(); composerPresented = true } }
+        }
         .onChange(of: manager.selection) { _, selection in
             if shortcutDraftConversation != selection { text = "" }
         }
@@ -326,6 +356,11 @@ struct ChatView: View {
             highlightedSuggestion = suggestion.id
             suggestionsPresented = true
         })
+    }
+
+    private var modalIsActive: Bool {
+        manager.authenticationPresented || manager.internetApproval != nil || manager.memoryPresented || manager.memoryDraft != nil ||
+            documentsPresented || privacyPresented || voicePresented || suggestionsPresented || selectionContent != nil
     }
 
     private func executeSuggestion(_ suggestion: HomeSuggestion) {
@@ -376,11 +411,8 @@ struct ChatView: View {
                 }
             }.labelStyle(.iconOnly).buttonStyle(.plain)
         }
-        .padding(12).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous).stroke(.white.opacity(0.18), lineWidth: 1))
-        .shadow(color: .black.opacity(0.12), radius: 24, y: 10)
-        .frame(maxWidth: 760).padding(.horizontal, 16).padding(.vertical, 10)
-        .frame(maxWidth: .infinity).background(MultiVibeTheme.background)
+        .padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 12)
+        .frame(maxWidth: 760).frame(maxWidth: .infinity)
     }
 
     private func consumeIntent() {
