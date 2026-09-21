@@ -515,7 +515,7 @@ import Network
                             try await self.saveLocalDocument(document, generation: revision, account: accountRevision)
                         }, readDevice: { action, query in
                             try await self.readDeviceData(action: action, query: query, generation: revision, account: accountRevision)
-                        }, allowedDeviceActions: LocalDeviceScope.actions(for: input.last?.content ?? ""), authorizeInternet: { url in
+                        }, allowedDeviceActions: LocalDeviceScope.actions(for: input), authorizeInternet: { url in
                             try await self.requestInternet(url: url, conversation: id, generation: revision, account: accountRevision)
                         }, webFetch: services.webFetch, memory: { action, query, text in
                             try await self.memoryTool(action: action, query: query, text: text, conversation: id,
