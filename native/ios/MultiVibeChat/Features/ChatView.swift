@@ -91,7 +91,7 @@ struct ChatView: View {
             }
         } detail: {
             VStack(spacing: 0) {
-                if manager.current?.messages.isEmpty != false {
+                if isNewConversation {
                     welcome
                 } else {
                     ScrollViewReader { proxy in
@@ -215,7 +215,7 @@ struct ChatView: View {
                 if manager.isLoadingModels && manager.selectedModel != LocalModel.id { ProgressView("Chargement des modèles…").padding(.horizontal) }
             }
             .overlay(alignment: .bottomTrailing) {
-                if !composerPresented {
+                if !composerRequested {
                     Button("Afficher la saisie", systemImage: "text.cursor") { composerPresented = true }
                         .buttonStyle(.borderedProminent).labelStyle(.iconOnly).controlSize(.large)
                         .padding(18).accessibilityIdentifier("showComposerSheet")
@@ -301,10 +301,11 @@ struct ChatView: View {
             }
         }
         .sheet(item: $selectionContent) { SelectableMessageSheet(message: $0) }
-        .sheet(isPresented: Binding(get: { composerPresented && preferredColumn == .detail && !modalIsActive }, set: { presented in
-            if !presented && preferredColumn == .detail && !modalIsActive { composerPresented = false }
+        .sheet(isPresented: Binding(get: { composerRequested && preferredColumn == .detail && !modalIsActive }, set: { presented in
+            if !presented && !isNewConversation && preferredColumn == .detail && !modalIsActive { composerPresented = false }
         })) {
             composer
+            .interactiveDismissDisabled(isNewConversation)
             .presentationDetents([Self.compactComposerDetent])
             .presentationDragIndicator(.visible)
             .presentationContentInteraction(.scrolls)
@@ -317,6 +318,10 @@ struct ChatView: View {
         }
         .onChange(of: manager.selection) { _, selection in
             if shortcutDraftConversation != selection { text = "" }
+            if selection != nil {
+                preferredColumn = .detail
+                composerPresented = true
+            }
         }
         .onChange(of: voice.transcript) { _, value in if !voicePresented { text = value } }
         .onChange(of: manager.wantsNewConversation) { _, _ in consumeIntent() }
@@ -338,6 +343,12 @@ struct ChatView: View {
             suggestionsPresented = true
         })
     }
+
+    private var isNewConversation: Bool { manager.current?.messages.isEmpty != false }
+
+    // An empty conversation always needs its input. Navigation and competing
+    // sheets may dismiss the presentation without changing that requirement.
+    private var composerRequested: Bool { isNewConversation || composerPresented }
 
     private var modalIsActive: Bool {
         manager.authenticationPresented || manager.internetApproval != nil || manager.memoryPresented || manager.memoryDraft != nil ||
