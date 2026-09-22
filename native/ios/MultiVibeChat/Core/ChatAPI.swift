@@ -1,3 +1,4 @@
+import MultiVibeSDK
 import Foundation
 
 actor ChatAPI {

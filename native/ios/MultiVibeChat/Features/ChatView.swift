@@ -43,6 +43,7 @@ struct ChatView: View {
         NavigationSplitView(preferredCompactColumn: $preferredColumn) {
             List(selection: $manager.selection) {
                 Section {
+                    if manager.session != nil { NavigationLink("Applications", destination: SDKApplicationsView().id(manager.session?.accountId)) }
                     Button("Mémoire", systemImage: "brain") { manager.memoryPresented = true }.accessibilityIdentifier("openMemory")
                 }
 
