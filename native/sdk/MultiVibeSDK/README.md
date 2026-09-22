@@ -30,7 +30,7 @@ import MultiVibeChatUI
 }
 ```
 
-The chat view owns its navigation toolbar. Keep it in a `NavigationStack`. The view handles incoming callback URLs; if authentication is initiated outside that view, deliver callbacks to `client.handleOpenURL(_:)` exactly once. Add `applinks:your-domain.example` to your app's Associated Domains entitlement. Callback URLs must be HTTPS without query or fragment. The default Cloud origin is `https://app.multivibe.cloud`.
+The chat view owns its navigation toolbar. Keep it in a `NavigationStack`. Pass `initialPrompt:` to prefill the composer without sending or consuming credits; the user remains in control of submission. The view handles incoming callback URLs; if authentication is initiated outside that view, deliver callbacks to `client.handleOpenURL(_:)` exactly once. Add `applinks:your-domain.example` to your app's Associated Domains entitlement. Callback URLs must be HTTPS without query or fragment. The default Cloud origin is `https://app.multivibe.cloud`.
 
 On iOS the sign-in presenter first opens the official app's universal link. If no app handles it, it opens `ASWebAuthenticationSession`, permitting an existing web session. The official app or web page presents consent. The SDK validates state, exact callback and PKCE, exchanges a one-use code, and stores its own rotating credentials in the application's private Keychain. A transport redirect cannot forward bearer credentials. Token refresh failure requires reconnection instead of replaying a possibly consumed rotating credential.
 
