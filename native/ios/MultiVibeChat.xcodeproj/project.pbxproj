@@ -13,7 +13,6 @@
 		1C8F8986E4465808FAB30AF7 /* LocalDeviceData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6636026081D44F2E5870C485 /* LocalDeviceData.swift */; };
 		1DF0848C4A22AE54E2F6A90F /* SDKApplicationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF240043145CEC1114F5AAAC /* SDKApplicationsView.swift */; };
 		3498F2842AD2073C13C61F4C /* SecureStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD2222EAEE8931D5CFBC41BA /* SecureStore.swift */; };
-		397896CBB553E7A529359E35 /* MultiVibeSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 8AB5F49DB8E9359D2C0F3D23 /* MultiVibeSDK */; };
 		5BAE03F5B75D339A9AF58336 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = D7577716199F102273754156 /* PrivacyInfo.xcprivacy */; };
 		61EEC9C8DB8522810F721117 /* ChatAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EC3EFFD60CE2939BD5BCD88 /* ChatAPI.swift */; };
 		726A7A3E670153E53166E796 /* SSEParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42EEE3F6ED3F93F3854EAC51 /* SSEParserTests.swift */; };
@@ -85,14 +84,6 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		2942E119180D89F20675FCD2 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				397896CBB553E7A529359E35 /* MultiVibeSDK in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		6F9FE7DF70824C66A84CD1B2 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -228,7 +219,6 @@
 			buildConfigurationList = E9C4C9FE82076FFEF3436F98 /* Build configuration list for PBXNativeTarget "MultiVibeChatTests" */;
 			buildPhases = (
 				785250CEB79AE07583077FC7 /* Sources */,
-				2942E119180D89F20675FCD2 /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -237,7 +227,6 @@
 			);
 			name = MultiVibeChatTests;
 			packageProductDependencies = (
-				8AB5F49DB8E9359D2C0F3D23 /* MultiVibeSDK */,
 			);
 			productName = MultiVibeChatTests;
 			productReference = A69AFB0001BDEA3472C4FE21 /* MultiVibeChatTests.xctest */;
@@ -689,10 +678,6 @@
 		866486075F05053501529275 /* MultiVibeChatUI */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MultiVibeChatUI;
-		};
-		8AB5F49DB8E9359D2C0F3D23 /* MultiVibeSDK */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = MultiVibeSDK;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

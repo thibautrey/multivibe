@@ -12,6 +12,7 @@ import Observation
     let localProvider:(any MultiVibeLocalModelProvider)?
     private let tokenProvider: (@Sendable () async throws -> String)?
     private let transport: URLSession
+    @ObservationIgnored var dataTransportOverride: (@MainActor (URLRequest) async throws -> (Data, URLResponse))?
     private let storage: SDKKeychain
     private var stored: StoredSession?
     private var refreshTask: Task<StoredSession, Error>?
@@ -30,14 +31,25 @@ import Observation
     }
     public func beginAuthorization() throws -> MultiVibeAuthorization {
         guard mode == .application else { throw MultiVibeError.invalidCallback }
-        let value = try MultiVibeAuthorization(configuration: configuration); authorization = value; authorizationDate = Date(); return value
+        let value = try MultiVibeAuthorization(configuration: configuration)
+        generation = UUID(); refreshTask?.cancel(); refreshTask = nil
+        authorization = value; authorizationDate = Date(); return value
     }
     public func handleOpenURL(_ url: URL) async throws {
         guard let pending = authorization, let date = authorizationDate, Date().timeIntervalSince(date) < 600 else { throw MultiVibeError.invalidCallback }
         let code = try pending.code(from: url)
+        let epoch = generation
         authorization = nil; authorizationDate = nil
         let session = try await exchange(["grant_type":"authorization_code", "code":code, "code_verifier":pending.verifier, "redirect_uri":configuration.redirectURI.absoluteString])
-        generation = UUID(); conversations = []; models = []; accountID = nil
+        guard generation == epoch else {
+            revokeAbandoned(session)
+            throw MultiVibeError.invalidCallback
+        }
+        guard !Task.isCancelled else {
+            revokeAbandoned(session)
+            throw CancellationError()
+        }
+        conversations = []; models = []; accountID = nil
         try storage.save(session); stored = session
         try await connect()
     }
@@ -71,10 +83,16 @@ import Observation
         if let localProvider, await localProvider.isAvailable() {models.append(MultiVibeModel(id:localProvider.modelID,supportsTools:false))}
     }
     public func disconnect() async throws {
-        if mode == .application, let token = stored?.refreshToken {
-            _ = try await form("/developers/oauth/revoke", fields: ["client_id":configuration.clientID,"token":token])
-        }
-        generation = UUID(); stored = nil; if mode == .application {storage.clear()}; refreshTask?.cancel(); refreshTask = nil; authorization = nil; accountID = nil; isConnected = false; conversations = []; models = []
+        let token = mode == .application ? stored?.refreshToken : nil
+        // Invalidate before the network suspension: an older authorization or
+        // refresh must never restore credentials while revocation is in flight.
+        generation = UUID(); stored = nil; if mode == .application {storage.clear()}; refreshTask?.cancel(); refreshTask = nil; authorization = nil; authorizationDate = nil; accountID = nil; isConnected = false; conversations = []; models = []
+        if let token { _ = try await form("/developers/oauth/revoke", fields:["client_id":configuration.clientID,"token":token]) }
+    }
+    private func revokeAbandoned(_ session:StoredSession) {
+        // Revoke only this newly minted, abandoned grant; do not delay or
+        // mutate the winning session while best-effort cleanup is underway.
+        Task { _ = try? await form("/developers/oauth/revoke",fields:["client_id":configuration.clientID,"token":session.refreshToken]) }
     }
     public func newConversation() -> MultiVibeConversation { MultiVibeConversation(appId: configuration.clientID, model: models.first?.id ?? "") }
     var historyPath: String { mode == .accountOwner ? "/native/v1/sdk/conversations" : "/sdk/v1/conversations" }
@@ -97,7 +115,7 @@ import Observation
             let token = try await tokenProvider()
             var request = URLRequest(url:configuration.baseURL.appending(path:"/native/v1/auth/session"))
             request.setValue("Bearer \(token)",forHTTPHeaderField:"Authorization")
-            let (data,response) = try await transport.data(for:request); try validate(response,data:data)
+            let (data,response) = try await transportData(request); try validate(response,data:data)
             struct Identity:Decodable {let accountId:String}
             let identity = try JSONDecoder().decode(Identity.self,from:data)
             guard accountID == nil || accountID == identity.accountId else {throw MultiVibeError.authenticationRequired}
@@ -105,19 +123,35 @@ import Observation
         }
         guard mode == .application, let previous = stored else { throw MultiVibeError.authenticationRequired }
         if previous.expiresAt > Date().addingTimeInterval(60) { return previous.accessToken }
-        if let refreshTask { return try await refreshTask.value.accessToken }
-        let task = Task { try await self.exchange(["grant_type":"refresh_token", "refresh_token":previous.refreshToken]) }; refreshTask = task
-        defer { refreshTask = nil }
+        if let refreshTask {
+            let renewed = try await refreshTask.value
+            try Task.checkCancellation()
+            return renewed.accessToken
+        }
         let epoch = generation
-        do {
-            let renewed = try await task.value; try Task.checkCancellation()
-            guard epoch == generation else {throw MultiVibeError.authenticationRequired}
-            try storage.save(renewed); stored = renewed; return renewed.accessToken
-        } catch {
-            if epoch == generation {stored = nil; storage.clear(); isConnected = false; accountID = nil; conversations = []; models = []; generation = UUID()}
+        let task = Task {
+            let renewed = try await self.exchange(["grant_type":"refresh_token", "refresh_token":previous.refreshToken])
+            guard epoch == self.generation else {
+                self.revokeAbandoned(renewed)
+                throw MultiVibeError.authenticationRequired
+            }
+            // The shared operation owns rotation persistence. Cancellation of
+            // an awaiting UI task must not discard a successfully rotated token.
+            try self.storage.save(renewed); self.stored = renewed
+            return renewed
+        }
+        refreshTask = task
+        defer {if epoch == generation {refreshTask = nil}}
+        let renewed:StoredSession
+        do {renewed = try await task.value}
+        catch {
+            if epoch == generation {stored = nil; storage.clear(); isConnected = false; accountID = nil; conversations = []; models = []; generation = UUID(); refreshTask = nil}
             throw error
         }
+        try Task.checkCancellation()
+        return renewed.accessToken
     }
+
     func exchange(_ fields: [String:String]) async throws -> StoredSession {
         var fields = fields; fields["client_id"] = configuration.clientID
         let data = try await form("/developers/oauth/token", fields: fields)
@@ -126,11 +160,15 @@ import Observation
         guard !r.access_token.isEmpty, !r.refresh_token.isEmpty, r.expires_in > 0 else { throw MultiVibeError.invalidResponse }
         return StoredSession(accessToken:r.access_token,refreshToken:r.refresh_token,expiresAt:Date().addingTimeInterval(Double(r.expires_in)))
     }
+    private func transportData(_ request:URLRequest) async throws -> (Data,URLResponse) {
+        if let dataTransportOverride {return try await dataTransportOverride(request)}
+        return try await transport.data(for:request)
+    }
     func form(_ path: String, fields: [String:String]) async throws -> Data {
         var request = URLRequest(url: URL(string:path,relativeTo:configuration.baseURL)!.absoluteURL); request.httpMethod = "POST"
         var form = URLComponents(); form.queryItems = fields.sorted(by:{$0.key < $1.key}).map {URLQueryItem(name:$0.key,value:$0.value)}
         request.httpBody = form.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B").data(using:.utf8); request.setValue("application/x-www-form-urlencoded",forHTTPHeaderField:"Content-Type")
-        let (data,response) = try await transport.data(for:request); try validate(response,data:data); return data
+        let (data,response) = try await transportData(request); try validate(response,data:data); return data
     }
     public func accountRequest<T: Decodable>(_ path: String, body: Data? = nil, as type: T.Type) async throws -> T {
         guard mode == .accountOwner, path.hasPrefix("/native/v1/sdk/") else { throw MultiVibeError.authenticationRequired }
@@ -141,7 +179,7 @@ import Observation
     }
     func data(_ path: String, method: String = "GET", body: Data? = nil) async throws -> Data {
         let epoch = generation
-        let (data,response) = try await transport.data(for:request(path,method:method,body:body))
+        let (data,response) = try await transportData(request(path,method:method,body:body))
         guard epoch == generation else {throw MultiVibeError.authenticationRequired}
         try validate(response,data:data); return data
     }

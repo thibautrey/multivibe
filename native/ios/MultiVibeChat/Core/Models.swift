@@ -1,4 +1,8 @@
 import MultiVibeSDK
+
+// Preserve the app-internal parser names for existing native tests.
+typealias SSEParser = MultiVibeSDK.SSEParser
+typealias SSEByteParser = MultiVibeSDK.SSEByteParser
 import AuthenticationServices
 import Foundation
 
