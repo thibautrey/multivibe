@@ -19,3 +19,7 @@ assets/brand/.DS_Store
 native/ios/.DS_Store
 artifacts/local-macos/*.dmg
 artifacts/.DS_Store
+
+# Swift package build and local workspace data
+.build/
+.swiftpm/

@@ -41,8 +41,6 @@ targets:
     sources: [MultiVibeChatTests]
     dependencies:
       - target: MultiVibeChat
-      - package: MultiVibeSDK
-        product: MultiVibeSDK
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
