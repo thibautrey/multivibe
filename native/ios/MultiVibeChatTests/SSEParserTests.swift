@@ -1,3 +1,4 @@
+import MultiVibeSDK
 import XCTest
 import AVFoundation
 import AuthenticationServices

@@ -2,13 +2,16 @@ import SwiftUI
 
 @main struct MultiVibeChatApp: App {
     @State private var manager = ConversationManager.shared
+    @State private var sdkAuthorization: SDKAuthorizationRequest?
     var body: some Scene {
         WindowGroup {
             ChatEntryView()
             .environment(manager)
             .tint(MultiVibeTheme.accent)
             .task { await manager.restoreForNativeEntry(); if manager.session != nil { await manager.reloadModels() } }
+            .sheet(item: $sdkAuthorization) { request in SDKConsentView(request: request).environment(manager) }
             .onOpenURL { url in
+                if let request = SDKAuthorizationRequest(url: url) { sdkAuthorization = request; return }
                 guard let request = PasswordRecoveryRequest(url: url) else { return }
                 manager.voice.silence()
                 // Do not replace a form while the user is entering a password

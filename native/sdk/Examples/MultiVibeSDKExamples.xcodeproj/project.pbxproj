@@ -1,0 +1,444 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		3824B3FA3C8C9B82B206E84B /* MultiVibeChatUI in Frameworks */ = {isa = PBXBuildFile; productRef = 8C74E33DF705D831EE5637CC /* MultiVibeChatUI */; };
+		5C9C10F8DA2A3B23CE29612C /* ExampleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A3DCAD6687B1978B8EBF19D /* ExampleApp.swift */; };
+		6FD005686F5E1ED411C00B03 /* MultiVibeChatUI in Frameworks */ = {isa = PBXBuildFile; productRef = A23A11773F6868FBBCEDC9E3 /* MultiVibeChatUI */; };
+		779ED445731116C52D58CA6E /* MultiVibeSDK in Frameworks */ = {isa = PBXBuildFile; productRef = F4C4C688CA04F36056FDBEB2 /* MultiVibeSDK */; };
+		85D448FEE3065EA130A022BE /* MultiVibeSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 5EC38FFF67C0F0C1A923C6B8 /* MultiVibeSDK */; };
+		E6744D7BEC61E42209334B1A /* ExampleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A3DCAD6687B1978B8EBF19D /* ExampleApp.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		48A4DE40C22B9A844EB73347 /* NotesExample.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = NotesExample.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		4A3DCAD6687B1978B8EBF19D /* ExampleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExampleApp.swift; sourceTree = "<group>"; };
+		4A6CF889CF5FFB4493B07B14 /* MultiVibeSDK */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MultiVibeSDK; path = ../MultiVibeSDK; sourceTree = SOURCE_ROOT; };
+		6280F51A0C5C4B3739AD4308 /* Examples.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Examples.entitlements; sourceTree = "<group>"; };
+		A573F3A64374C28D975CA2B9 /* TasksExample.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = TasksExample.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		116F3BB298C4DB3ABB115D43 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6FD005686F5E1ED411C00B03 /* MultiVibeChatUI in Frameworks */,
+				85D448FEE3065EA130A022BE /* MultiVibeSDK in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5DD04574B26FBC7E09490793 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3824B3FA3C8C9B82B206E84B /* MultiVibeChatUI in Frameworks */,
+				779ED445731116C52D58CA6E /* MultiVibeSDK in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		4D30F332202ACB44583CDEE9 = {
+			isa = PBXGroup;
+			children = (
+				8D8841FCCA174A13CB397BFD /* Packages */,
+				BA710A0B67D194937653290E /* Shared */,
+				B5B261786F8629BCF30B2704 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		8D8841FCCA174A13CB397BFD /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				4A6CF889CF5FFB4493B07B14 /* MultiVibeSDK */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		B5B261786F8629BCF30B2704 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				48A4DE40C22B9A844EB73347 /* NotesExample.app */,
+				A573F3A64374C28D975CA2B9 /* TasksExample.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		BA710A0B67D194937653290E /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				4A3DCAD6687B1978B8EBF19D /* ExampleApp.swift */,
+				6280F51A0C5C4B3739AD4308 /* Examples.entitlements */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		4061F7DA34A7C700F4850204 /* TasksExample */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C7641EBC119FA7EAA0548CAA /* Build configuration list for PBXNativeTarget "TasksExample" */;
+			buildPhases = (
+				E7D45E74BC7943CD7A9269DB /* Sources */,
+				5DD04574B26FBC7E09490793 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TasksExample;
+			packageProductDependencies = (
+				8C74E33DF705D831EE5637CC /* MultiVibeChatUI */,
+				F4C4C688CA04F36056FDBEB2 /* MultiVibeSDK */,
+			);
+			productName = TasksExample;
+			productReference = A573F3A64374C28D975CA2B9 /* TasksExample.app */;
+			productType = "com.apple.product-type.application";
+		};
+		81EED18898BA99F5B6851353 /* NotesExample */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1860A160DA118C42A28A56E2 /* Build configuration list for PBXNativeTarget "NotesExample" */;
+			buildPhases = (
+				2871BA0AC0571B5EACD12379 /* Sources */,
+				116F3BB298C4DB3ABB115D43 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = NotesExample;
+			packageProductDependencies = (
+				A23A11773F6868FBBCEDC9E3 /* MultiVibeChatUI */,
+				5EC38FFF67C0F0C1A923C6B8 /* MultiVibeSDK */,
+			);
+			productName = NotesExample;
+			productReference = 48A4DE40C22B9A844EB73347 /* NotesExample.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AC29416078233E6F39E9E7FA /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					4061F7DA34A7C700F4850204 = {
+						DevelopmentTeam = "";
+					};
+					81EED18898BA99F5B6851353 = {
+						DevelopmentTeam = "";
+					};
+				};
+			};
+			buildConfigurationList = D8F5C9490E466DE98A28C010 /* Build configuration list for PBXProject "MultiVibeSDKExamples" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 4D30F332202ACB44583CDEE9;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				0C9C58D5FCED42BF9B2AA882 /* XCLocalSwiftPackageReference "../MultiVibeSDK" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = B5B261786F8629BCF30B2704 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				81EED18898BA99F5B6851353 /* NotesExample */,
+				4061F7DA34A7C700F4850204 /* TasksExample */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		2871BA0AC0571B5EACD12379 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5C9C10F8DA2A3B23CE29612C /* ExampleApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7D45E74BC7943CD7A9269DB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E6744D7BEC61E42209334B1A /* ExampleApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		3593A1D5964B2A616FABEC3D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_ENTITLEMENTS = Shared/Examples.entitlements;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_MultiVibeCallbackHost = "$(SDK_CALLBACK_HOST)";
+				INFOPLIST_KEY_MultiVibeClientID = "$(SDK_CLIENT_ID)";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SDK_CALLBACK_HOST = REPLACE_WITH_VERIFIED_DOMAIN;
+				SDK_CLIENT_ID = REPLACE_WITH_PORTAL_UUID;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		BEAEE0DAD95B0B7433080876 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_ENTITLEMENTS = Shared/Examples.entitlements;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_MultiVibeCallbackHost = "$(SDK_CALLBACK_HOST)";
+				INFOPLIST_KEY_MultiVibeClientID = "$(SDK_CLIENT_ID)";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SDK_CALLBACK_HOST = REPLACE_WITH_VERIFIED_DOMAIN;
+				SDK_CLIENT_ID = REPLACE_WITH_PORTAL_UUID;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		D3E4FE1DE8D72239CDE8BB25 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_KEY_CFBundleDisplayName = "Notes SDK";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = example.multivibe.notes;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		E75A050982A779D3F9E367E0 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_KEY_CFBundleDisplayName = "Notes SDK";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = example.multivibe.notes;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		EA53131F2CCBEE6583CDB80A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_KEY_CFBundleDisplayName = "Tasks SDK";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = example.multivibe.tasks;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		FA2771D0B8997FA8D0FC2E74 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_KEY_CFBundleDisplayName = "Tasks SDK";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = example.multivibe.tasks;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1860A160DA118C42A28A56E2 /* Build configuration list for PBXNativeTarget "NotesExample" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E75A050982A779D3F9E367E0 /* Debug */,
+				D3E4FE1DE8D72239CDE8BB25 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C7641EBC119FA7EAA0548CAA /* Build configuration list for PBXNativeTarget "TasksExample" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FA2771D0B8997FA8D0FC2E74 /* Debug */,
+				EA53131F2CCBEE6583CDB80A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		D8F5C9490E466DE98A28C010 /* Build configuration list for PBXProject "MultiVibeSDKExamples" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3593A1D5964B2A616FABEC3D /* Debug */,
+				BEAEE0DAD95B0B7433080876 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		0C9C58D5FCED42BF9B2AA882 /* XCLocalSwiftPackageReference "../MultiVibeSDK" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../MultiVibeSDK;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		5EC38FFF67C0F0C1A923C6B8 /* MultiVibeSDK */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MultiVibeSDK;
+		};
+		8C74E33DF705D831EE5637CC /* MultiVibeChatUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MultiVibeChatUI;
+		};
+		A23A11773F6868FBBCEDC9E3 /* MultiVibeChatUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MultiVibeChatUI;
+		};
+		F4C4C688CA04F36056FDBEB2 /* MultiVibeSDK */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MultiVibeSDK;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = AC29416078233E6F39E9E7FA /* Project object */;
+}

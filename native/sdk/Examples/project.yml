@@ -1,0 +1,45 @@
+name: MultiVibeSDKExamples
+options:
+  deploymentTarget:
+    iOS: '18.0'
+packages:
+  MultiVibeSDK:
+    path: ../MultiVibeSDK
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    DEVELOPMENT_TEAM: ''
+    GENERATE_INFOPLIST_FILE: YES
+    SDK_CLIENT_ID: REPLACE_WITH_PORTAL_UUID
+    SDK_CALLBACK_HOST: REPLACE_WITH_VERIFIED_DOMAIN
+    INFOPLIST_KEY_MultiVibeClientID: $(SDK_CLIENT_ID)
+    INFOPLIST_KEY_MultiVibeCallbackHost: $(SDK_CALLBACK_HOST)
+    CODE_SIGN_ENTITLEMENTS: Shared/Examples.entitlements
+    INFOPLIST_KEY_UILaunchScreen_Generation: YES
+targets:
+  NotesExample:
+    type: application
+    platform: iOS
+    sources: [Shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: example.multivibe.notes
+        INFOPLIST_KEY_CFBundleDisplayName: Notes SDK
+    dependencies:
+      - package: MultiVibeSDK
+        product: MultiVibeChatUI
+      - package: MultiVibeSDK
+        product: MultiVibeSDK
+  TasksExample:
+    type: application
+    platform: iOS
+    sources: [Shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: example.multivibe.tasks
+        INFOPLIST_KEY_CFBundleDisplayName: Tasks SDK
+    dependencies:
+      - package: MultiVibeSDK
+        product: MultiVibeChatUI
+      - package: MultiVibeSDK
+        product: MultiVibeSDK
