@@ -14,8 +14,8 @@ import MultiVibeSDK
     #if canImport(UIKit)
     @State private var authentication:MultiVibeAuthenticationPresenter?
     #endif
-    public init(client:MultiVibeClient,conversation:MultiVibeConversation? = nil,tools:[MultiVibeTool] = [],contextProvider:(any MultiVibeContextProvider)? = nil) {
-        self.client = client; self.tools = tools; self.contextProvider = contextProvider; _conversation = State(initialValue:conversation)
+    public init(client:MultiVibeClient,conversation:MultiVibeConversation? = nil,tools:[MultiVibeTool] = [],contextProvider:(any MultiVibeContextProvider)? = nil,initialPrompt:String = "") {
+        self.client = client; self.tools = tools; self.contextProvider = contextProvider; _conversation = State(initialValue:conversation); _text = State(initialValue:initialPrompt)
     }
     public var body: some View {
         VStack(spacing:0) {
@@ -106,7 +106,7 @@ import MultiVibeSDK
 #if canImport(UIKit)
 import UIKit
 @MainActor public final class MultiVibeChatViewController: UIHostingController<MultiVibeChatView> {
-    public init(client:MultiVibeClient,tools:[MultiVibeTool] = [],contextProvider:(any MultiVibeContextProvider)? = nil) {super.init(rootView:MultiVibeChatView(client:client,tools:tools,contextProvider:contextProvider))}
+    public init(client:MultiVibeClient,tools:[MultiVibeTool] = [],contextProvider:(any MultiVibeContextProvider)? = nil,initialPrompt:String = "") {super.init(rootView:MultiVibeChatView(client:client,tools:tools,contextProvider:contextProvider,initialPrompt:initialPrompt))}
     @available(*,unavailable) required dynamic init?(coder:NSCoder) {fatalError("Use init(client:)")}
 }
 #endif
