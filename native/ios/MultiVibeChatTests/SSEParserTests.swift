@@ -18,6 +18,16 @@ import AuthenticationServices
         XCTAssertEqual(decoded.modelAccess, access)
     }
 
+    func testChangingAccountClearsProviderSelection() {
+        let manager = ConversationManager(services: isolatedServices())
+        manager.selectedModel = "openai/luna"
+        manager.selectedAccess = .init(id: "old-private-account", modelId: "openai/luna", label: "Private", method: "device_code")
+        manager.requestedAccessModel = .init(id: "openai/luna")
+        manager.session = .init(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: UUID().uuidString)
+        XCTAssertNil(manager.selectedAccess)
+        XCTAssertNil(manager.requestedAccessModel)
+    }
+
     func testLocalModelIsFreePrivateAndOffline() {
         let presentation = ModelOption(id: LocalModel.id, name: "Apple Foundation Local").presentation
         XCTAssertEqual(presentation.provider, .apple)
@@ -118,7 +128,7 @@ final class NativeTransportTests: XCTestCase {
         XCTAssertFalse(manager.isStreaming)
         XCTAssertEqual(manager.selectedModel, "second")
     }
-    func testUnavailableModelRequiresExplicitReplacement() {
+    func testUnloadedModelKeepsIdentityWithoutInventingAnAccess() {
         let manager = ConversationManager(services: isolatedServices())
         manager.session = nil
         let conversation = Conversation(model: "removed")
@@ -126,7 +136,8 @@ final class NativeTransportTests: XCTestCase {
         manager.selectedModel = "available"
         manager.conversations = [conversation]
         manager.selection = conversation.id
-        XCTAssertEqual(manager.selectedModel, "")
+        XCTAssertEqual(manager.selectedModel, "removed")
+        XCTAssertNil(manager.selectedAccess)
     }
     func testReselectingSameConversationDoesNotStopGeneration() {
         let manager = ConversationManager(services: isolatedServices())
