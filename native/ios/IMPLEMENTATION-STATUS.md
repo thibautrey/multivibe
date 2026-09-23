@@ -223,7 +223,8 @@ in older entries are superseded by this summary and subsequent validation entrie
 - The adapter prepares the same native voice interface, with local dictation beginning only after authenticated foreground presentation and existing Speech/microphone permission handling. Recognition never automatically transmits a message. Pending immediate capture is cleared when another shortcut replaces it or session cleanup runs.
 - Verified against the installed SDK and Apple's article at https://developer.apple.com/documentation/appintents/launching-your-voice-based-conversational-app-from-the-side-button-of-iphone : production eligibility requires Japan account/physical location and the side-button entitlement. Do not promise automatic future EU enablement.
 - The first opt-in build found a missing closing brace; fixed immediately. Fresh main unsigned simulator build with the opt-in compilation condition then passed (`/tmp/multivibe-ios-assistant-build.log`, exit 0). This verifies macro compilation, not eligible-device invocation or signing. Added a preparation-state regression test; execution remains pending.
-- Remaining reference gap: this app still uses local push-to-talk recognition plus explicit send and TTS, not full-duplex realtime voice. Do not describe it as the complete realtime assistant envisioned in the reference.
+- MULTIVIBE-41 adds a feature-gated full-screen realtime voice client: continuous PCM capture/playback, server VAD events, barge-in, partial/final transcripts, text injection, persistent voice preference, tactile tool confirmation, background audio mode, bounded reconnect, and final-turn reconciliation into the existing conversation. Local dictation remains a separate action.
+- The source and simulator build do not establish a shipped voice service. OpenAI Realtime activation, the authenticated cascaded gateway, GPU speech pool, live billing/admission, latency targets, background behavior and physical iPhone/Bluetooth/interruption acceptance remain deployment and device gates.
 
 ### Assistant regression suite and realtime transport discovery
 
@@ -569,3 +570,25 @@ lifecycle integration remain outstanding.
   review, local document import, local inference response, cancellation and
   preservation of a subsequent run, and prepared draft navigation.
 - No push, release, deployment or physical Siri/Shortcuts acceptance performed.
+
+
+### Realtime voice transport
+
+The fullscreen voice view uses native WebRTC tracks for OpenAI and PCM24 WebSocket
+streaming for the cascaded gateway. WebRTC is pinned to stasel/WebRTC 153.0.0;
+its Swift package verifies the binary SHA-256. Attribution is supplied by that
+package. Final assistant transcripts are eligible only after completed generation
+and playback, and cancelled turns remain excluded. Persisted IDs are stable and
+bound to the originating account/conversation. Audio and provisional text remain
+in memory. Voice preference is stored per account.
+
+Background capture and lock-screen play/pause (microphone)/stop controls require
+the Cloud background capability. Without it, backgrounding ends the session.
+Network failures and incoming calls currently end the session explicitly;
+automatic session recreation is deliberately unavailable because provider state
+cannot be resumed safely. Tool execution and confirmation cards are unavailable
+until the existing chat tool ownership/approval boundary is connected.
+
+The Cloud deployment, billing/admission integration, GPU model artifact audit,
+provider live checks, interruption latency, Bluetooth/route handling, background
+behavior and physical iPhone acceptance are not established by compilation.

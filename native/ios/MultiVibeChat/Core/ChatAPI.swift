@@ -75,7 +75,7 @@ actor ChatAPI {
         let body = try JSONSerialization.data(withJSONObject: ["email": email])
         let (data, response) = try await session.data(for: request("auth/reset", body: body))
         try validate(response, data: data)
-        struct Reply: Decodable { let accepted: Bool }
+        struct Reply: Decodable { let accepted: Bool; let duplicate: Bool }
         guard try decoder.decode(Reply.self, from: data).accepted else { throw APIError.invalidResponse }
     }
     func completePasswordReset(link: String, password: String) async throws {
@@ -90,6 +90,35 @@ actor ChatAPI {
         let (data, response) = try await session.data(for: request("models", token: token))
         try validate(response, data: data)
         return try decoder.decode(ModelList.self, from: data).data
+    }
+    func voiceCapabilities(token: String) async throws -> VoiceCapabilities {
+        let (data, response) = try await session.data(for: request("voice/capabilities", token: token))
+        try validate(response, data: data)
+        return try decoder.decode(VoiceCapabilities.self, from: data)
+    }
+    func createVoiceSession(conversation: Conversation, model: String, voice: String, language: String,
+                            token: String) async throws -> VoiceSession {
+        let messages = Array(conversation.messages.filter { ["user", "assistant"].contains($0.role) && ($0.completion == nil || $0.completion == .completed) }.suffix(20)).map { ["role": $0.role, "content": $0.content] }
+        let body = try JSONSerialization.data(withJSONObject: ["conversationId": conversation.id.uuidString.lowercased(),
+            "model": model, "voice": voice, "language": language, "messages": messages])
+        let (data, response) = try await session.data(for: request("voice/sessions", body: body, token: token))
+        try validate(response, data: data)
+        return try decoder.decode(VoiceSession.self, from: data)
+    }
+    func reconcileVoiceTurn(session: VoiceSession, turnID: String, token: String) async throws -> Bool {
+        let body = try JSONSerialization.data(withJSONObject: ["turnId": turnID])
+        var request = request("voice/sessions/\(session.id)/turns", body: body, token: token)
+        request.setValue(session.sessionToken, forHTTPHeaderField: "X-MultiVibe-Voice-Token")
+        let (data, response) = try await self.session.data(for: request)
+        try validate(response, data: data)
+        struct Reply: Decodable { let accepted: Bool; let duplicate: Bool }
+        let reply = try decoder.decode(Reply.self, from: data)
+        return reply.accepted || reply.duplicate
+    }
+    func closeVoiceSession(_ voice: VoiceSession, token: String) async {
+        var request = request("voice/sessions/\(voice.id)/close", body: Data("{}".utf8), token: token)
+        request.setValue(voice.sessionToken, forHTTPHeaderField: "X-MultiVibe-Voice-Token")
+        _ = try? await session.data(for: request)
     }
     func refresh(_ previous: NativeSession) async throws -> NativeSession {
         var request = URLRequest(url: URL(string: "https://auth.multivibe.cloud/oauth/token")!)

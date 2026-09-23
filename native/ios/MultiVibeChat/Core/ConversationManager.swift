@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Observation
 import CryptoKit
@@ -470,6 +471,23 @@ import Network
         if conversations[index].messages.count == 1 { conversations[index].title = String(text.prefix(70)) }
         if MemoryCommand.isForget(text) { memoryPresented = true; return persist() }
         return startReply(conversation: id, index: index)
+    }
+    @discardableResult func appendVoiceTurn(conversationID: UUID, accountID: String, model: String, role: String, text: String, turnID: String) -> Bool {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard session?.accountId == accountID, ["user", "assistant"].contains(role), !text.isEmpty, storageLoaded,
+              let index = conversations.firstIndex(where: { $0.id == conversationID }) else { return false }
+        // Stable across retries and history sync, without retaining provider credentials.
+        let bytes = Array(SHA256.hash(data: Data((conversationID.uuidString + ":" + turnID).utf8)).prefix(16))
+        let id = UUID(uuid: (bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15]))
+        if conversations[index].messages.contains(where: { $0.id == id }) { return true }
+        let previous = conversations[index]
+        conversations[index].model = model
+        conversations[index].messages.append(ChatMessage(id: id, role: role, content: text, completion: role == "assistant" ? .completed : nil))
+        if conversations[index].messages.count == 1 { conversations[index].title = String(text.prefix(70)) }
+        conversations[index].updatedAt = Date()
+        guard persist() else { conversations[index] = previous; return false }
+        scheduleAutomaticSync()
+        return true
     }
     /// Retry only the current tail, never truncate later turns or duplicate the prompt.
     @discardableResult func retry(conversation id: UUID, message: UUID) -> Bool {

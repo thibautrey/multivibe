@@ -14,6 +14,9 @@ settings:
     CURRENT_PROJECT_VERSION: 1
     DEVELOPMENT_TEAM: ''
 packages:
+  WebRTC:
+    url: https://github.com/stasel/WebRTC.git
+    exactVersion: 153.0.0
   MultiVibeSDK:
     path: ../sdk/MultiVibeSDK
 targets:
@@ -22,6 +25,7 @@ targets:
     platform: iOS
     sources: [MultiVibeChat]
     dependencies:
+      - package: WebRTC
       - package: MultiVibeSDK
         product: MultiVibeSDK
       - package: MultiVibeSDK

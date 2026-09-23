@@ -30,7 +30,7 @@
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>MultiVibe utilise le micro lorsque vous démarrez une dictée. Vous vérifiez le texte avant de l’envoyer.</string>
+	<string>MultiVibe utilise le micro lorsque vous démarrez une dictée ou une conversation vocale. En conversation vocale, l’audio est transmis temporairement au service sélectionné et n’est pas conservé.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>MultiVibe transcrit votre voix sur cet appareil pour préparer un message modifiable. Le texte est transmis au modèle uniquement lorsque vous touchez Envoyer.</string>
 	<key>UILaunchScreen</key>
@@ -40,6 +40,10 @@
 		<string>UIInterfaceOrientationPortrait</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
 	</array>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Consulter et modifier vos événements lorsque vous utilisez les outils de calendrier de MultiVibe.</string>

@@ -18,19 +18,24 @@
 		726A7A3E670153E53166E796 /* SSEParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42EEE3F6ED3F93F3854EAC51 /* SSEParserTests.swift */; };
 		77407A84E21962A60F63DC56 /* MultiVibeChatApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00217B9D7702B72A5569309F /* MultiVibeChatApp.swift */; };
 		7A74361E398770E2EA5D9736 /* NativeIntentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E7A1B6F2486B8877A908300 /* NativeIntentTests.swift */; };
-		7B76CFC0D6BDEA312BCFA0E7 /* MultiVibeSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 609BC433EA9477C7C93608F5 /* MultiVibeSDK */; };
+		7B76CFC0D6BDEA312BCFA0E7 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = DE00EB6D0A8D4203924A289E /* WebRTC */; };
+		7D68D3936B5105AC7AD322D6 /* RealtimeVoiceController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95A103874D7DD2121986E6B7 /* RealtimeVoiceController.swift */; };
+		7E9DADADAF1DFF748EDF171A /* VoiceTranscriptLedger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57E9D6AD4061C1FC45E4695F /* VoiceTranscriptLedger.swift */; };
 		8C1A0F4BD94755906DAE4B90 /* MemoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74D766009C5F24AF210383CA /* MemoryView.swift */; };
 		8FD1D22653DBCCB2B45A4CEA /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B36277A8CFF4EC17A06D2FC /* Models.swift */; };
 		915752F0CA99F9CFC83278C1 /* LocalAgentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3319D8F58B7782A53C37AF9B /* LocalAgentTests.swift */; };
 		91ABE914998A0252BC864813 /* AuthenticationUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73484D90F6B8C690FC806EBB /* AuthenticationUITests.swift */; };
 		92079D5C291F20B604251334 /* ConversationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED63046FBAF333333E159086 /* ConversationManager.swift */; };
 		AB19983233E7FE9F37CFDDDC /* LocalAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10A5C9556D7CAFE2EE22707 /* LocalAgent.swift */; };
-		C1B15569E65D46A8593B090F /* MultiVibeChatUI in Frameworks */ = {isa = PBXBuildFile; productRef = 866486075F05053501529275 /* MultiVibeChatUI */; };
+		B5F3F31445565B7A4FC8EB04 /* VoiceWebRTCTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19FF539BBD48306A3977C171 /* VoiceWebRTCTransport.swift */; };
+		C1B15569E65D46A8593B090F /* MultiVibeSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 609BC433EA9477C7C93608F5 /* MultiVibeSDK */; };
 		C74FEFADAC73275DB726E5A6 /* AuthenticationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA4393E98F397246F4A41196 /* AuthenticationView.swift */; };
 		D82AAFC3C8F507B521619C45 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B3F9F268516DD34F81AB7817 /* Assets.xcassets */; };
 		D93DCB45C9AFA5ED65425AE5 /* AgentMemoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B34FCAA84CB37FAFCB223316 /* AgentMemoryTests.swift */; };
 		E93F3E946B9434ED4C5BFD94 /* NativeIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC28D33BB97A4F1A6581EB4F /* NativeIntents.swift */; };
+		ECDEA29B56DDE2F17FA9DC61 /* MultiVibeChatUI in Frameworks */ = {isa = PBXBuildFile; productRef = 866486075F05053501529275 /* MultiVibeChatUI */; };
 		EDD89E16CC7EEE5F49D07739 /* ChatIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 626C77A820035BB712EF6520 /* ChatIntents.swift */; };
+		EFCAC148BE4F8564C164FEF7 /* RealtimeVoiceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9178B9C07BCDF95DFE9A7DA /* RealtimeVoiceView.swift */; };
 		FE9F141E961C8316B702D426 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D23AAC6A6C06292DD31EC37 /* ChatView.swift */; };
 /* End PBXBuildFile section */
 
@@ -53,6 +58,7 @@
 
 /* Begin PBXFileReference section */
 		00217B9D7702B72A5569309F /* MultiVibeChatApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiVibeChatApp.swift; sourceTree = "<group>"; };
+		19FF539BBD48306A3977C171 /* VoiceWebRTCTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceWebRTCTransport.swift; sourceTree = "<group>"; };
 		26BC4D73E9F06A51A165F8E9 /* MultiVibeChat.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = MultiVibeChat.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3319D8F58B7782A53C37AF9B /* LocalAgentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalAgentTests.swift; sourceTree = "<group>"; };
 		42EEE3F6ED3F93F3854EAC51 /* SSEParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSEParserTests.swift; sourceTree = "<group>"; };
@@ -60,12 +66,14 @@
 		4D23AAC6A6C06292DD31EC37 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		4E7A1B6F2486B8877A908300 /* NativeIntentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeIntentTests.swift; sourceTree = "<group>"; };
 		4EC3EFFD60CE2939BD5BCD88 /* ChatAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatAPI.swift; sourceTree = "<group>"; };
+		57E9D6AD4061C1FC45E4695F /* VoiceTranscriptLedger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceTranscriptLedger.swift; sourceTree = "<group>"; };
 		626C77A820035BB712EF6520 /* ChatIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatIntents.swift; sourceTree = "<group>"; };
 		6636026081D44F2E5870C485 /* LocalDeviceData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalDeviceData.swift; sourceTree = "<group>"; };
 		68DE1C2DEDCA28B710DD6C5D /* AgentMemory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentMemory.swift; sourceTree = "<group>"; };
 		73484D90F6B8C690FC806EBB /* AuthenticationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticationUITests.swift; sourceTree = "<group>"; };
 		74D766009C5F24AF210383CA /* MemoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryView.swift; sourceTree = "<group>"; };
 		82F71476C40CB1762E352DF5 /* VoiceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceController.swift; sourceTree = "<group>"; };
+		95A103874D7DD2121986E6B7 /* RealtimeVoiceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeVoiceController.swift; sourceTree = "<group>"; };
 		9A8B15C5C36771B67C287720 /* MultiVibeChat.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MultiVibeChat.entitlements; sourceTree = "<group>"; };
 		9B36277A8CFF4EC17A06D2FC /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		A10A5C9556D7CAFE2EE22707 /* LocalAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalAgent.swift; sourceTree = "<group>"; };
@@ -81,6 +89,7 @@
 		ED63046FBAF333333E159086 /* ConversationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationManager.swift; sourceTree = "<group>"; };
 		EE89CDEC6389DF7D57D2960C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		F821AA010F4443A441EF6DF0 /* MultiVibeSDK */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MultiVibeSDK; path = ../sdk/MultiVibeSDK; sourceTree = SOURCE_ROOT; };
+		F9178B9C07BCDF95DFE9A7DA /* RealtimeVoiceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeVoiceView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -88,8 +97,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				7B76CFC0D6BDEA312BCFA0E7 /* MultiVibeSDK in Frameworks */,
-				C1B15569E65D46A8593B090F /* MultiVibeChatUI in Frameworks */,
+				7B76CFC0D6BDEA312BCFA0E7 /* WebRTC in Frameworks */,
+				C1B15569E65D46A8593B090F /* MultiVibeSDK in Frameworks */,
+				ECDEA29B56DDE2F17FA9DC61 /* MultiVibeChatUI in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -122,8 +132,12 @@
 				CA4393E98F397246F4A41196 /* AuthenticationView.swift */,
 				4D23AAC6A6C06292DD31EC37 /* ChatView.swift */,
 				74D766009C5F24AF210383CA /* MemoryView.swift */,
+				95A103874D7DD2121986E6B7 /* RealtimeVoiceController.swift */,
+				F9178B9C07BCDF95DFE9A7DA /* RealtimeVoiceView.swift */,
 				DF240043145CEC1114F5AAAC /* SDKApplicationsView.swift */,
 				82F71476C40CB1762E352DF5 /* VoiceController.swift */,
+				57E9D6AD4061C1FC45E4695F /* VoiceTranscriptLedger.swift */,
+				19FF539BBD48306A3977C171 /* VoiceWebRTCTransport.swift */,
 			);
 			path = Features;
 			sourceTree = "<group>";
@@ -264,6 +278,7 @@
 			);
 			name = MultiVibeChat;
 			packageProductDependencies = (
+				DE00EB6D0A8D4203924A289E /* WebRTC */,
 				609BC433EA9477C7C93608F5 /* MultiVibeSDK */,
 				866486075F05053501529275 /* MultiVibeChatUI */,
 			);
@@ -302,6 +317,7 @@
 			mainGroup = 5C147FEBCFDA6C8DE43FC6FE;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				BC20CCA88EA0B22EF3ABC765 /* XCRemoteSwiftPackageReference "WebRTC" */,
 				8A03A575490DF8296F8BB694 /* XCLocalSwiftPackageReference "../sdk/MultiVibeSDK" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -357,9 +373,13 @@
 				8FD1D22653DBCCB2B45A4CEA /* Models.swift in Sources */,
 				77407A84E21962A60F63DC56 /* MultiVibeChatApp.swift in Sources */,
 				E93F3E946B9434ED4C5BFD94 /* NativeIntents.swift in Sources */,
+				7D68D3936B5105AC7AD322D6 /* RealtimeVoiceController.swift in Sources */,
+				EFCAC148BE4F8564C164FEF7 /* RealtimeVoiceView.swift in Sources */,
 				1DF0848C4A22AE54E2F6A90F /* SDKApplicationsView.swift in Sources */,
 				3498F2842AD2073C13C61F4C /* SecureStore.swift in Sources */,
 				0A4A1A84E6560C97F714C2C9 /* VoiceController.swift in Sources */,
+				7E9DADADAF1DFF748EDF171A /* VoiceTranscriptLedger.swift in Sources */,
+				B5F3F31445565B7A4FC8EB04 /* VoiceWebRTCTransport.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -670,6 +690,17 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		BC20CCA88EA0B22EF3ABC765 /* XCRemoteSwiftPackageReference "WebRTC" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/stasel/WebRTC.git";
+			requirement = {
+				kind = exactVersion;
+				version = 153.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		609BC433EA9477C7C93608F5 /* MultiVibeSDK */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -678,6 +709,11 @@
 		866486075F05053501529275 /* MultiVibeChatUI */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MultiVibeChatUI;
+		};
+		DE00EB6D0A8D4203924A289E /* WebRTC */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BC20CCA88EA0B22EF3ABC765 /* XCRemoteSwiftPackageReference "WebRTC" */;
+			productName = WebRTC;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

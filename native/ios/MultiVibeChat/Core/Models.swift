@@ -145,6 +145,31 @@ struct ModelOption: Codable, Identifiable, Sendable {
     var displayName: String { name ?? id }
 }
 struct ModelList: Decodable { let data: [ModelOption] }
+struct VoiceOption: Codable, Identifiable, Equatable, Sendable { let id: String; let name: String }
+struct VoiceCapabilities: Decodable, Sendable {
+    let enabled: Bool
+    let voices: [VoiceOption]
+    let backgroundAudio: Bool
+    let tools: Bool
+    let retainsAudio: Bool
+}
+struct VoiceCredential: Decodable, Sendable {
+    let protocolName: String
+    let transport: String
+    let endpoint: URL
+    let token: String
+    let expiresAt: Date
+    enum CodingKeys: String, CodingKey { case protocolName = "protocol", transport, endpoint, token, expiresAt }
+}
+struct VoiceSession: Decodable, Sendable {
+    let id: String
+    let route: String
+    let sessionToken: String
+    let expiresAt: Date
+    let credential: VoiceCredential
+    let retainsAudio: Bool
+    let transcriptPersistence: String
+}
 struct NativeSession: Codable, Sendable {
     let accessToken: String
     let refreshToken: String
