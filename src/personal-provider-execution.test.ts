@@ -44,6 +44,12 @@ test('personal subscription refreshes once, persists rotation, then dispatches w
  },new AbortController().signal,async value=>{persisted=value;});
  assert.equal((await response.json()).choices[0].message.content,'refreshed');assert.equal(calls,2);assert.equal(persisted.accessToken,'replacement-oauth');assert.equal(persisted.refreshToken,'replacement-refresh');
 });
+test('personal subscription converts a Responses stream to browser chat SSE',async()=>{
+ const credential={accessToken:'oauth-fixture',expiresAt:Date.now()+120000,coreAccountContext:JSON.stringify({schemaVersion:1,provider:'openai',baseUrl:'https://chatgpt.com',upstreamMode:'responses',chatgptAccountId:'account_fixture'})};
+ const upstream=[{type:'response.created',response:{id:'r',model:'fixture',created_at:1}},{type:'response.output_text.delta',delta:'Streamed reply'},{type:'response.completed',response:{id:'r',model:'fixture',status:'completed',output:[],usage:{input_tokens:1,output_tokens:2,total_tokens:3}}}].map(value=>`data: ${JSON.stringify(value)}\n\n`).join('');
+ const response=await executePersonalProviderChat({...input,endpoint:'https://chatgpt.com',credential,body:{...input.body,stream:true}},async()=>new Response(upstream,{headers:{'content-type':'text/event-stream'}}),new AbortController().signal);
+ const text=await response.text();assert.match(text,/Streamed reply/);assert.match(text,/\[DONE\]/);assert.doesNotMatch(text,/response\.output_text/);
+});
 test('personal execution rejects redirects, unknown request fields and excessive limits before dispatch',async()=>{
   let calls=0;const transport:typeof fetch=async()=>{calls++;throw Error('unexpected');};
   for(const body of [{...input.body,baseUrl:'https://attacker.test'},{...input.body,max_tokens:32769},{...input.body,stream:'true'}]) {
