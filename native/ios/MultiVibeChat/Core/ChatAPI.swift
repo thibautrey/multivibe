@@ -101,10 +101,23 @@ actor ChatAPI {
         try validate(response, data: data)
         return try decoder.decode(CloudCreditBalance.self, from: data)
     }
-    func models(token: String) async throws -> [ModelOption] {
-        let (data, response) = try await session.data(for: request("models", token: token))
+    func providerRequest<T: Decodable & Sendable>(_ path: String, fields: [String: String]? = nil, token: String) async throws -> T {
+        let body = try fields.map { try JSONSerialization.data(withJSONObject: $0) }
+        let (data, response) = try await session.data(for: request(path, body: body, token: token))
         try validate(response, data: data)
-        return try decoder.decode(ModelList.self, from: data).data
+        return try decoder.decode(T.self, from: data)
+    }
+    func catalog(search: String = "", cursor: String = "", token: String) async throws -> CatalogPage {
+        try await providerRequest("catalog", fields: ["search": search, "cursor": cursor], token: token)
+    }
+    func models(token: String) async throws -> [ModelOption] {
+        try await catalog(token: token).data.map(\.option)
+    }
+    func modelAccess(model: String, token: String) async throws -> ModelAccessReply {
+        try await providerRequest("model-access", fields: ["model": model], token: token)
+    }
+    func saveModelAccess(_ access: SelectedModelAccess, token: String) async throws {
+        let _: [String: Bool] = try await providerRequest("model-preference", fields: ["model": access.modelId, "accessId": access.id], token: token)
     }
     func voiceCapabilities(token: String) async throws -> VoiceCapabilities {
         let (data, response) = try await session.data(for: request("voice/capabilities", token: token))
@@ -168,12 +181,17 @@ actor ChatAPI {
         let (data, response) = try await session.data(for: request)
         try validate(response, data: data)
     }
-    func stream(model: String, messages: [ChatMessage], token: String,
+    func stream(model: String, access: SelectedModelAccess? = nil, messages: [ChatMessage], token: String,
                 onDelta: @Sendable (String) async -> Void) async throws {
-        let body = try JSONSerialization.data(withJSONObject: ["model": model, "stream": true,
+        guard let access, access.modelId == model else { throw APIError.server(409, "model_access_unavailable") }
+        let body = try JSONSerialization.data(withJSONObject: ["model": model, "accessId": access.id, "stream": true,
             "messages": messages.map { ["role": $0.role, "content": $0.content] }] as [String: Any])
-        let (bytes, response) = try await session.bytes(for: request("completions", body: body, token: token))
-        try validate(response)
+        let (bytes, response) = try await session.bytes(for: request("access-completions", body: body, token: token))
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            var data = Data()
+            for try await byte in bytes { data.append(byte); if data.count >= 8192 { break } }
+            try validate(response, data: data)
+        }
         guard (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "content-type")?.hasPrefix("text/event-stream") == true else {
             throw APIError.invalidResponse
         }

@@ -4,18 +4,18 @@ import AuthenticationServices
 @testable import MultiVibeChat
 
 @MainActor final class ModelMarketplaceTests: XCTestCase {
-    func testKnownProvidersAndUseCasesAreClassified() {
-        let fixtures = [
-            (ModelOption(id: "openai/gpt-5.3", name: "GPT-5.3"), ModelProvider.openAI),
-            (ModelOption(id: "anthropic/claude-sonnet-5", name: nil), .anthropic),
-            (ModelOption(id: "google/gemini-3-pro", name: nil), .google),
-            (ModelOption(id: "mistral/devstral-2", name: nil), .mistral),
-            (ModelOption(id: "meta/llama-4", name: nil), .meta),
-            (ModelOption(id: "deepseek/deepseek-v4", name: nil), .deepSeek)
-        ]
-        for (model, provider) in fixtures { XCTAssertEqual(model.presentation.provider, provider) }
-        XCTAssertTrue(fixtures[0].0.presentation.useCases.contains(.coding))
-        XCTAssertTrue(fixtures[2].0.presentation.useCases.contains(.creation))
+    func testCatalogMetadataOwnsProviderIdentity() {
+        XCTAssertEqual(ModelOption(id: "gpt-lookalike", author: "anthropic").presentation.provider, .anthropic)
+        XCTAssertEqual(ModelOption(id: "openai/gpt-5.3").presentation.provider, .other)
+        XCTAssertEqual(ModelOption(id: "opaque-id", author: "openai").presentation.provider, .openAI)
+    }
+    func testAccessSelectionSurvivesHistoryAndLegacyConversationDecoding() throws {
+        let access = SelectedModelAccess(id: "account-1", modelId: "openai/luna", label: "My account", method: "device_code")
+        XCTAssertEqual(SelectedModelAccess.fromHistory(access.historyValue), access)
+        XCTAssertNil(SelectedModelAccess.fromHistory(nil))
+        let conversation = Conversation(model: access.modelId, modelAccess: access)
+        let decoded = try JSONDecoder().decode(Conversation.self, from: JSONEncoder().encode(conversation))
+        XCTAssertEqual(decoded.modelAccess, access)
     }
 
     func testLocalModelIsFreePrivateAndOffline() {
