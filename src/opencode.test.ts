@@ -212,3 +212,14 @@ test("fails OAuth connection when inference config discovery fails", async (t) =
     { accessToken: "session" },
   ), /config.*failed 503/);
 });
+
+test("Big Pickle routing preserves other OpenCode model modes and normalizes versioned roots", async () => {
+  const {openCodeInferenceUrl, openCodeUpstreamMode} = await import('./opencode.js');
+  for (const baseUrl of ['https://opencode.ai/zen', 'https://opencode.ai/inference/openai/v1/']) {
+    const account = {baseUrl, upstreamMode: 'responses' as const};
+    assert.equal(openCodeUpstreamMode(account, 'big-pickle'), 'chat/completions');
+    assert.equal(openCodeInferenceUrl(account, 'big-pickle'), normalizeOpenCodeApiRoot(baseUrl) + '/v1/chat/completions');
+    assert.equal(openCodeInferenceUrl(account, 'gpt-5.5'), normalizeOpenCodeApiRoot(baseUrl) + '/v1/responses');
+  }
+  assert.equal(openCodeUpstreamMode({upstreamMode:'chat/completions'}, 'other-model'), 'chat/completions');
+});
