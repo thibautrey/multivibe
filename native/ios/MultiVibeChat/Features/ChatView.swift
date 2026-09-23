@@ -913,7 +913,10 @@ private struct ModelListView: View {
 }
 
 private struct ModelDetailView: View {
+    @Environment(ConversationManager.self) private var manager
     let model: ModelOption
+    @State private var detail: ModelOption?
+    @State private var detailError: String?
     @Binding var favorite: Bool
     let select: (ModelOption) -> Void
     var body: some View {
@@ -928,18 +931,27 @@ private struct ModelDetailView: View {
                         .buttonStyle(.bordered).tint(.orange)
                 }.frame(maxWidth: .infinity).padding(.vertical, 16)
             }.listRowBackground(Color.clear)
-            Section("À quoi sert ce modèle ?") { Text(model.presentation.summary) }
+            Section("À quoi sert ce modèle ?") { Text((detail ?? model).presentation.summary) }
             Section("Accès") {
                 LabeledContent("Créateur", value: model.presentation.provider.displayName)
                 LabeledContent("Accès", value: model.id == LocalModel.id ? "Sur cet appareil" : "Au choix selon disponibilité")
-                if let context = model.metadata?.contextLength { LabeledContent("Contexte", value: "\(context) tokens") }
-                if let output = model.metadata?.maxOutputTokens { LabeledContent("Sortie maximale", value: "\(output) tokens") }
-                if let license = model.metadata?.license { LabeledContent("Licence", value: license) }
+                if let context = (detail ?? model).metadata?.contextLength { LabeledContent("Contexte", value: "\(context) tokens") }
+                if let output = (detail ?? model).metadata?.maxOutputTokens { LabeledContent("Sortie maximale", value: "\(output) tokens") }
+                if let license = (detail ?? model).metadata?.license { LabeledContent("Licence", value: license) }
                 if model.id == LocalModel.id { Label("Traitement sur cet appareil", systemImage: "lock.iphone") }
             }
             Section { Button("Utiliser \(model.displayName)") { select(model) }.buttonStyle(.borderedProminent).frame(maxWidth: .infinity) }
         }
         .navigationTitle("Détails").navigationBarTitleDisplayMode(.inline)
+        .task {
+            guard model.id != LocalModel.id else { return }
+            do {
+                let token = try await manager.validSession().accessToken
+                let entry: CatalogEntry = try await ChatAPI.shared.providerRequest("catalog-detail", fields: ["model": model.id], token: token)
+                detail = entry.option
+            } catch { detailError = error.localizedDescription }
+        }
+        .safeAreaInset(edge: .bottom) { if let detailError { Text(detailError).font(.caption).padding().background(.regularMaterial) } }
     }
 }
 
@@ -1970,6 +1982,7 @@ private struct ProviderConnectView: View {
                     Button("Ouvrir la page du provider") { browser = true }
                     Text("Valable jusqu’à \(challenge.expiry.formatted(date: .omitted, time: .shortened))").font(.caption)
                     ProgressView("En attente d’autorisation…")
+                    if error != nil { Button("Vérifier la connexion") { error = nil; beginPolling(challenge) } }
                 }
             } else {
                 Section { Button(setup.method == "api_key" ? "Valider la clé et connecter" : "Se connecter") { Task { await start() } }.disabled(busy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (setup.method == "api_key" && key.isEmpty)) }
@@ -2014,7 +2027,7 @@ private struct ProviderConnectView: View {
                     interval = result.intervalSeconds ?? interval
                 }
                 await cancelFlow(value); challenge = nil; error = "Le code a expiré. Vous pouvez recommencer."
-            } catch is CancellationError {} catch { self.error = error.localizedDescription; await cancelFlow(value); challenge = nil }
+            } catch is CancellationError {} catch { self.error = error.localizedDescription }
         }
     }
     private func finish(_ id: String) async throws {
