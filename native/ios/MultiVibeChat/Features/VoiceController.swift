@@ -161,7 +161,7 @@ enum VoiceSystemEvent: Sendable, Equatable {
             self.request = request
             transcript = ""; error = nil
             let input = engine.inputNode
-            input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { @Sendable buffer, _ in request.append(buffer) }
+            Self.installRecordingTap(on: input, request: request)
             tapInstalled = true
             recognition = recognizer.recognitionTask(with: request) { @Sendable [weak self] result, failure in
                 let text = result?.bestTranscription.formattedString
@@ -181,6 +181,15 @@ enum VoiceSystemEvent: Sendable, Equatable {
             engine.prepare(); try engine.start(); recording = true
         } catch { stop(); self.error = error.localizedDescription }
     }
+    // Construct the realtime callback outside MainActor isolation. Only the audio
+    // tap appends buffers; UI state remains on MainActor.
+    nonisolated private static func installRecordingTap(on input: AVAudioInputNode,
+                                                       request: SFSpeechAudioBufferRecognitionRequest) {
+        input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in
+            request.append(buffer)
+        }
+    }
+
     func stop() {
         activation = UUID(); starting = false
         guard audioServicesAvailable else { recording = false; return }
