@@ -6,7 +6,7 @@ import {sdkCallOptions, chatResult, chatStream} from './ai-sdk/protocol.js';
 import {providerCredentialEndpoint} from './team-api-key-validation.js';
 import {decodeTeamProviderCredential, type TeamProviderCredential} from './team-provider-credential.js';
 import {buildCopilotHeaders} from './github-copilot.js';
-import {openCodeAccountHeaders,openCodeInferenceToken} from './opencode.js';
+import {openCodeAccountHeaders,openCodeInferenceToken,openCodeUpstreamMode,openCodeInferenceUrl} from './opencode.js';
 import {chatCompletionsToResponsesPayload} from './responses/payloads.js';
 import {createResponsesToChatCompletionStreamState,convertResponsesSSEToChatCompletionSSE,finalizeResponsesSSEToChatCompletionSSE,responseObjectToChatCompletion} from './responses/converters.js';
 import {encodeTeamDeviceCredential} from './team-provider-credential.js';
@@ -62,10 +62,10 @@ export async function executePersonalProviderChat(input:PersonalProviderExecutio
         else {const token=await refreshOpenCodeAccessToken(runtimeAccount,refreshTransport);runtimeAccount={...runtimeAccount,accessToken:token.accessToken,refreshToken:token.refreshToken??runtimeAccount.refreshToken,expiresAt:token.expiresAt??runtimeAccount.expiresAt};}
         await persist(encodeTeamDeviceCredential(runtimeAccount));account=runtimeAccount;
       }
-      const mode=account.provider==='github-copilot'?account.copilotModelEndpoints?.[body.model]??account.upstreamMode:account.upstreamMode;
+      const mode=account.provider==='opencode'?openCodeUpstreamMode(account,body.model):account.provider==='github-copilot'?account.copilotModelEndpoints?.[body.model]??account.upstreamMode:account.upstreamMode;
       if(mode!=='responses'&&mode!=='chat/completions')throw Error('unsupported');
       const responses=mode==='responses',payload=responses?chatCompletionsToResponsesPayload({...body,stream:Boolean(body.stream)}):{...body,max_tokens:tokens};
-      const endpoint=account.provider==='openai'?'https://chatgpt.com/backend-api/codex/responses':`${input.endpoint}/${responses?'responses':'chat/completions'}`;
+      const endpoint=account.provider==='opencode'?openCodeInferenceUrl(account,body.model):account.provider==='openai'?'https://chatgpt.com/backend-api/codex/responses':`${input.endpoint}/${responses?'responses':'chat/completions'}`;
       const headers:Record<string,string>=account.provider==='github-copilot'?buildCopilotHeaders(account.accessToken,payload,body.stream?'text/event-stream':'application/json'):
         {'content-type':'application/json',accept:body.stream?'text/event-stream':'application/json',authorization:`Bearer ${account.provider==='opencode'?openCodeInferenceToken(runtimeAccount):account.accessToken}`,
           ...(account.provider==='openai'&&account.chatgptAccountId?{'chatgpt-account-id':account.chatgptAccountId}:{}),

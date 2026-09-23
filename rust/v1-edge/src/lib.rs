@@ -1682,7 +1682,12 @@ fn account_base_url(account: &Account, config: &EdgeConfig) -> String {
     }
 }
 
-fn resolve_upstream_mode(account: &Account, chat_route: bool, compact: bool) -> bool {
+fn resolve_upstream_mode(account: &Account, model: &str, chat_route: bool, compact: bool) -> bool {
+    // Big Pickle is chat-only on both Zen and Console. Override the legacy
+    // account-wide Responses default without changing other models.
+    if normalize_provider(account) == "opencode" && model == "big-pickle" {
+        return true;
+    }
     if normalize_provider(account) == "ai-sdk" {
         return true;
     }
@@ -5439,7 +5444,7 @@ fn prepared_payload(
     let chat_route = path.contains("chat/completions");
     let messages_route = path.ends_with("/messages");
     let compact = path.ends_with("/responses/compact");
-    let sends_chat = resolve_upstream_mode(account, chat_route, compact);
+    let sends_chat = resolve_upstream_mode(account, &route.model, chat_route, compact);
     let mut payload = if account.multivibe_cloud == Some(true) && !sends_chat && !chat_route {
         // Cloud owns and validates its Responses contract. Codex parity
         // defaults (store, include, text, forced streaming) are upstream
@@ -5928,6 +5933,7 @@ fn set_response_headers(
 fn transform_for(
     path: &str,
     account: &Account,
+    model: &str,
     client_stream: bool,
     content_type: &str,
 ) -> StreamTransform {
@@ -5945,7 +5951,7 @@ fn transform_for(
     }
     let messages = path.ends_with("/messages");
     let sends_chat =
-        resolve_upstream_mode(account, client_chat, path.ends_with("/responses/compact"));
+        resolve_upstream_mode(account, model, client_chat, path.ends_with("/responses/compact"));
     if messages {
         return StreamTransform::ResponseToAnthropic;
     }
@@ -6181,6 +6187,7 @@ async fn proxy_inference(
                 }
                 let sends_chat = resolve_upstream_mode(
                     &account,
+                    &route.model,
                     path.contains("chat/completions"),
                     path.ends_with("/responses/compact"),
                 );
@@ -6574,7 +6581,7 @@ async fn proxy_inference(
                     .lock()
                     .await
                     .insert(provider.clone(), account.id.clone());
-                let transform = transform_for(path, &account, client_stream, &content_type);
+                let transform = transform_for(path, &account, &route.model, client_stream, &content_type);
                 let content_type_is_sse = content_type
                     .to_ascii_lowercase()
                     .contains("text/event-stream");
@@ -12545,6 +12552,30 @@ pub fn build_router(state: EdgeState) -> Router {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn opencode_big_pickle_routes_chat_and_responses_clients_through_chat() {
+        let account: Account = serde_json::from_value(json!({
+            "id":"console", "provider":"opencode", "enabled":true,
+            "accessToken":"fixture", "upstreamMode":"responses"
+        })).unwrap();
+        let config = EdgeConfig::default();
+        let route = RouteCandidate { requested_model:"friendly-alias".into(),
+            model:"big-pickle".into(), provider:Some("opencode".into()), account_ids:vec![] };
+        for path in ["/v1/responses", "/v1/chat/completions"] {
+            let body = if path.contains("chat") { json!({"model":"friendly-alias","messages":[{"role":"user","content":"Hello"}]}) }
+                else { json!({"model":"friendly-alias","input":"Hello"}) };
+            let payload = prepared_payload(&body, path, &account, &route, None, true, false, &config);
+            assert_eq!(payload["model"], "big-pickle");
+            assert!(payload["messages"].is_array());
+            assert!(payload.get("input").is_none());
+            assert_eq!(upstream_path(&account,&config,resolve_upstream_mode(&account,&route.model,false,false),false), "/v1/chat/completions");
+        }
+        assert_eq!(transform_for("/v1/responses", &account, "big-pickle", true, "text/event-stream"), StreamTransform::ChatToResponse);
+        assert_eq!(transform_for("/v1/chat/completions", &account, "big-pickle", true, "text/event-stream"), StreamTransform::None);
+        assert!(!resolve_upstream_mode(&account,"gpt-5.5",true,false));
+        assert_eq!(transform_for("/v1/chat/completions", &account, "gpt-5.5", true, "text/event-stream"), StreamTransform::ResponseToChat);
+    }
+
+    #[test]
     fn opencode_headers_resolve_current_token_and_workspace_for_inference_and_discovery() {
         let mut account: Account = serde_json::from_value(serde_json::json!({
             "id": "console", "provider": "opencode", "enabled": true,
@@ -15129,11 +15160,11 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
     fn headerless_openai_chat_stream_is_converted() {
         let openai = account("openai-1");
         assert_eq!(
-            transform_for("/v1/chat/completions", &openai, true, ""),
+            transform_for("/v1/chat/completions", &openai, "gpt-test", true, ""),
             StreamTransform::ResponseToChat
         );
         assert_eq!(
-            transform_for("/v1/responses", &openai, true, ""),
+            transform_for("/v1/responses", &openai, "gpt-test", true, ""),
             StreamTransform::None
         );
     }

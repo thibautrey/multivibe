@@ -65,3 +65,19 @@ test('upstream diagnostics and stream failures cannot expose credential text',as
   const response=await executePersonalProviderChat({...input,body:{...input.body,stream:true}},async()=>new Response(`data: ${JSON.stringify({error:{message:input.credential.accessToken}})}\n\n`,{headers:{'content-type':'text/event-stream'}}),new AbortController().signal);
   await assert.rejects(response.text(),error=>{assert.doesNotMatch(String(error),/private-fixture-key/);return true;});
 });
+
+test('OpenCode Big Pickle uses the versioned chat endpoint despite a saved Responses default',async()=>{
+ const endpoint='https://opencode.ai/inference/openai';
+ const credential={accessToken:'console-session',coreAccountContext:JSON.stringify({schemaVersion:1,provider:'opencode',baseUrl:endpoint,upstreamMode:'responses',opencodeConsoleUrl:'https://opencode.ai/console',opencodeAccountId:'user-one',opencodeOrgId:'org-one',opencodeApiKey:'{env:OPENCODE_CONSOLE_TOKEN}'})};
+ for(const stream of [false,true]){
+  const reply=stream?'data: {"choices":[{"delta":{"content":"OK"}}]}\n\ndata: [DONE]\n\n':JSON.stringify({choices:[{message:{role:'assistant',content:'OK'}}]});
+  const response=await executePersonalProviderChat({provider:'opencode',endpoint,credential,body:{model:'big-pickle',messages:[{role:'user',content:'Hello'}],stream,max_tokens:16}},async(url,init)=>{
+   assert.equal(url,endpoint+'/v1/chat/completions');
+   assert.equal(new Headers(init?.headers).get('authorization'),'Bearer console-session');
+   assert.equal(new Headers(init?.headers).get('x-org-id'),'org-one');
+   const body=JSON.parse(String(init?.body));assert.equal(body.model,'big-pickle');assert.equal(body.messages[0].content,'Hello');assert.equal(body.stream,stream);assert.equal(body.input,undefined);
+   return new Response(reply,{headers:{'content-type':stream?'text/event-stream':'application/json'}});
+  },new AbortController().signal);
+  assert.equal(await response.text(),reply);
+ }
+});
