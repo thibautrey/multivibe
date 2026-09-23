@@ -4,6 +4,7 @@ import EventKit
 import EventKitUI
 import MapKit
 import SwiftUI
+import SafariServices
 import UniformTypeIdentifiers
 import WebKit
 
@@ -332,6 +333,9 @@ struct ChatView: View {
         } message: {
             Text("Les conversations modifiées sur cet appareil seront ajoutées comme copies locales. Les versions du compte seront conservées ; les suppressions locales ne seront pas appliquées au compte pendant cette résolution.")
         }
+        .sheet(item: $manager.requestedAccessModel) { model in
+            NavigationStack { ModelAccessView(model: model) }
+        }
         .sheet(isPresented: $manager.memoryPresented) { MemoryView() }
         .sheet(item: Binding(get: { manager.memoryPresented ? nil : manager.memoryDraft }, set: { manager.memoryDraft = $0 })) { draft in MemoryEditor(draft: draft) }
         .sheet(isPresented: $documentsPresented) { LocalDocumentsView() }
@@ -498,6 +502,11 @@ struct ChatView: View {
                                   isLoading: manager.isLoadingModels, isDisabled: manager.isStreaming) {
                     await manager.reloadModels()
                 }
+                if let access = manager.selectedAccess {
+                    Button { Task { await manager.chooseModel(manager.models.first { $0.id == access.modelId } ?? ModelOption(id: access.modelId), force: true) } } label: {
+                        Text(access.label).font(.caption).lineLimit(1)
+                    }.accessibilityLabel("Changer de mode d’accès : \(access.label)").disabled(manager.isStreaming)
+                }
                 Spacer(minLength: 0)
                 if manager.isStreaming {
                     Button("Arrêter", systemImage: "stop.circle.fill") { manager.stop() }.font(.title).frame(minWidth: 44, minHeight: 44)
@@ -599,6 +608,7 @@ struct ChatView: View {
 
 
 private struct ModelPickerButton: View {
+    @Environment(ConversationManager.self) private var manager
     let models: [ModelOption]
     @Binding var selectedModel: String
     let isLoading: Bool
@@ -630,8 +640,8 @@ private struct ModelPickerButton: View {
             NavigationStack {
                 ModelQuickPicker(models: models, selectedModel: selectedModel, favorites: $favorites,
                                  isLoading: isLoading, reload: reload, expand: { detent = .large }) { model in
-                    selectedModel = model.id
                     presented = false
+                    Task { await manager.chooseModel(model) }
                 }
             }
             .presentationDetents([.medium, .large], selection: $detent)
@@ -703,7 +713,7 @@ private struct ModelPickerRow: View {
             ModelProviderLogo(provider: model.presentation.provider, size: 36)
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.displayName).font(.body.weight(.medium)).foregroundStyle(.primary)
-                Text(model.id == LocalModel.id ? "Apple · sur cet appareil" : "\(model.presentation.provider.displayName) · MultiVibe Cloud")
+                Text(model.id == LocalModel.id ? "Apple · sur cet appareil" : model.author ?? "Catalogue MultiVibe")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -714,19 +724,30 @@ private struct ModelPickerRow: View {
 }
 
 private struct ModelMarketplaceView: View {
+    @Environment(ConversationManager.self) private var manager
     enum Tab: Hashable { case discover, categories, favorites, providers }
     let models: [ModelOption]
     @Binding var favorites: Set<String>
     let select: (ModelOption) -> Void
     @State private var tab: Tab = .discover
     @State private var search = ""
-    private var filtered: [ModelOption] {
-        guard !search.isEmpty else { return models }
-        return models.filter {
-            $0.displayName.localizedCaseInsensitiveContains(search) ||
-            $0.presentation.provider.displayName.localizedCaseInsensitiveContains(search) ||
-            $0.presentation.useCases.contains { $0.title.localizedCaseInsensitiveContains(search) }
-        }
+    @State private var entries: [ModelOption] = []
+    @State private var cursor: String?
+    @State private var loading = false
+    @State private var catalogError: String?
+    private var filtered: [ModelOption] { search.isEmpty ? [LocalModel.option] + entries : entries }
+    private func load(reset: Bool) async {
+        let query = search
+        loading = true
+        defer { if query == search { loading = false } }
+        do {
+            let token = try await manager.validSession().accessToken
+            let page = try await ChatAPI.shared.catalog(search: query, cursor: reset ? "" : cursor ?? "", token: token)
+            guard query == search, !Task.isCancelled else { return }
+            entries = reset ? page.data.map(\.option) : entries + page.data.map(\.option).filter { item in !entries.contains { $0.id == item.id } }
+            cursor = page.nextCursor; catalogError = nil
+            for model in entries where !manager.models.contains(where: { $0.id == model.id }) { manager.models.append(model) }
+        } catch { if !Task.isCancelled { catalogError = error.localizedDescription } }
     }
     var body: some View {
         TabView(selection: $tab) {
@@ -742,6 +763,16 @@ private struct ModelMarketplaceView: View {
         .navigationTitle("Modèles")
         .navigationBarTitleDisplayMode(.large)
         .searchable(text: $search, prompt: "Modèles, fournisseurs et usages")
+        .task(id: search) { try? await Task.sleep(for: .milliseconds(300)); guard !Task.isCancelled else { return }; await load(reset: true) }
+        .safeAreaInset(edge: .bottom) {
+            if tab != .providers {
+                VStack {
+                    if let catalogError { Text(catalogError).font(.caption); Button("Réessayer") { Task { await load(reset: true) } } }
+                    if loading { ProgressView() }
+                    else if cursor != nil { Button("Charger plus de modèles") { Task { await load(reset: false) } }.padding(8) }
+                }.frame(maxWidth: .infinity).background(.regularMaterial)
+            }
+        }
     }
 }
 
@@ -765,6 +796,7 @@ private struct ModelDiscoverView: View {
                 }
                 ModelShelf(title: "Les plus populaires", models: Array(popular.prefix(5)), favorites: $favorites, select: select, ranked: true)
                 if !free.isEmpty { ModelShelf(title: "Gratuits · sans crédit Cloud", models: free, favorites: $favorites, select: select) }
+                ModelShelf(title: "Tous les modèles", models: models, favorites: $favorites, select: select)
                 if !coding.isEmpty { ModelShelf(title: "Indispensables pour coder", models: coding, favorites: $favorites, select: select) }
             }.padding()
         }
@@ -815,7 +847,7 @@ private struct ModelShelf: View {
                             ModelProviderLogo(provider: model.presentation.provider, size: 42)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(model.displayName).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
-                                Text(model.id == LocalModel.id ? "Sur cet appareil" : "\(model.presentation.provider.displayName) · MultiVibe Cloud")
+                                Text(model.id == LocalModel.id ? "Sur cet appareil" : model.author ?? "Catalogue MultiVibe")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
@@ -890,7 +922,7 @@ private struct ModelDetailView: View {
                 VStack(spacing: 12) {
                     ModelProviderLogo(provider: model.presentation.provider, size: 76, prominent: true)
                     Text(model.displayName).font(.largeTitle.bold()).multilineTextAlignment(.center)
-                    Text(model.presentation.provider.displayName).foregroundStyle(.secondary)
+                    Text(model.author ?? model.presentation.provider.displayName).foregroundStyle(.secondary)
                     HStack { ForEach(model.presentation.badges, id: \.self) { Text($0).font(.caption.bold()).padding(.horizontal, 8).padding(.vertical, 5).background(.secondary.opacity(0.1), in: Capsule()) } }
                     Button(favorite ? "Retirer des favoris" : "Ajouter aux favoris", systemImage: favorite ? "star.fill" : "star") { favorite.toggle() }
                         .buttonStyle(.bordered).tint(.orange)
@@ -899,8 +931,10 @@ private struct ModelDetailView: View {
             Section("À quoi sert ce modèle ?") { Text(model.presentation.summary) }
             Section("Accès") {
                 LabeledContent("Créateur", value: model.presentation.provider.displayName)
-                LabeledContent("Accès", value: model.id == LocalModel.id ? "Sur cet appareil" : "MultiVibe Cloud")
-                LabeledContent("Facturation", value: model.presentation.usesCloudCredit ? "Crédits MultiVibe Cloud" : "Sans crédit Cloud")
+                LabeledContent("Accès", value: model.id == LocalModel.id ? "Sur cet appareil" : "Au choix selon disponibilité")
+                if let context = model.metadata?.contextLength { LabeledContent("Contexte", value: "\(context) tokens") }
+                if let output = model.metadata?.maxOutputTokens { LabeledContent("Sortie maximale", value: "\(output) tokens") }
+                if let license = model.metadata?.license { LabeledContent("Licence", value: license) }
                 if model.id == LocalModel.id { Label("Traitement sur cet appareil", systemImage: "lock.iphone") }
             }
             Section { Button("Utiliser \(model.displayName)") { select(model) }.buttonStyle(.borderedProminent).frame(maxWidth: .infinity) }
@@ -911,33 +945,7 @@ private struct ModelDetailView: View {
 
 private struct ModelProvidersView: View {
     let models: [ModelOption]
-    private var providers: [(ModelProvider, Int)] {
-        Dictionary(grouping: models, by: { $0.presentation.provider }).map { ($0.key, $0.value.count) }
-            .sorted { $0.0.displayName < $1.0.displayName }
-    }
-    var body: some View {
-        List {
-            Section { Text("Retrouvez les modèles MultiVibe Cloud, locaux et ceux de vos fournisseurs dans un catalogue unique.").font(.callout).foregroundStyle(.secondary) }
-            Section("Sources disponibles") {
-                ForEach(providers, id: \.0.id) { provider, count in
-                    HStack(spacing: 12) {
-                        ModelProviderLogo(provider: provider, size: 42)
-                        VStack(alignment: .leading) {
-                            Text(provider.displayName).font(.body.weight(.semibold))
-                            Text("\(count) modèle\(count > 1 ? "s" : "")").font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Text(provider == .apple || provider == .multivibe ? "Actif" : "Catalogue")
-                            .font(.caption.bold()).foregroundStyle(MultiVibeTheme.accent)
-                    }
-                }
-            }
-            Section("Connexions personnelles") {
-                Label("La connexion d’un abonnement ou d’une clé API sera proposée ici lorsqu’un fournisseur l’autorise dans l’app.", systemImage: "key.horizontal")
-                    .font(.callout).foregroundStyle(.secondary)
-            }
-        }
-    }
+    var body: some View { ProviderConnectionsView() }
 }
 
 private struct ModelProviderLogo: View {
@@ -1789,4 +1797,237 @@ private struct NativeAccountSection: View {
             failed = true
         }
     }
+}
+
+private struct ProviderSetup: Identifiable {
+    let id = UUID()
+    let provider: String
+    let name: String
+    let method: String
+    var replacing: String?
+}
+
+private struct ModelAccessView: View {
+    let model: ModelOption
+    @Environment(ConversationManager.self) private var manager
+    @State private var reply: ModelAccessReply?
+    @State private var error: String?
+    @State private var loading = false
+    @State private var setup: ProviderSetup?
+    @State private var billing = false
+    var body: some View {
+        List {
+            Section {
+                Text(reply?.model.displayName ?? model.displayName).font(.title2.bold())
+                if let notice = manager.accessNotice { Text(notice).font(.callout).foregroundStyle(.secondary) }
+            }
+            Section("Choisir un mode d’accès") {
+                ForEach(reply?.data ?? []) { option in
+                    Button {
+                        if option.state == "connect" { setup = .init(provider: option.provider, name: option.label, method: option.method) }
+                        else { Task { await select(option) } }
+                    } label: {
+                        HStack {
+                            Image(systemName: option.method == "cloud" ? "cloud" : option.method == "api_key" ? "key" : "person.crop.circle")
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(option.label).foregroundStyle(.primary)
+                                Text(option.billing).font(.caption).foregroundStyle(.secondary)
+                                Text(option.state == "ready" ? "Utiliser" : option.state == "connect" ? "Connecter · accès au modèle à vérifier" : "Indisponible actuellement").font(.caption)
+                            }
+                            Spacer(); Image(systemName: "chevron.right")
+                        }.padding(.vertical, 6)
+                    }.disabled(loading || option.state == "unavailable")
+                }
+            }
+            if let error { Section { Text(error).foregroundStyle(.red); Button("Réessayer") { Task { await load() } } } }
+            Section { Button("Recharger les crédits MultiVibe") { billing = true } }
+            if loading { ProgressView() }
+        }
+        .navigationTitle("Mode d’accès").navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Fermer") { manager.requestedAccessModel = nil } } }
+        .task { await load() }
+        .sheet(item: $setup) { value in
+            NavigationStack { ProviderConnectView(setup: value) { connectionID in
+                setup = nil
+                Task {
+                    await load()
+                    if let option = reply?.data.first(where: { $0.connectionId == connectionID && $0.state == "ready" }) { await select(option) }
+                    else { error = "Compte connecté, mais ce modèle n’est pas accessible avec ce compte. Choisissez un autre accès." }
+                }
+            } }
+        }
+        .sheet(isPresented: $billing, onDismiss: { Task { await load() } }) {
+            if let id = manager.session?.accountId { CloudBillingView(accountId: id) }
+        }
+    }
+    private func load() async {
+        loading = true; defer { loading = false }
+        do { let token = try await manager.validSession().accessToken; reply = try await ChatAPI.shared.modelAccess(model: model.id, token: token); error = nil }
+        catch { self.error = error.localizedDescription }
+    }
+    private func select(_ option: ModelAccessOption) async {
+        loading = true; defer { loading = false }
+        let account = manager.session?.accountId
+        do {
+            let token = try await manager.validSession().accessToken
+            try await ChatAPI.shared.saveModelAccess(option.selection, token: token)
+            guard manager.session?.accountId == account else { return }
+            manager.applyAccess(option.selection)
+        } catch { self.error = error.localizedDescription }
+    }
+}
+
+private struct ProviderConnectionsView: View {
+    @Environment(ConversationManager.self) private var manager
+    @State private var capabilities: [ProviderCapability] = []
+    @State private var connections: [ProviderConnection] = []
+    @State private var setup: ProviderSetup?
+    @State private var error: String?
+    @State private var removing: ProviderConnection?
+    var body: some View {
+        List {
+            Section("Mes connexions") {
+                if connections.isEmpty { Text("Connectez un compte ou une clé API pour retrouver vos modèles sur vos appareils.").foregroundStyle(.secondary) }
+                ForEach(connections) { connection in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(connection.displayName).font(.headline)
+                        Text("\(connection.provider) · \(connection.models.count) modèles · \(connection.state == "connected" ? "Connecté" : "En attente")").font(.caption)
+                        HStack {
+                            Button("Reconnecter") { setup = .init(provider: connection.provider, name: connection.displayName, method: connection.authenticationMethod, replacing: connection.id) }
+                            Spacer()
+                            Button("Déconnecter", role: .destructive) { removing = connection }
+                        }.buttonStyle(.borderless)
+                    }.padding(.vertical, 5)
+                }
+            }
+            Section("Ajouter un provider") {
+                ForEach(capabilities) { provider in
+                    ForEach(provider.authenticationMethods, id: \.self) { method in
+                        Button { setup = .init(provider: provider.id, name: provider.name, method: method) } label: {
+                            Label("\(provider.name) · \(method == "api_key" ? "Clé API" : "Abonnement")", systemImage: method == "api_key" ? "key" : "person.crop.circle")
+                        }
+                    }
+                }
+            }
+            if let error { Section { Text(error).foregroundStyle(.red); Button("Réessayer") { Task { await load() } } } }
+        }
+        .task { await load() }.refreshable { await load() }
+        .sheet(item: $setup) { value in NavigationStack { ProviderConnectView(setup: value) { _ in setup = nil; Task { await load() } } } }
+        .confirmationDialog("Déconnecter ce compte ?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
+            Button("Déconnecter", role: .destructive) {
+                guard let connection = removing else { return }; removing = nil
+                Task {
+                    do { let token = try await manager.validSession().accessToken; let _: [String: Bool] = try await ChatAPI.shared.providerRequest("providers/\(connection.id)/disconnect", fields: [:], token: token); await load() }
+                    catch { self.error = error.localizedDescription }
+                }
+            }
+        } message: { Text("Les conversations sont conservées. Cet accès ne pourra plus envoyer de messages.") }
+    }
+    private func load() async {
+        do {
+            let token = try await manager.validSession().accessToken
+            let caps: ProviderCapabilities = try await ChatAPI.shared.providerRequest("providers/capabilities", token: token)
+            let list: ProviderConnections = try await ChatAPI.shared.providerRequest("providers", token: token)
+            capabilities = caps.providers; connections = list.data; error = nil
+        } catch { self.error = error.localizedDescription }
+    }
+}
+
+private struct ProviderBrowser: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> SFSafariViewController { SFSafariViewController(url: url) }
+    func updateUIViewController(_ controller: SFSafariViewController, context: Context) {}
+}
+private struct ProviderConnectView: View {
+    let setup: ProviderSetup
+    let connected: (String) -> Void
+    @Environment(ConversationManager.self) private var manager
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var phase
+    @State private var name = ""
+    @State private var key = ""
+    @State private var challenge: ProviderChallenge?
+    @State private var browser = false
+    @State private var busy = false
+    @State private var error: String?
+    @State private var polling: Task<Void, Never>?
+    @State private var accountID: String?
+    var body: some View {
+        Form {
+            Section {
+                Text(setup.name).font(.title2.bold())
+                Text("Connexion privée, enregistrée dans votre compte MultiVibe.").font(.callout).foregroundStyle(.secondary)
+                TextField("Nom de la connexion", text: $name).disabled(challenge != nil || busy)
+                if setup.method == "api_key" {
+                    SecureField("Clé API", text: $key).textInputAutocapitalization(.never).autocorrectionDisabled().disabled(busy)
+                    Text("La clé est envoyée au coffre sécurisé MultiVibe. Elle n’est pas conservée sur cet iPhone.").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if let challenge {
+                Section("Autoriser la connexion") {
+                    Text(challenge.userCode).font(.title.monospaced()).textSelection(.enabled)
+                    Button("Copier le code") { UIPasteboard.general.setItems([[UIPasteboard.typeAutomatic: challenge.userCode]], options: [.localOnly: true, .expirationDate: challenge.expiry]) }
+                    Button("Ouvrir la page du provider") { browser = true }
+                    Text("Valable jusqu’à \(challenge.expiry.formatted(date: .omitted, time: .shortened))").font(.caption)
+                    ProgressView("En attente d’autorisation…")
+                }
+            } else {
+                Section { Button(setup.method == "api_key" ? "Valider la clé et connecter" : "Se connecter") { Task { await start() } }.disabled(busy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (setup.method == "api_key" && key.isEmpty)) }
+            }
+            if busy { ProgressView() }
+            if let error { Section { Text(error).foregroundStyle(.red) } }
+        }
+        .navigationTitle("Connecter un compte").navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuler") { Task { await cancel(); dismiss() } } } }
+        .interactiveDismissDisabled(busy || challenge != nil)
+        .onAppear { name = setup.name; accountID = manager.session?.accountId }
+        .onDisappear { key = ""; polling?.cancel(); if let challenge { Task { await cancelFlow(challenge) } } }
+        .onChange(of: phase) { _, value in if value == .active, let challenge { beginPolling(challenge) } else if value == .background { polling?.cancel() } }
+        .sheet(isPresented: $browser) { if let challenge { ProviderBrowser(url: challenge.verificationUrl) } }
+    }
+    private func start() async {
+        busy = true; error = nil; defer { busy = false; key = "" }
+        do {
+            let token = try await manager.validSession().accessToken
+            if setup.method == "api_key" {
+                let connection: ProviderConnection = try await ChatAPI.shared.providerRequest("providers", fields: ["provider": setup.provider, "displayName": name, "apiKey": key], token: token)
+                try await finish(connection.id)
+            } else {
+                let value: ProviderChallenge = try await ChatAPI.shared.providerRequest("providers/device/start", fields: ["provider": setup.provider, "displayName": name], token: token)
+                guard value.verificationUrl.scheme == "https", value.verificationUrl.user == nil, value.verificationUrl.password == nil else { throw APIError.invalidResponse }
+                challenge = value; browser = true; beginPolling(value)
+            }
+        } catch { self.error = error.localizedDescription }
+    }
+    private func beginPolling(_ value: ProviderChallenge) {
+        polling?.cancel()
+        polling = Task {
+            var interval = value.intervalSeconds
+            do {
+                while Date() < value.expiry {
+                    try await Task.sleep(for: .seconds(max(1, min(300, interval))))
+                    let token = try await manager.validSession().accessToken
+                    guard manager.session?.accountId == accountID else { return }
+                    let result: ProviderPoll = try await ChatAPI.shared.providerRequest("providers/device/poll", fields: ["flowToken": value.flowToken], token: token)
+                    try Task.checkCancellation()
+                    if result.status == "connected", let id = result.providerId { challenge = nil; browser = false; try await finish(id); return }
+                    interval = result.intervalSeconds ?? interval
+                }
+                await cancelFlow(value); challenge = nil; error = "Le code a expiré. Vous pouvez recommencer."
+            } catch is CancellationError {} catch { self.error = error.localizedDescription; await cancelFlow(value); challenge = nil }
+        }
+    }
+    private func finish(_ id: String) async throws {
+        guard manager.session?.accountId == accountID else { throw APIError.authenticationRequired }
+        if let replacing = setup.replacing {
+            let token = try await manager.validSession().accessToken
+            let _: [String: Bool] = try await ChatAPI.shared.providerRequest("providers/\(replacing)/disconnect", fields: [:], token: token)
+        }
+        connected(id)
+    }
+    private func cancelFlow(_ value: ProviderChallenge) async {
+        guard manager.session?.accountId == accountID, let token = try? await manager.validSession().accessToken else { return }
+        let _: [String: Bool]? = try? await ChatAPI.shared.providerRequest("providers/device/cancel", fields: ["flowToken": value.flowToken], token: token)
+    }
+    private func cancel() async { polling?.cancel(); key = ""; if let value = challenge { await cancelFlow(value) }; challenge = nil }
 }
