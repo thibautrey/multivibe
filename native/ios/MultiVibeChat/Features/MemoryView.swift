@@ -11,7 +11,6 @@ struct MemoryView: View {
         NavigationStack {
             List {
                 Section {
-                    Text("Seuls les souvenirs validés, non expirés et sans contradiction sont utilisables. Une déclaration mémorisée n’est pas une preuve indépendante.")
                     if let error = manager.memoryError { Text(error).foregroundStyle(.red) }
                     Button("Ajouter un souvenir", systemImage: "plus") {
                         manager.memoryDraft = MemoryDraft(text: "", evidence: MemoryEvidence(origin: .userEntry,
@@ -22,7 +21,6 @@ struct MemoryView: View {
                     Section("Projet de cette conversation") {
                         TextField("Nom du projet (vide : général)", text: $project).onSubmit { manager.setMemoryScope(project) }
                         Button("Appliquer le projet") { manager.setMemoryScope(project) }
-                        Text("Les souvenirs généraux et ceux de ce projet seront consultables par l’agent.")
                     }
                 }
                 Section("Souvenirs") {
@@ -57,16 +55,20 @@ struct MemoryView: View {
                             }.buttonStyle(.borderless)
                         }.accessibilityElement(children: .contain)
                     }
-                    if manager.memoryItems.isEmpty { Text("Les informations utiles sont retenues automatiquement après vos échanges. Vous pouvez les ajouter, les corriger ou les oublier ici.") }
+                    if manager.memoryItems.isEmpty {
+                        Label("Aucun souvenir", systemImage: "brain")
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Section("Synchronisation") {
-                    if let status = manager.historyStatus { Text(status).font(.caption) }
-                    if manager.session == nil { Text("Mémoire invitée locale. Elle n’est pas copiée automatiquement dans un compte.") }
+                    if manager.session == nil {
+                        Label("Sur cet appareil", systemImage: "iphone")
+                            .foregroundStyle(.secondary)
+                    }
                     else {
                         Toggle("Synchroniser la mémoire", isOn: Binding(get: { manager.memorySyncEnabled }, set: {
                             if $0 { confirmSync = true } else { manager.setMemorySync(false) }
                         }))
-                        Text("Envoie les souvenirs validés et leurs sources au compte. Les corrections et oublis seront synchronisés ; les propositions restent locales. Activez aussi la synchronisation automatique de l’historique pour le retour du réseau. Désactiver ne supprime pas la copie serveur.")
                         Button("Synchroniser maintenant") { Task { await manager.synchronizeHistory() } }
                             .disabled(!manager.memorySyncEnabled)
                     }
