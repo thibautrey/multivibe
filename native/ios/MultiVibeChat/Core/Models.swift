@@ -136,12 +136,17 @@ struct Conversation: Codable, Identifiable, Equatable, Sendable {
     var memoryScope: String?
     var memoryReviewedThrough: UUID?
     var model: String = ""
+    var modelAccess: SelectedModelAccess?
     var messages: [ChatMessage] = []
     var updatedAt = Date()
 }
 struct ModelOption: Codable, Identifiable, Sendable, Equatable {
     let id: String
     var name: String?
+    var author: String?
+    var description: String?
+    var metadata: CatalogMetadata?
+    var popularityRank: Int?
     var displayName: String { name ?? id }
 }
 
@@ -211,40 +216,13 @@ struct ModelPresentation: Identifiable, Sendable {
 
 extension ModelOption {
     var presentation: ModelPresentation {
-        let searchable = "\(id) \(displayName)".lowercased()
-        let provider: ModelProvider
-        if id == LocalModel.id || searchable.contains("apple") || searchable.contains("foundation") { provider = .apple }
-        else if searchable.contains("openai") || searchable.contains("gpt") || searchable.contains("o1") || searchable.contains("o3") || searchable.contains("o4") { provider = .openAI }
-        else if searchable.contains("anthropic") || searchable.contains("claude") { provider = .anthropic }
-        else if searchable.contains("google") || searchable.contains("gemini") || searchable.contains("gemma") { provider = .google }
-        else if searchable.contains("mistral") || searchable.contains("devstral") || searchable.contains("codestral") || searchable.contains("mixtral") { provider = .mistral }
-        else if searchable.contains("meta") || searchable.contains("llama") { provider = .meta }
-        else if searchable.contains("deepseek") { provider = .deepSeek }
-        else { provider = .multivibe }
-
-        var uses: Set<ModelUseCase> = [.writing, .analysis]
-        if searchable.contains("code") || searchable.contains("devstral") || searchable.contains("gpt") || searchable.contains("claude") { uses.insert(.coding) }
-        if searchable.contains("vision") || searchable.contains("image") || searchable.contains("multimodal") || searchable.contains("gemini") { uses.insert(.creation) }
-        if id == LocalModel.id { uses = [.writing, .analysis, .local] }
-
-        let summary: String
-        if id == LocalModel.id { summary = "Réponses privées, rapides et disponibles hors ligne sur cet appareil." }
-        else if uses.contains(.coding) { summary = "Un modèle polyvalent, adapté au raisonnement, à l’écriture et au code." }
-        else if uses.contains(.creation) { summary = "Un modèle multimodal pour comprendre et créer à partir de plusieurs formats." }
-        else { summary = "Un modèle disponible dans votre catalogue MultiVibe pour écrire et analyser." }
-
-        var badges = ModelUseCase.allCases.filter { uses.contains($0) }.prefix(3).map(\.title)
-        if id == LocalModel.id { badges.insert("Hors ligne", at: 0) }
-        let popularity: Int
-        if searchable.contains("gpt") { popularity = 100 }
-        else if searchable.contains("claude") { popularity = 95 }
-        else if searchable.contains("gemini") { popularity = 90 }
-        else if id == LocalModel.id { popularity = 85 }
-        else if searchable.contains("mistral") || searchable.contains("deepseek") { popularity = 80 }
-        else { popularity = 50 }
-        let free = id == LocalModel.id || searchable.contains("free") || searchable.contains("community")
-        return ModelPresentation(model: self, provider: provider, useCases: uses, summary: summary,
-                                 badges: Array(badges), popularity: popularity, usesCloudCredit: !free)
+        let local = id == LocalModel.id
+        let provider: ModelProvider = local ? .apple : ["openai": .openAI, "anthropic": .anthropic, "google": .google, "mistralai": .mistral, "mistral": .mistral, "meta": .meta, "meta-llama": .meta, "deepseek": .deepSeek][author?.lowercased() ?? ""] ?? .other
+        let uses: Set<ModelUseCase> = local ? [.local, .writing, .analysis] : []
+        return ModelPresentation(model: self, provider: provider, useCases: uses,
+            summary: description ?? (local ? "Réponses privées sur cet appareil." : "Consultez les capacités et les accès disponibles pour ce modèle."),
+            badges: local ? ["Hors ligne"] : metadata?.modalities ?? [],
+            popularity: popularityRank.map { 100000 - $0 } ?? 0, usesCloudCredit: !local)
     }
 }
 
@@ -437,7 +415,7 @@ struct AccountHistorySnapshot: Codable, Sendable {
             else if let parent = node["parentId"]?.string { cursor = parent }
             else { throw APIError.invalidResponse }
         }
-        return Conversation(id: id, title: title, memorySourceID: item["multivibeSourceID"]?.string.flatMap(UUID.init(uuidString:)), memoryScope: item["multivibeMemoryScope"]?.string, memoryReviewedThrough: item["multivibeMemoryReviewedThrough"]?.string.flatMap(UUID.init(uuidString:)), model: item["model"]?.string ?? "", messages: messages.reversed(), updatedAt: Date(timeIntervalSince1970: timestamp / 1000))
+        return Conversation(id: id, title: title, memorySourceID: item["multivibeSourceID"]?.string.flatMap(UUID.init(uuidString:)), memoryScope: item["multivibeMemoryScope"]?.string, memoryReviewedThrough: item["multivibeMemoryReviewedThrough"]?.string.flatMap(UUID.init(uuidString:)), model: item["model"]?.string ?? "", modelAccess: SelectedModelAccess.fromHistory(item["modelAccess"]), messages: messages.reversed(), updatedAt: Date(timeIntervalSince1970: timestamp / 1000))
     }
 }
 
@@ -496,6 +474,7 @@ extension AccountHistorySnapshot {
         item["id"] = .string(serverID); item["title"] = .string(conversation.title)
         item["updatedAt"] = .number(conversation.updatedAt.timeIntervalSince1970 * 1000)
         item["model"] = .string(conversation.model)
+        item["modelAccess"] = conversation.modelAccess?.historyValue ?? .null
         if let reviewed = conversation.memoryReviewedThrough { item["multivibeMemoryReviewedThrough"] = .string(reviewed.uuidString) }
         if let scope = conversation.memoryScope { item["multivibeMemoryScope"] = .string(scope) }
         if item["renamed"] == nil { item["renamed"] = .bool(false) }
@@ -686,4 +665,49 @@ struct NativeAccountProfile: Decodable, Sendable {
     let accountId: String
     let email: String?
     let teams: [Team]
+}
+
+struct CatalogMetadata: Codable, Sendable, Equatable {
+    var modalities: [String]?
+    var contextLength: Int?
+    var maxOutputTokens: Int?
+    var license: String?
+}
+struct CatalogEntry: Decodable, Sendable {
+    let id: String
+    let displayName: String
+    let author: String?
+    let description: String?
+    let metadata: CatalogMetadata?
+    let popularityRank: Int?
+    var option: ModelOption { ModelOption(id: id, name: displayName, author: author, description: description, metadata: metadata, popularityRank: popularityRank) }
+}
+struct CatalogPage: Decodable, Sendable { let data: [CatalogEntry]; let nextCursor: String? }
+struct ProviderCapability: Decodable, Identifiable, Sendable { let id: String; let name: String; let authenticationMethods: [String] }
+struct ProviderCapabilities: Decodable, Sendable { let providers: [ProviderCapability] }
+struct ProviderConnection: Decodable, Identifiable, Sendable {
+    let id: String; let provider: String; let displayName: String; let state: String
+    let models: [String]; let authenticationMethod: String
+}
+struct ProviderConnections: Decodable, Sendable { let data: [ProviderConnection] }
+struct ProviderChallenge: Decodable, Sendable {
+    let provider: String; let userCode: String; let verificationUrl: URL; let intervalSeconds: Double
+    let expiresAt: Double; let flowToken: String
+    var expiry: Date { Date(timeIntervalSince1970: expiresAt / 1000) }
+}
+struct ProviderPoll: Decodable, Sendable { let status: String; let intervalSeconds: Double?; let providerId: String? }
+struct ModelAccessOption: Decodable, Identifiable, Sendable {
+    let id: String; let modelId: String; let method: String; let provider: String; let label: String
+    let state: String; let connectionId: String?; let billing: String
+    var selection: SelectedModelAccess { .init(id: id, modelId: modelId, label: label, method: method) }
+}
+struct ModelAccessReply: Decodable, Sendable { let model: CatalogEntry; let data: [ModelAccessOption]; let preferred: String? }
+struct SelectedModelAccess: Codable, Equatable, Sendable {
+    let id: String; let modelId: String; let label: String; let method: String
+    var historyValue: HistoryJSON { .object(["id": .string(id), "modelId": .string(modelId), "label": .string(label), "method": .string(method)]) }
+    static func fromHistory(_ value: HistoryJSON?) -> Self? {
+        guard let o = value?.object, let id = o["id"]?.string, let model = o["modelId"]?.string,
+              let label = o["label"]?.string, let method = o["method"]?.string else { return nil }
+        return .init(id: id, modelId: model, label: label, method: method)
+    }
 }
