@@ -10,6 +10,12 @@ listens on loopback at `CONTROL_PLANE_PORT` (default 1456). The supervisor
 generates one shared internal credential and stops both children when either
 exits. Docker and packaged Host installations use their existing supervisors.
 
+The control plane binding is intentionally not operator-configurable away from
+loopback: it is an internal dependency, and the edge on `V1_EDGE_PORT` already
+serves and authenticates every dashboard route by reverse proxying to it. To
+reach the dashboard from another machine, use `http://<host>:1455` and set
+`ADMIN_TOKEN`; do not publish `CONTROL_PLANE_PORT`.
+
 Public Responses, Chat Completions, realtime, WebSockets and inference jobs
 belong to Rust. There is no JavaScript inference launch mode. Node retains
 admin business logic and the authenticated internal AI SDK adapter. The legacy
