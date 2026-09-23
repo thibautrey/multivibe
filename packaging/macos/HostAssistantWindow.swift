@@ -32,6 +32,9 @@ extension MultiVibeMenuBarApp {
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // Activating the menu bar popover also triggers this delegate callback.
+        // Only a Dock reopen should bring up the chat in that case.
+        guard !popover.isShown, !notificationPopover.isShown else { return false }
         Task { @MainActor in self.showAssistant() }
         return true
     }
