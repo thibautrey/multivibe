@@ -112,7 +112,10 @@ import Network
             error = nil
             if let current {
                 // Do not silently substitute a different model for an existing chat.
-                selectedModel = models.contains(where: { $0.id == current.model }) ? current.model : ""
+                selectedModel = current.model
+                if !current.model.isEmpty && !models.contains(where: { $0.id == current.model }) {
+                    models.append(ModelOption(id: current.model))
+                }
                 selectedAccess = current.modelAccess
             }
         }

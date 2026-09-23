@@ -126,6 +126,9 @@ actor ChatAPI {
     }
     func createVoiceSession(conversation: Conversation, model: String, voice: String, language: String,
                             token: String) async throws -> VoiceSession {
+        guard conversation.modelAccess?.method == "cloud", conversation.modelAccess?.modelId == model else {
+            throw APIError.server(409, "voice_requires_explicit_cloud_access")
+        }
         let messages = Array(conversation.messages.filter { ["user", "assistant"].contains($0.role) && ($0.completion == nil || $0.completion == .completed) }.suffix(20)).map { ["role": $0.role, "content": $0.content] }
         let body = try JSONSerialization.data(withJSONObject: ["conversationId": conversation.id.uuidString.lowercased(),
             "model": model, "voice": voice, "language": language, "messages": messages])
