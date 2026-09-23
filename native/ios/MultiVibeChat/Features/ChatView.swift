@@ -25,6 +25,8 @@ struct ChatView: View {
     private struct RetryTarget { let conversation: UUID; let message: UUID }
     @State private var documentsPresented = false
     @State private var privacyPresented = false
+    @State private var profilePresented = false
+    @State private var authenticateAfterProfile = false
     @State private var suggestions = HomeSuggestionStore.load()
     @State private var suggestionsPresented = false
     @State private var highlightedSuggestion: UUID?
@@ -62,15 +64,21 @@ struct ChatView: View {
             .searchable(text: $search, prompt: "Conversations sur cet appareil")
             .navigationTitle("")
             .safeAreaInset(edge: .bottom) {
-                VStack {
-                    if let status = manager.historyStatus { Text(status).font(.caption) }
-                    if manager.hasHistoryConflict {
-                        Button("Conserver les deux versions") { confirmHistoryConflict = true }
-                            .disabled(manager.isSynchronizing || manager.isStreaming || manager.isRestoring)
-                    }
-                }.padding().background(.regularMaterial)
+                if let status = manager.historyStatus, status != "Historique synchronisé avec votre compte." {
+                    VStack {
+                        Text(status).font(.caption)
+                        if manager.hasHistoryConflict {
+                            Button("Conserver les deux versions") { confirmHistoryConflict = true }
+                                .disabled(manager.isSynchronizing || manager.isStreaming || manager.isRestoring)
+                        }
+                    }.padding().background(.regularMaterial)
+                }
             }
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Profil", systemImage: "person.crop.circle") { profilePresented = true }
+                        .accessibilityIdentifier("openProfile")
+                }
                 ToolbarItem(placement: .primaryAction) { Button("Nouvelle conversation", systemImage: "square.and.pencil") { openNewConversation() } }
                 ToolbarItem(placement: .secondaryAction) {
                     Button("Synchroniser l’historique", systemImage: "arrow.triangle.2.circlepath") {
@@ -85,10 +93,6 @@ struct ChatView: View {
                     }
                 }
                 ToolbarItem(placement: .secondaryAction) { Button("Confidentialité et données", systemImage: "hand.raised") { privacyPresented = true } }
-                ToolbarItem(placement: .bottomBar) {
-                    if manager.session != nil { Button("Déconnexion") { Task { await manager.logout() } } }
-                    else { Button("Se connecter") { manager.authenticationPresented = true }.accessibilityIdentifier("openAuthentication") }
-                }
                 ToolbarItem(placement: .secondaryAction) {
                     Button("Documents et outils locaux", systemImage: "doc") { documentsPresented = true }
                 }
@@ -303,6 +307,46 @@ struct ChatView: View {
         .sheet(item: Binding(get: { manager.memoryPresented ? nil : manager.memoryDraft }, set: { manager.memoryDraft = $0 })) { draft in MemoryEditor(draft: draft) }
         .sheet(isPresented: $documentsPresented) { LocalDocumentsView() }
         .sheet(isPresented: $privacyPresented) { NativePrivacyView() }
+        .sheet(isPresented: $profilePresented, onDismiss: {
+            if authenticateAfterProfile {
+                authenticateAfterProfile = false
+                manager.authenticationPresented = true
+            }
+        }) {
+            NavigationStack {
+                Form {
+                    Section("Compte") {
+                        LabeledContent("Statut", value: manager.session == nil ? "Invité" : "Connecté")
+                    }
+                    Section {
+                        if manager.session != nil {
+                            Button("Déconnexion", role: .destructive) {
+                                profilePresented = false
+                                Task { await manager.logout() }
+                            }
+                            .accessibilityIdentifier("signOut")
+                            .disabled(manager.isRestoring)
+                        } else {
+                            Button("Se connecter") {
+                                authenticateAfterProfile = true
+                                profilePresented = false
+                            }
+                            .accessibilityIdentifier("openAuthentication")
+                            .disabled(manager.isRestoring)
+                        }
+                    }
+                }
+                .navigationTitle("Profil")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Fermer", systemImage: "xmark") { profilePresented = false }
+                    }
+                }
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
         .sheet(isPresented: $suggestionsPresented) {
             SuggestionsEditor(suggestions: $suggestions, highlighted: highlightedSuggestion) {
                 HomeSuggestionStore.save(suggestions)
