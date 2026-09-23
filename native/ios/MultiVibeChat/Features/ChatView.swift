@@ -48,8 +48,31 @@ struct ChatView: View {
         NavigationSplitView(preferredCompactColumn: $preferredColumn) {
             List(selection: $manager.selection) {
                 Section {
-                    if manager.session != nil { NavigationLink("Applications", destination: SDKApplicationsView().id(manager.session?.accountId)) }
-                    Button("Mémoire", systemImage: "brain") { manager.memoryPresented = true }.accessibilityIdentifier("openMemory")
+                    ScrollView(.horizontal) {
+                        LazyHGrid(rows: [GridItem(.flexible(), alignment: .top)], spacing: 16) {
+                            if manager.session != nil {
+                                NavigationLink {
+                                    SDKApplicationsView().id(manager.session?.accountId)
+                                } label: {
+                                    ConversationShortcutLabel(title: "Applications", systemImage: "square.grid.2x2.fill")
+                                }
+                                .accessibilityIdentifier("openApplications")
+                            }
+                            Button {
+                                manager.memoryPresented = true
+                            } label: {
+                                ConversationShortcutLabel(title: "Mémoire", systemImage: "brain")
+                            }
+                            .accessibilityIdentifier("openMemory")
+                        }
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 8)
+                    }
+                    .scrollIndicators(.hidden)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .buttonStyle(.plain)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                 }
 
                 ForEach(manager.historyConversations.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }) { conversation in
@@ -1139,5 +1162,33 @@ struct InternetPermissionView: View {
                 Spacer()
             }.padding().navigationTitle("Accès Internet").navigationBarTitleDisplayMode(.inline)
         }.presentationDetents([.large])
+    }
+}
+
+private struct ConversationShortcutLabel: View {
+    let title: String
+    let systemImage: String
+    @ScaledMetric(relativeTo: .caption) private var itemWidth = 88.0
+    @ScaledMetric(relativeTo: .body) private var iconSize = 60.0
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.title2.weight(.medium))
+                .foregroundStyle(MultiVibeTheme.accent)
+                .frame(width: iconSize, height: iconSize)
+                .background(.background, in: Circle())
+                .overlay(Circle().stroke(MultiVibeTheme.accent.opacity(0.15), lineWidth: 1))
+                .accessibilityHidden(true)
+            Text(title)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(width: max(itemWidth, iconSize), alignment: .top)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
     }
 }
