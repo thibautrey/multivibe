@@ -67,6 +67,18 @@ key and application-policy inventories, and all public inference routes.
 Compatibility endpoints for Ollama- and LiteLLM-style discovery are also
 available.
 
+Reach the dashboard through `:1455`, never through `:1456`. The control plane
+port stays on container loopback by design and is not a second entry point, so
+publishing or browsing `1456` returns a refused connection. The edge reverse
+proxies every dashboard route to it after session authentication.
+
+`ADMIN_TOKEN` protects the dashboard and must be set for any host reachable
+beyond your own machine. The Compose default (`change-me`) is a placeholder:
+while it is in effect the instance logs a startup warning and the admin boundary
+accepts a publicly known value. Set `ADMIN_TOKEN` in `.env` next to
+`docker-compose.yml`; local overrides belong in an untracked
+`docker-compose.override.yml`.
+
 </details>
 
 ### Find your way

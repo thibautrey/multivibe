@@ -872,6 +872,15 @@ Sentry.setupExpressErrorHandler(app);
 const server = http.createServer(app);
 const stopOpenCatalog = loadOpenModelCatalog.start();
 server.once("close", stopOpenCatalog);
+// The shipped Compose default is a well-known placeholder. Serving the admin
+// boundary with it would let anyone on the reachable network authenticate.
+const INSECURE_ADMIN_TOKENS = new Set(["change-me"]);
+if (ADMIN_TOKEN && INSECURE_ADMIN_TOKENS.has(ADMIN_TOKEN)) {
+  console.warn(
+    "multivibe admin token is a well-known placeholder value; set ADMIN_TOKEN before exposing this instance",
+  );
+}
+
 server.listen(nodeHost ? { port: nodePort, host: nodeHost } : { port: nodePort }, () => {
   smartRouting.startHealthMonitoring();
   hostHarnessIntegrations?.startCatalogSynchronization();
