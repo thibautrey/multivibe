@@ -34,7 +34,9 @@ struct ChatView: View {
     @State private var composerPresented = true
     @FocusState private var composerFocused: Bool
     private static let compactComposerHeight: CGFloat = 126
-    private static let compactComposerDetent = PresentationDetent.height(compactComposerHeight)
+    private var composerDetent: PresentationDetent {
+        .height(Self.compactComposerHeight + (voice.error != nil ? 76 : (voice.recording || voice.starting ? 28 : 0)))
+    }
     private let latestMessageAnchor = "latest-message"
 
     var body: some View {
@@ -203,7 +205,9 @@ struct ChatView: View {
                 if voice.speaking {
                     Button("Arrêter la lecture", systemImage: "stop.circle") { voice.silence() }.padding(.horizontal)
                 }
-                if let error = voice.error { Text(error).font(.callout).foregroundStyle(.red).padding() }
+                if !composerRequested, let error = voice.error {
+                    Text(error).font(.callout).foregroundStyle(.red).padding()
+                }
                 if let error = manager.error { Text(error).font(.callout).foregroundStyle(.red).padding() }
                 if let error = manager.modelsError, manager.selectedModel != LocalModel.id {
                     VStack(alignment: .leading, spacing: 8) {
@@ -306,10 +310,10 @@ struct ChatView: View {
         })) {
             composer
             .interactiveDismissDisabled(isNewConversation)
-            .presentationDetents([Self.compactComposerDetent])
+            .presentationDetents([composerDetent])
             .presentationDragIndicator(.visible)
             .presentationContentInteraction(.scrolls)
-            .presentationBackgroundInteraction(.enabled(upThrough: Self.compactComposerDetent))
+            .presentationBackgroundInteraction(.enabled(upThrough: composerDetent))
             .presentationCornerRadius(30)
             .presentationBackground(.clear)
         }
@@ -376,6 +380,18 @@ struct ChatView: View {
     private var composer: some View {
         @Bindable var manager = manager
         return VStack(alignment: .leading, spacing: 12) {
+            if let error = voice.error {
+                Text(error).font(.callout).foregroundStyle(.red)
+                    .lineLimit(3).accessibilityIdentifier("dictationError")
+            } else if voice.recording {
+                Label("Écoute…", systemImage: "mic.fill")
+                    .font(.callout).foregroundStyle(.red)
+                    .accessibilityIdentifier("dictationListening")
+            } else if voice.starting {
+                Label("Démarrage de la dictée…", systemImage: "mic")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("dictationStarting")
+            }
             TextField("Que souhaitez-vous savoir ?", text: $text, axis: .vertical)
                 .focused($composerFocused)
                 .submitLabel(.send)
@@ -399,10 +415,15 @@ struct ChatView: View {
                 if manager.isStreaming {
                     Button("Arrêter", systemImage: "stop.circle.fill") { manager.stop() }.font(.title).frame(minWidth: 44, minHeight: 44)
                 } else if voice.recording {
-                    Button("Terminer la dictée", systemImage: "waveform.circle.fill") { voice.stop() }
+                    Button("Terminer la dictée", systemImage: "stop.circle.fill") { voice.stop() }
+                        .foregroundStyle(.red).accessibilityIdentifier("stopDictation")
                         .font(.title).frame(minWidth: 44, minHeight: 44)
+                } else if voice.starting {
+                    ProgressView().frame(minWidth: 44, minHeight: 44)
+                        .accessibilityLabel("Démarrage de la dictée")
                 } else if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Button("Dicter sur cet appareil", systemImage: "waveform.circle.fill") { startVoiceInput() }
+                        .accessibilityIdentifier("startDictation")
                         .font(.title).frame(minWidth: 44, minHeight: 44)
                 } else {
                     Button("Envoyer", systemImage: "arrow.up.circle.fill") { sendComposerMessage() }
