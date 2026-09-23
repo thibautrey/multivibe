@@ -25,7 +25,7 @@ test('personal execution streams incrementally with usage and a completion marke
   const text=await response.text();assert.match(text,/Hello/);assert.match(text,/\[DONE\]/);
 });
 test('personal ChatGPT subscription uses the pinned Responses route and converts its result',async()=>{
- const credential={accessToken:'oauth-fixture',refreshToken:'refresh-fixture',expiresAt:Date.now()+60_000,coreAccountContext:JSON.stringify({schemaVersion:1,provider:'openai',baseUrl:'https://chatgpt.com',upstreamMode:'responses',chatgptAccountId:'account_fixture'})};
+ const credential={accessToken:'oauth-fixture',refreshToken:'refresh-fixture',expiresAt:Date.now()+120_000,coreAccountContext:JSON.stringify({schemaVersion:1,provider:'openai',baseUrl:'https://chatgpt.com',upstreamMode:'responses',chatgptAccountId:'account_fixture'})};
  const response=await executePersonalProviderChat({...input,endpoint:'https://chatgpt.com',credential},async(url,init)=>{
   assert.equal(String(url),'https://chatgpt.com/backend-api/codex/responses');const headers=new Headers(init?.headers);
   assert.equal(headers.get('authorization'),'Bearer oauth-fixture');assert.equal(headers.get('chatgpt-account-id'),'account_fixture');
@@ -33,6 +33,16 @@ test('personal ChatGPT subscription uses the pinned Responses route and converts
   return Response.json({id:'response_fixture',model:'fixture',status:'completed',output:[{type:'message',role:'assistant',content:[{type:'output_text',text:'Subscription reply'}]}],usage:{input_tokens:2,output_tokens:2,total_tokens:4}});
  },new AbortController().signal);
  assert.equal((await response.json()).choices[0].message.content,'Subscription reply');
+});
+test('personal subscription refreshes once, persists rotation, then dispatches with the replacement token',async()=>{
+ const credential={accessToken:'expired-oauth',refreshToken:'rotating-refresh',expiresAt:Date.now()-1,coreAccountContext:JSON.stringify({schemaVersion:1,provider:'openai',baseUrl:'https://chatgpt.com',upstreamMode:'responses',chatgptAccountId:'account_fixture'})};
+ let calls=0,persisted:any;
+ const response=await executePersonalProviderChat({...input,endpoint:'https://chatgpt.com',credential},async(url,init)=>{
+  calls++;if(String(url)==='https://auth.openai.com/oauth/token'){assert.match(String(init?.body),/refresh_token=rotating-refresh/);return Response.json({access_token:'replacement-oauth',refresh_token:'replacement-refresh',expires_in:3600,account_id:'account_fixture'});}
+  assert.equal(String(url),'https://chatgpt.com/backend-api/codex/responses');assert.equal(new Headers(init?.headers).get('authorization'),'Bearer replacement-oauth');
+  return Response.json({id:'r',model:'fixture',status:'completed',output:[{type:'message',role:'assistant',content:[{type:'output_text',text:'refreshed'}]}]});
+ },new AbortController().signal,async value=>{persisted=value;});
+ assert.equal((await response.json()).choices[0].message.content,'refreshed');assert.equal(calls,2);assert.equal(persisted.accessToken,'replacement-oauth');assert.equal(persisted.refreshToken,'replacement-refresh');
 });
 test('personal execution rejects redirects, unknown request fields and excessive limits before dispatch',async()=>{
   let calls=0;const transport:typeof fetch=async()=>{calls++;throw Error('unexpected');};
