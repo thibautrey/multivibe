@@ -9,6 +9,13 @@ import {buildCopilotHeaders} from './github-copilot.js';
 import {openCodeAccountHeaders,openCodeInferenceToken} from './opencode.js';
 import {chatCompletionsToResponsesPayload} from './responses/payloads.js';
 import {createResponsesToChatCompletionStreamState,convertResponsesSSEToChatCompletionSSE,finalizeResponsesSSEToChatCompletionSSE,responseObjectToChatCompletion} from './responses/converters.js';
+import {encodeTeamDeviceCredential} from './team-provider-credential.js';
+import {refreshCopilotAccessToken} from './github-copilot.js';
+import {refreshXaiAccessToken} from './xai.js';
+import {refreshOpenCodeAccessToken} from './opencode.js';
+import {refreshAccessToken,mergeTokenIntoAccount} from './oauth.js';
+import {defaultOAuthConfig} from './oauth-config.js';
+import type {Account} from './types.js';
 
 export interface PersonalProviderExecution {
   provider:string;
@@ -18,9 +25,9 @@ export interface PersonalProviderExecution {
 }
 
 /** No implicit global fetch, retries, arbitrary endpoints or provider diagnostics. */
-export async function executePersonalProviderChat(input:PersonalProviderExecution, transport:typeof fetch, signal:AbortSignal):Promise<Response> {
+export async function executePersonalProviderChat(input:PersonalProviderExecution, transport:typeof fetch, signal:AbortSignal,persist?:(credential:TeamProviderCredential)=>Promise<void>):Promise<Response> {
   try {
-    const account = decodeTeamProviderCredential(input.credential,input.provider,input.endpoint);
+    let account = decodeTeamProviderCredential(input.credential,input.provider,input.endpoint);
     const body=input.body;
     const accepted=new Set(['model','messages','stream','max_tokens','max_completion_tokens','temperature','top_p','tools','tool_choice','response_format','stream_options']);
     if(!body||Array.isArray(body)||Object.keys(body).some(key=>!accepted.has(key))
@@ -45,7 +52,16 @@ export async function executePersonalProviderChat(input:PersonalProviderExecutio
       })),{status:response.status,headers:response.headers});
     };
     if(account.provider!=='ai-sdk'){
-      const runtimeAccount={id:'isolated-personal-provider',enabled:true,...account};
+      let runtimeAccount:Account={id:'isolated-personal-provider',enabled:true,accessToken:account.accessToken,...account};
+      if(account.expiresAt!==undefined&&account.expiresAt<=Date.now()+60_000){
+        if(!account.refreshToken||!persist)throw Error('reauthentication_required');
+        const refreshTransport:typeof fetch=(url,init)=>transport(url,{...init,redirect:'error',signal:AbortSignal.any([boundedSignal,AbortSignal.timeout(15_000)])});
+        if(account.provider==='openai')runtimeAccount=mergeTokenIntoAccount(runtimeAccount,await refreshAccessToken(defaultOAuthConfig,account.refreshToken,refreshTransport));
+        else if(account.provider==='github-copilot')runtimeAccount=await refreshCopilotAccessToken(runtimeAccount as Account&{refreshToken:string},refreshTransport);
+        else if(account.provider==='xai')runtimeAccount=await refreshXaiAccessToken(runtimeAccount as Account&{refreshToken:string},refreshTransport);
+        else {const token=await refreshOpenCodeAccessToken(runtimeAccount,refreshTransport);runtimeAccount={...runtimeAccount,accessToken:token.accessToken,refreshToken:token.refreshToken??runtimeAccount.refreshToken,expiresAt:token.expiresAt??runtimeAccount.expiresAt};}
+        await persist(encodeTeamDeviceCredential(runtimeAccount));account=runtimeAccount;
+      }
       const mode=account.provider==='github-copilot'?account.copilotModelEndpoints?.[body.model]??account.upstreamMode:account.upstreamMode;
       if(mode!=='responses'&&mode!=='chat/completions')throw Error('unsupported');
       const responses=mode==='responses',payload=responses?chatCompletionsToResponsesPayload({...body,stream:Boolean(body.stream)}):{...body,max_tokens:tokens};
