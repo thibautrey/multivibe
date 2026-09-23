@@ -32,6 +32,7 @@ struct ChatView: View {
     @State private var followsLatest = true
     @State private var userScrolling = false
     @State private var composerPresented = true
+    @State private var voiceConversationPresented = false
     @FocusState private var composerFocused: Bool
     private static let compactComposerHeight: CGFloat = 126
     private var composerDetent: PresentationDetent {
@@ -251,6 +252,9 @@ struct ChatView: View {
             InternetPermissionView(request: request)
                 .interactiveDismissDisabled()
         }
+        .fullScreenCover(isPresented: $voiceConversationPresented) {
+            RealtimeVoiceView().environment(manager)
+        }
         .alert("Supprimer cette conversation ?", isPresented: Binding(
             get: { conversationToDelete != nil },
             set: { if !$0 { conversationToDelete = nil } }
@@ -422,8 +426,11 @@ struct ChatView: View {
                     ProgressView().frame(minWidth: 44, minHeight: 44)
                         .accessibilityLabel("Démarrage de la dictée")
                 } else if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Button("Dicter sur cet appareil", systemImage: "waveform.circle.fill") { startVoiceInput() }
+                    Button("Dicter sur cet appareil", systemImage: "mic") { startVoiceInput() }
                         .accessibilityIdentifier("startDictation")
+                        .font(.title3).frame(minWidth: 44, minHeight: 44)
+                    Button("Démarrer une conversation vocale", systemImage: "waveform.circle.fill") { startVoiceConversation() }
+                        .accessibilityIdentifier("startVoiceConversation")
                         .font(.title).frame(minWidth: 44, minHeight: 44)
                 } else {
                     Button("Envoyer", systemImage: "arrow.up.circle.fill") { sendComposerMessage() }
@@ -468,7 +475,7 @@ struct ChatView: View {
         }
         if manager.wantsVoiceConversation {
             manager.wantsVoiceConversation = false
-            startVoiceInput()
+            startVoiceConversation()
         }
         if let draft = manager.pendingDraft {
             shortcutDraftConversation = manager.selection
@@ -487,6 +494,14 @@ struct ChatView: View {
             await voice.start()
             manager.wantsImmediateVoiceCapture = false
         }
+    }
+    private func startVoiceConversation() {
+        preferredColumn = .detail
+        composerPresented = false
+        voice.silence()
+        if manager.session == nil { manager.authenticationPresented = true; return }
+        guard !manager.selectedModel.isEmpty else { manager.error = APIError.noModel.localizedDescription; return }
+        voiceConversationPresented = true
     }
 }
 
@@ -516,6 +531,7 @@ struct NativePrivacyView: View {
                 }
                 Section("Dictée, lecture et raccourcis") {
                     Text("La dictée exige la reconnaissance sur l’appareil : l’app ne transmet pas l’enregistrement audio à MultiVibe. Vérifiez le texte avant d’appuyer sur Envoyer. La lecture vocale utilise la synthèse vocale du système.")
+                    Text("La conversation vocale transmet temporairement le son au moteur vocal indiqué afin de répondre en direct. MultiVibe conserve uniquement les transcriptions finales dans le fil ; l’audio et les transcriptions partielles ne sont pas enregistrés.")
                     Text("Les raccourcis préparent une action dans l’app au premier plan. Ils n’envoient pas automatiquement votre brouillon. Partager un message utilise la feuille de partage iOS ; vous choisissez sa destination.")
                     Text("Les suggestions personnalisées restent sur cet iPhone. Une suggestion configurée avec le presse-papiers le lit uniquement lorsque vous touchez ce bouton ; iOS peut alors demander votre autorisation de coller.")
                 }
