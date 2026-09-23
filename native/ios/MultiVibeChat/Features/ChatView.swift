@@ -33,6 +33,7 @@ struct ChatView: View {
     @State private var userScrolling = false
     @State private var composerPresented = true
     @State private var voiceConversationPresented = false
+    @State private var voiceConversationPreparing = false
     @FocusState private var composerFocused: Bool
     private static let compactComposerHeight: CGFloat = 126
     private var composerDetent: PresentationDetent {
@@ -252,7 +253,11 @@ struct ChatView: View {
             InternetPermissionView(request: request)
                 .interactiveDismissDisabled()
         }
-        .fullScreenCover(isPresented: $voiceConversationPresented) {
+        .fullScreenCover(isPresented: $voiceConversationPresented, onDismiss: {
+            voiceConversationPreparing = false
+            composerPresented = true
+            composerFocused = false
+        }) {
             RealtimeVoiceView().environment(manager)
         }
         .alert("Supprimer cette conversation ?", isPresented: Binding(
@@ -356,7 +361,9 @@ struct ChatView: View {
 
     // An empty conversation always needs its input. Navigation and competing
     // sheets may dismiss the presentation without changing that requirement.
-    private var composerRequested: Bool { isNewConversation || composerPresented }
+    private var composerRequested: Bool {
+        !voiceConversationPreparing && !voiceConversationPresented && (isNewConversation || composerPresented)
+    }
 
     private var modalIsActive: Bool {
         manager.authenticationPresented || manager.internetApproval != nil || manager.memoryPresented || manager.memoryDraft != nil ||
@@ -497,11 +504,20 @@ struct ChatView: View {
     }
     private func startVoiceConversation() {
         preferredColumn = .detail
-        composerPresented = false
         voice.silence()
         if manager.session == nil { manager.authenticationPresented = true; return }
         guard !manager.selectedModel.isEmpty else { manager.error = APIError.noModel.localizedDescription; return }
-        voiceConversationPresented = true
+        // The compact composer is itself a sheet. Dismiss it before presenting
+        // the full-screen voice UI so UIKit never restores it at a large detent.
+        voiceConversationPreparing = true
+        composerPresented = false
+        composerFocused = false
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(180))
+            guard voiceConversationPreparing else { return }
+            voiceConversationPresented = true
+            voiceConversationPreparing = false
+        }
     }
 }
 
