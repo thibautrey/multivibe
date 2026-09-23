@@ -494,19 +494,10 @@ struct ChatView: View {
                 .onSubmit(sendComposerMessage)
                 .accessibilityLabel("Message").lineLimit(1...4).padding(.horizontal, 6)
             HStack(spacing: 8) {
-                Menu {
-                    Picker("Modèle", selection: $manager.selectedModel) {
-                        Text("Choisir un modèle").tag("")
-                        ForEach(manager.models) { model in Text(model.displayName).tag(model.id) }
-                    }
-                    Button("Actualiser les modèles", systemImage: "arrow.clockwise") { Task { await manager.reloadModels() } }
-                        .disabled(manager.isLoadingModels)
-                } label: {
-                    HStack(spacing: 5) {
-                        Text(manager.models.first(where: { $0.id == manager.selectedModel })?.displayName ?? "Choisir un modèle").lineLimit(1)
-                        Image(systemName: "chevron.down").font(.caption2)
-                    }.font(.subheadline).frame(minHeight: 44)
-                }.disabled(manager.isStreaming).accessibilityLabel("Modèle")
+                ModelPickerButton(models: manager.models, selectedModel: $manager.selectedModel,
+                                  isLoading: manager.isLoadingModels, isDisabled: manager.isStreaming) {
+                    await manager.reloadModels()
+                }
                 Spacer(minLength: 0)
                 if manager.isStreaming {
                     Button("Arrêter", systemImage: "stop.circle.fill") { manager.stop() }.font(.title).frame(minWidth: 44, minHeight: 44)
@@ -604,6 +595,371 @@ struct ChatView: View {
             voiceConversationPreparing = false
         }
     }
+}
+
+
+private struct ModelPickerButton: View {
+    let models: [ModelOption]
+    @Binding var selectedModel: String
+    let isLoading: Bool
+    let isDisabled: Bool
+    let reload: @MainActor () async -> Void
+    @State private var presented = false
+    @State private var detent: PresentationDetent = .medium
+    @State private var favorites = ModelFavoriteStore.load()
+
+    var body: some View {
+        Button {
+            favorites = ModelFavoriteStore.load()
+            detent = .medium
+            presented = true
+        } label: {
+            HStack(spacing: 6) {
+                if let model = models.first(where: { $0.id == selectedModel }) {
+                    ModelProviderLogo(provider: model.presentation.provider, size: 22)
+                }
+                Text(models.first(where: { $0.id == selectedModel })?.displayName ?? "Choisir un modèle")
+                    .lineLimit(1)
+                Image(systemName: "chevron.down").font(.caption2)
+            }.font(.subheadline).frame(minHeight: 44)
+        }
+        .disabled(isDisabled)
+        .accessibilityLabel("Modèle")
+        .accessibilityValue(models.first(where: { $0.id == selectedModel })?.displayName ?? "Aucun modèle choisi")
+        .sheet(isPresented: $presented) {
+            NavigationStack {
+                ModelQuickPicker(models: models, selectedModel: selectedModel, favorites: $favorites,
+                                 isLoading: isLoading, reload: reload, expand: { detent = .large }) { model in
+                    selectedModel = model.id
+                    presented = false
+                }
+            }
+            .presentationDetents([.medium, .large], selection: $detent)
+            .presentationDragIndicator(.visible)
+            .presentationCornerRadius(30)
+        }
+    }
+}
+
+private struct ModelQuickPicker: View {
+    let models: [ModelOption]
+    let selectedModel: String
+    @Binding var favorites: Set<String>
+    let isLoading: Bool
+    let reload: @MainActor () async -> Void
+    let expand: () -> Void
+    let select: (ModelOption) -> Void
+    @Environment(\.dismiss) private var dismiss
+    private var selected: ModelOption? { models.first { $0.id == selectedModel } }
+    private var favoriteModels: [ModelOption] { models.filter { favorites.contains($0.id) && $0.id != selectedModel } }
+
+    var body: some View {
+        List {
+            if let selected {
+                Section("Modèle actuel") {
+                    Button { select(selected) } label: {
+                        ModelPickerRow(model: selected, favorite: favorites.contains(selected.id), trailing: "checkmark")
+                    }
+                }
+            }
+            if !favoriteModels.isEmpty {
+                Section("Favoris") {
+                    ForEach(favoriteModels) { model in
+                        Button { select(model) } label: { ModelPickerRow(model: model, favorite: true) }
+                    }
+                }
+            }
+            Section {
+                NavigationLink {
+                    ModelMarketplaceView(models: models, favorites: $favorites, select: select).onAppear(perform: expand)
+                } label: {
+                    Label("Explorer tous les modèles", systemImage: "sparkles.rectangle.stack")
+                        .font(.body.weight(.semibold)).foregroundStyle(MultiVibeTheme.accent)
+                }
+                Button { Task { await reload() } } label: {
+                    Label("Actualiser les modèles", systemImage: "arrow.clockwise")
+                }.disabled(isLoading)
+            }
+        }
+        .navigationTitle("Changer de modèle")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { dismiss() } } }
+        .overlay {
+            if selected == nil && favoriteModels.isEmpty && models.isEmpty && !isLoading {
+                ContentUnavailableView("Aucun modèle disponible", systemImage: "cpu",
+                                       description: Text("Actualisez le catalogue ou connectez-vous à votre compte."))
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+}
+
+private struct ModelPickerRow: View {
+    let model: ModelOption
+    let favorite: Bool
+    var trailing: String? = nil
+    var body: some View {
+        HStack(spacing: 12) {
+            ModelProviderLogo(provider: model.presentation.provider, size: 36)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.displayName).font(.body.weight(.medium)).foregroundStyle(.primary)
+                Text(model.id == LocalModel.id ? "Apple · sur cet appareil" : "\(model.presentation.provider.displayName) · MultiVibe Cloud")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if let trailing { Image(systemName: trailing).foregroundStyle(MultiVibeTheme.accent) }
+            else if favorite { Image(systemName: "star.fill").foregroundStyle(.orange) }
+        }.contentShape(Rectangle())
+    }
+}
+
+private struct ModelMarketplaceView: View {
+    enum Tab: Hashable { case discover, categories, favorites, providers }
+    let models: [ModelOption]
+    @Binding var favorites: Set<String>
+    let select: (ModelOption) -> Void
+    @State private var tab: Tab = .discover
+    @State private var search = ""
+    private var filtered: [ModelOption] {
+        guard !search.isEmpty else { return models }
+        return models.filter {
+            $0.displayName.localizedCaseInsensitiveContains(search) ||
+            $0.presentation.provider.displayName.localizedCaseInsensitiveContains(search) ||
+            $0.presentation.useCases.contains { $0.title.localizedCaseInsensitiveContains(search) }
+        }
+    }
+    var body: some View {
+        TabView(selection: $tab) {
+            ModelDiscoverView(models: filtered, favorites: $favorites, select: select)
+                .tabItem { Label("Découvrir", systemImage: "sparkles") }.tag(Tab.discover)
+            ModelCategoriesView(models: filtered, favorites: $favorites, select: select)
+                .tabItem { Label("Catégories", systemImage: "square.grid.2x2") }.tag(Tab.categories)
+            ModelListView(title: "Favoris", models: filtered.filter { favorites.contains($0.id) }, favorites: $favorites, select: select)
+                .tabItem { Label("Favoris", systemImage: "star") }.tag(Tab.favorites)
+            ModelProvidersView(models: filtered)
+                .tabItem { Label("Fournisseurs", systemImage: "person.2.badge.gearshape") }.tag(Tab.providers)
+        }
+        .navigationTitle("Modèles")
+        .navigationBarTitleDisplayMode(.large)
+        .searchable(text: $search, prompt: "Modèles, fournisseurs et usages")
+    }
+}
+
+private struct ModelDiscoverView: View {
+    let models: [ModelOption]
+    @Binding var favorites: Set<String>
+    let select: (ModelOption) -> Void
+    private var popular: [ModelOption] {
+        models.sorted {
+            $0.presentation.popularity == $1.presentation.popularity ? $0.displayName < $1.displayName : $0.presentation.popularity > $1.presentation.popularity
+        }
+    }
+    private var coding: [ModelOption] { popular.filter { $0.presentation.useCases.contains(.coding) } }
+    private var free: [ModelOption] { popular.filter { !$0.presentation.usesCloudCredit } }
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 22) {
+                if let featured = coding.first ?? popular.first {
+                    NavigationLink { ModelDetailView(model: featured, favorite: favoriteBinding(featured), select: select) }
+                    label: { FeaturedModelCard(model: featured) }.buttonStyle(.plain)
+                }
+                ModelShelf(title: "Les plus populaires", models: Array(popular.prefix(5)), favorites: $favorites, select: select, ranked: true)
+                if !free.isEmpty { ModelShelf(title: "Gratuits · sans crédit Cloud", models: free, favorites: $favorites, select: select) }
+                if !coding.isEmpty { ModelShelf(title: "Indispensables pour coder", models: coding, favorites: $favorites, select: select) }
+            }.padding()
+        }
+        .background(MultiVibeTheme.softAccent)
+        .overlay { if models.isEmpty { ContentUnavailableView("Aucun résultat", systemImage: "magnifyingglass") } }
+    }
+    private func favoriteBinding(_ model: ModelOption) -> Binding<Bool> {
+        Binding(get: { favorites.contains(model.id) }, set: { setFavorite(model.id, $0, in: &favorites) })
+    }
+}
+
+private struct FeaturedModelCard: View {
+    let model: ModelOption
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("SÉLECTION MULTIVIBE").font(.caption2.bold()).tracking(1).foregroundStyle(.white.opacity(0.75))
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(model.presentation.useCases.contains(.coding) ? "Des modèles qui savent vraiment coder." : "Le bon modèle pour commencer.")
+                        .font(.title2.bold()).foregroundStyle(.white)
+                    Text(model.presentation.summary).font(.callout).foregroundStyle(.white.opacity(0.85)).lineLimit(3)
+                }
+                Spacer(minLength: 12)
+                ModelProviderLogo(provider: model.presentation.provider, size: 58, prominent: true)
+            }
+            Text("Voir la fiche").font(.callout.bold()).padding(.horizontal, 13).padding(.vertical, 8)
+                .foregroundStyle(MultiVibeTheme.accent).background(.white, in: Capsule())
+        }
+        .padding(20)
+        .background(LinearGradient(colors: [MultiVibeTheme.accent, MultiVibeTheme.accent.opacity(0.72)], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 24))
+    }
+}
+
+private struct ModelShelf: View {
+    let title: String
+    let models: [ModelOption]
+    @Binding var favorites: Set<String>
+    let select: (ModelOption) -> Void
+    var ranked = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.title3.bold())
+            VStack(spacing: 0) {
+                ForEach(Array(models.enumerated()), id: \.element.id) { index, model in
+                    NavigationLink { ModelDetailView(model: model, favorite: favoriteBinding(model), select: select) } label: {
+                        HStack(spacing: 10) {
+                            if ranked { Text("\(index + 1)").font(.headline).foregroundStyle(.secondary).frame(width: 18) }
+                            ModelProviderLogo(provider: model.presentation.provider, size: 42)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(model.displayName).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
+                                Text(model.id == LocalModel.id ? "Sur cet appareil" : "\(model.presentation.provider.displayName) · MultiVibe Cloud")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Utiliser") { select(model) }.buttonStyle(.bordered).controlSize(.small)
+                        }.padding(.vertical, 9)
+                    }.buttonStyle(.plain)
+                    if model.id != models.last?.id { Divider().padding(.leading, ranked ? 70 : 52) }
+                }
+            }.padding(.horizontal, 12).background(.background.opacity(0.9), in: RoundedRectangle(cornerRadius: 18))
+        }
+    }
+    private func favoriteBinding(_ model: ModelOption) -> Binding<Bool> {
+        Binding(get: { favorites.contains(model.id) }, set: { setFavorite(model.id, $0, in: &favorites) })
+    }
+}
+
+private struct ModelCategoriesView: View {
+    let models: [ModelOption]
+    @Binding var favorites: Set<String>
+    let select: (ModelOption) -> Void
+    var body: some View {
+        ScrollView {
+            LazyVGrid(columns: [.init(.flexible()), .init(.flexible())], spacing: 12) {
+                ForEach(ModelUseCase.allCases) { useCase in
+                    let matching = models.filter { $0.presentation.useCases.contains(useCase) }
+                    NavigationLink { ModelListView(title: useCase.title, models: matching, favorites: $favorites, select: select) } label: {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Image(systemName: useCase.systemImage).font(.title2)
+                            Spacer()
+                            Text(useCase.title).font(.headline)
+                            Text("\(matching.count) modèle\(matching.count > 1 ? "s" : "")").font(.caption).opacity(0.75)
+                        }.foregroundStyle(.white).padding(16).frame(maxWidth: .infinity, minHeight: 130, alignment: .leading)
+                            .background(categoryColor(useCase), in: RoundedRectangle(cornerRadius: 20))
+                    }.buttonStyle(.plain)
+                }
+            }.padding()
+        }.background(MultiVibeTheme.softAccent)
+    }
+    private func categoryColor(_ value: ModelUseCase) -> Color {
+        switch value { case .writing: .purple; case .coding: .teal; case .analysis: .blue; case .creation: .orange; case .local: MultiVibeTheme.accent }
+    }
+}
+
+private struct ModelListView: View {
+    let title: String
+    let models: [ModelOption]
+    @Binding var favorites: Set<String>
+    let select: (ModelOption) -> Void
+    var body: some View {
+        List(models) { model in
+            NavigationLink {
+                ModelDetailView(model: model, favorite: Binding(get: { favorites.contains(model.id) }, set: { setFavorite(model.id, $0, in: &favorites) }), select: select)
+            } label: { ModelPickerRow(model: model, favorite: favorites.contains(model.id)) }
+            .swipeActions(edge: .trailing) {
+                Button(favorites.contains(model.id) ? "Retirer" : "Favori", systemImage: favorites.contains(model.id) ? "star.slash" : "star") {
+                    setFavorite(model.id, !favorites.contains(model.id), in: &favorites)
+                }.tint(.orange)
+            }
+        }
+        .navigationTitle(title)
+        .overlay { if models.isEmpty { ContentUnavailableView("Aucun modèle", systemImage: "cpu") } }
+    }
+}
+
+private struct ModelDetailView: View {
+    let model: ModelOption
+    @Binding var favorite: Bool
+    let select: (ModelOption) -> Void
+    var body: some View {
+        List {
+            Section {
+                VStack(spacing: 12) {
+                    ModelProviderLogo(provider: model.presentation.provider, size: 76, prominent: true)
+                    Text(model.displayName).font(.largeTitle.bold()).multilineTextAlignment(.center)
+                    Text(model.presentation.provider.displayName).foregroundStyle(.secondary)
+                    HStack { ForEach(model.presentation.badges, id: \.self) { Text($0).font(.caption.bold()).padding(.horizontal, 8).padding(.vertical, 5).background(.secondary.opacity(0.1), in: Capsule()) } }
+                    Button(favorite ? "Retirer des favoris" : "Ajouter aux favoris", systemImage: favorite ? "star.fill" : "star") { favorite.toggle() }
+                        .buttonStyle(.bordered).tint(.orange)
+                }.frame(maxWidth: .infinity).padding(.vertical, 16)
+            }.listRowBackground(Color.clear)
+            Section("À quoi sert ce modèle ?") { Text(model.presentation.summary) }
+            Section("Accès") {
+                LabeledContent("Créateur", value: model.presentation.provider.displayName)
+                LabeledContent("Accès", value: model.id == LocalModel.id ? "Sur cet appareil" : "MultiVibe Cloud")
+                LabeledContent("Facturation", value: model.presentation.usesCloudCredit ? "Crédits MultiVibe Cloud" : "Sans crédit Cloud")
+                if model.id == LocalModel.id { Label("Traitement sur cet appareil", systemImage: "lock.iphone") }
+            }
+            Section { Button("Utiliser \(model.displayName)") { select(model) }.buttonStyle(.borderedProminent).frame(maxWidth: .infinity) }
+        }
+        .navigationTitle("Détails").navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct ModelProvidersView: View {
+    let models: [ModelOption]
+    private var providers: [(ModelProvider, Int)] {
+        Dictionary(grouping: models, by: { $0.presentation.provider }).map { ($0.key, $0.value.count) }
+            .sorted { $0.0.displayName < $1.0.displayName }
+    }
+    var body: some View {
+        List {
+            Section { Text("Retrouvez les modèles MultiVibe Cloud, locaux et ceux de vos fournisseurs dans un catalogue unique.").font(.callout).foregroundStyle(.secondary) }
+            Section("Sources disponibles") {
+                ForEach(providers, id: \.0.id) { provider, count in
+                    HStack(spacing: 12) {
+                        ModelProviderLogo(provider: provider, size: 42)
+                        VStack(alignment: .leading) {
+                            Text(provider.displayName).font(.body.weight(.semibold))
+                            Text("\(count) modèle\(count > 1 ? "s" : "")").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text(provider == .apple || provider == .multivibe ? "Actif" : "Catalogue")
+                            .font(.caption.bold()).foregroundStyle(MultiVibeTheme.accent)
+                    }
+                }
+            }
+            Section("Connexions personnelles") {
+                Label("La connexion d’un abonnement ou d’une clé API sera proposée ici lorsqu’un fournisseur l’autorise dans l’app.", systemImage: "key.horizontal")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct ModelProviderLogo: View {
+    let provider: ModelProvider
+    let size: CGFloat
+    var prominent = false
+    var body: some View {
+        Group {
+            if let asset = provider.assetName { Image(asset).resizable().renderingMode(.template).scaledToFit().padding(size * 0.24) }
+            else if provider == .multivibe { Image("MultiVibeMark").resizable().scaledToFit().padding(size * 0.16) }
+            else { Image(systemName: "cpu").resizable().scaledToFit().padding(size * 0.25) }
+        }
+        .foregroundStyle(prominent ? .white : .primary)
+        .frame(width: size, height: size)
+        .background(prominent ? Color.black.opacity(0.22) : Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: size * 0.28))
+        .accessibilityHidden(true)
+    }
+}
+
+@MainActor private func setFavorite(_ identifier: String, _ enabled: Bool, in favorites: inout Set<String>) {
+    if enabled { favorites.insert(identifier) } else { favorites.remove(identifier) }
+    ModelFavoriteStore.save(favorites)
 }
 
 
