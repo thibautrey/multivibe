@@ -71,7 +71,7 @@ export function sdkAccountModels(account: Account, live?: LiveModelCatalogSnapsh
   const selected = account.sdkModels?.length
     ? account.sdkModels.map((id) => known.get(id.toLowerCase()) ?? listed.find((model) => model.id === id) ?? { id, name: id, input: ["text"] })
     : listed;
-  return selected.map((model) => ({
+  return selected.filter(model => !account.multivibeTeam || account.multivibeTeam.models.includes(model.id)).map((model) => ({
     id: `${provider.id}/${model.id}`, object: "model", owned_by: provider.id, created: 0,
     name: model.name, context_window: model.context, max_output_tokens: model.output,
     supports_tools: model.tools, supported_tool_types: model.tools === undefined ? undefined : model.tools ? ["function"] : [],
@@ -85,6 +85,7 @@ export function sdkModelId(account: Account, requested: string) {
   const prefix = `${account.sdkProvider}/`;
   if (!requested.startsWith(prefix) || requested.length === prefix.length) throw new Error("Model does not belong to this provider");
   const model = requested.slice(prefix.length);
+  if (account.multivibeTeam && !account.multivibeTeam.models.includes(model)) throw new Error("Model is not enabled on this Team account");
   if (account.sdkModels?.length && !account.sdkModels.includes(model)) throw new Error("Model is not enabled on this account");
   return model;
 }

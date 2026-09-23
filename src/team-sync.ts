@@ -1,16 +1,16 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createDecipheriv, createHash, createPrivateKey, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomUUID, sign } from "node:crypto";
-import type { Account, ProviderId, StoreSettings } from "./types.js";
+import type { Account, StoreSettings } from "./types.js";
 import type { AccountStore } from "./store.js";
 import type { TraceEntry } from "./traces.js";
 import {decodeTeamProviderCredential, withoutTeamCredentialContext} from "./team-provider-credential.js";
 
 export type TeamPrincipal = Readonly<{ type:"member"|"service"|"unassigned"; id?:string; name?:string }>;
 export type TeamProviderManifest = Readonly<{
-  id:string; provider:ProviderId; displayName:string; endpoint:string; models:readonly string[];
+  id:string; provider:string; displayName:string; endpoint:string; models:readonly string[];
   deliveryMode:"distributed"|"cloud_proxy"; enabled:boolean; revision:number;
-  sealedCredential?:Readonly<{schemaVersion:"multivibe-team-sealed-credential-v1";algorithm:"X25519-HKDF-SHA256-AES-256-GCM";ephemeralPublicKeySpki:string;nonce:string;ciphertext:string;tag:string}>;
+  sealedCredential?:Readonly<{schemaVersion:"multivibe-team-sealed-credential-v1"|"multivibe-team-sealed-credential-v2";algorithm:"X25519-HKDF-SHA256-AES-256-GCM";ephemeralPublicKeySpki:string;nonce:string;ciphertext:string;tag:string}>;
 }>;
 export type TeamSyncManifest = Readonly<{schemaVersion:"multivibe-team-sync-v1";cursor:number;providers:readonly TeamProviderManifest[];removedProviderIds:readonly string[];removedProviders?:readonly {id:string;revision:number}[]} >;
 export type TeamInstanceEnrollment=Readonly<{schemaVersion:"multivibe-team-instance-enrollment-v1";id:string;name:string;publicKeySpki:string;encryptionPublicKeySpki:string;version:string}>;
@@ -106,7 +106,18 @@ export class MultivibeTeamSyncService {
       const existing=accounts.find(account=>account.multivibeTeam?.providerId===item.id);
       if(existing&&existing.multivibeTeam!.revision>item.revision) throw new Error('Team provider revision is stale');
       const credential=item.sealedCredential?this.openCredential(item.id,item.revision,item.sealedCredential,item.provider,item.endpoint):undefined;
-      const account:Account={...withoutTeamCredentialContext(existing),...credential,id:existing?.id??`team-${item.id}`,provider:item.provider,email:item.displayName,accessToken:credential?.accessToken??'',refreshToken:credential?.refreshToken,expiresAt:credential?.expiresAt,baseUrl:item.deliveryMode==='cloud_proxy'?`https://api.multivibe.cloud/team/providers/${item.id}`:item.endpoint,enabled:item.enabled,location:'cloud',priority:existing?.priority??0,multivibeTeam:{providerId:item.id,models:[...item.models],deliveryMode:item.deliveryMode,revision:item.revision,readOnly:true}};
+      const account:Account = {
+        ...withoutTeamCredentialContext(existing), ...credential,
+        id:existing?.id ?? `team-${item.id}`, provider:credential?.provider ?? 'openai-compatible',
+        email:item.displayName, accessToken:credential?.accessToken ?? '',
+        refreshToken:credential?.refreshToken, expiresAt:credential?.expiresAt,
+        baseUrl:item.deliveryMode === 'cloud_proxy' ? `https://api.multivibe.cloud/team/providers/${item.id}`
+          : credential?.provider === 'ai-sdk' ? undefined : credential?.baseUrl,
+        enabled:item.enabled, location:'cloud', priority:existing?.priority ?? 0,
+        multivibeTeam:{providerId:item.id, models:[...item.models], deliveryMode:item.deliveryMode,
+          revision:item.revision, readOnly:true},
+        ...(credential?.provider === 'ai-sdk' ? {sdkModels:[...item.models]} : {}),
+      };
       prepared.push(account);
     }
     // Validate/decrypt first, then replace accounts, removals and cursor together.
@@ -151,7 +162,7 @@ export class MultivibeTeamSyncService {
   signRequest(payload:unknown,issuedAt=new Date()):Readonly<{schemaVersion:'multivibe-team-instance-envelope-v1';instanceId:string;issuedAt:string;payload:unknown;signature:string}>{
     if(!this.identity)throw new Error('Team Sync is not initialized');const at=issuedAt.toISOString();const canonical=JSON.stringify({instanceId:this.identity.instanceId,issuedAt:at,payload});const signature=sign(null,Buffer.from(canonical),createPrivateKey(this.identity.privateKeyPkcs8)).toString('base64url');return Object.freeze({schemaVersion:'multivibe-team-instance-envelope-v1',instanceId:this.identity.instanceId,issuedAt:at,payload,signature});
   }
-  private openCredential(providerId:string,revision:number,envelope:NonNullable<TeamProviderManifest['sealedCredential']>,provider:ProviderId,endpoint:string):ReturnType<typeof decodeTeamProviderCredential>{
+  private openCredential(providerId:string,revision:number,envelope:NonNullable<TeamProviderManifest['sealedCredential']>,provider:string,endpoint:string):ReturnType<typeof decodeTeamProviderCredential>{
     if(!this.identity||(envelope.schemaVersion!=='multivibe-team-sealed-credential-v1'&&envelope.schemaVersion!=='multivibe-team-sealed-credential-v2')||envelope.algorithm!=='X25519-HKDF-SHA256-AES-256-GCM')throw new Error('Team credential envelope is invalid');
     let shared:Buffer|undefined,key:Buffer|undefined,clear:Buffer|undefined;
     try {
