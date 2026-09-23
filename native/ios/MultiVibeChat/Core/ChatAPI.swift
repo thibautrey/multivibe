@@ -91,6 +91,11 @@ actor ChatAPI {
         try validate(response, data: data)
         return try decoder.decode(CloudBillingSession.self, from: data)
     }
+    func accountProfile(token: String) async throws -> NativeAccountProfile {
+        let (data, response) = try await session.data(for: request("account", token: token))
+        try validate(response, data: data)
+        return try decoder.decode(NativeAccountProfile.self, from: data)
+    }
     func creditBalance(token: String) async throws -> CloudCreditBalance {
         let (data, response) = try await session.data(for: request("credits", token: token))
         try validate(response, data: data)

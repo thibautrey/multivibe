@@ -344,11 +344,11 @@ struct ChatView: View {
         }) {
             NavigationStack {
                 Form {
-                    Section("Compte") {
-                        LabeledContent("Statut", value: manager.session == nil ? "Invité" : "Connecté")
-                    }
                     if let accountId = manager.session?.accountId {
+                        NativeAccountSection(accountId: accountId).id(accountId)
                         CloudCreditBalanceSection(accountId: accountId).id(accountId)
+                    } else {
+                        Section { LabeledContent("Compte", value: "Invité") }
                     }
                     Section {
                         if manager.session != nil {
@@ -1379,6 +1379,58 @@ private struct CloudBillingWebView: UIViewRepresentable {
                 parent.error = "La page de recharge est temporairement indisponible."
                 decisionHandler(.cancel)
             } else { decisionHandler(.allow) }
+        }
+    }
+}
+
+
+private struct NativeAccountSection: View {
+    let accountId: String
+    @Environment(ConversationManager.self) private var manager
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var profile: NativeAccountProfile?
+    @State private var loading = true
+    @State private var failed = false
+
+    var body: some View {
+        Section {
+            LabeledContent("Compte") {
+                if loading {
+                    ProgressView().accessibilityLabel("Chargement du compte")
+                } else {
+                    Text(profile?.email ?? "E-mail indisponible")
+                        .multilineTextAlignment(.trailing)
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("accountEmail")
+                }
+            }
+            if let profile {
+                ForEach(profile.teams) { team in
+                    LabeledContent("Équipe", value: team.name)
+                        .accessibilityIdentifier("accountTeam")
+                }
+            }
+            if failed { Button("Réessayer") { Task { await reload() } } }
+        }
+        .task(id: scenePhase) { if scenePhase == .active { await reload() } }
+    }
+
+    @MainActor private func reload() async {
+        loading = true
+        failed = false
+        profile = nil
+        do {
+            let session = try await manager.validSession()
+            guard session.accountId == accountId else { throw CancellationError() }
+            let result = try await ChatAPI.shared.accountProfile(token: session.accessToken)
+            try Task.checkCancellation()
+            guard manager.session?.accountId == accountId, result.accountId == accountId else { throw APIError.invalidResponse }
+            profile = result
+            loading = false
+        } catch {
+            guard !Task.isCancelled, manager.session?.accountId == accountId else { return }
+            loading = false
+            failed = true
         }
     }
 }

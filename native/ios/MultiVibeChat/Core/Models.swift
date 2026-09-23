@@ -563,3 +563,14 @@ struct CloudBillingSession: Decodable, Sendable {
         return cookie
     }
 }
+
+
+struct NativeAccountProfile: Decodable, Sendable {
+    struct Team: Decodable, Identifiable, Sendable {
+        let id: String
+        let name: String
+    }
+    let accountId: String
+    let email: String?
+    let teams: [Team]
+}

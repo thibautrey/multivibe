@@ -956,3 +956,15 @@ final class CloudBillingSessionTests: XCTestCase {
         XCTAssertThrowsError(try session.cookie(now: Date(timeIntervalSince1970: 0)))
     }
 }
+
+
+final class NativeAccountProfileTests: XCTestCase {
+    func testAccountWithAndWithoutTeams() throws {
+        let profile = try JSONDecoder().decode(NativeAccountProfile.self, from: Data(#"{"accountId":"account","email":"member@example.com","teams":[{"id":"team","name":"My Team"}]}"#.utf8))
+        XCTAssertEqual(profile.email, "member@example.com")
+        XCTAssertEqual(profile.teams.first?.name, "My Team")
+        let personal = try JSONDecoder().decode(NativeAccountProfile.self, from: Data(#"{"accountId":"account","email":null,"teams":[]}"#.utf8))
+        XCTAssertNil(personal.email)
+        XCTAssertTrue(personal.teams.isEmpty)
+    }
+}
