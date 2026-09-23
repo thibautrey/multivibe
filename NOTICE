@@ -11,6 +11,12 @@ weights, when obtained separately, likewise retain their own terms. Neither is
 automatically covered by MultiVibe Core's Apache-2.0 license, and this source
 archive makes no broader grant for them.
 
+Provider marks embedded in the iOS model catalog are vendored from the same
+LobeHub Icons MIT-licensed set documented under `web/public/assets/providers`
+where available. Apple and Meta vector marks are sourced from the CC0-1.0
+Simple Icons collection. All provider names and marks remain trademarks of
+their respective owners.
+
 Every MultiVibe-authored source file distributed in this repository is covered
 by Apache-2.0. The separately implemented and operated multivibe.cloud service
 is not included in this repository or distribution. Apache-2.0 grants no access
