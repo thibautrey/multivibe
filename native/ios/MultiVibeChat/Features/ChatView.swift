@@ -755,7 +755,7 @@ private struct ModelMarketplaceView: View {
                 .tabItem { Label("Découvrir", systemImage: "sparkles") }.tag(Tab.discover)
             ModelCategoriesView(models: filtered, favorites: $favorites, select: select)
                 .tabItem { Label("Catégories", systemImage: "square.grid.2x2") }.tag(Tab.categories)
-            ModelListView(title: "Favoris", models: filtered.filter { favorites.contains($0.id) }, favorites: $favorites, select: select)
+            ModelListView(title: "Favoris", models: (search.isEmpty ? manager.models : filtered).filter { favorites.contains($0.id) }, favorites: $favorites, select: select)
                 .tabItem { Label("Favoris", systemImage: "star") }.tag(Tab.favorites)
             ModelProvidersView(models: filtered)
                 .tabItem { Label("Fournisseurs", systemImage: "person.2.badge.gearshape") }.tag(Tab.providers)

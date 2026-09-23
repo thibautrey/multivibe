@@ -88,7 +88,11 @@ import Network
     private var monitoringNetwork = false
     private var online = false
     private var syncTask: Task<Void, Never>?
-    var session: NativeSession?
+    var session: NativeSession? {
+        didSet {
+            if session?.accountId != oldValue?.accountId { selectedAccess = nil; requestedAccessModel = nil; accessNotice = nil }
+        }
+    }
     init(services suppliedServices: SessionServices? = nil) {
         var services = suppliedServices ?? SessionServices()
         if suppliedServices == nil {
@@ -290,6 +294,9 @@ import Network
             // Sending can begin while this request is in flight; never switch its model.
             guard !isStreaming else { return }
             var available = [LocalModel.option] + remoteModels.filter { $0.id != LocalModel.id }
+            for favorite in ModelFavoriteStore.load().sorted() where !available.contains(where: { $0.id == favorite }) {
+                available.append(models.first { $0.id == favorite } ?? ModelOption(id: favorite))
+            }
             if let current, !current.model.isEmpty, !available.contains(where: { $0.id == current.model }) {
                 available.append(models.first { $0.id == current.model } ?? ModelOption(id: current.model))
             }
