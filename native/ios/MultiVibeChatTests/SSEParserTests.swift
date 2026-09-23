@@ -790,14 +790,16 @@ final class MessageMarkdownTests: XCTestCase {
         XCTAssertEqual(manager.selectedModel, "chosen")
         XCTAssertEqual(manager.conversations, [conversation])
     }
-    func testRemovedModelRequiresUserSelection() async {
+    func testPaginatedCatalogPreservesConversationWithoutInventingAccess() async {
         let credentials = session()
         let manager = ConversationManager(services: isolatedServices(load: { credentials }, models: { _ in [ModelOption(id: "new")] }))
         let conversation = Conversation(model: "old")
         manager.conversations = [conversation]; manager.selection = conversation.id
         manager.selectedModel = "old"
         await manager.reloadModels()
-        XCTAssertEqual(manager.selectedModel, "")
+        XCTAssertEqual(manager.selectedModel, "old")
+        XCTAssertNil(manager.selectedAccess)
+        XCTAssertTrue(manager.models.contains { $0.id == "old" })
         XCTAssertEqual(manager.current?.model, "old")
     }
     func testEmptyRemoteCatalogStillOffersLocalModel() async {
