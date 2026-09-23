@@ -540,5 +540,26 @@ struct CloudCreditBalance: Decodable, Sendable {
         available = amount
     }
     private enum CodingKeys: String, CodingKey { case currency, totalAvailableUsd }
-    var formatted: String { available.formatted(.currency(code: "USD").precision(.fractionLength(2...6))) }
+    var formatted: String {
+        let number = available.formatted(.number.precision(.fractionLength(0...6)))
+        return "\(number) \(available == 1 ? "crédit" : "crédits")"
+    }
+}
+
+
+struct CloudBillingSession: Decodable, Sendable {
+    private let sessionToken: String
+    let expiresAt: Date
+    static let pageURL = URL(string: "https://app.multivibe.cloud/billing")!
+
+    func cookie(now: Date = Date()) throws -> HTTPCookie {
+        guard sessionToken.range(of: #"^[A-Za-z0-9_-]{43}$"#, options: .regularExpression) != nil,
+              expiresAt > now,
+              let cookie = HTTPCookie(properties: [
+                .name: "__Host-mv_dashboard_session", .value: sessionToken,
+                .originURL: Self.pageURL, .path: "/", .secure: "TRUE",
+                .init("HttpOnly"): "TRUE", .expires: expiresAt,
+              ]), cookie.isSecure, cookie.isHTTPOnly else { throw APIError.invalidResponse }
+        return cookie
+    }
 }

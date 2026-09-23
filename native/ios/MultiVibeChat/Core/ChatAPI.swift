@@ -86,6 +86,11 @@ actor ChatAPI {
         struct Reply: Decodable { let changed: Bool }
         guard try decoder.decode(Reply.self, from: data).changed else { throw APIError.invalidResponse }
     }
+    func billingSession(token: String) async throws -> CloudBillingSession {
+        let (data, response) = try await session.data(for: request("billing/browser-session", body: Data("{}".utf8), token: token))
+        try validate(response, data: data)
+        return try decoder.decode(CloudBillingSession.self, from: data)
+    }
     func creditBalance(token: String) async throws -> CloudCreditBalance {
         let (data, response) = try await session.data(for: request("credits", token: token))
         try validate(response, data: data)

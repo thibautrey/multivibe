@@ -5,6 +5,7 @@ import EventKitUI
 import MapKit
 import SwiftUI
 import UniformTypeIdentifiers
+import WebKit
 
 private struct SelectableMessage: Identifiable { let id: UUID; let text: String }
 
@@ -1217,6 +1218,7 @@ private struct CloudCreditBalanceSection: View {
     @State private var balance: CloudCreditBalance?
     @State private var loading = true
     @State private var failed = false
+    @State private var billingPresented = false
 
     var body: some View {
         Section("MultiVibe Cloud") {
@@ -1233,6 +1235,11 @@ private struct CloudCreditBalanceSection: View {
             if failed {
                 Button("Réessayer") { Task { await reload() } }
             }
+            Button("Recharger / S’abonner") { billingPresented = true }
+                .accessibilityIdentifier("openCloudBilling")
+        }
+        .sheet(isPresented: $billingPresented, onDismiss: { Task { await reload() } }) {
+            CloudBillingView(accountId: accountId)
         }
         .task(id: scenePhase) {
             if scenePhase == .active { await reload() }
@@ -1255,6 +1262,123 @@ private struct CloudCreditBalanceSection: View {
             guard !Task.isCancelled, manager.session?.accountId == accountId else { return }
             loading = false
             failed = true
+        }
+    }
+}
+
+
+private struct CloudBillingView: View {
+    let accountId: String
+    @Environment(ConversationManager.self) private var manager
+    @Environment(\.dismiss) private var dismiss
+    @State private var cookie: HTTPCookie?
+    @State private var error: String?
+    @State private var attempt = UUID()
+    @State private var loading = true
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                if let cookie {
+                    CloudBillingWebView(cookie: cookie, loading: $loading, error: $error)
+                        .id(attempt)
+                }
+                if let error {
+                    ContentUnavailableView {
+                        Label("Page indisponible", systemImage: "wifi.exclamationmark")
+                    } description: {
+                        Text(error)
+                    } actions: {
+                        Button("Réessayer") { cookie = nil; self.error = nil; attempt = UUID() }
+                    }
+                    .background(.background)
+                } else if loading {
+                    ProgressView("Ouverture de MultiVibe Cloud…")
+                        .padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
+            .navigationTitle("MultiVibe Cloud")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Fermer") { dismiss() } }
+            }
+            .task(id: attempt) {
+                loading = true
+                do {
+                    let session = try await manager.validSession()
+                    guard session.accountId == accountId else { throw CancellationError() }
+                    let browserSession = try await ChatAPI.shared.billingSession(token: session.accessToken)
+                    try Task.checkCancellation()
+                    guard manager.session?.accountId == accountId else { return }
+                    cookie = try browserSession.cookie()
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    self.error = "Impossible d’ouvrir la page de recharge. Réessayez dans un instant."
+                    loading = false
+                }
+            }
+        }
+    }
+}
+
+/// Billing uses an isolated, temporary website session. The native bearer and
+/// refresh token are never passed to WebKit, JavaScript, or a navigation URL.
+private struct CloudBillingWebView: UIViewRepresentable {
+    let cookie: HTTPCookie
+    @Binding var loading: Bool
+    @Binding var error: String?
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeUIView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.navigationDelegate = context.coordinator
+        context.coordinator.preparation = Task { @MainActor in
+            await configuration.websiteDataStore.httpCookieStore.setCookie(cookie)
+            guard !Task.isCancelled else { return }
+            webView.load(URLRequest(url: CloudBillingSession.pageURL))
+        }
+        return webView
+    }
+    func updateUIView(_ webView: WKWebView, context: Context) { context.coordinator.parent = self }
+    static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
+        coordinator.preparation?.cancel()
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+    }
+    @MainActor final class Coordinator: NSObject, WKNavigationDelegate {
+        var parent: CloudBillingWebView
+        var preparation: Task<Void, Never>?
+        init(_ parent: CloudBillingWebView) { self.parent = parent }
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { parent.loading = true }
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { parent.loading = false }
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { failed(error) }
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { failed(error) }
+        private func failed(_ error: Error) {
+            guard (error as NSError).code != NSURLErrorCancelled else { return }
+            parent.loading = false
+            parent.error = "La page n’a pas pu être chargée. Vérifiez votre connexion et réessayez."
+        }
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            guard let url = navigationAction.request.url, url.scheme == "https",
+                  url.user == nil, url.password == nil else { decisionHandler(.cancel); return }
+            if navigationAction.targetFrame == nil {
+                decisionHandler(.cancel)
+                webView.load(navigationAction.request)
+            } else {
+                decisionHandler(.allow)
+            }
+        }
+        func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
+                     decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+            if navigationResponse.isForMainFrame, let response = navigationResponse.response as? HTTPURLResponse,
+               response.statusCode >= 400 {
+                parent.loading = false
+                parent.error = "La page de recharge est temporairement indisponible."
+                decisionHandler(.cancel)
+            } else { decisionHandler(.allow) }
         }
     }
 }
