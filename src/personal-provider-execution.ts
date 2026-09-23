@@ -52,7 +52,7 @@ export async function executePersonalProviderChat(input:PersonalProviderExecutio
     return new Response(new ReadableStream<Uint8Array>({
       async pull(out){try{const next=await iterator.next();if(next.done)out.close();else out.enqueue(new TextEncoder().encode(next.value));}
         catch{controller.abort();out.error(new Error('Provider stream interrupted'));}},
-      async cancel(){controller.abort();await iterator.return?.();},
+      async cancel(){controller.abort();await iterator.return?.(undefined);},
     }),{headers:{'content-type':'text/event-stream','cache-control':'no-store'}});
   } catch {throw new Error('Personal provider request failed');}
 }
