@@ -590,7 +590,7 @@ struct ChatView: View {
         preferredColumn = .detail
         voice.silence()
         if manager.session == nil { manager.authenticationPresented = true; return }
-        guard !manager.selectedModel.isEmpty else { manager.error = APIError.noModel.localizedDescription; return }
+        manager.newConversation()
         // The compact composer is itself a sheet. Dismiss it before presenting
         // the full-screen voice UI so UIKit never restores it at a large detent.
         voiceConversationPreparing = true

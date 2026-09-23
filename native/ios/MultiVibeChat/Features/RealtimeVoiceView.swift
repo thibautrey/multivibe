@@ -102,7 +102,11 @@ struct RealtimeVoiceView: View {
     }
     private func begin() async {
         guard let account = manager.session else { return }
-        guard let conversation = manager.current else { controller.error = "Ouvrez une conversation avant de démarrer le mode vocal."; return }
+        manager.newConversation()
+        guard let conversation = manager.current else {
+            controller.error = "Impossible de démarrer maintenant. Réessayez dans un instant."
+            return
+        }
         let key = "cloud.multivibe.voice.\(account.accountId)"
         selectedVoice = UserDefaults.standard.string(forKey: key) ?? "coral"
         do {
@@ -111,7 +115,16 @@ struct RealtimeVoiceView: View {
             guard capabilities.enabled else { controller.error = "Le mode vocal n’est pas encore disponible pour ce compte."; return }
             voices = capabilities.voices
             if !voices.contains(where: { $0.id == selectedVoice }) { selectedVoice = voices.first?.id ?? "coral" }
-            let model = manager.selectedModel
+            var model = manager.selectedModel
+            if model.isEmpty || model == LocalModel.id {
+                if !manager.models.contains(where: { $0.id != LocalModel.id }) { await manager.reloadModels() }
+                model = manager.models.first(where: { $0.id != LocalModel.id })?.id ?? ""
+            }
+            guard !model.isEmpty else {
+                controller.error = "La conversation vocale est temporairement indisponible. Réessayez dans un instant."
+                return
+            }
+            manager.selectedModel = model
             let session = try await ChatAPI.shared.createVoiceSession(conversation: conversation, model: model, voice: selectedVoice, language: Locale.current.identifier, token: account.accessToken)
             await controller.start(session: session, history: conversation.messages, accountToken: account.accessToken, backgroundAudio: capabilities.backgroundAudio) { role, text, id in
                 manager.appendVoiceTurn(conversationID: conversation.id, accountID: account.accountId, model: model, role: role, text: text, turnID: id)
