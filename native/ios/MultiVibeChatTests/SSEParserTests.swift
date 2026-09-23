@@ -928,3 +928,31 @@ final class CloudCreditBalanceTests: XCTestCase {
         }
     }
 }
+
+
+final class CloudBillingSessionTests: XCTestCase {
+    func testZeroBalanceUsesCredits() throws {
+        let balance = try JSONDecoder().decode(CloudCreditBalance.self, from: Data(#"{"currency":"USD","totalAvailableUsd":"0"}"#.utf8))
+        XCTAssertEqual(balance.formatted, "0 crédits")
+    }
+    func testBrowserCookieIsSecureHTTPOnlyAndBoundToCloud() throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let data = Data("{\"sessionToken\":\"\(String(repeating: "a", count: 43))\",\"expiresAt\":\"2030-01-01T00:00:00Z\"}".utf8)
+        let session = try decoder.decode(CloudBillingSession.self, from: data)
+        let cookie = try session.cookie(now: Date(timeIntervalSince1970: 0))
+        XCTAssertTrue(cookie.isSecure)
+        XCTAssertTrue(cookie.isHTTPOnly)
+        XCTAssertEqual(cookie.name, "__Host-mv_dashboard_session")
+        XCTAssertEqual(cookie.domain, "app.multivibe.cloud")
+        XCTAssertEqual(cookie.path, "/")
+        XCTAssertEqual(CloudBillingSession.pageURL.absoluteString, "https://app.multivibe.cloud/billing")
+        XCTAssertThrowsError(try session.cookie(now: .distantFuture))
+    }
+    func testInvalidBrowserTokenIsRejected() throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let session = try decoder.decode(CloudBillingSession.self, from: Data(#"{"sessionToken":"invalid","expiresAt":"2030-01-01T00:00:00Z"}"#.utf8))
+        XCTAssertThrowsError(try session.cookie(now: Date(timeIntervalSince1970: 0)))
+    }
+}
