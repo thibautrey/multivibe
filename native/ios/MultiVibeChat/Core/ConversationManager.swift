@@ -289,13 +289,17 @@ import Network
             guard sessionRevision == accountRevision, modelLoadRevision == loadRevision else { return }
             // Sending can begin while this request is in flight; never switch its model.
             guard !isStreaming else { return }
-            let available = [LocalModel.option] + remoteModels.filter { $0.id != LocalModel.id }
+            var available = [LocalModel.option] + remoteModels.filter { $0.id != LocalModel.id }
+            if let current, !current.model.isEmpty, !available.contains(where: { $0.id == current.model }) {
+                available.append(models.first { $0.id == current.model } ?? ModelOption(id: current.model))
+            }
             models = available
             if !selectedModel.isEmpty {
                 if !available.contains(where: { $0.id == selectedModel }) { selectedModel = "" }
             } else if let current {
                 selectedModel = available.contains(where: { $0.id == current.model }) ? current.model : ""
             } else { selectedModel = available.first?.id ?? "" }
+            if let current, current.model == selectedModel { selectedAccess = current.modelAccess }
 
         } catch {
             if sessionRevision == accountRevision, modelLoadRevision == loadRevision {
@@ -541,6 +545,7 @@ import Network
               conversations[index].messages.dropLast().last?.role == "user",
               models.contains(where: { $0.id == conversations[index].model }) else { return false }
         selectedModel = conversations[index].model
+        selectedAccess = conversations[index].modelAccess
         voice.silence()
         conversations[index].messages.removeLast()
         return startReply(conversation: id, index: index)
@@ -617,7 +622,7 @@ import Network
             } catch {
                 if generationRevision == revision && sessionRevision == accountRevision {
                     setReplyCompletion(.failed)
-                    if model != LocalModel.id, case APIError.server(let status, _) = error, [401, 402, 403, 409, 429].contains(status) {
+                    if model != LocalModel.id, case APIError.server(let status, _) = error, [400, 401, 402, 403, 409, 429, 503].contains(status) {
                         accessNotice = "Cet accès est indisponible. Réessayez ou choisissez un autre mode."
                         requestedAccessModel = models.first { $0.id == model } ?? ModelOption(id: model)
                     }
