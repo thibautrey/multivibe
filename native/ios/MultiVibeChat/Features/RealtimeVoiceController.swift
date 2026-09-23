@@ -200,7 +200,7 @@ import UIKit
                 fail("La transcription n’a pas pu être enregistrée. La session a été arrêtée."); return
             }
             do { _ = try await ChatAPI.shared.reconcileVoiceTurn(session: session, turnID: turn.id, token: accountToken) }
-            catch { error = "Transcription enregistrée sur l’appareil ; réconciliation vocale indisponible." }
+            catch { self.error = "Transcription enregistrée sur l’appareil ; réconciliation vocale indisponible." }
         }
     }
     func setMuted(_ value: Bool) {
