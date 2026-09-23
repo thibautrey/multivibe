@@ -29,6 +29,9 @@ import UIKit
     private var audioGeneration = 0
     private var onTurn: (@MainActor (String, String, String) async -> Bool)?
     private var sessionClosed = false
+    private var closing = false
+    private var cueEngine: AVAudioEngine?
+    private var cuePlayer: AVAudioPlayerNode?
 
     func start(session: VoiceSession, history: [ChatMessage], accountToken: String, backgroundAudio: Bool,
                onTurn: @escaping @MainActor (String, String, String) async -> Bool) async {
@@ -79,6 +82,8 @@ import UIKit
                 try await send(["type": "conversation.item.create", "item": ["type": "message", "role": message.role,
                     "content": [["type": message.role == "assistant" ? "output_text" : "input_text", "text": message.content]]]])
             }
+            await playCue(.started)
+            guard phase != .ended else { return }
             if let webRTC { webRTC.setMuted(muted) }
             else {
                 try startCapture()
@@ -261,12 +266,59 @@ import UIKit
         player.stop(); player.reset()
         if playback.isRunning { player.play() }
     }
+    func endWithCue() async {
+        guard !closing, phase != .ended else { return }
+        closing = true
+        muted = true
+        webRTC?.setMuted(true)
+        if capture.isRunning { capture.pause() }
+        ledger.interrupt()
+        stopOutput()
+        try? await send(["type": "response.cancel"])
+        await playCue(.ended)
+        end()
+    }
     func end() {
+        guard phase != .ended else { return }
         phase = .ended; ledger.interrupt(); endAudio()
         guard !sessionClosed, let session else { return }
         sessionClosed = true
         let token = accountToken
         Task { await ChatAPI.shared.closeVoiceSession(session, token: token) }
+    }
+
+    private enum SessionCue { case started, ended }
+    private func playCue(_ cue: SessionCue) async {
+        guard phase != .ended else { return }
+        let engine = AVAudioEngine()
+        let player = AVAudioPlayerNode()
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!
+        let duration = cue == .started ? 0.34 : 0.30
+        let frames = AVAudioFrameCount(48_000 * duration)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames),
+              let samples = buffer.floatChannelData?[0] else { return }
+        buffer.frameLength = frames
+        let frequencies: (Double, Double) = cue == .started ? (523.25, 783.99) : (659.25, 392.00)
+        for index in 0..<Int(frames) {
+            let progress = Double(index) / Double(frames)
+            let attack = min(1, progress / 0.08)
+            let release = min(1, (1 - progress) / 0.38)
+            let envelope = sin(.pi * min(1, attack)) * sin(.pi / 2 * min(1, release))
+            let frequency = frequencies.0 + (frequencies.1 - frequencies.0) * progress
+            let fundamental = sin(2 * .pi * frequency * Double(index) / 48_000)
+            let overtone = sin(2 * .pi * frequency * 2 * Double(index) / 48_000) * 0.16
+            samples[index] = Float((fundamental + overtone) * envelope * 0.12)
+        }
+        engine.attach(player)
+        engine.connect(player, to: engine.mainMixerNode, format: format)
+        cueEngine = engine; cuePlayer = player
+        do { try engine.start() } catch { cueEngine = nil; cuePlayer = nil; return }
+        await withCheckedContinuation { continuation in
+            player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in continuation.resume() }
+            player.play()
+        }
+        player.stop(); engine.stop()
+        if cueEngine === engine { cueEngine = nil; cuePlayer = nil }
     }
     private func fail(_ message: String) { error = message; end() }
     private func endAudio() {
@@ -277,6 +329,7 @@ import UIKit
         if capture.isRunning { capture.stop() }
         if captureTapInstalled { capture.inputNode.removeTap(onBus: 0); captureTapInstalled = false }
         stopOutput()
+        cuePlayer?.stop(); cueEngine?.stop(); cuePlayer = nil; cueEngine = nil
         if playback.isRunning { playback.stop() }
         for observer in observers { NotificationCenter.default.removeObserver(observer) }; observers.removeAll()
         for (command, target) in remoteCommands { command.removeTarget(target); command.isEnabled = false }

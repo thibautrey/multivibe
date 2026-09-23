@@ -11,40 +11,89 @@ struct RealtimeVoiceView: View {
     @State private var selectedVoice = "coral"
     @State private var typed = ""
     @State private var settings = false
+    @State private var closing = false
 
     var body: some View {
         ZStack {
-            LinearGradient(colors: [MultiVibeTheme.accent.opacity(0.18), MultiVibeTheme.background], startPoint: .topLeading, endPoint: .bottomTrailing).ignoresSafeArea()
-            VStack(spacing: 24) {
-                HStack {
-                    Button("Réglages vocaux", systemImage: "slider.horizontal.3") { settings = true }.labelStyle(.iconOnly)
-                    Spacer()
-                    Text(controller.route == "cascaded" ? "Mode compatible" : "Temps réel").font(.caption).foregroundStyle(.secondary)
-                }.padding(.horizontal, 24)
-                Spacer()
-                VoiceOrb(phase: controller.phase, reduceMotion: reduceMotion)
-                    .frame(width: 190, height: 190)
-                    .accessibilityLabel(status)
-                VStack(spacing: 8) {
-                    Text(status).font(.headline)
-                    Text(controller.partialUser.isEmpty ? controller.partialAssistant : controller.partialUser)
-                        .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).lineLimit(4)
-                        .frame(minHeight: 64).padding(.horizontal, 32)
-                }
-                if let error = controller.error { Text(error).foregroundStyle(.red).font(.callout).padding(.horizontal) }
-                Spacer()
-                HStack(spacing: 12) {
-                    TextField("Écrire à MultiVibe", text: $typed).textFieldStyle(.plain).padding(14).background(.regularMaterial, in: Capsule()).onSubmit(sendText)
-                    Button(controller.muted ? "Réactiver le micro" : "Couper le micro", systemImage: controller.muted ? "mic.slash.fill" : "mic.fill") { controller.setMuted(!controller.muted) }.labelStyle(.iconOnly).buttonStyle(.bordered).buttonBorderShape(.circle).controlSize(.large)
-                    Button("Terminer", systemImage: "xmark") { close() }.labelStyle(.iconOnly).buttonStyle(.borderedProminent).tint(.black).buttonBorderShape(.circle).controlSize(.large)
-                }.padding(.horizontal, 20).padding(.bottom, 16)
-            }
+            LinearGradient(colors: [MultiVibeTheme.accent.opacity(0.14), MultiVibeTheme.background], startPoint: .topLeading, endPoint: .bottomTrailing).ignoresSafeArea()
+            if manager.session == nil { signedOutContent }
+            else { conversationContent }
         }
-        .interactiveDismissDisabled(controller.phase != .ended)
+        .interactiveDismissDisabled(manager.session != nil && controller.phase != .ended)
         .task { await begin() }
         .onDisappear { controller.end() }
         .sheet(isPresented: $settings) {
-            NavigationStack { List { Picker("Voix", selection: $selectedVoice) { ForEach(voices) { Text($0.name).tag($0.id) } }; Text("Le choix de voix sera utilisé à la prochaine conversation.").font(.caption).foregroundStyle(.secondary) }.navigationTitle("Voix").toolbar { Button("Terminé") { saveVoice(); settings = false } } }
+            NavigationStack {
+                List {
+                    Picker("Voix", selection: $selectedVoice) { ForEach(voices) { Text($0.name).tag($0.id) } }
+                    Text("La nouvelle voix sera utilisée à la prochaine conversation.").font(.caption).foregroundStyle(.secondary)
+                }
+                .navigationTitle("Voix")
+                .toolbar { Button("Terminé") { saveVoice(); settings = false } }
+            }
+        }
+    }
+
+    private var signedOutContent: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Spacer()
+                Button("Fermer", systemImage: "xmark") { dismiss() }
+                    .labelStyle(.iconOnly).buttonStyle(.bordered).buttonBorderShape(.circle)
+            }.padding(24)
+            Spacer()
+            Image("MultiVibeMark")
+                .resizable().scaledToFit().frame(width: 82, height: 82)
+                .accessibilityHidden(true)
+            Text("Parlez avec MultiVibe")
+                .font(.title2.weight(.semibold)).padding(.top, 24)
+            Text("Connectez-vous pour démarrer une conversation vocale.")
+                .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                .padding(.top, 8).padding(.horizontal, 44)
+            Button("Se connecter", systemImage: "person.crop.circle") { presentAuthentication() }
+                .buttonStyle(.borderedProminent).controlSize(.large)
+                .padding(.top, 28).accessibilityIdentifier("voiceOpenAuthentication")
+            Spacer()
+        }
+    }
+
+    private var conversationContent: some View {
+        VStack(spacing: 24) {
+            HStack {
+                Button("Réglages vocaux", systemImage: "slider.horizontal.3") { settings = true }
+                    .labelStyle(.iconOnly).buttonStyle(.plain)
+                Spacer()
+                if !controller.route.isEmpty {
+                    Text(controller.route == "cascaded" ? "Mode compatible" : "Temps réel")
+                        .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                }
+            }.padding(.horizontal, 24).padding(.top, 8)
+            Spacer()
+            VoiceOrb(phase: controller.phase, reduceMotion: reduceMotion)
+                .frame(width: 190, height: 190).accessibilityLabel(status)
+            VStack(spacing: 8) {
+                Text(status).font(.headline)
+                Text(controller.partialUser.isEmpty ? controller.partialAssistant : controller.partialUser)
+                    .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).lineLimit(4)
+                    .frame(minHeight: 64).padding(.horizontal, 32)
+            }
+            if let error = controller.error {
+                Label(error, systemImage: "exclamationmark.circle")
+                    .font(.callout).foregroundStyle(.primary).multilineTextAlignment(.leading)
+                    .padding(.horizontal, 16).padding(.vertical, 12)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .padding(.horizontal, 24)
+            }
+            Spacer()
+            HStack(spacing: 12) {
+                TextField("Écrire à MultiVibe", text: $typed)
+                    .textFieldStyle(.plain).padding(14).background(.regularMaterial, in: Capsule()).onSubmit(sendText)
+                Button(controller.muted ? "Réactiver le micro" : "Couper le micro", systemImage: controller.muted ? "mic.slash.fill" : "mic.fill") { controller.setMuted(!controller.muted) }
+                    .labelStyle(.iconOnly).buttonStyle(.bordered).buttonBorderShape(.circle).controlSize(.large)
+                Button("Terminer", systemImage: "xmark") { close() }
+                    .labelStyle(.iconOnly).buttonStyle(.borderedProminent).tint(.primary)
+                    .buttonBorderShape(.circle).controlSize(.large).disabled(closing)
+            }.padding(.horizontal, 20).padding(.bottom, 16)
         }
     }
 
@@ -52,7 +101,8 @@ struct RealtimeVoiceView: View {
         switch controller.phase { case .idle: "Prêt"; case .connecting: "Connexion…"; case .listening: "Je vous écoute"; case .thinking: "Je réfléchis"; case .speaking: "MultiVibe répond"; case .reconnecting: "Reconnexion…"; case .awaitingConfirmation: "Validation requise"; case .ended: "Conversation terminée" }
     }
     private func begin() async {
-        guard let account = manager.session, let conversation = manager.current else { controller.error = "Connectez-vous pour utiliser la conversation vocale."; return }
+        guard let account = manager.session else { return }
+        guard let conversation = manager.current else { controller.error = "Ouvrez une conversation avant de démarrer le mode vocal."; return }
         let key = "cloud.multivibe.voice.\(account.accountId)"
         selectedVoice = UserDefaults.standard.string(forKey: key) ?? "coral"
         do {
@@ -70,7 +120,18 @@ struct RealtimeVoiceView: View {
     }
     private func saveVoice() { guard let account=manager.session else{return};UserDefaults.standard.set(selectedVoice,forKey:"cloud.multivibe.voice.\(account.accountId)") }
     private func sendText() { let value=typed;typed="";Task { await controller.sendText(value) } }
-    private func close() { controller.end(); dismiss() }
+    private func presentAuthentication() {
+        dismiss()
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            manager.authenticationPresented = true
+        }
+    }
+    private func close() {
+        guard !closing else { return }
+        closing = true
+        Task { await controller.endWithCue(); dismiss() }
+    }
 }
 
 private struct VoiceOrb: View {
