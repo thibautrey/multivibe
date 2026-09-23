@@ -45,14 +45,15 @@ export async function executePersonalProviderChat(input:PersonalProviderExecutio
       })),{status:response.status,headers:response.headers});
     };
     if(account.provider!=='ai-sdk'){
+      const runtimeAccount={id:'isolated-personal-provider',enabled:true,...account};
       const mode=account.provider==='github-copilot'?account.copilotModelEndpoints?.[body.model]??account.upstreamMode:account.upstreamMode;
       if(mode!=='responses'&&mode!=='chat/completions')throw Error('unsupported');
       const responses=mode==='responses',payload=responses?chatCompletionsToResponsesPayload({...body,stream:Boolean(body.stream)}):{...body,max_tokens:tokens};
       const endpoint=account.provider==='openai'?'https://chatgpt.com/backend-api/codex/responses':`${input.endpoint}/${responses?'responses':'chat/completions'}`;
       const headers:Record<string,string>=account.provider==='github-copilot'?buildCopilotHeaders(account.accessToken,payload,body.stream?'text/event-stream':'application/json'):
-        {'content-type':'application/json',accept:body.stream?'text/event-stream':'application/json',authorization:`Bearer ${account.provider==='opencode'?openCodeInferenceToken(account):account.accessToken}`,
+        {'content-type':'application/json',accept:body.stream?'text/event-stream':'application/json',authorization:`Bearer ${account.provider==='opencode'?openCodeInferenceToken(runtimeAccount):account.accessToken}`,
           ...(account.provider==='openai'&&account.chatgptAccountId?{'chatgpt-account-id':account.chatgptAccountId}:{}),
-          ...(account.provider==='opencode'?openCodeAccountHeaders(account):{})};
+          ...(account.provider==='opencode'?openCodeAccountHeaders(runtimeAccount):{})};
       const upstream=await guarded(endpoint,{method:'POST',headers,body:JSON.stringify(payload)});
       if(!responses)return new Response(upstream.body,{headers:{'content-type':body.stream?'text/event-stream':'application/json','cache-control':'no-store'}});
       if(!body.stream){const value=await upstream.json();return Response.json(responseObjectToChatCompletion(value,body.model),{headers:{'cache-control':'no-store'}});}
