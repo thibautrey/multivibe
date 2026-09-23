@@ -5,7 +5,7 @@ import {
   OPENCODE_CONSOLE_URL,
   OPENCODE_OAUTH_CLIENT_ID,
 } from "./config.js";
-import type { Account, OAuthFlowState } from "./types.js";
+import type { Account, OAuthFlowState, UpstreamMode } from "./types.js";
 
 export type OpenCodeDeviceCode = {
   deviceCode: string;
@@ -91,6 +91,16 @@ export function openCodeAccountHeaders(account: Account): Record<string, string>
   if (account.opencodeOrgId) headers.set("x-org-id", account.opencodeOrgId);
   headers.delete("authorization");
   return Object.fromEntries(headers.entries());
+}
+
+/** Big Pickle is chat-only on both Zen and Console, including accounts saved
+ * before model-aware routing was introduced. Other models keep their mode. */
+export function openCodeUpstreamMode(account: Partial<Account>, model: string): UpstreamMode {
+  return model === "big-pickle" ? "chat/completions" : account.upstreamMode ?? "responses";
+}
+
+export function openCodeInferenceUrl(account: Partial<Account>, model: string): string {
+  return `${normalizeOpenCodeApiRoot(account.baseUrl)}/v1/${openCodeUpstreamMode(account, model)}`;
 }
 
 export function openCodeUsageUrl(baseUrl?: string): string | undefined {
