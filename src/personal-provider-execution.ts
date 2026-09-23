@@ -52,7 +52,7 @@ export async function executePersonalProviderChat(input:PersonalProviderExecutio
       })),{status:response.status,headers:response.headers});
     };
     if(account.provider!=='ai-sdk'){
-      let runtimeAccount:Account={id:'isolated-personal-provider',enabled:true,accessToken:account.accessToken,...account};
+      let runtimeAccount={id:'isolated-personal-provider',enabled:true,...account} as Account;
       if(account.expiresAt!==undefined&&account.expiresAt<=Date.now()+60_000){
         if(!account.refreshToken||!persist)throw Error('reauthentication_required');
         const refreshTransport:typeof fetch=(url,init)=>transport(url,{...init,redirect:'error',signal:AbortSignal.any([boundedSignal,AbortSignal.timeout(15_000)])});
