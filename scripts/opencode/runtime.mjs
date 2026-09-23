@@ -8,7 +8,8 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {StringDecoder} from 'node:string_decoder';
 
-export const MODEL = 'opencode/big-pickle';
+export const MODEL = 'big-pickle-opencode-local';
+const CLI_MODEL = 'opencode/big-pickle';
 class RequestError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
 }
@@ -46,7 +47,7 @@ export async function runOpenCode({messages,maxTokens,signal}, options = {}) {
       OPENCODE_CONFIG_CONTENT:JSON.stringify(config),OPENCODE_DISABLE_AUTOUPDATE:'true'};
     const prompt = 'Answer the final user message in this text conversation. Preserve the supplied conversation context and instructions. Do not use tools or inspect files. Return only the answer.\n\n' + JSON.stringify(messages);
     return await new Promise((resolve,reject) => {
-      const child = spawn(binary,['run','--pure','--model',MODEL,'--format','json','--title','MultiVibe text conversation'],{cwd:path.join(workspace,'project'),env,stdio:['pipe','pipe','pipe']});
+      const child = spawn(binary,['run','--pure','--model',CLI_MODEL,'--format','json','--title','MultiVibe text conversation'],{cwd:path.join(workspace,'project'),env,stdio:['pipe','pipe','pipe']});
       let buffer='',text='',usage,sessionID,bytes=0,failure,killTimer,finishReason='stop';
       const decoder=new StringDecoder('utf8');
       const fail = error => {failure ??= error;child.kill('SIGTERM');killTimer ??= setTimeout(()=>child.kill('SIGKILL'),3000);};
@@ -97,7 +98,7 @@ export function createRuntime({apiKey,run=runOpenCode,maxConcurrent=2}) {
     const supplied=Buffer.from(req.headers.authorization ?? ''),expected=Buffer.from(`Bearer ${apiKey}`);
     const json=(status,value) => {res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(value));};
     if(supplied.length!==expected.length || !timingSafeEqual(supplied,expected))return json(401,{error:{message:'Unauthorized'}});
-    if(req.method==='GET' && req.url==='/v1/models')return json(200,{object:'list',data:[{id:MODEL,object:'model',owned_by:'opencode',name:'Big Pickle · OpenCode local',capabilities:{tools:false,vision:false},metadata:{transport:'official-opencode-cli',streaming:'buffered',input_modalities:['text'],output_modalities:['text']}}]});
+    if(req.method==='GET' && req.url==='/v1/models')return json(200,{object:'list',data:[{id:MODEL,object:'model',owned_by:'opencode',name:'Big Pickle · OpenCode local',supports_tools:false,supported_tool_types:[],context_window:160000,max_output_tokens:32000,capabilities:{tools:false,vision:false},metadata:{transport:'official-opencode-cli',streaming:'buffered',input_modalities:['text'],output_modalities:['text']}}]});
     if(req.method!=='POST' || req.url!=='/v1/chat/completions')return json(404,{error:{message:'Not found'}});
     if(active>=maxConcurrent)return json(429,{error:{message:'OpenCode local is busy'}});
     active++;
