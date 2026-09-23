@@ -7,7 +7,7 @@ The official client can also trigger that error when its shell tool is removed
 ([upstream report](https://github.com/anomalyco/opencode/issues/50627)).
 
 MultiVibe's optional local adapter runs the genuine OpenCode v1 CLI and exposes
-`opencode/big-pickle` through an authenticated loopback Chat Completions endpoint.
+`big-pickle-opencode-local` through an authenticated loopback Chat Completions endpoint.
 It does not impersonate OpenCode headers, add pretend tools to API requests,
 select a paid fallback, or circumvent provider limits.
 
@@ -29,7 +29,7 @@ OPENCODE_BRIDGE_KEY_FILE=/absolute/path/to/private-key \
 The default address is `http://127.0.0.1:14957` (override the port with
 `OPENCODE_BRIDGE_PORT`). Add it to MultiVibe as an OpenAI-compatible account,
 with that key and Chat Completions mode. Its model endpoint advertises only
-`opencode/big-pickle`. A macOS LaunchAgent can run the same command at login.
+`big-pickle-opencode-local`. A macOS LaunchAgent can run the same command at login.
 The OpenCode account sign-in integration remains separate and supports
 workspace-scoped authorization for direct Console/Go access.
 
@@ -65,4 +65,4 @@ node --test scripts/opencode/runtime.test.mjs
 The tests exercise authorization, unsupported-input rejection, concurrency,
 cancellation, CLI stdin/configuration, cleanup, text replies, and buffered SSE.
 A working `/models` response alone does not prove access: verify a real chat
-through the Host with `model: "opencode/big-pickle"`.
+through the Host with `model: "big-pickle-opencode-local"`.
