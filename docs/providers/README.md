@@ -35,6 +35,7 @@ The following providers are available through API-key setup. Quota probes run in
 | [Inference services](expansion-inference.md) | Fireworks AI, DeepInfra, Nebius AI Studio, SambaNova Cloud, SiliconFlow, Novita AI, NVIDIA NIM, Mistral Codestral, Cohere, AI21 Labs | API-key access and upstream request-token accounting; no invented subscription quota. |
 | [Gateways and prediction APIs](expansion-gateways.md) | OrcaRouter, Martian, CrofAI, Inceptron, Neuralwatt, Baseten, Replicate, fal.ai | API-key access. Replicate is scoped to the reviewed Llama 3 70B text prediction model, with buffered streaming and no client tools or media. fal uses its `Key` authorization scheme. |
 | [Cloud platforms](cloud-platforms.md) | AWS Bedrock, Azure AI Foundry, Google Vertex AI (Express), Cloudflare Workers AI | Provider API keys and validated cloud endpoints. Resource quotas and billing remain in the cloud console. |
+| [OpenCode Big Pickle](opencode.md) | Official local OpenCode CLI for the free model; direct Console/Go sign-in remains separate | Actual CLI token usage; no invented remaining free allowance |
 | Existing integrations retained | Together AI, Groq, Cerebras, DeepSeek, Mistral AI, OpenCode Go | Existing API-key or native integration; OpenCode Go quota tracking remains active. |
 
 ## Model lists and live discovery
