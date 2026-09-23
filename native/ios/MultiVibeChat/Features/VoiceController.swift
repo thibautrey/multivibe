@@ -48,7 +48,7 @@ enum VoiceSystemEvent: Sendable, Equatable {
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var tapInstalled = false
     private var activation = UUID()
-    private var starting = false
+    private(set) var starting = false
     private var currentUtterance: AVSpeechUtterance?
     private var audioOwnership = VoiceAudioSessionOwnership()
 
@@ -125,7 +125,7 @@ enum VoiceSystemEvent: Sendable, Equatable {
         guard audioServicesAvailable else { error = "Le service audio est indisponible pour le moment."; return }
         guard !recording, !starting else { return }
         let activation = UUID()
-        self.activation = activation; starting = true
+        self.activation = activation; starting = true; error = nil
         defer { if self.activation == activation { starting = false } }
         let speech = await withCheckedContinuation { continuation in
             // Speech invokes this callback off the main actor, including when already authorized.
