@@ -16,6 +16,7 @@ export type OpenCodeDeviceCode = {
 };
 
 export type OpenCodeToken = {
+  orgId?: string;
   accessToken: string;
   refreshToken?: string;
   expiresAt?: number;
@@ -59,7 +60,7 @@ async function jsonResponse<T>(response: Response, context: string): Promise<T> 
   return data as T;
 }
 
-async function postConsole<T>(path: string, body: Record<string, string>, fetchImpl: typeof fetch): Promise<T> {
+async function postConsole<T>(path: string, body: Record<string, string | boolean>, fetchImpl: typeof fetch): Promise<T> {
   const response = await fetchImpl(`${configuredConsoleUrl()}${path}`, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
@@ -118,7 +119,7 @@ export async function requestOpenCodeDeviceCode(fetchImpl: typeof fetch = fetch)
     verification_uri_complete: string;
     expires_in: number;
     interval: number;
-  }>("/auth/device/code", { client_id: OPENCODE_OAUTH_CLIENT_ID }, fetchImpl);
+  }>("/auth/device/code", { client_id: OPENCODE_OAUTH_CLIENT_ID, supports_org_scope: true }, fetchImpl);
   const verificationUrl = new URL(
     device.verification_uri_complete,
     `${configuredConsoleUrl()}/`,
@@ -152,6 +153,7 @@ export async function pollOpenCodeDeviceCode(
   const text = await response.text();
   let data: {
     access_token?: string;
+    org_id?: string | null;
     refresh_token?: string;
     expires_in?: number;
     error?: string;
@@ -166,6 +168,7 @@ export async function pollOpenCodeDeviceCode(
       status: "success",
       token: {
         accessToken: data.access_token,
+        orgId: data.org_id ?? undefined,
         refreshToken: data.refresh_token,
         expiresAt: data.expires_in
           ? Date.now() + data.expires_in * 1000
@@ -285,7 +288,7 @@ export async function accountFromOpenCodeOAuth(
   existing?: Account,
   fetchImpl: typeof fetch = fetch,
 ): Promise<Account> {
-  const profile = await fetchOpenCodeProfile(token.accessToken, existing?.opencodeOrgId, fetchImpl);
+  const profile = await fetchOpenCodeProfile(token.accessToken, token.orgId ?? existing?.opencodeOrgId, fetchImpl);
   if (
     existing?.opencodeAccountId &&
     existing.opencodeAccountId !== profile.accountId

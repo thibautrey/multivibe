@@ -46,7 +46,7 @@ test("starts OpenCode Console device OAuth with the official contract", async ()
   try {
     const device = await requestOpenCodeDeviceCode();
     assert.equal(requestUrl, `${OPENCODE_CONSOLE_URL}/auth/device/code`);
-    assert.deepEqual(requestBody, { client_id: OPENCODE_OAUTH_CLIENT_ID });
+    assert.deepEqual(requestBody, { client_id: OPENCODE_OAUTH_CLIENT_ID, supports_org_scope: true });
     assert.equal(device.userCode, "ABCD-EFGH");
     assert.equal(
       device.verificationUrl,
@@ -222,4 +222,22 @@ test("Big Pickle routing preserves other OpenCode model modes and normalizes ver
     assert.equal(openCodeInferenceUrl(account, 'gpt-5.5'), normalizeOpenCodeApiRoot(baseUrl) + '/v1/responses');
   }
   assert.equal(openCodeUpstreamMode({upstreamMode:'chat/completions'}, 'other-model'), 'chat/completions');
+});
+
+
+test("scoped OpenCode sign-in selects the authorized workspace instead of alphabetical order", async () => {
+  const { token } = await pollOpenCodeDeviceCode("fixture", 5, async () => Response.json({
+    access_token:"fixture-session", org_id:"org_z", expires_in:3600,
+  })) as {status:"success"; token: import("./opencode.js").OpenCodeToken};
+  assert.equal(token.orgId,"org_z");
+  const transport:typeof fetch=async (input,init)=> {
+    if(String(input).endsWith('/api/user'))return Response.json({id:'user',email:'fixture@example.test'});
+    if(String(input).endsWith('/api/orgs'))return Response.json([{id:'org_a',name:'A'},{id:'org_z',name:'Z'}]);
+    assert.equal(new Headers(init?.headers).get('x-org-id'),'org_z');
+    return Response.json({config:{provider:{opencode:{api:'https://opencode.ai/inference/openai',options:{apiKey:'{env:OPENCODE_CONSOLE_TOKEN}'}}}}});
+  };
+  const flow={id:'flow',email:'',codeVerifier:'',createdAt:Date.now(),status:'pending' as const};
+  const account=await accountFromOpenCodeOAuth(flow,token,undefined,transport);
+  assert.equal(account.opencodeOrgId,'org_z');
+  await assert.rejects(accountFromOpenCodeOAuth(flow,token,{id:'old',provider:'opencode',enabled:true,accessToken:'old',opencodeAccountId:'user',opencodeOrgId:'org_a'},transport),/organization mismatch/);
 });
