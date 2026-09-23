@@ -906,3 +906,25 @@ final class NativeSSOFailureTests: XCTestCase {
         }
     }
 }
+
+
+final class CloudCreditBalanceTests: XCTestCase {
+    func testExactDecimalBalancesIncludingZeroAndSmallRemainders() throws {
+        for raw in ["0", "11.75", "0.000001"] {
+            let data = Data("{\"currency\":\"USD\",\"totalAvailableUsd\":\"\(raw)\"}".utf8)
+            let balance = try JSONDecoder().decode(CloudCreditBalance.self, from: data)
+            XCTAssertEqual(balance.available, Decimal(string: raw))
+            XCTAssertFalse(balance.formatted.isEmpty)
+        }
+    }
+    func testInvalidBalanceNeverBecomesZero() {
+        for json in [#"{"currency":"EUR","totalAvailableUsd":"10"}"#,
+                     #"{"currency":"USD","totalAvailableUsd":"invalid"}"#,
+                     #"{"currency":"USD","totalAvailableUsd":"12oops"}"#,
+                     #"{"currency":"USD","totalAvailableUsd":"-1"}"#,
+                     #"{"currency":"USD","totalAvailableUsd":10}"#,
+                     #"{"currency":"USD"}"#] {
+            XCTAssertThrowsError(try JSONDecoder().decode(CloudCreditBalance.self, from: Data(json.utf8)))
+        }
+    }
+}
