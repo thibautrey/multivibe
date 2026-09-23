@@ -1000,3 +1000,56 @@ final class NativeAccountProfileTests: XCTestCase {
         XCTAssertTrue(personal.teams.isEmpty)
     }
 }
+
+private final class ProviderTestProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var handler: (@Sendable (URLRequest) throws -> (Int, String))?
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        do {
+            let (status, body) = try Self.handler!(request)
+            let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(body.utf8)); client?.urlProtocolDidFinishLoading(self)
+        } catch { client?.urlProtocol(self, didFailWithError: error) }
+    }
+    override func stopLoading() {}
+}
+@MainActor final class NativeProviderAPITests: XCTestCase {
+    private func api(_ handler: @escaping @Sendable (URLRequest) throws -> (Int, String)) -> ChatAPI {
+        ProviderTestProtocol.handler = handler
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ProviderTestProtocol.self]
+        return ChatAPI(session: URLSession(configuration: configuration))
+    }
+    func testProviderConnectionUsesNativeBearerBoundary() async throws {
+        let api = api { request in
+            XCTAssertEqual(request.url?.path, "/native/v1/providers")
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer native-fixture")
+            XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
+            return (201, #"{"id":"connection-1","provider":"openai","displayName":"My API","state":"connected","models":["luna"],"authenticationMethod":"api_key"}"#)
+        }
+        let reply: ProviderConnection = try await api.providerRequest("providers", fields: ["provider": "openai", "displayName": "My API", "apiKey": "fixture-only"], token: "native-fixture")
+        XCTAssertEqual(reply.id, "connection-1")
+        XCTAssertEqual(reply.authenticationMethod, "api_key")
+    }
+    func testProviderErrorsDoNotExposeUpstreamDiagnostics() async {
+        let api = api { _ in (503, #"{"error":"personal_provider_unavailable","message":"secret-diagnostic-fixture"}"#) }
+        do {
+            let _: ProviderConnection = try await api.providerRequest("providers", fields: [:], token: "fixture")
+            XCTFail("Expected failure")
+        } catch { XCTAssertFalse(error.localizedDescription.contains("secret-diagnostic-fixture")) }
+    }
+    func testLegacySelectionCannotSilentlyUseCloud() async {
+        let api = api { _ in XCTFail("Missing access must fail before networking"); return (500, "{}") }
+        do { try await api.stream(model: "openai/luna", messages: [], token: "fixture") { _ in }; XCTFail("Expected explicit choice") }
+        catch { if case APIError.server(409, "model_access_unavailable") = error {} else { XCTFail("Unexpected error: \(error)") } }
+    }
+    func testDeviceChallengeDecodesExpiryAndOpaqueFlow() throws {
+        let challenge = try JSONDecoder().decode(ProviderChallenge.self, from: Data(#"{"provider":"openai","userCode":"TEST-CODE","verificationUrl":"https://auth.openai.com/codex/device","intervalSeconds":5,"expiresAt":2000000000000,"flowToken":"opaque-fixture"}"#.utf8))
+        XCTAssertEqual(challenge.expiry.timeIntervalSince1970, 2000000000)
+        XCTAssertEqual(challenge.intervalSeconds, 5)
+        XCTAssertEqual(challenge.flowToken, "opaque-fixture")
+    }
+}
