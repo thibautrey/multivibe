@@ -445,14 +445,28 @@ struct ChatView: View {
             }
             prompt += prompt.isEmpty ? clipboard : ": " + clipboard
         } else if suggestion.behavior == .prepare { prompt += prompt.isEmpty ? "" : " " }
-        if suggestion.behavior == .send, manager.send(prompt) { text = "" }
-        else { text = prompt }
+        if suggestion.behavior == .send, manager.send(prompt) {
+            text = ""
+            collapseComposerAfterSend()
+        } else { text = prompt }
     }
 
     private func sendComposerMessage() {
         guard manager.send(text) else { return }
         text = ""
-        composerFocused = false
+        collapseComposerAfterSend()
+    }
+
+    private func collapseComposerAfterSend() {
+        // Release the keyboard before dismissing its sheet. Both state changes
+        // happen in the same transaction so the running conversation is visible
+        // immediately instead of waiting for the keyboard animation.
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            composerFocused = false
+            composerPresented = false
+        }
     }
 
     private var composer: some View {
