@@ -23,7 +23,6 @@ struct ChatView: View {
     @State private var confirmHistoryConflict = false
     @State private var retryTarget: RetryTarget?
     private struct RetryTarget { let conversation: UUID; let message: UUID }
-    @State private var voicePresented = false
     @State private var documentsPresented = false
     @State private var privacyPresented = false
     @State private var suggestions = HomeSuggestionStore.load()
@@ -296,7 +295,6 @@ struct ChatView: View {
         .sheet(item: Binding(get: { manager.memoryPresented ? nil : manager.memoryDraft }, set: { manager.memoryDraft = $0 })) { draft in MemoryEditor(draft: draft) }
         .sheet(isPresented: $documentsPresented) { LocalDocumentsView() }
         .sheet(isPresented: $privacyPresented) { NativePrivacyView() }
-        .sheet(isPresented: $voicePresented) { VoiceConversationView() }
         .sheet(isPresented: $suggestionsPresented) {
             SuggestionsEditor(suggestions: $suggestions, highlighted: highlightedSuggestion) {
                 HomeSuggestionStore.save(suggestions)
@@ -325,7 +323,7 @@ struct ChatView: View {
                 composerPresented = true
             }
         }
-        .onChange(of: voice.transcript) { _, value in if !voicePresented { text = value } }
+        .onChange(of: voice.transcript) { _, value in text = value }
         .onChange(of: manager.wantsNewConversation) { _, _ in consumeIntent() }
         .onChange(of: manager.wantsVoiceConversation) { _, _ in consumeIntent() }
         .onChange(of: scenePhase) { _, phase in
@@ -354,7 +352,7 @@ struct ChatView: View {
 
     private var modalIsActive: Bool {
         manager.authenticationPresented || manager.internetApproval != nil || manager.memoryPresented || manager.memoryDraft != nil ||
-            documentsPresented || privacyPresented || voicePresented || suggestionsPresented || selectionContent != nil
+            documentsPresented || privacyPresented || suggestionsPresented || selectionContent != nil
     }
 
     private func executeSuggestion(_ suggestion: HomeSuggestion) {
@@ -398,13 +396,13 @@ struct ChatView: View {
                     }.font(.subheadline).frame(minHeight: 44)
                 }.disabled(manager.isStreaming).accessibilityLabel("Modèle")
                 Spacer(minLength: 0)
-                Button(voice.recording ? "Terminer la dictée" : "Dicter sur cet appareil", systemImage: voice.recording ? "mic.fill" : "mic") {
-                    if voice.recording { voice.stop() } else { Task { await voice.start() } }
-                }.frame(minWidth: 44, minHeight: 44)
                 if manager.isStreaming {
                     Button("Arrêter", systemImage: "stop.circle.fill") { manager.stop() }.font(.title).frame(minWidth: 44, minHeight: 44)
+                } else if voice.recording {
+                    Button("Terminer la dictée", systemImage: "waveform.circle.fill") { voice.stop() }
+                        .font(.title).frame(minWidth: 44, minHeight: 44)
                 } else if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Button("Conversation vocale", systemImage: "waveform.circle.fill") { voice.silence(); voicePresented = true }
+                    Button("Dicter sur cet appareil", systemImage: "waveform.circle.fill") { startVoiceInput() }
                         .font(.title).frame(minWidth: 44, minHeight: 44)
                 } else {
                     Button("Envoyer", systemImage: "arrow.up.circle.fill") { sendComposerMessage() }
@@ -429,7 +427,7 @@ struct ChatView: View {
         do {
             if let request = try manager.applyNativeShortcut() {
                 voice.silence()
-                voicePresented = false; documentsPresented = false; privacyPresented = false
+                documentsPresented = false; privacyPresented = false
                 manager.memoryPresented = false
                 switch request.destination {
                 case .history: preferredColumn = .sidebar
@@ -448,7 +446,8 @@ struct ChatView: View {
             openNewConversation()
         }
         if manager.wantsVoiceConversation {
-            manager.wantsVoiceConversation = false; voice.silence(); voicePresented = true
+            manager.wantsVoiceConversation = false
+            startVoiceInput()
         }
         if let draft = manager.pendingDraft {
             shortcutDraftConversation = manager.selection
@@ -456,96 +455,17 @@ struct ChatView: View {
         }
         if manager.wantsVoice {
             manager.wantsVoice = false
-            Task { await voice.start() }
+            startVoiceInput()
         }
     }
-}
 
-/// Push-to-talk conversation mode deliberately keeps sending separate from
-/// recognition. Siri, Shortcuts and the toolbar all open this same interface.
-struct VoiceConversationView: View {
-    @Environment(ConversationManager.self) private var manager
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.scenePhase) private var scenePhase
-    @State private var draft = ""
-    @State private var awaitingReply = false
-    @State private var replyConversation: UUID?
-    @State private var replyMessage: UUID?
-    @State private var response = ""
-    private var voice: VoiceController { manager.voice }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    Label(status, systemImage: voice.recording ? "mic.fill" : voice.speaking ? "speaker.wave.2.fill" : "waveform")
-                        .font(.title2).foregroundStyle(MultiVibeTheme.accent)
-                        .accessibilityAddTraits(.updatesFrequently)
-                    Text("La dictée reste sur cet appareil. Seul le bouton Envoyer transmet votre message au modèle sélectionné.")
-                        .font(.callout).foregroundStyle(.secondary)
-                    Text(manager.selectedModel.isEmpty ? "Aucun modèle disponible" : manager.selectedModel).font(.caption)
-                }
-                Section("Votre message") {
-                    TextField("Dictez ou saisissez votre message", text: $draft, axis: .vertical).lineLimit(3...10)
-                    Button(voice.recording ? "Terminer la dictée" : "Dicter", systemImage: voice.recording ? "stop.circle" : "mic") {
-                        if voice.recording { voice.stop() } else { Task { await voice.start() } }
-                    }.disabled(manager.isStreaming || scenePhase != .active)
-                    Button("Envoyer et écouter la réponse", systemImage: "arrow.up.circle.fill") {
-                        voice.silence()
-                        if manager.send(draft) {
-                            replyConversation = manager.selection
-                            replyMessage = manager.current?.messages.last?.id
-                            awaitingReply = true; draft = ""; response = ""
-                        }
-                    }.disabled(manager.isStreaming || manager.selectedModel.isEmpty || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-                if manager.isStreaming { Button("Arrêter la réponse", systemImage: "stop.circle") { awaitingReply = false; manager.stop() } }
-                if !response.isEmpty { Section("Réponse") { Text(response).textSelection(.enabled) } }
-                if voice.speaking { Button("Arrêter la lecture", systemImage: "speaker.slash") { voice.silence() } }
-                if let error = voice.error ?? manager.error { Section { Text(error).foregroundStyle(.red) } }
-            }
-            .scrollContentBackground(.hidden).background(MultiVibeTheme.background)
-            .navigationTitle("Conversation vocale")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { voice.silence(); dismiss() } } }
-        }
-        .task(id: canStartAssistantCapture) {
-            guard canStartAssistantCapture else { return }
+    private func startVoiceInput() {
+        preferredColumn = .detail
+        composerPresented = true
+        Task {
             await voice.start()
-            // Keep a deferred request while inactive or restoring. Consume only
-            // after permission handling, so changing this task's identity cannot
-            // cancel its own microphone activation before it has completed.
-            guard !Task.isCancelled else { return }
             manager.wantsImmediateVoiceCapture = false
         }
-        .onChange(of: voice.transcript) { _, value in draft = value }
-        .onChange(of: manager.isStreaming) { _, streaming in
-            guard !streaming, awaitingReply else { return }
-            awaitingReply = false
-            guard scenePhase == .active, manager.error == nil,
-                  let replyMessage, manager.completedReply == replyMessage,
-                  let conversation = manager.conversations.first(where: { $0.id == replyConversation }),
-                  let reply = conversation.messages.first(where: { $0.id == replyMessage }),
-                  !reply.content.isEmpty else { return }
-            response = reply.content; voice.speak(reply.content)
-        }
-        .onChange(of: scenePhase) { _, phase in if phase != .active { awaitingReply = false; voice.silence() } }
-        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in awaitingReply = false; voice.silence() }
-        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.mediaServicesWereLostNotification)) { _ in awaitingReply = false }
-        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.mediaServicesWereResetNotification)) { _ in awaitingReply = false }
-        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { notification in
-            if VoiceSystemEvent.decode(notification) == .routeLost { awaitingReply = false }
-        }
-        .onDisappear { awaitingReply = false; voice.silence() }
-    }
-    private var canStartAssistantCapture: Bool {
-        manager.wantsImmediateVoiceCapture && scenePhase == .active &&
-            !manager.isRestoring && !manager.isStreaming
-    }
-    private var status: String {
-        if voice.recording { return "À votre écoute" }
-        if manager.isStreaming { return "Réponse en cours" }
-        if voice.speaking { return "MultiVibe vous répond" }
-        return "Prêt à discuter"
     }
 }
 
