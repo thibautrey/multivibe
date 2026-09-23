@@ -525,3 +525,20 @@ struct NativePasskeyOptions: Decodable, Sendable {
         return Data(base64Encoded: encoded + String(repeating: "=", count: (4 - encoded.count % 4) % 4))
     }
 }
+
+/// The Cloud contract expresses available USD as a decimal string, never a float.
+struct CloudCreditBalance: Decodable, Sendable {
+    let available: Decimal
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let currency = try values.decode(String.self, forKey: .currency)
+        let raw = try values.decode(String.self, forKey: .totalAvailableUsd)
+        guard currency == "USD", raw.range(of: #"^[0-9]+(?:\.[0-9]+)?$"#, options: .regularExpression) != nil,
+              let amount = Decimal(string: raw, locale: Locale(identifier: "en_US_POSIX")), !amount.isNaN else {
+            throw APIError.invalidResponse
+        }
+        available = amount
+    }
+    private enum CodingKeys: String, CodingKey { case currency, totalAvailableUsd }
+    var formatted: String { available.formatted(.currency(code: "USD").precision(.fractionLength(2...6))) }
+}

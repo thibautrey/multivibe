@@ -346,6 +346,9 @@ struct ChatView: View {
                     Section("Compte") {
                         LabeledContent("Statut", value: manager.session == nil ? "Invité" : "Connecté")
                     }
+                    if let accountId = manager.session?.accountId {
+                        CloudCreditBalanceSection(accountId: accountId).id(accountId)
+                    }
                     Section {
                         if manager.session != nil {
                             Button("Déconnexion", role: .destructive) {
@@ -1204,5 +1207,54 @@ private struct ConversationShortcutLabel: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
+    }
+}
+
+private struct CloudCreditBalanceSection: View {
+    let accountId: String
+    @Environment(ConversationManager.self) private var manager
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var balance: CloudCreditBalance?
+    @State private var loading = true
+    @State private var failed = false
+
+    var body: some View {
+        Section("MultiVibe Cloud") {
+            LabeledContent("Solde disponible") {
+                if loading {
+                    ProgressView().accessibilityLabel("Chargement du solde")
+                } else if let balance {
+                    Text(balance.formatted).monospacedDigit()
+                        .accessibilityIdentifier("cloudCreditBalance")
+                } else {
+                    Text("Indisponible").foregroundStyle(.secondary)
+                }
+            }
+            if failed {
+                Button("Réessayer") { Task { await reload() } }
+            }
+        }
+        .task(id: scenePhase) {
+            if scenePhase == .active { await reload() }
+        }
+    }
+
+    @MainActor private func reload() async {
+        loading = true
+        failed = false
+        balance = nil
+        do {
+            let session = try await manager.validSession()
+            guard session.accountId == accountId else { throw CancellationError() }
+            let result = try await ChatAPI.shared.creditBalance(token: session.accessToken)
+            try Task.checkCancellation()
+            guard manager.session?.accountId == accountId else { return }
+            balance = result
+            loading = false
+        } catch {
+            guard !Task.isCancelled, manager.session?.accountId == accountId else { return }
+            loading = false
+            failed = true
+        }
     }
 }
