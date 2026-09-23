@@ -49,7 +49,7 @@ struct ChatView: View {
             List(selection: $manager.selection) {
                 Section {
                     ScrollView(.horizontal) {
-                        LazyHGrid(rows: [GridItem(.flexible(), alignment: .top)], spacing: 16) {
+                        LazyHStack(alignment: .top, spacing: 16) {
                             if manager.session != nil {
                                 NavigationLink {
                                     SDKApplicationsView().id(manager.session?.accountId)
