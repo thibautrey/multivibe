@@ -158,6 +158,32 @@ final class AuthenticationUITests: XCTestCase {
     }
 }
 
+@MainActor final class ModelMarketplaceUITests: XCTestCase {
+    func testQuickPickerOpensMarketplaceWithoutEmptyChoice() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-local-agent-ui-fixture", "-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR"]
+        app.launch()
+        let picker = app.buttons["Modèle"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 15))
+        picker.tap()
+        XCTAssertTrue(app.navigationBars["Changer de modèle"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Choisir un modèle"].exists)
+        XCTAssertTrue(app.staticTexts["Apple Foundation Local"].exists)
+        let explore = app.buttons["Explorer tous les modèles"]
+        XCTAssertTrue(explore.exists)
+        explore.tap()
+        XCTAssertTrue(app.navigationBars["Modèles"].waitForExistence(timeout: 5))
+        for tab in ["Découvrir", "Catégories", "Favoris", "Fournisseurs"] {
+            XCTAssertTrue(app.tabBars.buttons[tab].exists)
+        }
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "model-marketplace-discover"
+        capture.lifetime = .keepAlways
+        add(capture)
+    }
+}
+
 final class LocalInternetUITests: XCTestCase {
     func testLocalWebPermissionCanBeDeniedOnceWithoutSigningIn() throws {
         continueAfterFailure = false

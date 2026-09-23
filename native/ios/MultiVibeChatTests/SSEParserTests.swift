@@ -3,6 +3,38 @@ import AVFoundation
 import AuthenticationServices
 @testable import MultiVibeChat
 
+@MainActor final class ModelMarketplaceTests: XCTestCase {
+    func testKnownProvidersAndUseCasesAreClassified() {
+        let fixtures = [
+            (ModelOption(id: "openai/gpt-5.3", name: "GPT-5.3"), ModelProvider.openAI),
+            (ModelOption(id: "anthropic/claude-sonnet-5", name: nil), .anthropic),
+            (ModelOption(id: "google/gemini-3-pro", name: nil), .google),
+            (ModelOption(id: "mistral/devstral-2", name: nil), .mistral),
+            (ModelOption(id: "meta/llama-4", name: nil), .meta),
+            (ModelOption(id: "deepseek/deepseek-v4", name: nil), .deepSeek)
+        ]
+        for (model, provider) in fixtures { XCTAssertEqual(model.presentation.provider, provider) }
+        XCTAssertTrue(fixtures[0].0.presentation.useCases.contains(.coding))
+        XCTAssertTrue(fixtures[2].0.presentation.useCases.contains(.creation))
+    }
+
+    func testLocalModelIsFreePrivateAndOffline() {
+        let presentation = ModelOption(id: LocalModel.id, name: "Apple Foundation Local").presentation
+        XCTAssertEqual(presentation.provider, .apple)
+        XCTAssertFalse(presentation.usesCloudCredit)
+        XCTAssertTrue(presentation.useCases.contains(.local))
+        XCTAssertTrue(presentation.badges.contains("Hors ligne"))
+    }
+
+    func testFavoritesRoundTripInDedicatedDefaultsSuite() {
+        let suite = "ModelFavoriteStoreTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        ModelFavoriteStore.save(["model-b", "model-a"], to: defaults)
+        XCTAssertEqual(ModelFavoriteStore.load(from: defaults), ["model-a", "model-b"])
+    }
+}
+
 final class SSEParserTests: XCTestCase {
     func testEventBoundariesAndComments() {
         var parser = SSEParser()

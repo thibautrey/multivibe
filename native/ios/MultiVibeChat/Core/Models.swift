@@ -139,10 +139,123 @@ struct Conversation: Codable, Identifiable, Equatable, Sendable {
     var messages: [ChatMessage] = []
     var updatedAt = Date()
 }
-struct ModelOption: Codable, Identifiable, Sendable {
+struct ModelOption: Codable, Identifiable, Sendable, Equatable {
     let id: String
     var name: String?
     var displayName: String { name ?? id }
+}
+
+enum ModelProvider: String, CaseIterable, Identifiable, Sendable {
+    case multivibe, apple, openAI, anthropic, google, mistral, meta, deepSeek, other
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .multivibe: "MultiVibe Cloud"
+        case .apple: "Apple"
+        case .openAI: "OpenAI"
+        case .anthropic: "Anthropic"
+        case .google: "Google"
+        case .mistral: "Mistral AI"
+        case .meta: "Meta"
+        case .deepSeek: "DeepSeek"
+        case .other: "Autre fournisseur"
+        }
+    }
+    var assetName: String? {
+        switch self {
+        case .apple: "ProviderApple"
+        case .openAI: "ProviderOpenAI"
+        case .anthropic: "ProviderAnthropic"
+        case .google: "ProviderGemini"
+        case .mistral: "ProviderMistral"
+        case .meta: "ProviderMeta"
+        case .deepSeek: "ProviderDeepSeek"
+        case .multivibe, .other: nil
+        }
+    }
+}
+
+enum ModelUseCase: String, CaseIterable, Identifiable, Sendable {
+    case writing, coding, analysis, creation, local
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .writing: "Écrire"
+        case .coding: "Coder"
+        case .analysis: "Analyser"
+        case .creation: "Créer"
+        case .local: "Sur cet appareil"
+        }
+    }
+    var systemImage: String {
+        switch self {
+        case .writing: "pencil.line"
+        case .coding: "chevron.left.forwardslash.chevron.right"
+        case .analysis: "doc.text.magnifyingglass"
+        case .creation: "paintpalette"
+        case .local: "iphone"
+        }
+    }
+}
+
+struct ModelPresentation: Identifiable, Sendable {
+    let model: ModelOption
+    let provider: ModelProvider
+    let useCases: Set<ModelUseCase>
+    let summary: String
+    let badges: [String]
+    let popularity: Int
+    let usesCloudCredit: Bool
+    var id: String { model.id }
+}
+
+extension ModelOption {
+    var presentation: ModelPresentation {
+        let searchable = "\(id) \(displayName)".lowercased()
+        let provider: ModelProvider
+        if id == LocalModel.id || searchable.contains("apple") || searchable.contains("foundation") { provider = .apple }
+        else if searchable.contains("openai") || searchable.contains("gpt") || searchable.contains("o1") || searchable.contains("o3") || searchable.contains("o4") { provider = .openAI }
+        else if searchable.contains("anthropic") || searchable.contains("claude") { provider = .anthropic }
+        else if searchable.contains("google") || searchable.contains("gemini") || searchable.contains("gemma") { provider = .google }
+        else if searchable.contains("mistral") || searchable.contains("devstral") || searchable.contains("codestral") || searchable.contains("mixtral") { provider = .mistral }
+        else if searchable.contains("meta") || searchable.contains("llama") { provider = .meta }
+        else if searchable.contains("deepseek") { provider = .deepSeek }
+        else { provider = .multivibe }
+
+        var uses: Set<ModelUseCase> = [.writing, .analysis]
+        if searchable.contains("code") || searchable.contains("devstral") || searchable.contains("gpt") || searchable.contains("claude") { uses.insert(.coding) }
+        if searchable.contains("vision") || searchable.contains("image") || searchable.contains("multimodal") || searchable.contains("gemini") { uses.insert(.creation) }
+        if id == LocalModel.id { uses = [.writing, .analysis, .local] }
+
+        let summary: String
+        if id == LocalModel.id { summary = "Réponses privées, rapides et disponibles hors ligne sur cet appareil." }
+        else if uses.contains(.coding) { summary = "Un modèle polyvalent, adapté au raisonnement, à l’écriture et au code." }
+        else if uses.contains(.creation) { summary = "Un modèle multimodal pour comprendre et créer à partir de plusieurs formats." }
+        else { summary = "Un modèle disponible dans votre catalogue MultiVibe pour écrire et analyser." }
+
+        var badges = ModelUseCase.allCases.filter { uses.contains($0) }.prefix(3).map(\.title)
+        if id == LocalModel.id { badges.insert("Hors ligne", at: 0) }
+        let popularity: Int
+        if searchable.contains("gpt") { popularity = 100 }
+        else if searchable.contains("claude") { popularity = 95 }
+        else if searchable.contains("gemini") { popularity = 90 }
+        else if id == LocalModel.id { popularity = 85 }
+        else if searchable.contains("mistral") || searchable.contains("deepseek") { popularity = 80 }
+        else { popularity = 50 }
+        let free = id == LocalModel.id || searchable.contains("free") || searchable.contains("community")
+        return ModelPresentation(model: self, provider: provider, useCases: uses, summary: summary,
+                                 badges: Array(badges), popularity: popularity, usesCloudCredit: !free)
+    }
+}
+
+@MainActor enum ModelFavoriteStore {
+    static let key = "cloud.multivibe.chat.favorite-models-v1"
+    static func load(from defaults: UserDefaults = .standard) -> Set<String> {
+        Set(defaults.stringArray(forKey: key) ?? [])
+    }
+    static func save(_ identifiers: Set<String>, to defaults: UserDefaults = .standard) {
+        defaults.set(identifiers.sorted(), forKey: key)
+    }
 }
 struct ModelList: Decodable { let data: [ModelOption] }
 struct VoiceOption: Codable, Identifiable, Equatable, Sendable { let id: String; let name: String }
