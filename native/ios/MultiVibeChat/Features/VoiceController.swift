@@ -128,7 +128,10 @@ enum VoiceSystemEvent: Sendable, Equatable {
         self.activation = activation; starting = true
         defer { if self.activation == activation { starting = false } }
         let speech = await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0 == .authorized) }
+            // Speech invokes this callback off the main actor, including when already authorized.
+            SFSpeechRecognizer.requestAuthorization { @Sendable status in
+                continuation.resume(returning: status == .authorized)
+            }
         }
         guard self.activation == activation, !Task.isCancelled else { return }
         guard speech else {
@@ -158,9 +161,9 @@ enum VoiceSystemEvent: Sendable, Equatable {
             self.request = request
             transcript = ""; error = nil
             let input = engine.inputNode
-            input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in request.append(buffer) }
+            input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { @Sendable buffer, _ in request.append(buffer) }
             tapInstalled = true
-            recognition = recognizer.recognitionTask(with: request) { [weak self] result, failure in
+            recognition = recognizer.recognitionTask(with: request) { @Sendable [weak self] result, failure in
                 let text = result?.bestTranscription.formattedString
                 let failed = failure != nil
                 let finished = result?.isFinal == true || failed
