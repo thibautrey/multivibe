@@ -42,7 +42,7 @@ test('unknown, oversized and malicious context cannot become account properties'
  for(const replacement of [42,'','{','x'.repeat(65537)])assert.throws(()=>decodeTeamProviderCredential({...encoded,coreAccountContext:replacement},'github-copilot',copilot.baseUrl!),/invalid/);
 });
 test('legacy keys remain supported but malformed private fields are never silently stripped',()=>{
- assert.deepEqual(decodeTeamProviderCredential({accessToken:'api-key'},'openai','https://api.openai.com/v1'),{accessToken:'api-key'});
+ assert.deepEqual(decodeTeamProviderCredential({accessToken:'api-key'},'openai','https://api.openai.com/v1'),{accessToken:'api-key',provider:'ai-sdk',sdkProvider:'openai',upstreamMode:'chat/completions'});
  for(const patch of [{refreshToken:null},{refreshToken:''},{expiresAt:'1'},{expiresAt:NaN},{expiresAt:Infinity},{expiresAt:-1},{accessToken:'bad\nkey'},{accessToken:'x'.repeat(8193)},{extra:'untrusted'}]){
   assert.throws(()=>decodeTeamProviderCredential({accessToken:'api-key',...patch},'openai','https://api.openai.com/v1'),/invalid/);
  }
@@ -79,5 +79,5 @@ test('ChatGPT device context pins Codex routing and excludes local account data'
  assert.throws(()=>decodeTeamProviderCredential({...encoded,coreAccountContext:JSON.stringify({...context,email:'injected@example.test'})},'openai','https://chatgpt.com'),/invalid/);
  const cleaned=withoutTeamCredentialContext({...account,...decoded});
  assert.equal(cleaned.chatgptAccountId,undefined);assert.equal(cleaned.upstreamMode,undefined);assert.equal(cleaned.baseUrl,undefined);
- assert.deepEqual(decodeTeamProviderCredential({accessToken:'api-key'},'openai','https://api.openai.com/v1'),{accessToken:'api-key'});
+ assert.deepEqual(decodeTeamProviderCredential({accessToken:'api-key'},'openai','https://api.openai.com/v1'),{accessToken:'api-key',provider:'ai-sdk',sdkProvider:'openai',upstreamMode:'chat/completions'});
 });

@@ -1238,6 +1238,11 @@ fn apply_opencode_headers(account: &Account, headers: &mut HeaderMap) {
 
 // Exact upstream IDs only: normalization or aliases must not expand a Team grant.
 fn team_model_allowed(account: &Account, model: &str) -> bool {
+    let model = if normalize_provider(account) == "ai-sdk" {
+        let Some(provider) = account.sdk_provider.as_deref() else { return false; };
+        let Some(raw) = model.strip_prefix(&format!("{provider}/")) else { return false; };
+        raw
+    } else { model };
     account
         .multivibe_team
         .as_ref()
@@ -18260,6 +18265,25 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
 #[cfg(test)]
 mod team_provider_policy_tests {
     use super::*;
+    #[test]
+    fn team_api_keys_use_sdk_routing_and_raw_model_grants() {
+        let account = Account {
+            id: "team-fixture".into(), provider: Some("ai-sdk".into()),
+            sdk_provider: Some("anthropic".into()), enabled: true,
+            access_token: "fixture-key".into(),
+            multivibe_team: Some(TeamProviderPolicy { models: vec!["selected".into()] }),
+            ..Default::default()
+        };
+        let config = EdgeConfig::default();
+        assert!(account_base_url(&account, &config).ends_with("/internal/ai-sdk/team-fixture"));
+        assert!(account_usable(&account, "anthropic/selected", &HashMap::new()));
+        for denied in ["selected", "anthropic/other", "openai/selected", "anthropic/SELECTED"] {
+            assert!(!account_usable(&account, denied, &HashMap::new()));
+        }
+        let mut catalog = Vec::new();
+        merge_account_models(&mut catalog, &account, &[json!({"id":"anthropic/selected"}),json!({"id":"anthropic/other"})]);
+        assert_eq!(catalog.len(), 1);
+    }
     #[test]
     fn team_models_restrict_execution_and_missing_selection_denies() {
         let mut account = Account {

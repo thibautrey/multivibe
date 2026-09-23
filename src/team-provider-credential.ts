@@ -1,8 +1,9 @@
 /** Versioned private wire format owned by Core. Cloud stores/seals coreAccountContext
  * opaquely; it must never spread this JSON into an account or a public response. */
-import type { Account, ProviderId, UpstreamMode } from './types.js';
+import type { Account, UpstreamMode } from './types.js';
 import { trustedCopilotBaseUrl } from './github-copilot.js';
 import { OPENCODE_CONSOLE_URL, XAI_OAUTH_CLIENT_ID, XAI_OAUTH_ISSUER } from './config.js';
+import {providerCredentialEndpoint} from './team-api-key-validation.js';
 
 export interface TeamProviderCredential {
   accessToken: string;
@@ -125,7 +126,7 @@ export function encodeTeamDeviceCredential(account: Account): TeamProviderCreden
 }
 
 /** Legacy API-key bundles remain valid. Versioned device context binds provider + endpoint. */
-export function decodeTeamProviderCredential(value: unknown, provider: ProviderId, endpoint: string):
+export function decodeTeamProviderCredential(value: unknown, provider: string, endpoint: string):
   Pick<Account, 'accessToken' | 'refreshToken' | 'expiresAt'> & Partial<Account> {
   const input = object(value);
   if (Object.keys(input).some(key => !['accessToken', 'refreshToken', 'expiresAt', 'coreAccountContext'].includes(key)) ||
@@ -134,7 +135,15 @@ export function decodeTeamProviderCredential(value: unknown, provider: ProviderI
   const credential = {accessToken: input.accessToken,
     ...(input.refreshToken !== undefined ? {refreshToken: input.refreshToken as string} : {}),
     ...(input.expiresAt !== undefined ? {expiresAt: input.expiresAt as number} : {})};
-  if (input.coreAccountContext === undefined) return credential;
+  if (input.coreAccountContext === undefined) {
+    // A bare credential is an API key, never a subscription token. The Cloud
+    // product ID is not a Core transport ID (notably OpenAI API vs ChatGPT).
+    if (input.refreshToken !== undefined || input.expiresAt !== undefined) return invalid();
+    let expectedEndpoint: string;
+    try { expectedEndpoint = providerCredentialEndpoint(provider); } catch { return invalid(); }
+    if (canonicalEndpoint(endpoint) !== expectedEndpoint) return invalid();
+    return {...credential, provider: 'ai-sdk', sdkProvider: provider.replace(/-zdr$/, ''), upstreamMode: 'chat/completions'};
+  }
   if (typeof input.coreAccountContext !== 'string' || Buffer.byteLength(input.coreAccountContext) > MAX_CONTEXT) return invalid();
   let context;
   try { context = accountContext(JSON.parse(input.coreAccountContext)); } catch { return invalid(); }
