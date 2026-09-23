@@ -6,13 +6,13 @@ actor ChatAPI {
     private let base = URL(string: "https://app.multivibe.cloud")!
     private let session: URLSession
     private let decoder: JSONDecoder
-    init() {
+    init(session suppliedSession: URLSession? = nil) {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil
         configuration.httpCookieStorage = nil
         configuration.timeoutIntervalForRequest = 60
         configuration.timeoutIntervalForResource = 300
-        session = URLSession(configuration: configuration, delegate: NativeTransportDelegate(), delegateQueue: nil)
+        session = suppliedSession ?? URLSession(configuration: configuration, delegate: NativeTransportDelegate(), delegateQueue: nil)
         decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let raw = try decoder.singleValueContainer().decode(String.self)
