@@ -89,5 +89,5 @@ test("native menu bar shows a provider credit balance when there is no quota win
     source,
     /func balanceCell\(title: String, balance: ProviderQuota\.Balance\) -> NSView/u,
   );
-  assert.match(source, /cells\.append\(balanceCell\(title: "Credit", balance: balance\)\)/u);
+  assert.match(source, /content = balanceCell\(title: "Available credit", balance: balance\)/u);
 });
