@@ -24,12 +24,16 @@
 		7B76CFC0D6BDEA312BCFA0E7 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = DE00EB6D0A8D4203924A289E /* WebRTC */; };
 		7D68D3936B5105AC7AD322D6 /* RealtimeVoiceController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95A103874D7DD2121986E6B7 /* RealtimeVoiceController.swift */; };
 		7E9DADADAF1DFF748EDF171A /* VoiceTranscriptLedger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57E9D6AD4061C1FC45E4695F /* VoiceTranscriptLedger.swift */; };
+		8144B301625507F33189954E /* LocalWeatherForecast.swift in Sources */ = {isa = PBXBuildFile; fileRef = 586626865BD3FD4B7CB6632A /* LocalWeatherForecast.swift */; };
 		8C1A0F4BD94755906DAE4B90 /* MemoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74D766009C5F24AF210383CA /* MemoryView.swift */; };
 		8C5D2ED524FCFB0349D7B83C /* DownloadedModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 305C09A77B9927C7474D6147 /* DownloadedModelTests.swift */; };
 		8FD1D22653DBCCB2B45A4CEA /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B36277A8CFF4EC17A06D2FC /* Models.swift */; };
 		915752F0CA99F9CFC83278C1 /* LocalAgentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3319D8F58B7782A53C37AF9B /* LocalAgentTests.swift */; };
 		91ABE914998A0252BC864813 /* AuthenticationUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73484D90F6B8C690FC806EBB /* AuthenticationUITests.swift */; };
 		92079D5C291F20B604251334 /* ConversationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED63046FBAF333333E159086 /* ConversationManager.swift */; };
+		94044294E174A79BF89B09B3 /* PiAgentHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25782B401A99BA1E09850757 /* PiAgentHarness.swift */; };
+		9D053541A18A2D53C94E927F /* PiAgentCore-LICENSES.txt in Resources */ = {isa = PBXBuildFile; fileRef = 8E3FEAC535D29FB28363C8A5 /* PiAgentCore-LICENSES.txt */; };
+		A121AF7435396F761EF406ED /* PiAgentCore.js in Resources */ = {isa = PBXBuildFile; fileRef = D6D203722FEE3A237B2FBA13 /* PiAgentCore.js */; };
 		AB19983233E7FE9F37CFDDDC /* LocalAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10A5C9556D7CAFE2EE22707 /* LocalAgent.swift */; };
 		B242BA0DFE43365D51F44CF8 /* LocalModelsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 922D779C752D39F8E3F7F0EA /* LocalModelsView.swift */; };
 		B5F3F31445565B7A4FC8EB04 /* VoiceWebRTCTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19FF539BBD48306A3977C171 /* VoiceWebRTCTransport.swift */; };
@@ -71,6 +75,7 @@
 		00217B9D7702B72A5569309F /* MultiVibeChatApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiVibeChatApp.swift; sourceTree = "<group>"; };
 		16EA3BB8F0EBD6ADB21388D9 /* MultiVibeLocalInference.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = MultiVibeLocalInference.xcframework; path = .build/MultiVibeLocalInference.xcframework; sourceTree = "<group>"; };
 		19FF539BBD48306A3977C171 /* VoiceWebRTCTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceWebRTCTransport.swift; sourceTree = "<group>"; };
+		25782B401A99BA1E09850757 /* PiAgentHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiAgentHarness.swift; sourceTree = "<group>"; };
 		26BC4D73E9F06A51A165F8E9 /* MultiVibeChat.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = MultiVibeChat.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		305C09A77B9927C7474D6147 /* DownloadedModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadedModelTests.swift; sourceTree = "<group>"; };
 		3319D8F58B7782A53C37AF9B /* LocalAgentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalAgentTests.swift; sourceTree = "<group>"; };
@@ -80,6 +85,7 @@
 		4E7A1B6F2486B8877A908300 /* NativeIntentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeIntentTests.swift; sourceTree = "<group>"; };
 		4EC3EFFD60CE2939BD5BCD88 /* ChatAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatAPI.swift; sourceTree = "<group>"; };
 		57E9D6AD4061C1FC45E4695F /* VoiceTranscriptLedger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceTranscriptLedger.swift; sourceTree = "<group>"; };
+		586626865BD3FD4B7CB6632A /* LocalWeatherForecast.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalWeatherForecast.swift; sourceTree = "<group>"; };
 		6180BCA2920EE4B41879C672 /* LocalModelCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalModelCatalog.swift; sourceTree = "<group>"; };
 		626C77A820035BB712EF6520 /* ChatIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatIntents.swift; sourceTree = "<group>"; };
 		6636026081D44F2E5870C485 /* LocalDeviceData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalDeviceData.swift; sourceTree = "<group>"; };
@@ -90,6 +96,7 @@
 		84D36CAA606FDEACCA4F58AF /* LocalModelLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalModelLibrary.swift; sourceTree = "<group>"; };
 		8713B44FBEA8912EB4C8334F /* LocalModelManifest.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = LocalModelManifest.json; sourceTree = "<group>"; };
 		8DBDCECFA9845CE5F3C6A960 /* DownloadedModelRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadedModelRuntime.swift; sourceTree = "<group>"; };
+		8E3FEAC535D29FB28363C8A5 /* PiAgentCore-LICENSES.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "PiAgentCore-LICENSES.txt"; sourceTree = "<group>"; };
 		922D779C752D39F8E3F7F0EA /* LocalModelsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalModelsView.swift; sourceTree = "<group>"; };
 		95A103874D7DD2121986E6B7 /* RealtimeVoiceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeVoiceController.swift; sourceTree = "<group>"; };
 		9A8B15C5C36771B67C287720 /* MultiVibeChat.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MultiVibeChat.entitlements; sourceTree = "<group>"; };
@@ -103,6 +110,7 @@
 		C5173C6F10D1D8A8125C53A7 /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };
 		CA4393E98F397246F4A41196 /* AuthenticationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticationView.swift; sourceTree = "<group>"; };
 		CCC5DC2C101699AB590EC553 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
+		D6D203722FEE3A237B2FBA13 /* PiAgentCore.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = PiAgentCore.js; sourceTree = "<group>"; };
 		D7577716199F102273754156 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		DD2222EAEE8931D5CFBC41BA /* SecureStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureStore.swift; sourceTree = "<group>"; };
 		DF240043145CEC1114F5AAAC /* SDKApplicationsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SDKApplicationsView.swift; sourceTree = "<group>"; };
@@ -149,6 +157,8 @@
 				EF18EF613BF5858C8BAB2F5F /* llama-LICENSE.txt */,
 				8713B44FBEA8912EB4C8334F /* LocalModelManifest.json */,
 				9A8B15C5C36771B67C287720 /* MultiVibeChat.entitlements */,
+				8E3FEAC535D29FB28363C8A5 /* PiAgentCore-LICENSES.txt */,
+				D6D203722FEE3A237B2FBA13 /* PiAgentCore.js */,
 				D7577716199F102273754156 /* PrivacyInfo.xcprivacy */,
 			);
 			path = Resources;
@@ -222,8 +232,10 @@
 				ED63046FBAF333333E159086 /* ConversationManager.swift */,
 				A10A5C9556D7CAFE2EE22707 /* LocalAgent.swift */,
 				6636026081D44F2E5870C485 /* LocalDeviceData.swift */,
+				586626865BD3FD4B7CB6632A /* LocalWeatherForecast.swift */,
 				4B001301568AC61EB8AE8F59 /* LocalWebFetch.swift */,
 				9B36277A8CFF4EC17A06D2FC /* Models.swift */,
+				25782B401A99BA1E09850757 /* PiAgentHarness.swift */,
 				DD2222EAEE8931D5CFBC41BA /* SecureStore.swift */,
 			);
 			path = Core;
@@ -392,6 +404,8 @@
 			files = (
 				D82AAFC3C8F507B521619C45 /* Assets.xcassets in Resources */,
 				E897D566713EF64EA43668E0 /* LocalModelManifest.json in Resources */,
+				9D053541A18A2D53C94E927F /* PiAgentCore-LICENSES.txt in Resources */,
+				A121AF7435396F761EF406ED /* PiAgentCore.js in Resources */,
 				5BAE03F5B75D339A9AF58336 /* PrivacyInfo.xcprivacy in Resources */,
 				BE6766D49B5A31ADDF3502EB /* llama-LICENSE.txt in Resources */,
 			);
@@ -428,11 +442,13 @@
 				C8B0A62B02F77441A8AFB13A /* LocalModelCatalog.swift in Sources */,
 				76D1281C135A63D3CFB0FBEA /* LocalModelLibrary.swift in Sources */,
 				B242BA0DFE43365D51F44CF8 /* LocalModelsView.swift in Sources */,
+				8144B301625507F33189954E /* LocalWeatherForecast.swift in Sources */,
 				003956616649C28F8B135B88 /* LocalWebFetch.swift in Sources */,
 				8C1A0F4BD94755906DAE4B90 /* MemoryView.swift in Sources */,
 				8FD1D22653DBCCB2B45A4CEA /* Models.swift in Sources */,
 				77407A84E21962A60F63DC56 /* MultiVibeChatApp.swift in Sources */,
 				E93F3E946B9434ED4C5BFD94 /* NativeIntents.swift in Sources */,
+				94044294E174A79BF89B09B3 /* PiAgentHarness.swift in Sources */,
 				7D68D3936B5105AC7AD322D6 /* RealtimeVoiceController.swift in Sources */,
 				EFCAC148BE4F8564C164FEF7 /* RealtimeVoiceView.swift in Sources */,
 				1DF0848C4A22AE54E2F6A90F /* SDKApplicationsView.swift in Sources */,
