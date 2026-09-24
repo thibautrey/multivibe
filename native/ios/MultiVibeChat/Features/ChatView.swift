@@ -453,6 +453,8 @@ struct ChatView: View {
         })
     }
 
+    private var isNewConversation: Bool { manager.current?.messages.isEmpty != false }
+
     // Keep the input visible for every text conversation. Navigation, competing
     // sheets and full-screen voice temporarily take over its presentation.
     private var composerRequested: Bool {
