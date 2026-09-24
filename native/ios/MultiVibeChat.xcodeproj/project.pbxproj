@@ -56,6 +56,7 @@
 		ECDEA29B56DDE2F17FA9DC61 /* MultiVibeChatUI in Frameworks */ = {isa = PBXBuildFile; productRef = 866486075F05053501529275 /* MultiVibeChatUI */; };
 		EDD89E16CC7EEE5F49D07739 /* ChatIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 626C77A820035BB712EF6520 /* ChatIntents.swift */; };
 		EFCAC148BE4F8564C164FEF7 /* RealtimeVoiceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9178B9C07BCDF95DFE9A7DA /* RealtimeVoiceView.swift */; };
+		F1D6D7802498EC8BC30B8023 /* AutomationUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63B3E34A764DACD69B7AB0B0 /* AutomationUITests.swift */; };
 		FE355EA09A71428B7CF119AB /* MultiVibeLocalInference.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 16EA3BB8F0EBD6ADB21388D9 /* MultiVibeLocalInference.xcframework */; };
 		FE9F141E961C8316B702D426 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D23AAC6A6C06292DD31EC37 /* ChatView.swift */; };
 /* End PBXBuildFile section */
@@ -97,6 +98,7 @@
 		6180BCA2920EE4B41879C672 /* LocalModelCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalModelCatalog.swift; sourceTree = "<group>"; };
 		626C77A820035BB712EF6520 /* ChatIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatIntents.swift; sourceTree = "<group>"; };
 		629415D327799BA41C85897A /* AutomationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationCoordinator.swift; sourceTree = "<group>"; };
+		63B3E34A764DACD69B7AB0B0 /* AutomationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationUITests.swift; sourceTree = "<group>"; };
 		6636026081D44F2E5870C485 /* LocalDeviceData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalDeviceData.swift; sourceTree = "<group>"; };
 		68DE1C2DEDCA28B710DD6C5D /* AgentMemory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentMemory.swift; sourceTree = "<group>"; };
 		73484D90F6B8C690FC806EBB /* AuthenticationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticationUITests.swift; sourceTree = "<group>"; };
@@ -270,6 +272,7 @@
 			isa = PBXGroup;
 			children = (
 				73484D90F6B8C690FC806EBB /* AuthenticationUITests.swift */,
+				63B3E34A764DACD69B7AB0B0 /* AutomationUITests.swift */,
 			);
 			path = MultiVibeChatUITests;
 			sourceTree = "<group>";
@@ -496,6 +499,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				91ABE914998A0252BC864813 /* AuthenticationUITests.swift in Sources */,
+				F1D6D7802498EC8BC30B8023 /* AutomationUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
