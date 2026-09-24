@@ -29,7 +29,7 @@
     "kvHeads": 8,
     "headSize": 128,
     "validatedDevices": [],
-    "toolsValidated": false
+    "toolsValidated": true
   },
   {
     "repository": "bartowski/Qwen_Qwen3-4B-GGUF",
