@@ -83,6 +83,7 @@ struct LocalModelCard: View {
     @Environment(ConversationManager.self) private var manager
     let model: DownloadableModel
     let select: (ModelOption) -> Void
+    var showsDetailLink = true
     @State private var deleting = false
     private var library: LocalModelLibrary { .shared }
     private var entry: ModelInstallation? { library.installation(model.id) }
@@ -91,12 +92,17 @@ struct LocalModelCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .top, spacing: 12) {
-                ModelProviderLogo(provider: .other, publisher: model.resolvedLogoPublisher, size: 42)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(model.name).font(.headline)
-                    if model.recommended { Text("Recommandé pour cet appareil").font(.caption).foregroundStyle(MultiVibeTheme.accent) }
-                    Text(model.publisher + " · " + model.sizeLabel).font(.caption).foregroundStyle(.secondary)
-                    Text(model.supportsTools ? "Outils locaux" : "Conversation uniquement").font(.caption).foregroundStyle(.secondary)
+                if showsDetailLink {
+                    NavigationLink {
+                        LocalModelDetailView(model: model, select: select)
+                    } label: {
+                        LocalModelSummary(model: model)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    LocalModelSummary(model: model)
                 }
                 Spacer(minLength: 0)
                 if entry == nil || entry?.state == .installed {
@@ -130,8 +136,10 @@ struct LocalModelCard: View {
                 }
             } else if let problem { Text(problem).font(.caption).foregroundStyle(.secondary) }
             if entry == nil { Text("Réponses privées, même sans Internet.").font(.caption).foregroundStyle(.secondary) }
-            Link("Licence : " + model.license, destination: URL(string: "https://huggingface.co/" + model.repository)!)
-                .font(.caption2).foregroundStyle(.secondary)
+            if !showsDetailLink {
+                Link("Voir la page du modèle", destination: URL(string: "https://huggingface.co/" + model.repository)!)
+                    .font(.caption2)
+            }
         }
         .padding(.vertical, 5)
         .alert("Télécharger avec les données mobiles ?", isPresented: Binding(get: { library.cellularRequest?.id == model.id }, set: { if !$0 { library.cellularRequest = nil } })) {
@@ -149,5 +157,69 @@ struct LocalModelCard: View {
             }
             Button("Annuler", role: .cancel) { }
         } message: { Text("Vos conversations et favoris seront conservés. Vous pourrez télécharger ce modèle à nouveau.") }
+    }
+}
+
+private struct LocalModelSummary: View {
+    let model: DownloadableModel
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ModelProviderLogo(provider: .other, publisher: model.resolvedLogoPublisher, size: 42)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(model.name).font(.headline)
+                if model.recommended {
+                    Text("Recommandé pour cet appareil")
+                        .font(.caption)
+                        .foregroundStyle(MultiVibeTheme.accent)
+                }
+                Text(model.publisher + " · " + model.sizeLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(model.supportsTools ? "Outils locaux" : "Conversation uniquement")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct LocalModelDetailView: View {
+    let model: DownloadableModel
+    let select: (ModelOption) -> Void
+
+    var body: some View {
+        List {
+            Section {
+                VStack(spacing: 12) {
+                    ModelProviderLogo(provider: .other, publisher: model.resolvedLogoPublisher, size: 76, prominent: true)
+                    Text(model.name)
+                        .font(.largeTitle.bold())
+                        .multilineTextAlignment(.center)
+                    Text(model.publisher).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+            }
+            .listRowBackground(Color.clear)
+
+            Section("À quoi sert ce modèle ?") {
+                Text("Conversation privée sur cet appareil, même sans Internet.")
+            }
+
+            Section("Caractéristiques") {
+                LabeledContent("Stockage", value: model.sizeLabel)
+                LabeledContent("Architecture", value: model.architecture.uppercased())
+                LabeledContent("Outils", value: model.supportsTools ? "Pris en charge" : "Conversation uniquement")
+                LabeledContent("Licence", value: model.license)
+                Label("Traitement sur cet appareil", systemImage: "lock.iphone")
+            }
+
+            Section("Téléchargement et utilisation") {
+                LocalModelCard(model: model, select: select, showsDetailLink: false)
+            }
+        }
+        .navigationTitle("Détails")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
