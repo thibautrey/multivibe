@@ -234,3 +234,24 @@ enum LocalDownloadedTools {
         return result
     }
 }
+
+/// Runs a one-shot title summarization against an on-device model.
+///
+/// It is deliberately separate from the chat responder: no tool workspace is
+/// available, and the only output is plain text. Callers pass the model id so the
+/// Apple Foundation model and downloaded GGUF models share one entry point.
+enum TitleSummarizer {
+    static func summarize(model: String, prompt: String) async throws -> String {
+        if model == LocalModel.id { return try await LocalAgent.summarizeTitle(prompt) }
+        let entry: (model: DownloadableModel, path: URL)? = await MainActor.run {
+            guard let installation = LocalModelLibrary.shared.installation(model),
+                  installation.state == .installed else { return nil }
+            return (LocalModelLibrary.shared.validated(installation.model), LocalModelLibrary.shared.file(installation.model))
+        }
+        guard let entry else { throw LocalAgentError.unavailable("Téléchargez ce modèle pour l’utiliser sur cet appareil.") }
+        let buffer = MemoryReviewOutput()
+        try await DownloadedModelRuntime.shared.respond(model: entry.model, path: entry.path,
+            messages: [ChatMessage(role: "user", content: prompt)], workspace: nil) { await buffer.append($0) }
+        return await buffer.value()
+    }
+}

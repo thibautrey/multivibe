@@ -110,14 +110,18 @@ import AuthenticationServices
 
     func testChoosingAModelRemembersItForTheSignedInAccount() async {
         let recorder = LastUsedModelRecorder()
-        let manager = ConversationManager(services: recorderServices(recorder))
+        // A downloaded model is chosen without network, so the test isolates the
+        // preference write rather than provider access negotiation.
+        var services = recorderServices(recorder)
+        services.downloadedModels = { [ModelOption(id: "device-gguf:qwen3")] }
+        services.downloadedAvailability = { _ in nil }
+        let manager = ConversationManager(services: services)
         await manager.restore(loadRemoteModels: false)
         XCTAssertEqual(manager.selectedModel, LocalModel.id)
         XCTAssertNil(recorder.values["account-a"])
-        manager.models.append(ModelOption(id: "openai/luna"))
-        await manager.chooseModel(ModelOption(id: "openai/luna"))
-        XCTAssertEqual(manager.selectedModel, "openai/luna")
-        XCTAssertEqual(recorder.values["account-a"], "openai/luna")
+        await manager.chooseModel(ModelOption(id: "device-gguf:qwen3"))
+        XCTAssertEqual(manager.selectedModel, "device-gguf:qwen3")
+        XCTAssertEqual(recorder.values["account-a"], "device-gguf:qwen3")
     }
 
     func testNewConversationUsesTheLastUsedModel() async {
@@ -148,9 +152,9 @@ import AuthenticationServices
     func testRestorationUsesTheRememberedModelWhenItIsStillInTheCatalog() async {
         let recorder = LastUsedModelRecorder()
         recorder.values["account-a"] = "downloaded-model"
-        let services = isolatedServices(load: { self.session("account-a") },
-                                        downloadedModels: { [ModelOption(id: "downloaded-model")] },
+        var services = isolatedServices(load: { self.session("account-a") },
                                         lastUsedModel: recorder.lookup, rememberLastUsedModel: recorder.remember)
+        services.downloadedModels = { [ModelOption(id: "downloaded-model")] }
         let manager = ConversationManager(services: services)
         await manager.restore(loadRemoteModels: false)
         XCTAssertEqual(manager.selectedModel, "downloaded-model")
@@ -167,12 +171,14 @@ import AuthenticationServices
 
     func testGuestsKeepTheirOwnPreferenceSlot() async {
         let recorder = LastUsedModelRecorder()
-        let manager = ConversationManager(services: isolatedServices(lastUsedModel: recorder.lookup,
-                                                                     rememberLastUsedModel: recorder.remember))
+        var services = isolatedServices(lastUsedModel: recorder.lookup,
+                                        rememberLastUsedModel: recorder.remember)
+        services.downloadedModels = { [ModelOption(id: "device-gguf:qwen3")] }
+        services.downloadedAvailability = { _ in nil }
+        let manager = ConversationManager(services: services)
         await manager.restore(loadRemoteModels: false)
-        manager.models = [LocalModel.option, ModelOption(id: "remote-a")]
-        await manager.chooseModel(ModelOption(id: "remote-a"))
-        XCTAssertEqual(recorder.values[ConversationManager.guestModelScope], "remote-a")
+        await manager.chooseModel(ModelOption(id: "device-gguf:qwen3"))
+        XCTAssertEqual(recorder.values[ConversationManager.guestModelScope], "device-gguf:qwen3")
         XCTAssertNil(recorder.values["account-a"])
     }
 }

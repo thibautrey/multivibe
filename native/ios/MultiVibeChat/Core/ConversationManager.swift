@@ -43,7 +43,11 @@ import Network
     var webFetch: @Sendable (URL, String) async throws -> LocalWebResponse = { try await LocalWebFetch.fetch(url: $0, method: $1) }
     var memoryIndex: @MainActor (URL) throws -> MemoryIndex = { try MemoryIndex(url: $0) }
     var reviewLocalMemory: @Sendable (String) async throws -> String = { try await LocalAgent.reviewMemory($0) }
-    var summarizeLocalTitle: @Sendable (String) async throws -> String = { try await LocalAgent.summarizeTitle($0) }
+    /// Dedicated, workspace-free title summarization for local and downloaded
+    /// models. It never reuses the chat responder, which expects a real turn.
+    var summarizeTitle: @Sendable (String, String) async throws -> String = { model, prompt in
+        try await TitleSummarizer.summarize(model: model, prompt: prompt)
+    }
     var memoryReviewDelay: @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(2)) }
     var monitorConnectivity = true
     var syncDelay: @Sendable (Int) async throws -> Void = { attempt in try await Task.sleep(for: .seconds(min(60, 2 << attempt))) }
@@ -141,19 +145,17 @@ import Network
     private(set) var isLoadingModels = false
     private(set) var modelsError: String?
     private var modelLoadRevision = UUID()
-    var selectedModel = "" {
-        didSet {
-            guard selectedModel != oldValue else { return }
-            selectedAccess = nil
-            // Remember the explicit choice; restoration and new conversations
-            // revalidate it against the available catalog before reusing it.
-            if !selectedModel.isEmpty { services.rememberLastUsedModel(selectedModel, modelPreferenceScope) }
-        }
-    }
+    var selectedModel = "" { didSet { if selectedModel != oldValue { selectedAccess = nil } } }
     /// Account the last-used preference belongs to. Guests keep their own slot so
     /// a signed-out session can never inherit another account's model.
     private var modelPreferenceScope: String { session?.accountId ?? Self.guestModelScope }
     static let guestModelScope = "guest"
+    /// Records a model the user actually settled on. Restoration fallbacks and
+    /// conversation switching go through `selectedModel` directly and never land here.
+    private func rememberSelectedModel() {
+        guard !selectedModel.isEmpty else { return }
+        services.rememberLastUsedModel(selectedModel, modelPreferenceScope)
+    }
     var selectedAccess: SelectedModelAccess?
     var requestedAccessModel: ModelOption?
     var accessNotice: String?
@@ -163,6 +165,7 @@ import Network
             if ModelExecution(model.id) == .downloaded, let reason = services.downloadedAvailability(model.id) { error = reason; return }
             selectedModel = model.id; selectedAccess = nil
             if !models.contains(where: { $0.id == model.id }) { models.append(model) }
+            rememberSelectedModel()
             return
         }
         let account = session?.accountId
@@ -183,6 +186,7 @@ import Network
     func applyAccess(_ access: SelectedModelAccess) {
         guard !isStreaming else { return }
         selectedModel = access.modelId; selectedAccess = access
+        rememberSelectedModel()
         if let id = selection, let index = conversations.firstIndex(where: { $0.id == id }) {
             conversations[index].model = access.modelId; conversations[index].modelAccess = access
             conversations[index].updatedAt = Date(); _ = persist()
@@ -1194,12 +1198,7 @@ import Network
     private enum TitleError: Error { case unusable }
     private func titleSummary(model: String, access: SelectedModelAccess?, request: String) async throws -> String {
         let prompt = ConversationTitle.instructions + "\n\nDemande de l'utilisateur :\n" + request
-        if ModelExecution(model).isLocal {
-            if model == LocalModel.id { return try await services.summarizeLocalTitle(prompt) }
-            let buffer = MemoryReviewOutput()
-            try await services.downloadedRespond(model, [ChatMessage(role: "user", content: prompt)], nil) { await buffer.append($0) }
-            return await buffer.value()
-        }
+        if ModelExecution(model).isLocal { return try await services.summarizeTitle(model, prompt) }
         guard let access, access.modelId == model else { throw APIError.server(409, "model_access_unavailable") }
         let credentials = try await validSession()
         try Task.checkCancellation()
