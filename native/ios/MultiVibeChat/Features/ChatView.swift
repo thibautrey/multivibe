@@ -64,6 +64,9 @@ struct ChatView: View {
                                 }
                                 .accessibilityIdentifier("openApplications")
                             }
+                            NavigationLink { AutomationsView() } label: {
+                                ConversationShortcutLabel(title: "Automatisations", systemImage: "clock.arrow.circlepath")
+                            }.accessibilityIdentifier("openAutomations")
                             Button {
                                 manager.memoryPresented = true
                             } label: {

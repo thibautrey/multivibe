@@ -13,8 +13,10 @@ import SwiftUI
                 Button("OK") { LocalModelLibrary.shared.storageError = nil }
             } message: { Text(LocalModelLibrary.shared.storageError ?? "") }
             .tint(MultiVibeTheme.accent)
-            .task { LocalModelLibrary.shared.start(); await manager.restoreForNativeEntry(); if manager.session != nil { await manager.reloadModels() } }
+            .task { LocalModelLibrary.shared.start(); await manager.restoreForNativeEntry(); configureAutomations(); if manager.session != nil { await manager.reloadModels() } }
+            .onChange(of: manager.session?.accountId) { _, _ in configureAutomations() }
             .onChange(of: scenePhase) { _, phase in
+                AutomationCoordinator.shared.foreground(phase == .active)
                 if phase == .background { Task { await DownloadedModelRuntime.shared.unload() } }
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
@@ -33,6 +35,19 @@ import SwiftUI
 
         }
     }
+    private func configureAutomations() {
+        let coordinator = AutomationCoordinator.shared
+        coordinator.cloud = { body in
+            let account = manager.session?.accountId
+            guard let account, coordinator.scope == account else { throw AutomationFailure.unavailable("Connexion au compte requise.") }
+            let session = try await manager.validSession()
+            guard manager.session?.accountId == account else { throw CancellationError() }
+            return try await ChatAPI.shared.automations(body, token: session.accessToken)
+        }
+        coordinator.activate(scope: manager.session?.accountId ?? "guest")
+        coordinator.foreground(scenePhase == .active)
+    }
+
 }
 
 /// Local chat and its history are available before any account is created.
