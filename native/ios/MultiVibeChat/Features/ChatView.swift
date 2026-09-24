@@ -626,7 +626,7 @@ private struct ModelPickerButton: View {
         } label: {
             HStack(spacing: 6) {
                 if let model = models.first(where: { $0.id == selectedModel }) {
-                    ModelProviderLogo(provider: model.presentation.provider, size: 22)
+                    ModelProviderLogo(provider: model.presentation.provider, publisher: model.logoPublisher ?? model.author, size: 22)
                 }
                 Text(models.first(where: { $0.id == selectedModel })?.displayName ?? "Choisir un modèle")
                     .lineLimit(1)
@@ -717,7 +717,7 @@ private struct ModelPickerRow: View {
     var trailing: String? = nil
     var body: some View {
         HStack(spacing: 12) {
-            ModelProviderLogo(provider: model.presentation.provider, size: 36)
+            ModelProviderLogo(provider: model.presentation.provider, publisher: model.logoPublisher ?? model.author, size: 36)
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.displayName).font(.body.weight(.medium)).foregroundStyle(.primary)
                 Text(ModelExecution(model.id).isLocal ? "Sur cet appareil" : model.author ?? "Catalogue MultiVibe")
@@ -842,7 +842,7 @@ private struct FeaturedModelCard: View {
                     Text(model.presentation.summary).font(.callout).foregroundStyle(.white.opacity(0.85)).lineLimit(3)
                 }
                 Spacer(minLength: 12)
-                ModelProviderLogo(provider: model.presentation.provider, size: 58, prominent: true)
+                ModelProviderLogo(provider: model.presentation.provider, publisher: model.logoPublisher ?? model.author, size: 58, prominent: true)
             }
             Text("Voir la fiche").font(.callout.bold()).padding(.horizontal, 13).padding(.vertical, 8)
                 .foregroundStyle(MultiVibeTheme.accent).background(.white, in: Capsule())
@@ -866,7 +866,7 @@ private struct ModelShelf: View {
                     NavigationLink { ModelDetailView(model: model, favorite: favoriteBinding(model), select: select) } label: {
                         HStack(spacing: 10) {
                             if ranked { Text("\(index + 1)").font(.headline).foregroundStyle(.secondary).frame(width: 18) }
-                            ModelProviderLogo(provider: model.presentation.provider, size: 42)
+                            ModelProviderLogo(provider: model.presentation.provider, publisher: model.logoPublisher ?? model.author, size: 42)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(model.displayName).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
                                 Text(ModelExecution(model.id).isLocal ? "Sur cet appareil" : model.author ?? "Catalogue MultiVibe")
@@ -945,7 +945,7 @@ private struct ModelDetailView: View {
         List {
             Section {
                 VStack(spacing: 12) {
-                    ModelProviderLogo(provider: model.presentation.provider, size: 76, prominent: true)
+                    ModelProviderLogo(provider: model.presentation.provider, publisher: model.logoPublisher ?? model.author, size: 76, prominent: true)
                     Text(model.displayName).font(.largeTitle.bold()).multilineTextAlignment(.center)
                     Text(model.author ?? model.presentation.provider.displayName).foregroundStyle(.secondary)
                     HStack { ForEach(model.presentation.badges, id: \.self) { Text($0).font(.caption.bold()).padding(.horizontal, 8).padding(.vertical, 5).background(.secondary.opacity(0.1), in: Capsule()) } }
@@ -986,19 +986,26 @@ private struct ModelProvidersView: View {
     var body: some View { ProviderConnectionsView() }
 }
 
-private struct ModelProviderLogo: View {
+struct ModelProviderLogo: View {
     let provider: ModelProvider
+    var publisher: String? = nil
     let size: CGFloat
     var prominent = false
     var body: some View {
         Group {
-            if let asset = provider.assetName { Image(asset).resizable().renderingMode(.template).scaledToFit().padding(size * 0.24) }
+            if let publisher = ModelPublisher.canonical(publisher),
+               let image = UIImage(named: "Publisher-" + publisher) {
+                Image(uiImage: image).resizable().scaledToFit().padding(size * 0.15)
+                    .frame(width: size, height: size).background(.white)
+            }
+            else if let asset = provider.assetName { Image(asset).resizable().renderingMode(.template).scaledToFit().padding(size * 0.24) }
             else if provider == .multivibe { Image("MultiVibeMark").resizable().scaledToFit().padding(size * 0.16) }
             else { Image(systemName: "cpu").resizable().scaledToFit().padding(size * 0.25) }
         }
         .foregroundStyle(prominent ? .white : .primary)
         .frame(width: size, height: size)
         .background(prominent ? Color.black.opacity(0.22) : Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: size * 0.28))
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.28))
         .accessibilityHidden(true)
     }
 }

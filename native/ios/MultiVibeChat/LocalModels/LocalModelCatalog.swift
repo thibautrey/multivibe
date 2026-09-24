@@ -15,6 +15,7 @@ struct DownloadableModel: Codable, Identifiable, Equatable, Sendable {
     let layers: Int
     let kvHeads: Int
     let headSize: Int
+    var logoPublisher: String?
     var validatedDevices: [String] = []
     var toolsValidated: Bool = false
     var recommended: Bool { validatedDevices.contains(LocalHardware.identifier) }
@@ -29,7 +30,8 @@ struct DownloadableModel: Codable, Identifiable, Equatable, Sendable {
         return url
     }
     var option: ModelOption { ModelOption(id: id, name: name, author: publisher,
-        description: "Conversation privée sur cet appareil, même sans Internet.") }
+        description: "Conversation privée sur cet appareil, même sans Internet.", logoPublisher: resolvedLogoPublisher) }
+    var resolvedLogoPublisher: String? { ModelPublisher.canonical(logoPublisher) ?? ModelPublisher.canonical(publisher) ?? ModelPublisher.resolve(repository: repository) }
     var estimatedMemory: UInt64 {
         // F16 K/V at a fixed 4096-token context + weights + graph/Metal/scratch headroom.
         UInt64(max(0, bytes)) + UInt64(max(0, layers * kvHeads * headSize)) * 4096 * 4 + 512 * 1024 * 1024
@@ -129,11 +131,18 @@ actor HuggingFaceCatalog: LocalCatalogProviding {
         let header = try await LimitedModelHeader.fetch(request)
         let info = try GGUFHeader.read(header)
         let card = root["cardData"] as? [String: Any]
+        let baseModels = (card?["base_model"] as? [String])
+            ?? (card?["base_model"] as? String).map { [$0] } ?? []
+        let taggedModels = (root["tags"] as? [String] ?? []).compactMap { tag -> String? in
+            guard tag.hasPrefix("base_model:") else { return nil }
+            return tag.split(separator: ":").last.map(String.init)
+        }
         return DownloadableModel(repository: repository, revision: revision, filename: filename,
             name: repository.split(separator: "/").last.map(String.init)?.replacingOccurrences(of: "-GGUF", with: "") ?? repository,
             publisher: String(repository.split(separator: "/")[0]), bytes: bytes, sha256: hash,
             license: card?["license"] as? String ?? "Voir la licence du modèle", architecture: info.architecture,
-            layers: info.layers, kvHeads: info.kvHeads, headSize: info.headSize)
+            layers: info.layers, kvHeads: info.kvHeads, headSize: info.headSize,
+            logoPublisher: ModelPublisher.resolve(repository: repository, baseModels: baseModels.isEmpty ? taggedModels : baseModels))
     }
 }
 

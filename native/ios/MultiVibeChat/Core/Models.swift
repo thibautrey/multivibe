@@ -154,6 +154,7 @@ struct ModelOption: Codable, Identifiable, Sendable, Equatable {
     var author: String?
     var description: String?
     var metadata: CatalogMetadata?
+    var logoPublisher: String?
     var popularityRank: Int?
     var displayName: String { name ?? id }
 }
@@ -717,5 +718,26 @@ struct SelectedModelAccess: Codable, Equatable, Sendable {
         guard let o = value?.object, let id = o["id"]?.string, let model = o["modelId"]?.string,
               let label = o["label"]?.string, let method = o["method"]?.string else { return nil }
         return .init(id: id, modelId: model, label: label, method: method)
+    }
+}
+
+
+// Canonical publisher identities shared with the Cloud catalog. Never guess from
+// a namespaced repository's model name: fine-tunes retain their own identity.
+enum ModelPublisher {
+    static let known: Set<String> = ["aion-labs", "alibaba", "amazon", "anthracite-org", "anthropic", "arcee-ai", "baai", "baidu", "black-forest-labs", "bytedance-seed", "bytedance", "canopylabs", "cohere", "deepgram", "deepseek-ai", "deepseek", "dots-studio", "fish-audio", "google", "gryphe", "hexgrad", "heygen", "ibm-granite", "inception", "inclusionai", "intfloat", "krea", "kwaipilot", "kwaivgi", "liquid", "mancer", "meituan", "meta-llama", "meta", "microsoft", "minimax", "mistralai", "moonshotai", "morph", "nex-agi", "nousresearch", "nvidia", "openai", "openrouter", "perceptron", "perplexity", "poolside", "qwen", "recraft", "rekaai", "relace", "runway", "sakana", "sao10k", "sentence-transformers", "sesame", "sourceful", "stepfun", "tencent", "thedrummer", "thenlper", "thinkingmachines", "undi95", "upstage", "venice", "voyageai", "writer", "x-ai", "xiaomi", "z-ai"]
+    static func canonical(_ value: String?) -> String? {
+        let value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let aliases = ["google deepmind": "google", "meta ai": "meta", "mistral": "mistralai",
+                       "mistral ai": "mistralai", "xai": "x-ai", "x.ai": "x-ai",
+                       "zai": "z-ai", "z.ai": "z-ai", "zai-org": "z-ai",
+                       "liquidai": "liquid", "cohereforai": "cohere"]
+        let key = aliases[value] ?? value
+        return known.contains(key) ? key : nil
+    }
+    static func resolve(repository: String, baseModels: [String] = []) -> String? {
+        let owners = Set(baseModels.compactMap { canonical($0.split(separator: "/").first.map(String.init)) })
+        if owners.count == 1 { return owners.first }
+        return canonical(repository.split(separator: "/").first.map(String.init))
     }
 }

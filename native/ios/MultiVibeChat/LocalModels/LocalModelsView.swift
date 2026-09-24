@@ -91,8 +91,7 @@ struct LocalModelCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "cpu").font(.title2).foregroundStyle(MultiVibeTheme.accent)
-                    .frame(width: 42, height: 42).background(.quaternary, in: RoundedRectangle(cornerRadius: 12)).accessibilityHidden(true)
+                ModelProviderLogo(provider: .other, publisher: model.resolvedLogoPublisher, size: 42)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(model.name).font(.headline)
                     if model.recommended { Text("Recommandé pour cet appareil").font(.caption).foregroundStyle(MultiVibeTheme.accent) }
