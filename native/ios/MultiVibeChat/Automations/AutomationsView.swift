@@ -168,10 +168,23 @@ private struct AutomationEditor: View {
     @Environment(ConversationManager.self) private var manager
     var existing: AgentAutomation?
     var preset: AutomationPreset = .blank
-    @State private var title = "", prompt = "", kind = "daily", minutes = "60", event = "", executor = "local", model = LocalModel.id, latitude = "", longitude = "", radius = "200", transition = "enter", domains = ""
+    @State private var title = ""
+    @State private var prompt = ""
+    @State private var kind = "daily"
+    @State private var minutes = "60"
+    @State private var event = ""
+    @State private var executor = "local"
+    @State private var model = LocalModel.id
+    @State private var latitude = ""
+    @State private var longitude = ""
+    @State private var radius = "200"
+    @State private var transition = "enter"
+    @State private var domains = ""
     @State private var date = Date().addingTimeInterval(3600)
     @State private var error: String?
-    @State private var saving = false, notify = true, advanced = false
+    @State private var saving = false
+    @State private var notify = true
+    @State private var advanced = false
 
     var body: some View {
         NavigationStack {
