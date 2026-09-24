@@ -2,14 +2,6 @@ import Foundation
 import CryptoKit
 import os
 
-enum ModelExecution: Equatable, Sendable {
-    case remote, apple, downloaded
-    init(_ id: String) {
-        self = id == LocalModel.id ? .apple : id.hasPrefix("device-gguf:") ? .downloaded : .remote
-    }
-    var isLocal: Bool { self != .remote }
-}
-
 struct DownloadableModel: Codable, Identifiable, Equatable, Sendable {
     let repository: String
     let revision: String

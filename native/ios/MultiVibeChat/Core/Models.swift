@@ -140,6 +140,14 @@ struct Conversation: Codable, Identifiable, Equatable, Sendable {
     var messages: [ChatMessage] = []
     var updatedAt = Date()
 }
+enum ModelExecution: Equatable, Sendable {
+    case remote, apple, downloaded
+    init(_ id: String) {
+        self = id == LocalModel.id ? .apple : id.hasPrefix("device-gguf:") ? .downloaded : .remote
+    }
+    var isLocal: Bool { self != .remote }
+}
+
 struct ModelOption: Codable, Identifiable, Sendable, Equatable {
     let id: String
     var name: String?
