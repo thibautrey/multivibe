@@ -135,6 +135,9 @@ struct Conversation: Codable, Identifiable, Equatable, Sendable {
     var memorySourceID: UUID?
     var memoryScope: String?
     var memoryReviewedThrough: UUID?
+    /// Marker for the user message whose background title summarization was already
+    /// requested. It prevents a second request and protects a settled title.
+    var titleGeneratedFor: UUID?
     var model: String = ""
     var modelAccess: SelectedModelAccess?
     var messages: [ChatMessage] = []
@@ -242,6 +245,49 @@ extension ModelOption {
     }
     static func save(_ identifiers: Set<String>, to defaults: UserDefaults = .standard) {
         defaults.set(identifiers.sorted(), forKey: key)
+    }
+}
+
+/// Summarizes a first user request into a short conversation title.
+///
+/// This runs as a non-blocking side request against the same model as the
+/// conversation. The result is only a preference: any failure keeps the local
+/// truncation fallback, and a title the user or a previous run already settled is
+/// never overwritten.
+enum ConversationTitle {
+    /// Upper bound for a stored title, matching the existing truncation fallback.
+    static let maximumCharacters = 70
+    /// Keeps the title prompt small; the first message is already the whole evidence.
+    static let maximumInputCharacters = 4_000
+    static let instructions = """
+    Tu résumes la demande de l'utilisateur pour titrer une conversation.
+    Réponds UNIQUEMENT par le titre, sur une seule ligne, en 2 à 6 mots, dans la langue de la demande.
+    Pas de guillemets, pas de ponctuation finale, pas de préfixe comme « Titre : », pas d'explication.
+    """
+    /// Deterministic fallback used when no summary is available yet.
+    static func fallback(for request: String) -> String {
+        let collapsed = request
+            .split(whereSeparator: { $0.isWhitespace || $0.isNewline })
+            .joined(separator: " ")
+        return String(collapsed.prefix(maximumCharacters))
+    }
+    /// Extracts a usable title from a raw model reply, or nil when it is unusable.
+    static func normalize(_ output: String) -> String? {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Keep the first meaningful line: models often append a sentence after the title.
+        let firstLine = trimmed
+            .split(whereSeparator: { $0.isNewline })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty } ?? ""
+        var value = firstLine
+        for prefix in ["Titre :", "Titre:", "Title:", "**", "\"", "'", "«", "”"] where value.hasPrefix(prefix) {
+            value.removeFirst(prefix.count); value = value.trimmingCharacters(in: .whitespaces)
+        }
+        for suffix in ["**", "\"", "'", "»", "”", "."] where value.hasSuffix(suffix) {
+            value.removeLast(suffix.count); value = value.trimmingCharacters(in: .whitespaces)
+        }
+        guard !value.isEmpty, value.count <= maximumCharacters else { return value.isEmpty ? nil : String(value.prefix(maximumCharacters)) }
+        return value
     }
 }
 
