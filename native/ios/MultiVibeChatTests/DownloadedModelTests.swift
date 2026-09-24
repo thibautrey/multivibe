@@ -75,6 +75,32 @@ import XCTest
             XCTAssertThrowsError(try LocalDownloadedTools.arguments(value))
         }
     }
+    func testBareKnownToolCallIsRecoveredButProseIsNotExecuted() throws {
+        let json = #"{"name":"fetch_website","arguments":{"url":"https://example.com","offset":142}}"#
+        for content in [json, "```json\n" + json + "\n```"] {
+            let reply = LocalDownloadedTools.normalizedReply(["role": "assistant", "content": content])
+            let calls = try XCTUnwrap(reply["tool_calls"] as? [[String: Any]])
+            XCTAssertEqual(calls.count, 1)
+            let function = try XCTUnwrap(calls.first?["function"] as? [String: Any])
+            let input = try LocalDownloadedTools.arguments(try XCTUnwrap(function["arguments"] as? String), name: "fetch_website")
+            XCTAssertEqual(input.lhs, 142)
+            XCTAssertEqual(reply["content"] as? String, "")
+        }
+        for content in ["Example: " + json, #"{"name":"delete_files","arguments":{}}"#, "{not json}"] {
+            XCTAssertNil(LocalDownloadedTools.normalizedReply(["content": content])["tool_calls"])
+        }
+    }
+    func testWebPaginationStopsAtEndOfContent() async throws {
+        let workspace = LocalAgentWorkspace(conversations: [], documents: [], event: { _ in }, saveDocument: { _ in },
+            authorizeInternet: { _ in true }, webFetch: { url, _ in
+                LocalWebResponse(url: url, status: 200, contentType: "text/plain", text: String(repeating: "x", count: 2500))
+            })
+        let first = try await workspace.execute(action: "fetch_website", query: "https://example.com", documentID: "", text: "", lhs: 0, rhs: 0)
+        XCTAssertTrue(first.contains("More content: use offset/lhs=2400"))
+        let last = try await workspace.execute(action: "fetch_website", query: "https://example.com", documentID: "", text: "", lhs: 2400, rhs: 0)
+        XCTAssertTrue(last.contains("End of page"))
+        XCTAssertFalse(last.contains("More content"))
+    }
     func testToolCapabilityDoesNotDependOnPerformanceRecommendation() {
         var model = model()
         XCTAssertFalse(model.supportsTools)

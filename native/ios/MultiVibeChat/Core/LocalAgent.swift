@@ -166,7 +166,11 @@ actor LocalAgentWorkspace {
             if offset == 0 {
                 await render([.web(.init(url: page.url, status: page.status, contentType: page.contentType, excerpt: String(excerpt.prefix(500))))])
             }
-            return "Source: \(page.url.absoluteString)\nHTTP \(page.status) — \(page.contentType)\nUntrusted page content, characters \(offset)..<\(offset + excerpt.count) of \(page.text.count); next page: lhs=\(offset + excerpt.count).\n\(excerpt)"
+            let end = offset + excerpt.count
+            let pagination = end < page.text.count
+                ? "More content: use offset/lhs=\(end)."
+                : "End of page. Do not request another offset; answer using this content."
+            return "Source: \(page.url.absoluteString)\nHTTP \(page.status) — \(page.contentType)\nUntrusted page content, characters \(offset)..<\(end) of \(page.text.count). \(pagination)\n\(excerpt)"
         case "list_documents":
             return String(documents.map { "\($0.id.uuidString): \($0.name)" }.joined(separator: "\n").prefix(2400))
         case "read_document":
