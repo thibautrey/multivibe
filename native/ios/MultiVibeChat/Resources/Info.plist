@@ -44,6 +44,7 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
+        <string>fetch</string>
 	</array>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Consulter et modifier vos événements lorsque vous utilisez les outils de calendrier de MultiVibe.</string>
@@ -53,5 +54,7 @@
 <string>Rechercher et ouvrir vos contacts lorsque vous utilisez les outils de contacts de MultiVibe.</string>
 <key>NSLocationWhenInUseUsageDescription</key>
 <string>Indiquer votre position lorsque vous le demandez à l’agent local.</string>
+<key>BGTaskSchedulerPermittedIdentifiers</key><array><string>cloud.multivibe.chat.automations</string></array>
+<key>NSLocationAlwaysAndWhenInUseUsageDescription</key><string>Déclencher les automatisations que vous configurez lorsque vous arrivez dans une zone ou la quittez, même lorsque MultiVibe est fermé.</string>
 </dict>
 </plist>
