@@ -39,6 +39,11 @@ actor ChatAPI {
             throw APIError.server(http.statusCode, code)
         }
     }
+    func automations(_ body: Data, token: String) async throws -> Data {
+        let (data, response) = try await session.data(for: request("automations", body: body, token: token))
+        try validate(response, data: data)
+        guard data.count <= 2_000_000 else { throw APIError.invalidResponse }; return data
+    }
     func history(token: String) async throws -> AccountHistorySnapshot {
         let (data, response) = try await session.data(for: request("history", token: token))
         try validate(response, data: data)

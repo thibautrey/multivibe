@@ -347,6 +347,11 @@ extension LocalModelLibrary: URLSessionDownloadDelegate {
 }
 
 final class ModelDownloadAppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        AutomationCoordinator.shared.registerBackground()
+        if launchOptions?[.location] != nil { AutomationCoordinator.shared.activate(scope: UserDefaults.standard.string(forKey: "automation-active-scope") ?? "guest") }
+        return true
+    }
     func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String,
                      completionHandler: @escaping () -> Void) {
         guard identifier == LocalModelLibrary.sessionIdentifier else { completionHandler(); return }

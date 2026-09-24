@@ -335,3 +335,20 @@ struct PrepareMultiVibeDeviceRequestIntent: AppIntent {
         return .result()
     }
 }
+
+/// Admits an event, never treats external text as an instruction or returns private results.
+struct SendMultiVibeAutomationEventIntent: AppIntent {
+    static let title: LocalizedStringResource = "Transmettre un événement à MultiVibe"
+    static let description = IntentDescription("Déclenche les automatisations déjà configurées pour ce nom. Utilisez un identifiant stable pour éviter les doublons. L’exécution peut être différée par iOS.")
+    static let openAppWhenRun = false
+    static let authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
+    @Parameter(title: "Nom de l’événement") var name: String
+    @Parameter(title: "Identifiant unique de l’événement") var eventID: String
+    @Parameter(title: "Données", default: "") var payload: String
+    @MainActor func perform() async throws -> some IntentResult & ReturnsValue<String> {
+        let coordinator = AutomationCoordinator.shared
+        if coordinator.scope.isEmpty { coordinator.activate(scope: UserDefaults.standard.string(forKey: "automation-active-scope") ?? "guest") }
+        let count = try coordinator.sendEvent(name: name, id: eventID, payload: payload)
+        return .result(value: "Événement enregistré pour \(count) automatisation(s). Exécution selon disponibilité.")
+    }
+}
