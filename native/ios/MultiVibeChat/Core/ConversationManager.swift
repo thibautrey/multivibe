@@ -336,7 +336,16 @@ import Network
         // One owner persists the rotated token; concurrent callers only await it.
         let task = Task { @MainActor in
             defer { if refreshRevision == flight { refreshTask = nil } }
-            let renewed = try await services.refresh(previous)
+            let renewed: NativeSession
+            do {
+                renewed = try await services.refresh(previous)
+            } catch APIError.server(400, "invalid_grant") {
+                guard sessionRevision == revision else { throw CancellationError() }
+                await closeRejectedSession(
+                    message: "Votre session a expiré. Reconnectez-vous pour retrouver les modèles Cloud."
+                )
+                throw APIError.authenticationRequired
+            }
             if sessionRevision == revision {
                 do {
                     try services.save(renewed)
@@ -382,6 +391,28 @@ import Network
         let renewed = try await task.value
         guard sessionRevision == revision else { throw CancellationError() }
         return renewed
+    }
+
+    /// A rejected refresh token cannot become usable again. Clear only the
+    /// authentication state, then restore the guest workspace from local disk.
+    private func closeRejectedSession(message: String) async {
+        stop()
+        voice.silence()
+        sessionRevision = UUID()
+        resetModelLoading()
+        isRestoring = true
+        services.clear()
+        session = nil
+        conversations = []; selection = nil
+        resetHistorySync()
+        models = [LocalModel.option]; selectedModel = LocalModel.id
+        localDocuments = []; automaticSync = false
+        await restore(loadRemoteModels: false)
+        nativeShortcut = nil
+        wantsNewConversation = false; wantsVoice = false
+        wantsVoiceConversation = false; wantsImmediateVoiceCapture = false; pendingDraft = nil
+        error = message
+        authenticationPresented = true
     }
     func accept(_ session: NativeSession) async throws {
         nativeShortcut = nil

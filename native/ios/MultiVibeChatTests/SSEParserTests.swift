@@ -36,6 +36,12 @@ import AuthenticationServices
         XCTAssertTrue(presentation.badges.contains("Hors ligne"))
     }
 
+    func testMarketplaceDeduplicatesLocalAndPaginatedModels() {
+        let models = [LocalModel.option, LocalModel.option,
+                      ModelOption(id: "remote-a"), ModelOption(id: "remote-a"), ModelOption(id: "remote-b")]
+        XCTAssertEqual(uniqueMarketplaceModels(models).map(\.id), [LocalModel.id, "remote-a", "remote-b"])
+    }
+
     func testFavoritesRoundTripInDedicatedDefaultsSuite() {
         let suite = "ModelFavoriteStoreTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -248,6 +254,23 @@ final class NativeTransportTests: XCTestCase {
         XCTAssertEqual(b.refreshToken, "renewed")
         XCTAssertEqual(saves, 1)
         XCTAssertEqual(refreshes, 1)
+    }
+
+    func testInvalidRefreshGrantClosesSessionAndRequestsLogin() async {
+        var stored: NativeSession? = session("invalid", expired: true)
+        var cleared = false
+        let services = isolatedServices(load: { stored }, clear: { cleared = true; stored = nil },
+            refresh: { _ in throw APIError.server(400, "invalid_grant") }, models: { _ in [] })
+        let manager = ConversationManager(services: services)
+
+        do { _ = try await manager.validSession(); XCTFail("Invalid refresh grant must require login") }
+        catch APIError.authenticationRequired {} catch { XCTFail("Unexpected error: \(error)") }
+
+        XCTAssertTrue(cleared)
+        XCTAssertNil(manager.session)
+        XCTAssertTrue(manager.authenticationPresented)
+        XCTAssertEqual(manager.models.map(\.id), [LocalModel.id])
+        XCTAssertEqual(manager.error, "Votre session a expiré. Reconnectez-vous pour retrouver les modèles Cloud.")
     }
 
     func testAccountSwitchRevokesOldRotationWithoutReplacingNewAccount() async throws {
