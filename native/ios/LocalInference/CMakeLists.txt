@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(MultiVibeLocalInference LANGUAGES C CXX OBJCXX)
+project(MultiVibeLocalInference LANGUAGES C CXX OBJC OBJCXX)
 set(CMAKE_CXX_STANDARD 17)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_COMMON ON CACHE BOOL "" FORCE)
