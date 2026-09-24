@@ -324,6 +324,19 @@ enum LocalAgent {
         throw LocalAgentError.unavailable("Le modèle local est indisponible.")
     }
 
+    /// A separate session of the same local model, used only to title a conversation.
+    static func summarizeTitle(_ prompt: String) async throws -> String {
+        if let reason = LocalModel.unavailableReason { throw LocalAgentError.unavailable(reason) }
+        #if canImport(FoundationModels)
+        if #available(iOS 26, *) {
+            let session = LanguageModelSession(model: SystemLanguageModel.default,
+                instructions: ConversationTitle.instructions)
+            return try await session.respond(to: prompt).content
+        }
+        #endif
+        throw LocalAgentError.unavailable("Le modèle local est indisponible.")
+    }
+
     static func respond(messages: [ChatMessage], workspace: LocalAgentWorkspace,
                         onText: @escaping @Sendable (String) async -> Void) async throws {
         if let reason = LocalModel.unavailableReason { throw LocalAgentError.unavailable(reason) }

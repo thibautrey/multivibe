@@ -316,14 +316,141 @@ import XCTest
     models: @escaping @MainActor (String) async throws -> [ModelOption] = { _ in [] },
     downloadedModels: @escaping @MainActor () -> [ModelOption] = { [] },
     lastUsedModel: @escaping @MainActor (String) -> String? = { _ in nil },
-    rememberLastUsedModel: @escaping @MainActor (String, String) -> Void = { _, _ in }
+    rememberLastUsedModel: @escaping @MainActor (String, String) -> Void = { _, _ in },
+    summarizeLocalTitle: @escaping @Sendable (String) async throws -> String = { _ in throw APIError.invalidResponse }
 ) -> SessionServices {
     SessionServices(writeHistory: writeHistory, load: load, save: save, clear: clear,
         refresh: refresh, revoke: revoke, readHistory: readHistory, saveHistory: saveHistory,
         stream: stream, readLocalHistory: readLocalHistory, localAvailability: localAvailability,
         localRespond: localRespond, downloadedModels: downloadedModels,
         memoryIndex: { _ in try MemoryIndex(url: nil) }, reviewLocalMemory: { _ in "[]" }, monitorConnectivity: monitorConnectivity, syncDelay: syncDelay, models: models,
-        lastUsedModel: lastUsedModel, rememberLastUsedModel: rememberLastUsedModel)
+        lastUsedModel: lastUsedModel, rememberLastUsedModel: rememberLastUsedModel,
+        summarizeLocalTitle: summarizeLocalTitle)
+}
+
+@MainActor final class ConversationTitleTests: XCTestCase {
+    private func session() -> NativeSession {
+        NativeSession(accessToken: "a", refreshToken: "r", expiresAt: .distantFuture, accountId: "account-a")
+    }
+    /// Captures the title request so the test can assert what the model received.
+    actor Probe {
+        var prompts: [String] = []
+        func record(_ prompt: String) { prompts.append(prompt) }
+        func count() -> Int { prompts.count }
+        func first() -> String? { prompts.first }
+    }
+    /// Suspends the title model call until the test releases it, so a late result
+    /// can be checked against a title settled in the meantime.
+    actor TitleGate {
+        private var release: CheckedContinuation<Void, Never>?
+        private var released = false
+        var started = false
+        func waitForRelease() async {
+            started = true
+            guard !released else { return }
+            await withCheckedContinuation { self.release = $0 }
+        }
+        func release() {
+            released = true
+            release?.resume(); release = nil
+        }
+    }
+    private func waitForTitle(_ manager: ConversationManager) async {
+        for _ in 0..<2000 where manager.current?.titleGeneratedFor == nil { await Task.yield() }
+    }
+
+    func testPolicyNormalizesModelOutput() {
+        XCTAssertEqual(ConversationTitle.normalize("Analyse budget mensuel"), "Analyse budget mensuel")
+        XCTAssertEqual(ConversationTitle.normalize("\"Résumé du contrat\"\nExplication ensuite."), "Résumé du contrat")
+        XCTAssertEqual(ConversationTitle.normalize("Titre : Suivi du chantier."), "Suivi du chantier")
+        XCTAssertNil(ConversationTitle.normalize("   \n  "))
+        XCTAssertEqual(ConversationTitle.fallback(for: "  Bonjour\n  le   monde  "), "Bonjour le monde")
+        XCTAssertEqual(ConversationTitle.fallback(for: String(repeating: "a", count: 100)).count, ConversationTitle.maximumCharacters)
+    }
+
+    func testSuccessfulSummaryReplacesTheTruncationFallback() async {
+        let probe = Probe()
+        let services = isolatedServices(load: { self.session() },
+            localAvailability: { nil },
+            localRespond: { _, _, output in await output("Réponse") },
+            summarizeLocalTitle: { prompt in
+                await probe.record(prompt)
+                return "\"Planification du chantier\""
+            })
+        let manager = ConversationManager(services: services)
+        await manager.restore(loadRemoteModels: false)
+        manager.models = [LocalModel.option]
+        manager.selectedModel = LocalModel.id
+        XCTAssertTrue(manager.send("Peux-tu m'aider à planifier le chantier de la semaine prochaine ?"))
+        await waitForTitle(manager)
+        XCTAssertEqual(manager.current?.title, "Planification du chantier")
+        XCTAssertEqual(await probe.count(), 1, "The title request must run exactly once")
+        XCTAssertEqual(manager.current?.titleGeneratedFor, manager.current?.messages.first?.id)
+    }
+
+    func testFailureKeepsTheFallbackAndDoesNotRetry() async {
+        let probe = Probe()
+        let services = isolatedServices(load: { self.session() },
+            localAvailability: { nil },
+            localRespond: { _, _, output in await output("Réponse") },
+            summarizeLocalTitle: { prompt in
+                await probe.record(prompt)
+                throw APIError.invalidResponse
+            })
+        let manager = ConversationManager(services: services)
+        await manager.restore(loadRemoteModels: false)
+        manager.models = [LocalModel.option]
+        manager.selectedModel = LocalModel.id
+        XCTAssertTrue(manager.send("Premier message utilisateur"))
+        await waitForTitle(manager)
+        XCTAssertEqual(manager.current?.title, "Premier message utilisateur")
+        XCTAssertTrue(manager.send("Deuxième message"))
+        for _ in 0..<200 where manager.isStreaming { await Task.yield() }
+        XCTAssertEqual(await probe.count(), 1, "A failed attempt must not be repeated on later turns")
+    }
+
+    func testRequestIsBoundedAndCarriesTheUserPrompt() async {
+        let probe = Probe()
+        let long = String(repeating: "contexte ", count: 2_000)
+        let services = isolatedServices(load: { self.session() },
+            localAvailability: { nil },
+            localRespond: { _, _, output in await output("Réponse") },
+            summarizeLocalTitle: { prompt in
+                await probe.record(prompt)
+                return "Titre court"
+            })
+        let manager = ConversationManager(services: services)
+        await manager.restore(loadRemoteModels: false)
+        manager.models = [LocalModel.option]
+        manager.selectedModel = LocalModel.id
+        XCTAssertTrue(manager.send(long))
+        await waitForTitle(manager)
+        let prompt = await probe.first() ?? ""
+        XCTAssertTrue(prompt.contains(ConversationTitle.instructions))
+        XCTAssertLessThanOrEqual(prompt.count, ConversationTitle.maximumInputCharacters + ConversationTitle.instructions.count + 64)
+    }
+
+    func testLateSummaryNeverOverwritesATitleTheUserAlreadySettled() async {
+        let recorder = TitleGate()
+        let services = isolatedServices(load: { self.session() },
+            localAvailability: { nil },
+            localRespond: { _, _, output in await output("Réponse") },
+            summarizeLocalTitle: { _ in await recorder.waitForRelease(); return "Titre tardif" })
+        let manager = ConversationManager(services: services)
+        await manager.restore(loadRemoteModels: false)
+        manager.models = [LocalModel.option]
+        manager.selectedModel = LocalModel.id
+        XCTAssertTrue(manager.send("Message initial"))
+        // Wait until the background request is actually suspended in the model call.
+        for _ in 0..<2000 where !(await recorder.started) { await Task.yield() }
+        // A title settled during the in-flight request must win.
+        let id = manager.current!.id
+        let index = manager.conversations.firstIndex { $0.id == id }!
+        manager.conversations[index].title = "Titre manuel"
+        await recorder.release()
+        await waitForTitle(manager)
+        XCTAssertEqual(manager.current?.title, "Titre manuel")
+    }
 }
 
 @MainActor final class InternetConsentTests: XCTestCase {

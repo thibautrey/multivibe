@@ -43,6 +43,7 @@ import Network
     var webFetch: @Sendable (URL, String) async throws -> LocalWebResponse = { try await LocalWebFetch.fetch(url: $0, method: $1) }
     var memoryIndex: @MainActor (URL) throws -> MemoryIndex = { try MemoryIndex(url: $0) }
     var reviewLocalMemory: @Sendable (String) async throws -> String = { try await LocalAgent.reviewMemory($0) }
+    var summarizeLocalTitle: @Sendable (String) async throws -> String = { try await LocalAgent.summarizeTitle($0) }
     var memoryReviewDelay: @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(2)) }
     var monitorConnectivity = true
     var syncDelay: @Sendable (Int) async throws -> Void = { attempt in try await Task.sleep(for: .seconds(min(60, 2 << attempt))) }
@@ -91,6 +92,8 @@ import Network
     var memoryPresented = false
     var memoryDraft: MemoryDraft?
     private var memoryReviews: [UUID: Task<Void, Never>] = [:]
+    /// One background title request per conversation; never blocks the main reply.
+    private var titleTasks: [UUID: Task<Void, Never>] = [:]
     var memoryItems: [MemoryItem] { MemoryPolicy.items(memoryRecords) }
 
     var authenticationPresented = false
@@ -279,6 +282,7 @@ import Network
         selectedModel = restoredModel(for: modelPreferenceScope, in: models) ?? LocalModel.id
         storageLoaded = false
         memoryReviews.values.forEach { $0.cancel() }; memoryReviews = [:]
+        titleTasks.values.forEach { $0.cancel() }; titleTasks = [:]
         memoryRecords = []; memoryBaseline = []; memoryIndex = nil; memoryDraft = nil; memorySyncEnabled = false; memoryError = nil
         calendarEnabled = false; remindersEnabled = false
         do {
@@ -608,8 +612,10 @@ import Network
         conversations[index].model = selectedModel
         conversations[index].modelAccess = selectedAccess
         conversations[index].messages.append(ChatMessage(role: "user", content: text))
-        if conversations[index].messages.count == 1 { conversations[index].title = String(text.prefix(70)) }
+        if conversations[index].messages.count == 1 { conversations[index].title = ConversationTitle.fallback(for: text) }
         if MemoryCommand.isForget(text) { memoryPresented = true; return persist() }
+        // Runs in the background against the same model; the reply is not delayed.
+        if conversations[index].messages.count == 1 { scheduleTitle(conversation: id) }
         return startReply(conversation: id, index: index)
     }
     @discardableResult func appendVoiceTurn(conversationID: UUID, accountID: String, model: String, role: String, text: String, turnID: String) -> Bool {
@@ -623,9 +629,10 @@ import Network
         let previous = conversations[index]
         conversations[index].model = model
         conversations[index].messages.append(ChatMessage(id: id, role: role, content: text, completion: role == "assistant" ? .completed : nil))
-        if conversations[index].messages.count == 1 { conversations[index].title = String(text.prefix(70)) }
+        if conversations[index].messages.count == 1 { conversations[index].title = ConversationTitle.fallback(for: text) }
         conversations[index].updatedAt = Date()
         guard persist() else { conversations[index] = previous; return false }
+        if conversations[index].messages.count == 1 { scheduleTitle(conversation: conversationID) }
         scheduleAutomaticSync()
         return true
     }
@@ -757,6 +764,7 @@ import Network
     }
     func delete(_ id: UUID) {
         memoryReviews[id]?.cancel(); memoryReviews[id] = nil
+        titleTasks[id]?.cancel(); titleTasks[id] = nil
         if selection == id { stop(); selection = nil }
         let sourceID = conversations.first(where: { $0.id == id })?.memorySourceID ?? id
         let oldConversations = conversations; let oldMemory = memoryRecords
@@ -1142,6 +1150,84 @@ import Network
                 if historySnapshot != nil, pendingHistorySave == nil, conversations == historyBaseline, !memorySyncEnabled || memoryRecords.filter({ $0.state != .proposed }) == memoryBaseline { return }
             }
         }
+    }
+    /// Titles a conversation from its first user request, in the background.
+    ///
+    /// The request runs against the same model and access as the conversation and
+    /// never blocks or cancels the visible reply. It is attempted once per first
+    /// user message; any failure simply keeps the local truncation fallback.
+    private func scheduleTitle(conversation id: UUID) {
+        guard let snapshot = conversations.first(where: { $0.id == id }),
+              let firstUser = snapshot.messages.first(where: { $0.role == "user" }),
+              !snapshot.messages.isEmpty,
+              snapshot.messages.first?.role == "user",
+              snapshot.titleGeneratedFor != firstUser.id else { return }
+        // Never spend a request on an empty or unusable prompt.
+        let request = String(firstUser.content.prefix(ConversationTitle.maximumInputCharacters))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !request.isEmpty else { return }
+        // Claim the marker before starting so a second turn cannot enqueue a duplicate.
+        titleTasks[id]?.cancel()
+        let account = sessionRevision
+        titleTasks[id] = Task {
+            do {
+                let output = try await titleSummary(model: snapshot.model, access: snapshot.modelAccess, request: request)
+                try Task.checkCancellation()
+                guard sessionRevision == account else { return }
+                guard let title = ConversationTitle.normalize(output) else { throw TitleError.unusable }
+                applyGeneratedTitle(title, conversation: id, firstUser: firstUser.id)
+            } catch is CancellationError {
+                // A newer first message or an account change superseded this request.
+            } catch {
+                // Keep the truncation fallback; still record the attempt so an
+                // offline or unavailable model is not retried on every turn.
+                guard sessionRevision == account else { return }
+                markTitleAttempted(conversation: id, firstUser: firstUser.id)
+            }
+        }
+    }
+    private enum TitleError: Error { case unusable }
+    private func titleSummary(model: String, access: SelectedModelAccess?, request: String) async throws -> String {
+        let prompt = ConversationTitle.instructions + "\n\nDemande de l'utilisateur :\n" + request
+        if ModelExecution(model).isLocal {
+            if model == LocalModel.id { return try await services.summarizeLocalTitle(prompt) }
+            let buffer = MemoryReviewOutput()
+            try await services.downloadedRespond(model, [ChatMessage(role: "user", content: prompt)], nil) { await buffer.append($0) }
+            return await buffer.value()
+        }
+        guard let access, access.modelId == model else { throw APIError.server(409, "model_access_unavailable") }
+        let credentials = try await validSession()
+        try Task.checkCancellation()
+        let buffer = MemoryReviewOutput()
+        try await streamUsingAccess(model, access: access, messages: [ChatMessage(role: "user", content: prompt)],
+                                    token: credentials.accessToken) { await buffer.append($0) }
+        return await buffer.value()
+    }
+    /// Applies a generated title only if the conversation still holds the same first
+    /// request and no title was settled in the meantime.
+    private func applyGeneratedTitle(_ title: String, conversation id: UUID, firstUser: UUID) {
+        guard let index = conversations.firstIndex(where: { $0.id == id }),
+              conversations[index].titleGeneratedFor != firstUser,
+              conversations[index].messages.first?.id == firstUser,
+              let firstUserMessage = conversations[index].messages.first(where: { $0.id == firstUser }),
+              conversations[index].title == ConversationTitle.fallback(for: firstUserMessage.content),
+              let normalized = ConversationTitle.normalize(title) else { return }
+        let previous = conversations[index].title
+        conversations[index].title = normalized
+        // The marker records the attempt even if persistence fails, so a message is
+        // never re-summarized in a loop.
+        conversations[index].titleGeneratedFor = firstUser
+        guard persist() else {
+            conversations[index].title = previous
+            return
+        }
+        scheduleAutomaticSync()
+    }
+    private func markTitleAttempted(conversation id: UUID, firstUser: UUID) {
+        guard let index = conversations.firstIndex(where: { $0.id == id }),
+              conversations[index].titleGeneratedFor != firstUser else { return }
+        conversations[index].titleGeneratedFor = firstUser
+        persist()
     }
     private func scheduleMemoryReview(conversation id: UUID) {
         guard let snapshot = conversations.first(where: { $0.id == id }),
