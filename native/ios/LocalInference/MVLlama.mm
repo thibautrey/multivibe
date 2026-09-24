@@ -91,6 +91,16 @@
         if (!formatted.parser.empty()) parser.parser.load(formatted.parser);
         common_params_sampling sp;
         sp.temp = 0.6f;
+        if (!formatted.grammar.empty()) {
+            sp.grammar = common_grammar(COMMON_GRAMMAR_TYPE_TOOL_CALLS, formatted.grammar);
+            sp.grammar_lazy = formatted.grammar_lazy;
+            sp.grammar_triggers = formatted.grammar_triggers;
+            sp.generation_prompt = formatted.generation_prompt;
+            for (const auto & text : formatted.preserved_tokens) {
+                const auto ids = common_tokenize(_context, text, false, true);
+                if (ids.size() == 1) sp.preserved_tokens.insert(ids.front());
+            }
+        }
         std::unique_ptr<common_sampler, decltype(&common_sampler_free)> sampler(common_sampler_init(_model, sp), common_sampler_free);
         if (!sampler) throw std::runtime_error("Impossible de préparer la réponse.");
         std::string output, published;
