@@ -78,6 +78,31 @@ final class AuthenticationUITests: XCTestCase {
         }
     }
 
+    func testConversationListUsesBrandedCompactNavigation() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR"]
+        app.launch()
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "Message").firstMatch.waitForExistence(timeout: 15))
+
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.staticTexts["MultiVibe"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["searchConversations"].exists)
+        XCTAssertTrue(app.buttons["openAutomations"].exists)
+        XCTAssertTrue(app.buttons["openMemory"].exists)
+        XCTAssertTrue(app.buttons["openDocuments"].exists)
+        XCTAssertTrue(app.staticTexts["Récents"].exists)
+        XCTAssertTrue(app.buttons["Nouvelle conversation"].exists)
+        XCTAssertTrue(app.buttons["openProfile"].exists)
+
+        app.buttons["searchConversations"].tap()
+        XCTAssertTrue(app.textFields["Rechercher dans les conversations"].waitForExistence(timeout: 5))
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "conversation-list-branded"
+        capture.lifetime = .keepAlways
+        add(capture)
+    }
+
     func testDarkLoginKeepsNativeSecureFieldsAndDismissal() {
         let app = launch(dark: true)
         XCTAssertTrue(app.secureTextFields["Mot de passe"].exists)
