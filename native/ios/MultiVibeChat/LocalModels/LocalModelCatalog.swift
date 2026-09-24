@@ -19,7 +19,8 @@ struct DownloadableModel: Codable, Identifiable, Equatable, Sendable {
     var validatedDevices: [String] = []
     var toolsValidated: Bool = false
     var recommended: Bool { validatedDevices.contains(LocalHardware.identifier) }
-    var supportsTools: Bool { toolsValidated && recommended }
+    // Tool protocol validation is independent of the device performance recommendation.
+    var supportsTools: Bool { toolsValidated }
     var id: String { "device-gguf:" + repository + "/" + filename + "@" + revision }
     var key: String { SHA256.hash(data: Data(id.utf8)).map { String(format: "%02x", $0) }.joined() }
     var url: URL {
