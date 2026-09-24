@@ -185,6 +185,25 @@ final class AuthenticationUITests: XCTestCase {
 }
 
 final class LocalInternetUITests: XCTestCase {
+    func testFirstReplyRemainsVisibleAfterComposerDismissal() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-local-agent-ui-fixture", "-local-agent-ui-immediate-reply", "-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR"]
+        app.launch()
+
+        let newConversation = app.buttons["Nouvelle conversation"].firstMatch
+        XCTAssertTrue(newConversation.waitForExistence(timeout: 10))
+        newConversation.tap()
+        let message = app.descendants(matching: .any).matching(identifier: "Message").firstMatch
+        XCTAssertTrue(message.waitForExistence(timeout: 10))
+        message.tap()
+        message.typeText("FIRST-TURN-PROMPT")
+        app.buttons["Envoyer"].tap()
+
+        XCTAssertTrue(app.staticTexts["FIRST-TURN-PROMPT"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["FIXTURE-REPLY"].waitForExistence(timeout: 10))
+    }
+
     func testLocalWebPermissionCanBeDeniedOnceWithoutSigningIn() throws {
         continueAfterFailure = false
         let app = XCUIApplication()

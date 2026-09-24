@@ -65,6 +65,10 @@ import Network
             let manager = ConversationManager(services: SessionServices(writeHistory: { _, _ in }, load: { nil },
                 readLocalHistory: { _ in throw CocoaError(.fileReadNoSuchFile) }, localAvailability: { nil },
                 localRespond: { _, workspace, output in
+                    if ProcessInfo.processInfo.arguments.contains("-local-agent-ui-immediate-reply") {
+                        await output("FIXTURE-REPLY")
+                        return
+                    }
                     let result = try await workspace.execute(action: "fetch_website", query: "https://example.com", documentID: "", text: "", lhs: 0, rhs: 0)
                     await output(result)
                 }, webFetch: { url, _ in
