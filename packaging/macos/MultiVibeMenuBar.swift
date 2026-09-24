@@ -8,6 +8,7 @@ let configuredHostPort: Int = {
 }()
 
 let hasExplicitHostPort = ProcessInfo.processInfo.environment["MULTIVIBE_HOST_PORT"] != nil
+let isMenuPreview = ProcessInfo.processInfo.environment["MULTIVIBE_HOST_MENU_PREVIEW"] == "1"
 
 @main
 final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
@@ -79,7 +80,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         configurePopover()
         // Login launches keep the Host in the background; explicit launches open the chat.
         let launchedAtLogin = NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
-        if !launchedAtLogin && ProcessInfo.processInfo.environment["MULTIVIBE_HOST_MENU_PREVIEW"] != "1" {
+        if !launchedAtLogin && !isMenuPreview {
             Task { @MainActor in self.showAssistant() }
         }
         popoverController.selectQuotaProvider = { [weak self] id in
@@ -96,15 +97,15 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         }
         RunLoop.main.add(quotaTimer!, forMode: .common)
         configureTerminationSignals()
-        synchronizeLoginItem()
+        if !isMenuPreview { synchronizeLoginItem() }
         render()
-        ensureServiceIsRunning()
+        if isMenuPreview { refresh() } else { ensureServiceIsRunning() }
         if pendingEnrollmentToken != nil {
             DispatchQueue.main.async { [weak self] in self?.presentPendingEnrollmentConfirmation() }
         }
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in self?.refresh() }
 #if DEBUG
-        if ProcessInfo.processInfo.environment["MULTIVIBE_HOST_MENU_PREVIEW"] == "1" {
+        if isMenuPreview {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in self?.showPreviewWindow() }
         }
 #endif
@@ -304,7 +305,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
     }
 
     @objc func quitApplication() {
-        stopHostService()
+        if !isMenuPreview { stopHostService() }
         NSApplication.shared.terminate(nil)
     }
 }

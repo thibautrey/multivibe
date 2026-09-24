@@ -7,6 +7,7 @@ extension MultiVibeMenuBarApp {
     }
 
     func synchronizeLoginItem() {
+        guard !isMenuPreview else { return }
         do {
             if startAtLoginEnabled {
                 if SMAppService.mainApp.status == .notRegistered {
@@ -47,6 +48,7 @@ extension MultiVibeMenuBarApp {
     }
 
     func stopHostService() {
+        guard !isMenuPreview else { return }
         if let service = ownedService, service.isRunning {
             service.terminate()
             ownedService = nil
@@ -56,6 +58,7 @@ extension MultiVibeMenuBarApp {
     }
 
     func startHostLaunchAgent() {
+        guard !isMenuPreview else { return }
         _ = runLaunchctl(["enable", hostLaunchAgentService])
         if FileManager.default.isReadableFile(atPath: hostLaunchAgentURL.path) {
             _ = runLaunchctl(["bootstrap", "gui/\(getuid())", hostLaunchAgentURL.path])
@@ -64,6 +67,7 @@ extension MultiVibeMenuBarApp {
     }
 
     func setStartAtLogin(_ enabled: Bool) {
+        guard !isMenuPreview else { return }
         UserDefaults.standard.set(enabled, forKey: "startAtLogin")
         var loginItemNeedsAttention = false
         do {
@@ -92,6 +96,7 @@ extension MultiVibeMenuBarApp {
     }
 
     func ensureServiceIsRunning() {
+        guard !isMenuPreview else { return }
         guard UserDefaults.standard.object(forKey: "startAtLogin") as? Bool ?? true else { return }
         if ownedService?.isRunning == true {
             refreshing = false
