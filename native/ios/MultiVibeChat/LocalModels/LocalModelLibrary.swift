@@ -43,7 +43,7 @@ struct DownloadMeter: Sendable {
     private(set) var installations: [ModelInstallation] = []
     private(set) var meters: [String: DownloadMeter] = [:]
     private(set) var cachedModels: [DownloadableModel] = []
-    private(set) var connected = true
+    private(set) var connected = false
     private(set) var cellular = false
     var storageError: String?
     var cellularRequest: DownloadableModel?
@@ -53,6 +53,7 @@ struct DownloadMeter: Sendable {
     @ObservationIgnored private var tasks: [String: URLSessionDownloadTask] = [:]
     @ObservationIgnored private var retryTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var completion: (() -> Void)?
+    @ObservationIgnored private var started = false
     @ObservationIgnored private var reconciliationComplete = false
     @ObservationIgnored private var verificationTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private lazy var session: URLSession = {
@@ -111,8 +112,8 @@ struct DownloadMeter: Sendable {
         catch { storageError = "Impossible de conserver le catalogue hors ligne." }
     }
     func start() {
-        guard !reconciliationComplete else { return }
-        reconciliationComplete = true
+        guard !started else { return }
+        started = true
         monitor.pathUpdateHandler = { [weak self] path in
             let connected = path.status == .satisfied, cellular = path.isExpensive
             Task { @MainActor in
@@ -125,6 +126,7 @@ struct DownloadMeter: Sendable {
         session.getAllTasks { [weak self] existing in
             Task { @MainActor in
                 guard let self else { return }
+                self.reconciliationComplete = true
                 for task in existing {
                     guard let download = task as? URLSessionDownloadTask, let transfer = task.taskDescription,
                           let entry = self.installations.first(where: { $0.transfer == transfer && $0.state.active }) else { task.cancel(); continue }
