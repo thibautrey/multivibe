@@ -25,6 +25,8 @@ struct DownloadableModel: Codable, Identifiable, Equatable, Sendable {
     let headSize: Int
     var validatedDevices: [String] = []
     var toolsValidated: Bool = false
+    var recommended: Bool { validatedDevices.contains(LocalHardware.identifier) }
+    var supportsTools: Bool { toolsValidated && recommended }
     var id: String { "device-gguf:" + repository + "/" + filename + "@" + revision }
     var key: String { SHA256.hash(data: Data(id.utf8)).map { String(format: "%02x", $0) }.joined() }
     var url: URL {
@@ -203,5 +205,14 @@ enum GGUFHeader {
             }
         }
         throw URLError(.cannotParseResponse)
+    }
+}
+
+enum LocalHardware {
+    static var identifier: String {
+        var info = utsname(); uname(&info)
+        return withUnsafePointer(to: &info.machine) { pointer in
+            pointer.withMemoryRebound(to: CChar.self, capacity: 256) { String(cString: $0) }
+        }
     }
 }

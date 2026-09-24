@@ -64,7 +64,10 @@ struct DownloadMeter: Sendable {
         config.httpMaximumConnectionsPerHost = 2
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
-    var installed: [DownloadableModel] { installations.filter { $0.state == .installed }.map(\.model) }
+    var installed: [DownloadableModel] { installations.filter { $0.state == .installed }.map { validated($0.model) } }
+    func validated(_ model: DownloadableModel) -> DownloadableModel {
+        HuggingFaceCatalog.bundled.first { $0.id == model.id } ?? model
+    }
     var available: [DownloadableModel] {
         var seen = Set<String>()
         return (HuggingFaceCatalog.bundled + cachedModels + installations.map(\.model)).filter { seen.insert($0.id).inserted }

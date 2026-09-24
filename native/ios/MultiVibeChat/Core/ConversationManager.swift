@@ -33,7 +33,7 @@ import Network
         guard let entry = LocalModelLibrary.shared.installation(id), entry.state == .installed else {
             throw LocalAgentError.unavailable("Téléchargez ce modèle pour l’utiliser sur cet appareil.")
         }
-        try await DownloadedModelRuntime.shared.respond(model: entry.model, path: LocalModelLibrary.shared.file(entry.model),
+        try await DownloadedModelRuntime.shared.respond(model: LocalModelLibrary.shared.validated(entry.model), path: LocalModelLibrary.shared.file(entry.model),
             messages: messages, workspace: workspace, onText: delta)
     }
 
