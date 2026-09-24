@@ -42,10 +42,6 @@ struct ChatView: View {
     @State private var voiceConversationPresented = false
     @State private var voiceConversationPreparing = false
     @FocusState private var composerFocused: Bool
-    private static let compactComposerHeight: CGFloat = 126
-    private var composerDetent: PresentationDetent {
-        .height(Self.compactComposerHeight + (voice.error != nil ? 76 : (voice.recording || voice.starting ? 28 : 0)))
-    }
     private let latestMessageAnchor = "latest-message"
 
     var body: some View {
@@ -139,7 +135,7 @@ struct ChatView: View {
                                     if message.role == "user" {
                                         Text(message.content).textSelection(.enabled)
                                             .padding(.horizontal, 18).padding(.vertical, 12)
-                                            .background(MultiVibeTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 22))
+                                            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
                                             .padding(.leading, 36)
                                     } else {
                                         if !message.content.isEmpty || message.nativeContent != nil {
@@ -150,10 +146,7 @@ struct ChatView: View {
                                                 }
                                                 NativeMessageContent(content: message.content)
                                             }
-                                            .padding(16)
-                                            .background(.background.opacity(0.82), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-                                            .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(.primary.opacity(0.06)))
-                                            .shadow(color: .black.opacity(0.05), radius: 18, y: 8)
+                                            .padding(.vertical, 2)
                                         }
                                         if let completion = message.completion, completion != .completed, completion != .streaming {
                                             Text(completion == .stopped ? "Réponse arrêtée" : "Réponse interrompue")
@@ -175,23 +168,26 @@ struct ChatView: View {
                                         }
                                         HStack(spacing: 4) {
                                             if !message.content.isEmpty {
-                                                Button("Lire à voix haute", systemImage: "speaker.wave.2") { voice.speak(message.content) }
+                                                Button("Copier", systemImage: "doc.on.doc") { copyMessage(message.content) }
                                                 ShareLink(item: message.content) { Image(systemName: "square.and.arrow.up") }.accessibilityLabel("Partager le message")
-                                            }
-                                            if message.canRetry && manager.current?.messages.last?.id == message.id {
-                                                Button("Réessayer", systemImage: "arrow.clockwise") {
-                                                    if let conversation = manager.selection { retryTarget = RetryTarget(conversation: conversation, message: message.id) }
-                                                }.disabled(manager.isStreaming)
+                                                Menu("Plus d’actions", systemImage: "ellipsis") {
+                                                    Button("Lire à voix haute", systemImage: "speaker.wave.2") { voice.speak(message.content) }
+                                                    Button("Sélectionner le texte", systemImage: "selection.pin.in.out") {
+                                                        selectionContent = SelectableMessage(id: message.id, text: message.content)
+                                                    }
+                                                    if message.canRetry && manager.current?.messages.last?.id == message.id {
+                                                        Button("Réessayer", systemImage: "arrow.clockwise") {
+                                                            if let conversation = manager.selection { retryTarget = RetryTarget(conversation: conversation, message: message.id) }
+                                                        }.disabled(manager.isStreaming)
+                                                    }
+                                                }
                                             }
                                         }.labelStyle(.iconOnly).buttonStyle(.borderless).controlSize(.large)
                                             .foregroundStyle(.secondary)
                                     }
                                 }.frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
                                     .contextMenu {
-                                        Button("Copier tout", systemImage: "doc.on.doc") {
-                                            UIPasteboard.general.setItems([["public.utf8-plain-text": message.content]], options: [.localOnly: true])
-                                            UINotificationFeedbackGenerator().notificationOccurred(.success)
-                                        }
+                                        Button("Copier tout", systemImage: "doc.on.doc") { copyMessage(message.content) }
                                         Button("Sélectionner le texte", systemImage: "selection.pin.in.out") {
                                             selectionContent = SelectableMessage(id: message.id, text: message.content)
                                         }
@@ -204,7 +200,6 @@ struct ChatView: View {
                         }.padding(.horizontal, 14).padding(.vertical, 18)
                             .animation(reduceMotion ? nil : .spring(duration: 0.38, bounce: 0.12), value: manager.current?.messages.count)
                     }
-                    .contentMargins(.bottom, composerRequested ? Self.compactComposerHeight : 0, for: .scrollContent)
                     .defaultScrollAnchor(.bottom)
                     .onScrollPhaseChange { _, phase in
                         userScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
@@ -247,9 +242,6 @@ struct ChatView: View {
                 if voice.speaking {
                     Button("Arrêter la lecture", systemImage: "stop.circle") { voice.silence() }.padding(.horizontal)
                 }
-                if !composerRequested, let error = voice.error {
-                    Text(error).font(.callout).foregroundStyle(.red).padding()
-                }
                 if let error = manager.error { Text(error).font(.callout).foregroundStyle(.red).padding() }
                 if let error = manager.modelsError, !ModelExecution(manager.selectedModel).isLocal {
                     VStack(alignment: .leading, spacing: 8) {
@@ -261,17 +253,28 @@ struct ChatView: View {
                 }
                 if manager.isLoadingModels && !ModelExecution(manager.selectedModel).isLocal { ProgressView("Chargement des modèles…").padding(.horizontal) }
             }
-            .background(MultiVibeTheme.softAccent.ignoresSafeArea())
+            .background(Color(uiColor: .systemBackground).ignoresSafeArea())
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if !voiceConversationPreparing && !voiceConversationPresented && !modalIsActive {
+                    composer
+                }
+            }
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    if manager.session == nil {
-                        Button("Se connecter") { manager.authenticationPresented = true }.accessibilityIdentifier("openAuthentication")
-                    }
-                }
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Nouvelle conversation", systemImage: "square.and.pencil") { openNewConversation() }
+                    ControlGroup {
+                        Button("Nouvelle conversation", systemImage: "square.and.pencil") { openNewConversation() }
+                        Menu("Plus d’options", systemImage: "ellipsis") {
+                            Button("Profil", systemImage: "person.crop.circle") { profilePresented = true }
+                            Button("Documents et outils locaux", systemImage: "doc") { documentsPresented = true }
+                            Button("Confidentialité et données", systemImage: "hand.raised") { privacyPresented = true }
+                            if manager.session == nil {
+                                Button("Se connecter", systemImage: "person.badge.key") { manager.authenticationPresented = true }
+                                    .accessibilityIdentifier("openAuthentication")
+                            }
+                        }
+                    }
                 }
             }
 
@@ -392,16 +395,6 @@ struct ChatView: View {
             }
         }
         .sheet(item: $selectionContent) { SelectableMessageSheet(message: $0) }
-        .sheet(isPresented: Binding(get: { composerRequested && preferredColumn == .detail && !modalIsActive }, set: { _ in })) {
-            composer
-            .interactiveDismissDisabled()
-            .presentationDetents([composerDetent])
-            .presentationDragIndicator(.visible)
-            .presentationContentInteraction(.scrolls)
-            .presentationBackgroundInteraction(.enabled(upThrough: composerDetent))
-            .presentationCornerRadius(30)
-            .presentationBackground(.clear)
-        }
         .onChange(of: manager.selection) { _, selection in
             if shortcutDraftConversation != selection { text = "" }
             if selection != nil {
@@ -446,6 +439,11 @@ struct ChatView: View {
         guard followsLatest && !userScrolling else { return }
         proxy.scrollTo(latestMessageAnchor, anchor: .bottom)
     }
+
+    private func copyMessage(_ content: String) {
+        UIPasteboard.general.setItems([["public.utf8-plain-text": content]], options: [.localOnly: true])
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
     private var welcome: some View {
         ChatWelcomeView(text: $text, suggestions: suggestions, execute: executeSuggestion, edit: { suggestion in
             highlightedSuggestion = suggestion.id
@@ -454,12 +452,6 @@ struct ChatView: View {
     }
 
     private var isNewConversation: Bool { manager.current?.messages.isEmpty != false }
-
-    // Keep the input visible for every text conversation. Navigation, competing
-    // sheets and full-screen voice temporarily take over its presentation.
-    private var composerRequested: Bool {
-        !voiceConversationPreparing && !voiceConversationPresented
-    }
 
     private var modalIsActive: Bool {
         manager.authenticationPresented || manager.internetApproval != nil || manager.memoryPresented || manager.memoryDraft != nil ||
@@ -497,7 +489,7 @@ struct ChatView: View {
 
     private var composer: some View {
         @Bindable var manager = manager
-        return VStack(alignment: .leading, spacing: 12) {
+        return VStack(alignment: .leading, spacing: 8) {
             if let error = voice.error {
                 Text(error).font(.callout).foregroundStyle(.red)
                     .lineLimit(3).accessibilityIdentifier("dictationError")
@@ -510,48 +502,72 @@ struct ChatView: View {
                     .font(.callout).foregroundStyle(.secondary)
                     .accessibilityIdentifier("dictationStarting")
             }
-            TextField("Que souhaitez-vous savoir ?", text: $text, axis: .vertical)
-                .focused($composerFocused)
-                .submitLabel(.send)
-                .onSubmit(sendComposerMessage)
-                .accessibilityLabel("Message").lineLimit(1...4).padding(.horizontal, 6)
-            HStack(spacing: 8) {
+            if let access = manager.selectedAccess {
+                Button {
+                    Task { await manager.chooseModel(manager.models.first { $0.id == access.modelId } ?? ModelOption(id: access.modelId), force: true) }
+                } label: {
+                    Text(access.label).font(.caption).lineLimit(1)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityLabel("Changer de mode d’accès : \(access.label)")
+                .disabled(manager.isStreaming)
+            }
+            HStack(alignment: .bottom, spacing: 4) {
                 ModelPickerButton(models: manager.models, selectedModel: $manager.selectedModel,
-                                  isLoading: manager.isLoadingModels, isDisabled: manager.isStreaming) {
+                                  isLoading: manager.isLoadingModels, isDisabled: manager.isStreaming,
+                                  compact: true) {
                     await manager.reloadModels()
                 }
-                if let access = manager.selectedAccess {
-                    Button { Task { await manager.chooseModel(manager.models.first { $0.id == access.modelId } ?? ModelOption(id: access.modelId), force: true) } } label: {
-                        Text(access.label).font(.caption).lineLimit(1)
-                    }.accessibilityLabel("Changer de mode d’accès : \(access.label)").disabled(manager.isStreaming)
-                }
-                Spacer(minLength: 0)
+                TextField("Écrire à MultiVibe", text: $text, axis: .vertical)
+                    .focused($composerFocused)
+                    .submitLabel(.send)
+                    .onSubmit(sendComposerMessage)
+                    .accessibilityLabel("Message")
+                    .lineLimit(1...4)
+                    .padding(.vertical, 11)
                 if manager.isStreaming {
-                    Button("Arrêter", systemImage: "stop.circle.fill") { manager.stop() }.font(.title).frame(minWidth: 44, minHeight: 44)
+                    composerCircleButton("Arrêter", systemImage: "stop.fill", foreground: .white, background: .primary) { manager.stop() }
                 } else if voice.recording {
-                    Button("Terminer la dictée", systemImage: "stop.circle.fill") { voice.stop() }
-                        .foregroundStyle(.red).accessibilityIdentifier("stopDictation")
-                        .font(.title).frame(minWidth: 44, minHeight: 44)
+                    composerCircleButton("Terminer la dictée", systemImage: "stop.fill", foreground: .white, background: .red) { voice.stop() }
+                        .accessibilityIdentifier("stopDictation")
                 } else if voice.starting {
                     ProgressView().frame(minWidth: 44, minHeight: 44)
                         .accessibilityLabel("Démarrage de la dictée")
                 } else if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Button("Dicter sur cet appareil", systemImage: "mic") { startVoiceInput() }
                         .accessibilityIdentifier("startDictation")
-                        .font(.title3).frame(minWidth: 44, minHeight: 44)
-                    Button("Démarrer une conversation vocale", systemImage: "waveform.circle.fill") { startVoiceConversation() }
+                        .font(.title3.weight(.medium)).frame(minWidth: 40, minHeight: 44)
+                    composerCircleButton("Démarrer une conversation vocale", systemImage: "waveform", foreground: .white, background: .primary) { startVoiceConversation() }
                         .accessibilityIdentifier("startVoiceConversation")
-                        .font(.title).frame(minWidth: 44, minHeight: 44)
                 } else {
-                    Button("Envoyer", systemImage: "arrow.up.circle.fill") { sendComposerMessage() }
-                        .font(.title).frame(minWidth: 44, minHeight: 44)
+                    composerCircleButton("Envoyer", systemImage: "arrow.up", foreground: .white, background: .primary) { sendComposerMessage() }
                         .disabled(manager.selectedModel.isEmpty || (manager.isSynchronizing && !ModelExecution(manager.selectedModel).isLocal))
                 }
-            }.labelStyle(.iconOnly).buttonStyle(.plain)
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.plain)
+            .padding(.leading, 8)
+            .padding(.trailing, 6)
+            .padding(.vertical, 5)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous).stroke(.primary.opacity(0.12), lineWidth: 0.7))
+            .shadow(color: .black.opacity(0.06), radius: 12, y: 4)
         }
-        .padding(.horizontal, 18).padding(.vertical, 10)
-        .frame(maxWidth: 760).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        .background(.ultraThinMaterial, ignoresSafeAreaEdges: .all)
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 6)
+        .frame(maxWidth: 780)
+        .frame(maxWidth: .infinity)
+    }
+
+    private func composerCircleButton(_ title: String, systemImage: String, foreground: Color,
+                                      background: Color, action: @escaping () -> Void) -> some View {
+        Button(title, systemImage: systemImage, action: action)
+            .font(.headline.weight(.semibold))
+            .foregroundStyle(foreground)
+            .frame(width: 44, height: 44)
+            .background(background, in: Circle())
     }
 
     private func openNewConversation() {
@@ -628,6 +644,7 @@ private struct ModelPickerButton: View {
     @Binding var selectedModel: String
     let isLoading: Bool
     let isDisabled: Bool
+    var compact = false
     let reload: @MainActor () async -> Void
     @State private var presented = false
     @State private var detent: PresentationDetent = .medium
@@ -639,14 +656,20 @@ private struct ModelPickerButton: View {
             detent = .medium
             presented = true
         } label: {
-            HStack(spacing: 6) {
-                if let model = models.first(where: { $0.id == selectedModel }) {
-                    ModelProviderLogo(provider: model.presentation.provider, publisher: model.logoPublisher ?? model.author, size: 22)
-                }
-                Text(models.first(where: { $0.id == selectedModel })?.displayName ?? "Choisir un modèle")
-                    .lineLimit(1)
-                Image(systemName: "chevron.down").font(.caption2)
-            }.font(.subheadline).frame(minHeight: 44)
+            if compact {
+                Image(systemName: "plus")
+                    .font(.title2.weight(.regular))
+                    .frame(width: 44, height: 44)
+            } else {
+                HStack(spacing: 6) {
+                    if let model = models.first(where: { $0.id == selectedModel }) {
+                        ModelProviderLogo(provider: model.presentation.provider, publisher: model.logoPublisher ?? model.author, size: 22)
+                    }
+                    Text(models.first(where: { $0.id == selectedModel })?.displayName ?? "Choisir un modèle")
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down").font(.caption2)
+                }.font(.subheadline).frame(minHeight: 44)
+            }
         }
         .disabled(isDisabled)
         .accessibilityLabel("Modèle")
@@ -1376,34 +1399,32 @@ struct ChatWelcomeView: View {
     let edit: (HomeSuggestion) -> Void
     var body: some View {
         ScrollView {
-            VStack(spacing: 28) {
-                Spacer(minLength: 40)
-                Image("MultiVibeMark").renderingMode(.original).resizable().scaledToFit()
-                    .frame(width: 96, height: 96).accessibilityHidden(true)
-                Text("Comment puis-je\nvous aider ?")
-                    .font(.largeTitle.bold()).multilineTextAlignment(.center)
-                Text("Une idée, une question, un premier brouillon.")
-                    .foregroundStyle(.secondary).multilineTextAlignment(.center)
-                VStack(spacing: 10) {
+            VStack(spacing: 18) {
+                Spacer(minLength: 240)
+                VStack(alignment: .leading, spacing: 18) {
                     ForEach(suggestions) { suggestionButton($0) }
-                }.padding(.top, 8)
-                Text("Maintenez une suggestion pour personnaliser cette liste.")
-                    .font(.caption).foregroundStyle(.tertiary)
-            }.frame(maxWidth: 560).padding(24).frame(maxWidth: .infinity)
+                }
+            }
+            .frame(maxWidth: 720, minHeight: 560, alignment: .bottom)
+            .padding(.horizontal, 24)
+            .padding(.bottom, 12)
+            .frame(maxWidth: .infinity)
         }.scrollDismissesKeyboard(.interactively)
     }
 
     private func suggestionButton(_ suggestion: HomeSuggestion) -> some View {
         Button { execute(suggestion) } label: {
-            HStack(spacing: 14) {
-                Image(systemName: suggestion.systemImage).foregroundStyle(MultiVibeTheme.accent).frame(width: 24)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(suggestion.title).foregroundStyle(.primary)
-                    if suggestion.inputSource == .clipboard { Label("Utilise le presse-papiers", systemImage: "doc.on.clipboard").font(.caption2).foregroundStyle(.secondary) }
-                }
+            HStack(spacing: 12) {
+                Image(systemName: suggestion.systemImage)
+                    .foregroundStyle(.primary)
+                    .frame(width: 24)
+                Text(suggestion.title)
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 Spacer()
-                Image(systemName: suggestion.behavior == .send ? "arrow.up.circle.fill" : "arrow.up.left").font(.caption).foregroundStyle(.secondary)
-            }.padding(16).background(.background.opacity(0.7), in: RoundedRectangle(cornerRadius: 18))
+            }
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         // Recognize a hold before Button consumes it as an ordinary activation.
