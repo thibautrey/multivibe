@@ -701,7 +701,9 @@ import Network
                                 generation: revision, account: accountRevision)
                         }, allowedDeviceActions: LocalDeviceScope.actions(for: input), authorizeInternet: { url in
                             try await self.requestInternet(url: url, conversation: id, generation: revision, account: accountRevision)
-                        }, webFetch: services.webFetch, memory: { action, query, text in
+                        }, webFetch: services.webFetch, automation: { arguments in
+                            try await self.manageAutomation(arguments, model: model, account: accountRevision)
+                        }, memory: { action, query, text in
                             try await self.memoryTool(action: action, query: query, text: text, conversation: id,
                                 source: input.last, generation: revision, account: accountRevision)
                         })
@@ -1074,6 +1076,10 @@ import Network
             conversations[i].messages[j].localEvents = localEvents
             persist()
         }
+    }
+    private func manageAutomation(_ arguments: String, model: String, account: UUID) async throws -> String {
+        guard sessionRevision == account else { throw CancellationError() }
+        return try await AutomationTools.execute(arguments, model: model, scope: session?.accountId ?? "guest")
     }
     private func saveLocalDocument(_ document: LocalDocument, generation: UUID, account: UUID) throws {
         guard generationRevision == generation, sessionRevision == account else { throw CancellationError() }
