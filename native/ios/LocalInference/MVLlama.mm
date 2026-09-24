@@ -123,6 +123,9 @@
         }
         if (!ended) throw std::runtime_error("La réponse a atteint la limite de ce modèle. Demandez une réponse plus courte.");
         parsed = common_chat_parse(output, false, parser);
+        for (size_t i = 0; i < parsed.tool_calls.size(); ++i) {
+            if (parsed.tool_calls[i].id.empty()) parsed.tool_calls[i].id = "call_" + std::to_string(i + 1);
+        }
         if (parsed.content.size() > published.size() && parsed.content.compare(0, published.size(), published) == 0) {
             auto delta = parsed.content.substr(published.size());
             NSString *text = [[NSString alloc] initWithBytes:delta.data() length:delta.size() encoding:NSUTF8StringEncoding];
