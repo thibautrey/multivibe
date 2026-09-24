@@ -81,6 +81,7 @@ actor DownloadedModelRuntime {
             // Cancellation of the Swift stream must not permit a new native request
             // until the cancelled C++ work has actually left the serial queue.
             await withCheckedContinuation { continuation in worker.queue.async { continuation.resume() } }
+            unloadAfterCompletion = true
             await releaseIfNeeded(); throw error
         }
         await releaseIfNeeded()
