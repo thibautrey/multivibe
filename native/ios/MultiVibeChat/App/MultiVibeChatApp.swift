@@ -1,14 +1,25 @@
 import SwiftUI
 
 @main struct MultiVibeChatApp: App {
+    @UIApplicationDelegateAdaptor(ModelDownloadAppDelegate.self) private var downloadDelegate
+    @Environment(\.scenePhase) private var scenePhase
     @State private var manager = ConversationManager.shared
     @State private var sdkAuthorization: SDKAuthorizationRequest?
     var body: some Scene {
         WindowGroup {
             ChatEntryView()
             .environment(manager)
+            .alert("Modèles sur cet appareil", isPresented: Binding(get: { LocalModelLibrary.shared.storageError != nil }, set: { if !$0 { LocalModelLibrary.shared.storageError = nil } })) {
+                Button("OK") { LocalModelLibrary.shared.storageError = nil }
+            } message: { Text(LocalModelLibrary.shared.storageError ?? "") }
             .tint(MultiVibeTheme.accent)
-            .task { await manager.restoreForNativeEntry(); if manager.session != nil { await manager.reloadModels() } }
+            .task { LocalModelLibrary.shared.start(); await manager.restoreForNativeEntry(); if manager.session != nil { await manager.reloadModels() } }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .background { Task { await DownloadedModelRuntime.shared.unload() } }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+                Task { await DownloadedModelRuntime.shared.unload() }
+            }
             .sheet(item: $sdkAuthorization) { request in SDKConsentView(request: request).environment(manager) }
             .onOpenURL { url in
                 if let request = SDKAuthorizationRequest(url: url) { sdkAuthorization = request; return }
