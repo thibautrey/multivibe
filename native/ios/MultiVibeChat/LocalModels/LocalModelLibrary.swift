@@ -296,12 +296,7 @@ struct DownloadMeter: Sendable {
         verificationTasks[id] = Task { [weak self] in
             do {
                 let valid = try await Task.detached(priority: .utility) {
-                    let handle = try FileHandle(forReadingFrom: source); defer { try? handle.close() }
-                    var hash = SHA256(); var bytes: Int64 = 0
-                    while let data = try handle.read(upToCount: 1_048_576), !data.isEmpty {
-                        try Task.checkCancellation(); hash.update(data: data); bytes += Int64(data.count)
-                    }
-                    return bytes == entry.model.bytes && hash.finalize().map { String(format: "%02x", $0) }.joined() == entry.model.sha256.lowercased()
+                    try ModelFileVerification.matches(source, bytes: entry.model.bytes, sha256: entry.model.sha256)
                 }.value
                 try Task.checkCancellation()
                 guard let self, self.installation(id)?.transfer == entry.transfer else { return }
@@ -367,5 +362,25 @@ enum DownloadSegment {
         guard status == 206, received <= total - offset,
               range == "bytes \(offset)-\(offset + received - 1)/\(total)" else { throw URLError(.badServerResponse) }
         return false
+    }
+}
+
+// Foundation's FileHandle reads create autoreleased NSData. Swift scope alone
+// does not release them during a synchronous loop inside a detached task.
+// Drain each chunk before reading the next so multi-GB verification stays bounded.
+enum ModelFileVerification {
+    nonisolated static func matches(_ source: URL, bytes expectedBytes: Int64, sha256: String) throws -> Bool {
+        let handle = try FileHandle(forReadingFrom: source)
+        defer { try? handle.close() }
+        var hash = SHA256()
+        var bytes: Int64 = 0
+        while try autoreleasepool(invoking: { () throws -> Bool in
+            try Task.checkCancellation()
+            guard let data = try handle.read(upToCount: 1_048_576), !data.isEmpty else { return false }
+            hash.update(data: data)
+            bytes += Int64(data.count)
+            return true
+        }) {}
+        return bytes == expectedBytes && hash.finalize().map { String(format: "%02x", $0) }.joined() == sha256.lowercased()
     }
 }
