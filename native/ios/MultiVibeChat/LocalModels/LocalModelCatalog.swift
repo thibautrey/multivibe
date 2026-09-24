@@ -15,6 +15,7 @@ struct DownloadableModel: Codable, Identifiable, Equatable, Sendable {
     let layers: Int
     let kvHeads: Int
     let headSize: Int
+    var recurrentStateBytes: UInt64?
     var logoPublisher: String?
     var validatedDevices: [String] = []
     var toolsValidated: Bool = false
@@ -34,8 +35,9 @@ struct DownloadableModel: Codable, Identifiable, Equatable, Sendable {
         description: "Conversation privée sur cet appareil, même sans Internet.", logoPublisher: resolvedLogoPublisher) }
     var resolvedLogoPublisher: String? { ModelPublisher.canonical(logoPublisher) ?? ModelPublisher.canonical(publisher) ?? ModelPublisher.resolve(repository: repository) }
     var estimatedMemory: UInt64 {
-        // F16 K/V at a fixed 4096-token context + weights + graph/Metal/scratch headroom.
-        UInt64(max(0, bytes)) + UInt64(max(0, layers * kvHeads * headSize)) * 4096 * 4 + 512 * 1024 * 1024
+        // Conservative full-layer F16 KV at 4096 tokens, plus F32 recurrent state
+        // for hybrid models, weights and graph/Metal/scratch headroom.
+        UInt64(max(0, bytes)) + UInt64(max(0, layers * kvHeads * headSize)) * 4096 * 4 + (recurrentStateBytes ?? 0) + 512 * 1024 * 1024
     }
     var sizeLabel: String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
 }
@@ -52,7 +54,8 @@ struct LocalDeviceBudget: Sendable {
         return Self(memory: min(ceiling, available), disk: disk)
     }
     func problem(_ model: DownloadableModel, downloading: Bool) -> String? {
-        guard ["qwen3", "llama", "gemma3", "qwen2"].contains(model.architecture),
+        guard ["qwen3", "llama", "gemma3", "qwen2", "qwen35", "gemma4", "hunyuan-dense"].contains(model.architecture),
+              model.architecture != "qwen35" || (model.recurrentStateBytes ?? 0) > 0,
               model.layers > 0, model.kvHeads > 0, model.headSize > 0,
               model.bytes > 0, model.sha256.count == 64 else { return "Compatibilité non vérifiée pour ce modèle." }
         guard model.estimatedMemory <= memory else { return "Ce modèle nécessite plus de mémoire que cet appareil n’en a de disponible." }
@@ -121,9 +124,16 @@ actor HuggingFaceCatalog: LocalCatalogProviding {
         // Never expose split files, projectors, or a technical file selector.
         let candidates = files.filter { file in
             let name = (file["rfilename"] as? String ?? "").lowercased()
-            return name.hasSuffix(".gguf") && name.contains("q4_k_m") && !name.contains("mmproj") && !name.contains("-of-")
+            return name.hasSuffix(".gguf") && (name.contains("q4_k_m") || name.contains("q4_0") || name.contains("q1_0")) && !name.contains("mmproj") && !name.contains("mtp-") && !name.contains("-of-")
         }
-        guard let file = candidates.sorted(by: { ($0["rfilename"] as? String ?? "") < ($1["rfilename"] as? String ?? "") }).first,
+        guard let file = candidates.sorted(by: {
+            func rank(_ file: [String: Any]) -> String {
+                let name = file["rfilename"] as? String ?? ""
+                let lower = name.lowercased()
+                return (lower.contains("q4_k_m") ? "0" : lower.contains("q4_0") ? "1" : "2") + name
+            }
+            return rank($0) < rank($1)
+        }).first,
               let filename = file["rfilename"] as? String, let lfs = file["lfs"] as? [String: Any],
               let bytes = lfs["size"] as? Int64, let hash = lfs["sha256"] as? String else { throw URLError(.cannotParseResponse) }
         // Inspect GGUF metadata instead of guessing memory from the repository name.
@@ -142,7 +152,7 @@ actor HuggingFaceCatalog: LocalCatalogProviding {
             name: repository.split(separator: "/").last.map(String.init)?.replacingOccurrences(of: "-GGUF", with: "") ?? repository,
             publisher: String(repository.split(separator: "/")[0]), bytes: bytes, sha256: hash,
             license: card?["license"] as? String ?? "Voir la licence du modèle", architecture: info.architecture,
-            layers: info.layers, kvHeads: info.kvHeads, headSize: info.headSize,
+            layers: info.layers, kvHeads: info.kvHeads, headSize: info.headSize, recurrentStateBytes: info.recurrentStateBytes,
             logoPublisher: ModelPublisher.resolve(repository: repository, baseModels: baseModels.isEmpty ? taggedModels : baseModels))
     }
 }
@@ -159,7 +169,7 @@ enum LimitedModelHeader {
 }
 
 enum GGUFHeader {
-    struct Info { let architecture: String; let layers: Int; let kvHeads: Int; let headSize: Int }
+    struct Info { let architecture: String; let layers: Int; let kvHeads: Int; let headSize: Int; var recurrentStateBytes: UInt64? = nil }
     static func read(_ data: Data) throws -> Info {
         var offset = 0
         func number(_ count: Int) throws -> UInt64 {
@@ -199,7 +209,16 @@ enum GGUFHeader {
             // explicit key/value widths before computing the KV requirement.
             if key.hasPrefix("tokenizer.") { break }
             let type = try number(4)
-            if let val = try value(type) { values[key] = val }
+            if type == 9 && key.hasSuffix(".attention.head_count_kv") {
+                let subtype = try number(4), count = try number(8)
+                guard [UInt64(0), 1, 2, 3, 4, 5].contains(subtype), count > 0, count < 1024 else { throw URLError(.cannotParseResponse) }
+                var maximum = 0
+                for _ in 0..<count {
+                    guard let text = try value(subtype), let headCount = Int(text), headCount > 0 else { throw URLError(.cannotParseResponse) }
+                    maximum = max(maximum, headCount)
+                }
+                values[key] = String(maximum)
+            } else if let val = try value(type) { values[key] = val }
         }
         if let architecture = values["general.architecture"],
            let layers = values[architecture + ".block_count"].flatMap(Int.init),
@@ -211,7 +230,20 @@ enum GGUFHeader {
             guard explicitKey != nil || ["llama", "qwen2"].contains(architecture) else { throw URLError(.cannotParseResponse) }
             let headSize = max(explicitKey ?? embedding / heads, explicitValue ?? explicitKey ?? embedding / heads)
             guard layers > 0, layers < 1024, kv > 0, kv < 1024, headSize > 0, headSize < 16384 else { throw URLError(.cannotParseResponse) }
-            return Info(architecture: architecture, layers: layers, kvHeads: kv, headSize: headSize)
+            var recurrentStateBytes: UInt64?
+            if architecture == "qwen35" {
+                func dimension(_ name: String) throws -> UInt64 {
+                    guard let value = values[architecture + ".ssm." + name].flatMap(UInt64.init),
+                          value > 0, value <= 65536 else { throw URLError(.cannotParseResponse) }
+                    return value
+                }
+                let state = try dimension("state_size"), inner = try dimension("inner_size")
+                let kernel = try dimension("conv_kernel"), groups = try dimension("group_count")
+                // Count every layer: conservative even when recurrent-layer layouts differ.
+                recurrentStateBytes = UInt64(layers) * 4 * (state * inner + (kernel - 1) * (inner + 2 * groups * state))
+            }
+            return Info(architecture: architecture, layers: layers, kvHeads: kv, headSize: headSize,
+                        recurrentStateBytes: recurrentStateBytes)
         }
         throw URLError(.cannotParseResponse)
     }
