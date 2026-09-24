@@ -33,7 +33,7 @@ actor DownloadedModelRuntime {
         }
         busy = true; loadedID = model.id
         defer { busy = false }
-        let useTools = model.toolsValidated && workspace != nil
+        let useTools = model.supportsTools && workspace != nil
         var history = messages.filter { ["system", "user", "assistant"].contains($0.role) }
             .map { ["role": $0.role, "content": $0.content] as [String: Any] }
         history.insert(["role": "system", "content": useTools

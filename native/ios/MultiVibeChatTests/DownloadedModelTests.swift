@@ -90,3 +90,55 @@ import XCTest
         XCTAssertNil(manager.session)
     }
 }
+
+/// Run explicitly on a physical device. Downloads real immutable model artifacts.
+@MainActor final class DownloadedModelDeviceTests: XCTestCase {
+    func testRealDownloadResumeAndLocalTools() async throws {
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Physical-device acceptance only")
+        #else
+        guard ProcessInfo.processInfo.environment["MULTIVIBE_LOCAL_DEVICE_TEST"] == "1" else {
+            throw XCTSkip("Explicit opt-in required for real model downloads")
+        }
+        let library = LocalModelLibrary.shared
+        library.start()
+        for _ in 0..<100 { if library.connected { break }; try await Task.sleep(for: .milliseconds(100)) }
+        guard library.connected, !library.cellular else { throw XCTSkip("Connect device to Wi-Fi for multi-GB acceptance downloads") }
+        for var model in HuggingFaceCatalog.bundled.prefix(2) {
+            library.requestDownload(model)
+            if library.installation(model.id)?.state != .installed {
+                for _ in 0..<600 {
+                    if (library.meters[model.id]?.bytes ?? 0) > 1_000_000 { break }
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+                library.pause(model.id)
+                XCTAssertEqual(library.installation(model.id)?.state, .paused)
+                try await Task.sleep(for: .seconds(1))
+                library.resume(model.id)
+            }
+            for _ in 0..<1800 {
+                if library.installation(model.id)?.state == .installed { break }
+                if let failure = library.installation(model.id)?.failure { XCTFail(failure); return }
+                try await Task.sleep(for: .seconds(1))
+            }
+            XCTAssertEqual(library.installation(model.id)?.state, .installed)
+            guard library.installation(model.id)?.state == .installed else { return }
+            actor Capture {
+                var text = ""; var calls: [String] = []
+                func append(_ value: String) { text += value }
+                func event(_ value: LocalAgentEvent) { calls.append(value.tool) }
+            }
+            let capture = Capture()
+            let workspace = LocalAgentWorkspace(conversations: [], documents: [], event: { await capture.event($0) }, saveDocument: { _ in })
+            model.toolsValidated = true
+            model.validatedDevices = [LocalHardware.identifier]
+            try await DownloadedModelRuntime.shared.respond(model: model, path: library.file(model),
+                messages: [ChatMessage(role: "user", content: "Use the add tool to calculate 19 + 23. Then give only the result.")], workspace: workspace) { await capture.append($0) }
+            let text = await capture.text, calls = await capture.calls
+            XCTAssertTrue(text.contains("42"), "Unexpected real model output: \(text)")
+            XCTAssertTrue(calls.contains("add"), "The model did not invoke the tool")
+            await DownloadedModelRuntime.shared.unload()
+        }
+        #endif
+    }
+}

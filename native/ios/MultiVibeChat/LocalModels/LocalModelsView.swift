@@ -95,8 +95,9 @@ struct LocalModelCard: View {
                     .frame(width: 42, height: 42).background(.quaternary, in: RoundedRectangle(cornerRadius: 12)).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(model.name).font(.headline)
+                    if model.recommended { Text("Recommandé pour cet appareil").font(.caption).foregroundStyle(MultiVibeTheme.accent) }
                     Text(model.publisher + " · " + model.sizeLabel).font(.caption).foregroundStyle(.secondary)
-                    Text(model.toolsValidated ? "Outils locaux" : "Conversation uniquement").font(.caption).foregroundStyle(.secondary)
+                    Text(model.supportsTools ? "Outils locaux" : "Conversation uniquement").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
                 if entry == nil || entry?.state == .installed {
