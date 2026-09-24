@@ -12,8 +12,8 @@
     "@earendil-works/pi-agent-core": "0.87.1",
     "@earendil-works/pi-ai": "0.87.1",
     "abort-controller": "3.0.0",
-    "fast-text-encoding": "1.0.6",
-    "core-js-pure": "3.45.1"
+    "core-js-pure": "3.45.1",
+    "fast-text-encoding": "1.0.6"
   },
   "devDependencies": {
     "esbuild": "0.25.12"
