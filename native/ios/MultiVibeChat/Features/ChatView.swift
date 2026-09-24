@@ -428,42 +428,16 @@ struct ChatView: View {
                 manager.authenticationPresented = true
             }
         }) {
-            NavigationStack {
-                Form {
-                    if let accountId = manager.session?.accountId {
-                        NativeAccountSection(accountId: accountId).id(accountId)
-                        CloudCreditBalanceSection(accountId: accountId).id(accountId)
-                    } else {
-                        Section { LabeledContent("Compte", value: "Invité") }
-                    }
-                    Section {
-                        if manager.session != nil {
-                            Button("Déconnexion", role: .destructive) {
-                                profilePresented = false
-                                Task { await manager.logout() }
-                            }
-                            .accessibilityIdentifier("signOut")
-                            .disabled(manager.isRestoring)
-                        } else {
-                            Button("Se connecter") {
-                                authenticateAfterProfile = true
-                                profilePresented = false
-                            }
-                            .accessibilityIdentifier("openAuthentication")
-                            .disabled(manager.isRestoring)
-                        }
-                    }
+            AccountProfileView(
+                close: { profilePresented = false },
+                authenticate: {
+                    authenticateAfterProfile = true
+                    profilePresented = false
                 }
-                .navigationTitle("Profil")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Fermer", systemImage: "xmark") { profilePresented = false }
-                    }
-                }
-            }
-            .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.visible)
+            )
+            .presentationDetents([.large])
+            .presentationDragIndicator(.hidden)
+            .presentationCornerRadius(44)
         }
         .sheet(isPresented: $suggestionsPresented) {
             SuggestionsEditor(suggestions: $suggestions, highlighted: highlightedSuggestion) {
@@ -1744,61 +1718,6 @@ private struct SidebarShortcutLabel: View {
     }
 }
 
-private struct CloudCreditBalanceSection: View {
-    let accountId: String
-    @Environment(ConversationManager.self) private var manager
-    @Environment(\.scenePhase) private var scenePhase
-    @State private var balance: CloudCreditBalance?
-    @State private var loading = true
-    @State private var failed = false
-    @State private var billingPresented = false
-
-    var body: some View {
-        Section("MultiVibe Cloud") {
-            LabeledContent("Solde disponible") {
-                if loading {
-                    ProgressView().accessibilityLabel("Chargement du solde")
-                } else if let balance {
-                    Text(balance.formatted).monospacedDigit()
-                        .accessibilityIdentifier("cloudCreditBalance")
-                } else {
-                    Text("Indisponible").foregroundStyle(.secondary)
-                }
-            }
-            if failed {
-                Button("Réessayer") { Task { await reload() } }
-            }
-            Button("Recharger / S’abonner") { billingPresented = true }
-                .accessibilityIdentifier("openCloudBilling")
-        }
-        .sheet(isPresented: $billingPresented, onDismiss: { Task { await reload() } }) {
-            CloudBillingView(accountId: accountId)
-        }
-        .task(id: scenePhase) {
-            if scenePhase == .active { await reload() }
-        }
-    }
-
-    @MainActor private func reload() async {
-        loading = true
-        failed = false
-        balance = nil
-        do {
-            let session = try await manager.validSession()
-            guard session.accountId == accountId else { throw CancellationError() }
-            let result = try await ChatAPI.shared.creditBalance(token: session.accessToken)
-            try Task.checkCancellation()
-            guard manager.session?.accountId == accountId else { return }
-            balance = result
-            loading = false
-        } catch {
-            guard !Task.isCancelled, manager.session?.accountId == accountId else { return }
-            loading = false
-            failed = true
-        }
-    }
-}
-
 
 private struct CloudBillingView: View {
     let accountId: String
@@ -1917,41 +1836,197 @@ private struct CloudBillingWebView: UIViewRepresentable {
 }
 
 
-private struct NativeAccountSection: View {
-    let accountId: String
+private struct AccountProfileView: View {
+    let close: () -> Void
+    let authenticate: () -> Void
+
     @Environment(ConversationManager.self) private var manager
     @Environment(\.scenePhase) private var scenePhase
     @State private var profile: NativeAccountProfile?
-    @State private var loading = true
-    @State private var failed = false
+    @State private var balance: CloudCreditBalance?
+    @State private var loadingProfile = false
+    @State private var loadingBalance = false
+    @State private var profileFailed = false
+    @State private var balanceFailed = false
+    @State private var billingPresented = false
+
+    private var isSignedIn: Bool { manager.session != nil }
+    private var email: String? { profile?.email }
+    private var displayName: String {
+        guard let email, let prefix = email.split(separator: "@").first, !prefix.isEmpty else {
+            return isSignedIn ? "Votre compte" : "Bienvenue"
+        }
+        return String(prefix).replacingOccurrences(of: ".", with: " ").capitalized
+    }
+    private var initials: String {
+        let words = displayName.split(separator: " ").prefix(2)
+        let value = words.compactMap(\.first).map(String.init).joined()
+        return value.isEmpty ? "M" : value.uppercased()
+    }
 
     var body: some View {
-        Section {
-            LabeledContent("Compte") {
-                if loading {
-                    ProgressView().accessibilityLabel("Chargement du compte")
-                } else {
-                    Text(profile?.email ?? "E-mail indisponible")
-                        .multilineTextAlignment(.trailing)
-                        .textSelection(.enabled)
-                        .accessibilityIdentifier("accountEmail")
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 28) {
+                    profileHeader
+
+                    if isSignedIn {
+                        accountGroup
+                        cloudGroup
+                    } else {
+                        guestGroup
+                    }
+
+                    sessionAction
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 32)
+                .padding(.bottom, 44)
+            }
+            .background(MultiVibeTheme.softAccent.ignoresSafeArea())
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(action: close) {
+                        Image(systemName: "xmark")
+                            .font(.title2.weight(.medium))
+                            .frame(width: 46, height: 46)
+                            .background(.thinMaterial, in: Circle())
+                            .overlay(Circle().stroke(.primary.opacity(0.08)))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Fermer")
                 }
             }
-            if let profile {
-                ForEach(profile.teams) { team in
-                    LabeledContent("Équipe", value: team.name)
-                        .accessibilityIdentifier("accountTeam")
+            .task(id: reloadKey) { await reload() }
+            .sheet(isPresented: $billingPresented, onDismiss: { Task { await reloadBalance() } }) {
+                if let accountId = manager.session?.accountId {
+                    CloudBillingView(accountId: accountId)
                 }
             }
-            if failed { Button("Réessayer") { Task { await reload() } } }
         }
-        .task(id: scenePhase) { if scenePhase == .active { await reload() } }
+    }
+
+    private var reloadKey: String { (manager.session?.accountId ?? "guest") + "-" + String(describing: scenePhase) }
+
+    private var profileHeader: some View {
+        VStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(LinearGradient(colors: [MultiVibeTheme.accent, MultiVibeTheme.accent.opacity(0.62)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: 92, height: 92)
+                    .shadow(color: MultiVibeTheme.accent.opacity(0.18), radius: 18, y: 8)
+                Text(initials)
+                    .font(.title.bold())
+                    .foregroundStyle(.white)
+            }
+            .accessibilityHidden(true)
+
+            Text(displayName)
+                .font(.title2.bold())
+            Text(isSignedIn ? (email ?? "Compte MultiVibe") : "Utilisez MultiVibe sans compte ou connectez-vous pour synchroniser vos données.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 16)
+    }
+
+    private var accountGroup: some View {
+        AccountSettingsGroup(title: "Compte") {
+            AccountSettingsRow(icon: "envelope", title: "E-mail", value: loadingProfile ? nil : (email ?? "Indisponible"), loading: loadingProfile)
+                .accessibilityIdentifier("accountEmail")
+            ForEach(profile?.teams ?? []) { team in
+                AccountSettingsDivider()
+                AccountSettingsRow(icon: "person.2", title: "Équipe", value: team.name)
+                    .accessibilityIdentifier("accountTeam")
+            }
+            if profileFailed {
+                AccountSettingsDivider()
+                Button("Réessayer le chargement du compte", systemImage: "arrow.clockwise") {
+                    Task { await reloadProfile() }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)
+            }
+        }
+    }
+
+    private var cloudGroup: some View {
+        AccountSettingsGroup(title: "MultiVibe Cloud") {
+            AccountSettingsRow(
+                icon: "gauge.with.dots.needle.50percent",
+                title: "Crédits disponibles",
+                value: balance?.formatted ?? (balanceFailed ? "Indisponible" : nil),
+                loading: loadingBalance
+            )
+            .accessibilityIdentifier("cloudCreditBalance")
+            AccountSettingsDivider()
+            Button {
+                billingPresented = true
+            } label: {
+                AccountSettingsRow(icon: "plus.circle", title: "Recharger ou s’abonner", showsChevron: true)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("openCloudBilling")
+            if balanceFailed {
+                AccountSettingsDivider()
+                Button("Réessayer le chargement du solde", systemImage: "arrow.clockwise") {
+                    Task { await reloadBalance() }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)
+            }
+        }
+    }
+
+    private var guestGroup: some View {
+        AccountSettingsGroup(title: "Compte") {
+            AccountSettingsRow(icon: "person.crop.circle", title: "Statut", value: "Invité")
+            AccountSettingsDivider()
+            AccountSettingsRow(icon: "iphone", title: "Données", value: "Sur cet appareil")
+        }
+    }
+
+    @ViewBuilder private var sessionAction: some View {
+        if isSignedIn {
+            Button(role: .destructive) {
+                close()
+                Task { await manager.logout() }
+            } label: {
+                Text("Se déconnecter")
+                    .font(.body.weight(.semibold))
+                    .frame(maxWidth: .infinity, minHeight: 54)
+            }
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.roundedRectangle(radius: 22))
+            .accessibilityIdentifier("signOut")
+            .disabled(manager.isRestoring)
+        } else {
+            Button(action: authenticate) {
+                Text("Se connecter")
+                    .font(.body.weight(.semibold))
+                    .frame(maxWidth: .infinity, minHeight: 54)
+            }
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.roundedRectangle(radius: 22))
+            .accessibilityIdentifier("openAuthentication")
+            .disabled(manager.isRestoring)
+        }
     }
 
     @MainActor private func reload() async {
-        loading = true
-        failed = false
-        profile = nil
+        guard scenePhase == .active, manager.session != nil else { return }
+        async let profileTask: Void = reloadProfile()
+        async let balanceTask: Void = reloadBalance()
+        _ = await (profileTask, balanceTask)
+    }
+
+    @MainActor private func reloadProfile() async {
+        guard let accountId = manager.session?.accountId else { return }
+        loadingProfile = true
+        profileFailed = false
         do {
             let session = try await manager.validSession()
             guard session.accountId == accountId else { throw CancellationError() }
@@ -1959,12 +2034,88 @@ private struct NativeAccountSection: View {
             try Task.checkCancellation()
             guard manager.session?.accountId == accountId, result.accountId == accountId else { throw APIError.invalidResponse }
             profile = result
-            loading = false
         } catch {
             guard !Task.isCancelled, manager.session?.accountId == accountId else { return }
-            loading = false
-            failed = true
+            profileFailed = true
         }
+        loadingProfile = false
+    }
+
+    @MainActor private func reloadBalance() async {
+        guard let accountId = manager.session?.accountId else { return }
+        loadingBalance = true
+        balanceFailed = false
+        do {
+            let session = try await manager.validSession()
+            guard session.accountId == accountId else { throw CancellationError() }
+            let result = try await ChatAPI.shared.creditBalance(token: session.accessToken)
+            try Task.checkCancellation()
+            guard manager.session?.accountId == accountId else { return }
+            balance = result
+        } catch {
+            guard !Task.isCancelled, manager.session?.accountId == accountId else { return }
+            balanceFailed = true
+        }
+        loadingBalance = false
+    }
+}
+
+private struct AccountSettingsGroup<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.title3.bold())
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 14)
+            VStack(spacing: 0) { content }
+                .background(MultiVibeTheme.card, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).stroke(.primary.opacity(0.04)))
+        }
+    }
+}
+
+private struct AccountSettingsRow: View {
+    let icon: String
+    let title: String
+    var value: String? = nil
+    var loading = false
+    var showsChevron = false
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.body.weight(.medium))
+                .frame(width: 26)
+                .foregroundStyle(.primary)
+            Text(title)
+                .foregroundStyle(.primary)
+            Spacer(minLength: 12)
+            if loading {
+                ProgressView().accessibilityLabel("Chargement")
+            } else if let value {
+                Text(value)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.trailing)
+            }
+            if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(.caption.bold())
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .frame(minHeight: 60)
+        .padding(.horizontal, 16)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct AccountSettingsDivider: View {
+    var body: some View {
+        Divider().padding(.leading, 56)
     }
 }
 
