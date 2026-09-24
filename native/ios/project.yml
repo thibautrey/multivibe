@@ -25,6 +25,11 @@ targets:
     platform: iOS
     sources: [MultiVibeChat]
     dependencies:
+      - framework: .build/MultiVibeLocalInference.xcframework
+        embed: false
+      - sdk: Metal.framework
+      - sdk: Accelerate.framework
+      - sdk: libc++.tbd
       - package: WebRTC
       - package: MultiVibeSDK
         product: MultiVibeSDK

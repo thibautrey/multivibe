@@ -216,8 +216,8 @@ struct ModelPresentation: Identifiable, Sendable {
 
 extension ModelOption {
     var presentation: ModelPresentation {
-        let local = id == LocalModel.id
-        let provider: ModelProvider = local ? .apple : ["openai": .openAI, "anthropic": .anthropic, "google": .google, "mistralai": .mistral, "mistral": .mistral, "meta": .meta, "meta-llama": .meta, "deepseek": .deepSeek][author?.lowercased() ?? ""] ?? .other
+        let local = ModelExecution(id).isLocal
+        let provider: ModelProvider = id == LocalModel.id ? .apple : ["openai": .openAI, "anthropic": .anthropic, "google": .google, "mistralai": .mistral, "mistral": .mistral, "meta": .meta, "meta-llama": .meta, "deepseek": .deepSeek][author?.lowercased() ?? ""] ?? .other
         let uses: Set<ModelUseCase> = local ? [.local, .writing, .analysis] : []
         return ModelPresentation(model: self, provider: provider, useCases: uses,
             summary: description ?? (local ? "Réponses privées sur cet appareil." : "Consultez les capacités et les accès disponibles pour ce modèle."),

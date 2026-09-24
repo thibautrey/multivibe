@@ -1,0 +1,50 @@
+[
+  {
+    "repository": "bartowski/Qwen_Qwen3-0.6B-GGUF",
+    "revision": "60b85c0e3d8fe0f6474f406922a26d12aca4550d",
+    "filename": "Qwen_Qwen3-0.6B-Q4_K_M.gguf",
+    "name": "Qwen3 0.6B",
+    "publisher": "Qwen",
+    "bytes": 484220320,
+    "sha256": "9acfc1e001311f34b4252001b626f2e466d592a42065f66571bff3790d4e1b14",
+    "license": "apache-2.0",
+    "architecture": "qwen3",
+    "layers": 28,
+    "kvHeads": 8,
+    "headSize": 128,
+    "validatedDevices": [],
+    "toolsValidated": false
+  },
+  {
+    "repository": "bartowski/Qwen_Qwen3-1.7B-GGUF",
+    "revision": "dcb19155b962dbb6389f4691a982043a8e651022",
+    "filename": "Qwen_Qwen3-1.7B-Q4_K_M.gguf",
+    "name": "Qwen3 1.7B",
+    "publisher": "Qwen",
+    "bytes": 1282439584,
+    "sha256": "72c5c3cb38fa32d5256e2fe30d03e7a64c6c79e668ad84057e3bd66e250b24fb",
+    "license": "apache-2.0",
+    "architecture": "qwen3",
+    "layers": 28,
+    "kvHeads": 8,
+    "headSize": 128,
+    "validatedDevices": [],
+    "toolsValidated": false
+  },
+  {
+    "repository": "bartowski/Qwen_Qwen3-4B-GGUF",
+    "revision": "cb76885dc66d50759b207c5a48c4e78dfa00c638",
+    "filename": "Qwen_Qwen3-4B-Q4_K_M.gguf",
+    "name": "Qwen3 4B",
+    "publisher": "Qwen",
+    "bytes": 2497280960,
+    "sha256": "fbe1d5edd4ce802ae3ae7c7e4ab7d09789d697fdac1fc7929f8df4ca3c41bae3",
+    "license": "apache-2.0",
+    "architecture": "qwen3",
+    "layers": 36,
+    "kvHeads": 8,
+    "headSize": 128,
+    "validatedDevices": [],
+    "toolsValidated": false
+  }
+]
