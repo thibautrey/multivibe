@@ -1,6 +1,7 @@
 // The loop, argument validation and tool-result ordering are upstream Pi code.
 // This file adapts its transport to the app's native GGUF engine and tool executor.
 import 'fast-text-encoding';
+import { iosToolSchemas, executeIOSTool } from './ios-tools.mjs';
 import URL from 'core-js-pure/features/url/index.js';
 import URLSearchParams from 'core-js-pure/features/url-search-params/index.js';
 globalThis.URL ??= URL;
@@ -57,9 +58,15 @@ function stable(value) {
 async function run(input) {
   let rounds = 0, calls = 0, modelMilliseconds = 0, repairAttempts = 0;
   const repeats = new Map();
-  const tools = input.tools.map(({ function: tool }) => ({ ...tool, label: tool.name,
+  let terminalResult, weatherEvidence = false;
+  const declarations = input.tools.map(({ function: tool }) => iosToolSchemas.find(t => t.name === tool.name) ?? tool);
+  const tools = declarations.map(tool => ({ ...tool, label: tool.name,
     execute: async (id, args) => {
-      const result = await request('tool', { name: tool.name, arguments: JSON.stringify(args), callID: id });
+      if (terminalResult) return { content: [{ type: 'text', text: 'Waiting for the user; no further action executed.' }], details: { isError: true } };
+      const native = (name, args) => request('tool', { name, arguments: JSON.stringify(args), callID: id });
+      const result = iosToolSchemas.some(t => t.name === tool.name)
+        ? await executeIOSTool(tool.name, args, native, active.controller.signal)
+        : await native(tool.name, args);
       return { content: [{ type: 'text', text: result.content }], details: result };
     }
   }));
@@ -70,7 +77,6 @@ async function run(input) {
   if (!prompt || prompt.role !== 'user') throw new Error('A user message is required');
   messages.unshift({ role: 'system', content: input.messages.filter(m => m.role === 'system').map(m => m.content).join('\n'), timestamp: 0 });
   const context = { messages, tools };
-  let terminalResult, weatherEvidence = false;
   const config = {
     model, convertToLlm: messages => messages, toolExecution: 'sequential',
     prepareRequest: () => {

@@ -1,0 +1,138 @@
+{
+  "clarify": {
+    "name": "clarify",
+    "description": "Ask the user one or more questions when you need a decision, clarification, or feedback before proceeding. Pass every question in `questions` (1-5 entries) — a single question is a one-entry array, and several INDEPENDENT questions belong in ONE call (one form beats a chain of clarify calls; if one answer would change another question, ask separately). Per question: single-select (up to 4 choices — put your recommended option FIRST, the UI marks it '(Recommended)' and auto-appends an 'Other' free-text row), multi-select (multi_select=true), or open-ended (omit choices). Options go ONLY in `choices`, never enumerated inside the question text (choices render as pickable rows; options written into the question are dead prose the user can't click). Result: {responses: [...]} in question order (plus timed_out=true, and a notice saying why, if the user stopped part-way or the prompt could not be delivered). Prefer deciding low-stakes questions yourself; don't use this for dangerous-command confirmation (the terminal tool handles that).",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "questions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 5,
+          "description": "The question(s). Each: question text (options excluded), optional choices (recommended first; omit for free-text), optional multi_select. Responses come back in question order with the question text echoed.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "question": {
+                "type": "string"
+              },
+              "choices": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 4
+              },
+              "multi_select": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "question"
+            ]
+          }
+        }
+      },
+      "required": [
+        "questions"
+      ]
+    }
+  },
+  "session_search": {
+    "name": "session_search",
+    "description": "Recall past conversations: search or read old Hermes sessions (FTS5), or scroll inside one. Four shapes, picked by args: `query` = discovery (top-N matching sessions, top result fully hydrated); `session_id` + `around_message_id` = scroll (window of messages around an anchor); `session_id` alone = read a whole session — how you resolve an `@session:<profile>/<id>` link (split on '/' into profile + id); no args = browse recent sessions. Results are actual DB messages, no LLM. Searches conversation history ONLY — when the user gave a direct source (URL, file, contact, live system), inspect that first; never conclude 'not found' from history alone. Use for questions about past conversations: 'what did we do about X', 'where did we leave Y'. When referring the user to a session, write its `link` value verbatim inline (it renders as a titled link).",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Search query (discovery shape). Keywords, phrases, or boolean expressions to find in past sessions. Omit to browse recent sessions. Ignored when session_id + around_message_id are set (scroll shape)."
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Discovery shape only. Max sessions to return (default 3, max 10). Bump to 5–10 when the topic likely spans several sessions and you want to pick the right one to scroll into.",
+          "default": 3
+        },
+        "sort": {
+          "type": "string",
+          "enum": [
+            "newest",
+            "oldest"
+          ],
+          "description": "Discovery shape only. Temporal bias on top of FTS5 ranking: omit for relevance-only (exploratory recall), 'newest' for \"where did we leave X\", 'oldest' for \"how did X start\"."
+        },
+        "detail": {
+          "type": "string",
+          "enum": [
+            "adaptive",
+            "full"
+          ],
+          "description": "Discovery shape only. 'adaptive' (default) fully hydrates the top-ranked result and returns only the exact anchor message for lower-ranked results. 'full' returns bookends and the complete anchored window for every result.",
+          "default": "adaptive"
+        },
+        "after": {
+          "type": "string",
+          "description": "Discovery shape only. Inclusive lower bound on session start time. ISO date/datetime (e.g. 2026-06-01) or relative duration (7d, 24h, 2w = within the last N). Use only when the user names a time frame. sort is a ranking bias, not a bound."
+        },
+        "before": {
+          "type": "string",
+          "description": "Discovery shape only. Exclusive upper bound on session start time. ISO date/datetime (a date-only value is midnight UTC that day) or relative duration (7d = older than a week). Use only when the user names a time frame."
+        },
+        "exclude_session_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Discovery shape only. Session ids already inspected this task. Those sessions and their lineage are omitted so a later query explores instead of repeating the same hit. Cap 20."
+        },
+        "session_id": {
+          "type": "string",
+          "description": "Scroll shape. Session to read inside. Use the session_id returned from a prior discovery call. Must be paired with around_message_id."
+        },
+        "around_message_id": {
+          "type": "integer",
+          "description": "Scroll shape. Message id to center the window on — use match_message_id from a discovery result, or any id from a prior window."
+        },
+        "window": {
+          "type": "integer",
+          "description": "Scroll shape only. Messages to return on each side of the anchor (anchor itself always included). Clamped to [1, 20]. Default 5.",
+          "default": 5
+        },
+        "role_filter": {
+          "type": "string",
+          "description": "Optional. Comma-separated roles to include. Discovery defaults to 'user,assistant' (tool output is usually noise). Pass 'user,assistant,tool' to include tool output (debugging tool behaviour) or 'tool' to search tool output only."
+        },
+        "profile": {
+          "type": "string",
+          "description": "Optional. Read sessions from another Hermes profile's database (read-only). Use when resolving an `@session:<profile>/<id>` link: pass the profile segment here with session_id as the id segment. Omit to use the current profile."
+        }
+      },
+      "required": []
+    }
+  },
+  "web_extract": {
+    "name": "web_extract",
+    "description": "Extract content from web page URLs. Returns clean page content in markdown/text (no LLM summarization — fast). Also works with PDF URLs (arxiv papers, documents) — pass the PDF link directly. Pages within the char budget (default 15000) return whole; larger pages return a head+tail window with a footer telling you the full text's saved file path and the read_file call to page through the omitted middle. Inline images appear as [IMAGE: alt] placeholders; real image URLs are kept as links. If a URL fails or times out, use the browser tool instead.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "urls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of URLs to extract content from (max 5 URLs per call)",
+          "maxItems": 5
+        },
+        "char_limit": {
+          "type": "integer",
+          "description": "Optional per-page character budget sent back (default 15000). Pages larger than this are head+tail truncated with the full text stored to disk. Raise it when you need more of a long page inline.",
+          "minimum": 2000
+        }
+      },
+      "required": [
+        "urls"
+      ]
+    }
+  }
+}
