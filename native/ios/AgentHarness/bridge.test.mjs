@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
+import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { randomBytes } from 'node:crypto';
-const { outputFiles } = await build({ entryPoints: [new URL('bridge.mjs', import.meta.url).pathname], bundle: true,
+const { outputFiles } = await build({ entryPoints: [fileURLToPath(new URL('bridge.mjs', import.meta.url))], bundle: true,
   platform: 'browser', format: 'iife', target: 'safari18', define: { global: 'globalThis' }, write: false });
 const schema = [{ type: 'function', function: { name: 'fetch_website', description: 'Read a URL',
   parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'], additionalProperties: false } } }];
