@@ -327,6 +327,31 @@ import XCTest
 /// Run explicitly on a physical device. Downloads real immutable model artifacts.
 @MainActor final class DownloadedModelDeviceTests: XCTestCase {
     override func tearDown() async throws { await DownloadedModelRuntime.shared.unload() }
+    func testInstalledQwenUsesUpstreamDocumentEdit() async throws {
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Physical-device acceptance only")
+        #else
+        guard ProcessInfo.processInfo.environment["MULTIVIBE_LOCAL_DEVICE_TEST"] == "1" else { throw XCTSkip("Opt in to device inference") }
+        let library = LocalModelLibrary.shared
+        let model = try XCTUnwrap(HuggingFaceCatalog.bundled.first { $0.name == "Qwen3 1.7B" })
+        guard library.installation(model.id)?.state == .installed else { throw XCTSkip("Install Qwen3 1.7B") }
+        actor Capture {
+            var saved: LocalDocument?
+            var text = ""
+            func save(_ value: LocalDocument) { saved = value }
+            func append(_ value: String) { text += value }
+        }
+        let capture = Capture()
+        let document = LocalDocument(name: "Note de test", text: "Total: 42")
+        let workspace = LocalAgentWorkspace(conversations: [], documents: [document], event: { _ in }, saveDocument: { await capture.save($0) })
+        try await DownloadedModelRuntime.shared.respond(model: library.validated(model), path: library.file(model),
+            messages: [ChatMessage(role: "user", content: "Dans le document \(document.id.uuidString), remplace exactement « Total: 42 » par « Total: 43 » avec edit_document. Ne crée pas de nouveau document.")],
+            workspace: workspace) { await capture.append($0) }
+        let saved = await capture.saved, text = await capture.text
+        XCTAssertEqual(saved?.id, document.id, text)
+        XCTAssertEqual(saved?.text, "Total: 43", text)
+        #endif
+    }
     func testInstalledQwenToolsThroughProductionCatalog() async throws {
         #if targetEnvironment(simulator)
         throw XCTSkip("Physical-device acceptance only")
