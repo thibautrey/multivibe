@@ -1303,7 +1303,35 @@ private struct LocationCard: View {
     }}
 }
 
-private struct WebSourceCard: View { let source: NativeContentBlock.WebSource; var body: some View { EditorialCard(icon: "safari", title: source.url.host ?? "Source web") { Text(source.excerpt).font(.subheadline).lineLimit(4); Link("Ouvrir la source", destination: source.url); Text("HTTP \(source.status) · \(source.contentType)").font(.caption2).foregroundStyle(.secondary) } } }
+private struct WebSourceCard: View {
+    let source: NativeContentBlock.WebSource
+    @State private var browserPresented = false
+
+    private var canOpenSource: Bool {
+        ["http", "https"].contains(source.url.scheme?.lowercased() ?? "") && source.url.host != nil
+    }
+
+    var body: some View {
+        Button { browserPresented = true } label: {
+            EditorialCard(icon: "safari", title: source.url.host ?? "Source web") {
+                Text(source.excerpt).font(.subheadline).lineLimit(4)
+                Label("Ouvrir la source", systemImage: "safari")
+                    .foregroundStyle(MultiVibeTheme.accent)
+                Text("HTTP \(source.status) · \(source.contentType)")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(!canOpenSource)
+        .accessibilityIdentifier("openWebSource")
+        .sheet(isPresented: $browserPresented) {
+            InAppBrowser(url: source.url)
+                .ignoresSafeArea()
+        }
+    }
+}
+
 private struct DocumentResultCard: View { let document: NativeContentBlock.Document; var body: some View { EditorialCard(icon: "doc.text", title: document.name) { Text(document.excerpt).font(.subheadline).lineLimit(6).textSelection(.enabled); ShareLink(item: document.excerpt) { Label("Partager l’extrait", systemImage: "square.and.arrow.up") } } } }
 
 private struct CalendarEventController: UIViewControllerRepresentable {
@@ -1996,7 +2024,7 @@ private struct ProviderConnectionsView: View {
     }
 }
 
-private struct ProviderBrowser: UIViewControllerRepresentable {
+private struct InAppBrowser: UIViewControllerRepresentable {
     let url: URL
     func makeUIViewController(context: Context) -> SFSafariViewController { SFSafariViewController(url: url) }
     func updateUIViewController(_ controller: SFSafariViewController, context: Context) {}
@@ -2047,7 +2075,7 @@ private struct ProviderConnectView: View {
         .onAppear { name = setup.name; accountID = manager.session?.accountId }
         .onDisappear { key = ""; polling?.cancel(); if let challenge { Task { await cancelFlow(challenge) } } }
         .onChange(of: phase) { _, value in if value == .active, let challenge { beginPolling(challenge) } else if value == .background { polling?.cancel() } }
-        .sheet(isPresented: $browser) { if let challenge { ProviderBrowser(url: challenge.verificationUrl) } }
+        .sheet(isPresented: $browser) { if let challenge { InAppBrowser(url: challenge.verificationUrl) } }
     }
     private func start() async {
         busy = true; error = nil; defer { busy = false; key = "" }
