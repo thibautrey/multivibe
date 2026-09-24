@@ -1973,6 +1973,7 @@ private struct ProviderConnectionsView: View {
     @State private var capabilities: [ProviderCapability] = []
     @State private var connections: [ProviderConnection] = []
     @State private var setup: ProviderSetup?
+    @State private var addingProvider = false
     @State private var error: String?
     @State private var removing: ProviderConnection?
     var body: some View {
@@ -1991,19 +1992,26 @@ private struct ProviderConnectionsView: View {
                     }.padding(.vertical, 5)
                 }
             }
-            Section("Ajouter un provider") {
-                ForEach(capabilities) { provider in
-                    ForEach(provider.authenticationMethods, id: \.self) { method in
-                        Button { setup = .init(provider: provider.id, name: provider.name, method: method) } label: {
-                            Label("\(provider.name) · \(method == "api_key" ? "Clé API" : "Abonnement")", systemImage: method == "api_key" ? "key" : "person.crop.circle")
-                        }
-                    }
+            Section {
+                Button { addingProvider = true } label: {
+                    Label("Ajouter une connexion", systemImage: "plus.circle.fill")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 6)
                 }
+            } footer: {
+                Text("Choisissez d’abord un fournisseur, puis la manière de connecter votre compte.")
             }
             if let error { Section { Text(error).foregroundStyle(.red); Button("Réessayer") { Task { await load() } } } }
         }
         .task { await load() }.refreshable { await load() }
         .sheet(item: $setup) { value in NavigationStack { ProviderConnectView(setup: value) { _ in setup = nil; Task { await load() } } } }
+        .sheet(isPresented: $addingProvider) {
+            ProviderOnboardingView(capabilities: capabilities) { _ in
+                addingProvider = false
+                Task { await load() }
+            }
+        }
         .confirmationDialog("Déconnecter ce compte ?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
             Button("Déconnecter", role: .destructive) {
                 guard let connection = removing else { return }; removing = nil
@@ -2021,6 +2029,120 @@ private struct ProviderConnectionsView: View {
             let list: ProviderConnections = try await ChatAPI.shared.providerRequest("providers", token: token)
             capabilities = caps.providers; connections = list.data; error = nil
         } catch { self.error = error.localizedDescription }
+    }
+}
+
+private struct ProviderOnboardingView: View {
+    let capabilities: [ProviderCapability]
+    let connected: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Choisissez votre fournisseur")
+                            .font(.title2.bold())
+                        Text("Vous choisirez ensuite une méthode de connexion proposée par ce fournisseur.")
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 8)
+                    .accessibilityElement(children: .combine)
+                }
+
+                Section("Fournisseurs disponibles") {
+                    ForEach(capabilities) { provider in
+                        NavigationLink {
+                            ProviderMethodView(provider: provider, connected: connected)
+                        } label: {
+                            HStack(spacing: 14) {
+                                Text(providerInitials(provider.name))
+                                    .font(.headline)
+                                    .foregroundStyle(.tint)
+                                    .frame(width: 42, height: 42)
+                                    .background(.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                                    .accessibilityHidden(true)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(provider.name).font(.headline)
+                                    Text(methodSummary(provider.authenticationMethods))
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .padding(.vertical, 5)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Nouvelle connexion")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } } }
+        }
+    }
+
+    private func providerInitials(_ name: String) -> String {
+        name.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined().uppercased()
+    }
+
+    private func methodSummary(_ methods: [String]) -> String {
+        methods.map { $0 == "api_key" ? "Clé API" : "Abonnement" }.joined(separator: " et ")
+    }
+}
+
+private struct ProviderMethodView: View {
+    let provider: ProviderCapability
+    let connected: (String) -> Void
+
+    var body: some View {
+        List {
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(provider.name).font(.title2.bold())
+                    Text("Comment souhaitez-vous accéder aux modèles de ce fournisseur ?")
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 8)
+                .accessibilityElement(children: .combine)
+            }
+
+            Section("Méthodes disponibles") {
+                ForEach(provider.authenticationMethods, id: \.self) { method in
+                    NavigationLink {
+                        ProviderConnectView(
+                            setup: .init(provider: provider.id, name: provider.name, method: method),
+                            connected: connected
+                        )
+                    } label: {
+                        HStack(alignment: .top, spacing: 14) {
+                            Image(systemName: method == "api_key" ? "key.fill" : "person.crop.circle.fill")
+                                .font(.title2)
+                                .foregroundStyle(.tint)
+                                .frame(width: 34)
+                                .accessibilityHidden(true)
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(method == "api_key" ? "Utiliser une clé API" : "Connecter mon abonnement")
+                                    .font(.headline)
+                                Text(method == "api_key"
+                                     ? "Vos usages sont facturés directement par le fournisseur."
+                                     : "Utilise votre compte fournisseur pour les modèles compatibles.")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 7)
+                    }
+                }
+            }
+
+            Section {
+                Label("Vos identifiants sont enregistrés dans le coffre sécurisé de votre compte MultiVibe.", systemImage: "lock.shield")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("Mode de connexion")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -2046,8 +2168,20 @@ private struct ProviderConnectView: View {
     var body: some View {
         Form {
             Section {
-                Text(setup.name).font(.title2.bold())
-                Text("Connexion privée, enregistrée dans votre compte MultiVibe.").font(.callout).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(setup.method == "api_key" ? "Connecter une clé API" : "Connecter un abonnement")
+                        .font(.title2.bold())
+                    Text(setup.name).font(.headline).foregroundStyle(.tint)
+                    Text(setup.method == "api_key"
+                         ? "Donnez un nom à cette connexion, puis saisissez la clé fournie par \(setup.name)."
+                         : "Donnez un nom à cette connexion. Un code vous permettra ensuite de l’autoriser sur le site de \(setup.name).")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 6)
+                .accessibilityElement(children: .combine)
+            }
+            Section("Votre connexion") {
                 TextField("Nom de la connexion", text: $name).disabled(challenge != nil || busy)
                 if setup.method == "api_key" {
                     SecureField("Clé API", text: $key).textInputAutocapitalization(.never).autocorrectionDisabled().disabled(busy)
@@ -2064,12 +2198,18 @@ private struct ProviderConnectView: View {
                     if error != nil { Button("Vérifier la connexion") { error = nil; beginPolling(challenge) } }
                 }
             } else {
-                Section { Button(setup.method == "api_key" ? "Valider la clé et connecter" : "Se connecter") { Task { await start() } }.disabled(busy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (setup.method == "api_key" && key.isEmpty)) }
+                Section {
+                    Button(setup.method == "api_key" ? "Valider la clé et connecter" : "Continuer avec \(setup.name)") { Task { await start() } }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .frame(maxWidth: .infinity)
+                        .disabled(busy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (setup.method == "api_key" && key.isEmpty))
+                }
             }
             if busy { ProgressView() }
             if let error { Section { Text(error).foregroundStyle(.red) } }
         }
-        .navigationTitle("Connecter un compte").navigationBarTitleDisplayMode(.inline)
+        .navigationTitle("Configurer").navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuler") { Task { await cancel(); dismiss() } } } }
         .interactiveDismissDisabled(busy || challenge != nil)
         .onAppear { name = setup.name; accountID = manager.session?.accountId }
