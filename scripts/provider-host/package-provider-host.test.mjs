@@ -275,14 +275,91 @@ test("notarization fails closed for rejection, timeout, malformed results and mi
   }
 });
 
+test("a transient upload abort before any submission is retried", async () => {
+  // Reproduced from the arm64 release job: notarytool aborted the S3 upload with
+  // a reset connection and no submission ID, which is safe to retry.
+  const abortedUpload = Object.assign(new Error("xcrun failed with exit 1"), {
+    code: 1,
+    stderr: 'Error: abortedUpload(resumeRequest: SotoS3.S3.ResumeMultipartUploadRequest(uploadRequest: ...), '
+      + 'uploadId: "cgtNaFys", completedParts: [...]), error: The operation couldnaEURO(tm)t be completed. '
+      + '(Network.NWError error 54 - Connection reset by peer))',
+  });
+  let submits = 0;
+  const id = await submitMacNotarization("Host.dmg", "release", async (_program, args) => {
+    if (args[1] === "submit") {
+      submits += 1;
+      if (submits < 3) throw abortedUpload;
+      return `  id: ${notaryID}\n`;
+    }
+    return notaryAccepted;
+  });
+  assert.equal(id, notaryID);
+  assert.equal(submits, 3);
+});
+
+test("persistent upload aborts stop after the bounded attempts", async () => {
+  const abortedUpload = Object.assign(new Error("xcrun failed with exit 1"), {
+    stderr: "Network.NWError error 54 - Connection reset by peer",
+  });
+  let submits = 0;
+  await assert.rejects(submitMacNotarization("Host.dmg", "release", async (_program, args) => {
+    if (args[1] === "submit") {
+      submits += 1;
+      throw abortedUpload;
+    }
+    throw new Error("wait must not run without a submission ID");
+  }), /aborted 3 times without a submission ID/u);
+  assert.equal(submits, 3);
+});
+
+test("a transient abort after an accepted submission ID is not resubmitted", async () => {
+  // When the client already reported a submission ID, the upload must not be
+  // retried; the existing submission is resumed instead.
+  const abortedUpload = Object.assign(new Error("xcrun failed with exit 1"), {
+    stderr: "Network.NWError error 54 - Connection reset by peer",
+    stdout: `Submission ID received\n  id: ${notaryID}\n`,
+  });
+  let submits = 0;
+  let waits = 0;
+  const id = await submitMacNotarization("Host.dmg", "release", async (_program, args) => {
+    if (args[1] === "submit") {
+      submits += 1;
+      if (submits > 1) throw new Error("an identified submission must never be uploaded twice");
+      throw abortedUpload;
+    }
+    assert.equal(args[2], notaryID);
+    waits += 1;
+    return notaryAccepted;
+  });
+  assert.equal(id, notaryID);
+  assert.equal(submits, 1);
+  assert.equal(waits, 1);
+});
+
 test("submission without an ID or with an ordinary failure is not retried", async () => {
-  for (const result of ["", notaryCrash(), new Error("authentication failed")]) {
-    let calls = 0;
-    await assert.rejects(submitMacNotarization("Host.dmg", "release", async () => {
-      calls += 1;
+  // An empty success, a credential/usage failure, and a reset connection that
+  // still names a submission are never re-uploaded.
+  const identifiedReset = Object.assign(new Error("xcrun failed with exit 1"), {
+    stderr: "Network.NWError error 54 - Connection reset by peer",
+    stdout: `  id: ${notaryID}\n`,
+  });
+  for (const result of ["", new Error("authentication failed"), identifiedReset]) {
+    let submits = 0;
+    await assert.rejects(submitMacNotarization("Host.dmg", "release", async (_program, args) => {
+      assert.equal(args[1], "submit");
+      submits += 1;
       if (result instanceof Error) throw result;
       return result;
     }));
-    assert.equal(calls, 1);
+    assert.equal(submits, 1);
   }
+});
+
+test("a lone client crash without an ID stops instead of resubmitting forever", async () => {
+  let submits = 0;
+  await assert.rejects(submitMacNotarization("Host.dmg", "release", async () => {
+    submits += 1;
+    throw notaryCrash();
+  }), /aborted 3 times without a submission ID/u);
+  assert.equal(submits, 3);
 });
