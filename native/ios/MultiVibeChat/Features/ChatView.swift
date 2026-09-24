@@ -19,6 +19,7 @@ struct ChatView: View {
     @State private var shortcutDraftConversation: UUID?
     @State private var preferredColumn: NavigationSplitViewColumn = .detail
     @State private var search = ""
+    @State private var sidebarSearchPresented = false
     @State private var conversationToDelete: Conversation?
     @State private var confirmGuestImport = false
     @State private var confirmHistorySync = false
@@ -47,72 +48,137 @@ struct ChatView: View {
     var body: some View {
         @Bindable var manager = manager
         NavigationSplitView(preferredCompactColumn: $preferredColumn) {
-            List(selection: $manager.selection) {
+            List {
                 Section {
-                    ScrollView(.horizontal) {
-                        LazyHStack(alignment: .top, spacing: 16) {
-                            if manager.session != nil {
-                                NavigationLink {
-                                    SDKApplicationsView().id(manager.session?.accountId)
-                                } label: {
-                                    ConversationShortcutLabel(title: "Applications", systemImage: "square.grid.2x2.fill")
-                                }
-                                .accessibilityIdentifier("openApplications")
-                            }
-                            NavigationLink { AutomationsView().id(manager.session?.accountId ?? "guest") } label: {
-                                ConversationShortcutLabel(title: "Automatisations", systemImage: "clock.arrow.circlepath")
-                            }.accessibilityIdentifier("openAutomations")
-                            Button {
-                                manager.memoryPresented = true
-                            } label: {
-                                ConversationShortcutLabel(title: "Mémoire", systemImage: "brain")
-                            }
-                            .accessibilityIdentifier("openMemory")
+                    HStack(spacing: 12) {
+                        Image("MultiVibeMark")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 34, height: 34)
+                            .accessibilityHidden(true)
+                        Text("MultiVibe")
+                            .font(.title2.bold())
+                        Spacer()
+                        Button(sidebarSearchPresented ? "Fermer la recherche" : "Rechercher", systemImage: sidebarSearchPresented ? "xmark" : "magnifyingglass") {
+                            withAnimation(.snappy) { sidebarSearchPresented.toggle() }
                         }
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 8)
+                        .labelStyle(.iconOnly)
+                        .font(.title2.weight(.medium))
+                        .frame(width: 44, height: 44)
+                        .contentShape(Circle())
+                        .accessibilityIdentifier("searchConversations")
                     }
-                    .scrollIndicators(.hidden)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .buttonStyle(.plain)
+                    .padding(.vertical, 4)
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
+
+                    if sidebarSearchPresented {
+                        TextField("Rechercher", text: $search)
+                            .textFieldStyle(.plain)
+                            .padding(.horizontal, 14)
+                            .frame(height: 44)
+                            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .accessibilityLabel("Rechercher dans les conversations")
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                    }
                 }
 
-                ForEach(manager.historyConversations.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }) { conversation in
-                    Label(conversation.title, systemImage: conversation.id == manager.selection ? "bubble.left.fill" : "bubble.left")
-                        .font(.body.weight(conversation.id == manager.selection ? .semibold : .regular)).tag(conversation.id)
+                Section {
+                    if manager.session != nil {
+                        NavigationLink {
+                            SDKApplicationsView().id(manager.session?.accountId)
+                        } label: {
+                            SidebarShortcutLabel(title: "Applications", systemImage: "square.grid.2x2")
+                        }
+                        .accessibilityIdentifier("openApplications")
+                    }
+                    NavigationLink { AutomationsView().id(manager.session?.accountId ?? "guest") } label: {
+                        SidebarShortcutLabel(title: "Automatisations", systemImage: "clock")
+                    }
+                    .accessibilityIdentifier("openAutomations")
+                    Button { manager.memoryPresented = true } label: {
+                        SidebarShortcutLabel(title: "Mémoire", systemImage: "brain")
+                    }
+                    .accessibilityIdentifier("openMemory")
+                    Button { documentsPresented = true } label: {
+                        SidebarShortcutLabel(title: "Documents et outils", systemImage: "folder")
+                    }
+                    .accessibilityIdentifier("openDocuments")
+                }
+                .listSectionSpacing(8)
+
+                Section("Récents") {
+                    ForEach(manager.historyConversations.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }) { conversation in
+                        Button {
+                            manager.selection = conversation.id
+                            preferredColumn = .detail
+                        } label: {
+                            Text(conversation.title)
+                                .font(.body)
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 2)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .listRowBackground(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(conversation.id == manager.selection ? Color(uiColor: .secondarySystemBackground) : .clear)
+                        )
+                        .accessibilityAddTraits(conversation.id == manager.selection ? .isSelected : [])
                         .swipeActions(allowsFullSwipe: false) {
                             Button("Supprimer", role: .destructive) { conversationToDelete = conversation }
                         }
+                    }
                 }
             }
+            .listStyle(.plain)
             .scrollContentBackground(.hidden)
-            .background(MultiVibeTheme.softAccent.ignoresSafeArea())
-            .searchable(text: $search, prompt: "Conversations sur cet appareil")
+            .background(Color(uiColor: .systemBackground).ignoresSafeArea())
             .navigationTitle("")
             .safeAreaInset(edge: .bottom) {
-                if let status = manager.historyStatus, status != "Historique synchronisé avec votre compte." {
-                    VStack {
-                        Text(status).font(.caption)
-                        if manager.hasHistoryConflict {
-                            Button("Conserver les deux versions") { confirmHistoryConflict = true }
-                                .disabled(manager.isSynchronizing || manager.isStreaming || manager.isRestoring)
+                VStack(spacing: 10) {
+                    if let status = manager.historyStatus, status != "Historique synchronisé avec votre compte." {
+                        VStack {
+                            Text(status).font(.caption)
+                            if manager.hasHistoryConflict {
+                                Button("Conserver les deux versions") { confirmHistoryConflict = true }
+                                    .disabled(manager.isSynchronizing || manager.isStreaming || manager.isRestoring)
+                            }
                         }
-                    }.padding().background(.regularMaterial)
+                    }
+                    HStack {
+                        Button(action: openNewConversation) {
+                            Label("Chat", systemImage: "square.and.pencil")
+                                .font(.headline)
+                                .padding(.horizontal, 20)
+                                .frame(height: 52)
+                                .foregroundStyle(Color(uiColor: .systemBackground))
+                                .background(.primary, in: Capsule())
+                        }
+                        .accessibilityLabel("Nouvelle conversation")
+                        Spacer()
+                        Button("Profil et réglages", systemImage: "gearshape") { profilePresented = true }
+                            .labelStyle(.iconOnly)
+                            .font(.title2.weight(.semibold))
+                            .frame(width: 52, height: 52)
+                            .background(.regularMaterial, in: Circle())
+                            .overlay(Circle().stroke(.primary.opacity(0.12), lineWidth: 0.7))
+                            .accessibilityIdentifier("openProfile")
+                    }
                 }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(.ultraThinMaterial)
             }
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Profil", systemImage: "person.crop.circle") { profilePresented = true }
-                        .accessibilityIdentifier("openProfile")
-                }
-                ToolbarItem(placement: .primaryAction) { Button("Nouvelle conversation", systemImage: "square.and.pencil") { openNewConversation() } }
                 ToolbarItem(placement: .secondaryAction) {
                     Button("Synchroniser l’historique", systemImage: "arrow.triangle.2.circlepath") {
                         if manager.session == nil { manager.authenticationPresented = true } else { confirmHistorySync = true }
                     }
-                        .disabled(manager.isSynchronizing || manager.isStreaming || manager.isRestoring)
+                    .disabled(manager.isSynchronizing || manager.isStreaming || manager.isRestoring)
                 }
                 ToolbarItem(placement: .secondaryAction) {
                     if manager.session != nil {
@@ -1655,28 +1721,23 @@ struct InternetPermissionView: View {
     }
 }
 
-private struct ConversationShortcutLabel: View {
+private struct SidebarShortcutLabel: View {
     let title: String
     let systemImage: String
-    @ScaledMetric(relativeTo: .caption) private var itemWidth = 88.0
-    @ScaledMetric(relativeTo: .body) private var iconSize = 60.0
 
     var body: some View {
-        VStack(spacing: 8) {
+        HStack(spacing: 16) {
             Image(systemName: systemImage)
-                .font(.title2.weight(.medium))
-                .foregroundStyle(MultiVibeTheme.accent)
-                .frame(width: iconSize, height: iconSize)
-                .background(.background, in: Circle())
-                .overlay(Circle().stroke(MultiVibeTheme.accent.opacity(0.15), lineWidth: 1))
+                .font(.title3.weight(.medium))
+                .foregroundStyle(.primary)
+                .frame(width: 28, height: 32)
                 .accessibilityHidden(true)
             Text(title)
-                .font(.caption.weight(.medium))
+                .font(.body.weight(.medium))
                 .foregroundStyle(.primary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
         }
-        .frame(width: max(itemWidth, iconSize), alignment: .top)
+        .frame(minHeight: 48)
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
