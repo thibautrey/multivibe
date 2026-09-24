@@ -18,7 +18,13 @@ final class AutomationUITests: XCTestCase {
         let item = app.staticTexts["Briefing du matin"].firstMatch
         XCTAssertTrue(item.waitForExistence(timeout: 10))
         let list = XCTAttachment(screenshot: app.screenshot()); list.name = "Automations list"; list.lifetime = .keepAlways; add(list)
-        item.tap()
+        let schedule = app.buttons["scheduleAutomation"]
+        XCTAssertTrue(schedule.waitForExistence(timeout: 5)); schedule.tap()
+        XCTAssertTrue(app.textFields["automationTitle"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Répéter"].exists)
+        let editor = XCTAttachment(screenshot: app.screenshot()); editor.name = "Automation editor"; editor.lifetime = .keepAlways; add(editor)
+        app.buttons["Annuler"].tap()
+        XCTAssertTrue(item.waitForExistence(timeout: 5)); item.tap()
         XCTAssertTrue(app.staticTexts["Prépare mon briefing"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Reprendre"].exists)
         let detail = XCTAttachment(screenshot: app.screenshot()); detail.name = "Automation details"; detail.lifetime = .keepAlways; add(detail)
