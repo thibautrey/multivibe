@@ -58,11 +58,17 @@ actor DownloadedModelRuntime {
                 guard Date() < deadline else { throw LocalAgentError.budget }
                 let json = String(decoding: try JSONSerialization.data(withJSONObject: history), as: UTF8.self)
                 let tools = useTools ? toolSchema : "[]"
-                let result = try await generate(path: path, messages: json, tools: tools, onText: onText)
-                guard let data = result.data(using: .utf8), let reply = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                let output = DownloadedToolOutput(onText: onText)
+                let result = try await generate(path: path, messages: json, tools: tools,
+                    onText: { text in await output.append(text, inspectTools: useTools) })
+                guard let data = result.data(using: .utf8), var reply = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                     throw LocalAgentError.invalidInput
                 }
-                guard let calls = reply["tool_calls"] as? [[String: Any]], !calls.isEmpty else { finished = true; break }
+                if useTools { reply = LocalDownloadedTools.normalizedReply(reply) }
+                guard let calls = reply["tool_calls"] as? [[String: Any]], !calls.isEmpty else {
+                    await output.finish()
+                    finished = true; break
+                }
                 guard useTools, let workspace, calls.count <= 4 else { throw LocalAgentError.invalidInput }
                 history.append(reply)
                 for call in calls {
@@ -122,6 +128,26 @@ actor DownloadedModelRuntime {
     }
 }
 
+/// Hold JSON-shaped output until it is known to be prose or a tool request.
+/// Normal conversational text remains streamed as soon as its prefix is known.
+private actor DownloadedToolOutput {
+    private var pending = ""
+    private var streaming = false
+    private let onText: @Sendable (String) async -> Void
+    init(onText: @escaping @Sendable (String) async -> Void) { self.onText = onText }
+    func append(_ text: String, inspectTools: Bool) async {
+        if streaming || !inspectTools { await onText(text); return }
+        pending += text
+        let prefix = pending.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prefix.isEmpty, !prefix.hasPrefix("{"), !prefix.hasPrefix("`") else { return }
+        streaming = true
+        await onText(pending); pending = ""
+    }
+    func finish() async {
+        if !pending.isEmpty { await onText(pending); pending = "" }
+    }
+}
+
 enum LocalDownloadedTools {
     static let actions = ["list_documents", "read_document", "search_conversations", "create_document", "add", "subtract", "multiply", "divide", "current_date", "read_calendar", "read_reminders", "read_contacts", "current_location", "read_mail", "context_memory", "search_memory", "read_memory", "fetch_website", "http_head"]
     static func schema(deviceActions: [String]) -> String {
@@ -144,6 +170,27 @@ enum LocalDownloadedTools {
                     "offset": ["type": "number", "description": "Character offset, zero initially."]],
                     "required": ["url"], "additionalProperties": false]]]]
         return String(decoding: try! JSONSerialization.data(withJSONObject: tools), as: UTF8.self)
+    }
+    /// Some small models omit the template's tool-call delimiters on follow-up
+    /// turns. Accept only a complete, known function object, never JSON embedded
+    /// in prose. Execution still passes through argument and permission checks.
+    static func normalizedReply(_ reply: [String: Any]) -> [String: Any] {
+        if let calls = reply["tool_calls"] as? [[String: Any]], !calls.isEmpty { return reply }
+        guard var content = reply["content"] as? String else { return reply }
+        content = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if content.hasPrefix("```json\n"), content.hasSuffix("\n```") {
+            content = String(content.dropFirst(8).dropLast(4))
+        }
+        guard let data = content.data(using: .utf8),
+              let call = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(call.keys) == Set(["name", "arguments"]),
+              let name = call["name"] as? String, ["fetch_website", "local_workspace"].contains(name),
+              let arguments = call["arguments"] as? [String: Any],
+              let encoded = try? JSONSerialization.data(withJSONObject: arguments),
+              let json = String(data: encoded, encoding: .utf8) else { return reply }
+        return ["role": "assistant", "content": "", "tool_calls": [
+            ["id": "call_" + UUID().uuidString, "type": "function",
+             "function": ["name": name, "arguments": json]]]]
     }
     struct Arguments: Decodable {
         let action: String
