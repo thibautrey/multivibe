@@ -26,7 +26,8 @@ import XCTest
             XCTAssertNotNil(model.revision.range(of: "^[a-f0-9]{40}$", options: .regularExpression))
             XCTAssertNotNil(model.sha256.range(of: "^[a-f0-9]{64}$", options: .regularExpression))
             XCTAssertNil(LocalDeviceBudget(memory: 64_000_000_000, disk: 100_000_000_000).problem(model, downloading: true), model.name)
-            XCTAssertNotNil(LocalDeviceBudget(memory: 1, disk: 100_000_000_000).problem(model, downloading: false))
+            XCTAssertNil(LocalDeviceBudget(memory: 1, disk: 100_000_000_000).problem(model, downloading: false))
+            XCTAssertNotNil(LocalDeviceBudget(memory: 1, disk: 100_000_000_000).memoryWarning(model))
             if model.name != "Qwen3 1.7B" { XCTAssertFalse(model.supportsTools) }
         }
         var hybrid = try XCTUnwrap(models.first { $0.name == "Bonsai 27B" })
@@ -50,7 +51,14 @@ import XCTest
     func testRuntimeMemoryIncludesKVAndScratchInsteadOfFileSizeOnly() {
         let m = model()
         XCTAssertGreaterThan(m.estimatedMemory, UInt64(m.bytes))
-        XCTAssertNotNil(LocalDeviceBudget(memory: UInt64(m.bytes), disk: 10_000_000_000).problem(m, downloading: true))
+        let lowMemory = LocalDeviceBudget(memory: UInt64(m.bytes), disk: 10_000_000_000)
+        XCTAssertNotNil(lowMemory.memoryWarning(m))
+        XCTAssertNil(lowMemory.problem(m, downloading: true))
+        XCTAssertNil(lowMemory.problem(m, downloading: false))
+        XCTAssertNil(LocalDeviceBudget(memory: m.estimatedMemory, disk: 10_000_000_000).memoryWarning(m))
+        XCTAssertNotNil(LocalDeviceBudget(memory: m.estimatedMemory - 1, disk: 10_000_000_000).memoryWarning(m))
+        XCTAssertNotNil(LocalDeviceBudget(memory: 0, disk: m.bytes).problem(m, downloading: true))
+        XCTAssertNil(LocalDeviceBudget(memory: 0, disk: 0).problem(m, downloading: false))
         XCTAssertNotNil(LocalDeviceBudget(memory: 10_000_000_000, disk: m.bytes).problem(m, downloading: true))
         XCTAssertNil(LocalDeviceBudget(memory: 10_000_000_000, disk: 10_000_000_000).problem(m, downloading: true))
     }
