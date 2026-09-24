@@ -9,6 +9,10 @@ struct LocalModelsView: View {
     @State private var loading = false
     @State private var error: String?
     private var library: LocalModelLibrary { .shared }
+    private var catalogModels: [DownloadableModel] {
+        var seen = Set<String>()
+        return (HuggingFaceCatalog.bundled + results).filter { matches($0) && seen.insert($0.id).inserted }
+    }
     private func matches(_ model: DownloadableModel) -> Bool {
         search.isEmpty || (model.name + " " + model.publisher).localizedCaseInsensitiveContains(search)
     }
@@ -28,11 +32,11 @@ struct LocalModelsView: View {
                 }
             }
             Section(search.isEmpty ? "À télécharger" : "Résultats") {
-                let candidates = search.isEmpty ? HuggingFaceCatalog.bundled : results
+                let candidates = catalogModels
                 ForEach(candidates.filter { library.installation($0.id) == nil && matches($0) }) { LocalModelCard(model: $0, select: select) }
                 if loading { ProgressView("Recherche de modèles…") }
                 if let error { Text(error).font(.callout); Button("Réessayer") { Task { await load(reset: true) } } }
-                if !search.isEmpty && !loading && results.isEmpty && error == nil {
+                if !search.isEmpty && !loading && catalogModels.isEmpty && error == nil {
                     Text("Aucun modèle pris en charge trouvé. Essayez un autre nom.").foregroundStyle(.secondary)
                 }
                 if next != nil && !loading { Button("Afficher plus") { Task { await load(reset: false) } } }
@@ -43,7 +47,7 @@ struct LocalModelsView: View {
             }
         }
         .task(id: search) {
-            next = nil
+            next = nil; error = nil; loading = false
             if search.isEmpty { results = []; return }
             results = library.cachedModels.filter(matches)
             do { try await Task.sleep(for: .milliseconds(350)); try Task.checkCancellation(); await load(reset: true) } catch { }
