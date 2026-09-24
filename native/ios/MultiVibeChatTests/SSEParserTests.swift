@@ -51,6 +51,132 @@ import AuthenticationServices
     }
 }
 
+@MainActor final class LastUsedModelTests: XCTestCase {
+    /// Captures the in-memory preference slot so tests never touch real user defaults.
+    @MainActor final class LastUsedModelRecorder {
+        var values: [String: String] = [:]
+        var lookup: @MainActor (String) -> String? { { self.values[$0] } }
+        var remember: @MainActor (String, String) -> Void { { value, scope in self.values[scope] = value } }
+    }
+
+    private func defaults() -> UserDefaults {
+        let suite = "LastUsedModelStoreTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        return defaults
+    }
+    private func session(_ account: String = "account-a") -> NativeSession {
+        NativeSession(accessToken: "a", refreshToken: "r", expiresAt: .distantFuture, accountId: account)
+    }
+    private func recorderServices(_ recorder: LastUsedModelRecorder, account: String = "account-a") -> SessionServices {
+        isolatedServices(load: { self.session(account) },
+                         lastUsedModel: recorder.lookup, rememberLastUsedModel: recorder.remember)
+    }
+
+    func testStoreKeepsOneModelPerAccountAndIgnoresEmptyValues() {
+        let storage = defaults()
+        LastUsedModelStore.save("openai/luna", for: "account-a", to: storage)
+        LastUsedModelStore.save("mistral/large", for: "account-b", to: storage)
+        XCTAssertEqual(LastUsedModelStore.model(for: "account-a", from: storage), "openai/luna")
+        XCTAssertEqual(LastUsedModelStore.model(for: "account-b", from: storage), "mistral/large")
+        LastUsedModelStore.save("", for: "account-a", to: storage)
+        XCTAssertNil(LastUsedModelStore.model(for: "account-a", from: storage))
+        LastUsedModelStore.save("openai/luna", for: "", to: storage)
+        XCTAssertEqual(LastUsedModelStore.load(from: storage), ["account-b": "mistral/large"])
+    }
+
+    func testStoreClearRemovesOnlyTheRequestedAccount() {
+        let storage = defaults()
+        LastUsedModelStore.save("openai/luna", for: "account-a", to: storage)
+        LastUsedModelStore.save("mistral/large", for: "account-b", to: storage)
+        LastUsedModelStore.clear(for: "account-a", from: storage)
+        XCTAssertNil(LastUsedModelStore.model(for: "account-a", from: storage))
+        XCTAssertEqual(LastUsedModelStore.model(for: "account-b", from: storage), "mistral/large")
+        LastUsedModelStore.clear(for: "account-b", from: storage)
+        XCTAssertEqual(LastUsedModelStore.load(from: storage), [:])
+    }
+
+    func testStoreGrowthIsBoundedWithoutDroppingTheFreshAccount() {
+        let storage = defaults()
+        for index in 0...LastUsedModelStore.maximumAccounts + 4 {
+            LastUsedModelStore.save("model-\(index)", for: "account-\(index)", to: storage)
+        }
+        let values = LastUsedModelStore.load(from: storage)
+        XCTAssertEqual(values.count, LastUsedModelStore.maximumAccounts)
+        let newest = "account-\(LastUsedModelStore.maximumAccounts + 4)"
+        XCTAssertEqual(values[newest], "model-\(LastUsedModelStore.maximumAccounts + 4)")
+        XCTAssertEqual(LastUsedModelStore.model(for: "account-0", from: storage), nil)
+    }
+
+    func testChoosingAModelRemembersItForTheSignedInAccount() async {
+        let recorder = LastUsedModelRecorder()
+        let manager = ConversationManager(services: recorderServices(recorder))
+        await manager.restore(loadRemoteModels: false)
+        XCTAssertEqual(manager.selectedModel, LocalModel.id)
+        XCTAssertNil(recorder.values["account-a"])
+        manager.models.append(ModelOption(id: "openai/luna"))
+        await manager.chooseModel(ModelOption(id: "openai/luna"))
+        XCTAssertEqual(manager.selectedModel, "openai/luna")
+        XCTAssertEqual(recorder.values["account-a"], "openai/luna")
+    }
+
+    func testNewConversationUsesTheLastUsedModel() async {
+        let recorder = LastUsedModelRecorder()
+        recorder.values["account-a"] = "remote-a"
+        let manager = ConversationManager(services: recorderServices(recorder))
+        await manager.restore(loadRemoteModels: false)
+        manager.models = [LocalModel.option, ModelOption(id: "remote-a")]
+        let previous = Conversation(model: "remote-a", messages: [ChatMessage(role: "user", content: "Bonjour")])
+        manager.conversations = [previous]; manager.selection = previous.id
+        // Simulate a composer showing a different model before creating a chat.
+        manager.selectedModel = LocalModel.id
+        manager.newConversation()
+        XCTAssertEqual(manager.selectedModel, "remote-a")
+        XCTAssertEqual(manager.current?.model, "remote-a")
+    }
+
+    func testNewConversationFallsBackWhenTheRememberedModelIsUnavailable() async {
+        let recorder = LastUsedModelRecorder()
+        recorder.values["account-a"] = "retired-model"
+        let manager = ConversationManager(services: recorderServices(recorder))
+        await manager.restore(loadRemoteModels: false)
+        manager.models = [LocalModel.option]
+        manager.newConversation()
+        XCTAssertEqual(manager.selectedModel, LocalModel.id)
+    }
+
+    func testRestorationUsesTheRememberedModelWhenItIsStillInTheCatalog() async {
+        let recorder = LastUsedModelRecorder()
+        recorder.values["account-a"] = "downloaded-model"
+        let services = isolatedServices(load: { self.session("account-a") },
+                                        downloadedModels: { [ModelOption(id: "downloaded-model")] },
+                                        lastUsedModel: recorder.lookup, rememberLastUsedModel: recorder.remember)
+        let manager = ConversationManager(services: services)
+        await manager.restore(loadRemoteModels: false)
+        XCTAssertEqual(manager.selectedModel, "downloaded-model")
+        XCTAssertNil(manager.selectedAccess)
+    }
+
+    func testRestorationFallsBackToLocalWhenTheRememberedModelIsGone() async {
+        let recorder = LastUsedModelRecorder()
+        recorder.values["account-a"] = "retired-model"
+        let manager = ConversationManager(services: recorderServices(recorder))
+        await manager.restore(loadRemoteModels: false)
+        XCTAssertEqual(manager.selectedModel, LocalModel.id)
+    }
+
+    func testGuestsKeepTheirOwnPreferenceSlot() async {
+        let recorder = LastUsedModelRecorder()
+        let manager = ConversationManager(services: isolatedServices(lastUsedModel: recorder.lookup,
+                                                                     rememberLastUsedModel: recorder.remember))
+        await manager.restore(loadRemoteModels: false)
+        manager.models = [LocalModel.option, ModelOption(id: "remote-a")]
+        await manager.chooseModel(ModelOption(id: "remote-a"))
+        XCTAssertEqual(recorder.values[ConversationManager.guestModelScope], "remote-a")
+        XCTAssertNil(recorder.values["account-a"])
+    }
+}
+
 final class SSEParserTests: XCTestCase {
     func testEventBoundariesAndComments() {
         var parser = SSEParser()

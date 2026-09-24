@@ -244,6 +244,49 @@ extension ModelOption {
         defaults.set(identifiers.sorted(), forKey: key)
     }
 }
+
+/// Remembers the last model each account actually used, so a new conversation
+/// starts on that model instead of falling back to the local model. The value is
+/// only a preference: callers must revalidate it against the available catalog
+/// and keep a safe fallback when it is gone or no longer usable.
+@MainActor enum LastUsedModelStore {
+    static let key = "cloud.multivibe.chat.last-used-model-v1"
+    static let maximumAccounts = 20
+    static func load(from defaults: UserDefaults = .standard) -> [String: String] {
+        let stored = defaults.dictionary(forKey: key) ?? [:]
+        var values: [String: String] = [:]
+        for (account, value) in stored {
+            guard !account.isEmpty, let identifier = value as? String, !identifier.isEmpty else { continue }
+            values[account] = identifier
+        }
+        return values
+    }
+    static func model(for account: String, from defaults: UserDefaults = .standard) -> String? {
+        guard !account.isEmpty else { return nil }
+        return load(from: defaults)[account]
+    }
+    static func save(_ identifier: String, for account: String, to defaults: UserDefaults = .standard) {
+        guard !account.isEmpty else { return }
+        var values = load(from: defaults)
+        guard !identifier.isEmpty else { values.removeValue(forKey: account); return persist(values, to: defaults) }
+        values.removeValue(forKey: account)
+        values[account] = identifier
+        // Bound growth without dropping the account being written.
+        while values.count > maximumAccounts {
+            guard let oldest = values.keys.first(where: { $0 != account }) else { break }
+            values.removeValue(forKey: oldest)
+        }
+        persist(values, to: defaults)
+    }
+    static func clear(for account: String, from defaults: UserDefaults = .standard) {
+        var values = load(from: defaults)
+        guard values.removeValue(forKey: account) != nil else { return }
+        persist(values, to: defaults)
+    }
+    private static func persist(_ values: [String: String], to defaults: UserDefaults) {
+        if values.isEmpty { defaults.removeObject(forKey: key) } else { defaults.set(values, forKey: key) }
+    }
+}
 struct ModelList: Decodable { let data: [ModelOption] }
 struct VoiceOption: Codable, Identifiable, Equatable, Sendable { let id: String; let name: String }
 struct VoiceCapabilities: Decodable, Sendable {

@@ -313,12 +313,17 @@ import XCTest
     localRespond: @escaping @Sendable ([ChatMessage], LocalAgentWorkspace, @escaping @Sendable (String) async -> Void) async throws -> Void = { _, _, _ in throw APIError.invalidResponse },
     monitorConnectivity: Bool = false,
     syncDelay: @escaping @Sendable (Int) async throws -> Void = { _ in await Task.yield() },
-    models: @escaping @MainActor (String) async throws -> [ModelOption] = { _ in [] }
+    models: @escaping @MainActor (String) async throws -> [ModelOption] = { _ in [] },
+    downloadedModels: @escaping @MainActor () -> [ModelOption] = { [] },
+    lastUsedModel: @escaping @MainActor (String) -> String? = { _ in nil },
+    rememberLastUsedModel: @escaping @MainActor (String, String) -> Void = { _, _ in }
 ) -> SessionServices {
     SessionServices(writeHistory: writeHistory, load: load, save: save, clear: clear,
         refresh: refresh, revoke: revoke, readHistory: readHistory, saveHistory: saveHistory,
         stream: stream, readLocalHistory: readLocalHistory, localAvailability: localAvailability,
-        localRespond: localRespond, memoryIndex: { _ in try MemoryIndex(url: nil) }, reviewLocalMemory: { _ in "[]" }, monitorConnectivity: monitorConnectivity, syncDelay: syncDelay, models: models)
+        localRespond: localRespond, downloadedModels: downloadedModels,
+        memoryIndex: { _ in try MemoryIndex(url: nil) }, reviewLocalMemory: { _ in "[]" }, monitorConnectivity: monitorConnectivity, syncDelay: syncDelay, models: models,
+        lastUsedModel: lastUsedModel, rememberLastUsedModel: rememberLastUsedModel)
 }
 
 @MainActor final class InternetConsentTests: XCTestCase {

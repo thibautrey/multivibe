@@ -47,6 +47,8 @@ import Network
     var monitorConnectivity = true
     var syncDelay: @Sendable (Int) async throws -> Void = { attempt in try await Task.sleep(for: .seconds(min(60, 2 << attempt))) }
     var models: @MainActor (String) async throws -> [ModelOption] = { try await ChatAPI.shared.models(token: $0) }
+    var lastUsedModel: @MainActor (String) -> String? = { LastUsedModelStore.model(for: $0) }
+    var rememberLastUsedModel: @MainActor (String, String) -> Void = { LastUsedModelStore.save($0, for: $1) }
 }
 
 @MainActor @Observable final class ConversationManager {
@@ -136,7 +138,19 @@ import Network
     private(set) var isLoadingModels = false
     private(set) var modelsError: String?
     private var modelLoadRevision = UUID()
-    var selectedModel = "" { didSet { if selectedModel != oldValue { selectedAccess = nil } } }
+    var selectedModel = "" {
+        didSet {
+            guard selectedModel != oldValue else { return }
+            selectedAccess = nil
+            // Remember the explicit choice; restoration and new conversations
+            // revalidate it against the available catalog before reusing it.
+            if !selectedModel.isEmpty { services.rememberLastUsedModel(selectedModel, modelPreferenceScope) }
+        }
+    }
+    /// Account the last-used preference belongs to. Guests keep their own slot so
+    /// a signed-out session can never inherit another account's model.
+    private var modelPreferenceScope: String { session?.accountId ?? Self.guestModelScope }
+    static let guestModelScope = "guest"
     var selectedAccess: SelectedModelAccess?
     var requestedAccessModel: ModelOption?
     var accessNotice: String?
@@ -262,7 +276,7 @@ import Network
         defer { if restorationRevision == restoration { isRestoring = false; scheduleAutomaticSync() } }
         startNetworkMonitoring()
         models = [LocalModel.option] + services.downloadedModels()
-        selectedModel = LocalModel.id
+        selectedModel = restoredModel(for: modelPreferenceScope, in: models) ?? LocalModel.id
         storageLoaded = false
         memoryReviews.values.forEach { $0.cancel() }; memoryReviews = [:]
         memoryRecords = []; memoryBaseline = []; memoryIndex = nil; memoryDraft = nil; memorySyncEnabled = false; memoryError = nil
@@ -305,6 +319,13 @@ import Network
         models.removeAll { option in ModelExecution(option.id) == .downloaded && !downloaded.contains(where: { $0.id == option.id }) }
         for model in downloaded where !models.contains(where: { $0.id == model.id }) { models.append(model) }
     }
+    /// The remembered model is a preference, not an entitlement: reuse it only
+    /// when it is present in the given catalog, otherwise fall back to the local model.
+    private func restoredModel(for scope: String, in available: [ModelOption]) -> String? {
+        guard let remembered = services.lastUsedModel(scope),
+              available.contains(where: { $0.id == remembered }) else { return nil }
+        return remembered
+    }
     func reloadModels() async {
         guard session != nil, !isLoadingModels, !isStreaming else { return }
         let accountRevision = sessionRevision
@@ -331,6 +352,9 @@ import Network
                 if !available.contains(where: { $0.id == selectedModel }) { selectedModel = "" }
             } else if let current {
                 selectedModel = available.contains(where: { $0.id == current.model }) ? current.model : ""
+            } else if let remembered = restoredModel(for: modelPreferenceScope, in: available) {
+                // No conversation selected: start from the last model this account used.
+                selectedModel = remembered
             } else { selectedModel = available.first?.id ?? "" }
             if let current, current.model == selectedModel { selectedAccess = current.modelAccess }
 
@@ -555,6 +579,9 @@ import Network
         guard !isRestoring, storageLoaded else { return }
         if current?.messages.isEmpty == true { return }
         stop()
+        // A new conversation opens on the model the user last used, not on
+        // whatever the previously selected conversation happened to use.
+        if let remembered = restoredModel(for: modelPreferenceScope, in: models) { selectedModel = remembered }
         if let unused = conversations.first(where: { $0.messages.isEmpty }) {
             selection = unused.id
             return
