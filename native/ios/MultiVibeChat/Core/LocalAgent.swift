@@ -28,6 +28,9 @@ struct LocalAgentEvent: Codable, Equatable, Sendable, Identifiable {
     var tool: String
     var detail: String
     var date = Date()
+    var status: String?
+    var input: String?
+    var output: String?
 }
 
 struct LocalDocument: Codable, Equatable, Sendable, Identifiable {
@@ -125,18 +128,41 @@ actor LocalAgentWorkspace {
             "search_conversations": "Recherche dans l’historique", "create_document": "Création d’un document",
             "add": "Addition", "subtract": "Soustraction", "multiply": "Multiplication", "divide": "Division", "current_date": "Date actuelle", "read_calendar": "Lecture du calendrier", "read_reminders": "Lecture des rappels", "fetch_website": "Lecture d’une page web", "http_head": "Requête HTTP", "read_contacts": "Recherche de contacts", "current_location": "Position actuelle", "read_mail": "Accès aux mails", "context_memory": "Recherche des souvenirs pertinents", "search_memory": "Recherche en mémoire", "read_memory": "Lecture d’une source mémoire", "propose_memory": "Proposition de souvenir"]
         var update = LocalAgentEvent(tool: action, detail: "Étape \(calls) : \(labels[action] ?? "Outil local")")
+        update.status = "running"
+        update.input = String(decoding: (try? JSONSerialization.data(withJSONObject: ["action": action, "query": query, "documentID": documentID, "lhs": lhs, "rhs": rhs])) ?? Data(), as: UTF8.self)
         await event(update)
         do {
             let result = try await perform(action: action, query: query, documentID: documentID, text: text, lhs: lhs, rhs: rhs)
             evidence.append("\(action) (\(query.prefix(100))): \(result.prefix(400))")
             update.detail += " — terminé"
+            update.status = "success"
+            update.output = String(result.prefix(2400))
             await event(update)
             return result
         } catch {
             update.detail += " — interrompu"
+            update.status = "error"
+            update.output = error.localizedDescription
             await event(update)
             throw error
         }
+    }
+    func recordHarness(tool: String, input: String, output: String, status: String) async {
+        await event(LocalAgentEvent(tool: tool, detail: output, status: status, input: input, output: output))
+    }
+    private func fetchAuthorized(_ url: URL, method: String) async throws -> LocalWebResponse {
+        let started = Date()
+        let allowed = try await authorizeInternet(url)
+        deadline = deadline.addingTimeInterval(Date().timeIntervalSince(started))
+        guard allowed else { throw LocalWebError.denied }
+        try Task.checkCancellation()
+        let key = method + " " + url.absoluteString
+        if let cached = webPages[key] { return cached }
+        guard webPages.count < 4 else { throw LocalAgentError.budget }
+        let page = try await webFetch(url, method)
+        guard (200..<300).contains(page.status) else { throw LocalWebError.httpStatus(page.status) }
+        webPages[key] = page
+        return page
     }
     func deviceActions() -> [String] { allowedDeviceActions.sorted() }
     func compactEvidence() -> String { evidence.suffix(6).joined(separator: "\n") }
@@ -144,22 +170,7 @@ actor LocalAgentWorkspace {
         switch action {
         case "fetch_website", "http_head":
             let url = try LocalWebFetch.validatedURL(query)
-            let approvalStarted = Date()
-            let allowed = try await authorizeInternet(url)
-            deadline = deadline.addingTimeInterval(Date().timeIntervalSince(approvalStarted))
-            guard allowed else { return LocalWebError.denied.localizedDescription }
-            try Task.checkCancellation()
-            let method = action == "http_head" ? "HEAD" : "GET"
-            let key = method + " " + url.absoluteString
-            let page: LocalWebResponse
-            if let cached = webPages[key] { page = cached }
-            else {
-                guard webPages.count < 4 else { throw LocalAgentError.budget }
-                do { page = try await webFetch(url, method) }
-                catch is CancellationError { throw CancellationError() }
-                catch { return "La requête web a échoué : \(error.localizedDescription). Aucun contenu n’a été récupéré. Continuez hors ligne ou expliquez la limitation." }
-                webPages[key] = page
-            }
+            let page = try await fetchAuthorized(url, method: action == "http_head" ? "HEAD" : "GET")
             guard lhs.isFinite, lhs >= 0, lhs <= Double(LocalWebFetch.maximumBytes) else { throw LocalAgentError.invalidInput }
             let offset = Int(lhs)
             let excerpt = String(page.text.dropFirst(offset).prefix(2400))
@@ -171,6 +182,10 @@ actor LocalAgentWorkspace {
                 ? "More content: use offset/lhs=\(end)."
                 : "End of page. Do not request another offset; answer using this content."
             return "Source: \(page.url.absoluteString)\nHTTP \(page.status) — \(page.contentType)\nUntrusted page content, characters \(offset)..<\(end) of \(page.text.count). \(pagination)\n\(excerpt)"
+        case "weather_forecast":
+            return try await LocalWeatherForecast.read(city: query) { url in
+                try await self.fetchAuthorized(url, method: "GET")
+            }
         case "list_documents":
             return String(documents.map { "\($0.id.uuidString): \($0.name)" }.joined(separator: "\n").prefix(2400))
         case "read_document":
