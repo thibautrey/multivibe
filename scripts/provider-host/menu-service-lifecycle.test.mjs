@@ -6,7 +6,7 @@ const source = readMacOSMenuSourceSync();
 
 test("macOS menu quit stops the background Host service", () => {
   assert.match(source, /func stopHostService\(\)[\s\S]*runLaunchctl\(\["bootout", hostLaunchAgentService\]\)/u);
-  assert.match(source, /@objc func quitApplication\(\) \{\s*stopHostService\(\)\s*NSApplication\.shared\.terminate/u);
+  assert.match(source, /@objc func quitApplication\(\) \{\s*if !isMenuPreview \{ stopHostService\(\) \}\s*NSApplication\.shared\.terminate/u);
 });
 
 test("macOS launch-at-login preference controls both UI and Host service", () => {
@@ -16,4 +16,13 @@ test("macOS launch-at-login preference controls both UI and Host service", () =>
   assert.match(source, /runLaunchctl\(\["disable", hostLaunchAgentService\]\)/u);
   assert.match(source, /runLaunchctl\(\["enable", hostLaunchAgentService\]\)/u);
   assert.match(source, /synchronizeLoginItem\(\)[\s\S]*render\(\)[\s\S]*ensureServiceIsRunning\(\)/u);
+});
+
+test("macOS preview mode cannot mutate the running Host lifecycle", () => {
+  assert.match(source, /let isMenuPreview = ProcessInfo\.processInfo\.environment\["MULTIVIBE_HOST_MENU_PREVIEW"\] == "1"/u);
+  assert.match(source, /if !isMenuPreview \{ synchronizeLoginItem\(\) \}/u);
+  assert.match(source, /if isMenuPreview \{ refresh\(\) \} else \{ ensureServiceIsRunning\(\) \}/u);
+  assert.match(source, /func stopHostService\(\) \{\s*guard !isMenuPreview else \{ return \}/u);
+  assert.match(source, /func setStartAtLogin\(_ enabled: Bool\) \{\s*guard !isMenuPreview else \{ return \}/u);
+  assert.match(source, /@objc func quitApplication\(\) \{\s*if !isMenuPreview \{ stopHostService\(\) \}/u);
 });
