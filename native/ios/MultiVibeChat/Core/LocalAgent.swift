@@ -150,6 +150,42 @@ actor LocalAgentWorkspace {
             throw error
         }
     }
+    /// Private transport for upstream tools. These operations are never exposed
+    /// as model tools; only app-owned document UUIDs can cross this boundary.
+    func executeHarnessTool(name: String, arguments: String) async throws -> PiToolResult? {
+        guard ["clarify", "document_snapshot", "document_replace"].contains(name) else { return nil }
+        try Task.checkCancellation()
+        guard calls < 12, Date() < deadline else { throw LocalAgentError.budget }
+        guard arguments.utf8.count <= 1_300_000,
+              let data = arguments.data(using: .utf8),
+              let input = try JSONSerialization.jsonObject(with: data) as? [String: String] else { throw LocalAgentError.invalidInput }
+        calls += 1
+        if name == "clarify" {
+            guard Set(input.keys) == ["content"], let content = input["content"],
+                  !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, content.count <= 8_000 else { throw LocalAgentError.invalidInput }
+            await recordHarness(tool: name, input: "", output: content, status: "needs_input")
+            return PiToolResult(content: content, terminal: true)
+        }
+        guard let rawID = input["documentID"], let id = UUID(uuidString: rawID),
+              let index = documents.firstIndex(where: { $0.id == id }) else { throw LocalAgentError.documentMissing }
+        if name == "document_snapshot" {
+            guard Set(input.keys) == ["documentID"] else { throw LocalAgentError.invalidInput }
+            return PiToolResult(content: documents[index].text)
+        }
+        guard Set(input.keys) == ["documentID", "content", "expected"],
+              let content = input["content"], content.utf8.count <= 100_000,
+              let expected = input["expected"], expected == documents[index].text else {
+            throw LocalAgentError.unavailable("Le document a changé ou le contenu est trop grand. Relisez-le avant de modifier.")
+        }
+        var updated = documents[index]
+        updated.text = content
+        try await saveDocument(updated)
+        documents[index] = updated
+        let result = "Document modifié : \(updated.name) (\(updated.id.uuidString))."
+        await recordHarness(tool: "edit_document", input: rawID, output: result, status: "success")
+        await render([.document(.init(id: id, name: updated.name, excerpt: String(content.prefix(500))))])
+        return PiToolResult(content: result)
+    }
     func recordHarness(tool: String, input: String, output: String, status: String) async {
         await event(LocalAgentEvent(tool: tool, detail: output, status: status, input: input, output: output))
     }

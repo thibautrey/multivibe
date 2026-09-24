@@ -127,6 +127,46 @@ import XCTest
         XCTAssertTrue(last.contains("End of page"))
         XCTAssertFalse(last.contains("More content"))
     }
+    func testUpstreamPiDocumentEditInJavaScriptCore() async throws {
+        actor State {
+            var turns = 0
+            var saved: LocalDocument?
+            func next() -> Int { turns += 1; return turns }
+            func save(_ document: LocalDocument) { saved = document }
+        }
+        let state = State()
+        let document = LocalDocument(name: "Test", text: "Total: 42\r\n")
+        let workspace = LocalAgentWorkspace(conversations: [], documents: [document], event: { _ in }, saveDocument: { await state.save($0) })
+        let harness = try PiAgentHarness()
+        try await harness.run(messages: #"[{"role":"user","content":"Modifie Total: 42 en Total: 43"}]"#,
+            tools: LocalDownloadedTools.schema(deviceActions: []), generate: { messages, tools, _ in
+                XCTAssertTrue(tools.contains("edit_document"))
+                if await state.next() == 1 {
+                    let args = String(decoding: try JSONSerialization.data(withJSONObject: ["path": document.id.uuidString, "edits": [["oldText": "Total: 42", "newText": "Total: 43"]]]), as: UTF8.self)
+                    return String(decoding: try JSONSerialization.data(withJSONObject: ["role": "assistant", "content": "", "tool_calls": [["id": "edit", "type": "function", "function": ["name": "edit_document", "arguments": args]]]]), as: UTF8.self)
+                }
+                XCTAssertTrue(messages.contains("Successfully replaced"))
+                return #"{"role":"assistant","content":"Modifié"}"#
+            }, execute: { name, args in
+                guard let result = try await workspace.executeHarnessTool(name: name, arguments: args) else { throw LocalAgentError.invalidInput }
+                return result
+            }, onText: { _ in })
+        let saved = await state.saved
+        XCTAssertEqual(saved?.id, document.id)
+        XCTAssertEqual(saved?.text, "Total: 43\r\n")
+    }
+    func testNativeDocumentReplacementRejectsStaleSnapshotAndFailedSave() async throws {
+        let document = LocalDocument(name: "Test", text: "Original")
+        let workspace = LocalAgentWorkspace(conversations: [], documents: [document], event: { _ in }, saveDocument: { _ in throw CocoaError(.fileWriteOutOfSpace) })
+        for expected in ["Stale", "Original"] {
+            let json = String(decoding: try JSONSerialization.data(withJSONObject: ["documentID": document.id.uuidString, "content": "Changed", "expected": expected]), as: UTF8.self)
+            do { _ = try await workspace.executeHarnessTool(name: "document_replace", arguments: json); XCTFail("Must reject stale or failed writes") }
+            catch { }
+        }
+        let json = String(decoding: try JSONSerialization.data(withJSONObject: ["documentID": document.id.uuidString]), as: UTF8.self)
+        let result = try await workspace.executeHarnessTool(name: "document_snapshot", arguments: json)
+        XCTAssertEqual(result?.content, "Original")
+    }
     func testPiJavaScriptCoreExecutesNativeToolAndPreservesPrompt() async throws {
         actor Calls {
             var count = 0

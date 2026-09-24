@@ -1077,8 +1077,10 @@ import Network
     }
     private func saveLocalDocument(_ document: LocalDocument, generation: UUID, account: UUID) throws {
         guard generationRevision == generation, sessionRevision == account else { throw CancellationError() }
-        localDocuments.append(document)
-        guard persist() else { localDocuments.removeAll { $0.id == document.id }; throw LocalAgentError.unavailable("Enregistrement du document impossible.") }
+        let previous = localDocuments
+        if let index = localDocuments.firstIndex(where: { $0.id == document.id }) { localDocuments[index] = document }
+        else { localDocuments.append(document) }
+        guard persist() else { localDocuments = previous; throw LocalAgentError.unavailable("Enregistrement du document impossible.") }
     }
     func importDocument(name: String, text: String) throws {
         guard !isRestoring, !isStreaming, text.utf8.count <= 100_000 else { throw LocalAgentError.invalidInput }
