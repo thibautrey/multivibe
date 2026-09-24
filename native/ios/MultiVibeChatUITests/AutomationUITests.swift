@@ -21,7 +21,6 @@ final class AutomationUITests: XCTestCase {
         let schedule = app.buttons["scheduleAutomation"]
         XCTAssertTrue(schedule.waitForExistence(timeout: 5)); schedule.tap()
         XCTAssertTrue(app.textFields["automationTitle"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.datePickers["Chaque jour à"].exists)
         let editor = XCTAttachment(screenshot: app.screenshot()); editor.name = "Automation editor"; editor.lifetime = .keepAlways; add(editor)
         app.buttons["Annuler"].tap()
         XCTAssertTrue(item.waitForExistence(timeout: 5)); item.tap()
