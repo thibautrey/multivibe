@@ -2,6 +2,22 @@ import XCTest
 @testable import MultiVibeChat
 
 @MainActor final class DownloadedModelTests: XCTestCase {
+    func testPublisherIdentityAndBundledImages() throws {
+        XCTAssertEqual(ModelPublisher.resolve(repository: "bartowski/Qwen", baseModels: ["Qwen/Qwen3-0.6B"]), "qwen")
+        XCTAssertEqual(ModelPublisher.resolve(repository: "bartowski/Gemma", baseModels: ["google/gemma-3"]), "google")
+        XCTAssertNil(ModelPublisher.resolve(repository: "unknown/Qwen-finetune"))
+        XCTAssertNil(ModelPublisher.canonical("unknown"))
+        XCTAssertEqual(ModelPublisher.canonical("Mistral AI"), "mistralai")
+        for publisher in ModelPublisher.known {
+            XCTAssertNotNil(UIImage(named: "Publisher-" + publisher), publisher)
+        }
+        for model in HuggingFaceCatalog.bundled {
+            XCTAssertEqual(model.resolvedLogoPublisher, "qwen")
+            XCTAssertEqual(model.option.logoPublisher, "qwen")
+        }
+        let old = try JSONEncoder().encode(model())
+        XCTAssertNil(try JSONDecoder().decode(DownloadableModel.self, from: old).logoPublisher)
+    }
     private func model() -> DownloadableModel {
         DownloadableModel(repository: "example/model", revision: String(repeating: "a", count: 40), filename: "model-Q4_K_M.gguf",
             name: "Test model", publisher: "Example", bytes: 500_000_000, sha256: String(repeating: "b", count: 64),
