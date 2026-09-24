@@ -230,6 +230,16 @@ import CryptoKit
         let schema = LocalDownloadedTools.schema(deviceActions: [], weather: true)
         XCTAssertTrue(schema.contains("weather_forecast"))
         XCTAssertFalse(schema.contains("fetch_website"))
+
+        let followUp = [
+            ChatMessage(role: "user", content: "Tu peux vérifier la météo pour la semaine prochaine à Montréal ?"),
+            ChatMessage(role: "assistant", content: "À Montréal, les températures seront comprises entre 4 et 19 °C."),
+            ChatMessage(role: "user", content: "Est-ce qu’il faut prévoir des pulls ?")]
+        XCTAssertFalse(LocalDownloadedTools.isWeatherRequest(followUp))
+        XCTAssertTrue(LocalDownloadedTools.isWeatherRequest([
+            ChatMessage(role: "user", content: "Quel temps fera-t-il demain ?"),
+            ChatMessage(role: "assistant", content: "Pour quelle ville souhaites-tu la météo ?"),
+            ChatMessage(role: "user", content: "Toulouse")]))
     }
     func testToolCapabilityDoesNotDependOnPerformanceRecommendation() {
         var model = model()
