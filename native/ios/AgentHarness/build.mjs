@@ -6,7 +6,7 @@ const directory = fileURLToPath(new URL('.', import.meta.url));
 const output = new URL('../MultiVibeChat/Resources/PiAgentCore.js', import.meta.url);
 const result = await build({ absWorkingDir: directory, entryPoints: ['bridge.mjs'], bundle: true,
   platform: 'browser', format: 'iife', target: 'safari18', define: { global: 'globalThis' },
-  minify: true, legalComments: 'inline', write: false, metafile: true });
+  tsconfigRaw: { compilerOptions: { alwaysStrict: true } }, minify: true, legalComments: 'inline', write: false, metafile: true });
 const forbidden = Object.keys(result.metafile.inputs).filter(path => /node_modules\/(openai|@anthropic-ai|@aws-sdk|@google)\//.test(path));
 if (forbidden.length) throw new Error('Native-only bundle unexpectedly includes provider SDKs: ' + forbidden.join(', '));
 const content = result.outputFiles[0].text;

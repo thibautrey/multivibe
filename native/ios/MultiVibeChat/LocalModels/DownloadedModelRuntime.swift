@@ -74,7 +74,7 @@ actor DownloadedModelRuntime {
                         return PiToolResult(content: question, terminal: true)
                     }
                     let result = try await workspace.execute(action: input.action, query: input.query, documentID: input.documentID,
-                        text: input.text, lhs: input.lhs, rhs: input.rhs)
+                        text: input.text, lhs: input.lhs, rhs: input.rhs, strictErrors: true)
                     return PiToolResult(content: String(result.prefix(12_000)))
                 } catch is CancellationError { throw CancellationError() }
                 catch LocalWebError.denied { return PiToolResult(content: LocalWebError.denied.localizedDescription, isError: true, terminal: true) }

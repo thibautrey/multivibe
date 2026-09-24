@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { randomBytes } from 'node:crypto';
 const { outputFiles } = await build({ entryPoints: [fileURLToPath(new URL('bridge.mjs', import.meta.url))], bundle: true,
-  platform: 'browser', format: 'iife', target: 'safari18', define: { global: 'globalThis' }, write: false });
+  platform: 'browser', format: 'iife', tsconfigRaw: { compilerOptions: { alwaysStrict: true } }, target: 'safari18', define: { global: 'globalThis' }, write: false });
 const schema = [{ type: 'function', function: { name: 'fetch_website', description: 'Read a URL',
   parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'], additionalProperties: false } } }];
 const call = (args = { url: 'https://example.com' }) => ({ role: 'assistant', content: '', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'fetch_website', arguments: JSON.stringify(args) } }] });

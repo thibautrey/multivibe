@@ -120,7 +120,7 @@ actor LocalAgentWorkspace {
         self.authorizeInternet = authorizeInternet; self.webFetch = webFetch
     }
     func execute(action: String, query: String, documentID: String, text: String,
-                 lhs: Double, rhs: Double) async throws -> String {
+                 lhs: Double, rhs: Double, strictErrors: Bool = false) async throws -> String {
         try Task.checkCancellation()
         guard calls < 12, Date() < deadline else { throw LocalAgentError.budget }
         calls += 1
@@ -144,6 +144,9 @@ actor LocalAgentWorkspace {
             update.status = "error"
             update.output = error.localizedDescription
             await event(update)
+            if !strictErrors, let webError = error as? LocalWebError, case .denied = webError {
+                return webError.localizedDescription
+            }
             throw error
         }
     }
