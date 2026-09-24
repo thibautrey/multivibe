@@ -101,6 +101,57 @@ import XCTest
         XCTAssertTrue(last.contains("End of page"))
         XCTAssertFalse(last.contains("More content"))
     }
+    func testPiJavaScriptCoreExecutesNativeToolAndPreservesPrompt() async throws {
+        actor Calls {
+            var count = 0
+            func next() -> Int { count += 1; return count }
+        }
+        let calls = Calls()
+        let harness = try PiAgentHarness()
+        XCTAssertNotEqual(harness.version, "unknown")
+        try await harness.run(messages: #"[{"role":"system","content":"PROMPT-KEPT"},{"role":"user","content":"Read the date"}]"#,
+            tools: LocalDownloadedTools.schema(deviceActions: []), generate: { messages, _, output in
+                XCTAssertTrue(messages.contains("PROMPT-KEPT"))
+                if await calls.next() == 1 {
+                    return #"{"role":"assistant","content":"","tool_calls":[{"id":"native-test","type":"function","function":{"name":"local_workspace","arguments":"{\"action\":\"current_date\"}"}}]}"#
+                }
+                XCTAssertTrue(messages.contains("DATE-EVIDENCE"))
+                await output("Done")
+                return #"{"role":"assistant","content":"Done"}"#
+            }, execute: { name, _ in
+                XCTAssertEqual(name, "local_workspace")
+                return PiToolResult(content: "DATE-EVIDENCE")
+            }, onText: { _ in })
+        let count = await calls.count
+        XCTAssertEqual(count, 2)
+    }
+    func testHTTPFailureIsRecordedAsErrorRatherThanSuccessfulEvidence() async throws {
+        actor Events {
+            var values: [LocalAgentEvent] = []
+            func add(_ value: LocalAgentEvent) { values.append(value) }
+        }
+        let events = Events()
+        let workspace = LocalAgentWorkspace(conversations: [], documents: [], event: { await events.add($0) }, saveDocument: { _ in },
+            authorizeInternet: { _ in true }, webFetch: { url, _ in
+                LocalWebResponse(url: url, status: 404, contentType: "text/html", text: "Not found")
+            })
+        do {
+            _ = try await workspace.execute(action: "fetch_website", query: "https://example.com/missing", documentID: "", text: "", lhs: 0, rhs: 0)
+            XCTFail("HTTP 404 must fail")
+        } catch LocalWebError.httpStatus(404) { }
+        let last = await events.values.last
+        XCTAssertEqual(last?.status, "error")
+        XCTAssertTrue(last?.output?.contains("404") == true)
+    }
+    func testWeatherToolRequiresUserProvidedCity() throws {
+        let messages = [ChatMessage(role: "user", content: "Quel temps fera-t-il demain ?")]
+        XCTAssertTrue(LocalDownloadedTools.isWeatherRequest(messages))
+        XCTAssertFalse(LocalDownloadedTools.cityWasProvided("Hawthorne", messages: messages))
+        XCTAssertTrue(LocalDownloadedTools.cityWasProvided("Toulouse", messages: messages + [ChatMessage(role: "user", content: "Toulouse")]))
+        let schema = LocalDownloadedTools.schema(deviceActions: [], weather: true)
+        XCTAssertTrue(schema.contains("weather_forecast"))
+        XCTAssertFalse(schema.contains("fetch_website"))
+    }
     func testToolCapabilityDoesNotDependOnPerformanceRecommendation() {
         var model = model()
         XCTAssertFalse(model.supportsTools)
@@ -233,6 +284,46 @@ import XCTest
             if live { XCTAssertTrue(text.contains("Example Domain"), text) }
             else if !denied { XCTAssertTrue(text.contains("ORION-742"), text) }
             else { XCTAssertFalse(text.contains("ORION-742"), text) }
+            await DownloadedModelRuntime.shared.unload()
+        }
+        #endif
+    }
+    func testPiWeatherClarificationAndLiveForecast() async throws {
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Physical-device acceptance only")
+        #else
+        guard ProcessInfo.processInfo.environment["MULTIVIBE_LOCAL_DEVICE_TEST"] == "1" else { throw XCTSkip("Opt in to device inference") }
+        let library = LocalModelLibrary.shared
+        let model = try XCTUnwrap(HuggingFaceCatalog.bundled.first { $0.name == "Qwen3 1.7B" })
+        guard library.installation(model.id)?.state == .installed else { throw XCTSkip("Install Qwen3 1.7B") }
+        actor Capture {
+            var text = ""; var requests = 0; var events: [LocalAgentEvent] = []
+            func append(_ value: String) { text += value }
+            func fetch() { requests += 1 }
+            func event(_ value: LocalAgentEvent) { events.append(value) }
+        }
+        for cityKnown in [false, true] {
+            let capture = Capture()
+            let workspace = LocalAgentWorkspace(conversations: [], documents: [], event: { await capture.event($0) }, saveDocument: { _ in },
+                authorizeInternet: { _ in true }, webFetch: { url, method in
+                    await capture.fetch()
+                    XCTAssertTrue(cityKnown, "No network request may guess the missing city")
+                    return try await LocalWebFetch.fetch(url: url, method: method)
+                })
+            var messages = [ChatMessage(role: "user", content: "Quel temps fera-t-il demain ?")]
+            if cityKnown { messages += [ChatMessage(role: "assistant", content: "Pour quelle ville ?"), ChatMessage(role: "user", content: "Toulouse")] }
+            try await DownloadedModelRuntime.shared.respond(model: model, path: library.file(model), messages: messages, workspace: workspace) { await capture.append($0) }
+            let text = await capture.text, requests = await capture.requests, events = await capture.events
+            XCTAssertTrue(events.contains { $0.tool == "pi_agent_core" })
+            if cityKnown {
+                XCTAssertEqual(requests, 2)
+                XCTAssertTrue(events.contains { $0.tool == "weather_forecast" && $0.status == "success" })
+                XCTAssertTrue(text.localizedCaseInsensitiveContains("Toulouse"), text)
+                XCTAssertTrue(text.contains("°") || text.contains("degr"), text)
+            } else {
+                XCTAssertEqual(requests, 0)
+                XCTAssertTrue(text.localizedCaseInsensitiveContains("ville"), text)
+            }
             await DownloadedModelRuntime.shared.unload()
         }
         #endif

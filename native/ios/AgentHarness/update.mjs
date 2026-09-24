@@ -1,0 +1,13 @@
+import { execFileSync } from 'node:child_process';
+import { readFile, writeFile } from 'node:fs/promises';
+const version = process.argv[2];
+if (!/^\d+\.\d+\.\d+$/.test(version ?? '')) throw new Error('Usage: npm run update:pi -- 0.87.1');
+const directory = new URL('.', import.meta.url);
+execFileSync('npm', ['install', '--ignore-scripts', '--save-exact', `@earendil-works/pi-agent-core@${version}`, `@earendil-works/pi-ai@${version}`], { cwd: directory, stdio: 'inherit' });
+const license = await fetch(`https://raw.githubusercontent.com/earendil-works/pi/v${version}/LICENSE`);
+if (!license.ok) throw new Error('Could not retrieve the pinned upstream license');
+await writeFile(new URL('licenses/pi.txt', directory), await license.text());
+const entry = new URL('bridge.mjs', directory);
+await writeFile(entry, (await readFile(entry, 'utf8')).replace(/version: '[\d.]+'/g, `version: '${version}'`));
+for (const script of ['build', 'test', 'check']) execFileSync('npm', ['run', script], { cwd: directory, stdio: 'inherit' });
+console.log('Run the iPhone acceptance tests before shipping this version.');
