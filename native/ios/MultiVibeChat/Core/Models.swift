@@ -298,39 +298,40 @@ enum ConversationTitle {
 @MainActor enum LastUsedModelStore {
     static let key = "cloud.multivibe.chat.last-used-model-v1"
     static let maximumAccounts = 20
+    /// Ordered oldest-first so eviction is deterministic rather than dictionary-order.
+    private struct Entry: Codable { var account: String; var model: String }
     static func load(from defaults: UserDefaults = .standard) -> [String: String] {
-        let stored = defaults.dictionary(forKey: key) ?? [:]
-        var values: [String: String] = [:]
-        for (account, value) in stored {
-            guard !account.isEmpty, let identifier = value as? String, !identifier.isEmpty else { continue }
-            values[account] = identifier
-        }
-        return values
+        Dictionary(entries(from: defaults).map { ($0.account, $0.model) }, uniquingKeysWith: { _, last in last })
     }
     static func model(for account: String, from defaults: UserDefaults = .standard) -> String? {
         guard !account.isEmpty else { return nil }
-        return load(from: defaults)[account]
+        return entries(from: defaults).last { $0.account == account }?.model
     }
     static func save(_ identifier: String, for account: String, to defaults: UserDefaults = .standard) {
         guard !account.isEmpty else { return }
-        var values = load(from: defaults)
-        guard !identifier.isEmpty else { values.removeValue(forKey: account); return persist(values, to: defaults) }
-        values.removeValue(forKey: account)
-        values[account] = identifier
-        // Bound growth without dropping the account being written.
-        while values.count > maximumAccounts {
-            guard let oldest = values.keys.first(where: { $0 != account }) else { break }
-            values.removeValue(forKey: oldest)
-        }
+        var values = entries(from: defaults).filter { $0.account != account }
+        if !identifier.isEmpty { values.append(Entry(account: account, model: identifier)) }
+        // Drop the oldest accounts first, never the one being written.
+        if values.count > maximumAccounts { values.removeFirst(values.count - maximumAccounts) }
         persist(values, to: defaults)
     }
     static func clear(for account: String, from defaults: UserDefaults = .standard) {
-        var values = load(from: defaults)
-        guard values.removeValue(forKey: account) != nil else { return }
-        persist(values, to: defaults)
+        guard !account.isEmpty else { return }
+        let values = entries(from: defaults)
+        let remaining = values.filter { $0.account != account }
+        guard remaining.count != values.count else { return }
+        persist(remaining, to: defaults)
     }
-    private static func persist(_ values: [String: String], to defaults: UserDefaults) {
-        if values.isEmpty { defaults.removeObject(forKey: key) } else { defaults.set(values, forKey: key) }
+    private static func entries(from defaults: UserDefaults) -> [Entry] {
+        guard let data = defaults.data(forKey: key),
+              let decoded = try? JSONDecoder().decode([Entry].self, from: data) else { return [] }
+        return decoded.filter { !$0.account.isEmpty && !$0.model.isEmpty }
+    }
+    private static func persist(_ values: [Entry], to defaults: UserDefaults) {
+        guard !values.isEmpty, let data = try? JSONEncoder().encode(values) else {
+            defaults.removeObject(forKey: key); return
+        }
+        defaults.set(data, forKey: key)
     }
 }
 struct ModelList: Decodable { let data: [ModelOption] }

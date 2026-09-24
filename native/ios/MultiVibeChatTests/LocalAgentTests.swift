@@ -317,15 +317,16 @@ import XCTest
     downloadedModels: @escaping @MainActor () -> [ModelOption] = { [] },
     lastUsedModel: @escaping @MainActor (String) -> String? = { _ in nil },
     rememberLastUsedModel: @escaping @MainActor (String, String) -> Void = { _, _ in },
-    summarizeLocalTitle: @escaping @Sendable (String) async throws -> String = { _ in throw APIError.invalidResponse }
+    summarizeTitle: @escaping @Sendable (String, String) async throws -> String = { _, _ in throw APIError.invalidResponse }
 ) -> SessionServices {
     SessionServices(writeHistory: writeHistory, load: load, save: save, clear: clear,
         refresh: refresh, revoke: revoke, readHistory: readHistory, saveHistory: saveHistory,
         stream: stream, readLocalHistory: readLocalHistory, localAvailability: localAvailability,
-        localRespond: localRespond, downloadedModels: downloadedModels,
-        memoryIndex: { _ in try MemoryIndex(url: nil) }, reviewLocalMemory: { _ in "[]" }, monitorConnectivity: monitorConnectivity, syncDelay: syncDelay, models: models,
-        lastUsedModel: lastUsedModel, rememberLastUsedModel: rememberLastUsedModel,
-        summarizeLocalTitle: summarizeLocalTitle)
+        downloadedModels: downloadedModels, localRespond: localRespond,
+        memoryIndex: { _ in try MemoryIndex(url: nil) }, reviewLocalMemory: { _ in "[]" },
+        summarizeTitle: summarizeTitle,
+        monitorConnectivity: monitorConnectivity, syncDelay: syncDelay, models: models,
+        lastUsedModel: lastUsedModel, rememberLastUsedModel: rememberLastUsedModel)
 }
 
 @MainActor final class ConversationTitleTests: XCTestCase {
@@ -342,21 +343,23 @@ import XCTest
     /// Suspends the title model call until the test releases it, so a late result
     /// can be checked against a title settled in the meantime.
     actor TitleGate {
-        private var release: CheckedContinuation<Void, Never>?
+        private var waiter: CheckedContinuation<Void, Never>?
         private var released = false
         var started = false
         func waitForRelease() async {
             started = true
             guard !released else { return }
-            await withCheckedContinuation { self.release = $0 }
+            await withCheckedContinuation { self.waiter = $0 }
         }
-        func release() {
+        func finish() {
             released = true
-            release?.resume(); release = nil
+            waiter?.resume(); waiter = nil
         }
     }
+    /// Waits for the background title attempt to settle and for the visible reply
+    /// to finish, so a following turn can be sent deterministically.
     private func waitForTitle(_ manager: ConversationManager) async {
-        for _ in 0..<2000 where manager.current?.titleGeneratedFor == nil { await Task.yield() }
+        for _ in 0..<4000 where manager.current?.titleGeneratedFor == nil || manager.isStreaming { await Task.yield() }
     }
 
     func testPolicyNormalizesModelOutput() {
@@ -373,7 +376,7 @@ import XCTest
         let services = isolatedServices(load: { self.session() },
             localAvailability: { nil },
             localRespond: { _, _, output in await output("Réponse") },
-            summarizeLocalTitle: { prompt in
+            summarizeTitle: { _, prompt in
                 await probe.record(prompt)
                 return "\"Planification du chantier\""
             })
@@ -384,7 +387,8 @@ import XCTest
         XCTAssertTrue(manager.send("Peux-tu m'aider à planifier le chantier de la semaine prochaine ?"))
         await waitForTitle(manager)
         XCTAssertEqual(manager.current?.title, "Planification du chantier")
-        XCTAssertEqual(await probe.count(), 1, "The title request must run exactly once")
+        let requests = await probe.count()
+        XCTAssertEqual(requests, 1, "The title request must run exactly once")
         XCTAssertEqual(manager.current?.titleGeneratedFor, manager.current?.messages.first?.id)
     }
 
@@ -393,7 +397,7 @@ import XCTest
         let services = isolatedServices(load: { self.session() },
             localAvailability: { nil },
             localRespond: { _, _, output in await output("Réponse") },
-            summarizeLocalTitle: { prompt in
+            summarizeTitle: { _, prompt in
                 await probe.record(prompt)
                 throw APIError.invalidResponse
             })
@@ -406,7 +410,8 @@ import XCTest
         XCTAssertEqual(manager.current?.title, "Premier message utilisateur")
         XCTAssertTrue(manager.send("Deuxième message"))
         for _ in 0..<200 where manager.isStreaming { await Task.yield() }
-        XCTAssertEqual(await probe.count(), 1, "A failed attempt must not be repeated on later turns")
+        let attempts = await probe.count()
+        XCTAssertEqual(attempts, 1, "A failed attempt must not be repeated on later turns")
     }
 
     func testRequestIsBoundedAndCarriesTheUserPrompt() async {
@@ -415,7 +420,7 @@ import XCTest
         let services = isolatedServices(load: { self.session() },
             localAvailability: { nil },
             localRespond: { _, _, output in await output("Réponse") },
-            summarizeLocalTitle: { prompt in
+            summarizeTitle: { _, prompt in
                 await probe.record(prompt)
                 return "Titre court"
             })
@@ -435,19 +440,19 @@ import XCTest
         let services = isolatedServices(load: { self.session() },
             localAvailability: { nil },
             localRespond: { _, _, output in await output("Réponse") },
-            summarizeLocalTitle: { _ in await recorder.waitForRelease(); return "Titre tardif" })
+            summarizeTitle: { _, _ in await recorder.waitForRelease(); return "Titre tardif" })
         let manager = ConversationManager(services: services)
         await manager.restore(loadRemoteModels: false)
         manager.models = [LocalModel.option]
         manager.selectedModel = LocalModel.id
         XCTAssertTrue(manager.send("Message initial"))
         // Wait until the background request is actually suspended in the model call.
-        for _ in 0..<2000 where !(await recorder.started) { await Task.yield() }
+        while !(await recorder.started) { await Task.yield() }
         // A title settled during the in-flight request must win.
         let id = manager.current!.id
         let index = manager.conversations.firstIndex { $0.id == id }!
         manager.conversations[index].title = "Titre manuel"
-        await recorder.release()
+        await recorder.finish()
         await waitForTitle(manager)
         XCTAssertEqual(manager.current?.title, "Titre manuel")
     }
