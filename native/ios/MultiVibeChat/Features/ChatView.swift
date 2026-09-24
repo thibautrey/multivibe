@@ -59,7 +59,7 @@ struct ChatView: View {
                                 }
                                 .accessibilityIdentifier("openApplications")
                             }
-                            NavigationLink { AutomationsView() } label: {
+                            NavigationLink { AutomationsView().id(manager.session?.accountId ?? "guest") } label: {
                                 ConversationShortcutLabel(title: "Automatisations", systemImage: "clock.arrow.circlepath")
                             }.accessibilityIdentifier("openAutomations")
                             Button {
