@@ -3,6 +3,18 @@ import CryptoKit
 @testable import MultiVibeChat
 
 @MainActor final class DownloadedModelTests: XCTestCase {
+    func testFileVerificationChecksDigestAndLengthAcrossChunks() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let data = Data(repeating: 0x5a, count: 2 * 1_048_576 + 37)
+        try data.write(to: file)
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        XCTAssertTrue(try ModelFileVerification.matches(file, bytes: Int64(data.count), sha256: digest.uppercased()))
+        XCTAssertFalse(try ModelFileVerification.matches(file, bytes: Int64(data.count - 1), sha256: digest))
+        XCTAssertFalse(try ModelFileVerification.matches(file, bytes: Int64(data.count), sha256: String(repeating: "0", count: 64)))
+        try FileManager.default.removeItem(at: file)
+        XCTAssertThrowsError(try ModelFileVerification.matches(file, bytes: Int64(data.count), sha256: digest))
+    }
     func testPublisherIdentityAndBundledImages() throws {
         XCTAssertEqual(ModelPublisher.resolve(repository: "bartowski/Qwen", baseModels: ["Qwen/Qwen3-0.6B"]), "qwen")
         XCTAssertEqual(ModelPublisher.resolve(repository: "bartowski/Gemma", baseModels: ["google/gemma-3"]), "google")
