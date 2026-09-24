@@ -184,17 +184,24 @@ enum GGUFHeader {
         guard count < 100_000 else { throw URLError(.cannotParseResponse) }
         var values: [String: String] = [:]
         for _ in 0..<count {
-            let key = try string(), type = try number(4)
+            let key = try string()
+            // Architecture fields precede large tokenizer arrays. Finish collecting
+            // explicit key/value widths before computing the KV requirement.
+            if key.hasPrefix("tokenizer.") { break }
+            let type = try number(4)
             if let val = try value(type) { values[key] = val }
-            if let architecture = values["general.architecture"],
-               let layers = values[architecture + ".block_count"].flatMap(Int.init),
-               let kv = values[architecture + ".attention.head_count_kv"].flatMap(Int.init),
-               let heads = values[architecture + ".attention.head_count"].flatMap(Int.init), heads > 0,
-               let embedding = values[architecture + ".embedding_length"].flatMap(Int.init) {
-                let headSize = values[architecture + ".attention.key_length"].flatMap(Int.init) ?? embedding / heads
-                guard layers > 0, layers < 1024, kv > 0, kv < 1024, headSize > 0, headSize < 16384 else { throw URLError(.cannotParseResponse) }
-                return Info(architecture: architecture, layers: layers, kvHeads: kv, headSize: headSize)
-            }
+        }
+        if let architecture = values["general.architecture"],
+           let layers = values[architecture + ".block_count"].flatMap(Int.init),
+           let kv = values[architecture + ".attention.head_count_kv"].flatMap(Int.init),
+           let heads = values[architecture + ".attention.head_count"].flatMap(Int.init), heads > 0,
+           let embedding = values[architecture + ".embedding_length"].flatMap(Int.init) {
+            let explicitKey = values[architecture + ".attention.key_length"].flatMap(Int.init)
+            let explicitValue = values[architecture + ".attention.value_length"].flatMap(Int.init)
+            guard explicitKey != nil || ["llama", "qwen2"].contains(architecture) else { throw URLError(.cannotParseResponse) }
+            let headSize = max(explicitKey ?? embedding / heads, explicitValue ?? explicitKey ?? embedding / heads)
+            guard layers > 0, layers < 1024, kv > 0, kv < 1024, headSize > 0, headSize < 16384 else { throw URLError(.cannotParseResponse) }
+            return Info(architecture: architecture, layers: layers, kvHeads: kv, headSize: headSize)
         }
         throw URLError(.cannotParseResponse)
     }
