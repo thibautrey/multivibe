@@ -45,6 +45,20 @@ import XCTest
             XCTAssertThrowsError(try LocalDownloadedTools.arguments(value))
         }
     }
+    func testQwenExplicitKeyWidthOverridesEmbeddingDividedByHeads() throws {
+        var data = Data()
+        func number(_ value: UInt64, count: Int) { for i in 0..<count { data.append(UInt8((value >> (8 * i)) & 255)) } }
+        func string(_ value: String) { number(UInt64(value.utf8.count), count: 8); data.append(contentsOf: value.utf8) }
+        number(0x46554747, count: 4); number(3, count: 4); number(0, count: 8); number(7, count: 8)
+        string("general.architecture"); number(8, count: 4); string("qwen3")
+        for (key, value) in [("block_count", 28), ("embedding_length", 1024), ("attention.head_count", 16),
+                             ("attention.head_count_kv", 8), ("attention.key_length", 128), ("attention.value_length", 128)] {
+            string("qwen3." + key); number(4, count: 4); number(UInt64(value), count: 4)
+        }
+        let info = try GGUFHeader.read(data)
+        XCTAssertEqual(info.headSize, 128)
+        XCTAssertEqual(info.kvHeads, 8)
+    }
     func testMalformedGGUFDoesNotClaimCompatibility() {
         XCTAssertThrowsError(try GGUFHeader.read(Data()))
         XCTAssertThrowsError(try GGUFHeader.read(Data(repeating: 255, count: 1024)))
