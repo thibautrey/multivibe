@@ -269,3 +269,25 @@ final class LocalInternetUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["EXAMPLE-FETCH-SUCCEEDED"].exists)
     }
 }
+
+@MainActor final class DownloadedMarketplaceUITests: XCTestCase {
+    func testLocalMarketplaceIsAvailableWithoutAccount() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-local-agent-ui-fixture", "-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR"]
+        app.launch()
+        let picker = app.buttons["Modèle"].firstMatch
+        XCTAssertTrue(picker.waitForExistence(timeout: 15))
+        picker.tap()
+        let explore = app.buttons["Explorer tous les modèles"].firstMatch
+        XCTAssertTrue(explore.waitForExistence(timeout: 5))
+        explore.tap()
+        let device = app.tabBars.buttons["Sur cet appareil"]
+        XCTAssertTrue(device.waitForExistence(timeout: 5))
+        device.tap()
+        XCTAssertTrue(app.staticTexts["Téléchargés"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.textFields["Adresse e-mail"].exists)
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "local-model-marketplace"; capture.lifetime = .keepAlways; add(capture)
+    }
+}
