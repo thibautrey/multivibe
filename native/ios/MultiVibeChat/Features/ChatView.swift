@@ -735,7 +735,9 @@ private struct ModelMarketplaceView: View {
     @State private var cursor: String?
     @State private var loading = false
     @State private var catalogError: String?
-    private var filtered: [ModelOption] { search.isEmpty ? [LocalModel.option] + entries : entries }
+    private var filtered: [ModelOption] {
+        uniqueMarketplaceModels(search.isEmpty ? [LocalModel.option] + entries : entries)
+    }
     private func load(reset: Bool) async {
         let query = search
         loading = true
@@ -744,7 +746,8 @@ private struct ModelMarketplaceView: View {
             let token = try await manager.validSession().accessToken
             let page = try await ChatAPI.shared.catalog(search: query, cursor: reset ? "" : cursor ?? "", token: token)
             guard query == search, !Task.isCancelled else { return }
-            entries = reset ? page.data.map(\.option) : entries + page.data.map(\.option).filter { item in !entries.contains { $0.id == item.id } }
+            let received = page.data.map(\.option).filter { $0.id != LocalModel.id }
+            entries = uniqueMarketplaceModels(reset ? received : entries + received)
             cursor = page.nextCursor; catalogError = nil
             for model in entries where !manager.models.contains(where: { $0.id == model.id }) { manager.models.append(model) }
         } catch { if !Task.isCancelled { catalogError = error.localizedDescription } }
@@ -774,6 +777,11 @@ private struct ModelMarketplaceView: View {
             }
         }
     }
+}
+
+func uniqueMarketplaceModels(_ models: [ModelOption]) -> [ModelOption] {
+    var identifiers = Set<String>()
+    return models.filter { identifiers.insert($0.id).inserted }
 }
 
 private struct ModelDiscoverView: View {
