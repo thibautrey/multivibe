@@ -54,6 +54,33 @@ final class AuthenticationUITests: XCTestCase {
         }
     }
 
+    func testGuestAccountUsesExpandedCardLayout() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR"]
+        app.launch()
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "Message").firstMatch.waitForExistence(timeout: 15))
+
+        let options = app.buttons["Plus d’options"].firstMatch
+        XCTAssertTrue(options.waitForExistence(timeout: 5))
+        options.tap()
+        app.buttons["Profil"].tap()
+
+        XCTAssertTrue(app.staticTexts["Bienvenue"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Compte"].exists)
+        XCTAssertTrue(app.staticTexts["Statut"].exists)
+        XCTAssertTrue(app.staticTexts["Invité"].exists)
+        XCTAssertTrue(app.staticTexts["Données"].exists)
+        XCTAssertTrue(app.staticTexts["Sur cet appareil"].exists)
+        XCTAssertTrue(app.buttons["openAuthentication"].exists)
+        XCTAssertTrue(app.buttons["Fermer"].exists)
+
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "account-guest-redesign"
+        capture.lifetime = .keepAlways
+        add(capture)
+    }
+
     func testNewConversationFromHistoryAlwaysShowsComposer() {
         continueAfterFailure = false
         let app = XCUIApplication()
