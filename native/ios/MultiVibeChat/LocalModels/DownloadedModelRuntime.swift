@@ -34,8 +34,8 @@ actor DownloadedModelRuntime {
             await withCheckedContinuation { continuation in worker.queue.async { [worker] in worker.engine.unload(); continuation.resume() } }
             loadedID = nil
         }
-        guard LocalDeviceBudget.current.problem(model, downloading: false) == nil || loadedID == model.id else {
-            throw LocalAgentError.unavailable("Mémoire insuffisante. Fermez les autres apps puis réessayez.")
+        if loadedID != model.id, let problem = LocalDeviceBudget.current.problem(model, downloading: false) {
+            throw LocalAgentError.unavailable(problem)
         }
         loadedID = model.id
         let useTools = model.supportsTools && workspace != nil

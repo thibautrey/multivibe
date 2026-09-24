@@ -53,12 +53,16 @@ struct LocalDeviceBudget: Sendable {
             .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage) ?? 0
         return Self(memory: min(ceiling, available), disk: disk)
     }
+    func memoryWarning(_ model: DownloadableModel) -> String? {
+        guard model.estimatedMemory > memory else { return nil }
+        return "Ce modèle dépasse la mémoire disponible estimée et ne fonctionnera probablement pas sur cet appareil. Vous pouvez quand même essayer."
+    }
+    // Only technical incompatibility and insufficient download storage block an attempt.
     func problem(_ model: DownloadableModel, downloading: Bool) -> String? {
         guard ["qwen3", "llama", "gemma3", "qwen2", "qwen35", "gemma4", "hunyuan-dense"].contains(model.architecture),
               model.architecture != "qwen35" || (model.recurrentStateBytes ?? 0) > 0,
               model.layers > 0, model.kvHeads > 0, model.headSize > 0,
               model.bytes > 0, model.sha256.count == 64 else { return "Compatibilité non vérifiée pour ce modèle." }
-        guard model.estimatedMemory <= memory else { return "Ce modèle nécessite plus de mémoire que cet appareil n’en a de disponible." }
         // Reserve staging plus final file space. Conservative because recovery may require copying.
         if downloading && disk < model.bytes * 2 + 512_000_000 { return "Espace insuffisant. Libérez du stockage puis réessayez." }
         return nil

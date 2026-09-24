@@ -139,6 +139,10 @@ struct LocalModelCard: View {
                     }.font(.caption)
                 }
             } else if let problem { Text(problem).font(.caption).foregroundStyle(.secondary) }
+            if let warning = LocalDeviceBudget.current.memoryWarning(model) {
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+            }
             if entry == nil { Text("Réponses privées, même sans Internet.").font(.caption).foregroundStyle(.secondary) }
             if !showsDetailLink {
                 Link("Voir la page du modèle", destination: URL(string: "https://huggingface.co/" + model.repository)!)
