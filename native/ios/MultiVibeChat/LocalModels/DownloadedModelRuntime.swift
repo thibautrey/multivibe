@@ -147,8 +147,16 @@ private actor DownloadedToolOutput {
 enum LocalDownloadedTools {
     static let actions = ["list_documents", "read_document", "search_conversations", "create_document", "add", "subtract", "multiply", "divide", "current_date", "read_calendar", "read_reminders", "read_contacts", "current_location", "read_mail", "context_memory", "search_memory", "read_memory", "fetch_website", "http_head"]
     static func isWeatherRequest(_ messages: [ChatMessage]) -> Bool {
-        let recent = messages.suffix(3).filter { $0.role == "user" }.map(\.content).joined(separator: " ")
-        return recent.range(of: #"(?i)(météo|meteo|weather|forecast|temps.{0,30}(demain|fera|aujourd))"#, options: .regularExpression) != nil
+        guard let latestUserIndex = messages.lastIndex(where: { $0.role == "user" }) else { return false }
+        let latest = messages[latestUserIndex].content
+        if latest.range(of: #"(?i)(météo|meteo|weather|forecast|temps.{0,30}(demain|fera|aujourd))"#, options: .regularExpression) != nil { return true }
+        // A bare city is a weather request only after our explicit clarification.
+        // Other follow-ups should retain normal conversation mode and use the
+        // forecast already present in history instead of forcing a fresh tool call.
+        guard latestUserIndex > messages.startIndex else { return false }
+        let previous = messages[messages.index(before: latestUserIndex)]
+        return previous.role == "assistant"
+            && previous.content.range(of: #"(?i)(quelle|dans quelle).{0,20}ville"#, options: .regularExpression) != nil
     }
     static func cityWasProvided(_ city: String, messages: [ChatMessage]) -> Bool {
         let city = city.trimmingCharacters(in: .whitespacesAndNewlines)
