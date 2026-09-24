@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/NousResearch/hermes-agent",
+  "commit": "be59f0411e8fffa1e6f48425f7885c5c6badb705",
+  "sha256": {
+    "tools_clarify_tool.py": "3c55327461b28fa36905f12660122bd131fa84a09a44e481efb230edbf411ab3",
+    "tools_session_search_tool.py": "7fd4104121d1a05e10c0562d4cac615fd0aaed1567dbb827e9edb4d1bc97d2b4",
+    "tools_web_tools.py": "377d9d0219a5c732cc75dc6676e587afd4c44e8781deab4ae099cda31a151817",
+    "LICENSE": "821556e6336796450ab852d375117b48a4887e71d255794fd6318d99982a5ab6"
+  }
+}

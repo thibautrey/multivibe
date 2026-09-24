@@ -74,3 +74,74 @@ test('a plain response does not request native tools', async () => {
   const result = await drive(() => ({ role: 'assistant', content: 'Bonjour' }), () => assert.fail('Unexpected tool'), []);
   assert.equal(result.requests.length, 1);
 });
+const iosSchema = name => [{ type: 'function', function: { name } }];
+const toolCall = (name, args) => ({ role: 'assistant', content: '', tool_calls: [{ id: 'ios-call', type: 'function', function: { name, arguments: JSON.stringify(args) } }] });
+test('Hermes clarification ends the turn without fabricating a user reply', async () => {
+  const result = await drive(request => {
+    const schema = JSON.parse(request.tools)[0].function;
+    assert.equal(schema.name, 'clarify');
+    assert.equal(schema.parameters.properties.questions.maxItems, 5);
+    return toolCall('clarify', { questions: [{ question: 'Quelle ville ?', choices: ['Paris', 'Lyon'] }] });
+  }, request => {
+    assert.equal(request.name, 'clarify');
+    const { content } = JSON.parse(request.arguments);
+    assert.match(content, /1\. Paris/);
+    return { content, terminal: true };
+  }, iosSchema('clarify'));
+  assert.match(result.finalText, /Quelle ville/);
+  assert.equal(result.requests.filter(r => r.kind === 'model').length, 1);
+});
+test('clarification prevents subsequent tool calls in the same model reply', async () => {
+  const result = await drive(() => {
+    const response = toolCall('clarify', { questions: [{ question: 'Quelle ville ?' }] });
+    response.tool_calls.push({ ...call().tool_calls[0], id: 'second' });
+    return response;
+  }, request => {
+    assert.equal(request.name, 'clarify');
+    return { content: 'Quelle ville ?', terminal: true };
+  }, [...iosSchema('clarify'), ...schema]);
+  assert.equal(result.requests.filter(r => r.kind === 'tool').length, 1);
+});
+test('Hermes batch extraction stops immediately when Internet consent is denied', async () => {
+  const result = await drive(() => toolCall('web_extract', { urls: ['https://example.com', 'https://example.org'] }),
+    () => ({ content: 'Refusé', isError: true, terminal: true }), iosSchema('web_extract'));
+  assert.equal(result.requests.filter(r => r.kind === 'tool').length, 1);
+  assert.equal(result.finalText, 'Refusé');
+});
+test('Hermes history tool uses local history and preserves errors', async () => {
+  let turn = 0;
+  await drive(request => {
+    if (++turn === 1) return toolCall('session_search', { query: 'facture' });
+    assert.match(JSON.parse(request.messages).at(-1).content, /HISTORIQUE NON VALIDÉ/);
+    return { role: 'assistant', content: 'Trouvé' };
+  }, request => {
+    assert.deepEqual(JSON.parse(request.arguments), { action: 'search_conversations', query: 'facture' });
+    return { content: 'HISTORIQUE NON VALIDÉ' };
+  }, iosSchema('session_search'));
+});
+const documentID = '12345678-1234-1234-1234-123456789ABC';
+test('actual upstream Pi edit preserves BOM/CRLF and passes a stale-write precondition', async () => {
+  let turn = 0, writes = 0;
+  await drive(() => ++turn === 1 ? toolCall('edit_document', { path: documentID, edits: [{ oldText: 'Total: 42', newText: 'Total: 43' }] }) : { role: 'assistant', content: 'Modifié' }, request => {
+    if (request.name === 'document_snapshot') return { content: '\uFEFFTotal: 42\r\nFin\r\n' };
+    assert.equal(request.name, 'document_replace');
+    const args = JSON.parse(request.arguments);
+    assert.equal(args.expected, '\uFEFFTotal: 42\r\nFin\r\n');
+    assert.equal(args.content, '\uFEFFTotal: 43\r\nFin\r\n');
+    writes++; return { content: 'Saved' };
+  }, iosSchema('edit_document'));
+  assert.equal(writes, 1);
+});
+test('Pi refuses ambiguous edits without writing and rejects filesystem paths', async () => {
+  for (const path of [documentID, '/etc/passwd']) {
+    let turn = 0;
+    await drive(request => {
+      if (++turn === 1) return toolCall('edit_document', { path, edits: [{ oldText: 'same', newText: 'changed' }] });
+      assert.match(JSON.parse(request.messages).at(-1).content, /isError.*true/);
+      return { role: 'assistant', content: 'Cannot edit' };
+    }, request => {
+      assert.equal(request.name, 'document_snapshot');
+      return { content: 'same\nsame' };
+    }, iosSchema('edit_document'));
+  }
+});

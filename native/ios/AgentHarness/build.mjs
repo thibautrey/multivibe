@@ -16,7 +16,7 @@ if (process.argv.includes('--check')) {
 console.log(`Pi Agent Core browser bundle: ${Buffer.byteLength(content)} bytes`);
 
 const packages = [...new Set(Object.values(result.metafile.outputs).flatMap(output => Object.entries(output.inputs).filter(([, value]) => value.bytesInOutput > 0).map(([path]) => path)).map(path => path.match(/node_modules\/((?:@[^/]+\/)?[^/]+)/)?.[1]).filter(Boolean))].sort();
-let notices = '';
+let notices = 'Hermes Agent (MIT), contracts adapted for iOS\n' + (await readFile(new URL('upstream/hermes/LICENSE', import.meta.url), 'utf8')).trim() + '\n\n';
 for (const name of packages) {
   const root = join(directory, 'node_modules', name);
   const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
