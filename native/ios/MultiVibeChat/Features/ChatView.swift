@@ -1523,29 +1523,29 @@ private struct AgentThinkingGlow: View {
                 let shortSide = min(proxy.size.width, proxy.size.height)
                 let radius = min(64.0, max(44.0, shortSide * 0.13))
                 let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-                let pulse = 0.82 + sin(time * 1.55) * 0.18
-                let drift = Angle.degrees(time * 18 + sin(time * 0.48) * 30)
-                let counterDrift = Angle.degrees(-time * 12 + cos(time * 0.63) * 38)
+                // Keep all layers together so one bright head visibly travels around the screen.
+                let rotation = Angle.degrees(time.truncatingRemainder(dividingBy: 4) * 90)
+                let gradient = glowGradient(angle: rotation)
 
                 ZStack {
                     shape.inset(by: 3)
-                        .strokeBorder(glowGradient(angle: drift), lineWidth: 4.5 + sin(time * 1.1) * 1.5)
-                        .blur(radius: reduceTransparency ? 0 : 1.8)
-                        .opacity(reduceTransparency ? 0.88 : 1)
-
-                    shape.inset(by: 1)
-                        .strokeBorder(glowGradient(angle: counterDrift), lineWidth: 12)
-                        .blur(radius: reduceTransparency ? 0 : 10)
-                        .opacity(reduceTransparency ? 0.3 : 0.62 * pulse)
+                        .strokeBorder(MultiVibeTheme.accent.opacity(0.18), lineWidth: 2)
 
                     if !reduceTransparency {
-                        shape.inset(by: 8)
-                            .strokeBorder(glowGradient(angle: drift + .degrees(110)), lineWidth: 20)
-                            .blur(radius: 20)
-                            .opacity(0.27 + cos(time * 1.25) * 0.07)
+                        shape.inset(by: 7)
+                            .strokeBorder(gradient, lineWidth: 26)
+                            .blur(radius: 16)
+                            .opacity(0.75)
+
+                        shape.inset(by: 3)
+                            .strokeBorder(gradient, lineWidth: 14)
+                            .blur(radius: 6)
                     }
+
+                    shape.inset(by: 3)
+                        .strokeBorder(gradient, lineWidth: reduceTransparency ? 6 : 5)
+                        .blur(radius: reduceTransparency ? 0 : 0.8)
                 }
-                .blendMode(reduceTransparency ? .normal : .plusLighter)
             }
         }
         .ignoresSafeArea()
@@ -1555,14 +1555,14 @@ private struct AgentThinkingGlow: View {
 
     private func glowGradient(angle: Angle) -> AngularGradient {
         AngularGradient(
-            colors: [
-                MultiVibeTheme.accent.opacity(0.25),
-                MultiVibeTheme.accent,
-                Color(red: 0.45, green: 0.97, blue: 0.73),
-                MultiVibeTheme.warmAccent.opacity(0.92),
-                MultiVibeTheme.accent.opacity(0.32),
-                MultiVibeTheme.warmAccent.opacity(0.6),
-                MultiVibeTheme.accent
+            stops: [
+                .init(color: MultiVibeTheme.accent.opacity(0.08), location: 0),
+                .init(color: MultiVibeTheme.accent.opacity(0.08), location: 0.38),
+                .init(color: MultiVibeTheme.accent.opacity(0.35), location: 0.55),
+                .init(color: MultiVibeTheme.accent, location: 0.72),
+                .init(color: Color(red: 0.45, green: 0.97, blue: 0.73), location: 0.84),
+                .init(color: MultiVibeTheme.warmAccent, location: 0.91),
+                .init(color: MultiVibeTheme.accent.opacity(0.08), location: 1)
             ],
             center: .center,
             angle: angle
