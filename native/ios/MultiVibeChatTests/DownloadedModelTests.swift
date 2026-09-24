@@ -12,11 +12,29 @@ import XCTest
             XCTAssertNotNil(UIImage(named: "Publisher-" + publisher), publisher)
         }
         for model in HuggingFaceCatalog.bundled {
-            XCTAssertEqual(model.resolvedLogoPublisher, "qwen")
-            XCTAssertEqual(model.option.logoPublisher, "qwen")
+            XCTAssertEqual(model.resolvedLogoPublisher, ModelPublisher.canonical(model.publisher))
+            XCTAssertEqual(model.option.logoPublisher, model.resolvedLogoPublisher)
         }
         let old = try JSONEncoder().encode(model())
         XCTAssertNil(try JSONDecoder().decode(DownloadableModel.self, from: old).logoPublisher)
+    }
+    func testExpandedCatalogIntegrityAndMemoryGates() throws {
+        let models = HuggingFaceCatalog.bundled
+        XCTAssertEqual(models.count, 15)
+        XCTAssertEqual(Set(models.map(\.id)).count, models.count)
+        for model in models {
+            XCTAssertNotNil(model.revision.range(of: "^[a-f0-9]{40}$", options: .regularExpression))
+            XCTAssertNotNil(model.sha256.range(of: "^[a-f0-9]{64}$", options: .regularExpression))
+            XCTAssertNil(LocalDeviceBudget(memory: 64_000_000_000, disk: 100_000_000_000).problem(model, downloading: true), model.name)
+            XCTAssertNotNil(LocalDeviceBudget(memory: 1, disk: 100_000_000_000).problem(model, downloading: false))
+            if model.name != "Qwen3 1.7B" { XCTAssertFalse(model.supportsTools) }
+        }
+        var hybrid = try XCTUnwrap(models.first { $0.name == "Bonsai 27B" })
+        XCTAssertGreaterThan(try XCTUnwrap(hybrid.recurrentStateBytes), 0)
+        hybrid.recurrentStateBytes = nil
+        XCTAssertNotNil(LocalDeviceBudget(memory: 64_000_000_000, disk: 100_000_000_000).problem(hybrid, downloading: false))
+        let gemma = try XCTUnwrap(models.first { $0.name == "Gemma 4 E2B" })
+        XCTAssertEqual(gemma.headSize, 512) // Global KV width, not the 256-wide sliding window.
     }
     private func model() -> DownloadableModel {
         DownloadableModel(repository: "example/model", revision: String(repeating: "a", count: 40), filename: "model-Q4_K_M.gguf",
@@ -189,6 +207,28 @@ import XCTest
         let info = try GGUFHeader.read(data)
         XCTAssertEqual(info.headSize, 128)
         XCTAssertEqual(info.kvHeads, 8)
+    }
+    func testHybridAndPerLayerKVMetadata() throws {
+        func header(architecture: String, hybrid: Bool) -> Data {
+            var data = Data()
+            func number(_ value: UInt64, _ count: Int) { for i in 0..<count { data.append(UInt8((value >> (8 * i)) & 255)) } }
+            func string(_ value: String) { number(UInt64(value.utf8.count), 8); data.append(contentsOf: value.utf8) }
+            var fields = [("block_count", 32), ("embedding_length", 2560), ("attention.head_count", 16),
+                          ("attention.key_length", 256), ("attention.value_length", 256)]
+            if hybrid { fields += [("ssm.state_size", 128), ("ssm.inner_size", 4096), ("ssm.conv_kernel", 4), ("ssm.group_count", 16)] }
+            number(0x46554747, 4); number(3, 4); number(0, 8); number(UInt64(fields.count + 2), 8)
+            string("general.architecture"); number(8, 4); string(architecture)
+            for (key, value) in fields { string(architecture + "." + key); number(4, 4); number(UInt64(value), 4) }
+            string(architecture + ".attention.head_count_kv"); number(9, 4); number(4, 4); number(2, 8)
+            number(8, 4); number(1, 4)
+            return data
+        }
+        let hybrid = try GGUFHeader.read(header(architecture: "qwen35", hybrid: true))
+        XCTAssertEqual(hybrid.recurrentStateBytes, 70_254_592)
+        XCTAssertThrowsError(try GGUFHeader.read(header(architecture: "qwen35", hybrid: false)))
+        let gemma = try GGUFHeader.read(header(architecture: "gemma4", hybrid: false))
+        XCTAssertEqual(gemma.kvHeads, 8)
+        XCTAssertNil(gemma.recurrentStateBytes)
     }
     func testMalformedGGUFDoesNotClaimCompatibility() {
         XCTAssertThrowsError(try GGUFHeader.read(Data()))
