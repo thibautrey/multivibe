@@ -39,7 +39,6 @@ struct ChatView: View {
     @State private var hapticCharacterCount = 0
     @State private var pendingHapticCharacters = 0
     @State private var lastStreamingHaptic = Date.distantPast
-    @State private var composerPresented = true
     @State private var voiceConversationPresented = false
     @State private var voiceConversationPreparing = false
     @FocusState private var composerFocused: Bool
@@ -205,7 +204,7 @@ struct ChatView: View {
                         }.padding(.horizontal, 14).padding(.vertical, 18)
                             .animation(reduceMotion ? nil : .spring(duration: 0.38, bounce: 0.12), value: manager.current?.messages.count)
                     }
-                    .contentMargins(.bottom, composerPresented ? Self.compactComposerHeight : 0, for: .scrollContent)
+                    .contentMargins(.bottom, composerRequested ? Self.compactComposerHeight : 0, for: .scrollContent)
                     .defaultScrollAnchor(.bottom)
                     .onScrollPhaseChange { _, phase in
                         userScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
@@ -236,8 +235,7 @@ struct ChatView: View {
                             .buttonStyle(.borderedProminent).padding()
                         }
                     }
-                    // The first send replaces the welcome view while the composer
-                    // sheet is being dismissed. Its onChange can fire before this
+                    // The first send replaces the welcome view. Its onChange can fire before this
                     // ScrollView has a laid-out anchor, leaving a restored offset
                     // outside the content until navigation recreates the view.
                     .task(id: manager.current?.messages.count) {
@@ -262,13 +260,6 @@ struct ChatView: View {
                     }.padding(.horizontal)
                 }
                 if manager.isLoadingModels && !ModelExecution(manager.selectedModel).isLocal { ProgressView("Chargement des modèles…").padding(.horizontal) }
-            }
-            .overlay(alignment: .bottomTrailing) {
-                if !composerRequested {
-                    Button("Afficher la saisie", systemImage: "text.cursor") { composerPresented = true }
-                        .buttonStyle(.borderedProminent).labelStyle(.iconOnly).controlSize(.large)
-                        .padding(18).accessibilityIdentifier("showComposerSheet")
-                }
             }
             .background(MultiVibeTheme.softAccent.ignoresSafeArea())
             .navigationTitle("")
@@ -297,7 +288,6 @@ struct ChatView: View {
         }
         .fullScreenCover(isPresented: $voiceConversationPresented, onDismiss: {
             voiceConversationPreparing = false
-            composerPresented = true
             composerFocused = false
         }) {
             RealtimeVoiceView().environment(manager)
@@ -402,11 +392,9 @@ struct ChatView: View {
             }
         }
         .sheet(item: $selectionContent) { SelectableMessageSheet(message: $0) }
-        .sheet(isPresented: Binding(get: { composerRequested && preferredColumn == .detail && !modalIsActive }, set: { presented in
-            if !presented && !isNewConversation && preferredColumn == .detail && !modalIsActive { composerPresented = false }
-        })) {
+        .sheet(isPresented: Binding(get: { composerRequested && preferredColumn == .detail && !modalIsActive }, set: { _ in })) {
             composer
-            .interactiveDismissDisabled(isNewConversation)
+            .interactiveDismissDisabled()
             .presentationDetents([composerDetent])
             .presentationDragIndicator(.visible)
             .presentationContentInteraction(.scrolls)
@@ -414,14 +402,10 @@ struct ChatView: View {
             .presentationCornerRadius(30)
             .presentationBackground(.clear)
         }
-        .onChange(of: modalIsActive) { _, active in
-            if !active { Task { @MainActor in await Task.yield(); composerPresented = true } }
-        }
         .onChange(of: manager.selection) { _, selection in
             if shortcutDraftConversation != selection { text = "" }
             if selection != nil {
                 preferredColumn = .detail
-                composerPresented = true
             }
         }
         .onChange(of: voice.transcript) { _, value in text = value }
@@ -469,12 +453,10 @@ struct ChatView: View {
         })
     }
 
-    private var isNewConversation: Bool { manager.current?.messages.isEmpty != false }
-
-    // An empty conversation always needs its input. Navigation and competing
-    // sheets may dismiss the presentation without changing that requirement.
+    // Keep the input visible for every text conversation. Navigation, competing
+    // sheets and full-screen voice temporarily take over its presentation.
     private var composerRequested: Bool {
-        !voiceConversationPreparing && !voiceConversationPresented && (isNewConversation || composerPresented)
+        !voiceConversationPreparing && !voiceConversationPresented
     }
 
     private var modalIsActive: Bool {
@@ -492,25 +474,22 @@ struct ChatView: View {
         } else if suggestion.behavior == .prepare { prompt += prompt.isEmpty ? "" : " " }
         if suggestion.behavior == .send, manager.send(prompt) {
             text = ""
-            collapseComposerAfterSend()
+            dismissKeyboardAfterSend()
         } else { text = prompt }
     }
 
     private func sendComposerMessage() {
         guard manager.send(text) else { return }
         text = ""
-        collapseComposerAfterSend()
+        dismissKeyboardAfterSend()
     }
 
-    private func collapseComposerAfterSend() {
-        // Release the keyboard before dismissing its sheet. Both state changes
-        // happen in the same transaction so the running conversation is visible
-        // immediately instead of waiting for the keyboard animation.
+    private func dismissKeyboardAfterSend() {
+        // Release the keyboard while keeping the input panel visible.
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             composerFocused = false
-            composerPresented = false
         }
     }
 
@@ -576,7 +555,6 @@ struct ChatView: View {
     private func openNewConversation() {
         manager.newConversation()
         preferredColumn = .detail
-        composerPresented = true
     }
 
     private func consumeIntent() {
@@ -618,7 +596,6 @@ struct ChatView: View {
 
     private func startVoiceInput() {
         preferredColumn = .detail
-        composerPresented = true
         Task {
             await voice.start()
             manager.wantsImmediateVoiceCapture = false
@@ -632,7 +609,6 @@ struct ChatView: View {
         // The compact composer is itself a sheet. Dismiss it before presenting
         // the full-screen voice UI so UIKit never restores it at a large detent.
         voiceConversationPreparing = true
-        composerPresented = false
         composerFocused = false
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(180))
