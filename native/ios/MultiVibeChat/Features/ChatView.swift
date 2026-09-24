@@ -813,11 +813,6 @@ private struct ModelMarketplaceView: View {
         .navigationBarTitleDisplayMode(.large)
         .searchable(text: $search, prompt: "Modèles, fournisseurs et usages")
         .task(id: search + String(describing: tab)) { guard tab != .device, manager.session != nil else { return }; try? await Task.sleep(for: .milliseconds(300)); guard !Task.isCancelled else { return }; await load(reset: true) }
-        .overlay {
-            if loading && entries.isEmpty {
-                ProgressView().controlSize(.large)
-            }
-        }
         .safeAreaInset(edge: .bottom) {
             if tab != .providers && tab != .device && (catalogError != nil || (!loading && cursor != nil)) {
                 VStack {
