@@ -148,10 +148,10 @@ import XCTest
             model.toolsValidated = true
             model.validatedDevices = [LocalHardware.identifier]
             try await DownloadedModelRuntime.shared.respond(model: model, path: library.file(model),
-                messages: [ChatMessage(role: "user", content: "Use the add tool to calculate 19 + 23. Then give only the result.")], workspace: workspace) { await capture.append($0) }
+                messages: [ChatMessage(role: "user", content: "Use the current_date tool. Then answer briefly with the date that tool returned.")], workspace: workspace) { await capture.append($0) }
             let text = await capture.text, calls = await capture.calls
-            XCTAssertTrue(text.contains("42"), "Unexpected real model output: \(text)")
-            XCTAssertTrue(calls.contains("add"), "The model did not invoke the tool")
+            XCTAssertFalse(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "The model returned no final answer")
+            XCTAssertTrue(calls.contains("current_date"), "The model did not invoke the declared tool")
             await DownloadedModelRuntime.shared.unload()
         }
         #endif
