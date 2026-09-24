@@ -74,7 +74,7 @@ enum LocalDeviceScope {
 
     private static func isExplicitAuthorization(_ request: String) -> Bool {
         let text = request.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
-        let pattern = #"\b(je (t.|vous )?autorise|j.autorise|autorisation accordee|permission accordee|i (authorize|authorise|allow)|you (are|re) authorized|permission granted)\b"#
+        let pattern = #"\b(je (t.|vous )?autorises?|j.autorises?|autorisation accordee|permission accordee|i (authorize|authorise|allow)|you (are|re) authorized|permission granted)\b"#
         return text.range(of: pattern, options: .regularExpression) != nil
     }
 }
