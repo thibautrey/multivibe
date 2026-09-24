@@ -54,6 +54,20 @@ import XCTest
         meter.update(1500, now: start.addingTimeInterval(2))
         XCTAssertTrue(meter.label(total: 1000).hasPrefix("100 %"))
     }
+    func testMeterKeepsSmoothedSpeedAcrossDownloadSegments() {
+        let start = Date(timeIntervalSince1970: 0)
+        var meter = DownloadMeter(lastTime: start)
+        meter.update(500, now: start.addingTimeInterval(1))
+        let speed = meter.speed
+
+        meter.continueFrom(500, now: start.addingTimeInterval(2))
+
+        XCTAssertEqual(meter.speed, speed)
+        XCTAssertFalse(meter.label(total: 1_000).contains("Estimation"))
+        meter.update(600, now: start.addingTimeInterval(3))
+        XCTAssertGreaterThan(meter.speed, 100)
+        XCTAssertLessThan(meter.speed, speed)
+    }
     func testUntrustedToolCallsMustMatchKnownSchema() throws {
         let sum = try LocalDownloadedTools.arguments(#"{"action":"add","lhs":2,"rhs":3}"#)
         XCTAssertEqual(sum.lhs + sum.rhs, 5)

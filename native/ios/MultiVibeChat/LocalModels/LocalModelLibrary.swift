@@ -29,6 +29,10 @@ struct DownloadMeter: Sendable {
             self.bytes = bytes; lastTime = now
         }
     }
+    mutating func continueFrom(_ bytes: Int64, now: Date = Date()) {
+        self.bytes = bytes
+        lastTime = now
+    }
     func label(total: Int64) -> String {
         let percent = min(100, max(0, Int(Double(bytes) / Double(max(1, total)) * 100)))
         guard speed > 0 else { return "\(percent) % · Estimation…" }
@@ -230,7 +234,14 @@ struct DownloadMeter: Sendable {
             task = session.downloadTask(with: request)
         }
         task.taskDescription = transfer; tasks[entry.id] = task
-        meters[entry.id] = DownloadMeter(bytes: entry.completed)
+        if var meter = meters[entry.id] {
+            // A model is fetched in bounded HTTP ranges. Keep the smoothed speed
+            // across ranges while removing the idle hand-off from the next sample.
+            meter.continueFrom(entry.completed)
+            meters[entry.id] = meter
+        } else {
+            meters[entry.id] = DownloadMeter(bytes: entry.completed)
+        }
         task.resume()
     }
     private func received(transfer: String, location: URL, response: HTTPURLResponse?) {
