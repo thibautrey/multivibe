@@ -26,10 +26,17 @@ extension HostPopoverController {
         labels.spacing = 2
         labels.translatesAutoresizingMaskIntoConstraints = false
 
+        styleButton(settingsButton, kind: .quiet)
+        settingsButton.target = self
+        settingsButton.action = #selector(didToggleSettings)
+        settingsButton.imagePosition = .imageOnly
+        settingsButton.translatesAutoresizingMaskIntoConstraints = false
+
         let divider = makeDivider()
         divider.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(icon)
         container.addSubview(labels)
+        container.addSubview(settingsButton)
         container.addSubview(divider)
 
         NSLayoutConstraint.activate([
@@ -39,7 +46,11 @@ extension HostPopoverController {
             icon.heightAnchor.constraint(equalToConstant: 36),
             labels.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 12),
             labels.centerYAnchor.constraint(equalTo: icon.centerYAnchor),
-            labels.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -18),
+            labels.trailingAnchor.constraint(lessThanOrEqualTo: settingsButton.leadingAnchor, constant: -12),
+            settingsButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            settingsButton.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            settingsButton.widthAnchor.constraint(equalToConstant: 34),
+            settingsButton.heightAnchor.constraint(equalToConstant: 34),
             divider.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             divider.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             divider.bottomAnchor.constraint(equalTo: container.bottomAnchor),
@@ -62,9 +73,7 @@ extension HostPopoverController {
 
         primaryButton.image = NSImage(systemSymbolName: "arrow.up.right.square", accessibilityDescription: nil)
         primaryButton.imagePosition = .imageTrailing
-        let askButton = NSButton(title: "Ouvrir l’app", target: self, action: #selector(didOpenAssistant))
-        styleButton(askButton, kind: .secondary)
-        let actions = NSStackView(views: [primaryButton, askButton, NSView(), quitButton])
+        let actions = NSStackView(views: [primaryButton, NSView(), quitButton])
         actions.orientation = .horizontal
         actions.alignment = .centerY
         actions.spacing = 8
@@ -128,6 +137,102 @@ extension HostPopoverController {
         view.translatesAutoresizingMaskIntoConstraints = false
         view.widthAnchor.constraint(equalToConstant: 384).isActive = true
         return view
+    }
+
+    func providerPickerCard(_ picker: NSPopUpButton) -> NSView {
+        let container = AdaptiveLayerView(backgroundColor: MenuBarPalette.panel)
+        container.layer?.cornerRadius = 12
+        container.layer?.masksToBounds = true
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.widthAnchor.constraint(equalToConstant: 384).isActive = true
+
+        let icon = NSImageView(image: NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil) ?? NSImage())
+        icon.contentTintColor = MenuBarPalette.mutedStrong
+        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        let title = label("ACTIVE PROVIDER", size: 9, weight: .semibold, color: MenuBarPalette.muted)
+        let copy = NSStackView(views: [title, picker])
+        copy.orientation = .vertical
+        copy.alignment = .leading
+        copy.spacing = 3
+        copy.translatesAutoresizingMaskIntoConstraints = false
+        picker.translatesAutoresizingMaskIntoConstraints = false
+        picker.widthAnchor.constraint(equalTo: copy.widthAnchor).isActive = true
+
+        container.addSubview(icon)
+        container.addSubview(copy)
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            icon.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 18),
+            icon.heightAnchor.constraint(equalToConstant: 18),
+            copy.topAnchor.constraint(equalTo: container.topAnchor, constant: 11),
+            copy.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 11),
+            copy.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            copy.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
+        ])
+        return container
+    }
+
+    func providerCapacityCard(_ provider: ProviderQuota) -> NSView {
+        let container = card()
+        let content: NSView
+        if let limiting = provider.windows.min(by: { $0.remainingPercent < $1.remainingPercent }) {
+            let title = label("\(limiting.label) capacity", size: 11, weight: .medium, color: MenuBarPalette.muted)
+            let value = label(percent(limiting.remainingPercent), size: 27, weight: .semibold, color: MenuBarPalette.text)
+            value.font = .monospacedDigitSystemFont(ofSize: 27, weight: .semibold)
+            let heading = NSStackView(views: [title, NSView(), value])
+            heading.orientation = .horizontal
+            heading.alignment = .firstBaseline
+
+            let bar = QuotaBarView()
+            bar.remainingPercent = limiting.remainingPercent
+            bar.translatesAutoresizingMaskIntoConstraints = false
+            bar.setAccessibilityLabel("\(limiting.label) capacity remaining")
+            bar.setAccessibilityValue(percent(limiting.remainingPercent))
+
+            var context = [capacityResetText(provider: provider, label: limiting.label), accountCount(limiting.accountCount)]
+            let otherWindows = provider.windows
+                .filter { $0.label != limiting.label }
+                .map { "\($0.label) \(percent($0.remainingPercent))" }
+                .joined(separator: " · ")
+            if !otherWindows.isEmpty { context.insert(otherWindows, at: 0) }
+            let detail = label(context.joined(separator: "   "), size: 10, color: MenuBarPalette.muted)
+            detail.lineBreakMode = .byTruncatingTail
+            detail.maximumNumberOfLines = 1
+
+            let stack = NSStackView(views: [heading, bar, detail])
+            stack.orientation = .vertical
+            stack.alignment = .leading
+            stack.spacing = 7
+            heading.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            bar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            content = stack
+        } else if let balance = provider.balance {
+            content = balanceCell(title: "Available credit", balance: balance)
+        } else {
+            content = label("Capacity unavailable", size: 11, color: MenuBarPalette.muted)
+        }
+        content.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.topAnchor.constraint(equalTo: container.topAnchor, constant: 14),
+            content.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 15),
+            content.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -15),
+            content.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -14),
+        ])
+        return container
+    }
+
+    func capacityResetText(provider: ProviderQuota, label: String) -> String {
+        let candidates: [(String, QuotaWindow?)] = provider.accounts.flatMap { account in
+            [("5 hours", account.fiveHour), ("Weekly", account.weekly), ("Monthly", account.monthly)]
+        }
+        let reset = candidates.compactMap { fallback, window -> Double? in
+            guard let window, (window.label ?? fallback).localizedCaseInsensitiveCompare(label) == .orderedSame else { return nil }
+            return window.resetAt
+        }.filter(\.isFinite).min()
+        return resetText(reset)
     }
 
     func summaryCard(_ quota: MenuBarQuota?) -> NSView {

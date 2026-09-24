@@ -42,8 +42,8 @@ final class HostPopoverController: NSViewController {
         document.translatesAutoresizingMaskIntoConstraints = false
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
-        contentStack.spacing = 12
-        contentStack.edgeInsets = NSEdgeInsets(top: 14, left: 18, bottom: 16, right: 18)
+        contentStack.spacing = 13
+        contentStack.edgeInsets = NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18)
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         document.addSubview(contentStack)
         scrollView.documentView = document
@@ -61,7 +61,7 @@ final class HostPopoverController: NSViewController {
             header.topAnchor.constraint(equalTo: background.topAnchor),
             header.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             header.trailingAnchor.constraint(equalTo: background.trailingAnchor),
-            header.heightAnchor.constraint(equalToConstant: 72),
+            header.heightAnchor.constraint(equalToConstant: 76),
             scrollView.topAnchor.constraint(equalTo: header.bottomAnchor),
             scrollView.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: background.trailingAnchor),
@@ -92,7 +92,7 @@ final class HostPopoverController: NSViewController {
         providerPolicyPicker = nil
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
         headerTitle.stringValue = "MultiVibe"
-        headerStatus.stringValue = status
+        headerStatus.stringValue = operational ? "●  Host ready" : status
         headerStatus.textColor = operational ? MenuBarPalette.success : MenuBarPalette.mutedStrong
         headerVersion.stringValue = "v\(version)"
         primaryButton.title = operational ? "Open Dashboard" : "Start Host"
@@ -122,7 +122,7 @@ final class HostPopoverController: NSViewController {
         }
         accountSection.orientation = .vertical
         accountSection.alignment = .leading
-        accountSection.spacing = 8
+        accountSection.spacing = 10
         renderAccounts(operational: operational)
         contentStack.addArrangedSubview(accountSection)
         if workerNeedsSetup {
@@ -150,12 +150,7 @@ final class HostPopoverController: NSViewController {
         if updateStatus?.availableVersion == nil {
             settingsStack.addArrangedSubview(updateCard(updateStatus, busy: updateBusy))
         }
-        styleButton(settingsButton, kind: .quiet)
-        settingsButton.target = self
-        settingsButton.action = #selector(didToggleSettings)
-        settingsButton.imagePosition = .imageLeading
         updateSettingsDisclosure()
-        contentStack.addArrangedSubview(settingsButton)
         contentStack.addArrangedSubview(settingsStack)
         startAtLoginButton.state = startAtLogin ? .on : .off
         startAtLoginButton.target = self
@@ -173,6 +168,7 @@ final class HostPopoverController: NSViewController {
         if !providers.isEmpty {
             let picker = NSPopUpButton()
             picker.bezelStyle = .rounded
+            picker.controlSize = .regular
             picker.font = .systemFont(ofSize: 13, weight: .semibold)
             for provider in quotaProviders {
                 picker.addItem(withTitle: provider.displayName)
@@ -181,15 +177,8 @@ final class HostPopoverController: NSViewController {
             picker.selectItem(at: providers.firstIndex(of: selectedProvider ?? "") ?? 0)
             picker.target = self
             picker.action = #selector(didSelectProvider(_:))
-            picker.setAccessibilityLabel("View provider capacity")
-            picker.translatesAutoresizingMaskIntoConstraints = false
-            picker.widthAnchor.constraint(lessThanOrEqualToConstant: 270).isActive = true
-            let heading = NSStackView(views: [sectionLabel("PROVIDER"), NSView(), picker])
-            heading.orientation = .horizontal
-            heading.alignment = .centerY
-            heading.translatesAutoresizingMaskIntoConstraints = false
-            heading.widthAnchor.constraint(lessThanOrEqualToConstant: 384).isActive = true
-            accountSection.addArrangedSubview(heading)
+            picker.setAccessibilityLabel("Active provider")
+            accountSection.addArrangedSubview(providerPickerCard(picker))
         }
         let selected = quotaProviders.first { $0.id == selectedProvider }
         let accounts = selected?.accounts ?? []
@@ -197,30 +186,11 @@ final class HostPopoverController: NSViewController {
             accountSection.addArrangedSubview(emptyAccountsCard(operational: operational))
             return
         }
-        accountSection.addArrangedSubview(sectionLabel("CAPACITY REMAINING"))
-        var cells: [NSView] = (selected?.windows ?? []).map { window in
-            quotaCell(title: window.label, value: window.remainingPercent, detail: accountCount(window.accountCount))
+        accountSection.addArrangedSubview(sectionLabel("CAPACITY"))
+        if let selected, !selected.windows.isEmpty || selected.balance != nil {
+            accountSection.addArrangedSubview(providerCapacityCard(selected))
         }
-        // A provider that bills from credits shows the absolute balance it reported.
-        if let balance = selected?.balance {
-            cells.append(balanceCell(title: "Credit", balance: balance))
-        }
-        if !cells.isEmpty {
-            let container = card()
-            let stack = NSStackView(views: cells)
-            stack.distribution = .fillEqually
-            stack.spacing = 12
-            stack.translatesAutoresizingMaskIntoConstraints = false
-            container.addSubview(stack)
-            NSLayoutConstraint.activate([
-                stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
-                stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
-                stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
-                stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
-            ])
-            accountSection.addArrangedSubview(container)
-        }
-        accountSection.addArrangedSubview(sectionLabel("CONNECTED ACCOUNTS · \(accounts.count)"))
+        accountSection.addArrangedSubview(sectionLabel("ACCOUNTS · \(accounts.count)"))
         accountSection.addArrangedSubview(accountsCard(accounts))
     }
 
@@ -239,10 +209,11 @@ final class HostPopoverController: NSViewController {
     func updateSettingsDisclosure() {
         settingsStack.isHidden = !settingsExpanded
         settingsButton.image = NSImage(
-            systemSymbolName: settingsExpanded ? "chevron.down" : "chevron.right",
+            systemSymbolName: settingsExpanded ? "xmark.circle.fill" : "gearshape",
             accessibilityDescription: nil
         )
-        settingsButton.setAccessibilityLabel(settingsExpanded ? "Collapse settings" : "Expand settings")
+        settingsButton.contentTintColor = settingsExpanded ? MenuBarPalette.primary : MenuBarPalette.muted
+        settingsButton.setAccessibilityLabel(settingsExpanded ? "Close settings" : "Open settings")
     }
 
     @objc func didSelectQuotaProvider(_ sender: NSPopUpButton) {
