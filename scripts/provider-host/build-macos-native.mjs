@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, readdir, writeFile, rm, stat, mkdir } from 'node:fs/promises';
+import { existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -6,18 +7,64 @@ import { fileURLToPath } from 'node:url';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const run = (program, args) => execFileSync(program, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+const swiftConstantValuesRelativePath = 'usr/share/swift/SwiftConstantValues/AppIntents.json';
+
+// The Swift toolchain is selected through DEVELOPER_DIR. `xcode-select -p` can
+// name an installation whose toolchain is incomplete, so probe every installed
+// Xcode for the App Intents protocol definition and report the installation
+// each candidate came from when none of them satisfies the requirement.
+function developerDirectories() {
+  const candidates = [];
+  const add = (value) => {
+    if (!value) return;
+    const resolved = path.resolve(value);
+    if (path.basename(resolved) !== 'Developer') return;
+    if (!candidates.includes(resolved)) candidates.push(resolved);
+  };
+  add(process.env.DEVELOPER_DIR);
+  try {
+    add(run('xcode-select', ['-p']));
+  } catch {
+    // A missing or unselected command line tools installation is reported below.
+  }
+  const applications = '/Applications';
+  try {
+    for (const entry of readdirSync(applications)) {
+      if (!entry.endsWith('.app')) continue;
+      add(path.join(applications, entry, 'Contents', 'Developer'));
+    }
+  } catch {
+    // /Applications is expected on every macOS release build host.
+  }
+  return candidates;
+}
+
+export function resolveMacOSDeveloperDirectory() {
+  const candidates = developerDirectories();
+  if (candidates.length === 0) {
+    throw new Error('no macOS developer directory is configured; set DEVELOPER_DIR or run xcode-select --install');
+  }
+  const probed = candidates.map((developer) => ({
+    developer,
+    definition: path.join(developer, 'Toolchains/XcodeDefault.xctoolchain', swiftConstantValuesRelativePath),
+  }));
+  const selected = probed.find((candidate) => existsSync(candidate.definition));
+  if (selected) return selected.developer;
+  const inspected = probed.map((candidate) => `${candidate.developer} (missing ${candidate.definition})`).join('; ');
+  throw new Error(`no macOS developer directory provides ${swiftConstantValuesRelativePath}; inspected ${inspected}`);
+}
 
 // Kept identical for release packaging and local signed-app verification.
 export async function buildMacOSNative({ binary, resources, architecture = 'arm64', minimum = '13.0' }) {
   const temporary = await mkdtemp(path.join(tmpdir(), 'multivibe-native-'));
   try {
-    const developer = process.env.DEVELOPER_DIR || run('xcode-select', ['-p']);
+    const developer = resolveMacOSDeveloperDirectory();
     const toolchain = path.join(developer, 'Toolchains/XcodeDefault.xctoolchain');
     const sdk = run('xcrun', ['--sdk', 'macosx', '--show-sdk-path']);
     const version = run('xcodebuild', ['-version']).split(/\s+/u).at(-1);
     const sourceDirectory = path.join(repository, 'packaging/macos');
     const sources = (await readdir(sourceDirectory)).filter(name => name.endsWith('.swift')).sort().map(name => path.join(sourceDirectory, name));
-    const definition = JSON.parse(await readFile(path.join(toolchain, 'usr/share/swift/SwiftConstantValues/AppIntents.json'), 'utf8'));
+    const definition = JSON.parse(await readFile(path.join(toolchain, swiftConstantValuesRelativePath), 'utf8'));
     const protocols = path.join(temporary, 'protocols.json');
     await writeFile(protocols, JSON.stringify(Array.isArray(definition) ? definition : definition.constValueProtocols));
     const constants = path.join(temporary, 'Host.swiftconstvalues');

@@ -561,21 +561,36 @@ async function createMacApplicationIcon(work, destination) {
   await chmod(destination, 0o444);
 }
 
-// Keep normal submit output: unlike JSON it exposes the submission ID before
-// upload/wait completes, allowing recovery when Apple's client crashes.
-export async function submitMacNotarization(file, profile, run = command) {
+const submissionIDPattern = /^\s*id:\s*([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\s*$/imu;
+const crashedNotaryClient = (error) => error.signal === "SIGBUS";
+// Apple's notary client aborts an in-flight upload when the connection to S3 is
+// reset. A SIGBUS crash and a transport abort are both recoverable: with a
+// reported submission ID the existing submission is resumed, and without one the
+// upload is repeated because Apple never created a submission to resume.
+const transientNotaryFailure = (error) => (crashedNotaryClient(error) || /abortedUpload|Connection reset by peer|Network\.NWError|NSURLErrorDomain|The network connection was lost|The request timed out/iu
+  .test(`${error.stdout ?? ""}\n${error.stderr ?? ""}\n${error.message ?? ""}`));
+
+export async function submitMacNotarization(file, profile, run = command, attempts = 3) {
   const credentials = ["--keychain-profile", profile];
   let output;
-  try {
-    output = await run("xcrun", ["notarytool", "submit", file, ...credentials,
-      "--no-wait", "--no-progress", "--no-s3-acceleration"], { capture: true });
-  } catch (error) {
-    if (error.signal !== "SIGBUS") throw error;
-    output = error.stdout ?? "";
-    // An ID is not proof of a completed upload. Only an Accepted response
-    // below permits stapling; never blindly resubmit an ambiguous upload.
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      output = await run("xcrun", ["notarytool", "submit", file, ...credentials,
+        "--no-wait", "--no-progress", "--no-s3-acceleration"], { capture: true });
+      break;
+    } catch (error) {
+      if (!transientNotaryFailure(error)) throw error;
+      output = error.stdout ?? "";
+      // An ID is not proof of a completed upload. Only an Accepted response
+      // below permits stapling; never blindly resubmit an identified upload.
+      if (submissionIDPattern.test(output)) break;
+      if (attempt >= attempts) {
+        throw new Error(`notarytool submit aborted ${attempts} times without a submission ID: ${error.message}`, { cause: error });
+      }
+      console.warn(`notarytool submit failed before creating a submission; retrying (attempt ${attempt + 1}/${attempts})`);
+    }
   }
-  const id = output.match(/^\s*id:\s*([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\s*$/imu)?.[1];
+  const id = output.match(submissionIDPattern)?.[1];
   if (!id) throw new Error("notarytool submit returned no submission ID; notarization cannot be verified");
   console.log(`Notarization submission: ${id}`);
   for (let attempt = 1; attempt <= 3; attempt += 1) {
