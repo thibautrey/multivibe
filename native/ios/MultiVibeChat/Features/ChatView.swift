@@ -1541,56 +1541,50 @@ private struct AgentThinkingGlow: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { timeline in
-            let time = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate
-            GeometryReader { proxy in
-                let shortSide = min(proxy.size.width, proxy.size.height)
-                let radius = min(64.0, max(44.0, shortSide * 0.13))
-                let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-                // Keep all layers together so one bright head visibly travels around the screen.
-                let rotation = Angle.degrees(time.truncatingRemainder(dividingBy: 4) * 90)
-                let gradient = glowGradient(angle: rotation)
+        GeometryReader { proxy in
+            let inset = 3.0
+            let rect = CGRect(origin: .zero, size: proxy.size).insetBy(dx: inset, dy: inset)
+            let shortSide = min(rect.width, rect.height)
+            let radius = min(61.0, max(41.0, shortSide * 0.13))
+            let path = RoundedRectangle(cornerRadius: radius, style: .continuous).path(in: rect)
 
-                ZStack {
-                    shape.inset(by: 3)
-                        .strokeBorder(MultiVibeTheme.accent.opacity(0.18), lineWidth: 2)
+            ZStack {
+                path.stroke(MultiVibeTheme.accent.opacity(0.16), lineWidth: 2)
 
-                    if !reduceTransparency {
-                        shape.inset(by: 7)
-                            .strokeBorder(gradient, lineWidth: 26)
-                            .blur(radius: 16)
-                            .opacity(0.75)
+                TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: reduceMotion)) { timeline in
+                    let time = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate
+                    Canvas(opaque: false, colorMode: .linear, rendersAsynchronously: true) { context, _ in
+                        // Only a short dash is redrawn. The previous implementation re-rendered
+                        // three full-screen angular gradients and large blurs on every frame.
+                        let perimeter = max(1, 2 * (rect.width + rect.height) - 8 * radius + 2 * CGFloat.pi * radius)
+                        let travel = CGFloat(time.truncatingRemainder(dividingBy: 4) / 4)
+                        let phase = -travel * perimeter
+                        let segment = perimeter * 0.20
+                        let gap = perimeter - segment
+                        let segmentStyle = StrokeStyle(lineWidth: reduceTransparency ? 6 : 5, lineCap: .round,
+                            lineJoin: .round, dash: [segment, gap], dashPhase: phase)
 
-                        shape.inset(by: 3)
-                            .strokeBorder(gradient, lineWidth: 14)
-                            .blur(radius: 6)
+                        if !reduceTransparency {
+                            context.drawLayer { glow in
+                                glow.addFilter(.blur(radius: 9))
+                                glow.stroke(path, with: .color(MultiVibeTheme.accent.opacity(0.82)),
+                                    style: StrokeStyle(lineWidth: 18, lineCap: .round, lineJoin: .round,
+                                        dash: [segment, gap], dashPhase: phase))
+                            }
+                        }
+
+                        context.stroke(path, with: .color(MultiVibeTheme.accent), style: segmentStyle)
+                        context.stroke(path, with: .color(MultiVibeTheme.warmAccent),
+                            style: StrokeStyle(lineWidth: reduceTransparency ? 5 : 4, lineCap: .round,
+                                lineJoin: .round, dash: [perimeter * 0.035, perimeter * 0.965],
+                                dashPhase: phase - segment * 0.78))
                     }
-
-                    shape.inset(by: 3)
-                        .strokeBorder(gradient, lineWidth: reduceTransparency ? 6 : 5)
-                        .blur(radius: reduceTransparency ? 0 : 0.8)
                 }
             }
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
         .accessibilityHidden(true)
-    }
-
-    private func glowGradient(angle: Angle) -> AngularGradient {
-        AngularGradient(
-            stops: [
-                .init(color: MultiVibeTheme.accent.opacity(0.08), location: 0),
-                .init(color: MultiVibeTheme.accent.opacity(0.08), location: 0.38),
-                .init(color: MultiVibeTheme.accent.opacity(0.35), location: 0.55),
-                .init(color: MultiVibeTheme.accent, location: 0.72),
-                .init(color: Color(red: 0.45, green: 0.97, blue: 0.73), location: 0.84),
-                .init(color: MultiVibeTheme.warmAccent, location: 0.91),
-                .init(color: MultiVibeTheme.accent.opacity(0.08), location: 1)
-            ],
-            center: .center,
-            angle: angle
-        )
     }
 }
 
