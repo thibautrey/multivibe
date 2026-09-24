@@ -776,12 +776,16 @@ private struct ModelMarketplaceView: View {
         .navigationBarTitleDisplayMode(.large)
         .searchable(text: $search, prompt: "Modèles, fournisseurs et usages")
         .task(id: search + String(describing: tab)) { guard tab != .device, manager.session != nil else { return }; try? await Task.sleep(for: .milliseconds(300)); guard !Task.isCancelled else { return }; await load(reset: true) }
+        .overlay {
+            if loading && entries.isEmpty {
+                ProgressView().controlSize(.large)
+            }
+        }
         .safeAreaInset(edge: .bottom) {
-            if tab != .providers && tab != .device {
+            if tab != .providers && tab != .device && (catalogError != nil || (!loading && cursor != nil)) {
                 VStack {
                     if let catalogError { Text(catalogError).font(.caption); Button("Réessayer") { Task { await load(reset: true) } } }
-                    if loading { ProgressView() }
-                    else if cursor != nil { Button("Charger plus de modèles") { Task { await load(reset: false) } }.padding(8) }
+                    if cursor != nil { Button("Charger plus de modèles") { Task { await load(reset: false) } }.padding(8) }
                 }.frame(maxWidth: .infinity).background(.regularMaterial)
             }
         }
