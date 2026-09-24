@@ -47,3 +47,42 @@ checks alone do not establish JavaScriptCore or physical-model compatibility.
 Pi and the bundled compatibility packages retain their license notices in
 `Resources/PiAgentCore-LICENSES.txt`. OpenCode and Hermes were reviewed as
 alternatives; their full Node/Python applications are not embedded in iOS.
+
+### Hermes contracts and mobile tools
+
+The iOS adapter vendors MIT-licensed Hermes Agent source at the exact commit in
+`upstream/hermes/manifest.json`. `hermes-sync.py` extracts its Python schema AST
+without importing or executing the Python modules. `ios-tools.mjs` narrows those
+contracts to capabilities actually supported by the native app:
+
+| Tool | Reused upstream code | iOS behavior |
+| --- | --- | --- |
+| `clarify` | Hermes question/choice schema | Ends the turn with questions in chat; never manufactures user responses. Choices are text, not a native form. |
+| `session_search` | Hermes query contract | Literal search in this account's local history; no server DB, FTS operators or other profiles. |
+| `web_extract` | Hermes URL-list contract | Up to three public HTTPS text/HTML/JSON pages, using native consent and bounded pagination. No PDF or browser execution. |
+| `edit_document` | **Unmodified Pi `createEditTool()` execution** | Exact, unique, non-overlapping edits to imported document UUIDs; preserves BOM/newlines, saves the same document atomically, rejects stale snapshots. |
+
+Hermes Python handlers are not embedded in the app: they depend on its server
+runtime, database, plugins or credentials. Their contracts are reused with explicit
+native adapters; Pi's JavaScript edit implementation runs directly in JavaScriptCore.
+The app's memory, device permissions, date, calculator, document reading/creation,
+weather and HTTPS reader remain available. Weather uses its small dedicated tool set.
+No terminal, cron, messaging, delegation or arbitrary filesystem tool is exposed.
+Web search is not advertised without a configured reliable search backend. Hermes
+planning/todo persistence would require a separate conversation-state integration;
+it is not represented as iOS Reminders.
+
+To update Hermes, select and review an upstream commit, then from this directory:
+
+```
+python3 hermes-sync.py --update <full-40-character-commit-SHA>
+npm run build
+npm test
+npm run check
+```
+
+The updater downloads a pinned snapshot, records SHA-256 hashes, and regenerates
+contracts; unknown schema expressions fail closed. Review changes to the native
+capability subset before shipping. Hermes notices are included in the app's existing
+`PiAgentCore-LICENSES.txt`. Pi updates continue through `npm run update:pi -- <version>`.
+Both updates ship in an app release, not as downloaded executable code on the phone.
