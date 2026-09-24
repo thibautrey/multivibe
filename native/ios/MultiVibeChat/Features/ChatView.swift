@@ -221,7 +221,7 @@ struct ChatView: View {
                         playStreamingHaptic()
                     }
                     .onChange(of: manager.current?.messages.count) { _, _ in
-                        if followsLatest && !userScrolling { proxy.scrollTo(latestMessageAnchor, anchor: .bottom) }
+                        scrollToLatest(proxy)
                     }
                     .onChange(of: manager.selection) { _, _ in
                         followsLatest = true
@@ -235,6 +235,14 @@ struct ChatView: View {
                             }
                             .buttonStyle(.borderedProminent).padding()
                         }
+                    }
+                    // The first send replaces the welcome view while the composer
+                    // sheet is being dismissed. Its onChange can fire before this
+                    // ScrollView has a laid-out anchor, leaving a restored offset
+                    // outside the content until navigation recreates the view.
+                    .task(id: manager.current?.messages.count) {
+                        await Task.yield()
+                        scrollToLatest(proxy)
                     }
                     }
                 }
@@ -448,6 +456,11 @@ struct ChatView: View {
         UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.2)
         pendingHapticCharacters = 0
         lastStreamingHaptic = now
+    }
+
+    private func scrollToLatest(_ proxy: ScrollViewProxy) {
+        guard followsLatest && !userScrolling else { return }
+        proxy.scrollTo(latestMessageAnchor, anchor: .bottom)
     }
     private var welcome: some View {
         ChatWelcomeView(text: $text, suggestions: suggestions, execute: executeSuggestion, edit: { suggestion in
