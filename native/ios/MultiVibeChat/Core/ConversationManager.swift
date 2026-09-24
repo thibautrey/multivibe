@@ -25,6 +25,18 @@ import Network
     var streamAccess: (@MainActor (String, SelectedModelAccess?, [ChatMessage], String, @Sendable (String) async -> Void) async throws -> Void)?
     var readLocalHistory: @MainActor (URL) throws -> Data = { try Data(contentsOf: $0) }
     var localAvailability: @MainActor () -> String? = { LocalModel.unavailableReason }
+    var downloadedModels: @MainActor () -> [ModelOption] = { LocalModelLibrary.shared.installed.map(\.option) }
+    var downloadedAvailability: @MainActor (String) -> String? = { id in
+        LocalModelLibrary.shared.installation(id)?.state == .installed ? nil : "Téléchargez ce modèle pour l’utiliser sur cet appareil."
+    }
+    var downloadedRespond: @MainActor (String, [ChatMessage], LocalAgentWorkspace?, @escaping @Sendable (String) async -> Void) async throws -> Void = { id, messages, workspace, delta in
+        guard let entry = LocalModelLibrary.shared.installation(id), entry.state == .installed else {
+            throw LocalAgentError.unavailable("Téléchargez ce modèle pour l’utiliser sur cet appareil.")
+        }
+        try await DownloadedModelRuntime.shared.respond(model: entry.model, path: LocalModelLibrary.shared.file(entry.model),
+            messages: messages, workspace: workspace, onText: delta)
+    }
+
     var localRespond: @Sendable ([ChatMessage], LocalAgentWorkspace, @escaping @Sendable (String) async -> Void) async throws -> Void = {
         try await LocalAgent.respond(messages: $0, workspace: $1, onText: $2)
     }
@@ -129,7 +141,13 @@ import Network
     var requestedAccessModel: ModelOption?
     var accessNotice: String?
     func chooseModel(_ model: ModelOption, force: Bool = false) async {
-        if model.id == LocalModel.id { selectedModel = model.id; selectedAccess = nil; return }
+        if ModelExecution(model.id).isLocal {
+            guard !isStreaming else { return }
+            if ModelExecution(model.id) == .downloaded, let reason = services.downloadedAvailability(model.id) { error = reason; return }
+            selectedModel = model.id; selectedAccess = nil
+            if !models.contains(where: { $0.id == model.id }) { models.append(model) }
+            return
+        }
         let account = session?.accountId
         do {
             let token = try await validSession().accessToken
@@ -243,7 +261,7 @@ import Network
         isRestoring = true
         defer { if restorationRevision == restoration { isRestoring = false; scheduleAutomaticSync() } }
         startNetworkMonitoring()
-        models = [LocalModel.option]
+        models = [LocalModel.option] + services.downloadedModels()
         selectedModel = LocalModel.id
         storageLoaded = false
         memoryReviews.values.forEach { $0.cancel() }; memoryReviews = [:]
@@ -282,6 +300,11 @@ import Network
         } catch { self.error = error.localizedDescription }
     }
     /// Explicit network recovery without re-reading or replacing local history.
+    func refreshDownloadedModels() {
+        let downloaded = services.downloadedModels()
+        models.removeAll { option in ModelExecution(option.id) == .downloaded && !downloaded.contains(where: { $0.id == option.id }) }
+        for model in downloaded where !models.contains(where: { $0.id == model.id }) { models.append(model) }
+    }
     func reloadModels() async {
         guard session != nil, !isLoadingModels, !isStreaming else { return }
         let accountRevision = sessionRevision
@@ -296,7 +319,7 @@ import Network
             guard sessionRevision == accountRevision, modelLoadRevision == loadRevision else { return }
             // Sending can begin while this request is in flight; never switch its model.
             guard !isStreaming else { return }
-            var available = [LocalModel.option] + remoteModels.filter { $0.id != LocalModel.id }
+            var available = [LocalModel.option] + services.downloadedModels() + remoteModels.filter { !ModelExecution($0.id).isLocal }
             for favorite in ModelFavoriteStore.load().sorted() where !available.contains(where: { $0.id == favorite }) {
                 available.append(models.first { $0.id == favorite } ?? ModelOption(id: favorite))
             }
@@ -511,12 +534,13 @@ import Network
     }
     @discardableResult func send(_ text: String) -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isRestoring, !isStreaming, !isSynchronizing || selectedModel == LocalModel.id else { return false }
-        guard session != nil || selectedModel == LocalModel.id else { error = APIError.authenticationRequired.localizedDescription; return false }
+        guard !text.isEmpty, !isRestoring, !isStreaming, !isSynchronizing || ModelExecution(selectedModel).isLocal else { return false }
+        guard session != nil || ModelExecution(selectedModel).isLocal else { error = APIError.authenticationRequired.localizedDescription; return false }
         guard storageLoaded else { error = "L’historique local n’a pas pu être ouvert. Il est conservé sans modification. Relancez l’app après avoir déverrouillé l’appareil."; return false }
         if selectedModel == LocalModel.id, let reason = localUnavailableReason { error = reason; return false }
+        if ModelExecution(selectedModel) == .downloaded, let reason = services.downloadedAvailability(selectedModel) { error = reason; return false }
         guard !selectedModel.isEmpty else { error = APIError.noModel.localizedDescription; return false }
-        if selectedModel != LocalModel.id && selectedAccess?.modelId != selectedModel && services.streamAccess != nil {
+        if !ModelExecution(selectedModel).isLocal && selectedAccess?.modelId != selectedModel && services.streamAccess != nil {
             requestedAccessModel = models.first { $0.id == selectedModel } ?? ModelOption(id: selectedModel)
             return false
         }
@@ -549,7 +573,7 @@ import Network
     }
     /// Retry only the current tail, never truncate later turns or duplicate the prompt.
     @discardableResult func retry(conversation id: UUID, message: UUID) -> Bool {
-        guard !isStreaming, !isSynchronizing || current?.model == LocalModel.id, selection == id,
+        guard !isStreaming, !isSynchronizing || ModelExecution(current?.model ?? "").isLocal, selection == id,
               let index = conversations.firstIndex(where: { $0.id == id }),
               let last = conversations[index].messages.last, last.id == message, last.canRetry,
               conversations[index].messages.dropLast().last?.role == "user",
@@ -572,7 +596,7 @@ import Network
         let revision = generationRevision
         let accountRevision = sessionRevision
         let model = selectedModel
-        if model == LocalModel.id {
+        if ModelExecution(model).isLocal {
             generationExpiresAt = Date().addingTimeInterval(120)
             armGenerationDeadline(generation: revision, account: accountRevision)
         }
@@ -586,7 +610,7 @@ import Network
                 }
             }
             do {
-                if model == LocalModel.id {
+                if ModelExecution(model).isLocal {
                     let deviceData = LocalDeviceSnapshot()
                     try Task.checkCancellation()
                     guard generationRevision == revision && sessionRevision == accountRevision else { return }
@@ -606,9 +630,12 @@ import Network
                             try await self.memoryTool(action: action, query: query, text: text, conversation: id,
                                 source: input.last, generation: revision, account: accountRevision)
                         })
-                    try await services.localRespond(input, workspace) { delta in
+                    let delta: @Sendable (String) async -> Void = { delta in
                         await self.append(delta, conversation: id, message: reply.id, generation: revision, account: accountRevision)
                     }
+                    if ModelExecution(model) == .downloaded {
+                        try await services.downloadedRespond(model, input, workspace, delta)
+                    } else { try await services.localRespond(input, workspace, delta) }
                 } else {
                     let session = try await validSession()
                     try Task.checkCancellation()
@@ -632,11 +659,11 @@ import Network
             } catch {
                 if generationRevision == revision && sessionRevision == accountRevision {
                     setReplyCompletion(.failed)
-                    if model != LocalModel.id, case APIError.server(let status, _) = error, [400, 401, 402, 403, 409, 429, 503].contains(status) {
+                    if !ModelExecution(model).isLocal, case APIError.server(let status, _) = error, [400, 401, 402, 403, 409, 429, 503].contains(status) {
                         accessNotice = "Cet accès est indisponible. Réessayez ou choisissez un autre mode."
                         requestedAccessModel = models.first { $0.id == model } ?? ModelOption(id: model)
                     }
-                    self.error = model == LocalModel.id
+                    self.error = ModelExecution(model).isLocal
                         ? (error as? LocalAgentError)?.localizedDescription ?? "L’agent local n’a pas pu terminer cette demande. Réessayez avec une demande plus précise ; les étapes déjà enregistrées sont conservées."
                         : error.localizedDescription
                 }
@@ -1081,6 +1108,11 @@ import Network
                 let output: String
                 if snapshot.model == LocalModel.id {
                     output = try await services.reviewLocalMemory(payload)
+                } else if ModelExecution(snapshot.model) == .downloaded {
+                    let buffer = MemoryReviewOutput()
+                    try await services.downloadedRespond(snapshot.model, [ChatMessage(role: "system", content: AutomaticMemory.instructions),
+                        ChatMessage(role: "user", content: payload)], nil) { await buffer.append($0) }
+                    output = await buffer.value()
                 } else {
                     let credentials = try await validSession()
                     try Task.checkCancellation()

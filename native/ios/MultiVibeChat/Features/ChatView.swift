@@ -240,7 +240,7 @@ struct ChatView: View {
                     Text(error).font(.callout).foregroundStyle(.red).padding()
                 }
                 if let error = manager.error { Text(error).font(.callout).foregroundStyle(.red).padding() }
-                if let error = manager.modelsError, manager.selectedModel != LocalModel.id {
+                if let error = manager.modelsError, !ModelExecution(manager.selectedModel).isLocal {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(error).font(.callout)
                         Button("Réessayer le chargement des modèles", systemImage: "arrow.clockwise") {
@@ -248,7 +248,7 @@ struct ChatView: View {
                         }.disabled(manager.isLoadingModels || manager.isStreaming)
                     }.padding(.horizontal)
                 }
-                if manager.isLoadingModels && manager.selectedModel != LocalModel.id { ProgressView("Chargement des modèles…").padding(.horizontal) }
+                if manager.isLoadingModels && !ModelExecution(manager.selectedModel).isLocal { ProgressView("Chargement des modèles…").padding(.horizontal) }
             }
             .overlay(alignment: .bottomTrailing) {
                 if !composerRequested {
@@ -310,7 +310,7 @@ struct ChatView: View {
             }
             Button("Annuler", role: .cancel) { retryTarget = nil }
         } message: {
-            Text(manager.current?.model == LocalModel.id ? "La réponse partielle sera remplacée et la demande sera reprise sur cet iPhone. Les documents déjà créés sont conservés." : "La réponse partielle sera remplacée. Votre message ne sera pas ajouté une seconde fois. Cette nouvelle demande peut consommer des crédits.")
+            Text(ModelExecution(manager.current?.model ?? "").isLocal ? "La réponse partielle sera remplacée et la demande sera reprise sur cet iPhone. Les documents déjà créés sont conservés." : "La réponse partielle sera remplacée. Votre message ne sera pas ajouté une seconde fois. Cette nouvelle demande peut consommer des crédits.")
         }
         .confirmationDialog("Copier l’historique invité dans ce compte ?", isPresented: $confirmGuestImport, titleVisibility: .visible) {
             Button("Importer") { manager.importGuestHistory() }
@@ -415,7 +415,7 @@ struct ChatView: View {
         .onChange(of: manager.wantsNewConversation) { _, _ in consumeIntent() }
         .onChange(of: manager.wantsVoiceConversation) { _, _ in consumeIntent() }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { voice.silence(); if phase == .background && manager.selectedModel == LocalModel.id { manager.stop() } } else { manager.foreground(); consumeIntent() }
+            if phase != .active { voice.silence(); if phase == .background && ModelExecution(manager.selectedModel).isLocal { manager.stop() } } else { manager.foreground(); consumeIntent() }
         }
         .onAppear { consumeIntent() }
         .onChange(of: manager.nativeShortcut) { _, _ in consumeIntent() }
@@ -527,7 +527,7 @@ struct ChatView: View {
                 } else {
                     Button("Envoyer", systemImage: "arrow.up.circle.fill") { sendComposerMessage() }
                         .font(.title).frame(minWidth: 44, minHeight: 44)
-                        .disabled(manager.selectedModel.isEmpty || (manager.isSynchronizing && manager.selectedModel != LocalModel.id))
+                        .disabled(manager.selectedModel.isEmpty || (manager.isSynchronizing && !ModelExecution(manager.selectedModel).isLocal))
                 }
             }.labelStyle(.iconOnly).buttonStyle(.plain)
         }
@@ -679,6 +679,13 @@ private struct ModelQuickPicker: View {
                     }
                 }
             }
+            if !LocalModelLibrary.shared.installed.isEmpty {
+                Section("Sur cet appareil") {
+                    ForEach(LocalModelLibrary.shared.installed) { model in
+                        Button { select(model.option) } label: { ModelPickerRow(model: model.option, favorite: favorites.contains(model.id)) }
+                    }
+                }
+            }
             Section {
                 NavigationLink {
                     ModelMarketplaceView(models: models, favorites: $favorites, select: select).onAppear(perform: expand)
@@ -713,7 +720,7 @@ private struct ModelPickerRow: View {
             ModelProviderLogo(provider: model.presentation.provider, size: 36)
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.displayName).font(.body.weight(.medium)).foregroundStyle(.primary)
-                Text(model.id == LocalModel.id ? "Apple · sur cet appareil" : model.author ?? "Catalogue MultiVibe")
+                Text(ModelExecution(model.id).isLocal ? "Sur cet appareil" : model.author ?? "Catalogue MultiVibe")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -725,7 +732,7 @@ private struct ModelPickerRow: View {
 
 private struct ModelMarketplaceView: View {
     @Environment(ConversationManager.self) private var manager
-    enum Tab: Hashable { case discover, categories, favorites, providers }
+    enum Tab: Hashable { case discover, categories, favorites, providers, device }
     let models: [ModelOption]
     @Binding var favorites: Set<String>
     let select: (ModelOption) -> Void
@@ -757,15 +764,17 @@ private struct ModelMarketplaceView: View {
                 .tabItem { Label("Catégories", systemImage: "square.grid.2x2") }.tag(Tab.categories)
             ModelListView(title: "Favoris", models: (search.isEmpty ? manager.models : filtered).filter { favorites.contains($0.id) }, favorites: $favorites, select: select)
                 .tabItem { Label("Favoris", systemImage: "star") }.tag(Tab.favorites)
+            LocalModelsView(search: search, select: select)
+                .tabItem { Label("Sur cet appareil", systemImage: "iphone") }.tag(Tab.device)
             ModelProvidersView(models: filtered)
                 .tabItem { Label("Fournisseurs", systemImage: "person.2.badge.gearshape") }.tag(Tab.providers)
         }
         .navigationTitle("Modèles")
         .navigationBarTitleDisplayMode(.large)
         .searchable(text: $search, prompt: "Modèles, fournisseurs et usages")
-        .task(id: search) { try? await Task.sleep(for: .milliseconds(300)); guard !Task.isCancelled else { return }; await load(reset: true) }
+        .task(id: search + String(describing: tab)) { guard tab != .device, manager.session != nil else { return }; try? await Task.sleep(for: .milliseconds(300)); guard !Task.isCancelled else { return }; await load(reset: true) }
         .safeAreaInset(edge: .bottom) {
-            if tab != .providers {
+            if tab != .providers && tab != .device {
                 VStack {
                     if let catalogError { Text(catalogError).font(.caption); Button("Réessayer") { Task { await load(reset: true) } } }
                     if loading { ProgressView() }
@@ -794,6 +803,7 @@ private struct ModelDiscoverView: View {
                     NavigationLink { ModelDetailView(model: featured, favorite: favoriteBinding(featured), select: select) }
                     label: { FeaturedModelCard(model: featured) }.buttonStyle(.plain)
                 }
+                LocalModelDiscoveryShelf(select: select)
                 ModelShelf(title: "Les plus populaires", models: Array(popular.prefix(5)), favorites: $favorites, select: select, ranked: true)
                 if !free.isEmpty { ModelShelf(title: "Gratuits · sans crédit Cloud", models: free, favorites: $favorites, select: select) }
                 ModelShelf(title: "Tous les modèles", models: models, favorites: $favorites, select: select)
@@ -847,7 +857,7 @@ private struct ModelShelf: View {
                             ModelProviderLogo(provider: model.presentation.provider, size: 42)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(model.displayName).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
-                                Text(model.id == LocalModel.id ? "Sur cet appareil" : model.author ?? "Catalogue MultiVibe")
+                                Text(ModelExecution(model.id).isLocal ? "Sur cet appareil" : model.author ?? "Catalogue MultiVibe")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
@@ -934,17 +944,21 @@ private struct ModelDetailView: View {
             Section("À quoi sert ce modèle ?") { Text((detail ?? model).presentation.summary) }
             Section("Accès") {
                 LabeledContent("Créateur", value: model.presentation.provider.displayName)
-                LabeledContent("Accès", value: model.id == LocalModel.id ? "Sur cet appareil" : "Au choix selon disponibilité")
+                LabeledContent("Accès", value: ModelExecution(model.id).isLocal ? "Sur cet appareil" : "Au choix selon disponibilité")
                 if let context = (detail ?? model).metadata?.contextLength { LabeledContent("Contexte", value: "\(context) tokens") }
                 if let output = (detail ?? model).metadata?.maxOutputTokens { LabeledContent("Sortie maximale", value: "\(output) tokens") }
                 if let license = (detail ?? model).metadata?.license { LabeledContent("Licence", value: license) }
-                if model.id == LocalModel.id { Label("Traitement sur cet appareil", systemImage: "lock.iphone") }
+                if ModelExecution(model.id).isLocal { Label("Traitement sur cet appareil", systemImage: "lock.iphone") }
             }
-            Section { Button("Utiliser \(model.displayName)") { select(model) }.buttonStyle(.borderedProminent).frame(maxWidth: .infinity) }
+            Section {
+                if ModelExecution(model.id) == .downloaded, let downloadable = LocalModelLibrary.shared.model(model.id) {
+                    LocalModelCard(model: downloadable, select: select)
+                } else { Button("Utiliser \(model.displayName)") { select(model) }.buttonStyle(.borderedProminent).frame(maxWidth: .infinity) }
+            }
         }
         .navigationTitle("Détails").navigationBarTitleDisplayMode(.inline)
         .task {
-            guard model.id != LocalModel.id else { return }
+            guard !ModelExecution(model.id).isLocal else { return }
             do {
                 let token = try await manager.validSession().accessToken
                 let entry: CatalogEntry = try await ChatAPI.shared.providerRequest("catalog-detail", fields: ["model": model.id], token: token)
@@ -993,7 +1007,7 @@ struct NativePrivacyView: View {
             List {
                 Section("Compte et messages envoyés") {
                     Text("Votre adresse e-mail et vos identifiants sont transmis pour créer votre compte ou vous connecter. Les jetons de connexion sont conservés dans le trousseau de cet appareil.")
-                    Text("Apple Foundation Local traite les messages sur cet appareil, sans compte et sans Internet. Les modèles distants transmettent le message et son contexte à MultiVibe et peuvent consommer des crédits. Aucun basculement vers un modèle distant n’est automatique.")
+                    Text("Apple Foundation Local et les modèles téléchargés traitent les messages sur cet appareil, sans compte et sans Internet. Les modèles distants transmettent le message et son contexte à MultiVibe et peuvent consommer des crédits. Aucun basculement vers un modèle distant n’est automatique.")
                 }
                 Section("Outils et Internet") {
                     Text("L’accès web est demandé une seule fois par conversation. Autoriser permet les lectures HTTPS ; refuser conserve les outils hors ligne. Les sites reçoivent votre adresse IP et les URL demandées, sans les identifiants ni cookies de votre compte MultiVibe. Le modèle reste sur l’appareil.")
