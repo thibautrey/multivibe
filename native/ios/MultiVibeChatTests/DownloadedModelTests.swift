@@ -107,6 +107,7 @@ import XCTest
 
 /// Run explicitly on a physical device. Downloads real immutable model artifacts.
 @MainActor final class DownloadedModelDeviceTests: XCTestCase {
+    override func tearDown() async throws { await DownloadedModelRuntime.shared.unload() }
     func testRealDownloadResumeAndLocalTools() async throws {
         #if targetEnvironment(simulator)
         throw XCTSkip("Physical-device acceptance only")
