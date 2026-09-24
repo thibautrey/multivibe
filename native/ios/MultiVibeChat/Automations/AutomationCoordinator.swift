@@ -24,7 +24,19 @@ import UserNotifications
         guard self.scope != scope else { return }
         execution?.cancel(); execution = nil; self.scope = scope; store = nil; cloudAvailable = false
         for region in location.monitoredRegions where region.identifier.hasPrefix("mvauto.") { location.stopMonitoring(for: region) }
-        do { store = try AutomationStore.disk(scope: scope); UserDefaults.standard.set(scope, forKey: "automation-active-scope"); error = nil }
+        do {
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("-automation-ui-fixture") {
+                store = try AutomationStore { _ in }
+                _ = try store?.upsert(AgentAutomation(title: "Briefing du matin", prompt: "Prépare mon briefing", trigger: AutomationTrigger(kind: "daily", hour: 9, minute: 0, timeZone: "Europe/Paris"), model: LocalModel.id, enabled: false))
+            } else {
+                store = try AutomationStore.disk(scope: scope); UserDefaults.standard.set(scope, forKey: "automation-active-scope")
+            }
+            #else
+            store = try AutomationStore.disk(scope: scope); UserDefaults.standard.set(scope, forKey: "automation-active-scope")
+            #endif
+            error = nil
+        }
         catch { self.error = error.localizedDescription }
         reconcile(); wake()
     }
@@ -125,6 +137,11 @@ import UserNotifications
         }
         wake(); return count
     }
+    func yieldToUser() async {
+        let current = execution
+        current?.cancel()
+        await current?.value
+    }
     func wake() {
         guard execution == nil, let store else { return }
         let original = scope
@@ -152,6 +169,7 @@ import UserNotifications
                     do {
                         let result = try await runner(job, run.payload, foreground)
                         try Task.checkCancellation(); guard scope == original else { return }
+                        guard store.jobs.contains(where: { $0.id == job.id && $0.revision == job.revision }) else { try store.mark(run.id, status: "cancelled"); continue }
                         try store.mark(run.id, status: "succeeded", output: result)
                         if job.notify {
                             let content = UNMutableNotificationContent(); content.title = job.title; content.body = "Une automatisation est terminée. Ouvrez MultiVibe pour consulter le résultat."

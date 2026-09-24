@@ -685,6 +685,7 @@ import Network
                 }
             }
             do {
+                await AutomationCoordinator.shared.yieldToUser()
                 if ModelExecution(model).isLocal {
                     let deviceData = LocalDeviceSnapshot()
                     try Task.checkCancellation()

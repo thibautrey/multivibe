@@ -39,7 +39,8 @@ actor DownloadedModelRuntime {
         }
         loadedID = model.id
         let useTools = model.supportsTools && workspace != nil
-        let weather = useTools && LocalDownloadedTools.isWeatherRequest(messages)
+        let automationRequest = AutomationTools.requested(messages)
+        let weather = useTools && LocalDownloadedTools.isWeatherRequest(messages) && !automationRequest
         let automationAvailable = await workspace?.automationsAvailable() ?? false
         let toolSchema = LocalDownloadedTools.schema(deviceActions: await workspace?.deviceActions() ?? [], weather: weather, automation: useTools && AutomationTools.requested(messages) && automationAvailable)
         var history = messages.filter { ["system", "user", "assistant"].contains($0.role) }
