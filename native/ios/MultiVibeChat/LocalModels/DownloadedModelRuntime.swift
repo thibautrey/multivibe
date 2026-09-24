@@ -28,11 +28,16 @@ actor DownloadedModelRuntime {
     func respond(model: DownloadableModel, path: URL, messages: [ChatMessage], workspace: LocalAgentWorkspace?,
                  onText: @escaping @Sendable (String) async -> Void) async throws {
         guard !busy else { throw LocalAgentError.unavailable("Un modèle local termine une autre opération. Réessayez dans un instant.") }
+        busy = true
+        defer { busy = false }
+        if let previous = loadedID, previous != model.id {
+            await withCheckedContinuation { continuation in worker.queue.async { [worker] in worker.engine.unload(); continuation.resume() } }
+            loadedID = nil
+        }
         guard LocalDeviceBudget.current.problem(model, downloading: false) == nil || loadedID == model.id else {
             throw LocalAgentError.unavailable("Mémoire insuffisante. Fermez les autres apps puis réessayez.")
         }
-        busy = true; loadedID = model.id
-        defer { busy = false }
+        loadedID = model.id
         let useTools = model.supportsTools && workspace != nil
         var history = messages.filter { ["system", "user", "assistant"].contains($0.role) }
             .map { ["role": $0.role, "content": $0.content] as [String: Any] }
