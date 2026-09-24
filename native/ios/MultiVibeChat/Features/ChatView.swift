@@ -261,7 +261,14 @@ struct ChatView: View {
             }
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
+            .navigationBarBackButtonHidden(true)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Afficher les conversations", systemImage: "line.3.horizontal") {
+                        preferredColumn = .sidebar
+                    }
+                    .accessibilityIdentifier("openConversationHistory")
+                }
                 ToolbarItem(placement: .primaryAction) {
                     ControlGroup {
                         Button("Nouvelle conversation", systemImage: "square.and.pencil") { openNewConversation() }

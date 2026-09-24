@@ -4,6 +4,15 @@ import XCTest
 /// credentials or request a recovery email. SSO tests open the first-party browser only.
 @MainActor
 final class AuthenticationUITests: XCTestCase {
+    private func openAuthentication(_ app: XCUIApplication) {
+        let options = app.buttons["Plus d’options"].firstMatch
+        XCTAssertTrue(options.waitForExistence(timeout: 5))
+        options.tap()
+        let login = app.buttons["openAuthentication"].firstMatch
+        XCTAssertTrue(login.waitForExistence(timeout: 5))
+        login.tap()
+    }
+
     private func launch(dark: Bool = false) -> XCUIApplication {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -12,10 +21,7 @@ final class AuthenticationUITests: XCTestCase {
         // AppleInterfaceStyle launch arguments do not reliably override UIKit traits.
         app.launch()
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "Message").firstMatch.waitForExistence(timeout: 15))
-        let login = app.buttons["openAuthentication"].firstMatch
-        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: login)
-        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 15), .completed)
-        login.tap()
+        openAuthentication(app)
         XCTAssertTrue(app.textFields["Adresse e-mail"].waitForExistence(timeout: 15))
         let capture = XCTAttachment(screenshot: app.screenshot())
         capture.name = dark ? "login-dark" : "login-light"
@@ -39,7 +45,7 @@ final class AuthenticationUITests: XCTestCase {
         // Collapse the keyboard before interacting with the background toolbar.
         message.swipeDown()
         for _ in 0..<3 {
-            app.buttons["openAuthentication"].firstMatch.tap()
+            openAuthentication(app)
             XCTAssertTrue(app.textFields["Adresse e-mail"].waitForExistence(timeout: 5))
             app.buttons["Fermer la connexion"].tap()
             XCTAssertTrue(message.waitForExistence(timeout: 5))
@@ -77,7 +83,7 @@ final class AuthenticationUITests: XCTestCase {
         XCTAssertTrue(app.secureTextFields["Mot de passe"].exists)
         XCTAssertFalse(app.buttons["submitAuthentication"].isEnabled)
         app.buttons["Fermer la connexion"].tap()
-        XCTAssertTrue(app.buttons["openAuthentication"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Plus d’options"].waitForExistence(timeout: 5))
     }
 
     func testEmptyLoginAndSignupRemainDisabled() {
