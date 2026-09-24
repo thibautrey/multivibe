@@ -5,13 +5,14 @@ import FoundationModels
 
 enum AutomationTools {
     static func requested(_ messages: [ChatMessage]) -> Bool {
-        let text = messages.last(where: { $0.role == "user" })?.content.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current) ?? ""
+        let text = messages.suffix(4).filter { $0.role == "user" }.map(\.content).joined(separator: "\n").folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
         return text.range(of: #"automati|programm|planifi|chaque|tous les|toutes les|demain|rappel|recurr|schedule|every|trigger|quand j|lorsque j"#, options: .regularExpression) != nil
     }
     static let actions = ["capabilities", "list", "get", "create", "update", "pause", "resume", "delete", "run"]
     static var schema: [String: Any] {
         let strings = ["id", "title", "prompt", "kind", "at", "timeZone", "transition", "event", "executor", "model", "domains"]
         var properties = Dictionary(uniqueKeysWithValues: strings.map { ($0, ["type": "string"] as [String: Any]) })
+        properties["notify"] = ["type": "boolean"]
         properties["action"] = ["type": "string", "enum": actions]
         properties["kind"] = ["type": "string", "enum": ["at", "interval", "daily", "geofence", "event"]]
         properties["executor"] = ["type": "string", "enum": ["local", "cloud"]]
@@ -42,6 +43,7 @@ enum AutomationTools {
         }
         if action == "get" { return try AutomationCodec.string(store.state.runs.filter { $0.automationID == job.id }) + "\n" + AutomationCodec.string(job) }
         if ["create", "update"].contains(action) {
+            if let v = a["notify"] as? Bool { job.notify = v }
             if let v = a["title"] as? String { job.title = v }; if let v = a["prompt"] as? String { job.prompt = v }
             if let v = a["executor"] as? String { guard action == "create" || job.executor == v else { throw AutomationFailure.invalid("Créez une nouvelle automatisation pour changer son lieu d’exécution.") }; job.executor = v }
             if let v = a["model"] as? String { job.model = v }
@@ -100,6 +102,7 @@ struct AutomationAgentTool: Tool {
         var event: String?
         var executor: String?
         var model: String?
+        var notify: Bool?
     }
     func call(arguments: Arguments) async throws -> String {
         let json = arguments.generatedContent.jsonString

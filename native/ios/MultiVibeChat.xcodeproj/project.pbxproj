@@ -15,6 +15,7 @@
 		1DF0848C4A22AE54E2F6A90F /* SDKApplicationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF240043145CEC1114F5AAAC /* SDKApplicationsView.swift */; };
 		2DFBD8DBB45B3C239506B60A /* AutomationTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46AFA56819D7AFFDE7893BB0 /* AutomationTools.swift */; };
 		3498F2842AD2073C13C61F4C /* SecureStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD2222EAEE8931D5CFBC41BA /* SecureStore.swift */; };
+		3606B7EF64FF9A93199C7558 /* RemoteAutomationAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC85FE3EFC1C01C8EF3F7C30 /* RemoteAutomationAgent.swift */; };
 		43FB686D2DA826CF810CC5DA /* AutomationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D630802B501EF5F12EE05015 /* AutomationsView.swift */; };
 		5BAE03F5B75D339A9AF58336 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = D7577716199F102273754156 /* PrivacyInfo.xcprivacy */; };
 		61EEC9C8DB8522810F721117 /* ChatAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EC3EFFD60CE2939BD5BCD88 /* ChatAPI.swift */; };
@@ -55,6 +56,7 @@
 		ECDEA29B56DDE2F17FA9DC61 /* MultiVibeChatUI in Frameworks */ = {isa = PBXBuildFile; productRef = 866486075F05053501529275 /* MultiVibeChatUI */; };
 		EDD89E16CC7EEE5F49D07739 /* ChatIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 626C77A820035BB712EF6520 /* ChatIntents.swift */; };
 		EFCAC148BE4F8564C164FEF7 /* RealtimeVoiceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9178B9C07BCDF95DFE9A7DA /* RealtimeVoiceView.swift */; };
+		F1D6D7802498EC8BC30B8023 /* AutomationUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63B3E34A764DACD69B7AB0B0 /* AutomationUITests.swift */; };
 		FE355EA09A71428B7CF119AB /* MultiVibeLocalInference.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 16EA3BB8F0EBD6ADB21388D9 /* MultiVibeLocalInference.xcframework */; };
 		FE9F141E961C8316B702D426 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D23AAC6A6C06292DD31EC37 /* ChatView.swift */; };
 /* End PBXBuildFile section */
@@ -96,6 +98,7 @@
 		6180BCA2920EE4B41879C672 /* LocalModelCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalModelCatalog.swift; sourceTree = "<group>"; };
 		626C77A820035BB712EF6520 /* ChatIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatIntents.swift; sourceTree = "<group>"; };
 		629415D327799BA41C85897A /* AutomationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationCoordinator.swift; sourceTree = "<group>"; };
+		63B3E34A764DACD69B7AB0B0 /* AutomationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationUITests.swift; sourceTree = "<group>"; };
 		6636026081D44F2E5870C485 /* LocalDeviceData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalDeviceData.swift; sourceTree = "<group>"; };
 		68DE1C2DEDCA28B710DD6C5D /* AgentMemory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentMemory.swift; sourceTree = "<group>"; };
 		73484D90F6B8C690FC806EBB /* AuthenticationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticationUITests.swift; sourceTree = "<group>"; };
@@ -118,6 +121,7 @@
 		C5173C6F10D1D8A8125C53A7 /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };
 		C8B7BDC40696F8598713904B /* AutomationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationTests.swift; sourceTree = "<group>"; };
 		CA4393E98F397246F4A41196 /* AuthenticationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticationView.swift; sourceTree = "<group>"; };
+		CC85FE3EFC1C01C8EF3F7C30 /* RemoteAutomationAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAutomationAgent.swift; sourceTree = "<group>"; };
 		CCC5DC2C101699AB590EC553 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
 		D630802B501EF5F12EE05015 /* AutomationsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationsView.swift; sourceTree = "<group>"; };
 		D6D203722FEE3A237B2FBA13 /* PiAgentCore.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = PiAgentCore.js; sourceTree = "<group>"; };
@@ -220,6 +224,7 @@
 				3B8204CBB43A4BF53FAEC6DB /* AutomationStore.swift */,
 				D630802B501EF5F12EE05015 /* AutomationsView.swift */,
 				46AFA56819D7AFFDE7893BB0 /* AutomationTools.swift */,
+				CC85FE3EFC1C01C8EF3F7C30 /* RemoteAutomationAgent.swift */,
 			);
 			path = Automations;
 			sourceTree = "<group>";
@@ -267,6 +272,7 @@
 			isa = PBXGroup;
 			children = (
 				73484D90F6B8C690FC806EBB /* AuthenticationUITests.swift */,
+				63B3E34A764DACD69B7AB0B0 /* AutomationUITests.swift */,
 			);
 			path = MultiVibeChatUITests;
 			sourceTree = "<group>";
@@ -479,6 +485,7 @@
 				94044294E174A79BF89B09B3 /* PiAgentHarness.swift in Sources */,
 				7D68D3936B5105AC7AD322D6 /* RealtimeVoiceController.swift in Sources */,
 				EFCAC148BE4F8564C164FEF7 /* RealtimeVoiceView.swift in Sources */,
+				3606B7EF64FF9A93199C7558 /* RemoteAutomationAgent.swift in Sources */,
 				1DF0848C4A22AE54E2F6A90F /* SDKApplicationsView.swift in Sources */,
 				3498F2842AD2073C13C61F4C /* SecureStore.swift in Sources */,
 				0A4A1A84E6560C97F714C2C9 /* VoiceController.swift in Sources */,
@@ -492,6 +499,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				91ABE914998A0252BC864813 /* AuthenticationUITests.swift in Sources */,
+				F1D6D7802498EC8BC30B8023 /* AutomationUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
