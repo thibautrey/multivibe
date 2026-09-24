@@ -181,25 +181,31 @@ import XCTest
             func event(_ value: LocalAgentEvent) { calls.append(value.tool) }
             func fetched() { requests += 1 }
         }
-        for denied in [false, true] {
+        for scenario in ["allowed", "denied", "live"] {
+            let denied = scenario == "denied"
+            let live = scenario == "live"
             let capture = Capture()
             let workspace = LocalAgentWorkspace(conversations: [], documents: [],
                 event: { await capture.event($0) }, saveDocument: { _ in },
                 authorizeInternet: { _ in !denied },
                 webFetch: { url, _ in
                     await capture.fetched()
+                    if live { return try await LocalWebFetch.fetch(url: url, method: "GET") }
                     return LocalWebResponse(url: url, status: 200, contentType: "text/plain", text: "Validation code: ORION-742. Tomorrow: sunny, 21 C.")
                 })
             try await DownloadedModelRuntime.shared.respond(model: library.validated(model), path: library.file(model),
                 messages: [ChatMessage(role: "user", content: "Peux-tu vérifier sur Internet ?"),
                     ChatMessage(role: "assistant", content: "Je ne possède pas d’outils pour accéder à Internet."),
-                    ChatMessage(role: "user", content: "Utilise tes outils pour lire https://example.com et donne le code de validation indiqué dans la page.")],
+                    ChatMessage(role: "user", content: live
+                        ? "Lis https://example.com avec tes outils et donne le titre exact en anglais de la page."
+                        : "Utilise tes outils pour lire https://example.com et donne le code de validation indiqué dans la page.")],
                 workspace: workspace) { await capture.append($0) }
             let calls = await capture.calls, text = await capture.text, requests = await capture.requests
             XCTAssertTrue(calls.contains("fetch_website"), "No web tool call: " + text)
             XCTAssertEqual(requests, denied ? 0 : 1)
             XCTAssertFalse(text.isEmpty)
-            if !denied { XCTAssertTrue(text.contains("ORION-742"), text) }
+            if live { XCTAssertTrue(text.contains("Example Domain"), text) }
+            else if !denied { XCTAssertTrue(text.contains("ORION-742"), text) }
             else { XCTAssertFalse(text.contains("ORION-742"), text) }
             await DownloadedModelRuntime.shared.unload()
         }
