@@ -39,6 +39,16 @@ actor ChatAPI {
             throw APIError.server(http.statusCode, code)
         }
     }
+    func automationCompletion(model: String, access: SelectedModelAccess?, messages: String, tools: String, token: String) async throws -> String {
+        guard let access, access.modelId == model else { throw APIError.server(409, "model_access_unavailable") }
+        let body = try JSONSerialization.data(withJSONObject: ["model": model, "accessId": access.id, "stream": false, "max_tokens": 1024,
+            "messages": JSONSerialization.jsonObject(with: Data(messages.utf8)), "tools": JSONSerialization.jsonObject(with: Data(tools.utf8))])
+        let (data, response) = try await session.data(for: request("access-completions", body: body, token: token))
+        try validate(response, data: data)
+        guard data.count <= 128_000, let value = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = value["choices"] as? [[String: Any]], let message = choices.first?["message"] as? [String: Any] else { throw APIError.invalidResponse }
+        return String(decoding: try JSONSerialization.data(withJSONObject: message), as: UTF8.self)
+    }
     func automations(_ body: Data, token: String) async throws -> Data {
         let (data, response) = try await session.data(for: request("automations", body: body, token: token))
         try validate(response, data: data)
