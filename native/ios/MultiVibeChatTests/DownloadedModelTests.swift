@@ -75,6 +75,30 @@ import XCTest
             XCTAssertThrowsError(try LocalDownloadedTools.arguments(value))
         }
     }
+    func testToolCapabilityDoesNotDependOnPerformanceRecommendation() {
+        var model = model()
+        XCTAssertFalse(model.supportsTools)
+        model.toolsValidated = true
+        XCTAssertTrue(model.supportsTools)
+        XCTAssertFalse(model.recommended)
+        let qwen = HuggingFaceCatalog.bundled.first { $0.name == "Qwen3 1.7B" }
+        XCTAssertEqual(qwen?.supportsTools, true)
+    }
+    func testWebsiteToolAndDeviceScope() throws {
+        let schema = try XCTUnwrap(LocalDownloadedTools.schema(deviceActions: []).data(using: .utf8))
+        let tools = try XCTUnwrap(JSONSerialization.jsonObject(with: schema) as? [[String: Any]])
+        XCTAssertTrue(tools.contains { ($0["function"] as? [String: Any])?["name"] as? String == "fetch_website" })
+        XCTAssertFalse(String(decoding: schema, as: UTF8.self).contains("read_contacts"))
+        XCTAssertTrue(LocalDownloadedTools.schema(deviceActions: ["read_contacts"]).contains("read_contacts"))
+        let input = try LocalDownloadedTools.arguments(#"{"url":"https://example.com","offset":20}"#, name: "fetch_website")
+        XCTAssertEqual(input.action, "fetch_website")
+        XCTAssertEqual(input.query, "https://example.com")
+        XCTAssertEqual(input.lhs, 20)
+        for json in [#"{"url":12}"#, #"{"url":"https://example.com","offset":true}"#, #"{"url":"https://example.com","offset":-1}"#, #"{"url":"https://example.com","admin":true}"#] {
+            XCTAssertThrowsError(try LocalDownloadedTools.arguments(json, name: "fetch_website"))
+        }
+        XCTAssertThrowsError(try LocalDownloadedTools.arguments("{}", name: "unknown"))
+    }
     func testQwenExplicitKeyWidthOverridesEmbeddingDividedByHeads() throws {
         var data = Data()
         func number(_ value: UInt64, count: Int) { for i in 0..<count { data.append(UInt8((value >> (8 * i)) & 255)) } }
@@ -138,6 +162,49 @@ import XCTest
 /// Run explicitly on a physical device. Downloads real immutable model artifacts.
 @MainActor final class DownloadedModelDeviceTests: XCTestCase {
     override func tearDown() async throws { await DownloadedModelRuntime.shared.unload() }
+    func testInstalledQwenToolsThroughProductionCatalog() async throws {
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Physical-device acceptance only")
+        #else
+        guard ProcessInfo.processInfo.environment["MULTIVIBE_LOCAL_DEVICE_TEST"] == "1" else {
+            throw XCTSkip("Explicit opt-in required for on-device inference")
+        }
+        let library = LocalModelLibrary.shared
+        let model = try XCTUnwrap(HuggingFaceCatalog.bundled.first { $0.name == "Qwen3 1.7B" })
+        guard library.installation(model.id)?.state == .installed else {
+            throw XCTSkip("Install Qwen3 1.7B before running this test; it never downloads models")
+        }
+        XCTAssertTrue(library.validated(model).supportsTools)
+        actor Capture {
+            var text = ""; var calls: [String] = []; var requests = 0
+            func append(_ value: String) { text += value }
+            func event(_ value: LocalAgentEvent) { calls.append(value.tool) }
+            func fetched() { requests += 1 }
+        }
+        for denied in [false, true] {
+            let capture = Capture()
+            let workspace = LocalAgentWorkspace(conversations: [], documents: [],
+                event: { await capture.event($0) }, saveDocument: { _ in },
+                authorizeInternet: { _ in !denied },
+                webFetch: { url, _ in
+                    await capture.fetched()
+                    return LocalWebResponse(url: url, status: 200, contentType: "text/plain", text: "Validation code: ORION-742. Tomorrow: sunny, 21 C.")
+                })
+            try await DownloadedModelRuntime.shared.respond(model: library.validated(model), path: library.file(model),
+                messages: [ChatMessage(role: "user", content: "Peux-tu vérifier sur Internet ?"),
+                    ChatMessage(role: "assistant", content: "Je ne possède pas d’outils pour accéder à Internet."),
+                    ChatMessage(role: "user", content: "Utilise tes outils pour lire https://example.com et donne le code de validation indiqué dans la page.")],
+                workspace: workspace) { await capture.append($0) }
+            let calls = await capture.calls, text = await capture.text, requests = await capture.requests
+            XCTAssertTrue(calls.contains("fetch_website"), "No web tool call: " + text)
+            XCTAssertEqual(requests, denied ? 0 : 1)
+            XCTAssertFalse(text.isEmpty)
+            if !denied { XCTAssertTrue(text.contains("ORION-742"), text) }
+            else { XCTAssertFalse(text.contains("ORION-742"), text) }
+            await DownloadedModelRuntime.shared.unload()
+        }
+        #endif
+    }
     func testRealDownloadResumeAndLocalTools() async throws {
         #if targetEnvironment(simulator)
         throw XCTSkip("Physical-device acceptance only")
