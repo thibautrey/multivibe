@@ -440,6 +440,31 @@ final class PasswordResetLinkTests: XCTestCase {
 }
 
 @MainActor final class ReplyRetryTests: XCTestCase {
+    func testStreamingPublishesEveryAcceptedDeltaBeforeCompletion() async throws {
+        let session = NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: "stream-fixture")
+        var resume: CheckedContinuation<Void, Never>?
+        let services = isolatedServices(writeHistory: { _, _ in }, load: { session }, stream: { _, _, _, delta in
+            await delta("Bon")
+            await delta("jour")
+            await withCheckedContinuation { resume = $0 }
+        })
+        let manager = ConversationManager(services: services)
+        await manager.restore(loadRemoteModels: false)
+        manager.models = [ModelOption(id: "fixture")]; manager.selectedModel = "fixture"
+        let initialRevision = manager.streamingTextRevision
+
+        XCTAssertTrue(manager.send("hello"))
+        for _ in 0..<1000 { if resume != nil { break }; await Task.yield() }
+
+        XCTAssertTrue(manager.isStreaming)
+        XCTAssertEqual(manager.current?.messages.last?.content, "Bonjour")
+        XCTAssertEqual(manager.streamingTextRevision, initialRevision + 2)
+        let continuation = try XCTUnwrap(resume)
+        continuation.resume()
+        for _ in 0..<1000 { if !manager.isStreaming { break }; await Task.yield() }
+        XCTAssertEqual(manager.current?.messages.last?.completion, .completed)
+    }
+
     func testFailedTailRetryDoesNotDuplicatePrompt() async throws {
         let session = NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: "retry-fixture")
         var inputs: [[ChatMessage]] = []

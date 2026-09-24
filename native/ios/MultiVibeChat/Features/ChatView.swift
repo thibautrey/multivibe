@@ -35,6 +35,10 @@ struct ChatView: View {
     @State private var selectionContent: SelectableMessage?
     @State private var followsLatest = true
     @State private var userScrolling = false
+    @State private var hapticMessage: UUID?
+    @State private var hapticCharacterCount = 0
+    @State private var pendingHapticCharacters = 0
+    @State private var lastStreamingHaptic = Date.distantPast
     @State private var composerPresented = true
     @State private var voiceConversationPresented = false
     @State private var voiceConversationPreparing = false
@@ -212,8 +216,9 @@ struct ChatView: View {
                     } action: { _, nearBottom in
                         if userScrolling { followsLatest = nearBottom }
                     }
-                    .onChange(of: manager.current?.messages.last?.content) { _, _ in
+                    .onChange(of: manager.streamingTextRevision) { _, _ in
                         if followsLatest && !userScrolling { proxy.scrollTo(latestMessageAnchor, anchor: .bottom) }
+                        playStreamingHaptic()
                     }
                     .onChange(of: manager.current?.messages.count) { _, _ in
                         if followsLatest && !userScrolling { proxy.scrollTo(latestMessageAnchor, anchor: .bottom) }
@@ -424,6 +429,25 @@ struct ChatView: View {
         .onChange(of: manager.pendingDraft) { _, _ in consumeIntent() }
         .onDisappear { voice.silence() }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in voice.silence() }
+    }
+
+    private func playStreamingHaptic() {
+        guard let message = manager.current?.messages.last, message.role == "assistant",
+              message.completion == .streaming else { return }
+        if hapticMessage != message.id {
+            hapticMessage = message.id
+            hapticCharacterCount = 0
+            pendingHapticCharacters = 0
+            lastStreamingHaptic = .distantPast
+        }
+        let count = message.content.count
+        pendingHapticCharacters += max(0, count - hapticCharacterCount)
+        hapticCharacterCount = count
+        let now = Date()
+        guard pendingHapticCharacters >= 3, now.timeIntervalSince(lastStreamingHaptic) >= 0.08 else { return }
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.2)
+        pendingHapticCharacters = 0
+        lastStreamingHaptic = now
     }
     private var welcome: some View {
         ChatWelcomeView(text: $text, suggestions: suggestions, execute: executeSuggestion, edit: { suggestion in
