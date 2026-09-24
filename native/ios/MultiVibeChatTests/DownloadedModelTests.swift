@@ -1,4 +1,5 @@
 import XCTest
+import CryptoKit
 @testable import MultiVibeChat
 
 @MainActor final class DownloadedModelTests: XCTestCase {
@@ -326,7 +327,27 @@ import XCTest
         guard ProcessInfo.processInfo.environment["MULTIVIBE_LOCAL_DEVICE_TEST"] == "1" else { throw XCTSkip("Opt in to device inference") }
         let library = LocalModelLibrary.shared
         let model = try XCTUnwrap(HuggingFaceCatalog.bundled.first { $0.name == "Qwen3 1.7B" })
-        guard library.installation(model.id)?.state == .installed else { throw XCTSkip("Install Qwen3 1.7B") }
+        var modelFile = library.file(model)
+        var temporaryFile: URL?
+        defer { if let temporaryFile { try? FileManager.default.removeItem(at: temporaryFile) } }
+        if library.installation(model.id)?.state != .installed {
+            guard ProcessInfo.processInfo.environment["MULTIVIBE_TEST_DOWNLOAD_FIXTURE"] == "1" else { throw XCTSkip("Install Qwen3 1.7B or opt in to an isolated Wi-Fi fixture") }
+            executionTimeAllowance = 600
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.allowsCellularAccess = false
+            configuration.timeoutIntervalForResource = 480
+            let session = URLSession(configuration: configuration)
+            defer { session.invalidateAndCancel() }
+            let (file, response) = try await session.download(from: model.url)
+            temporaryFile = file
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+            let handle = try FileHandle(forReadingFrom: file)
+            defer { try? handle.close() }
+            var hash = SHA256(), size: Int64 = 0
+            while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty { hash.update(data: chunk); size += Int64(chunk.count) }
+            guard size == model.bytes, hash.finalize().map({ String(format: "%02x", $0) }).joined() == model.sha256.lowercased() else { throw LocalAgentError.invalidInput }
+            modelFile = file
+        }
         actor Capture {
             var saved: LocalDocument?
             var text = ""
@@ -336,7 +357,7 @@ import XCTest
         let capture = Capture()
         let document = LocalDocument(name: "Note de test", text: "Total: 42")
         let workspace = LocalAgentWorkspace(conversations: [], documents: [document], event: { _ in }, saveDocument: { await capture.save($0) })
-        try await DownloadedModelRuntime.shared.respond(model: library.validated(model), path: library.file(model),
+        try await DownloadedModelRuntime.shared.respond(model: library.validated(model), path: modelFile,
             messages: [ChatMessage(role: "user", content: "Dans le document \(document.id.uuidString), remplace exactement « Total: 42 » par « Total: 43 » avec edit_document. Ne crée pas de nouveau document.")],
             workspace: workspace) { await capture.append($0) }
         let saved = await capture.saved, text = await capture.text
