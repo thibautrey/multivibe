@@ -34,6 +34,7 @@
 		B242BA0DFE43365D51F44CF8 /* LocalModelsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 922D779C752D39F8E3F7F0EA /* LocalModelsView.swift */; };
 		B5F3F31445565B7A4FC8EB04 /* VoiceWebRTCTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19FF539BBD48306A3977C171 /* VoiceWebRTCTransport.swift */; };
 		B85D75D9CEF4051E7820B844 /* DownloadedModelRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DBDCECFA9845CE5F3C6A960 /* DownloadedModelRuntime.swift */; };
+		BE6766D49B5A31ADDF3502EB /* llama-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = EF18EF613BF5858C8BAB2F5F /* llama-LICENSE.txt */; };
 		C1B15569E65D46A8593B090F /* MultiVibeSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 609BC433EA9477C7C93608F5 /* MultiVibeSDK */; };
 		C74FEFADAC73275DB726E5A6 /* AuthenticationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA4393E98F397246F4A41196 /* AuthenticationView.swift */; };
 		C8B0A62B02F77441A8AFB13A /* LocalModelCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6180BCA2920EE4B41879C672 /* LocalModelCatalog.swift */; };
@@ -108,6 +109,7 @@
 		E2EABA31C1CFB803896807DD /* libc++.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = "libc++.tbd"; path = "usr/lib/libc++.tbd"; sourceTree = SDKROOT; };
 		ED63046FBAF333333E159086 /* ConversationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationManager.swift; sourceTree = "<group>"; };
 		EE89CDEC6389DF7D57D2960C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		EF18EF613BF5858C8BAB2F5F /* llama-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "llama-LICENSE.txt"; sourceTree = "<group>"; };
 		F821AA010F4443A441EF6DF0 /* MultiVibeSDK */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MultiVibeSDK; path = ../sdk/MultiVibeSDK; sourceTree = SOURCE_ROOT; };
 		F9178B9C07BCDF95DFE9A7DA /* RealtimeVoiceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeVoiceView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -144,6 +146,7 @@
 			children = (
 				B3F9F268516DD34F81AB7817 /* Assets.xcassets */,
 				EE89CDEC6389DF7D57D2960C /* Info.plist */,
+				EF18EF613BF5858C8BAB2F5F /* llama-LICENSE.txt */,
 				8713B44FBEA8912EB4C8334F /* LocalModelManifest.json */,
 				9A8B15C5C36771B67C287720 /* MultiVibeChat.entitlements */,
 				D7577716199F102273754156 /* PrivacyInfo.xcprivacy */,
@@ -390,6 +393,7 @@
 				D82AAFC3C8F507B521619C45 /* Assets.xcassets in Resources */,
 				E897D566713EF64EA43668E0 /* LocalModelManifest.json in Resources */,
 				5BAE03F5B75D339A9AF58336 /* PrivacyInfo.xcprivacy in Resources */,
+				BE6766D49B5A31ADDF3502EB /* llama-LICENSE.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
