@@ -12,7 +12,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { TTFT_BUCKET_ORDER, TTFT_CONTEXT_LABELS, fmt, formatTokenCount, pct, usd } from "../../lib/ui";
+import { TTFT_BUCKET_ORDER, TTFT_CONTEXT_LABELS, fmt, formatLatency, isMeasured, sumMeasured, formatTokenCount, pct, usd } from "../../lib/ui";
 import { Metric } from "../Metric";
 import { WidgetGrid } from "../WidgetGrid";
 import type { SessionTurn, SessionsResponse } from "../../types";
@@ -42,7 +42,7 @@ function formatDuration(ms: number): string {
   return `${(ms / 86_400_000).toFixed(1)} d`;
 }
 
-function formatSignedTokens(value: number | undefined): string {
+function formatSignedTokens(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "—";
   return `${value > 0 ? "+" : ""}${formatTokenCount(value)}`;
 }
@@ -61,9 +61,9 @@ function average(values: number[]): number | undefined {
 function SessionTurnDetails({ turns, loading }: { turns: SessionTurn[]; loading: boolean }) {
   if (loading) return <div className="muted trace-loading">Loading session turns...</div>;
   if (!turns.length) return <div className="muted trace-loading">No turns recorded for this session in the selected range.</div>;
-  let previousInput: number | undefined;
+  let previousInput: number | null | undefined;
   const chartRows = turns.map((turn, index) => {
-    const growth = index === 0 || typeof previousInput !== "number" ? undefined : turn.inputTokens - previousInput;
+    const growth = index === 0 || !isMeasured(previousInput) || !isMeasured(turn.inputTokens) ? undefined : turn.inputTokens - previousInput;
     previousInput = turn.inputTokens;
     return {
       ...turn,
@@ -78,16 +78,16 @@ function SessionTurnDetails({ turns, loading }: { turns: SessionTurn[]; loading:
     <>
       <div className="session-turn-summary">
         <span>New tokens per turn (avg) <strong>{formatSignedTokens(averageGrowth)}</strong></span>
-        <span>Cache read <strong>{formatTokenCount(turns.reduce((sum, turn) => sum + turn.cachedInputTokens, 0))}</strong></span>
-        <span>Cache written <strong>{formatTokenCount(turns.reduce((sum, turn) => sum + turn.cacheWriteTokens, 0))}</strong></span>
+        <span>Cache read <strong>{formatTokenCount(sumMeasured(turns.map(turn => turn.cachedInputTokens)))}</strong></span>
+        <span>Cache written <strong>{formatTokenCount(sumMeasured(turns.map(turn => turn.cacheWriteTokens)))}</strong></span>
       </div>
       <div className="chart-wrap session-turn-chart">
         <ResponsiveContainer width="100%" height={220}>
           <LineChart data={chartRows}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
             <XAxis dataKey="label" minTickGap={16} />
-            <YAxis tickFormatter={(value: any) => formatTokenCount(Number(value) || 0)} />
-            <Tooltip formatter={(value: any, name: any) => [formatTokenCount(Number(value) || 0), name]} />
+            <YAxis tickFormatter={(value: any) => formatTokenCount(value == null ? null : Number(value))} />
+            <Tooltip formatter={(value: any, name: any) => [formatTokenCount(value == null ? null : Number(value)), name]} />
             <Legend />
             <Line isAnimationActive={false} type="monotone" dataKey="inputTokens" name="input" stroke={TOKEN_CHART_COLORS[0]} strokeWidth={2} dot={false} />
             <Line isAnimationActive={false} type="monotone" dataKey="cachedInputTokens" name="cached input" stroke={TOKEN_CHART_COLORS[1]} strokeWidth={2} dot={false} />
@@ -112,7 +112,7 @@ function SessionTurnDetails({ turns, loading }: { turns: SessionTurn[]; loading:
                 <td>{formatTokenCount(turn.outputTokens)}</td>
                 <td>{formatSignedTokens(turn.growth)}</td>
                 <td>{typeof turn.ttftMs === "number" ? formatTtftDuration(turn.ttftMs) : "—"}</td>
-                <td>{Math.round(turn.latencyMs)}ms</td>
+                <td>{formatLatency(turn.latencyMs)}</td>
                 <td>{turn.upstreamAttempts}</td>
                 <td><span className={`badge ${turn.isError ? "badge-warn" : "badge-live"}`}>{turn.status}</span></td>
               </tr>
@@ -143,7 +143,7 @@ export function TracingSessions({
   const tokenComposition = [
     { label: "Cache read", tokens: summary.cachedInputTokens },
     { label: "Cache write", tokens: summary.cacheWriteTokens },
-    { label: "Uncached", tokens: Math.max(0, summary.inputTokens - summary.cachedInputTokens - summary.cacheWriteTokens) },
+    { label: "Uncached", tokens: isMeasured(summary.inputTokens) && isMeasured(summary.cachedInputTokens) && isMeasured(summary.cacheWriteTokens) ? Math.max(0, summary.inputTokens - summary.cachedInputTokens - summary.cacheWriteTokens) : null },
   ];
 
   return (
@@ -184,9 +184,9 @@ export function TracingSessions({
             <ResponsiveContainer width="100%" height={260}>
               <BarChart data={tokenComposition} layout="vertical">
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
-                <XAxis type="number" tickFormatter={(value: any) => formatTokenCount(Number(value) || 0)} />
+                <XAxis type="number" tickFormatter={(value: any) => formatTokenCount(value == null ? null : Number(value))} />
                 <YAxis type="category" dataKey="label" width={100} />
-                <Tooltip formatter={(value: any) => formatTokenCount(Number(value) || 0)} />
+                <Tooltip formatter={(value: any) => formatTokenCount(value == null ? null : Number(value))} />
                 <Bar isAnimationActive={false} dataKey="tokens" name="tokens" radius={[0, 5, 5, 0]}>
                   {tokenComposition.map((entry, index) => (
                     <Cell key={entry.label} fill={TOKEN_CHART_COLORS[index % TOKEN_CHART_COLORS.length]} />
