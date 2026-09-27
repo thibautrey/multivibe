@@ -101,7 +101,12 @@ export const fmt = (ts?: number) => (!ts ? "-" : new Date(ts).toLocaleString());
 export const clampPct = (v: number) => Math.max(0, Math.min(100, v));
 export const compactNumber = (v: number) =>
   new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(v);
-export const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
+export type DisplayMetric = number | null | undefined;
+export const isMeasured = (value: DisplayMetric): value is number => typeof value === "number" && Number.isFinite(value);
+export const metricCount = (value: DisplayMetric) => isMeasured(value) ? value.toLocaleString() : "Unavailable";
+export const formatLatency = (value: DisplayMetric) => isMeasured(value) ? `${Math.round(value).toLocaleString()}ms` : "Unavailable";
+export const pct = (v: DisplayMetric) => isMeasured(v) ? `${(v * 100).toFixed(1)}%` : "Unavailable";
+export const sumMeasured = (values: DisplayMetric[]): number | null => values.every(isMeasured) ? values.reduce((sum, value) => sum + value, 0) : null;
 
 const usdFormatter = new Intl.NumberFormat(undefined, {
   minimumFractionDigits: 2,
@@ -117,7 +122,8 @@ const costUnits = [
   { value: 1_000, suffix: "K" },
 ];
 
-export const usd = (v: number) => {
+export const usd = (v: DisplayMetric) => {
+  if (!isMeasured(v)) return "Unavailable";
   const absoluteValue = Math.abs(v);
   const unitIndex = costUnits.findIndex((unit) => absoluteValue >= unit.value);
   if (unitIndex === -1) return `${usdFormatter.format(v)} $US`;
@@ -132,8 +138,9 @@ export const usd = (v: number) => {
   return `${compactUsdFormatter.format(scaledValue)}${unit.suffix} $US`;
 };
 
-export function formatTokenCount(v: number): string {
-  const n = Number.isFinite(v) ? Math.max(0, v) : 0;
+export function formatTokenCount(v: DisplayMetric): string {
+  if (!isMeasured(v)) return "Unavailable";
+  const n = Math.max(0, v);
   if (n < 1_000) return `${Math.round(n)}`;
 
   const units = [
@@ -148,8 +155,9 @@ export function formatTokenCount(v: number): string {
   return `${text.replace(/\.0$/, "")}${unit.suffix}`;
 }
 
-export function formatTokenRate(v: number): string {
-  const n = Number.isFinite(v) ? Math.max(0, v) : 0;
+export function formatTokenRate(v: DisplayMetric): string {
+  if (!isMeasured(v)) return "Unavailable";
+  const n = Math.max(0, v);
   if (n > 0 && n < 10) return `${n.toFixed(1)} tok/s`;
   return `${formatTokenCount(n)} tok/s`;
 }

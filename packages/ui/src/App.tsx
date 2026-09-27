@@ -448,7 +448,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
     [filteredTraceStats.models],
   );
   const modelCostChartData = useMemo(
-    () => [...filteredTraceStats.models].sort((a, b) => b.costUsd - a.costUsd).slice(0, 8).map((m) => ({ ...m, label: m.model })),
+    () => [...filteredTraceStats.models].sort((a, b) => (b.costUsd ?? -Infinity) - (a.costUsd ?? -Infinity)).slice(0, 8).map((m) => ({ ...m, label: m.model })),
     [filteredTraceStats.models],
   );
 
@@ -456,7 +456,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
     () => traceStats.timeseries.map((b) => ({
       ...b,
       inferenceTokensPerSecond:
-        b.inferenceRequests > 0 ? b.inferenceTokensPerSecond : null,
+        (b.inferenceRequests ?? 0) > 0 ? b.inferenceTokensPerSecond : null,
       label: new Date(b.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     })),
     [traceStats.timeseries],
