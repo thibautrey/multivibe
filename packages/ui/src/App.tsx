@@ -14,7 +14,6 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "re
 import "./styles.css";
 import "./host/styles.css";
 import "./workspace-refresh.css";
-import { estimateCostUsd } from "./model-pricing";
 import { ApiError } from "./lib/api";
 import {
   EMPTY_SESSIONS_RESPONSE,
@@ -460,14 +459,6 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
       label: new Date(b.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     })),
     [traceStats.timeseries],
-  );
-  const totalTraceCostFromRows = useMemo(
-    () =>
-      traces.reduce(
-        (sum, t) => sum + (typeof t.costUsd === "number" ? t.costUsd : (estimateCostUsd(t.model, t.tokensInput ?? 0, t.tokensOutput ?? 0, t.tokensInputCached ?? 0, t.tokensInputCacheWrite ?? 0) ?? 0)),
-        0,
-      ),
-    [traces],
   );
   useEffect(() => {
     if (onNavigate || !baseLoaded || (requestedTab === "invoices" && invoicesLoading)) return;
