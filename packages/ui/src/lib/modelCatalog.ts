@@ -142,6 +142,10 @@ export function aggregateModels(models: ExposedModel[], accounts: Account[], clo
       entry.name = model.name;
       if (!entry.author && model.author) entry.author = model.author;
       entry.logo ??= modelLogo(model.id, entry.author);
+      for (const route of entry.routes.filter(route => route.source === 'cloud' && route.modelId === model.id)) {
+        if (model.priceSummary) route.priceSummary = model.priceSummary;
+        if (model.availabilityLabel) route.availabilityLabel = model.availabilityLabel;
+      }
     }
     if (entry?.routes.some(route => route.source === 'cloud')) continue;
     add(model.id, model.name, { source: 'cloud', label: model.network ? 'MultiVibe Cloud network' : 'MultiVibe Cloud catalog', modelId: model.id, ready: model.ready ?? false, accessSource: model.accessSource, priceSummary: model.priceSummary, availabilityLabel: model.availabilityLabel }, model.author);

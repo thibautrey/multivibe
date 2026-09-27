@@ -4,6 +4,15 @@ import { aggregateModels, modelLogo } from '../../packages/ui/src/lib/modelCatal
 import type { Account } from '../../packages/ui/src/types.js';
 
 const accounts: Account[] = [{ id: 'disabled', provider: 'mistral', enabled: false }, { id: 'working', provider: 'mistral', enabled: true }];
+test('exact Cloud routes receive catalog pricing without deriving readiness from catalog availability', () => {
+  const [model] = aggregateModels([{ id: 'author/model', metadata: { account_ids: ['cloud'], ready: false, priceSummary: 'Unavailable' } }],
+    [{ id: 'cloud', enabled: true, multivibeCloud: true }],
+    [{ id: 'author/model', name: 'Model', aliases: [], availability: 'available', network: false, ready: true, priceSummary: '$2 / 1M tokens', availabilityLabel: 'Published offer' }], []);
+  assert.equal(model.routes.length, 1);
+  assert.equal(model.routes[0].priceSummary, '$2 / 1M tokens');
+  assert.equal(model.routes[0].availabilityLabel, 'Published offer');
+  assert.equal(model.routes[0].ready, false);
+});
 test('any healthy compatible account grants access, not just the first candidate', () => {
   const [model] = aggregateModels([{ id: 'm', metadata: { provider: 'mistral', account_ids: ['disabled', 'working'] } }], accounts, [], []);
   assert.equal(model.routes.some(route => route.ready), true);

@@ -234,7 +234,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   const [invoicesError, setInvoicesError] = useState("");
   const [invoiceRefresh, setInvoiceRefresh] = useState(0);
   const cloudConnected = multivibeCloud.status === "connected";
-  const canManage = capabilities.host ? canManageWorkspace(teamWorkspace) : teamWorkspace.state === "personal" || teamWorkspace.role === "owner" || teamWorkspace.role === "admin";
+  const canManage = capabilities.host ? canManageWorkspace(teamWorkspace) : teamWorkspace.role === "owner" || teamWorkspace.role === "admin";
   const canViewInvoices = canManage || (teamWorkspace.state === "team" && teamWorkspace.role === "billing");
   const invoiceAccountSignature = JSON.stringify(accounts.map(account => [account.id, account.provider, account.sdkProvider, account.email, account.multivibeCloud]));
   useEffect(() => {
@@ -1069,8 +1069,11 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
       method: "POST",
       body: JSON.stringify({ ...extras, application }),
     });
-    await loadBase();
-    return result.proxyApiKey as CreatedProxyApiKey;
+    const created = result.proxyApiKey as CreatedProxyApiKey;
+    try { await loadBase(); } catch {
+      return { ...created, warning: [created.warning, "The key was created, but the workspace could not refresh. Save this secret before reloading."].filter(Boolean).join(" ") };
+    }
+    return created;
   };
 
   const deleteProxyApiKey = async (id: string) => {
@@ -1509,8 +1512,10 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
         )}
 
         {tab === "models" && <ModelsTab canConfigure={canManage} models={models} accounts={accounts}
+          onDetails={!capabilities.host && onNavigate ? model => onNavigate("models", { model }) : undefined}
           cloudConnected={cloudConnected} onUse={canManage ? openModelInDocs : () => { if (cloudConnected) window.location.assign("https://chat.multivibe.cloud"); }}
           onConnectCloud={connectMultivibeCloud} onConfigure={(route) => {
+            if (route.accessSource === "team" && onNavigate) { onNavigate("team"); return; }
             if (route.source === "cloud") {
               if (onNavigate) { onNavigate("models", { model: route.modelId }); return; }
               window.location.assign(`https://app.multivibe.cloud/models/${encodeURIComponent(route.modelId)}`);
