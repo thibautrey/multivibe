@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { aggregateModels, modelLogo } from '../src/lib/modelCatalog.js';
-import type { Account } from '../src/types.js';
+import { aggregateModels, modelLogo } from '../../packages/ui/src/lib/modelCatalog.js';
+import type { Account } from '../../packages/ui/src/types.js';
 
 const accounts: Account[] = [{ id: 'disabled', provider: 'mistral', enabled: false }, { id: 'working', provider: 'mistral', enabled: true }];
 test('any healthy compatible account grants access, not just the first candidate', () => {
@@ -114,7 +114,7 @@ test('OpenRouter routing namespace resolves explicit Cloud aliases and preserves
 });
 
 test('catalog filters constrain availability and actions to the same matching route', async () => {
-  const { filterCatalog } = await import('../src/lib/modelCatalog.js');
+  const { filterCatalog } = await import('../../packages/ui/src/lib/modelCatalog.js');
   const catalog = aggregateModels([{ id: 'm', metadata: { account_ids: ['working'] } }], accounts,
     [{ id: 'hf:m', name: 'M', aliases: ['m'], availability: 'available', network: true }], []);
   const filters = { query: '', source: 'cloud', provider: 'all', readyOnly: true, sort: 'ready' };
@@ -128,7 +128,7 @@ test('catalog filters constrain availability and actions to the same matching ro
 });
 
 test('catalog search combines terms, sorts deterministically, and handles no matches', async () => {
-  const { filterCatalog } = await import('../src/lib/modelCatalog.js');
+  const { filterCatalog } = await import('../../packages/ui/src/lib/modelCatalog.js');
   const catalog = aggregateModels([], [], [], [{ id: 'test', name: 'Test Provider', models: [{ id: 'b', name: 'Beta' }, { id: 'a', name: 'Alpha' }] }]);
   const filters = { query: '  ALPHA provider ', source: 'all', provider: 'all', readyOnly: false, sort: 'name' };
   assert.deepEqual(filterCatalog(catalog, filters).map(model => model.name), ['Alpha']);

@@ -1,0 +1,3 @@
+export type DiscoveryMemory = { requiredMiB: number; weightsMiB: number; cacheMiB: number; overheadMiB: number; variant: string; artifact: string; contextTokens: number; source: 'metadata'; estimator: 'catalog-memory-v1' | 'catalog-memory-v2' };
+export type MemoryEstimateReason = 'ready'|'queued'|'estimating'|'unsupported_architecture'|'missing_config'|'incomplete_metadata'|'incomplete_weights'|'context_unsupported'|'access_required'|'revision_changed'|'configuration_mismatch'|'temporary_failure';
+export type MemoryEstimateReport = {reason:MemoryEstimateReason; estimates:DiscoveryMemory[]; artifactReasons?:Record<string,MemoryEstimateReason>; revision?:string;lineageVerified?:boolean; httpStatus?:number;retryAfterMs?:number; checkedAt:string};

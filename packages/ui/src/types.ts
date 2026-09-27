@@ -1,0 +1,585 @@
+export type ProviderId =
+  | "ai-sdk"
+  | "openai"
+  | "openai-compatible"
+  | "opencode"
+  | "mistral"
+  | "zai"
+  | "github-copilot"
+  | "xai";
+
+export type LocalRuntimeAdapterId =
+  | "ollama" | "lm-studio" | "llama-cpp" | "vllm" | "sglang" | "localai"
+  | "huggingface-tgi" | "transformers-serve" | "xinference" | "mlx-lm" | "omlx"
+  | "mlc-llm" | "exo" | "jan" | "gpt4all" | "koboldcpp" | "text-generation-webui"
+  | "aphrodite" | "tabbyapi" | "llama-box" | "mistral-rs" | "nvidia-nim"
+  | "tensorrt-llm" | "triton" | "openllm" | "bentoml" | "mtplx" | "nvidia-pair"
+  | "manual-openai-compatible";
+
+export type LocalRuntimeMetadata = {
+  source: "multivibe-local-discovery" | "multivibe-local-configuration";
+  adapter: LocalRuntimeAdapterId;
+  endpoint: string;
+  confirmedModelIds: string[];
+  authentication: "none";
+};
+
+export type Account = {
+  actions?: {edit?: boolean; delete?: boolean; refreshUsage?: boolean; quotaReset?: boolean; unblock?: boolean; reauthenticate?: boolean};
+  accessSource?: "personal" | "team" | "cloud";
+  multivibeCloud?: boolean;
+  id: string;
+  provider?: ProviderId;
+  sdkProvider?: string;
+  sdkModels?: string[];
+  upstreamMode?: "responses" | "chat/completions";
+  compatibilityMode?: "auto" | "responses" | "chat-completions-bridge";
+  email?: string;
+  enabled: boolean;
+  accessToken?: string;
+  refreshToken?: string;
+  chatgptAccountId?: string;
+  opencodeAccountId?: string;
+  opencodeOrgId?: string;
+  opencodeOrgName?: string;
+  opencodeConsoleUrl?: string;
+  xaiUserId?: string;
+  xaiAuthScope?: string;
+  oidcIssuer?: string;
+  oidcClientId?: string;
+  baseUrl?: string;
+  priority?: number;
+  location?: "local" | "personal-cluster" | "cloud";
+  localRuntime?: LocalRuntimeMetadata;
+  capacityProfile?: {
+    maxConcurrent?: number;
+    prefillTokensPerSecond?: number;
+    decodeTokensPerSecond?: number;
+    contextWindow?: number;
+    healthUrl?: string;
+    metricsUrl?: string;
+  };
+  usage?: any;
+  state?: {
+    modelBlocks?: Record<string, { until: number; reason: string }>;
+    lastError?: string;
+    lastSelectedAt?: number;
+    recentErrors?: Array<{ at: number; message: string }>;
+    recentEmptyResponses?: Array<{ at: number; message: string }>;
+    needsTokenRefresh?: boolean;
+    authBlockedUntil?: number;
+    lastUsageRefreshAt?: number;
+    scheduledWeeklyReset?: {
+      scheduledAt: number;
+      idempotencyKey: string;
+      thresholdRemainingPercent: number;
+      lastAttemptAt?: number;
+      lastError?: string;
+    };
+  };
+};
+
+export type Trace = {
+  id: string;
+  at: number;
+  route: string;
+  clientRequestId?: string;
+  traceKind?: "client-request" | "upstream-attempt" | "diagnostic";
+  upstreamAttempt?: number;
+  providerAttempts?: number;
+  recoveredRetry?: boolean;
+  application?: string;
+  projectId?: string;
+  projectName?: string;
+  projectRemote?: string;
+  projectRoot?: string;
+  projectHost?: string;
+  accountId?: string;
+  accountEmail?: string;
+  provider?: ProviderId;
+  accountSelection?: {
+    reason: "sticky" | "policy-preferred" | "quota-headroom";
+    provider: ProviderId;
+    candidateCount: number;
+    eligibleCount: number;
+    nearLimitCount: number;
+    rotated: boolean;
+    selectedHeadroomPercent?: number;
+    selectedWeeklyRemainingPercent?: number;
+    selectedFiveHourRemainingPercent?: number;
+  };
+  model?: string;
+  requestedModel?: string;
+  resolvedModel?: string;
+  status: number;
+  isError: boolean;
+  stream: boolean;
+  latencyMs: number;
+  ttftMs?: number;
+  lifecycleState?: "started" | "completed" | "interrupted";
+  startedAt?: number;
+  completedAt?: number;
+  tokensInput?: number;
+  tokensInputCached?: number;
+  tokensInputCacheWrite?: number;
+  tokensOutput?: number;
+  tokensTotal?: number;
+  costUsd?: number;
+  pricingVersion?: string;
+  usageStatus?: "measured" | "missing";
+  costStatus?: "estimated" | "unpriced" | "unknown";
+  usage?: any;
+  error?: string;
+  requestBody?: any;
+  requestHeaders?: Record<string, string>;
+  hasRequestBody?: boolean;
+  hasRequestHeaders?: boolean;
+};
+
+export type TraceStats = {
+  totals: {
+    requests: number;
+    upstreamAttempts: number;
+    retriedRequests: number;
+    recoveredRequests: number;
+    requestsWithUsage: number;
+    requestsWithCost: number;
+    unpricedRequests: number;
+    errors: number;
+    errorRate: number;
+    tokensInput: number;
+    tokensInputCached: number;
+    tokensOutput: number;
+    tokensTotal: number;
+    inferenceTokensPerSecond: number;
+    inferenceRequests: number;
+    costUsd: number;
+    costUsdWithoutCache: number;
+    latencyAvgMs: number;
+  };
+  models: Array<{
+    model: string;
+    count: number;
+    okCount: number;
+    tokensInput: number;
+    tokensInputCached: number;
+    tokensOutput: number;
+    tokensTotal: number;
+    costUsd: number;
+  }>;
+  timeseries: Array<{
+    at: number;
+    requests: number;
+    upstreamAttempts: number;
+    retriedRequests: number;
+    recoveredRequests: number;
+    errors: number;
+    tokensInput: number;
+    tokensInputCached: number;
+    tokensOutput: number;
+    tokensTotal: number;
+    inferenceTokensPerSecond: number;
+    inferenceRequests: number;
+    costUsd: number;
+    latencyP50Ms: number;
+    latencyP95Ms: number;
+  }>;
+  ttftByProviderModel: Array<{
+    provider: ProviderId;
+    model: string;
+    inputTokenBucket: TtftInputTokenBucket;
+    samples: number;
+    ttftP50Ms: number;
+    ttftP95Ms: number;
+    medianInputTokens?: number;
+    cachedInputRatio?: number;
+    confidence: "low" | "sufficient";
+    rank?: number;
+  }>;
+  accountSelection: {
+    attempts: number;
+    rotations: number;
+    maxNearLimit: number;
+    averageHeadroom?: number;
+    reasonCounts: {
+      sticky: number;
+      "policy-preferred": number;
+      "quota-headroom": number;
+    };
+  };
+};
+
+export type TracePagination = {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  hasPrev: boolean;
+  hasNext: boolean;
+};
+
+export type ProjectUsageStats = {
+  byProject: Array<{
+    projectId: string;
+    projectName?: string;
+    projectRemote?: string;
+    requests: number;
+    ok: number;
+    errors: number;
+    stream: number;
+    successRate: number;
+    streamingRate: number;
+    requestsWithUsage: number;
+    requestsWithCost: number;
+    unpricedRequests: number;
+    costUsd: number;
+    avgLatencyMs: number;
+    latencyMsTotal: number;
+    latencyP50Ms: number;
+    latencyP95Ms: number;
+    tokens: {
+      prompt: number;
+      completion: number;
+      input: number;
+      cachedInput: number;
+      output: number;
+      total: number;
+    };
+    models: Array<{
+      model: string;
+      requests: number;
+      ok: number;
+      errors: number;
+      stream: number;
+      successRate: number;
+      streamingRate: number;
+      requestsWithUsage: number;
+      requestsWithCost: number;
+      unpricedRequests: number;
+      costUsd: number;
+      avgLatencyMs: number;
+      latencyMsTotal: number;
+      latencyP50Ms: number;
+      latencyP95Ms: number;
+      tokens: {
+        prompt: number;
+        completion: number;
+        input: number;
+        cachedInput: number;
+        output: number;
+        total: number;
+      };
+    }>;
+    firstAt?: number;
+    lastAt?: number;
+  }>;
+};
+
+export type TraceRange = TraceRangePreset | { startDate: string; endDate: string };
+
+export type TraceRangePreset = "24h" | "7d" | "30d" | "all";
+
+export type ActivityView = "overview" | "performance" | "sessions" | "usage" | "requests";
+
+export type SessionTurn = {
+  at: number;
+  lastAt: number;
+  clientRequestId: string;
+  application?: string;
+  projectId?: string;
+  projectName?: string;
+  provider?: ProviderId;
+  model?: string;
+  status: number;
+  isError: boolean;
+  upstreamAttempts: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  ttftMs?: number;
+  latencyMs: number;
+  costUsd: number;
+  costUsdWithoutCache: number;
+};
+
+export type SessionUsage = {
+  sessionKey: string;
+  application?: string;
+  projectId?: string;
+  projectName?: string;
+  provider?: ProviderId;
+  models: string[];
+  turns: number;
+  firstAt: number;
+  lastAt: number;
+  durationMs: number;
+  initialInputTokens?: number;
+  initialInputTokenBucket: TtftInputTokenBucket;
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  medianInputTokens?: number;
+  maxInputTokens?: number;
+  medianOutputTokens?: number;
+  cachedInputRatio?: number;
+  cacheHitTurns: number;
+  cacheMissTurns: number;
+  cacheWriteTurns: number;
+  contextGrowthTokens?: number;
+  medianTurnGrowthTokens?: number;
+  errorTurns: number;
+  costUsd: number;
+  costUsdWithoutCache: number;
+  cacheSavingsUsd: number;
+};
+
+export type TtftInputTokenBucket =
+  | "lt1k"
+  | "1k-8k"
+  | "8k-32k"
+  | "32k-64k"
+  | "64k-128k"
+  | "128k-plus"
+  | "unknown";
+
+export type SessionUsageSummary = {
+  sessions: number;
+  turns: number;
+  attempts: number;
+  totalAttempts: number;
+  coverage: number;
+  initialInputTokensMedian?: number;
+  initialInputTokenBuckets: Record<TtftInputTokenBucket, number>;
+  turnsPerSessionMedian: number;
+  cachedInputRatio?: number;
+  cacheHitTurns: number;
+  cacheHitRatio: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  cacheSavingsUsd: number;
+};
+
+export type SessionsResponse = {
+  ok: boolean;
+  coverage: {
+    totalAttempts: number;
+    identifiedAttempts: number;
+    ratio: number;
+  };
+  summary: SessionUsageSummary;
+  total: number;
+  sessions: SessionUsage[];
+};
+
+export type Tab =
+  | "invoices"
+  | "models"
+  | "overview"
+  | "accounts"
+  | "aliases"
+  | "api-keys"
+  | "plugins"
+  | "updates"
+  | "tracing"
+  | "docs";
+
+export type HostUpdateStatus = {
+  schema_version: "multivibe-host-updater-state-v1";
+  mode: "automatic" | "download" | "notify";
+  channel: "stable" | "beta";
+  current_version: string;
+  status: "idle" | "checking" | "available" | "downloading" | "downloaded" | "installing" | "current" | "deferred" | "failed";
+  last_checked_at: string | null;
+  next_check_at: string | null;
+  next_automatic_at?: string | null;
+  available_version: string | null;
+  available_critical: boolean;
+  rollout_eligible: boolean;
+  downloaded: boolean;
+  download_requested: boolean;
+  install_requested: boolean;
+  last_installed_at: string | null;
+  last_error_code: string | null;
+  last_error: string | null;
+  container_managed: boolean;
+};
+
+export type ExposedModel = {
+  id: string;
+  name?: string;
+  owned_by?: string;
+  metadata?: {
+    accessSource?: "cloud" | "personal" | "team";
+    priceSummary?: string;
+    availabilityLabel?: string;
+    ready?: boolean;
+    account_ids?: string[];
+    model_author?: string;
+    sdk_provider?: string;
+    provider?: ProviderId;
+    provider_candidates?: Array<
+      ProviderId
+    >;
+    is_alias?: boolean;
+    alias_targets?: string[];
+    runtime?: string;
+    upstream_model_id?: string;
+  };
+};
+
+export type ModelAlias = {
+  schemaVersion: 2;
+  id: string;
+  rules: RoutingRule[];
+  enabled: boolean;
+  description?: string;
+  defaults?: {
+    priority?: PriorityClass;
+    executionMode?: "sync" | "auto" | "defer";
+  };
+};
+
+export type PriorityClass = "critical" | "interactive" | "standard" | "batch";
+
+export type RoutingCandidate = {
+  model: string;
+  provider?: ProviderId;
+  accountIds?: string[];
+  location?: "local" | "personal-cluster" | "cloud";
+  quality?: number;
+  inputCostPerMillionUsd?: number;
+  outputCostPerMillionUsd?: number;
+  capacityProfile?: {
+    maxConcurrent?: number;
+    prefillTokensPerSecond?: number;
+    decodeTokensPerSecond?: number;
+    contextWindow?: number;
+    healthUrl?: string;
+    metricsUrl?: string;
+  };
+};
+
+export type RoutingRule = {
+  id: string;
+  enabled?: boolean;
+  match?: {
+    applications?: string[];
+    priorities?: PriorityClass[];
+    efforts?: string[];
+    modalities?: Array<"text" | "image" | "audio" | "video">;
+    requiresTools?: boolean;
+    executionModes?: Array<"sync" | "auto" | "defer">;
+    minInputTokens?: number;
+    maxInputTokens?: number;
+    timeWindows?: Array<{ days?: number[]; start: string; end: string; timezone?: string }>;
+  };
+  constraints?: {
+    allowedLocations?: Array<"local" | "personal-cluster" | "cloud">;
+    maxPredictedWaitMs?: number;
+    minContextWindow?: number;
+    minQuality?: number;
+  };
+  objectives?: { latency: number; cost: number; quality: number; locality: number };
+  candidates: RoutingCandidate[];
+  onNoCapacity?: "next-rule" | "queue" | "reject";
+  cloudBudget?: { amountUsd: number; period: "hour" | "day" | "month" };
+};
+
+export type StoreSettings = {
+  defaultPassthroughAccountId?: string;
+  imageRequestModelOverride?: string;
+  anonymousUsageSharingEnabled?: boolean;
+  anonymousUsageSharingEnabledAt?: string;
+  communityBenchmarksSharingEnabled?: boolean;
+  communityBenchmarksSharingEnabledAt?: string;
+};
+
+export type ModuleView = {
+  id: string;
+  origin: string;
+  commit: string;
+  enabled: boolean;
+  source: "external" | "bundled";
+  restartRequired?: boolean;
+  loaded: boolean;
+  healthy: boolean;
+  error?: string;
+  removable: boolean;
+  execution?: "wasm-sandbox" | "host-builtin";
+  settings: Record<string, unknown>;
+  manifest?: {
+    name: string;
+    version: string;
+    description: string;
+    hooks: string[];
+    categories?: string[];
+    tags?: string[];
+    author?: string;
+    homepage?: string;
+    settingsSchema?: Record<string, unknown>;
+  };
+};
+
+export type MarketplaceModule = {
+  id: string;
+  origin: string;
+  commit: string;
+  submittedAt: string;
+  manifest: NonNullable<ModuleView["manifest"]>;
+};
+
+export type ProxyApiKey = {
+  scopes?: string[];
+  expiresAt?: string | null;
+  monthlyLimitUsd?: string | null;
+  id: string;
+  application: string;
+  keyPreview: string;
+  createdAt?: number;
+  source: "dashboard" | "environment";
+};
+
+export type CreatedProxyApiKey = ProxyApiKey & {
+  key: string;
+};
+
+export type HostHarness = {
+  projectTracking?: "installed" | "not-installed" | "unavailable";
+  id: string;
+  name: string;
+  category: "cli" | "editor" | "agent" | "framework" | "service";
+  detected: boolean;
+  detectedBy: string[];
+  configured: boolean;
+  managed: boolean;
+  drifted: boolean;
+  canInstall: boolean;
+  repairable: boolean;
+  canUninstall: boolean;
+  configPath?: string;
+  unavailableReason?: string;
+  configurationIssue?: string;
+  effectiveProvider?: string;
+  effectiveBaseUrl?: string;
+};
+
+export type ApplicationWebhook = {
+  id: string;
+  url: string;
+  enabled: boolean;
+  createdAt: number;
+  secret?: string;
+};
+
+export type ApplicationPolicy = {
+  application: string;
+  fairnessWeight: number;
+  webhooks: ApplicationWebhook[];
+};

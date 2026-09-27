@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {preparationActive,preparationChatReady,preparationError,preparationBytes,preparationLabels} from '../src/lib/localPreparation';
+import {preparationActive,preparationChatReady,preparationError,preparationBytes,preparationLabels} from '../../packages/ui/src/lib/localPreparation';
 import type {PreparationJob} from '../../src/local-model-preparation';
 test('only tested ready jobs enable chat, never progress or intermediate states',()=>{
   for(const stage of Object.keys(preparationLabels)) {

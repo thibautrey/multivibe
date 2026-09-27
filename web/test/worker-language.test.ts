@@ -3,7 +3,7 @@ import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
 
 const accountsTabSource = await readFile(
-  new URL("../src/components/tabs/AccountsTab.tsx", import.meta.url),
+  new URL("../../packages/ui/src/components/tabs/AccountsTab.tsx", import.meta.url),
   "utf8",
 );
 const macOSMenuDirectory = new URL("../../packaging/macos/", import.meta.url);

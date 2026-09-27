@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { normalizeWidgets, moveWidget } from "../src/lib/widgetLayout.js";
+import { normalizeWidgets, moveWidget } from "../../packages/ui/src/lib/widgetLayout.js";
 
 const catalogue = [{ id: "health", required: true }, { id: "cost" }, { id: "requests" }];
 test("required widgets survive hidden preferences and new widgets appear", () => {

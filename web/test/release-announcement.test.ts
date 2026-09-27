@@ -6,7 +6,7 @@ import {
   extractReleaseBanner,
   fetchGitHubReleaseNotes,
   readReleaseAnnouncement,
-} from "../src/release-announcement";
+} from "../../packages/ui/src/release-announcement";
 
 function storage(entries: Record<string, string> = {}) {
   return {

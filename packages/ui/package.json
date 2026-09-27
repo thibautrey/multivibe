@@ -1,0 +1,9 @@
+{
+  "name": "@multivibe/ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": { ".": "./src/index.ts", "./styles.css": "./src/styles.css", "./workspace-refresh.css": "./src/workspace-refresh.css", "./routing": "./src/domain/routing-kernel.ts" },
+  "peerDependencies": { "react": "^18.3.1 || ^19.0.0", "react-dom": "^18.3.1 || ^19.0.0", "recharts": "^2.15.4" }
+}

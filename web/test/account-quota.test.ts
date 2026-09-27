@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { tracksSubscriptionQuota } from "../src/lib/accountQuota.js";
-import type { Account, LocalRuntimeAdapterId } from "../src/types.js";
+import { tracksSubscriptionQuota } from "../../packages/ui/src/lib/accountQuota.js";
+import type { Account, LocalRuntimeAdapterId } from "../../packages/ui/src/types.js";
 
 const localRuntimeAdapters: LocalRuntimeAdapterId[] = [
   "omlx",

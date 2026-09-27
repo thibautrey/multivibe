@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canManageWorkspace, workspaceLabel } from "../src/lib/teamWorkspace.js";
+import { canManageWorkspace, workspaceLabel } from "../../packages/ui/src/lib/teamWorkspace.js";
 test("personal and verified Team administrators retain configuration", () => {
   assert.equal(canManageWorkspace({state:"personal",role:null}),true);
   for (const role of ["owner", "admin"] as const) assert.equal(canManageWorkspace({state:"team",role}),true);

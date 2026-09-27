@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runtimeIdentityForAccount } from "../src/lib/runtimeCatalog.js";
+import { runtimeIdentityForAccount } from "../../packages/ui/src/lib/runtimeCatalog.js";
 
 test("DeepSeek AI-SDK accounts use the bundled DeepSeek identity", () => {
   assert.deepEqual(

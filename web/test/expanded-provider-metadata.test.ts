@@ -3,7 +3,7 @@ import test from "node:test";
 import type { Account } from "../../src/types.js";
 import { SDK_PROVIDERS } from "../../src/ai-sdk/providers.js";
 import { sdkAccountModels, sdkProviderCatalog } from "../../src/ai-sdk/catalog.js";
-import { SDK_PROVIDER_NAMES, EXPANDED_PROVIDER_ACCESS } from "../src/lib/expandedProviderMetadata.js";
+import { SDK_PROVIDER_NAMES, EXPANDED_PROVIDER_ACCESS } from "../../packages/ui/src/lib/expandedProviderMetadata.js";
 import { ACCESS as inference } from "../../src/ai-sdk/expansion-inference/index.js";
 import { ACCESS as subscriptions } from "../../src/ai-sdk/expansion-subscriptions/index.js";
 import { ACCESS as gateways } from "../../src/ai-sdk/expansion-gateways/index.js";

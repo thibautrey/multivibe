@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const refresh = await readFile(new URL("../../src/workspace-refresh.css", import.meta.url), "utf8");
-const base = await readFile(new URL("../../src/host/styles.css", import.meta.url), "utf8");
-const component = await readFile(new URL("../../src/host/HostHarnessCarousel.tsx", import.meta.url), "utf8");
+const refresh = await readFile(new URL("../../../packages/ui/src/workspace-refresh.css", import.meta.url), "utf8");
+const base = await readFile(new URL("../../../packages/ui/src/host/styles.css", import.meta.url), "utf8");
+const component = await readFile(new URL("../../../packages/ui/src/host/HostHarnessCarousel.tsx", import.meta.url), "utf8");
 
 test("coding tools stay in one horizontally scrollable row on every viewport", () => {
   const rules = [...refresh.matchAll(/\.host-harness-rail\s*\{([^}]+)\}/g)].map((match) => match[1]);
