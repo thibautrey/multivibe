@@ -2,9 +2,17 @@ import { EXPANDED_PROVIDER_ACCESS } from "./expandedProviderMetadata";
 // Reviewed 2026-09-07. These describe the connected API/OAuth service,
 // not a provider's consumer chatbot. Trials do not count as free tiers.
 export type AccessFilter = "Paid" | "Free" | "Freemium";
-export type ProviderAccess = { paid: boolean; free: boolean; note: string; source: string };
+export type ProviderAccess = { paid: boolean; free: boolean; reviewPricing?: boolean; note: string; source: string };
+/** API credentials are different products from same-named consumer subscriptions. */
+export const SDK_PROVIDER_ACCESS: Record<string, ProviderAccess> = {
+  openai: { paid: false, free: false, reviewPricing: true, note: "OpenAI API billing is separate from ChatGPT and Codex subscriptions. Review the provider's current API pricing.", source: "https://openai.com/api/pricing/" },
+  xai: { paid: false, free: false, reviewPricing: true, note: "xAI API billing is separate from Grok subscriptions. Review the provider's current API pricing.", source: "https://docs.x.ai/docs/models" },
+  mistral: { paid: false, free: false, reviewPricing: true, note: "Review pricing and eligibility for this Mistral API account; subscription access does not establish an API allowance.", source: "https://mistral.ai/pricing/api" },
+  "z-ai": { paid: false, free: false, reviewPricing: true, note: "Z.AI API access is separate from GLM Coding Plan. Pricing and any free allowance have not been verified for this connection.", source: "https://docs.z.ai/guides/overview/pricing" },
+};
 export const PROVIDER_ACCESS: Record<string, ProviderAccess> = {
   ...EXPANDED_PROVIDER_ACCESS,
+  "z-ai": SDK_PROVIDER_ACCESS["z-ai"],
   manus: { paid: true, free: true, note: "Use a Manus API key. Each text request creates a private agent task; profiles are standard, lite and max. No client tool calls or token streaming. Available credits refresh automatically.", source: "https://open.manus.ai/docs/v2/task.create" },
   "qwen-coding": { paid: true, free: false, note: "Use an international Alibaba Coding Plan key. Quotas refresh where Alibaba accepts API-key access; accounts requiring console sign-in show that limitation.", source: "https://www.alibabacloud.com/help/en/model-studio/coding-plan" },
   kimi: { paid: true, free: false, note: "Use a Moonshot API key. Kimi Code subscription keys use the separate Kimi Code connection.", source: "https://platform.moonshot.ai/docs" },
@@ -31,9 +39,12 @@ export const PROVIDER_ACCESS: Record<string, ProviderAccess> = {
   perplexity: { paid: true, free: false, note: "API usage is billed; consumer subscriptions do not make the API free.", source: "https://docs.perplexity.ai/docs/getting-started/pricing" },
 };
 
-export function matchesAccessFilter(id: string, filter: AccessFilter | null): boolean {
+export function providerAccess(id: string, sdk = false): ProviderAccess | undefined {
+  return sdk ? SDK_PROVIDER_ACCESS[id] ?? PROVIDER_ACCESS[id] : PROVIDER_ACCESS[id];
+}
+export function matchesAccessFilter(id: string, filter: AccessFilter | null, sdk = false): boolean {
   if (!filter) return true;
-  const access = PROVIDER_ACCESS[id];
-  if (!access) return false;
+  const access = providerAccess(id, sdk);
+  if (!access || access.reviewPricing) return false;
   return filter === "Paid" ? access.paid : filter === "Free" ? access.free : access.paid && access.free;
 }

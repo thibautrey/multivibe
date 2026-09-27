@@ -2,7 +2,7 @@ import { useDashboardRuntime } from "../adapter";
 import { memo, useState } from "react";
 import type { ProviderId } from "../types";
 import "./ProviderSetup.css";
-import { PROVIDER_ACCESS, matchesAccessFilter, type AccessFilter } from "../lib/providerAccess";
+import { providerAccess, matchesAccessFilter, type AccessFilter } from "../lib/providerAccess";
 
 export type SetupProvider = ProviderId | "nvidia-pair";
 export const SETUP_PROVIDERS: { id: SetupProvider; name: string; description: string; method: string; icon?: string }[] = [
@@ -52,7 +52,7 @@ export const ProviderPicker = memo(function ProviderPicker({ value, sdkProvider,
   ];
   const normalized = query.trim().toLocaleLowerCase();
   const matches = providers.filter((item) =>
-    matchesAccessFilter("sdkProvider" in item ? item.sdkProvider : item.id, accessFilter) &&
+    matchesAccessFilter("sdkProvider" in item ? item.sdkProvider : item.id, accessFilter, "sdkProvider" in item) &&
     `${item.name} ${item.description} ${item.method}`.toLocaleLowerCase().includes(normalized));
   return <div className="provider-setup-picker">
     <label className="provider-setup-search">Search providers
@@ -65,11 +65,11 @@ export const ProviderPicker = memo(function ProviderPicker({ value, sdkProvider,
     <div className="provider-setup-cards" role="group" aria-label="Choose a provider">
       {matches.map((item) => {
         const cloudId = "sdkProvider" in item ? item.sdkProvider : undefined;
-        const access = PROVIDER_ACCESS[cloudId ?? item.id];
+        const access = providerAccess(cloudId ?? item.id, Boolean(cloudId));
         const selected = value === item.id && (item.id !== "ai-sdk" || sdkProvider === cloudId);
         return <button key={cloudId ?? item.id} type="button" className={`provider-setup-card${selected ? " selected" : ""}`} aria-pressed={selected} onClick={() => onChange(item.id, cloudId)}>
           <ProviderMark provider={item.id} sdkProvider={cloudId} name={item.name} />
-          <span className="provider-setup-card-copy"><strong>{item.name}</strong><small>{item.method}</small><span className="provider-access-label" title={access?.note}>{access ? access.free ? access.paid ? "Free & paid" : "Free tier" : "Paid" : "Depends on endpoint"}</span></span>
+          <span className="provider-setup-card-copy"><strong>{item.name}</strong><small>{item.method}</small><span className="provider-access-label" title={access?.note}>{access?.reviewPricing ? "Pricing unverified" : access ? access.free ? access.paid ? "Free & paid" : "Free tier" : "Paid" : "Depends on endpoint"}</span></span>
           <span className="provider-setup-check" aria-hidden="true">{selected ? "✓" : ""}</span>
         </button>;
       })}
