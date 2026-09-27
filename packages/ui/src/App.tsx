@@ -1,7 +1,7 @@
 import type { SharedDashboardProps } from "./SharedDashboard";
 import { useDashboardApi, useDashboardRuntime } from "./adapter";
 import { InvoicesTab } from "./components/tabs/InvoicesTab";
-import { configuredInvoiceProviders, type InvoiceOverview } from "domain/provider-invoices";
+import { configuredInvoiceProviders, type InvoiceOverview } from "./domain/provider-invoices";
 import { canManageWorkspace, workspaceLabel, type TeamWorkspace } from "./lib/teamWorkspace";
 import { TeamMachineConsent } from "./components/TeamMachineConsent";
 import { TeamMachineCard } from "./components/TeamMachineCard";

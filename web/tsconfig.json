@@ -28,6 +28,9 @@
       ],
       "recharts": [
         "./node_modules/recharts"
+      ],
+      "react-dom": [
+        "./node_modules/@types/react-dom"
       ]
     }
   },
