@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const stylesheet = await readFile(
-  new URL("../src/components/tabs/ModelsTab.css", import.meta.url),
+  new URL("../../packages/ui/src/components/tabs/ModelsTab.css", import.meta.url),
   "utf8",
 );
 

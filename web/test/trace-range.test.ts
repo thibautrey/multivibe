@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { getRangeBounds } from "../src/lib/trace-range";
+import { getRangeBounds } from "../../packages/ui/src/lib/trace-range";
 
 test("custom dates include the full final day", () => {
   assert.deepEqual(getRangeBounds({ startDate: "2026-09-01", endDate: "2026-09-09" }), {

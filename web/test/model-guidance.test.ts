@@ -1,8 +1,8 @@
 import { parseOpenModels } from '../../src/open-model-catalog.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { modelView, modelNeeds, relevantChoices, recommendedChoices } from '../src/lib/modelGuidance.js';
-import type { CatalogEntry, ModelRoute } from '../src/lib/modelCatalog.js';
+import { modelView, modelNeeds, relevantChoices, recommendedChoices } from '../../packages/ui/src/lib/modelGuidance.js';
+import type { CatalogEntry, ModelRoute } from '../../packages/ui/src/lib/modelCatalog.js';
 const route = (source: ModelRoute['source'], ready = true): ModelRoute => ({ source, ready, label: source, accountId: source, modelId: 'gpt-5' });
 const entry = (routes: ModelRoute[], id = 'gpt-5'): CatalogEntry => ({ id, name: id, routes });
 
@@ -50,7 +50,7 @@ test('a writing-only model is not recommended for coding or documents', () => {
 });
 
 test('Cloud verification never fabricates a chat route and fails closed', async () => {
-  const { verifiedCloudCatalog } = await import('../src/lib/modelGuidance.js');
+  const { verifiedCloudCatalog } = await import('../../packages/ui/src/lib/modelGuidance.js');
   const catalog = [entry([route('cloud')])];
   for (const status of ['disconnected', 'access_denied', 'unavailable'] as const) {
     assert.equal(verifiedCloudCatalog(catalog, { status, modelIds: ['gpt-5'], checkedAt: '' }, true)[0].routes[0].ready, false);

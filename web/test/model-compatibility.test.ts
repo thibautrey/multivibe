@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { compatibilityFor, compatibilityDetail, type CompatibilityReport } from '../src/lib/modelCompatibility.js';
-import { filterCatalog, type CatalogEntry } from '../src/lib/modelCatalog.js';
+import { compatibilityFor, compatibilityDetail, type CompatibilityReport } from '../../packages/ui/src/lib/modelCompatibility.js';
+import { filterCatalog, type CatalogEntry } from '../../packages/ui/src/lib/modelCatalog.js';
 
 const model: CatalogEntry = { id: 'hf:qwen/qwen2.5-0.5b-instruct', name: 'Qwen', routes: [{ source: 'cloud', label: 'Cloud', modelId: 'qwen2.5:0.5b', ready: false }] };
 const report: CompatibilityReport = { schema_version: 'provider-model-compatibility-v1', context_tokens: 8192, checked_at: '2026-09-08T00:00:00Z', models: [{ model_id: model.id, aliases: ['qwen2.5:0.5b'], variant: 'qwen2.5:0.5b', state: 'compatible', reason: 'runtime_memory_estimate', runtime: 'llama.cpp', memory: [{ device: 'Host', model_mib: 400, context_mib: 24, compute_mib: 12 }] }] };

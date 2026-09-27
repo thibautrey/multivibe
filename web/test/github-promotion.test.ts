@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GITHUB_NEW_ISSUE_URL, GITHUB_PROMOTION_DELAY_MS, GITHUB_REPOSITORY_URL, dismissGitHubPromotion, readGitHubPromotionState } from "../src/github-promotion";
+import { GITHUB_NEW_ISSUE_URL, GITHUB_PROMOTION_DELAY_MS, GITHUB_REPOSITORY_URL, dismissGitHubPromotion, readGitHubPromotionState } from "../../packages/ui/src/github-promotion";
 
 function storage(entries: Record<string, string> = {}) {
   return { getItem: (key: string) => entries[key] ?? null, setItem: (key: string, value: string) => { entries[key] = value; }, entries };

@@ -57,61 +57,9 @@ export type CreateJobInput = Pick<
   | "deadlineAt"
 > & { method?: string; notBefore?: number };
 
-export type SchedulingCandidate = { id: string; application: string; priority: PriorityClass };
-
-/** Smooth weighted round-robin across priorities, then applications. */
-export class WeightedFairScheduler {
-  private priorityScores = new Map<PriorityClass, number>();
-  private applicationScores = new Map<string, number>();
-
-  choose(candidates: SchedulingCandidate[], applicationWeight: (application: string) => number): string | undefined {
-    if (!candidates.length) return undefined;
-    const priorities = PRIORITY_CLASSES.filter((priority) =>
-      candidates.some((candidate) => candidate.priority === priority),
-    );
-    let selectedPriority = priorities[0];
-    let selectedPriorityScore = Number.NEGATIVE_INFINITY;
-    const priorityTotal = priorities.reduce((sum, priority) => sum + PRIORITY_WEIGHTS[priority], 0);
-    for (const priority of priorities) {
-      const next = (this.priorityScores.get(priority) ?? 0) + PRIORITY_WEIGHTS[priority];
-      this.priorityScores.set(priority, next);
-      if (next > selectedPriorityScore) {
-        selectedPriority = priority;
-        selectedPriorityScore = next;
-      }
-    }
-    this.priorityScores.set(
-      selectedPriority,
-      (this.priorityScores.get(selectedPriority) ?? 0) - priorityTotal,
-    );
-
-    const matching = candidates.filter((candidate) => candidate.priority === selectedPriority);
-    const applications = Array.from(new Set(matching.map((candidate) => candidate.application)));
-    let selectedApplication = applications[0];
-    let selectedApplicationScore = Number.NEGATIVE_INFINITY;
-    const appTotal = applications.reduce(
-      (sum, application) => sum + Math.max(0.1, applicationWeight(application)),
-      0,
-    );
-    for (const application of applications) {
-      const key = `${selectedPriority}:${application}`;
-      const next =
-        (this.applicationScores.get(key) ?? 0) +
-        Math.max(0.1, applicationWeight(application));
-      this.applicationScores.set(key, next);
-      if (next > selectedApplicationScore) {
-        selectedApplication = application;
-        selectedApplicationScore = next;
-      }
-    }
-    const selectedKey = `${selectedPriority}:${selectedApplication}`;
-    this.applicationScores.set(
-      selectedKey,
-      (this.applicationScores.get(selectedKey) ?? 0) - appTotal,
-    );
-    return matching.find((candidate) => candidate.application === selectedApplication)?.id;
-  }
-}
+import { WeightedFairScheduler, type SchedulingCandidate } from './workspace-routing-kernel.js';
+export { WeightedFairScheduler } from './workspace-routing-kernel.js';
+export type { SchedulingCandidate } from './workspace-routing-kernel.js';
 
 function jsonParse<T>(value: string | null | undefined, fallback: T): T {
   if (!value) return fallback;

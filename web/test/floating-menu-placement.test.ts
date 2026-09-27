@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   observeFloatingViewportChanges,
   placeFloatingMenu,
-} from "../src/lib/floatingMenu.js";
+} from "../../packages/ui/src/lib/floatingMenu.js";
 
 const viewport = { top: 0, left: 0, width: 400, height: 800 };
 

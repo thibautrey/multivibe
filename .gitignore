@@ -6,7 +6,7 @@ target
 native/*.node
 .env
 web/*.tsbuildinfo
-web/public/assets/brand/
+packages/ui/public/assets/brand/
 data/*
 
 # Local deployment overrides hold operator credentials and must never be committed.

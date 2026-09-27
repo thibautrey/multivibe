@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { matchesAccessFilter, PROVIDER_ACCESS } from "../src/lib/providerAccess";
+import { matchesAccessFilter, PROVIDER_ACCESS } from "../../packages/ui/src/lib/providerAccess";
 import { SDK_PROVIDERS } from "../../src/ai-sdk/providers";
 
 test("free tiers also support paid and freemium filtering", () => {

@@ -11,17 +11,17 @@ const require = createRequire(new URL('../package.json', import.meta.url));
 const { createElement } = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
 const compiled = buildSync({
-  entryPoints: [fileURLToPath(new URL('../src/components/tabs/ModelDetailPanel.tsx', import.meta.url))],
+  stdin: {contents: `export {ModelDetailPanel} from '../../packages/ui/src/components/tabs/ModelDetailPanel'; export {DashboardProvider} from '../../packages/ui/src/adapter'; export {CORE_CAPABILITIES} from '../../packages/ui/src/capabilities';`, resolveDir: fileURLToPath(new URL('.',import.meta.url)), loader: 'tsx'},
   bundle: true, write: false, format: 'cjs', platform: 'node', packages: 'external', jsx: 'automatic',
 });
-const componentModule = { exports: {} as { ModelDetailPanel?: unknown } };
+const componentModule = { exports: {} as { ModelDetailPanel?: unknown; DashboardProvider?: unknown; CORE_CAPABILITIES?: unknown } };
 new Function('require', 'module', 'exports', compiled.outputFiles[0].text)(require, componentModule, componentModule.exports);
 
 const model = parseOpenModels([{ id: 'publisher/model', private: false, gated: false, pipeline_tag: 'text-generation', tags: ['conversational', 'license:mit'] }])[0];
 const row = rankOpenModels({ models: [model], checkedAt: '', stale: false, source: 'test', version: 'test' }, 'writing', 'recommended')[0];
 function render(recommendationSources: unknown) {
   const payload = JSON.parse(JSON.stringify({ ...row, recommendationSources }));
-  return renderToStaticMarkup(createElement(componentModule.exports.ModelDetailPanel, { row: payload, supported: false, onPrepare() {} }));
+  return renderToStaticMarkup(createElement(componentModule.exports.DashboardProvider, {value:{capabilities:componentModule.exports.CORE_CAPABILITIES,adapter:{request:async()=>({}),fetch:async()=>new Response('{}')}}}, createElement(componentModule.exports.ModelDetailPanel, { row: payload, supported: false, onPrepare() {} })));
 }
 test('model details render when legacy API responses omit sources or return null', () => {
   for (const sources of [undefined, null, [], {}]) {

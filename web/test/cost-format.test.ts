@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { usd } from "../src/lib/ui";
+import { usd } from "../../packages/ui/src/lib/ui";
 
 test("formats compact USD values with the unit after the magnitude", () => {
   assert.equal(usd(1_000), "1K $US");

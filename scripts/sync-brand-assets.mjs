@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sourceRoot = path.join(repositoryRoot, "assets", "brand");
-const destinationRoot = path.join(repositoryRoot, "web", "public", "assets", "brand");
+const destinationRoot = path.join(repositoryRoot, "packages", "ui", "public", "assets", "brand");
 
 const publicBrandAssets = [
   ["favicon/android-chrome-192x192.png", "android-chrome-192x192.png"],
