@@ -13,6 +13,7 @@ import type {
 export type ApiKeyExtensions = {
   renderCreateFields?: (state: {value: Record<string, unknown>; onChange: (value: Record<string, unknown>) => void}) => React.ReactNode;
   renderKeyMetadata?: (key: ProxyApiKey) => React.ReactNode;
+  renderCreatedKeyMetadata?: (key: CreatedProxyApiKey) => React.ReactNode;
   emptyDescription?: string;
 };
 type Props = {
@@ -237,6 +238,8 @@ export function ApiKeysTab({
               <span className="badge badge-live">Key created</span>
               <h2 id="created-key-title">Copy your secret key</h2>
               <p className="muted">This is the only time the full key for <strong>{createdKey.application}</strong> will be displayed.</p>
+              {createdKey.warning && <p role="alert">{createdKey.warning}</p>}
+              {extensions?.renderCreatedKeyMetadata?.(createdKey)}
             </div>
             <div className="api-key-secret">
               <code>{createdKey.key}</code>
