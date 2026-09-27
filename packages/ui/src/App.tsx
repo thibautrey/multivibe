@@ -162,7 +162,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   const [githubPromotion] = useState(() => readGitHubPromotionState(localStorage));
   const [requestedTab, updateTab] = useState<string>(activePage ?? initialTab);
   const setTab = (page: string) => { updateTab(page); onNavigate?.(page); };
-  useEffect(() => { if (activePage) updateTab(activePage); }, [activePage]);
+  useEffect(() => { if (activePage) { updateTab(activePage); setLocationSearch(window.location.search); } }, [activePage]);
   const [activityView, setActivityView] = useState<ActivityView>(initialActivityView);
   const [locationSearch, setLocationSearch] = useState(window.location.search);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -491,7 +491,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   }, []);
 
   const openModelInDocs = (modelId: string) => {
-    if (onNavigate) { updateTab("docs"); onNavigate("docs", {endpoint: "create-response", model: modelId}); return; }
+    if (onNavigate) { const query = new URLSearchParams(window.location.search); query.set("endpoint", "create-response"); query.set("model", modelId); setLocationSearch(query.toString()); updateTab("docs"); onNavigate("docs", {endpoint: "create-response", model: modelId}); return; }
     const url = new URL(window.location.href);
     url.searchParams.set("tab", "docs");
     url.searchParams.set("endpoint", "create-response");
