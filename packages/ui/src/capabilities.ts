@@ -33,6 +33,7 @@ export function dashboardResourceAllowed(resource: string, capabilities: Dashboa
   if (/^(?:provider-agent|local-runtimes|local-model-preparation|model-memory|open-model-family|model-recommendations)(?:\/|$)/.test(path)) return capabilities.localRuntimes;
   if (/^cloud\/(?:connect|disconnect)$/.test(path)) return capabilities.cloudConnection;
   if (path === 'usage/refresh-stale') return capabilities.usageRefresh;
+  if (path === 'quota-reset-forecast') return capabilities.host;
   if (path === 'grok/import') return capabilities.host;
   return !path.startsWith('admin/') && !path.includes('..') && !resource.startsWith('//') && !resource.includes('://');
 }

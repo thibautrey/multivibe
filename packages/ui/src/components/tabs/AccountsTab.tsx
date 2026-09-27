@@ -1647,7 +1647,7 @@ export function AccountsTab(props: Props) {
   };
 
   const openAiCount = accounts.filter(
-    (account) => (account.provider ?? "openai") === "openai",
+    (account) => capabilities.host && (account.provider ?? "openai") === "openai" && account.actions?.quotaReset !== false,
   ).length;
 
   useEffect(() => {

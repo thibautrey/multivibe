@@ -10,7 +10,7 @@ import { CORE_CAPABILITIES, CLOUD_CAPABILITIES, dashboardResourceAllowed } from 
 import { validateSmartAlias, evaluateAliasPolicy, WeightedFairScheduler } from '../packages/ui/src/domain/routing-kernel.ts';
 
 test('Cloud profile refuses all Host resources while retaining shared workspace APIs', () => {
-  for (const resource of ['host-update', 'host-update/check', 'host-harnesses', 'modules', 'modules/models', 'team-machine', 'provider-agent/local-worker', 'local-runtimes/discover', 'local-model-preparation', 'model-recommendations?need=coding', 'model-memory', 'cloud/connect', 'grok/import', 'usage/refresh-stale']) {
+  for (const resource of ['host-update', 'host-update/check', 'host-harnesses', 'modules', 'modules/models', 'team-machine', 'provider-agent/local-worker', 'local-runtimes/discover', 'local-model-preparation', 'model-recommendations?need=coding', 'model-memory', 'cloud/connect', 'grok/import', 'usage/refresh-stale', 'quota-reset-forecast']) {
     assert.equal(dashboardResourceAllowed(resource, CLOUD_CAPABILITIES), false, resource);
     assert.equal(dashboardResourceAllowed(resource, CORE_CAPABILITIES), true, resource);
   }
