@@ -148,7 +148,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   const api = useDashboardApi();
   const { capabilities, adapter, allowedPages } = useDashboardRuntime();
   const fetch = adapter.fetch;
-  const allTabs = [...TAB_ITEMS, ...pages];
+  const allTabs = [...TAB_ITEMS.filter(item => !pages.some(page => page.id === item.id)), ...pages];
   const [sidebarScrolling, setSidebarScrolling] = useState(false);
   const sidebarScrollTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const revealSidebarScrollbar = () => {
@@ -238,7 +238,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   const canViewInvoices = canManage || (teamWorkspace.state === "team" && teamWorkspace.role === "billing");
   const invoiceAccountSignature = JSON.stringify(accounts.map(account => [account.id, account.provider, account.sdkProvider, account.email, account.multivibeCloud]));
   useEffect(() => {
-    if (!baseLoaded || !authenticated || pageOverrides.invoices) { setInvoicesLoading(false); return; }
+    if (!baseLoaded || !authenticated || pageOverrides.invoices || pages.some(page => page.id === "invoices")) { setInvoicesLoading(false); return; }
     if (!canViewInvoices) { setInvoiceData({ providers: [], cloudUnavailable: false }); setInvoicesLoading(false); return; }
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 20000);
@@ -257,14 +257,15 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
     });
     return () => { active = false; window.clearTimeout(timeout); controller.abort(); };
   }, [baseLoaded, authenticated, canViewInvoices, invoiceAccountSignature, multivibeCloud.status, invoiceRefresh]);
-  const visibleTabItems = allTabs.filter(item =>
+  const availableTabItems = allTabs.filter(item =>
     (item.id !== "updates" || (capabilities.hostUpdates && hostApplication)) &&
     (item.id !== "plugins" || capabilities.plugins) &&
     (allowedPages ? allowedPages.includes(item.id) :
-      (item.id !== "invoices" || (canViewInvoices && (Boolean(pageOverrides.invoices) || invoiceData.providers.length > 0))) &&
+      (item.id !== "invoices" || (canViewInvoices && (Boolean(pageOverrides.invoices) || pages.some(page => page.id === "invoices") || invoiceData.providers.length > 0))) &&
       (canManage || (item.id === "invoices" && canViewInvoices) || ["overview", "models", "updates"].includes(item.id))));
-  const tab = requestedTab === "invoices" && canViewInvoices && (invoicesLoading || invoicesError) ? "invoices" : visibleTabItems.some(item => item.id === requestedTab) ? requestedTab : "overview";
-  const activeTabItem = visibleTabItems.find((item) => item.id === tab) ?? visibleTabItems[0];
+  const visibleTabItems = availableTabItems.filter(item => !("hiddenFromNavigation" in item && item.hiddenFromNavigation));
+  const tab = requestedTab === "invoices" && canViewInvoices && (invoicesLoading || invoicesError) ? "invoices" : availableTabItems.some(item => item.id === requestedTab) ? requestedTab : "overview";
+  const activeTabItem = availableTabItems.find((item) => item.id === tab) ?? visibleTabItems[0];
   const sanitized = useMemo(() => {
     const params = new URLSearchParams(locationSearch);
     return params.get("sanitized") === "1" || params.get("safe") === "1";
@@ -1511,6 +1512,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
           cloudConnected={cloudConnected} onUse={canManage ? openModelInDocs : () => { if (cloudConnected) window.location.assign("https://chat.multivibe.cloud"); }}
           onConnectCloud={connectMultivibeCloud} onConfigure={(route) => {
             if (route.source === "cloud") {
+              if (onNavigate) { onNavigate("models", { model: route.modelId }); return; }
               window.location.assign(`https://app.multivibe.cloud/models/${encodeURIComponent(route.modelId)}`);
               return;
             }

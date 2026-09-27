@@ -1,3 +1,4 @@
+import { providerMutationFields } from "../../capabilities";
 import { useDashboardApi, useDashboardRuntime } from "../../adapter";
 import { ChatGPTDeviceGuide } from "../ChatGPTDeviceGuide";
 import { TeamMachineConsent } from "../TeamMachineConsent";
@@ -1134,13 +1135,13 @@ export function AccountsTab(props: Props) {
           if (
             oauthDialog.mode === "create" &&
             accountId &&
-            (oauthDialog.pendingPriority !== 0 ||
+            (capabilities.providerPriority && (oauthDialog.pendingPriority ?? 0) !== 0 ||
               oauthDialog.pendingEnabled === false)
           ) {
-            await patch(accountId, {
+            await patch(accountId, providerMutationFields({
               priority: oauthDialog.pendingPriority ?? 0,
               enabled: oauthDialog.pendingEnabled ?? true,
-            });
+            }, capabilities, "update"));
           }
           closeOauthDialog();
           closeModal();
@@ -1201,6 +1202,7 @@ export function AccountsTab(props: Props) {
   );
 
   const loadAccountProviderModels = useCallback(async (accountId: string, refresh = false) => {
+    if (!capabilities.providerModelDiscovery) return;
     setEditModelsLoading(true);
     setEditModelsError("");
     try {
@@ -1308,6 +1310,7 @@ export function AccountsTab(props: Props) {
     pendingPriority?: number;
     pendingEnabled?: boolean;
   }) => {
+    if (options.method === "browser" && !capabilities.providerBrowserOAuth) throw new Error("Browser sign-in is unavailable in this workspace.");
     const result = await startOAuth(
       options.email,
       options.accountId,
@@ -1391,7 +1394,7 @@ export function AccountsTab(props: Props) {
     if ((provider === "openai-compatible" || provider === "nvidia-pair") && !manualBaseUrl.trim()) return;
     setIsSubmitting(true);
     try {
-      await createAccount({
+      await createAccount(providerMutationFields({
         provider,
         sdkProvider: provider === "ai-sdk" ? sdkProvider : undefined,
         sdkModels: provider === "ai-sdk" ? sdkModels.split(/[\n,]+/).map((id) => id.trim()).filter(Boolean) : undefined,
@@ -1412,7 +1415,7 @@ export function AccountsTab(props: Props) {
           healthUrl: manualHealthUrl.trim() || undefined,
           metricsUrl: manualMetricsUrl.trim() || undefined,
         },
-      });
+      }, capabilities, "create"));
       closeModal();
     } finally {
       setIsSubmitting(false);
@@ -1457,13 +1460,13 @@ export function AccountsTab(props: Props) {
       metricsUrl: account.capacityProfile?.metricsUrl ?? "",
     });
     setEditOAuthMethod("device");
-    if (account.provider === "ai-sdk") void loadAccountProviderModels(account.id);
-    else { setEditModelOptions([]); setEditModelsLive(null); setEditModelsError(""); }
+    if (account.provider === "ai-sdk" && capabilities.providerModelDiscovery) void loadAccountProviderModels(account.id);
+    else { setEditModelOptions(sdkProviders.find(item => item.id === account.sdkProvider)?.models ?? []); setEditModelsLive(null); setEditModelsError(""); }
   };
 
   const saveEditedAccount = async () => {
     if (!editingAccount) return;
-    if (isOAuthProvider(editingAccount.provider)) {
+    if (capabilities.providerCredentialEditing && isOAuthProvider(editingAccount.provider)) {
       if (
         editingAccount.provider === "openai" &&
         !editingAccount.email.trim()
@@ -1487,15 +1490,15 @@ export function AccountsTab(props: Props) {
       return;
     }
 
-    if (!editingAccount.accessToken.trim()) return;
+    if (capabilities.providerCredentialEditing && !editingAccount.accessToken.trim()) return;
     if (
-      (editingAccount.provider === "openai-compatible" || editingAccount.provider === "ai-sdk" && editingSdkProvider?.endpointRequired) &&
+      capabilities.providerUpstreamSettings && (editingAccount.provider === "openai-compatible" || editingAccount.provider === "ai-sdk" && editingSdkProvider?.endpointRequired) &&
       !editingAccount.baseUrl.trim()
     )
       return;
     setIsSavingEdit(true);
     try {
-      await patch(editingAccount.id, {
+      await patch(editingAccount.id, providerMutationFields({
         email: editingAccount.email.trim() || undefined,
         accessToken: editingAccount.accessToken.trim(),
         refreshToken: editingAccount.refreshToken.trim() || undefined,
@@ -1516,7 +1519,7 @@ export function AccountsTab(props: Props) {
           healthUrl: editingAccount.healthUrl.trim() || undefined,
           metricsUrl: editingAccount.metricsUrl.trim() || undefined,
         },
-      });
+      }, capabilities, "update"));
       closeEditModal();
     } finally {
       setIsSavingEdit(false);
@@ -1538,13 +1541,13 @@ export function AccountsTab(props: Props) {
       if (
         oauthDialog.mode === "create" &&
         accountId &&
-        (oauthDialog.pendingPriority !== 0 ||
+        (capabilities.providerPriority && (oauthDialog.pendingPriority ?? 0) !== 0 ||
           oauthDialog.pendingEnabled === false)
       ) {
-        await patch(accountId, {
+        await patch(accountId, providerMutationFields({
           priority: oauthDialog.pendingPriority ?? 0,
           enabled: oauthDialog.pendingEnabled ?? true,
-        });
+        }, capabilities, "update"));
       }
       closeOauthDialog();
       closeModal();
@@ -2171,13 +2174,13 @@ export function AccountsTab(props: Props) {
                               </>
                             ) : !isCloud && (
                               <>
-                                <button
+{capabilities.providerCredentialEditing && <button
                                   className="account-action-item"
                                   disabled={a.actions?.edit === false}
                               onClick={() => openEditModal(a)}
                                 >
                                   Change key
-                                </button>
+                                </button>}
                                 {a.provider === "opencode" && a.actions?.reauthenticate !== false && (
                                   <button
                                     className="account-action-item"
@@ -3006,12 +3009,12 @@ export function AccountsTab(props: Props) {
                   {`${oauthProviderLabel(provider)} login method`}
                   <select
                     value={manualOAuthMethod}
-                    disabled={provider !== "openai"}
+                    disabled={provider !== "openai" || !capabilities.providerBrowserOAuth}
                     onChange={(e) =>
                       setManualOAuthMethod(e.target.value as OAuthMethod)
                     }
                   >
-                    {provider === "openai" && (
+                    {capabilities.providerBrowserOAuth && provider === "openai" && (
                       <option value="browser">Browser callback</option>
                     )}
                     <option value="device">Device code (recommended)</option>
@@ -3059,7 +3062,7 @@ export function AccountsTab(props: Props) {
                       placeholder={provider === "opencode" ? "Optional for device sign-in" : "Required"}
                     />
                   </label>
-                  {!onboardingProviderSetup && <label>
+                  {!onboardingProviderSetup && capabilities.providerCredentialEditing && <label>
                     Refresh token (optional)
                     <input
                       type="password" autoComplete="off"
@@ -3075,7 +3078,7 @@ export function AccountsTab(props: Props) {
                     ? "Sign in on GitHub with a one-time device code. Models depend on your Copilot plan and organization policy. Premium request and chat quotas are refreshed when GitHub exposes them."
                     : provider === "xai"
                     ? "Grok Build uses xAI device OAuth and the SuperGrok / X Premium+ subscription quota."
-                    : "Approve a one-time code on OpenAI’s sign-in page. MultiVibe finishes connecting automatically. Browser callback is available as a fallback."}
+                    : "Approve a one-time code on OpenAI’s sign-in page. MultiVibe finishes connecting automatically."}
                 </div>
               )}
               {provider === "opencode" && (
@@ -3092,8 +3095,8 @@ export function AccountsTab(props: Props) {
                 {(provider === "openai-compatible" || provider === "nvidia-pair" || provider === "ai-sdk" && selectedSdkProvider?.endpointPlaceholder) && <div><dt>Endpoint</dt><dd>{manualBaseUrl || selectedSdkProvider?.endpointPlaceholder}</dd></div>}
               </dl>
               {isOAuthProvider(provider) && <p className="provider-setup-note">Next, approve the connection with your provider to finish setup.</p>}
-              {!onboardingProviderSetup && <details className="provider-setup-advanced"><summary>Advanced settings <span>Routing, priority & capacity</span></summary><div className="grid modal-grid">
-              {!onboardingProviderSetup && <label>
+              {!onboardingProviderSetup && <details className="provider-setup-advanced"><summary>Advanced settings <span>{capabilities.providerCapacity ? "Routing, priority & capacity" : "Connection status"}</span></summary><div className="grid modal-grid">
+              {!onboardingProviderSetup && capabilities.providerUpstreamSettings && <label>
                 Upstream mode (optional)
                 <select
                   value={manualUpstreamMode}
@@ -3110,7 +3113,7 @@ export function AccountsTab(props: Props) {
                   </option>
                 </select>
               </label>}
-              {!onboardingProviderSetup && isManualTokenProvider(provider) && (
+              {!onboardingProviderSetup && capabilities.providerCapacity && isManualTokenProvider(provider) && (
                 <>
                   <label>Execution location<select value={manualLocation} onChange={(e) => setManualLocation(e.target.value as "" | "local" | "personal-cluster" | "cloud")}><option value="">Infer from URL/provider</option><option value="local">Local</option><option value="personal-cluster">Personal cluster</option><option value="cloud">Cloud</option></select></label>
                   <label>Concurrent slots<input type="number" min="1" value={manualMaxConcurrent} onChange={(e) => setManualMaxConcurrent(e.target.value)} placeholder="1 local / 8 cloud" /></label>
@@ -3121,7 +3124,7 @@ export function AccountsTab(props: Props) {
                   <label>Metrics URL<input type="url" value={manualMetricsUrl} onChange={(e) => setManualMetricsUrl(e.target.value)} placeholder="Optional JSON metrics" /></label>
                 </>
               )}
-              {!onboardingProviderSetup && <label>
+              {!onboardingProviderSetup && capabilities.providerPriority && <label>
                 Priority
                 <input
                   value={manualPriority}
@@ -3227,24 +3230,24 @@ export function AccountsTab(props: Props) {
                   placeholder="account@email.com"
                 />
               </label>
-              {isOAuthProvider(editingAccount.provider) && (
+              {capabilities.providerCredentialEditing && isOAuthProvider(editingAccount.provider) && (
                 <label>
                   {`${oauthProviderLabel(editingAccount.provider)} reauth method`}
                   <select
                     value={editOAuthMethod}
-                    disabled={editingAccount.provider !== "openai"}
+                    disabled={editingAccount.provider !== "openai" || !capabilities.providerBrowserOAuth}
                     onChange={(e) =>
                       setEditOAuthMethod(e.target.value as OAuthMethod)
                     }
                   >
-                    {editingAccount.provider === "openai" && (
+                    {capabilities.providerBrowserOAuth && editingAccount.provider === "openai" && (
                       <option value="browser">Browser callback</option>
                     )}
                     <option value="device">Device code (recommended)</option>
                   </select>
                 </label>
               )}
-              {(editingAccount.provider === "openai-compatible" || editingAccount.provider === "ai-sdk" && editingSdkProvider?.endpointPlaceholder) && (
+              {capabilities.providerUpstreamSettings && (editingAccount.provider === "openai-compatible" || editingAccount.provider === "ai-sdk" && editingSdkProvider?.endpointPlaceholder) && (
                 <label>
                   Base URL
                   <input
@@ -3270,11 +3273,11 @@ export function AccountsTab(props: Props) {
                   live={editModelsLive}
                   loading={editModelsLoading}
                   error={editModelsError}
-                  onRefresh={() => { if (editingAccount) void loadAccountProviderModels(editingAccount.id, true); }}
+                  onRefresh={capabilities.providerModelDiscovery ? () => { if (editingAccount) void loadAccountProviderModels(editingAccount.id, true); } : undefined}
                   requiresSelection={editingSdkProvider?.requiresModelSelection}
                 />
               </div>}
-              <label>
+              {capabilities.providerUpstreamSettings && <label>
                 Upstream mode (optional)
                 <select
                   value={editingAccount.upstreamMode}
@@ -3298,19 +3301,21 @@ export function AccountsTab(props: Props) {
                     Force `/v1/chat/completions`
                   </option>
                 </select>
-              </label>
-              <label>Execution location<select value={editingAccount.location} onChange={(e) => setEditingAccount((current) => current ? { ...current, location: e.target.value as "local" | "personal-cluster" | "cloud" } : current)}><option value="local">Local</option><option value="personal-cluster">Personal cluster</option><option value="cloud">Cloud</option></select></label>
+              </label>}
+              {capabilities.providerCapacity && <><label>Execution location<select value={editingAccount.location} onChange={(e) => setEditingAccount((current) => current ? { ...current, location: e.target.value as "local" | "personal-cluster" | "cloud" } : current)}><option value="local">Local</option><option value="personal-cluster">Personal cluster</option><option value="cloud">Cloud</option></select></label>
               <label>Concurrent slots<input type="number" min="1" value={editingAccount.maxConcurrent} onChange={(e) => setEditingAccount((current) => current ? { ...current, maxConcurrent: e.target.value } : current)} /></label>
               <label>Prefill tokens/s<input type="number" min="0" value={editingAccount.prefillTokensPerSecond} onChange={(e) => setEditingAccount((current) => current ? { ...current, prefillTokensPerSecond: e.target.value } : current)} /></label>
               <label>Decode tokens/s<input type="number" min="0" value={editingAccount.decodeTokensPerSecond} onChange={(e) => setEditingAccount((current) => current ? { ...current, decodeTokensPerSecond: e.target.value } : current)} /></label>
               <label>Context window<input type="number" min="1" value={editingAccount.contextWindow} onChange={(e) => setEditingAccount((current) => current ? { ...current, contextWindow: e.target.value } : current)} /></label>
               <label>Health URL<input type="url" value={editingAccount.healthUrl} onChange={(e) => setEditingAccount((current) => current ? { ...current, healthUrl: e.target.value } : current)} /></label>
               <label>Metrics URL<input type="url" value={editingAccount.metricsUrl} onChange={(e) => setEditingAccount((current) => current ? { ...current, metricsUrl: e.target.value } : current)} /></label>
-              {isManualTokenProvider(editingAccount.provider) ? (
+              </>}
+              {capabilities.providerCredentialEditing && (isManualTokenProvider(editingAccount.provider) ? (
                 <>
                   <label>
                     API key
                     <input
+                      type="password" autoComplete="off"
                       value={editingAccount.accessToken}
                       onChange={(e) =>
                         setEditingAccount((current) =>
@@ -3325,6 +3330,7 @@ export function AccountsTab(props: Props) {
                   <label>
                     Refresh token (optional)
                     <input
+                      type="password" autoComplete="off"
                       value={editingAccount.refreshToken}
                       onChange={(e) =>
                         setEditingAccount((current) =>
@@ -3345,8 +3351,8 @@ export function AccountsTab(props: Props) {
                     ? "Grok Build reauth uses xAI device OAuth. Save changes, then approve the one-time code."
                     : "Save changes to start sign-in. Approve the one-time code, or paste the callback URL if you chose browser callback."}
                 </div>
-              )}
-              <label>
+              ))}
+              {capabilities.providerPriority && <label>
                 Priority
                 <input
                   value={editingAccount.priority}
@@ -3359,7 +3365,7 @@ export function AccountsTab(props: Props) {
                   }
                   placeholder="0"
                 />
-              </label>
+              </label>}
               <label className="inline">
                 <input
                   type="checkbox"
@@ -3380,21 +3386,21 @@ export function AccountsTab(props: Props) {
                 className="btn"
                 disabled={
                   isSavingEdit ||
-                  (isOAuthProvider(editingAccount.provider)
+                  (capabilities.providerCredentialEditing && isOAuthProvider(editingAccount.provider)
                     ? editingAccount.provider === "openai" &&
                       !editingAccount.email.trim()
-                    : !editingAccount.accessToken.trim() ||
-                      ((editingAccount.provider === "openai-compatible" || editingAccount.provider === "ai-sdk" && editingSdkProvider?.endpointRequired) &&
+                    : capabilities.providerCredentialEditing && !editingAccount.accessToken.trim() ||
+                      (capabilities.providerUpstreamSettings && (editingAccount.provider === "openai-compatible" || editingAccount.provider === "ai-sdk" && editingSdkProvider?.endpointRequired) &&
                         !editingAccount.baseUrl.trim()) ||
                       (editingAccount.provider === "ai-sdk" && editingSdkProvider?.requiresModelSelection && !editingAccount.sdkModels.split(/[\n,]+/).some((id) => id.trim())))
                 }
                 onClick={() => void saveEditedAccount()}
               >
                 {isSavingEdit
-                  ? isOAuthProvider(editingAccount.provider)
+                  ? capabilities.providerCredentialEditing && isOAuthProvider(editingAccount.provider)
                     ? "Starting OAuth..."
                     : "Saving..."
-                  : isOAuthProvider(editingAccount.provider)
+                  : capabilities.providerCredentialEditing && isOAuthProvider(editingAccount.provider)
                     ? editingAccount.provider === "xai"
                       ? "Start Grok reauth"
                       : "Start reauth"
