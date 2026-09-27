@@ -547,6 +547,7 @@ export type ProxyApiKey = {
 };
 
 export type CreatedProxyApiKey = ProxyApiKey & {
+  warning?: string;
   key: string;
 };
 
