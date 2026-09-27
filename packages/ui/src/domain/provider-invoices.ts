@@ -57,6 +57,7 @@ export const INVOICE_PORTALS: Record<string, Portal> = {
 
 /** Deliberate exclusions: no verified invoice destination for this connection yet, or no central vendor billing. */
 export const INVOICE_UNSUPPORTED: Record<string, string> = {
+  "z-ai": "The Z.AI API billing destination has not been verified. Coding Plan billing is a separate connection.",
   "nvidia-nim": "Hosted evaluation access; enterprise licensing is billed through the customer's vendor agreement.",
   "nvidia-pair": "Local router; no provider invoice portal.",
   "openai-compatible": "Custom endpoint does not identify a billing vendor.",

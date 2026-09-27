@@ -22,7 +22,7 @@ import {
   runtimeIdentityForAdapter,
 } from "../../lib/runtimeCatalog";
 import { tracksSubscriptionQuota } from "../../lib/accountQuota";
-import { PROVIDER_ACCESS } from "../../lib/providerAccess";
+import { providerAccess } from "../../lib/providerAccess";
 
 import { ProviderPicker, ProviderMark, SETUP_PROVIDERS, type SetupProvider, type CloudProvider } from "../ProviderPicker";
 import { ProviderModelPicker, type ProviderModelOption, type ProviderModelsLive } from "../ProviderModelPicker";
@@ -3047,7 +3047,7 @@ export function AccountsTab(props: Props) {
                   />
                 </div>
                 <p className="muted">Access and pricing depend on your provider account. Subscription quotas are not supplied by the catalog.</p>
-                {PROVIDER_ACCESS[sdkProvider] && <p className="muted">{PROVIDER_ACCESS[sdkProvider].note}</p>}
+                {providerAccess(sdkProvider, true) && <p className="muted">{providerAccess(sdkProvider, true)?.note}</p>}
               </>}
               {provider === "nvidia-pair" ? (
                 <div className="muted">PAIR is probed without a token and is isolated as personal-cluster capacity.</div>
