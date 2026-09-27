@@ -1,13 +1,13 @@
 import React from "react";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { TraceStats } from "../types";
-import { formatTokenCount } from "../lib/ui";
+import { formatTokenCount, isMeasured } from "../lib/ui";
 import { runtimeIdentityForProvider } from "../lib/runtimeCatalog";
 
 type Row = TraceStats["ttftByProviderModel"][number];
 
 const seconds = (ms: number) => `${(ms / 1000).toFixed(2)} s`;
-const cacheLabel = (row: Row) => row.cachedInputRatio === undefined ? "cache n/a" : `${Math.round(row.cachedInputRatio * 100)}% cached`;
+const cacheLabel = (row: Row) => isMeasured(row.cachedInputRatio) ? `${Math.round(row.cachedInputRatio * 100)}% cached` : "cache unavailable";
 const inputLabel = (row: Row) => row.medianInputTokens === undefined ? "—" : formatTokenCount(row.medianInputTokens);
 const rowKey = (row: Row) => `${row.provider}:${row.model}:${row.inputTokenBucket}`;
 
