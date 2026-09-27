@@ -39,6 +39,8 @@ export function ApiKeysTab({
   extensions,
 }: Props) {
   const {capabilities} = useDashboardRuntime();
+  const [error, setError] = useState("");
+  const showError = (value: unknown) => setError(value instanceof Error ? value.message : "The action could not be completed.");
   const [extraFields, setExtraFields] = useState<Record<string, unknown>>({});
   const [application, setApplication] = useState("");
   const [isCreating, setIsCreating] = useState(false);
@@ -61,13 +63,14 @@ export function ApiKeysTab({
     const name = application.trim();
     if (!name) return;
     setIsCreating(true);
+    setError("");
     try {
       const result = await createApiKey(name, extraFields);
       setCreatedKey(result);
       setApplication("");
       setExtraFields({});
       setCopied(false);
-    } finally {
+    } catch (error) { showError(error); } finally {
       setIsCreating(false);
     }
   };
@@ -75,9 +78,10 @@ export function ApiKeysTab({
   const revoke = async (entry: ProxyApiKey) => {
     if (!confirm(`Revoke the API key for ${entry.application}? Clients using it will immediately lose access.`)) return;
     setDeletingId(entry.id);
+    setError("");
     try {
       await deleteApiKey(entry.id);
-    } finally {
+    } catch (error) { showError(error); } finally {
       setDeletingId(null);
     }
   };
@@ -90,6 +94,7 @@ export function ApiKeysTab({
 
   return (
     <>
+      {error && <div className="panel error" role="alert">{error}</div>}
       {capabilities.hostHarnesses && <HostHarnessCards onApiKeysChanged={onHarnessesChanged} />}
       <section className="panel">
         <div className="section-split-header">
@@ -163,7 +168,7 @@ export function ApiKeysTab({
                         void setApplicationWeight(
                           entry.application,
                           Number(event.target.value) || 1,
-                        )
+                        ).catch(showError)
                       }
                       style={{ width: 88 }}
                     />
@@ -200,7 +205,7 @@ export function ApiKeysTab({
             void createWebhook(webhookApplication, webhookUrl).then((webhook) => {
               setCreatedWebhook(webhook);
               setWebhookUrl("");
-            });
+            }).catch(showError);
           }}
         >
           <label className="control-field"><span className="control-label">Application</span>
@@ -217,7 +222,7 @@ export function ApiKeysTab({
             <thead><tr><th>Application</th><th>ID</th><th>URL</th><th>Status</th><th /></tr></thead>
             <tbody>
               {policies.flatMap((policy) => policy.webhooks.map((webhook) => (
-                <tr key={webhook.id}><td>{policy.application}</td><td className="mono">{webhook.id}</td><td className="mono">{webhook.url}</td><td><span className="badge badge-live">{webhook.enabled ? "Enabled" : "Disabled"}</span></td><td><button className="btn danger" onClick={() => void deleteWebhook(policy.application, webhook.id)}>Delete</button></td></tr>
+                <tr key={webhook.id}><td>{policy.application}</td><td className="mono">{webhook.id}</td><td className="mono">{webhook.url}</td><td><span className="badge badge-live">{webhook.enabled ? "Enabled" : "Disabled"}</span></td><td><button className="btn danger" onClick={() => void deleteWebhook(policy.application, webhook.id).catch(showError)}>Delete</button></td></tr>
               )))}
             </tbody>
           </table>
