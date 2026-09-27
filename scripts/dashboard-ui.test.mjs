@@ -24,6 +24,10 @@ test('routing export validates and evaluates the same rule, and fairly schedules
   const resource = {accountId:'a',model:'model-a',provider:'openai',location:'cloud',enabled:true,inFlight:0,maxConcurrent:1,freeSlots:1,predictedWaitMs:0,averageLatencyMs:1,confidence:'declared'};
   const result = evaluateAliasPolicy(alias, request, [resource]);
   assert.equal(result.eligible[0]?.resource.accountId,'a');
+  const unknown={...resource,freeSlots:undefined,predictedWaitMs:undefined,averageLatencyMs:undefined};
+  assert.equal(Number.isFinite(evaluateAliasPolicy(alias,request,[unknown]).eligible[0]?.score),true);
+  const constrained={...alias,rules:[{...alias.rules[0],constraints:{maxPredictedWaitMs:100}}]};
+  assert.equal(evaluateAliasPolicy(constrained,request,[unknown]).eligible.length,0);
   const scheduler = new WeightedFairScheduler();
   const candidates=[{id:'a',application:'a',priority:'standard'},{id:'b',application:'b',priority:'standard'}];
   const results = Array.from({length:8},()=>scheduler.choose(candidates, app=>app==='a'?3:1));

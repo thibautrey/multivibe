@@ -433,9 +433,9 @@ function score(
   estimatedCostUsd: number | undefined,
 ): number {
   const total = Object.values(objectives).reduce((sum, value) => sum + value, 0) || 1;
-  const latency =
-    1 /
-    (1 + (resource.predictedWaitMs + resource.averageLatencyMs) / 1_000);
+  const latency = Number.isFinite(resource.predictedWaitMs) && Number.isFinite(resource.averageLatencyMs)
+    ? 1 / (1 + (resource.predictedWaitMs + resource.averageLatencyMs) / 1_000)
+    : 0.5;
   const cost = estimatedCostUsd === undefined ? 0.5 : 1 / (1 + estimatedCostUsd * 10);
   const quality = Math.max(0, Math.min(1, (config.quality ?? 50) / 100));
   const locality = resource.location === "local" ? 1 : resource.location === "personal-cluster" ? 0.5 : 0;
@@ -490,7 +490,7 @@ export function evaluateAliasPolicy(
         if (requiredPrivacy && (resource.privacyMode ?? "standard") !== requiredPrivacy) {
           rejectedReasons.push("privacy_mode_not_allowed");
         }
-        if (constraints?.maxPredictedWaitMs !== undefined && resource.predictedWaitMs > constraints.maxPredictedWaitMs) {
+        if (constraints?.maxPredictedWaitMs !== undefined && (!Number.isFinite(resource.predictedWaitMs) || resource.predictedWaitMs > constraints.maxPredictedWaitMs)) {
           rejectedReasons.push("predicted_wait_exceeded");
         }
         if (constraints?.minContextWindow !== undefined && (resource.contextWindow ?? 0) < constraints.minContextWindow) {

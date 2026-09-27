@@ -132,6 +132,26 @@ export function allAliasCandidateModels(alias: ModelAlias): string[] {
   );
 }
 
+type Observation = {
+  inFlight: number;
+  latencyMs?: number;
+  prefillTokensPerSecond?: number;
+  decodeTokensPerSecond?: number;
+  samples: number;
+  lastObservedAt?: number;
+};
+
+export type CapacityLease = {
+  accountId: string;
+  model: string;
+  startedAt: number;
+  release: (observation?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    latencyMs?: number;
+  }) => void;
+};
+
 export function capacityTokenUsage(usage: any): {
   inputTokens?: number;
   outputTokens?: number;
