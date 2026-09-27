@@ -8,6 +8,8 @@ export interface DashboardPage {
   label: string;
   description: string;
   group: 'Operate' | 'Build' | 'Advanced';
+  /** User-menu pages remain routable without appearing in the workspace sidebar. */
+  hiddenFromNavigation?: boolean;
   render: (context: DashboardPageContext) => React.ReactNode;
 }
 export interface SharedDashboardProps extends DashboardRuntime {

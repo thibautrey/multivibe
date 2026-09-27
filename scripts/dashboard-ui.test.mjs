@@ -6,7 +6,7 @@ import { join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { gunzipSync } from 'node:zlib';
 import { exportDashboardUI } from './export-dashboard-ui.mjs';
-import { CORE_CAPABILITIES, CLOUD_CAPABILITIES, dashboardResourceAllowed } from '../packages/ui/src/capabilities.ts';
+import { CORE_CAPABILITIES, CLOUD_CAPABILITIES, dashboardResourceAllowed, providerMutationFields } from '../packages/ui/src/capabilities.ts';
 import { validateSmartAlias, evaluateAliasPolicy, WeightedFairScheduler } from '../packages/ui/src/domain/routing-kernel.ts';
 
 test('Cloud profile refuses all Host resources while retaining shared workspace APIs', () => {
@@ -16,6 +16,17 @@ test('Cloud profile refuses all Host resources while retaining shared workspace 
   }
   for (const resource of ['session','accounts','model-aliases','application-policies','traces?limit=20','stats/usage','/v1/capacity?model=gpt']) assert.equal(dashboardResourceAllowed(resource, CLOUD_CAPABILITIES), true, resource);
   for (const resource of ['../host-update','/admin/accounts','https://localhost/admin/config','//localhost/admin/config']) assert.equal(dashboardResourceAllowed(resource, CLOUD_CAPABILITIES), false, resource);
+});
+test('provider mutations omit unsupported Cloud controls and preserve Core settings', () => {
+  const input={email:'display label',sdkModels:['one'],enabled:false,accessToken:'new-key',refreshToken:'refresh',baseUrl:'https://provider.invalid',upstreamMode:'responses',priority:5,location:'cloud',capacityProfile:{maxConcurrent:2}};
+  assert.deepEqual(providerMutationFields(input,CORE_CAPABILITIES,'update'),input);
+  assert.deepEqual(providerMutationFields(input,CLOUD_CAPABILITIES,'update'),{email:'display label',sdkModels:['one'],enabled:false});
+  assert.deepEqual(providerMutationFields(input,CLOUD_CAPABILITIES,'create'),{email:'display label',sdkModels:['one'],enabled:false,accessToken:'new-key',baseUrl:'https://provider.invalid'});
+  for(const resource of ['accounts/one/models','accounts/one/models/refresh']){
+    assert.equal(dashboardResourceAllowed(resource,CLOUD_CAPABILITIES),false);
+    assert.equal(dashboardResourceAllowed(resource,CORE_CAPABILITIES),true);
+  }
+  assert.equal(CLOUD_CAPABILITIES.providerBrowserOAuth,false);
 });
 test('routing export validates and evaluates the same rule, and fairly schedules applications', () => {
   const alias = {schemaVersion:2,id:'shared',enabled:true,rules:[{id:'preferred',candidates:[{model:'model-a'}],onNoCapacity:'reject'}]};
