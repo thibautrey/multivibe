@@ -499,7 +499,7 @@ export function evaluateAliasPolicy(
         if (constraints?.minQuality !== undefined && (config.quality ?? 0) < constraints.minQuality) {
           rejectedReasons.push("quality_too_low");
         }
-        if (resource.freeSlots <= 0) rejectedReasons.push("capacity_saturated");
+        if (resource.freeSlots !== undefined && resource.freeSlots <= 0) rejectedReasons.push("capacity_saturated");
         const estimatedCostUsd = estimateCandidateCost(
           config,
           request.estimatedInputTokens,
