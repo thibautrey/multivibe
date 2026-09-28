@@ -2994,7 +2994,7 @@ export function AccountsTab(props: Props) {
             </div>}
             {providerStep === 1 && provider === "openai" && manualOAuthMethod === "device" && <ChatGPTDeviceGuide />}
             {providerStep === 0 && <ProviderPicker value={provider} sdkProvider={sdkProvider} cloudProviders={sdkProviders} error={sdkCatalogError} onChange={selectProvider} />}
-            {providerStep === 1 && <div className="grid modal-grid provider-setup-fields">
+            {providerStep === 1 && <div className="grid modal-grid provider-connection-fields provider-setup-fields">
 
               <label>
                 {provider === "openai" ? "Email" : "Email (optional)"}
@@ -3217,7 +3217,7 @@ export function AccountsTab(props: Props) {
                 Close
               </button>
             </div>
-            <div className="grid modal-grid">
+            <div className="grid modal-grid provider-connection-fields">
               <label>
                 Email (optional)
                 <input
