@@ -5,6 +5,12 @@ export type CloudModel = { id: string; name: string; author?: string; aliases: s
 export type ModelRoute = { source: 'provider' | 'local' | 'cloud'; label: string; modelId: string; ready: boolean; accountId?: string; provider?: SetupProvider; sdkProvider?: string; accessSource?: 'cloud'|'personal'|'team'; priceSummary?: string; availabilityLabel?: string };
 export type CatalogEntry = { id: string; name: string; author?: string; routes: ModelRoute[]; logo?: string };
 
+export function mergeCloudModelPage(current: CloudModel[], page: CloudModel[]): CloudModel[] {
+  const merged = new Map(current.map(model => [model.id, model]));
+  for (const model of page) merged.set(model.id, model);
+  return [...merged.values()];
+}
+
 const MODEL_OWNER_ICONS: Record<string, string> = {
   'aion-labs': 'aion-labs.png', alibaba: 'alibaba.png', amazon: 'amazon.png',
   'anthracite-org': 'anthracite-org.png', anthropic: 'anthropic.svg', 'arcee-ai': 'arcee-ai.png',

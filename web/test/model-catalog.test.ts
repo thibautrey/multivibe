@@ -1,9 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { aggregateModels, modelLogo } from '../../packages/ui/src/lib/modelCatalog.js';
+import { aggregateModels, mergeCloudModelPage, modelLogo } from '../../packages/ui/src/lib/modelCatalog.js';
 import type { Account } from '../../packages/ui/src/types.js';
 
 const accounts: Account[] = [{ id: 'disabled', provider: 'mistral', enabled: false }, { id: 'working', provider: 'mistral', enabled: true }];
+test('catalog pages merge by exact id and newer pages refresh duplicate entries', () => {
+  const first = [{ id: 'publisher/a', name: 'A', aliases: [], availability: 'available', network: true }];
+  const second = [{ id: 'publisher/b', name: 'B', aliases: [], availability: 'available', network: true },
+    { ...first[0], name: 'A updated' }];
+  assert.deepEqual(mergeCloudModelPage(first, second).map(model => [model.id, model.name]), [
+    ['publisher/a', 'A updated'], ['publisher/b', 'B'],
+  ]);
+});
 test('exact Cloud routes receive catalog pricing without deriving readiness from catalog availability', () => {
   const [model] = aggregateModels([{ id: 'author/model', metadata: { account_ids: ['cloud'], ready: false, priceSummary: 'Unavailable' } }],
     [{ id: 'cloud', enabled: true, multivibeCloud: true }],
