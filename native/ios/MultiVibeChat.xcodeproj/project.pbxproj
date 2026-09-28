@@ -83,7 +83,7 @@
 		16EA3BB8F0EBD6ADB21388D9 /* MultiVibeLocalInference.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = MultiVibeLocalInference.xcframework; path = .build/MultiVibeLocalInference.xcframework; sourceTree = "<group>"; };
 		19FF539BBD48306A3977C171 /* VoiceWebRTCTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceWebRTCTransport.swift; sourceTree = "<group>"; };
 		25782B401A99BA1E09850757 /* PiAgentHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiAgentHarness.swift; sourceTree = "<group>"; };
-		26BC4D73E9F06A51A165F8E9 /* MultiVibeChat.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = MultiVibeChat.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		26BC4D73E9F06A51A165F8E9 /* MultiVibeChat.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MultiVibeChat.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		305C09A77B9927C7474D6147 /* DownloadedModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadedModelTests.swift; sourceTree = "<group>"; };
 		3319D8F58B7782A53C37AF9B /* LocalAgentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalAgentTests.swift; sourceTree = "<group>"; };
 		3B8204CBB43A4BF53FAEC6DB /* AutomationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationStore.swift; sourceTree = "<group>"; };
@@ -125,7 +125,7 @@
 		CCC5DC2C101699AB590EC553 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
 		D630802B501EF5F12EE05015 /* AutomationsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationsView.swift; sourceTree = "<group>"; };
 		D6D203722FEE3A237B2FBA13 /* PiAgentCore.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = PiAgentCore.js; sourceTree = "<group>"; };
-		D7577716199F102273754156 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		D7577716199F102273754156 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		DD2222EAEE8931D5CFBC41BA /* SecureStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureStore.swift; sourceTree = "<group>"; };
 		DF240043145CEC1114F5AAAC /* SDKApplicationsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SDKApplicationsView.swift; sourceTree = "<group>"; };
 		E2EABA31C1CFB803896807DD /* libc++.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = "libc++.tbd"; path = "usr/lib/libc++.tbd"; sourceTree = SDKROOT; };
@@ -396,9 +396,6 @@
 						DevelopmentTeam = "";
 						TestTargetID = D823DF267AB00046A3ED4807;
 					};
-					D823DF267AB00046A3ED4807 = {
-						DevelopmentTeam = "";
-					};
 				};
 			};
 			buildConfigurationList = 9B4F3B7FF37AACF77048EF2B /* Build configuration list for PBXProject "MultiVibeChat" */;
@@ -655,6 +652,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MultiVibeChat/Resources/MultiVibeChat.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = 5E2CNR9H47;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\".build\"",
@@ -677,6 +675,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MultiVibeChat/Resources/MultiVibeChat.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = 5E2CNR9H47;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\".build\"",
