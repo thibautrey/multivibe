@@ -24,6 +24,7 @@
 .provider-setup-card-copy small { color: var(--primary); font-size: 10px; font-weight: 700; letter-spacing: .2px; }
 .provider-setup-check { position: absolute; right: 11px; top: 12px; color: var(--primary); font-size: 12px; }
 .provider-setup-fields { padding: 20px; border-radius: 16px; background: var(--surface-muted); }
+.provider-connection-fields { grid-template-columns: minmax(0, 1fr); }
 .provider-setup-fields > .muted { grid-column: 1 / -1; font-size: 13px; line-height: 1.7; }
 .provider-setup-summary { margin: 0; padding: 8px 20px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface-muted); }
 .provider-setup-summary > div { display: flex; justify-content: space-between; gap: 20px; padding: 14px 0; font-size: 13px; }
