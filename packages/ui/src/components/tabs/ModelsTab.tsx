@@ -3,7 +3,7 @@ import { OpenModelDiscovery } from './OpenModelDiscovery';
 import { useEffect, useMemo, useState } from 'react';
 import type { Account, ExposedModel } from '../../types';
 
-import { aggregateModels, filterCatalog, type CloudModel, type ModelRoute } from '../../lib/modelCatalog';
+import { aggregateModels, filterCatalog, mergeCloudModelPage, type CloudModel, type ModelRoute } from '../../lib/modelCatalog';
 import type { CloudProvider } from '../ProviderPicker';
 import { compatibilityFor, compatibilityLabels, compatibilityDetail, type CompatibilityReport } from '../../lib/modelCompatibility';
 import './ModelsTab.css';
@@ -35,6 +35,9 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
     return () => controller.abort();
   }, [cloudConnected, canConfigure, accessRequest]);
   const [cloud, setCloud] = useState<CloudModel[]>([]);
+  const [catalogCursor, setCatalogCursor] = useState('');
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [catalogMoreError, setCatalogMoreError] = useState('');
   const [expertSection, setExpertSection] = useState<'library' | 'discover'>('library');
   const [catalogError, setCatalogError] = useState('');
   const [catalogRequest, setCatalogRequest] = useState(0);
@@ -61,13 +64,35 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
     setCatalogError('');
     void Promise.allSettled([api('cloud/models'), api('provider-catalog')]).then(([cloudResult, providerResult]) => {
       if (!active) return;
-      if (cloudResult.status === 'fulfilled') setCloud(cloudResult.value.models);
+      if (cloudResult.status === 'fulfilled') {
+        setCloud(cloudResult.value.models);
+        setCatalogCursor(typeof cloudResult.value.nextCursor === 'string' ? cloudResult.value.nextCursor : '');
+      }
       if (providerResult.status === 'fulfilled') setProviders(providerResult.value.providers);
       setCatalogError([cloudResult.status === 'rejected' ? 'MultiVibe Cloud discovery catalog could not be loaded.' : '', providerResult.status === 'rejected' ? 'Provider discovery catalog could not be loaded.' : ''].filter(Boolean).join(' '));
       setLoading(false);
     });
     return () => { active = false; };
   }, [canConfigure, catalogRequest, view, expertSection]);
+  const loadMoreCatalog = async () => {
+    if (!catalogCursor || loadingMore) return;
+    const cursor = catalogCursor;
+    setLoadingMore(true);
+    setCatalogMoreError('');
+    try {
+      const result = await api(`cloud/models?cursor=${encodeURIComponent(cursor)}`);
+      setCloud(current => mergeCloudModelPage(current, result.models ?? []));
+      const next = typeof result.nextCursor === 'string' ? result.nextCursor : '';
+      if (next === cursor) {
+        setCatalogCursor('');
+        setCatalogMoreError('The catalog did not advance. Refresh it before trying again.');
+      } else setCatalogCursor(next);
+    } catch {
+      setCatalogMoreError('More models could not be loaded. Try again.');
+    } finally {
+      setLoadingMore(false);
+    }
+  };
   useEffect(() => {
     setCompatibility(undefined);
     setEstimateError('');
@@ -153,6 +178,8 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
         })}</ul>
         {!filtered.length && <div className="models-empty"><h3>{loading ? 'Loading your model library…' : activeFilters ? 'No models match your filters' : 'Your model library is empty'}</h3><p className="muted">{loading ? 'Connected models will appear as catalogs become available.' : activeFilters ? 'Try a different search, source, or provider.' : 'Connect a provider or refresh the catalog to get started.'}</p>{activeFilters && <button className="btn ghost" onClick={reset}>Clear filters</button>}</div>}
         {pages > 1 && <nav className="models-pagination" aria-label="Model pages"><button className="btn ghost" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>← Previous</button><label>Page<select aria-label="Go to page" value={currentPage} onChange={event => setPage(Number(event.target.value))}>{Array.from({ length: pages }, (_, index) => <option key={index} value={index}>{index + 1}</option>)}</select>of {pages}</label><button className="btn ghost" disabled={currentPage + 1 === pages} onClick={() => setPage(currentPage + 1)}>Next →</button></nav>}
+        {catalogCursor && <div className="models-pagination"><button className="btn ghost" disabled={loadingMore} onClick={() => void loadMoreCatalog()}>{loadingMore ? 'Loading more…' : 'Load more models'}</button></div>}
+        {catalogMoreError && <p className="models-error" role="alert">{catalogMoreError}{catalogCursor && <button className="models-text-button" disabled={loadingMore} onClick={() => void loadMoreCatalog()}>Try again</button>}</p>}
 
       </div>
     </div>}
