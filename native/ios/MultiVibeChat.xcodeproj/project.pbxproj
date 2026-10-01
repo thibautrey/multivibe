@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C01920000000000000000001 /* CloudHermesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01920000000000000000002 /* CloudHermesTests.swift */; };
 		C01910000000000000000003 /* HermesFoundationAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01910000000000000000004 /* HermesFoundationAdapter.swift */; };
 		C01910000000000000000001 /* HermesCheckpointStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01910000000000000000002 /* HermesCheckpointStore.swift */; };
 		003956616649C28F8B135B88 /* LocalWebFetch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B001301568AC61EB8AE8F59 /* LocalWebFetch.swift */; };
@@ -82,6 +83,7 @@
 
 /* Begin PBXFileReference section */
 		C01910000000000000000004 /* HermesFoundationAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesFoundationAdapter.swift; sourceTree = "<group>"; };
+		C01920000000000000000002 /* CloudHermesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudHermesTests.swift; sourceTree = "<group>"; };
 		C01910000000000000000002 /* HermesCheckpointStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesCheckpointStore.swift; sourceTree = "<group>"; };
 		00217B9D7702B72A5569309F /* MultiVibeChatApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiVibeChatApp.swift; sourceTree = "<group>"; };
 		16EA3BB8F0EBD6ADB21388D9 /* MultiVibeLocalInference.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = MultiVibeLocalInference.xcframework; path = .build/MultiVibeLocalInference.xcframework; sourceTree = "<group>"; };
@@ -268,7 +270,8 @@
 				9B36277A8CFF4EC17A06D2FC /* Models.swift */,
 				25782B401A99BA1E09850757 /* PiAgentHarness.swift */,
 				C01910000000000000000004 /* HermesFoundationAdapter.swift */,
-				C01910000000000000000002 /* HermesCheckpointStore.swift */,
+				C01920000000000000000002 /* CloudHermesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudHermesTests.swift; sourceTree = "<group>"; };
+		C01910000000000000000002 /* HermesCheckpointStore.swift */,
 				DD2222EAEE8931D5CFBC41BA /* SecureStore.swift */,
 			);
 			path = Core;
@@ -307,6 +310,7 @@
 				B34FCAA84CB37FAFCB223316 /* AgentMemoryTests.swift */,
 				C8B7BDC40696F8598713904B /* AutomationTests.swift */,
 				305C09A77B9927C7474D6147 /* DownloadedModelTests.swift */,
+				C01920000000000000000002 /* CloudHermesTests.swift */,
 				3319D8F58B7782A53C37AF9B /* LocalAgentTests.swift */,
 				4E7A1B6F2486B8877A908300 /* NativeIntentTests.swift */,
 				42EEE3F6ED3F93F3854EAC51 /* SSEParserTests.swift */,
@@ -453,6 +457,7 @@
 				D93DCB45C9AFA5ED65425AE5 /* AgentMemoryTests.swift in Sources */,
 				BFFED1E87FEC0124E73AD138 /* AutomationTests.swift in Sources */,
 				8C5D2ED524FCFB0349D7B83C /* DownloadedModelTests.swift in Sources */,
+				C01920000000000000000001 /* CloudHermesTests.swift in Sources */,
 				915752F0CA99F9CFC83278C1 /* LocalAgentTests.swift in Sources */,
 				7A74361E398770E2EA5D9736 /* NativeIntentTests.swift in Sources */,
 				726A7A3E670153E53166E796 /* SSEParserTests.swift in Sources */,
