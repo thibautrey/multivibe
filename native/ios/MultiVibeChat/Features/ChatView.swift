@@ -27,6 +27,7 @@ struct ChatView: View {
     @State private var retryTarget: RetryTarget?
     private struct RetryTarget { let conversation: UUID; let message: UUID }
     @State private var documentsPresented = false
+    @State private var cloudHermesConsentPresented = false
     @State private var privacyPresented = false
     @State private var profilePresented = false
     @State private var authenticateAfterProfile = false
@@ -429,6 +430,7 @@ struct ChatView: View {
         .sheet(isPresented: $manager.memoryPresented) { MemoryView() }
         .sheet(item: Binding(get: { manager.memoryPresented ? nil : manager.memoryDraft }, set: { manager.memoryDraft = $0 })) { draft in MemoryEditor(draft: draft) }
         .sheet(isPresented: $documentsPresented) { LocalDocumentsView() }
+        .sheet(isPresented: $cloudHermesConsentPresented) { CloudHermesConsentView() }
         .sheet(isPresented: $privacyPresented) { NativePrivacyView() }
         .sheet(isPresented: $profilePresented, onDismiss: {
             if authenticateAfterProfile {
@@ -548,6 +550,27 @@ struct ChatView: View {
     private var composer: some View {
         @Bindable var manager = manager
         return VStack(alignment: .leading, spacing: 8) {
+            if !ModelExecution(manager.selectedModel).isLocal && manager.session != nil {
+                VStack(alignment:.leading,spacing:6) {
+                    Label("Hermes · environnement Linux personnel",systemImage:"cloud")
+                    if !manager.currentCloudHermesAuthorized {
+                        Button("Autoriser Hermes pour cette conversation") { cloudHermesConsentPresented = true }
+                    }
+                    if let status = manager.currentCloudHermesStatus {
+                        Text("Exécution : " + status.replacingOccurrences(of:"_",with:" ")).font(.caption)
+                    }
+                    if manager.currentCloudHermesPending {
+                        Text("La reprise vérifie la même exécution. Aucune commande incertaine ne sera rejouée automatiquement.").font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            Button("Vérifier la reprise") { Task { await manager.resumeCloudHermes() } }
+                            Button("Annuler l’exécution",role:.destructive) { Task { await manager.cancelPendingCloudHermes() } }
+                        }.disabled(manager.isStreaming)
+                    }
+                    if manager.currentCloudHermesStatus == "awaiting_resolution" {
+                        Text("Des effets restent à vérifier. Examinez l’environnement avant de recommencer ; annuler ne revient pas sur les commandes déjà exécutées.").font(.caption).foregroundStyle(.orange)
+                    }
+                }.accessibilityIdentifier("cloudHermesStatus")
+            }
             if let error = voice.error {
                 Text(error).font(.callout).foregroundStyle(.red)
                     .lineLimit(3).accessibilityIdentifier("dictationError")
@@ -2499,4 +2522,45 @@ private struct ProviderConnectView: View {
         let _: [String: Bool]? = try? await ChatAPI.shared.providerRequest("providers/device/cancel", fields: ["flowToken": value.flowToken], token: token)
     }
     private func cancel() async { polling?.cancel(); key = ""; if let value = challenge { await cancelFlow(value) }; challenge = nil }
+}
+
+
+private struct CloudHermesConsentView: View {
+    @Environment(ConversationManager.self) private var manager
+    @Environment(\.dismiss) private var dismiss
+    @State private var importApproved = false
+    @State private var busy = false
+    @State private var error: String?
+    @State private var accountID: String?
+    @State private var conversationID: UUID?
+    private var hasHistory: Bool { !(manager.current?.messages.isEmpty ?? true) }
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Votre environnement Hermes") {
+                    Text("Hermes reçoit vos messages dans un environnement Linux personnel. Les conversations, la mémoire et les fichiers qui lui sont envoyés sont lisibles par le serveur et chiffrés au repos.")
+                    Text("Ce stockage n’est pas chiffré de bout en bout et reste distinct des conversations SDK chiffrées de bout en bout.")
+                    Text("Aucun contact, calendrier, document de l’appareil ni souvenir local ne sera exporté automatiquement.")
+                }
+                if hasHistory {
+                    Section("Import explicite") {
+                        Toggle("J’autorise l’envoi des messages existants de cette conversation à Hermes",isOn:$importApproved)
+                            .accessibilityIdentifier("cloudHermesImportConsent")
+                    }
+                }
+                if let error { Section { Text(error).foregroundStyle(.red) } }
+                Section {
+                    Button(busy ? "Préparation…" : "Autoriser Hermes") {
+                        guard accountID == manager.session?.accountId, conversationID == manager.selection else { error = "Le compte ou la conversation a changé. Fermez puis rouvrez cette autorisation."; return }
+                        busy = true
+                        Task { do { try await manager.authorizeHermesCloud(importExistingConversation:hasHistory && importApproved); dismiss() }
+                            catch { self.error = error.localizedDescription }; busy = false }
+                    }.disabled(busy || (hasHistory && !importApproved)).accessibilityIdentifier("cloudHermesAuthorize")
+                }
+            }.navigationTitle("Autoriser Hermes")
+                .onAppear { accountID = manager.session?.accountId; conversationID = manager.selection }
+                .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() }.disabled(busy) } }
+                .interactiveDismissDisabled(busy)
+        }
+    }
 }

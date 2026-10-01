@@ -119,6 +119,86 @@ import Network
     var hermesRecovery: HermesRecovery?
     private var cloudHermesBindings: [UUID: CloudHermesBinding] = [:]
     private(set) var cloudHermesRecoveryRun: String?
+    private(set) var cloudHermesStatus: [UUID:String] = [:]
+    private var cloudHermesRestoreTask: Task<Void,Never>?
+    var currentCloudHermesAuthorized: Bool { guard let id = selection else { return false }; return cloudHermesBindings[id]?.accountId == session?.accountId && session != nil }
+    var currentCloudHermesStatus: String? { selection.flatMap { cloudHermesStatus[$0] } }
+    var currentCloudHermesPending: Bool { selection.flatMap { cloudHermesBindings[$0]?.pending } != nil }
+    func resumeCloudHermes() async {
+        guard !isRestoring, storageLoaded, !isStreaming, session != nil else { return }
+        if let task = cloudHermesRestoreTask { await task.value; return }
+        let revision = sessionRevision
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                var auth = try await validSession()
+                let deadline = Date().addingTimeInterval(9 * 60)
+                for (id,saved) in cloudHermesBindings where saved.accountId == auth.accountId && saved.pending != nil {
+                    guard sessionRevision == revision, session?.accountId == auth.accountId, !isStreaming else { return }
+                    guard let pending = saved.pending else { continue }
+                    do {
+                        var result = try await services.hermesRead(auth.accountId,pending.runId,auth.accessToken,false)
+                        cloudHermesStatus[id] = result.state
+                    while ["queued","running","waiting_device"].contains(result.state) {
+                            guard !Task.isCancelled, sessionRevision == revision, session?.accountId == auth.accountId, !isStreaming else { return }
+                            guard Date() < deadline else { throw APIError.server(409,"hermes_recovery_pending") }
+                            guard cloudHermesBindings[id]?.pending?.runId == pending.runId,
+                                cloudHermesStatus[id] != "cancelled", cloudHermesStatus[id] != "completed" else { break }
+                            cloudHermesStatus[id] = result.state
+                            try await services.hermesPollDelay()
+                            auth = try await validSession()
+                            guard sessionRevision == revision, auth.accountId == saved.accountId else { return }
+                            result = try await services.hermesRead(auth.accountId,pending.runId,auth.accessToken,false)
+                        }
+                        guard !Task.isCancelled, sessionRevision == revision, session?.accountId == auth.accountId, !isStreaming else { return }
+                        guard cloudHermesBindings[id]?.pending?.runId == pending.runId else { continue }
+                        try applyCloudHermesRecovery(result, conversation:id, binding:saved)
+                    } catch {
+                        guard sessionRevision == revision, session?.accountId == auth.accountId else { return }
+                        guard cloudHermesBindings[id]?.pending?.runId == pending.runId else { continue }
+                        cloudHermesStatus[id] = "recovery_unavailable"
+                        self.error = "Impossible de vérifier l’exécution Hermes. Aucun nouveau lancement n’a été créé. " + error.localizedDescription
+                    }
+                }
+            } catch { if sessionRevision == revision { self.error = error.localizedDescription } }
+        }
+        cloudHermesRestoreTask = task; await task.value
+        if sessionRevision == revision { cloudHermesRestoreTask = nil }
+    }
+    private func applyCloudHermesRecovery(_ run:CloudHermesRun, conversation id:UUID, binding saved:CloudHermesBinding) throws {
+        guard let pending = saved.pending,
+            let current = cloudHermesBindings[id], current.accountId == saved.accountId,
+            current.pending?.runId == pending.runId,
+            cloudHermesStatus[id] != "cancelled", cloudHermesStatus[id] != "completed",
+            run.runId == pending.runId, let stableReplyID = UUID(uuidString:run.runId), run.sessionId == saved.sessionId,
+            run.branchId == saved.branchId, let index = conversations.firstIndex(where:{$0.id == id}) else { throw APIError.invalidResponse }
+        var binding = current
+        if run.state == "completed", let completed = run.result {
+            guard let turn = binding.turnId, let userIndex = conversations[index].messages.firstIndex(where:{$0.id == turn}),
+                conversations[index].messages[userIndex].content == pending.message else { throw APIError.server(409,"hermes_history_conflict") }
+            let following = conversations[index].messages.dropFirst(userIndex+1)
+            guard following.count <= 1, following.first?.role != "user" else { throw APIError.server(409,"hermes_history_conflict") }
+            if let assistant = following.first, !assistant.content.isEmpty && assistant.content != completed.response { throw APIError.server(409,"hermes_history_conflict") }
+            if !following.isEmpty { conversations[index].messages[userIndex+1].content = completed.response; conversations[index].messages[userIndex+1].completion = .completed }
+            else { conversations[index].messages.append(ChatMessage(id:stableReplyID,role:"assistant",content:completed.response,completion:.completed)) }
+            binding.history = completed.history; binding.pending = nil; cloudHermesRecoveryRun = nil
+        } else if run.state == "cancelled" { binding.pending = nil; cloudHermesRecoveryRun = nil }
+        else if run.state == "awaiting_resolution" { cloudHermesRecoveryRun = run.runId }
+        cloudHermesBindings[id] = binding
+        cloudHermesStatus[id] = run.state
+        guard persist() else { throw APIError.server(0,"history_cache_write_failed") }
+    }
+    func cancelPendingCloudHermes() async {
+        guard let id = selection, let binding = cloudHermesBindings[id], let pending = binding.pending else { return }
+        let revision = sessionRevision
+        do {
+            let auth = try await validSession()
+            guard binding.accountId == auth.accountId else { return }
+            let run = try await services.hermesRead(auth.accountId,pending.runId,auth.accessToken,true)
+            guard sessionRevision == revision, session?.accountId == auth.accountId, !isStreaming else { return }
+            try applyCloudHermesRecovery(run,conversation:id,binding:binding)
+        } catch { if sessionRevision == revision { self.error = error.localizedDescription } }
+    }
     private var activeCloudHermes: (accountId:String, runId:String, token:String)?
     /// Call only after UI has explained server-readable storage and obtained explicit agreement.
     func authorizeHermesCloud(importExistingConversation: Bool) async throws {
@@ -163,7 +243,7 @@ import Network
     private var syncTask: Task<Void, Never>?
     var session: NativeSession? {
         didSet {
-            if session?.accountId != oldValue?.accountId { hermesRecovery = nil; cloudHermesRecoveryRun = nil; cloudHermesBindings = [:]; activeCloudHermes = nil; selectedAccess = nil; requestedAccessModel = nil; accessNotice = nil }
+            if session?.accountId != oldValue?.accountId { hermesRecovery = nil; cloudHermesRecoveryRun = nil; cloudHermesBindings = [:]; cloudHermesRestoreTask?.cancel(); cloudHermesRestoreTask = nil; cloudHermesStatus = [:]; activeCloudHermes = nil; selectedAccess = nil; requestedAccessModel = nil; accessNotice = nil }
         }
     }
     init(services suppliedServices: SessionServices? = nil) {
@@ -336,7 +416,7 @@ import Network
         let restoration = UUID()
         restorationRevision = restoration
         isRestoring = true
-        defer { if restorationRevision == restoration { isRestoring = false; scheduleAutomaticSync() } }
+        defer { if restorationRevision == restoration { isRestoring = false; scheduleAutomaticSync(); Task { await self.resumeCloudHermes() } } }
         startNetworkMonitoring()
         models = [LocalModel.option] + services.downloadedModels()
         selectedModel = restoredModel(for: modelPreferenceScope, in: models) ?? LocalModel.id
@@ -788,6 +868,7 @@ import Network
                         guard persist() else { throw APIError.server(0,"history_cache_write_failed") }
                     }
                     let request = binding.pending!
+                    cloudHermesStatus[id] = "queued"
                     activeCloudHermes = (session.accountId,request.runId,session.accessToken)
                     defer { if activeCloudHermes?.runId == request.runId { activeCloudHermes = nil } }
                     try await services.hermesPrepare(session.accountId,binding,session.accessToken)
@@ -803,6 +884,7 @@ import Network
                         Task { _ = try? await cancel(session.accountId,request.runId,session.accessToken,true) }
                         throw CancellationError()
                     }
+                    cloudHermesStatus[id] = result.state
                     while ["queued","running","waiting_device"].contains(result.state) {
                         try Task.checkCancellation()
                         guard generationRevision == revision && sessionRevision == accountRevision else { throw CancellationError() }
@@ -812,6 +894,7 @@ import Network
                     try Task.checkCancellation()
                     guard generationRevision == revision && sessionRevision == accountRevision,
                         result.sessionId == binding.sessionId, result.branchId == binding.branchId else { throw CancellationError() }
+                    cloudHermesStatus[id] = result.state
                     if result.state == "awaiting_resolution" { cloudHermesRecoveryRun = request.runId; throw APIError.server(409,"hermes_awaiting_resolution") }
                     guard result.state == "completed", let completed = result.result else { throw APIError.server(409,"hermes_run_cancelled") }
                     binding.history = completed.history; binding.pending = nil; cloudHermesBindings[id] = binding
@@ -1249,6 +1332,7 @@ import Network
         if persist() { scheduleAutomaticSync() }
     }
     func foreground() {
+        Task { await self.resumeCloudHermes() }
         scheduleAutomaticSync()
     }
     private func startNetworkMonitoring() {
