@@ -180,7 +180,7 @@ import CryptoKit
         let result = try await workspace.executeHarnessTool(name: "document_snapshot", arguments: json)
         XCTAssertEqual(result?.content, "Original")
     }
-    func testPiJavaScriptCoreExecutesNativeToolAndPreservesPrompt() async throws {
+    func testHermesJavaScriptCoreExecutesNativeToolAndPreservesPrompt() async throws {
         actor Calls {
             var count = 0
             func next() -> Int { count += 1; return count }
@@ -470,7 +470,7 @@ import CryptoKit
             if cityKnown { messages += [ChatMessage(role: "assistant", content: "Pour quelle ville ?"), ChatMessage(role: "user", content: "Toulouse")] }
             try await DownloadedModelRuntime.shared.respond(model: model, path: library.file(model), messages: messages, workspace: workspace) { await capture.append($0) }
             let text = await capture.text, requests = await capture.requests, events = await capture.events
-            XCTAssertTrue(events.contains { $0.tool == "pi_agent_core" })
+            XCTAssertTrue(events.contains { $0.tool == "hermes_agent" })
             if cityKnown {
                 XCTAssertEqual(requests, 2)
                 XCTAssertTrue(events.contains { $0.tool == "weather_forecast" && $0.status == "success" })

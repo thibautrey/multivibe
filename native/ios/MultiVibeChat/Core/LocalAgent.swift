@@ -85,6 +85,7 @@ enum LocalDeviceScope {
 /// A run has a bounded tool budget, read-only snapshots, and app-owned output creation.
 /// Web access is gated by a conversation decision. No shell, arbitrary file paths, or credentials.
 actor LocalAgentWorkspace {
+    let hermesContext: HermesRunContext?
     private let automation: (@Sendable (String) async throws -> String)?
     private let memory: @Sendable (String, String, String) async throws -> String
     private var calls = 0
@@ -102,7 +103,7 @@ actor LocalAgentWorkspace {
     private var webPages: [String: LocalWebResponse] = [:]
     private let event: @Sendable (LocalAgentEvent) async -> Void
     private let saveDocument: @Sendable (LocalDocument) async throws -> Void
-    init(conversations: [Conversation], documents: [LocalDocument], deviceData: LocalDeviceSnapshot = LocalDeviceSnapshot(),
+    init(conversations: [Conversation], documents: [LocalDocument], hermesContext: HermesRunContext? = nil, deviceData: LocalDeviceSnapshot = LocalDeviceSnapshot(),
          event: @escaping @Sendable (LocalAgentEvent) async -> Void,
          saveDocument: @escaping @Sendable (LocalDocument) async throws -> Void,
          deadline: Date = Date().addingTimeInterval(120),
@@ -113,6 +114,7 @@ actor LocalAgentWorkspace {
          webFetch: @escaping @Sendable (URL, String) async throws -> LocalWebResponse = { try await LocalWebFetch.fetch(url: $0, method: $1) },
          automation: (@Sendable (String) async throws -> String)? = nil,
          memory: @escaping @Sendable (String, String, String) async throws -> String = { action, _, _ in action == "context_memory" ? "" : "Aucune mémoire disponible." }) {
+        self.hermesContext = hermesContext
         self.conversations = conversations; self.documents = documents; self.deviceData = deviceData
         self.event = event; self.saveDocument = saveDocument; self.deadline = deadline
         self.memory = memory; self.automation = automation

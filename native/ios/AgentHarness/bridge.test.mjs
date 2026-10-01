@@ -26,9 +26,9 @@ async function drive(respond, execute, tools = schema) {
       bridge.resolve(request.id, JSON.stringify(result));
     }
   }
-  throw new Error('Pi did not terminate');
+  throw new Error('Hermes did not terminate');
 }
-test('upstream Pi executes a tool and keeps its matching result for the next turn', async () => {
+test('portable Hermes executes a tool and keeps its matching result for the next turn', async () => {
   let turns = 0;
   const result = await drive(request => {
     if (++turns === 1) { assert.match(JSON.parse(request.messages)[0].content, /Test assistant/); return call(); }
@@ -40,7 +40,7 @@ test('upstream Pi executes a tool and keeps its matching result for the next tur
   }, async () => ({ content: 'ORION', isError: false }));
   assert.equal(result.requests.filter(r => r.kind === 'tool').length, 1);
 });
-test('upstream schema validation rejects malformed arguments before native execution', async () => {
+test('mobile schema validation rejects malformed arguments before native execution', async () => {
   let turns = 0, executions = 0;
   await drive(request => {
     if (++turns === 1) return call({});
@@ -144,4 +144,20 @@ test('Pi refuses ambiguous edits without writing and rejects filesystem paths', 
       return { content: 'same\nsame' };
     }, iosSchema('edit_document'));
   }
+});
+
+test('durable bridge awaits native checkpoint acknowledgement before model or tools', async () => {
+  const context = vm.createContext({ __randomBytes: n => [...randomBytes(n)] });
+  vm.runInContext(outputFiles[0].text, context);
+  const bridge = context.HermesNative;
+  bridge.start(JSON.stringify({ messages: [{ role: 'user', content: 'Read' }], tools: schema, durable: true }));
+  await new Promise(resolve => setImmediate(resolve));
+  const first = JSON.parse(bridge.poll());
+  assert.deepEqual(first.requests.map(request => request.kind), ['checkpoint']);
+  assert.deepEqual(JSON.parse(bridge.poll()).requests, []);
+  bridge.resolve(first.requests[0].id, 'disk full', true);
+  await new Promise(resolve => setImmediate(resolve));
+  const failed = JSON.parse(bridge.poll());
+  assert.equal(failed.done, true); assert.match(failed.error, /disk full/);
+  assert.deepEqual(failed.requests, []);
 });

@@ -104,6 +104,26 @@ import Network
     private var titleTasks: [UUID: Task<Void, Never>] = [:]
     var memoryItems: [MemoryItem] { MemoryPolicy.items(memoryRecords) }
 
+    struct HermesRecovery {
+        let context: HermesRunContext
+        let replyID: UUID
+        let accountRevision: UUID
+        let detail: String
+    }
+    var hermesRecovery: HermesRecovery?
+    func resolveHermesRecovery(_ recovery: HermesRecovery) async {
+        guard !isStreaming,
+              recovery.context.accountID == session?.accountId,
+              recovery.accountRevision == sessionRevision, selection == recovery.context.conversationID else { hermesRecovery = nil; return }
+        do {
+            let engine = try PiAgentHarness().version
+            try await HermesCheckpointStore.shared.skipIndeterminate(recovery.context, engine: engine)
+            guard recovery.accountRevision == sessionRevision, recovery.context.accountID == session?.accountId else { return }
+            hermesRecovery = nil
+            _ = retry(conversation: recovery.context.conversationID, message: recovery.replyID)
+        } catch { self.error = error.localizedDescription }
+    }
+
     var authenticationPresented = false
     private(set) var internetApproval: InternetApprovalRequest?
     private var internetWaiters: [CheckedContinuation<Bool, Never>] = []
@@ -115,7 +135,7 @@ import Network
     private var syncTask: Task<Void, Never>?
     var session: NativeSession? {
         didSet {
-            if session?.accountId != oldValue?.accountId { selectedAccess = nil; requestedAccessModel = nil; accessNotice = nil }
+            if session?.accountId != oldValue?.accountId { hermesRecovery = nil; selectedAccess = nil; requestedAccessModel = nil; accessNotice = nil }
         }
     }
     init(services suppliedServices: SessionServices? = nil) {
@@ -132,6 +152,7 @@ import Network
     var selection: UUID? {
         didSet {
             guard selection != oldValue else { return }
+            hermesRecovery = nil
             stop()
             voice.silence()
             error = nil
@@ -690,7 +711,11 @@ import Network
                     let deviceData = LocalDeviceSnapshot()
                     try Task.checkCancellation()
                     guard generationRevision == revision && sessionRevision == accountRevision else { return }
-                    let workspace = LocalAgentWorkspace(conversations: conversations, documents: localDocuments, deviceData: deviceData,
+                    let checkpointContext = input.last(where: { $0.role == "user" }).map {
+                        HermesRunContext(accountID: session?.accountId, conversationID: id, turnID: $0.id, modelID: model)
+                    }
+                    let workspace = LocalAgentWorkspace(conversations: conversations, documents: localDocuments,
+                        hermesContext: checkpointContext, deviceData: deviceData,
                         event: { event in
                             await self.recordLocalEvent(event, generation: revision, account: accountRevision)
                         }, saveDocument: { document in
@@ -751,9 +776,16 @@ import Network
                         accessNotice = "Cet accès est indisponible. Réessayez ou choisissez un autre mode."
                         requestedAccessModel = models.first { $0.id == model } ?? ModelOption(id: model)
                     }
-                    self.error = ModelExecution(model).isLocal
+                    if let checkpointError = error as? HermesCheckpointError {
+                        self.error = checkpointError.localizedDescription
+                        if case .indeterminate = checkpointError, let turn = input.last(where: { $0.role == "user" }) {
+                            hermesRecovery = HermesRecovery(context: .init(accountID: session?.accountId, conversationID: id, turnID: turn.id, modelID: model), replyID: reply.id,
+                                accountRevision: accountRevision, detail: checkpointError.localizedDescription)
+                        }
+                    } else { self.error = ModelExecution(model).isLocal
                         ? (error as? LocalAgentError)?.localizedDescription ?? "L’agent local n’a pas pu terminer cette demande. Réessayez avec une demande plus précise ; les étapes déjà enregistrées sont conservées."
                         : error.localizedDescription
+                    }
                 }
             }
         }
@@ -799,6 +831,11 @@ import Network
             conversations = oldConversations; memoryRecords = oldMemory; memoryBaseline = oldBaseline
             historySnapshot = oldSnapshot; pendingHistorySave = oldPending; return
         }
+        let checkpointAccount = session?.accountId
+        Task {
+            do { try await HermesCheckpointStore.shared.deleteConversation(accountID: checkpointAccount, conversationID: id) }
+            catch { if session?.accountId == checkpointAccount { self.error = "La conversation a été supprimée, mais son point de reprise local n’a pas pu être effacé : " + error.localizedDescription } }
+        }
         refreshMemoryIndex(); scheduleAutomaticSync()
     }
     func logout() async {
@@ -814,6 +851,7 @@ import Network
         resetModelLoading()
         let revision = sessionRevision
         resetHistorySync()
+        await HermesCheckpointStore.shared.invalidateAccount(previous?.accountId)
         services.clear(); session = nil; conversations = []; selection = nil
         models = []; selectedModel = ""; wantsNewConversation = false; wantsVoice = false; wantsVoiceConversation = false; wantsImmediateVoiceCapture = false; pendingDraft = nil; error = nil
         localDocuments = []; automaticSync = false

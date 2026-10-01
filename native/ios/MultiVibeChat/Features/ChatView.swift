@@ -371,6 +371,14 @@ struct ChatView: View {
         }) {
             RealtimeVoiceView().environment(manager)
         }
+        .alert("Résultat d’action inconnu", isPresented: Binding(
+            get: { manager.hermesRecovery != nil }, set: { if !$0 { manager.hermesRecovery = nil } }
+        ), presenting: manager.hermesRecovery) { recovery in
+            Button("J’ai vérifié, poursuivre sans rejouer") { Task { await manager.resolveHermesRecovery(recovery) } }
+            Button("Plus tard", role: .cancel) { manager.hermesRecovery = nil }
+        } message: { recovery in
+            Text(recovery.detail + " Vérifiez les documents, services ou actions concernés. Continuer conservera ce résultat comme inconnu et ignorera ces actions.")
+        }
         .alert("Supprimer cette conversation ?", isPresented: Binding(
             get: { conversationToDelete != nil },
             set: { if !$0 { conversationToDelete = nil } }

@@ -8,7 +8,7 @@ struct PiToolResult: Codable, Sendable {
     var terminal = false
 }
 
-/// JavaScriptCore hosts the unmodified npm Pi loop. Swift owns inference, I/O and
+/// JavaScriptCore hosts the pinned portable Hermes loop. Swift owns inference, I/O and
 /// permission checks; the JS bundle has no network, filesystem or credentials.
 @MainActor final class PiAgentHarness {
     private let context: JSContext
@@ -17,7 +17,7 @@ struct PiToolResult: Codable, Sendable {
     init() throws {
         guard let context = JSContext(),
               let url = Bundle.main.url(forResource: "PiAgentCore", withExtension: "js") else {
-            throw LocalAgentError.unavailable("Le moteur d’agent Pi est absent de cette version de l’app.")
+            throw LocalAgentError.unavailable("Le moteur d’agent Hermes est absent de cette version de l’app.")
         }
         let random: @convention(block) (Int) -> [UInt8] = { count in
             guard (0...65_536).contains(count) else { return [] }
@@ -27,8 +27,8 @@ struct PiToolResult: Codable, Sendable {
         }
         context.setObject(random, forKeyedSubscript: "__randomBytes" as NSString)
         context.evaluateScript(try String(contentsOf: url, encoding: .utf8), withSourceURL: url)
-        guard context.exception == nil, let bridge = context.objectForKeyedSubscript("PiNative"), !bridge.isUndefined else {
-            throw LocalAgentError.unavailable("Le moteur d’agent Pi n’a pas pu démarrer : " + (context.exception?.toString() ?? "initialisation invalide"))
+        guard context.exception == nil, let bridge = context.objectForKeyedSubscript("HermesNative"), !bridge.isUndefined else {
+            throw LocalAgentError.unavailable("Le moteur d’agent Hermes n’a pas pu démarrer : " + (context.exception?.toString() ?? "initialisation invalide"))
         }
         self.context = context; self.bridge = bridge
     }
@@ -39,16 +39,26 @@ struct PiToolResult: Codable, Sendable {
         context.exception = nil
         let value = bridge.invokeMethod(method, withArguments: arguments)
         if let exception = context.exception {
-            throw LocalAgentError.unavailable("Erreur du moteur d’agent Pi : " + (exception.toString() ?? method))
+            throw LocalAgentError.unavailable("Erreur du moteur d’agent Hermes : " + (exception.toString() ?? method))
         }
         return value
     }
 
-    func run(messages: String, tools: String, weather: Bool = false,
+    func run(messages: String, tools: String, weather: Bool = false, checkpointContext: HermesRunContext? = nil,
              generate: @escaping @Sendable (String, String, @escaping @Sendable (String) async -> Void) async throws -> String,
              execute: @escaping @Sendable (String, String) async throws -> PiToolResult,
              onText: @escaping @Sendable (String) async -> Void) async throws {
-        let input = "{\"messages\":" + messages + ",\"tools\":" + tools + ",\"weather\":" + String(weather) + "}"
+        let lease: HermesCheckpointLease?
+        if let checkpointContext { lease = try await HermesCheckpointStore.shared.begin(checkpointContext, engine: version) }
+        else { lease = nil }
+        if let lease, lease.completed {
+            if let text = lease.recoveredText, !text.isEmpty { await onText(text) }
+            return
+        }
+        if !weather, let text = lease?.recoveredText, !text.isEmpty { await onText(text) }
+        let resume = lease?.resumeJSON.map { ",\"resume\":" + $0 } ?? ""
+        let input = "{\"messages\":" + messages + ",\"tools\":" + tools + ",\"weather\":" + String(weather)
+            + ",\"durable\":" + String(lease != nil) + resume + "}"
         _ = try invoke("start", [input])
         var idlePolls = 0
         do {
@@ -78,7 +88,10 @@ struct PiToolResult: Codable, Sendable {
                     }
                     do {
                         let response: String
-                        if kind == "model", let messages = request["messages"] as? String, let tools = request["tools"] as? String {
+                        if kind == "checkpoint", let lease, let messages = request["messages"] as? String, let state = request["state"] as? String {
+                            try await HermesCheckpointStore.shared.save(lease, engine: version, messages: messages, state: state)
+                            response = "{}"
+                        } else if kind == "model", let messages = request["messages"] as? String, let tools = request["tools"] as? String {
                             response = try await generate(messages, tools, onText)
                         } else if kind == "tool", let name = request["name"] as? String, let arguments = request["arguments"] as? String {
                             response = String(decoding: try JSONEncoder().encode(await execute(name, arguments)), as: UTF8.self)
