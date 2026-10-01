@@ -1118,12 +1118,10 @@ export function AccountsTab(props: Props) {
       devicePollInFlight.current = true;
       try {
         console.log("[oauth-device] polling approval", {
-          flowId: oauthDialog.flowId,
           intervalSeconds: oauthDialog.intervalSeconds ?? 5,
         });
         const result = await pollDeviceOAuth(oauthDialog.flowId);
         console.log("[oauth-device] poll result", {
-          flowId: oauthDialog.flowId,
           status: result?.status,
           hasAccount: Boolean(result?.account),
         });
@@ -1161,7 +1159,6 @@ export function AccountsTab(props: Props) {
         }
       } catch (err) {
         console.error("[oauth-device] poll failed", {
-          flowId: oauthDialog.flowId,
           error: err,
         });
         if (!cancelled) {
