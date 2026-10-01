@@ -10,7 +10,8 @@ Python embedding feasibility evidence, tests and capabilities not yet ported.
 The native bridge preserves OpenAI-compatible call/result IDs, validates device
 arguments, bounds work, and stops on permission refusal. Token streaming stays
 native. Weather requests select the forecast tool so small models do not invent
-URLs or locations. Apple FoundationModels currently retains its framework loop.
+URLs or locations. Apple FoundationModels proposes structured replies with no registered Apple tools;
+Hermes owns its conversational tool loop and checkpoints too.
 
 ## Reproducible dependency updates
 
