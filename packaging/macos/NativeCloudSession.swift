@@ -80,7 +80,10 @@ enum NativeCloudSessionError: LocalizedError {
         let started: Date
         let url: URL
     }
-    init(storage: NativeCloudSessionStorage = .keychain,
+    convenience override init() {
+        try! self.init(storage: .keychain)
+    }
+    init(storage: NativeCloudSessionStorage,
          transport: (@MainActor (URLRequest) async throws -> (Data, URLResponse))? = nil) throws {
         self.storage = storage
         if let transport { self.transport = transport }
