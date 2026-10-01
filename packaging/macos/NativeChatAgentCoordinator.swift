@@ -24,7 +24,7 @@ import Foundation
     init(session: NativeCloudSession? = nil, client: NativeAgentClient? = nil, root: URL? = nil) {
         self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("MultiVibe/NativeAgent")
         do {
-            let resolved = try session ?? NativeCloudSession()
+            let resolved = try session ?? NativeCloudSession(storage: nil)
             self.session = resolved; self.client = client ?? NativeAgentClient(session: resolved)
         } catch { self.session = nil; self.client = nil; self.error = "Connexion Cloud indisponible : \(error.localizedDescription)" }
     }
