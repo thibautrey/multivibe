@@ -39,6 +39,51 @@ actor ChatAPI {
             throw APIError.server(http.statusCode, code)
         }
     }
+    func hermesRequest<T: Decodable & Sendable>(_ path: String, body: Data? = nil, token: String) async throws -> T {
+        guard path == "capabilities" || path == "consent" || path == "mutations" || path == "runs"
+            || path.range(of: "^runs/[0-9a-f-]{36}(/cancel)?$", options: .regularExpression) != nil else { throw APIError.invalidResponse }
+        var request = URLRequest(url: base.appending(path: "/native/v2/agent/" + path))
+        request.httpMethod = body == nil ? "GET" : "POST"; request.httpBody = body
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        guard (body?.count ?? 0) <= 1_048_576 else { throw APIError.invalidResponse }
+        let (data,response) = try await session.data(for: request)
+        guard data.count <= 2_097_152, let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let code = (object?["error"] as? [String: Any])?["code"] as? String ?? "hermes_request_failed"
+            throw APIError.server(http.statusCode, code)
+        }
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+    func hermesConsent(token: String) async throws -> CloudHermesConsent { try await hermesRequest("consent", token: token) }
+    func hermesSetConsent(accountId: String, revision: Int, enabled: Bool, token: String) async throws -> CloudHermesConsent {
+        let body = try JSONSerialization.data(withJSONObject: ["accountId":accountId,"revision":revision,"cloudEnabled":enabled,"exportSources":[]] as [String:Any])
+        return try await hermesRequest("consent", body: body, token: token)
+    }
+    func hermesPrepare(accountId: String, binding: CloudHermesBinding, token: String) async throws {
+        struct Capabilities: Decodable, Sendable { let runtime: Bool }
+        let capabilities: Capabilities = try await hermesRequest("capabilities", token: token)
+        guard capabilities.runtime else { throw APIError.server(503,"agent_runtime_unavailable") }
+        let consent = try await hermesConsent(token: token)
+        guard consent.accountId == accountId, consent.cloudEnabled else { throw APIError.server(403,"agent_cloud_consent_required") }
+        let mutation: [String:Any] = ["operationId":binding.operationId,"objectId":binding.sessionId,"versionId":binding.versionId,
+            "deviceId":binding.deviceId,"kind":"session","parents":[],"deleted":false,
+            "value":["type":"hermes_chat","conversationId":binding.conversationId,"branchId":binding.branchId,"title":"Hermes chat"]]
+        struct Receipt: Decodable, Sendable { let accountId: String }
+        let receipt: Receipt = try await hermesRequest("mutations", body: JSONSerialization.data(withJSONObject:["accountId":accountId,"operations":[mutation]]), token: token)
+        guard receipt.accountId == accountId else { throw APIError.invalidResponse }
+    }
+    func hermesRun(accountId: String, run: CloudHermesRunInput, token: String) async throws -> CloudHermesRun {
+        struct Body: Encodable { let accountId: String; let run: CloudHermesRunInput }
+        let reply: CloudHermesRunReply = try await hermesRequest("runs", body: JSONEncoder().encode(Body(accountId:accountId,run:run)), token: token)
+        return try reply.checked(accountId: accountId, runId: run.runId)
+    }
+    func hermesRead(accountId: String, runId: String, token: String, cancel: Bool = false) async throws -> CloudHermesRun {
+        let body = cancel ? try JSONSerialization.data(withJSONObject:["accountId":accountId]) : nil
+        let reply: CloudHermesRunReply = try await hermesRequest("runs/" + runId + (cancel ? "/cancel" : ""), body: body, token: token)
+        return try reply.checked(accountId: accountId, runId: runId)
+    }
     func automationCompletion(model: String, access: SelectedModelAccess?, messages: String, tools: String, token: String) async throws -> String {
         guard let access, access.modelId == model else { throw APIError.server(409, "model_access_unavailable") }
         let body = try JSONSerialization.data(withJSONObject: ["model": model, "accessId": access.id, "stream": false, "max_tokens": 1024,
@@ -302,4 +347,37 @@ struct NativeAuthConfiguration: Decodable {
         guard url.scheme == "https", url.host != nil else { return false }
         return url.user == nil && url.password == nil
     }
+}
+
+struct CloudHermesConsent: Codable, Sendable { let accountId: String; let cloudEnabled: Bool; let revision: Int }
+struct CloudHermesModel: Codable, Equatable, Sendable {
+    let id: String; let source: String; let accessId: String?
+    static func selected(_ model: String, access: SelectedModelAccess?) throws -> Self {
+        if model.hasPrefix("relay/") { return .init(id:model,source:"relay",accessId:nil) }
+        guard let access, access.modelId == model else { throw APIError.server(409,"model_access_unavailable") }
+        if access.method == "cloud" { return .init(id:model.hasPrefix("multivibe/cloud/") ? model : "multivibe/cloud/" + model,source:"cloud",accessId:nil) }
+        guard UUID(uuidString:access.id) != nil else { throw APIError.invalidResponse }
+        return .init(id:model,source:"relay",accessId:access.id.lowercased())
+    }
+}
+struct CloudHermesRunInput: Codable, Equatable, Sendable {
+    let operationId: String; let runId: String; let sessionId: String; let branchId: String
+    let model: CloudHermesModel; let message: String; let history: [HistoryJSON]
+}
+struct CloudHermesRun: Codable, Sendable {
+    struct Result: Codable, Sendable { let response: String; let history: [HistoryJSON] }
+    let runId: String; let sessionId: String; let branchId: String; let state: String; let generation: Int; let result: Result?
+}
+struct CloudHermesRunReply: Decodable, Sendable {
+    let accountId: String; let run: CloudHermesRun
+    func checked(accountId expected: String, runId: String) throws -> CloudHermesRun {
+        guard accountId == expected, run.runId == runId, UUID(uuidString:run.sessionId) != nil, UUID(uuidString:run.branchId) != nil,
+            run.generation >= 0, ["queued","running","waiting_device","awaiting_resolution","completed","cancelled"].contains(run.state) else { throw APIError.invalidResponse }
+        return run
+    }
+}
+struct CloudHermesBinding: Codable, Sendable {
+    let accountId: String; let conversationId: String; let sessionId: String; let branchId: String
+    let operationId: String; let versionId: String; let deviceId: String
+    var importApproved: Bool; var history: [HistoryJSON] = []; var pending: CloudHermesRunInput?; var turnId: UUID?
 }
