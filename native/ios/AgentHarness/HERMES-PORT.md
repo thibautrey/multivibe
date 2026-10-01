@@ -39,7 +39,7 @@ and error guidance preserve the previous app behavior.
 
 ## Explicit gaps and behavior differences
 
-- **Persistence:** downloaded chat runs bind protected atomic checkpoints to the
+- **Persistence:** downloaded and Apple Foundation chat runs bind protected atomic checkpoints to the
   existing account (or separate anonymous device namespace), conversation UUID,
   user-turn UUID, model and engine pin. The native bridge acknowledges each
   checkpoint before execution continues. Retry resumes complete tool results or
@@ -83,3 +83,15 @@ The dependency-free `checkpoint-store.test.swift` runner compiles with
 unknown-effect refusal, cross-account/anonymous isolation, stale generations,
 write failure, explicit resolution and deletion. iOS file-protection and UI
 behavior still require native/device validation.
+
+## Apple Foundation inference adapter
+
+`HermesFoundationAdapter` uses iOS 26 `DynamicGenerationSchema` and
+`LanguageModelSession.respond(to:schema:)` with `tools: []`. It returns a complete
+OpenAI-shaped round to Hermes, which owns validation, journal checkpoints and
+execution. Generated argument JSON strings may still be invalid; they pass through
+Hermes recovery, never directly into native execution. Full transcript/tool
+observations are included as untrusted data and context overflow is surfaced.
+Only completed final text is displayed; proposed-call commentary is suppressed.
+Model availability and native device/Internet permissions remain required. This
+is API and codec validation, not proof of physical model tool-selection quality.

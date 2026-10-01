@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C01910000000000000000003 /* HermesFoundationAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01910000000000000000004 /* HermesFoundationAdapter.swift */; };
 		C01910000000000000000001 /* HermesCheckpointStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01910000000000000000002 /* HermesCheckpointStore.swift */; };
 		003956616649C28F8B135B88 /* LocalWebFetch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B001301568AC61EB8AE8F59 /* LocalWebFetch.swift */; };
 		036E2BC5E7BD23973C3C4181 /* AgentMemory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68DE1C2DEDCA28B710DD6C5D /* AgentMemory.swift */; };
@@ -80,6 +81,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		C01910000000000000000004 /* HermesFoundationAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesFoundationAdapter.swift; sourceTree = "<group>"; };
 		C01910000000000000000002 /* HermesCheckpointStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesCheckpointStore.swift; sourceTree = "<group>"; };
 		00217B9D7702B72A5569309F /* MultiVibeChatApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiVibeChatApp.swift; sourceTree = "<group>"; };
 		16EA3BB8F0EBD6ADB21388D9 /* MultiVibeLocalInference.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = MultiVibeLocalInference.xcframework; path = .build/MultiVibeLocalInference.xcframework; sourceTree = "<group>"; };
@@ -265,6 +267,7 @@
 				4B001301568AC61EB8AE8F59 /* LocalWebFetch.swift */,
 				9B36277A8CFF4EC17A06D2FC /* Models.swift */,
 				25782B401A99BA1E09850757 /* PiAgentHarness.swift */,
+				C01910000000000000000004 /* HermesFoundationAdapter.swift */,
 				C01910000000000000000002 /* HermesCheckpointStore.swift */,
 				DD2222EAEE8931D5CFBC41BA /* SecureStore.swift */,
 			);
@@ -483,6 +486,7 @@
 				77407A84E21962A60F63DC56 /* MultiVibeChatApp.swift in Sources */,
 				E93F3E946B9434ED4C5BFD94 /* NativeIntents.swift in Sources */,
 				94044294E174A79BF89B09B3 /* PiAgentHarness.swift in Sources */,
+				C01910000000000000000003 /* HermesFoundationAdapter.swift in Sources */,
 				C01910000000000000000001 /* HermesCheckpointStore.swift in Sources */,
 				7D68D3936B5105AC7AD322D6 /* RealtimeVoiceController.swift in Sources */,
 				EFCAC148BE4F8564C164FEF7 /* RealtimeVoiceView.swift in Sources */,

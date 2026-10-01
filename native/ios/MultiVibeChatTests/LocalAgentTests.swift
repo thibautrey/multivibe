@@ -2,6 +2,39 @@ import XCTest
 @testable import MultiVibeChat
 
 @MainActor final class LocalAgentTests: XCTestCase {
+    func testHermesFoundationKeepsFullTranscriptAndToolObservationsOutOfInstructions() throws {
+        let messages = #"[{"role":"system","content":"SYSTEM"},{"role":"user","content":"FIRST-REQUEST"},{"role":"assistant","tool_calls":[{"id":"a","function":{"name":"read","arguments":"{}"}}]},{"role":"tool","tool_call_id":"a","content":"UNTRUSTED-OBSERVATION"},{"role":"user","content":"CURRENT"}]"#
+        let tools = #"[{"type":"function","function":{"name":"read","parameters":{"type":"object"}}}]"#
+        let prepared = try HermesFoundationAdapter.prepare(messages: messages, tools: tools)
+        XCTAssertTrue(prepared.prompt.contains("FIRST-REQUEST"))
+        XCTAssertTrue(prepared.prompt.contains("UNTRUSTED-OBSERVATION"))
+        XCTAssertTrue(prepared.prompt.contains("tool_call_id"))
+        XCTAssertFalse(prepared.instructions.contains("UNTRUSTED-OBSERVATION"))
+        XCTAssertTrue(prepared.instructions.contains("SYSTEM"))
+        XCTAssertEqual(prepared.names, ["read"])
+    }
+    func testHermesFoundationConvertsOnlyCompletedCallsAndPreservesInvalidArgumentsForValidation() throws {
+        let generated = #"{"content":"not an executed result","proposedCalls":[{"name":"read","arguments":"{bad}"}]}"#
+        let first = try HermesFoundationAdapter.wireReply(generated, names: ["read"], messages: "transcript")
+        XCTAssertEqual(first, try HermesFoundationAdapter.wireReply(generated, names: ["read"], messages: "transcript"))
+        let wire = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(first.utf8)) as? [String: Any])
+        XCTAssertEqual(wire["content"] as? String, "")
+        XCTAssertEqual(wire["finish_reason"] as? String, "tool_calls")
+        let call = try XCTUnwrap((wire["tool_calls"] as? [[String: Any]])?.first)
+        XCTAssertEqual((call["function"] as? [String: String])?["arguments"], "{bad}")
+        XCTAssertThrowsError(try HermesFoundationAdapter.wireReply(generated, names: [], messages: "transcript"))
+        XCTAssertThrowsError(try HermesFoundationAdapter.wireReply(#"{"content":"","proposedCalls":"invalid"}"#, names: ["read"], messages: "transcript"))
+        XCTAssertThrowsError(try HermesFoundationAdapter.wireReply(#"{"content":"","proposedCalls":[]}"#, names: [], messages: "transcript"))
+        XCTAssertThrowsError(try HermesFoundationAdapter.wireReply("{", names: ["read"], messages: "transcript"))
+    }
+    func testHermesFoundationCancellationNeverProducesAnExecutableReply() async throws {
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try HermesFoundationAdapter.wireReply(#"{"content":"","proposedCalls":[{"name":"read","arguments":"{}"}]}"#, names: ["read"], messages: "transcript")
+        }
+        do { _ = try await task.value; XCTFail("Cancelled generation produced a tool call") }
+        catch is CancellationError { }
+    }
     func testDeviceToolsAreLazyAndDenialIsRecoverable() async throws {
         actor Reads {
             var actions: [String] = []

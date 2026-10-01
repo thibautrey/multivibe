@@ -712,7 +712,7 @@ import Network
                     try Task.checkCancellation()
                     guard generationRevision == revision && sessionRevision == accountRevision else { return }
                     let checkpointContext = input.last(where: { $0.role == "user" }).map {
-                        HermesRunContext(accountID: session?.accountId, conversationID: id, turnID: $0.id, modelID: model)
+                        HermesRunContext(accountID: session?.accountId, conversationID: id, turnID: $0.id, modelID: model, source: model == LocalModel.id ? "apple-foundation-local" : "downloaded-local")
                     }
                     let workspace = LocalAgentWorkspace(conversations: conversations, documents: localDocuments,
                         hermesContext: checkpointContext, deviceData: deviceData,
@@ -779,7 +779,7 @@ import Network
                     if let checkpointError = error as? HermesCheckpointError {
                         self.error = checkpointError.localizedDescription
                         if case .indeterminate = checkpointError, let turn = input.last(where: { $0.role == "user" }) {
-                            hermesRecovery = HermesRecovery(context: .init(accountID: session?.accountId, conversationID: id, turnID: turn.id, modelID: model), replyID: reply.id,
+                            hermesRecovery = HermesRecovery(context: .init(accountID: session?.accountId, conversationID: id, turnID: turn.id, modelID: model, source: model == LocalModel.id ? "apple-foundation-local" : "downloaded-local"), replyID: reply.id,
                                 accountRevision: accountRevision, detail: checkpointError.localizedDescription)
                         }
                     } else { self.error = ModelExecution(model).isLocal
