@@ -56,8 +56,8 @@ actor DownloadedModelRuntime {
         do {
             let json = String(decoding: try JSONSerialization.data(withJSONObject: history), as: UTF8.self)
             let harness = try await PiAgentHarness()
-            if let workspace { await workspace.recordHarness(tool: "pi_agent_core", input: "", output: "Pi Agent Core " + harness.version, status: "success") }
-            try await harness.run(messages: json, tools: useTools ? toolSchema : "[]", weather: weather, generate: { [self] messages, tools, emit in
+            if let workspace { await workspace.recordHarness(tool: "hermes_agent", input: "", output: "Hermes mobile " + harness.version, status: "success") }
+            try await harness.run(messages: json, tools: useTools ? toolSchema : "[]", weather: weather, checkpointContext: await workspace?.hermesContext, generate: { [self] messages, tools, emit in
                 let output = DownloadedToolOutput(onText: { text in if !weather { await emit(text) } })
                 let result = try await self.generate(path: path, messages: messages, tools: tools,
                     onText: { text in await output.append(text, inspectTools: useTools) })

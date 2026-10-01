@@ -5,7 +5,8 @@
   "scripts": {
     "build": "node build.mjs",
     "check": "python3 hermes-sync.py --check && node build.mjs --check",
-    "test": "node --test bridge.test.mjs",
+    "test": "node --test bridge.test.mjs hermes-loop.test.mjs",
+    "test:checkpoints": "python3 checkpoint-store-tests.py",
     "update:pi": "node update.mjs"
   },
   "dependencies": {

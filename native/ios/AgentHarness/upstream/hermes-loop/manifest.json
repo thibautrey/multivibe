@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/NousResearch/hermes-agent",
+  "commit": "6d49922875f60af5bc31e2bfbae78a81d2fa91fc",
+  "sha256": {
+    "agent/conversation_loop.py": "8b8768c965579121d836d736134661433b1e672f352971fe72b950986d9baca7",
+    "agent/turn_tool_validation.py": "a777325f15b75e617038cf554f347f57ffac14c740c7b01f7a302a57a1e49133",
+    "agent/turn_tool_round.py": "70a0a896fd89943516393fafa9534dfd059ebec55ffbd498b838f4a7d977be32",
+    "agent/message_sanitization.py": "c59e43abac1d93a832bc2e4acef2d18b3d04f08d2685ae9a98608fa52a29fb78",
+    "pyproject.toml": "856ddfe32a7ccbfc5ba4e2b73c43864aa673dcab794b717cc08f1354292fe9df",
+    "LICENSE": "821556e6336796450ab852d375117b48a4887e71d255794fd6318d99982a5ab6"
+  }
+}

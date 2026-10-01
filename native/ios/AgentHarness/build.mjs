@@ -1,8 +1,16 @@
 import { build } from 'esbuild';
+import { createHash } from 'node:crypto';
+import { hermesCommit } from './hermes-loop.mjs';
 import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve, join } from 'node:path';
 const directory = fileURLToPath(new URL('.', import.meta.url));
+const upstream = new URL('upstream/hermes-loop/', import.meta.url);
+const manifest = JSON.parse(await readFile(new URL('manifest.json', upstream), 'utf8'));
+if (manifest.commit !== hermesCommit) throw new Error('Hermes port/source pin mismatch');
+for (const [path, expected] of Object.entries(manifest.sha256)) {
+  if (createHash('sha256').update(await readFile(new URL(path, upstream))).digest('hex') !== expected) throw new Error('Hermes upstream snapshot changed: ' + path);
+}
 const output = new URL('../MultiVibeChat/Resources/PiAgentCore.js', import.meta.url);
 const result = await build({ absWorkingDir: directory, entryPoints: ['bridge.mjs'], bundle: true,
   platform: 'browser', format: 'iife', target: 'safari18', define: { global: 'globalThis' },
@@ -11,12 +19,12 @@ const forbidden = Object.keys(result.metafile.inputs).filter(path => /node_modul
 if (forbidden.length) throw new Error('Native-only bundle unexpectedly includes provider SDKs: ' + forbidden.join(', '));
 const content = result.outputFiles[0].text;
 if (process.argv.includes('--check')) {
-  if (await readFile(output, 'utf8') !== content) throw new Error('Pi bundle is stale: run npm run build');
+  if (await readFile(output, 'utf8') !== content) throw new Error('Hermes mobile bundle is stale: run npm run build');
 } else await writeFile(output, content);
-console.log(`Pi Agent Core browser bundle: ${Buffer.byteLength(content)} bytes`);
+console.log(`Hermes mobile browser bundle: ${Buffer.byteLength(content)} bytes`);
 
 const packages = [...new Set(Object.values(result.metafile.outputs).flatMap(output => Object.entries(output.inputs).filter(([, value]) => value.bytesInOutput > 0).map(([path]) => path)).map(path => path.match(/node_modules\/((?:@[^/]+\/)?[^/]+)/)?.[1]).filter(Boolean))].sort();
-let notices = 'Hermes Agent (MIT), contracts adapted for iOS\n' + (await readFile(new URL('upstream/hermes/LICENSE', import.meta.url), 'utf8')).trim() + '\n\n';
+let notices = 'Hermes Agent (MIT), portable loop and contracts adapted for iOS\n' + (await readFile(new URL('upstream/hermes/LICENSE', import.meta.url), 'utf8')).trim() + '\n\n';
 for (const name of packages) {
   const root = join(directory, 'node_modules', name);
   const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));

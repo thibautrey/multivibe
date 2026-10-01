@@ -1,17 +1,16 @@
-# Pi Agent Core on iOS
+# Hermes portable mobile agent
 
-The app runs the published **@earendil-works/pi-agent-core** package inside
-JavaScriptCore. `bridge.mjs` imports `runAgentLoop`; it does not copy or reimplement
-that loop. Pi owns argument validation, tool execution ordering, result messages,
-and continuation. App hooks bound work, stop repeated identical requests, and
-preserve permission refusals. Swift retains llama.cpp inference, native permissions,
-HTTP, storage and device tools. JavaScript has no network or filesystem bridge.
+The app runs a bounded portable subset of pinned **NousResearch/hermes-agent**
+inside JavaScriptCore. `hermes-loop.mjs` owns orchestration; Pi is retained only
+for its unmodified document edit tool. Swift owns inference, native permissions,
+HTTP, storage and device tools. JavaScript has no direct network or filesystem
+bridge. See [HERMES-PORT.md](HERMES-PORT.md) for exact upstream function mapping,
+Python embedding feasibility evidence, tests and capabilities not yet ported.
 
-The bridge adapts Pi's transcript to llama.cpp's OpenAI-compatible chat format.
-Model token streaming stays native. Weather requests select the forecast tool so
-small models do not invent URLs or locations; missing cities require clarification.
-HTTP errors are errors, and stored local tool events include inputs, results and
-status. Apple FoundationModels retains its native framework tool loop.
+The native bridge preserves OpenAI-compatible call/result IDs, validates device
+arguments, bounds work, and stops on permission refusal. Token streaming stays
+native. Weather requests select the forecast tool so small models do not invent
+URLs or locations. Apple FoundationModels currently retains its framework loop.
 
 ## Reproducible dependency updates
 
@@ -44,9 +43,8 @@ checks alone do not establish JavaScriptCore or physical-model compatibility.
 - [Pi agent core](https://www.npmjs.com/package/@earendil-works/pi-agent-core)
 - [Pi agent-loop source](https://github.com/earendil-works/pi/blob/main/packages/agent/src/agent-loop.ts)
 
-Pi and the bundled compatibility packages retain their license notices in
-`Resources/PiAgentCore-LICENSES.txt`. OpenCode and Hermes were reviewed as
-alternatives; their full Node/Python applications are not embedded in iOS.
+Hermes, Pi and the bundled compatibility packages retain their license notices in
+`Resources/PiAgentCore-LICENSES.txt`. The full Hermes Python server application is not embedded in iOS.
 
 ### Hermes contracts and mobile tools
 
@@ -62,7 +60,7 @@ contracts to capabilities actually supported by the native app:
 | `web_extract` | Hermes URL-list contract | Up to three public HTTPS text/HTML/JSON pages, using native consent and bounded pagination. No PDF or browser execution. |
 | `edit_document` | **Unmodified Pi `createEditTool()` execution** | Exact, unique, non-overlapping edits to imported document UUIDs; preserves BOM/newlines, saves the same document atomically, rejects stale snapshots. |
 
-Hermes Python handlers are not embedded in the app: they depend on its server
+Hermes Python tool handlers are not embedded in the app: they depend on its server
 runtime, database, plugins or credentials. Their contracts are reused with explicit
 native adapters; Pi's JavaScript edit implementation runs directly in JavaScriptCore.
 The app's memory, device permissions, date, calculator, document reading/creation,
