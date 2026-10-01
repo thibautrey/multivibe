@@ -13,6 +13,9 @@ private enum ChatPalette {
 
 @MainActor struct NativeChatView: View {
     @ObservedObject var store: NativeChatStore
+    @StateObject private var agent = NativeChatAgentCoordinator()
+    @State private var cloudConsent = false
+    @State private var selectedImports: Set<UUID> = []
     @State private var search = ""
     @State private var models: [HostAssistantModel] = []
     @State private var loading = false
@@ -56,7 +59,8 @@ private enum ChatPalette {
                 Divider()
                 Button { openDashboard() } label: { Label("Dashboard du Host", systemImage: "slider.horizontal.3").frame(maxWidth: .infinity, alignment: .leading) }
                     .buttonStyle(.plain).padding()
-                Text("Historique conservé sur ce Mac").font(.caption2).foregroundStyle(.secondary).padding(.bottom, 12)
+                cloudControls
+                Text("Historique Host conservé sur ce Mac").font(.caption2).foregroundStyle(.secondary).padding(.bottom, 12)
             }.navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
         } detail: {
             VStack(spacing: 0) {
@@ -79,8 +83,10 @@ private enum ChatPalette {
         .frame(minWidth: 760, minHeight: 500)
         .task {
             if store.current == nil { store.newConversation() }
+            await agent.restore()
             await loadModels()
         }
+        .sheet(isPresented: $cloudConsent) { consentSheet }
         .onChange(of: store.selection) { _ in speech.stopSpeaking(at: .immediate) }
         .alert("Supprimer cette conversation ?", isPresented: Binding(get: { deleteID != nil }, set: { if !$0 { deleteID = nil } })) {
             Button("Annuler", role: .cancel) { deleteID = nil }
@@ -100,6 +106,51 @@ private enum ChatPalette {
                 composing = true
             } catch { store.error = "Import impossible : \(error.localizedDescription)" }
         }
+    }
+    private var cloudControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if agent.accountID != nil {
+                Label("Compte Cloud connecté", systemImage: "person.crop.circle.badge.checkmark")
+                Button("Consentement et import Cloud…") { selectedImports = []; cloudConsent = true }
+                Button("Réessayer les imports autorisés") { Task { await agent.retryImports() } }
+                Button("Déconnecter le Cloud") { Task { await agent.disconnect() } }
+            } else {
+                Button("Connecter MultiVibe Cloud") {
+                    guard let window = NSApp.keyWindow else { return }
+                    Task { await agent.connect(window: window) }
+                }
+            }
+            if agent.busy { ProgressView().controlSize(.small) }
+            if let error = agent.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+            Text("Les conversations ci-dessus utilisent le Host de ce Mac. L’import Cloud est une copie explicite de l’historique choisi.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }.font(.callout).padding(.horizontal).padding(.bottom, 12).disabled(agent.busy)
+    }
+    private var consentSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Espace agent Cloud").font(.title2.bold())
+            Text("En autorisant l’espace Cloud, ses données peuvent être lues par le serveur pour exécuter l’agent. Elles sont chiffrées au repos. Sélectionnez uniquement les conversations de ce Mac que vous souhaitez copier vers votre compte.")
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(store.conversations.filter { !$0.messages.isEmpty }) { conversation in
+                        Toggle(conversation.title, isOn: Binding(get: { selectedImports.contains(conversation.id) }, set: { checked in
+                            if checked { selectedImports.insert(conversation.id) } else { selectedImports.remove(conversation.id) }
+                        })).disabled(agent.importedConversationIDs.contains(conversation.id))
+                        if agent.importedConversationIDs.contains(conversation.id) { Text("Déjà importée").font(.caption).foregroundStyle(.secondary) }
+                    }
+                }
+            }.frame(maxHeight: 240)
+            Text("Aucune conversation n’est cochée par défaut. Les clés du Host ne sont jamais transférées.").font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button("Annuler", role: .cancel) { cloudConsent = false }
+                Spacer()
+                Button("Autoriser et importer la sélection") {
+                    let selected = store.conversations.filter { selectedImports.contains($0.id) }
+                    cloudConsent = false
+                    Task { await agent.enableCloud(import: selected) }
+                }.buttonStyle(.borderedProminent).disabled(agent.busy || agent.consent == nil)
+            }
+        }.padding(24).frame(width: 520)
     }
     private var header: some View {
         HStack {
