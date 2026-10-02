@@ -68,7 +68,13 @@ actor DownloadedModelRuntime {
                 contextBudget: { [self] messages, tools, reserve in
                     try await self.measure(path:path,messages:messages,tools:tools,reservedOutputTokens:reserve)
                 }, summary: { [self] messages, reserve in
-                    try await self.generate(path:path,messages:messages,tools:"[]",reservedOutputTokens:reserve,onText:{ _ in })
+                    let result = try await self.generate(path:path,messages:messages,tools:"[]",reservedOutputTokens:reserve,onText:{ _ in })
+                    guard var reply = try JSONSerialization.jsonObject(with:Data(result.utf8)) as? [String:Any],
+                        let content=reply["content"] as? String, !content.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,
+                        (reply["tool_calls"] as? [Any])?.isEmpty != false else { throw LocalAgentError.invalidInput }
+                    // MVLlama throws on reserve exhaustion and only returns after an end-of-generation token.
+                    reply["finish_reason"]="stop"
+                    return String(decoding:try JSONSerialization.data(withJSONObject:reply),as:UTF8.self)
                 }, generate: { [self] messages, tools, emit in
                 let output = DownloadedToolOutput(onText: { text in if !weather { await emit(text) } })
                 let result = try await self.generate(path: path, messages: messages, tools: tools,
