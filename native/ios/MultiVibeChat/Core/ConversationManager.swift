@@ -143,6 +143,41 @@ import Network
                 conflicted:object.heads.count > 1,deleted:object.deleted,value:value)
         }.sorted { $0.id < $1.id }
     }
+    struct CloudConflictReview {
+        let account: String
+        let epoch: UUID
+        let objectId: String
+        let versions: [CloudAgentChange]
+    }
+    func cloudConflictReview(_ id: String) -> CloudConflictReview? {
+        guard let state = cloudAgentState, state.accountId == session?.accountId,
+            let object = state.objects[id], !object.deleted, object.heads.count > 1,
+            CloudAgentState.resolvableKinds.contains(object.kind) else { return nil }
+        let versions = object.heads.sorted().compactMap { object.versions[$0] }
+        guard versions.count == object.heads.count, versions.allSatisfy({ !$0.erased && !$0.deleted && $0.value != nil }) else { return nil }
+        return .init(account:state.accountId,epoch:sessionRevision,objectId:id,versions:versions)
+    }
+    func resolveCloudConflict(_ review: CloudConflictReview, selectedHead: String) async throws {
+        guard !cloudAgentSyncing, review.epoch == sessionRevision, review.account == session?.accountId else { throw CancellationError() }
+        await synchronizeCloudAgentState()
+        guard cloudAgentSyncError == nil, !cloudAgentSyncing, review.epoch == sessionRevision, review.account == session?.accountId else { throw CancellationError() }
+        let auth = try await validSession()
+        let consent = try await services.hermesConsent(auth.accessToken)
+        guard review.epoch == sessionRevision, review.account == session?.accountId,
+            auth.accountId == review.account, consent.accountId == review.account, consent.cloudEnabled else {
+            throw APIError.server(403,"agent_cloud_consent_required")
+        }
+        guard let state = cloudAgentState else { throw APIError.invalidResponse }
+        let mutation = try state.resolution(objectId:review.objectId,reviewedHeads:review.versions.map(\.versionId),selectedHead:selectedHead,account:review.account)
+        if mutation.kind == "session" {
+            guard remoteHermes[review.objectId] == nil,
+                !cloudHermesBindings.values.contains(where: { $0.sessionId == review.objectId }) else {
+                throw APIError.server(409,"agent_session_history_requires_resolution")
+            }
+        }
+        try enqueueCloudAgentMutation(mutation)
+        await synchronizeCloudAgentState()
+    }
     private(set) var discoveredCloudRuns:[String:CloudHermesRun] = [:]
     /// State-only journal exchange: never starts, resumes or replays an execution.
     func synchronizeCloudAgentState() async {

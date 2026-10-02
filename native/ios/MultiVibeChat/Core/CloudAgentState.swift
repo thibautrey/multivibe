@@ -76,6 +76,23 @@ struct CloudAgentState: Codable, Equatable, Sendable {
         }
         outbox.append(operation)
     }
+    static let resolvableKinds: Set<String> = ["memory","project","file","skill","session"]
+    func resolution(objectId: String, reviewedHeads: [String], selectedHead: String, account: String) throws -> CloudAgentMutation {
+        guard account == accountId, let object = objects[objectId], !object.deleted,
+            Self.resolvableKinds.contains(object.kind), object.heads.count > 1,
+            Set(reviewedHeads).count == reviewedHeads.count, Set(reviewedHeads) == Set(object.heads),
+            reviewedHeads.contains(selectedHead), !outbox.contains(where: { $0.objectId == objectId }),
+            let selected = object.versions[selectedHead], !selected.deleted, !selected.erased, let value = selected.value,
+            object.heads.allSatisfy({ object.versions[$0]?.value != nil && object.versions[$0]?.erased == false && object.versions[$0]?.deleted == false })
+        else { throw APIError.server(409,"agent_resolution_review_stale_or_unavailable") }
+        // Existing execution history needs an explicit history anchor, not an arbitrary task scan.
+        if object.kind == "session" {
+            guard !objects.values.contains(where: { object in object.kind == "task" && object.versions.values.contains(where: { $0.value?.object?["sessionId"]?.string == objectId }) }),
+                !outbox.contains(where: { $0.value?.object?["sessionId"]?.string == objectId })
+            else { throw APIError.server(409,"agent_session_history_requires_resolution") }
+        }
+        return .init(operationId:UUID().uuidString.lowercased(),objectId:objectId,versionId:UUID().uuidString.lowercased(),deviceId:deviceId,kind:object.kind,parents:reviewedHeads.sorted(),deleted:false,value:value)
+    }
     func acknowledging(_ reply:CloudAgentReceipts, submitted:[CloudAgentMutation]) throws -> Self {
         guard reply.accountId == accountId, !reply.receipts.isEmpty else { throw APIError.invalidResponse }
         var next = self; var acknowledged = Set<String>()
