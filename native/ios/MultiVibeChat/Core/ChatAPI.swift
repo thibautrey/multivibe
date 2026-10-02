@@ -1,3 +1,4 @@
+import CryptoKit
 import MultiVibeSDK
 import Foundation
 
@@ -40,9 +41,11 @@ actor ChatAPI {
         }
     }
     func hermesRequest<T: Decodable & Sendable>(_ path: String, body: Data? = nil, token: String) async throws -> T {
+        try Task.checkCancellation()
         guard path.rangeOfCharacter(from:.whitespacesAndNewlines) == nil else { throw APIError.invalidResponse }
         guard path == "capabilities" || path == "consent" || path == "mutations" || path == "runs"
             || path.range(of:"^changes\\?after=(0|[1-9][0-9]{0,15})$",options:.regularExpression) != nil
+            || path.range(of: "^artifacts(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(/(complete|chunks/(0|[1-9][0-9]{0,2})))?)?$", options: .regularExpression) != nil
             || path.range(of: "^runs/[0-9a-f-]{36}(/cancel)?$", options: .regularExpression) != nil else { throw APIError.invalidResponse }
         var components = URLComponents(url:base,resolvingAgainstBaseURL:false)!
         let parts = path.split(separator:"?",maxSplits:1)
@@ -55,6 +58,7 @@ actor ChatAPI {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         guard (body?.count ?? 0) <= 1_048_576 else { throw APIError.invalidResponse }
         let (data,response) = try await session.data(for: request)
+        try Task.checkCancellation()
         guard data.count <= 2_097_152, let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         guard (200..<300).contains(http.statusCode) else {
             let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -62,6 +66,39 @@ actor ChatAPI {
             throw APIError.server(http.statusCode, code)
         }
         return try JSONDecoder().decode(T.self, from: data)
+    }
+    func hermesArtifactBegin(accountId: String, artifact: CloudArtifactIdentity, token: String) async throws -> CloudArtifactManifest {
+        try artifact.validate()
+        struct Body: Encodable { let accountId: String; let artifact: CloudArtifactIdentity }
+        let reply: CloudArtifactReply = try await hermesRequest("artifacts", body: JSONEncoder().encode(Body(accountId: accountId, artifact: artifact)), token: token)
+        return try reply.checked(accountId: accountId, expected: artifact)
+    }
+    func hermesArtifactRead(accountId: String, artifact: CloudArtifactIdentity, token: String) async throws -> CloudArtifactManifest {
+        try artifact.validate()
+        let reply: CloudArtifactReply = try await hermesRequest("artifacts/" + artifact.artifactId, token: token)
+        return try reply.checked(accountId: accountId, expected: artifact)
+    }
+    func hermesArtifactComplete(accountId: String, artifact: CloudArtifactIdentity, token: String) async throws -> CloudArtifactManifest {
+        try artifact.validate()
+        let reply: CloudArtifactReply = try await hermesRequest("artifacts/" + artifact.artifactId + "/complete", body: JSONEncoder().encode(["accountId": accountId]), token: token)
+        let result = try reply.checked(accountId: accountId, expected: artifact)
+        guard result.state == "complete" else { throw APIError.invalidResponse }
+        return result
+    }
+    func hermesArtifactPutChunk(accountId: String, artifact: CloudArtifactIdentity, index: Int, data: Data, token: String) async throws -> CloudArtifactManifest {
+        try artifact.validate()
+        guard data.count == (try artifact.chunkLength(index)) else { throw APIError.invalidResponse }
+        let reply: CloudArtifactReply = try await hermesRequest("artifacts/" + artifact.artifactId + "/chunks/" + String(index),
+            body: JSONEncoder().encode(["accountId": accountId, "data": data.base64EncodedString()]), token: token)
+        let result = try reply.checked(accountId: accountId, expected: artifact)
+        guard result.received.contains(index) else { throw APIError.invalidResponse }
+        return result
+    }
+    func hermesArtifactReadChunk(accountId: String, artifact: CloudArtifactIdentity, index: Int, token: String) async throws -> Data {
+        try artifact.validate()
+        _ = try artifact.chunkLength(index)
+        let reply: CloudArtifactChunkReply = try await hermesRequest("artifacts/" + artifact.artifactId + "/chunks/" + String(index), token: token)
+        return try reply.checked(accountId: accountId, expected: artifact, index: index)
     }
     func hermesChanges(after:Int64,token:String) async throws -> CloudAgentPage {
         guard after >= 0, after < 9_007_199_254_740_991 else { throw APIError.invalidResponse }
@@ -514,5 +551,67 @@ struct RemoteHermesSession: Codable, Sendable {
             }
         }
         guard open.isEmpty else { throw APIError.server(409,"hermes_history_has_unknown_effects") }
+    }
+}
+
+struct CloudArtifactIdentity: Codable, Sendable, Equatable {
+    static let chunkBytes = 262_144
+    static let maxFileBytes = 67_108_864
+    let artifactId: String
+    let projectId: String
+    let fileId: String
+    let byteLength: Int
+    let sha256: String
+    var chunkCount: Int { (byteLength + Self.chunkBytes - 1) / Self.chunkBytes }
+    func validate() throws {
+        guard [artifactId, projectId, fileId].allSatisfy({ UUID(uuidString: $0)?.uuidString.lowercased() == $0 }),
+              (0...Self.maxFileBytes).contains(byteLength),
+              sha256.count == 64, sha256.allSatisfy({ "0123456789abcdef".contains($0) }) else { throw APIError.invalidResponse }
+    }
+    func chunkLength(_ index: Int) throws -> Int {
+        try validate()
+        guard index >= 0, index < chunkCount else { throw APIError.invalidResponse }
+        return min(Self.chunkBytes, byteLength - index * Self.chunkBytes)
+    }
+}
+struct CloudArtifactManifest: Codable, Sendable, Equatable {
+    let artifactId: String
+    let projectId: String
+    let fileId: String
+    let byteLength: Int
+    let sha256: String
+    let chunkBytes: Int
+    let state: String
+    let received: [Int]
+    var identity: CloudArtifactIdentity { .init(artifactId: artifactId, projectId: projectId, fileId: fileId, byteLength: byteLength, sha256: sha256) }
+    func checked(expected: CloudArtifactIdentity) throws -> Self {
+        try expected.validate()
+        guard identity == expected, chunkBytes == CloudArtifactIdentity.chunkBytes,
+              ["uploading", "complete"].contains(state), Set(received).count == received.count,
+              received.allSatisfy({ $0 >= 0 && $0 < expected.chunkCount }),
+              state != "complete" || received.count == expected.chunkCount else { throw APIError.invalidResponse }
+        return self
+    }
+}
+struct CloudArtifactReply: Decodable, Sendable {
+    let accountId: String
+    let artifact: CloudArtifactManifest
+    func checked(accountId expectedAccount: String, expected: CloudArtifactIdentity) throws -> CloudArtifactManifest {
+        guard accountId == expectedAccount else { throw APIError.invalidResponse }
+        return try artifact.checked(expected: expected)
+    }
+}
+struct CloudArtifactChunkReply: Decodable, Sendable {
+    struct Chunk: Decodable, Sendable { let index: Int; let data: String; let sha256: String }
+    let accountId: String
+    let chunk: Chunk
+    func checked(accountId expectedAccount: String, expected: CloudArtifactIdentity, index: Int) throws -> Data {
+        let size = try expected.chunkLength(index)
+        guard accountId == expectedAccount, chunk.index == index,
+              chunk.data.utf8.count == ((size + 2) / 3) * 4,
+              let bytes = Data(base64Encoded: chunk.data), bytes.count == size,
+              bytes.base64EncodedString() == chunk.data,
+              SHA256.hash(data: bytes).map({ String(format: "%02x", $0) }).joined() == chunk.sha256 else { throw APIError.invalidResponse }
+        return bytes
     }
 }
