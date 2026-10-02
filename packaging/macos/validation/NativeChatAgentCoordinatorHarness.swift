@@ -7,6 +7,7 @@ struct NativeChatConversation: Codable { let id: UUID; let title: String; let mo
     var failWrite = false
     var runBodies: [String: [String: Any]] = [:]
     var runState = "awaiting_resolution"
+    var runResults: [String: [String: Any]] = [:]
     var changes: [[String: Any]] = []
     var pauseWrite = false
     var pending: CheckedContinuation<Void, Never>?
@@ -27,7 +28,9 @@ struct NativeChatConversation: Codable { let id: UUID; let title: String; let mo
             guard let run = runBodies[id] else {
                 return (Data(), HTTPURLResponse(url: req.url!, statusCode: 404, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!)
             }
-            payload["run"] = ["runId": id, "sessionId": run["sessionId"]!, "branchId": run["branchId"]!, "state": req.url!.path.hasSuffix("cancel") ? "cancelled" : runState, "generation": 1]
+            var remoteRun: [String: Any] = ["runId": id, "sessionId": run["sessionId"]!, "branchId": run["branchId"]!, "state": req.url!.path.hasSuffix("cancel") ? "cancelled" : runState, "generation": 1]
+            if let result = runResults[id] { remoteRun["result"] = result }
+            payload["run"] = remoteRun
         }
         if req.url!.path.hasSuffix("mutations") {
             if failWrite { throw URLError(.notConnectedToInternet) }
@@ -91,6 +94,33 @@ struct NativeChatConversation: Codable { let id: UUID; let title: String; let mo
         await orderedReload.restore()
         precondition(orderedReload.orderedRuns.map(\.runId) == [run.runId, second.runId])
         precondition(orderedReload.cloudConversations.contains { $0.id == remoteID })
+        // A remote task carries full hidden tool history; discovery performs only GET.
+        let remoteKey = remoteID.uuidString.lowercased(), branch = UUID().uuidString.lowercased(), remoteRunID = UUID().uuidString.lowercased()
+        let history: [[String: Any]] = [["role": "user", "content": "Remote question"], ["role": "assistant", "content": "", "tool_calls": [["id": "call-1", "type": "function", "function": ["name": "terminal", "arguments": "{}"]]]], ["role": "tool", "tool_call_id": "call-1", "content": "hidden output"], ["role": "assistant", "content": "Remote answer"]]
+        var updatedSession = remote; updatedSession["parents"] = [remote["versionId"]!]; updatedSession["versionId"] = UUID().uuidString.lowercased(); updatedSession["cursor"] = 3
+        updatedSession["value"] = ["title": "Remote", "branchId": branch, "messages": []]
+        var task = base; task["kind"] = "task"; task["objectId"] = remoteRunID; task["versionId"] = UUID().uuidString.lowercased(); task["cursor"] = 4
+        task["value"] = ["type": "hermes_run", "runId": remoteRunID, "sessionId": remoteKey, "branchId": branch]
+        f.runBodies[remoteRunID] = ["sessionId": remoteKey, "branchId": branch]; f.runResults[remoteRunID] = ["history": history, "response": "Remote answer"]; f.runState = "completed"
+        f.changes = [task, updatedSession]
+        let beforeSync = f.requests.count
+        try await orderedReload.synchronize()
+        precondition(f.requests.dropFirst(beforeSync).allSatisfy { $0.httpMethod == "GET" })
+        precondition(orderedReload.synchronizedMessages(remoteID).map(\.content) == ["Remote question", "", "Remote answer"])
+        let continued = try await orderedReload.execute(modelID: "cloud-model", source: .cloud, conversationID: remoteID, message: "Continue")
+        precondition(f.runBodies[continued.runId]?["branchId"] as? String == branch)
+        precondition((f.runBodies[continued.runId]?["history"] as? [[String: Any]])?.count == 4)
+        let localID = UUID().uuidString.lowercased()
+        var local = base; local["objectId"] = localID; local["kind"] = "message"; local["cursor"] = 5; local["versionId"] = UUID().uuidString.lowercased()
+        local["value"] = ["type": "hermes_local_turn", "sessionId": remoteKey, "branchId": branch, "history": [["role": "user", "content": "Offline"], ["role": "assistant", "content": "Local answer"]]]
+        f.changes = [local]; try await orderedReload.synchronize()
+        precondition(orderedReload.synchronizedMessages(remoteID).last?.content == "Local answer")
+        let syncReload = NativeChatAgentCoordinator(session: session, client: client, root: folder); await syncReload.restore()
+        precondition(syncReload.synchronizedMessages(remoteID).last?.content == "Local answer")
+        var conflict = updatedSession; conflict["parents"] = []; conflict["versionId"] = UUID().uuidString.lowercased(); conflict["cursor"] = 6
+        f.changes = [conflict]; try await syncReload.synchronize()
+        precondition(syncReload.synchronizedMessages(remoteID).isEmpty)
+        do { _ = try await syncReload.execute(modelID: "cloud-model", source: .cloud, conversationID: remoteID, message: "Must refuse"); preconditionFailure("conflict executed") } catch {}
         f.pauseWrite = true
         let another = NativeChatConversation(id: UUID(), title: "Another", model: "local-model", messages: [])
         let epoch = restored.loginEpoch
