@@ -41,4 +41,19 @@ final class HermesSelectedMemoryTests: XCTestCase {
         XCTAssertEqual(try make(nil).prepare(action: "add", target: "memory", content: "new").content, "new")
         XCTAssertThrowsError(try HermesSelectedMemory(accountID: account, snapshots: source.snapshots + source.snapshots))
     }
+    func testCanonicalWriterAndForeignNewlineAreDistinguished() throws {
+        // Pinned MemoryStore writes exactly delimiter.join(entries); atomic_write_text adds no LF.
+        let canonical = ["first", "second"].joined(separator: HermesSelectedMemory.delimiter)
+        XCTAssertEqual(try make(canonical).prepare(action: "add", target: "memory", content: "third").content,
+                       canonical + HermesSelectedMemory.delimiter + "third")
+        XCTAssertThrowsError(try make(canonical + "\n").prepare(action: "remove", target: "memory", old_text: "first")) {
+            XCTAssertEqual($0 as? HermesSelectedMemory.Failure, .sourceDrift)
+            XCTAssertTrue($0.localizedDescription.contains("rien n’a été modifié"))
+        }
+        for failure in [HermesSelectedMemory.Failure.invalidSnapshot, .duplicateTarget, .unavailableTarget,
+                        .invalidAction, .invalidContent, .missingMatch, .ambiguousMatch, .limitExceeded, .sourceDrift] {
+            XCTAssertFalse(failure.errorDescription?.isEmpty ?? true)
+        }
+    }
+
 }
