@@ -438,16 +438,17 @@ import Network
             let version = object.versions[object.heads[0]], let value = version.value?.object,
             let branch = value["branchId"]?.string, CloudAgentState.uuid(branch) else { throw APIError.server(409,"hermes_session_conflict_or_missing") }
         var history: [HistoryJSON] = [], cursor: Int64 = 0
-        if let anchor=value["historyAnchor"], value["localTurnId"] == nil {
+        if let anchor=value["historyAnchor"] {
             history=try state.anchoredHistory(anchor,sessionId:id,account:state.accountId,runs:discoveredCloudRuns)
             cursor=version.cursor
-        } else if let local = value["localTurnId"]?.string {
+        }
+        if let local = value["localTurnId"]?.string {
             guard CloudAgentState.uuid(local), let message = state.objects[local], message.kind == "message", !message.deleted,
                 message.heads.count == 1, let raw = message.versions[message.heads[0]]?.value?.object,
                 raw["type"]?.string == "hermes_local_turn", raw["sessionId"]?.string == id, raw["branchId"]?.string == branch,
                 raw["turnId"]?.string == local, let saved = raw["history"]?.array else { throw APIError.server(409,"hermes_local_checkpoint_conflict") }
             history = saved; cursor = message.versions[message.heads[0]]!.cursor
-        } else if let saved = value["messages"]?.array { history = saved }
+        } else if value["historyAnchor"] == nil, let saved = value["messages"]?.array { history = saved }
         for task in state.objects.values where task.kind == "task" && !task.deleted {
             for head in task.heads {
                 guard let change = task.versions[head], let raw = change.value?.object,
