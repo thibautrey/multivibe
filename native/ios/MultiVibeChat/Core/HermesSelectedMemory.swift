@@ -28,9 +28,22 @@ struct HermesSelectedMemory: Sendable, Equatable {
             return String(decoding: try! JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), as: UTF8.self)
         }
     }
-    enum Failure: Error, Equatable {
+    enum Failure: LocalizedError, Equatable {
         case invalidSnapshot, duplicateTarget, unavailableTarget, invalidAction, invalidContent
         case missingMatch, ambiguousMatch, limitExceeded, sourceDrift
+        var errorDescription: String? {
+            switch self {
+            case .invalidSnapshot: "La mémoire sélectionnée est invalide ou appartient à un autre compte. Actualisez le contexte Hermes."
+            case .duplicateTarget: "Plusieurs mémoires correspondent à la même cible. Sélectionnez une seule mémoire par cible."
+            case .unavailableTarget: "Cette cible mémoire n’est pas sélectionnée. Choisissez explicitement la mémoire Hermes à modifier."
+            case .invalidAction: "Action mémoire non prise en charge. Utilisez add, replace ou remove."
+            case .invalidContent: "Le texte mémoire est vide ou contient un séparateur réservé. Fournissez une seule entrée et un old_text non vide pour remplacer ou supprimer."
+            case .missingMatch: "Aucune entrée ne correspond à old_text. Relisez la mémoire sélectionnée et reprenez le texte exact."
+            case .ambiguousMatch: "Plusieurs entrées correspondent à old_text. Utilisez le texte complet d’une seule entrée."
+            case .limitExceeded: "La limite de mémoire serait dépassée : 2 200 caractères pour memory, 1 375 pour user. Raccourcissez l’entrée ou retirez une entrée devenue inutile."
+            case .sourceDrift: "Le format de la mémoire a changé et sa réécriture pourrait perdre du texte. Vérifiez le contenu Cloud et ses séparateurs avant de réessayer ; rien n’a été modifié."
+            }
+        }
     }
     let accountID: String
     let snapshots: [Snapshot]
@@ -55,13 +68,14 @@ struct HermesSelectedMemory: Sendable, Equatable {
                 "properties": ["action": ["type": "string", "enum": ["add", "replace", "remove"]],
                     "target": ["type": "string", "enum": snapshots.map(\.target)],
                     "old_text": ["type": "string"], "content": ["type": "string"]],
-                "required": ["action", "target"]]]]
+                "required": ["action", "target"]]]]]
     }
     func prepare(action: String, target: String, old_text: String? = nil, content: String? = nil) throws -> Proposal {
         guard let snapshot = snapshots.first(where: { $0.target == target }) else { throw Failure.unavailableTarget }
         guard ["add", "replace", "remove"].contains(action) else { throw Failure.invalidAction }
         let raw = snapshot.content ?? ""
         var entries = raw.components(separatedBy: Self.delimiter).map(Self.trim).filter { !$0.isEmpty }
+        // Upstream MemoryStore._write_file writes delimiter.join(entries) verbatim, without a final LF.
         // Never normalize away foreign edits while rewriting a selected snapshot.
         guard entries.joined(separator: Self.delimiter) == raw else { throw Failure.sourceDrift }
         var matched: String?
