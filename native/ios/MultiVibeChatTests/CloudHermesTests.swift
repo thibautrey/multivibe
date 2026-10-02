@@ -476,5 +476,18 @@ final class RemoteHermesHistoryTests: XCTestCase {
         XCTAssertEqual(op.value?.object?["projectId"]?.string,billing);XCTAssertEqual(op.value?.object?["custom"]?.string,"Preserved")
         XCTAssertEqual(manager.remoteHermesTranscript(sessionID),history("hidden A"))
         XCTAssertFalse(manager.remoteHermesTranscript(sessionID).contains { $0.object?["content"]?.string == "hidden B" })
+        // A later local checkpoint on the new branch supersedes the immutable anchor.
+        let local=id(),localVersion=id(),nextSessionVersion=id()
+        let newBranch=try XCTUnwrap(op.value?.object?["branchId"]?.string)
+        changes.append(.init(operationId:id(),objectId:local,versionId:localVersion,deviceId:device,kind:"message",parents:[],deleted:false,
+            value:.object(["type":.string("hermes_local_turn"),"sessionId":.string(sessionID),"branchId":.string(newBranch),"turnId":.string(local),"history":.array(history("new local hidden"))]),cursor:6,erased:false))
+        var updated=try XCTUnwrap(op.value?.object);updated["localTurnId"] = .string(local)
+        changes.append(.init(operationId:id(),objectId:sessionID,versionId:nextSessionVersion,deviceId:device,kind:"session",parents:[version],deleted:false,value:.object(updated),cursor:7,erased:false))
+        await manager.synchronizeCloudAgentState()
+        XCTAssertEqual(manager.remoteHermesTranscript(sessionID),history("new local hidden"))
+        XCTAssertEqual(creates,0);XCTAssertEqual(cancels,0)
+        changes.append(.init(operationId:id(),objectId:local,versionId:id(),deviceId:device,kind:"message",parents:[localVersion],deleted:true,value:nil,cursor:8,erased:false))
+        await manager.synchronizeCloudAgentState()
+        XCTAssertTrue(manager.remoteHermesTranscript(sessionID).isEmpty) // Never fall back to old anchor after deletion.
     }
 }
