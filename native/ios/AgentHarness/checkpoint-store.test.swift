@@ -23,6 +23,8 @@ import Foundation
             throw NSError(domain: "Stale writer accepted", code: 1)
         } catch HermesCheckpointError.staleGeneration {}
         try await reopened.save(resumed, engine: "pinned", messages: intent, state: "{}")
+        do { _ = try await reopened.completedMessages(context,engine:"pinned"); throw NSError(domain:"Unknown effect exported",code:1) }
+        catch HermesCheckpointError.indeterminate {}
         let relaunch = HermesCheckpointStore(root: root)
         do {
             _ = try await relaunch.begin(context, engine: "pinned")
@@ -38,6 +40,10 @@ import Foundation
         let skipped = try await relaunch.begin(context, engine: "pinned")
         try expect(skipped.resumeJSON?.contains("Execution outcome unknown") == true, "Skip fabricated success")
         try await relaunch.save(skipped, engine: "pinned", messages: result, state: #"{"completed":true,"outputText":"Final answer"}"#)
+        let exported = try await relaunch.completedMessages(context,engine:"pinned")
+        try expect(exported == result,"Completed checkpoint export must retain tool history")
+        let otherExport = try await relaunch.completedMessages(otherContext,engine:"pinned")
+        try expect(otherExport == nil,"Checkpoint export crossed account")
         let completed = try await HermesCheckpointStore(root: root).begin(context, engine: "pinned")
         try expect(completed.completed && completed.recoveredText == "Final answer", "Completed response not recoverable")
         do {

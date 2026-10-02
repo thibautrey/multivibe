@@ -74,8 +74,8 @@ actor ChatAPI {
         return try await hermesRequest("mutations",body:JSONEncoder().encode(Body(accountId:accountId,operations:operations)),token:token)
     }
     func hermesConsent(token: String) async throws -> CloudHermesConsent { try await hermesRequest("consent", token: token) }
-    func hermesSetConsent(accountId: String, revision: Int, enabled: Bool, token: String) async throws -> CloudHermesConsent {
-        let body = try JSONSerialization.data(withJSONObject: ["accountId":accountId,"revision":revision,"cloudEnabled":enabled,"exportSources":[]] as [String:Any])
+    func hermesSetConsent(accountId: String, revision: Int, enabled: Bool, token: String, exportSources: [String] = []) async throws -> CloudHermesConsent {
+        let body = try JSONSerialization.data(withJSONObject: ["accountId":accountId,"revision":revision,"cloudEnabled":enabled,"exportSources":exportSources] as [String:Any])
         return try await hermesRequest("consent", body: body, token: token)
     }
     func hermesPrepare(accountId: String, binding: CloudHermesBinding, token: String) async throws {
@@ -366,7 +366,7 @@ struct NativeAuthConfiguration: Decodable {
     }
 }
 
-struct CloudHermesConsent: Codable, Sendable { let accountId: String; let cloudEnabled: Bool; let revision: Int }
+struct CloudHermesConsent: Codable, Sendable { let accountId: String; let cloudEnabled: Bool; let revision: Int; var exportSources: [String]? = nil }
 struct CloudHermesModel: Codable, Equatable, Sendable {
     let id: String; let source: String; let accessId: String?
     static func selected(_ model: String, access: SelectedModelAccess?) throws -> Self {
@@ -396,5 +396,55 @@ struct CloudHermesRunReply: Decodable, Sendable {
 struct CloudHermesBinding: Codable, Sendable {
     let accountId: String; let conversationId: String; let sessionId: String; let branchId: String
     let operationId: String; let versionId: String; let deviceId: String
+    var cloudAuthorized: Bool? = nil
+    var localExportSources: [String]? = nil
+    var localTurns: [CloudHermesLocalTurn]? = nil
     var importApproved: Bool; var history: [HistoryJSON] = []; var pending: CloudHermesRunInput?; var turnId: UUID?
+}
+
+/// A local inference intent is journaled before inference, including when export is not authorized.
+struct CloudHermesLocalTurn: Codable, Sendable {
+    let turnId: UUID
+    let modelId: String
+    let source: String
+    let parents: [String]
+    let operationId: String
+    let versionId: String
+    let sessionOperationId: String
+    let sessionVersionId: String
+    var published = false
+}
+extension CloudHermesBinding {
+    static let mobileEngine = "hermes-mobile/6d49922875f60af5bc31e2bfbae78a81d2fa91fc"
+    static let localSources = ["downloaded-local", "apple-foundation-local"]
+    mutating func recordLocalIntent(turnId: UUID, modelId: String, source: String, parents: [String]) {
+        guard !(localTurns ?? []).contains(where: { $0.turnId == turnId }) else { return }
+        let id = { UUID().uuidString.lowercased() }
+        var turns = localTurns ?? []
+        turns.append(.init(turnId:turnId,modelId:modelId,source:source,
+            parents:turns.last.map { [$0.sessionVersionId] } ?? parents,
+            operationId:id(),versionId:id(),sessionOperationId:id(),sessionVersionId:id()))
+        localTurns = turns
+    }
+    mutating func localPublication(index: Int, checkpoint: [HistoryJSON]) throws -> [CloudAgentMutation] {
+        guard var turns = localTurns, turns.indices.contains(index), !turns[index].published,
+            (localExportSources ?? []).contains(turns[index].source), cloudAuthorized != false,
+            let start = checkpoint.lastIndex(where: { $0.object?["role"]?.string == "user" }) else { throw APIError.server(403,"hermes_local_export_consent_required") }
+        let turn = turns[index]
+        guard turn.parents.count == 1 else { throw APIError.server(409,"hermes_session_conflict_requires_resolution") }
+        let continuation = history.isEmpty ? checkpoint : history + Array(checkpoint[start...])
+        let value: HistoryJSON = .object(["type":.string("hermes_local_turn"),"sessionId":.string(sessionId),"branchId":.string(branchId),
+            "turnId":.string(turn.turnId.uuidString.lowercased()),"localSource":.string(turn.source),"source":.string(turn.source),"modelId":.string(turn.modelId),
+            "engine":.string(Self.mobileEngine),"sequence":.number(Double(index)),"messages":.array(checkpoint),"history":.array(continuation)])
+        let message = CloudAgentMutation(operationId:turn.operationId,objectId:turn.turnId.uuidString.lowercased(),versionId:turn.versionId,deviceId:deviceId,
+            kind:"message",parents:[],deleted:false,value:value)
+        let session = CloudAgentMutation(operationId:turn.sessionOperationId,objectId:sessionId,versionId:turn.sessionVersionId,deviceId:deviceId,
+            kind:"session",parents:turn.parents,deleted:false,value:.object(["type":.string("hermes_session"),"conversationId":.string(conversationId),"branchId":.string(branchId),
+                "title":.string("Hermes chat"),"localSource":.string(turn.source),"localTurnId":.string(turn.turnId.uuidString.lowercased())]))
+        try CloudAgentState.validate(message); try CloudAgentState.validate(session)
+        // Preserve previous Cloud tool history, then the complete current local turn including its tool observations.
+        history = continuation
+        turns[index].published = true; localTurns = turns
+        return [message,session]
+    }
 }

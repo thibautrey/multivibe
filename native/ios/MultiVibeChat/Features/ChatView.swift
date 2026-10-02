@@ -561,9 +561,7 @@ struct ChatView: View {
             if !ModelExecution(manager.selectedModel).isLocal && manager.session != nil {
                 VStack(alignment:.leading,spacing:6) {
                     Label("Hermes · environnement Linux personnel",systemImage:"cloud")
-                    if !manager.currentCloudHermesAuthorized {
-                        Button("Autoriser Hermes pour cette conversation") { cloudHermesConsentPresented = true }
-                    }
+                    Button(manager.currentCloudHermesAuthorized ? "Gérer les autorisations de cette conversation" : "Autoriser Hermes pour cette conversation") { cloudHermesConsentPresented = true }
                     if let status = manager.currentCloudHermesStatus {
                         Text("Exécution : " + status.replacingOccurrences(of:"_",with:" ")).font(.caption)
                     }
@@ -2537,6 +2535,7 @@ private struct CloudHermesConsentView: View {
     @Environment(ConversationManager.self) private var manager
     @Environment(\.dismiss) private var dismiss
     @State private var importApproved = false
+    @State private var synchronizeLocalTurns = false
     @State private var busy = false
     @State private var error: String?
     @State private var accountID: String?
@@ -2548,7 +2547,7 @@ private struct CloudHermesConsentView: View {
                 Section("Votre environnement Hermes") {
                     Text("Hermes reçoit vos messages dans un environnement Linux personnel. Les conversations, la mémoire et les fichiers qui lui sont envoyés sont lisibles par le serveur et chiffrés au repos.")
                     Text("Ce stockage n’est pas chiffré de bout en bout et reste distinct des conversations SDK chiffrées de bout en bout.")
-                    Text("Aucun contact, calendrier, document de l’appareil ni souvenir local ne sera exporté automatiquement.")
+                    Text("Les collections de contacts, documents et souvenirs locaux ne sont pas importées. Les transcriptions autorisées peuvent toutefois contenir les données privées déjà renvoyées par vos outils.")
                 }
                 if hasHistory {
                     Section("Import explicite") {
@@ -2556,12 +2555,17 @@ private struct CloudHermesConsentView: View {
                             .accessibilityIdentifier("cloudHermesImportConsent")
                     }
                 }
+                Section("Reprise après une utilisation locale") {
+                    Toggle("Synchroniser les tours locaux de cette conversation",isOn:$synchronizeLocalTurns)
+                        .accessibilityIdentifier("cloudHermesLocalTurnsConsent")
+                    Text("Autorise les messages et résultats d’outils des modèles téléchargés et d’Apple Foundation, y compris les tours locaux déjà réalisés dans cette conversation. Ils seront envoyés au retour du réseau. Les résultats d’outils peuvent contenir des données privées. Aucune commande ne sera rejouée.")
+                }
                 if let error { Section { Text(error).foregroundStyle(.red) } }
                 Section {
                     Button(busy ? "Préparation…" : "Autoriser Hermes") {
                         guard accountID == manager.session?.accountId, conversationID == manager.selection else { error = "Le compte ou la conversation a changé. Fermez puis rouvrez cette autorisation."; return }
                         busy = true
-                        Task { do { try await manager.authorizeHermesCloud(importExistingConversation:hasHistory && importApproved); dismiss() }
+                        Task { do { try await manager.authorizeHermesCloud(importExistingConversation:hasHistory && importApproved,synchronizeLocalTurns:synchronizeLocalTurns); dismiss() }
                             catch { self.error = error.localizedDescription }; busy = false }
                     }.disabled(busy || (hasHistory && !importApproved)).accessibilityIdentifier("cloudHermesAuthorize")
                 }
