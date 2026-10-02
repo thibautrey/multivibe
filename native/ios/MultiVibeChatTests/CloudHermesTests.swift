@@ -501,6 +501,40 @@ final class RemoteHermesHistoryTests: XCTestCase {
 }
 
 @MainActor final class CloudWorkspaceFileTests: XCTestCase {
+    func testEditQueuedDuringFinalPullTriggersOneDeferredJournalDrain() async throws {
+        let id={UUID().uuidString.lowercased()}
+        let account=id(),project=id(),head=id(),device=id()
+        let state=try CloudAgentState(accountId:account,deviceId:device).applying(.init(accountId:account,changes:[.init(operationId:id(),objectId:project,versionId:head,deviceId:device,kind:"project",parents:[],deleted:false,value:.object(["title":.string("Project")]),cursor:1,erased:false)],cursor:1,hasMore:false))
+        let data=try JSONSerialization.data(withJSONObject:["cloudAgentState":JSONSerialization.jsonObject(with:JSONEncoder().encode(state)),"conversations":[],"baseline":[],"conversationIDs":[:],"messageIDs":[:]])
+        let auth=NativeSession(accessToken:"fixture",refreshToken:"fixture",expiresAt:.distantFuture,accountId:account)
+        let entered=expectation(description:"Final pull suspended"),drained=expectation(description:"Deferred write drained")
+        var reads=0,release:CheckedContinuation<Void,Never>?,changes:[CloudAgentChange]=[],writes=0
+        var services=isolatedServices(load:{auth},readLocalHistory:{_ in data})
+        services.hermesConsent={_ in .init(accountId:account,cloudEnabled:true,revision:1)}
+        services.hermesChanges={after,_ in
+            reads += 1
+            if reads==2 { await withCheckedContinuation { continuation in release=continuation;entered.fulfill() } }
+            return .init(accountId:account,changes:changes.filter{$0.cursor>after},cursor:changes.last?.cursor ?? 1,hasMore:false)
+        }
+        services.hermesMutations={_,ops,_ in
+            writes += 1
+            let op=ops[0]
+            changes.append(.init(operationId:op.operationId,objectId:op.objectId,versionId:op.versionId,deviceId:op.deviceId,kind:op.kind,parents:op.parents,deleted:op.deleted,value:op.value,cursor:2,erased:false))
+            drained.fulfill()
+            return .init(accountId:account,receipts:[.init(operationId:op.operationId,versionId:op.versionId,cursor:2,heads:[op.versionId],deleted:false)])
+        }
+        let manager=ConversationManager(services:services)
+        await manager.restore(loadRemoteModels:false)
+        await fulfillment(of:[entered],timeout:3)
+        let draft=try manager.cloudWorkspaceDraft(projectId:project,fileId:nil)
+        let version=try await manager.saveCloudWorkspaceFile(draft,path:"during-pull.txt",content:"saved")
+        XCTAssertEqual(manager.cloudWorkspaceWriteStatus(draft,version:version),"pending")
+        release?.resume();release=nil
+        await fulfillment(of:[drained],timeout:3)
+        for _ in 0..<100 where manager.cloudAgentSyncing { await Task.yield() }
+        XCTAssertEqual(writes,1)
+        XCTAssertEqual(manager.cloudWorkspaceWriteStatus(draft,version:version),"synced")
+    }
     func testOfflineWriteRetryIsDurableAndPersistenceFailureNeverQueuesOrExecutes() async throws {
         let id={UUID().uuidString.lowercased()}
         let account=id(),project=id(),head=id(),device=id()

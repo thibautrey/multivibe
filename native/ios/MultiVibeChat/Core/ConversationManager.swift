@@ -218,6 +218,7 @@ import Network
             (try? state.workspaceProject(draft.projectId)) != nil else { return "unavailable" }
         if let operation=state.outbox.first(where:{$0.versionId==version}) {
             if state.conflicts[operation.objectId] != nil { return "conflicted" }
+            if let object=state.objects[operation.objectId], !object.heads.contains(operation.versionId), Set(object.heads) != Set(operation.parents) { return "conflicted" }
             return "pending"
         }
         for object in state.objects.values where object.kind=="file" {
