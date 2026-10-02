@@ -356,6 +356,45 @@ final class RemoteHermesHistoryTests: XCTestCase {
 }
 
 @MainActor final class CloudConflictResolutionTests: XCTestCase {
+    func testPendingResolutionRetainsIdentityAndConcurrentHeadNeverReportsSuccess() async throws {
+        for concurrent in [false,true] {
+            let id = { UUID().uuidString.lowercased() }
+            let account=id(), object=id(), device=id(), first=id(), second=id()
+            var changes = [first,second].enumerated().map { index,version in
+                CloudAgentChange(operationId:id(),objectId:object,versionId:version,deviceId:device,kind:"memory",parents:[],deleted:false,value:.string("version-\(index)"),cursor:Int64(index+1),erased:false)
+            }
+            let state=try CloudAgentState(accountId:account,deviceId:device).applying(.init(accountId:account,changes:changes,cursor:2,hasMore:false))
+            let json=try JSONSerialization.jsonObject(with:JSONEncoder().encode(state))
+            let data=try JSONSerialization.data(withJSONObject:["cloudAgentState":json,"conversations":[],"baseline":[],"conversationIDs":[:],"messageIDs":[:]])
+            let auth=NativeSession(accessToken:"fixture",refreshToken:"fixture",expiresAt:.distantFuture,accountId:account)
+            var submitted:[String]=[]
+            var services=isolatedServices(load:{auth},readLocalHistory:{_ in data})
+            services.hermesChanges={after,_ in .init(accountId:account,changes:changes.filter{$0.cursor>after},cursor:changes.last!.cursor,hasMore:false)}
+            services.hermesConsent={_ in .init(accountId:account,cloudEnabled:true,revision:1)}
+            services.hermesMutations={_,operations,_ in
+                let op=operations[0];submitted.append(op.versionId)
+                if !concurrent { throw APIError.server(503,"offline") }
+                changes.append(.init(operationId:op.operationId,objectId:object,versionId:op.versionId,deviceId:device,kind:"memory",parents:op.parents,deleted:false,value:op.value,cursor:3,erased:false))
+                changes.append(.init(operationId:id(),objectId:object,versionId:id(),deviceId:device,kind:"memory",parents:[first],deleted:false,value:.string("concurrent"),cursor:4,erased:false))
+                return .init(accountId:account,receipts:[.init(operationId:op.operationId,versionId:op.versionId,cursor:3,heads:[op.versionId],deleted:false)])
+            }
+            let manager=ConversationManager(services:services)
+            await manager.restore(loadRemoteModels:false)
+            for _ in 0..<100 where manager.cloudAgentSyncing { await Task.yield() }
+            let review=try XCTUnwrap(manager.cloudConflictReview(object))
+            let version=try await manager.resolveCloudConflict(review,selectedHead:first)
+            XCTAssertFalse(manager.cloudConflictResolved(review,version:version))
+            if !concurrent {
+                XCTAssertEqual(manager.pendingCloudConflictVersion(review),version)
+                await manager.synchronizeCloudAgentState()
+                XCTAssertEqual(Set(submitted),[version]);XCTAssertGreaterThanOrEqual(submitted.count,2)
+            } else { XCTAssertEqual(manager.cloudConflictReview(object)?.versions.count,2) }
+            XCTAssertTrue(manager.cloudConflictReviewVisible(review))
+            await manager.logout()
+            XCTAssertFalse(manager.cloudConflictReviewVisible(review))
+            XCTAssertNil(manager.pendingCloudConflictVersion(review))
+        }
+    }
     func testRevocationBlocksReviewedResolutionWithoutMutationOrExecution() async throws {
         let id = { UUID().uuidString.lowercased() }
         let account=id(), object=id(), device=id(), first=id(), second=id()
