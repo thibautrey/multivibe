@@ -157,7 +157,7 @@ actor LocalAgentWorkspace {
         self.render = render
         self.authorizeInternet = authorizeInternet; self.webFetch = webFetch
     }
-    func hermesToolSchemas() -> [[String: Any]] {
+    func hermesToolSchemas() -> String {
         var tools = saveMemory == nil ? [] : (selectedMemory?.schemas ?? [])
         if selectedProject != nil, createWorkspaceFile != nil {
             tools.append(["type": "function", "function": ["name": "workspace_create_file",
@@ -165,7 +165,7 @@ actor LocalAgentWorkspace {
                 "parameters": ["type": "object", "additionalProperties": false,
                     "properties": ["path": ["type": "string"], "content": ["type": "string"]], "required": ["path", "content"]]]])
         }
-        return tools
+        return String(decoding: try! JSONSerialization.data(withJSONObject: tools, options: [.sortedKeys]), as: UTF8.self)
     }
     func automationsAvailable() -> Bool { automation != nil }
     func automationTool(_ arguments: String) async throws -> String {

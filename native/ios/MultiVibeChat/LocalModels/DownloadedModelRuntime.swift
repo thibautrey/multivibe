@@ -42,7 +42,7 @@ actor DownloadedModelRuntime {
         let automationRequest = AutomationTools.requested(messages)
         let weather = useTools && LocalDownloadedTools.isWeatherRequest(messages) && !automationRequest
         let automationAvailable = await workspace?.automationsAvailable() ?? false
-        let toolSchema = LocalDownloadedTools.schema(deviceActions: await workspace?.deviceActions() ?? [], weather: weather, automation: useTools && AutomationTools.requested(messages) && automationAvailable, skills: await workspace?.selectedSkills?.isEmpty == false, hermesTools: await workspace?.hermesToolSchemas() ?? [])
+        let toolSchema = LocalDownloadedTools.schema(deviceActions: await workspace?.deviceActions() ?? [], weather: weather, automation: useTools && AutomationTools.requested(messages) && automationAvailable, skills: await workspace?.selectedSkills?.isEmpty == false, hermesTools: await workspace?.hermesToolSchemas() ?? "[]")
         var history = messages.filter { ["system", "user", "assistant"].contains($0.role) }
             .map { ["role": $0.role, "content": $0.content] as [String: Any] }
         if let initial = await workspace?.initialHermesHistory {
@@ -202,7 +202,7 @@ enum LocalDownloadedTools {
         guard city.count >= 2, city.count <= 120 else { return false }
         return messages.suffix(6).contains { $0.role == "user" && $0.content.range(of: city, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
     }
-    static func schema(deviceActions: [String], weather: Bool = false, automation: Bool = false, skills: Bool = false, hermesTools: [[String: Any]] = []) -> String {
+    static func schema(deviceActions: [String], weather: Bool = false, automation: Bool = false, skills: Bool = false, hermesTools: String = "[]") -> String {
         if weather {
             let tools: [[String: Any]] = [["type": "function", "function": ["name": "weather_forecast",
                 "description": "Prévisions météo actuelles et des deux prochains jours. Utilise uniquement une ville donnée par l’utilisateur ; city vide si la ville manque, l’outil demandera la précision. Accès Internet autorisé par l’app.",
@@ -230,7 +230,7 @@ enum LocalDownloadedTools {
                     "required": ["url"], "additionalProperties": false]]]]
         if automation { tools.append(AutomationTools.schema) }
         if skills { tools += HermesSkillCatalog.schemas }
-        tools += hermesTools
+        tools += (try? JSONSerialization.jsonObject(with: Data(hermesTools.utf8)) as? [[String: Any]]) ?? []
         // Pi replaces these names with the versioned Hermes/Pi contracts. They
         // are deliberately absent from weather-only and no-tools turns.
         tools += ["clarify", "session_search", "web_extract", "edit_document"].map {

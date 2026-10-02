@@ -1076,7 +1076,8 @@ private actor CloudWorkspaceResponderHold {
             XCTAssertNil(memory)
             let context=await workspace.selectedCloudContext
             XCTAssertTrue(context.contains("Read only selected memory"))
-            let schemas=await workspace.hermesToolSchemas()
+            let rawSchemas=await workspace.hermesToolSchemas()
+            let schemas=try JSONSerialization.jsonObject(with:Data(rawSchemas.utf8)) as! [[String:Any]]
             XCTAssertFalse(schemas.contains{($0["function"] as? [String:Any])?["name"] as? String == "memory"})
             do { _=try await workspace.executeHarnessTool(name:"memory",arguments:#"{"action":"add","target":"user","content":"forbidden"}"#);XCTFail("Read only mutation accepted") } catch {}
             await delta("Read only response");checked.fulfill()
