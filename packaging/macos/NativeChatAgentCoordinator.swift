@@ -380,8 +380,14 @@ import Foundation
         else { branch = sessionID }
         let workspace = selectedWorkspaceProject(conversationID)
         guard workspace.isEmpty || cloudProjects.contains(where: { $0.id == workspace }) else { throw NativeAgentClientError.invalidRequest }
+        var billingProject: String?
+        if let heads = cloudObjects[sessionID], heads.count == 1, case .object(let value) = heads[0].value,
+           let raw = value["projectId"], raw != .null {
+            guard case .string(let id) = raw, UUID(uuidString: id) != nil else { throw NativeAgentClientError.invalidResponse }
+            billingProject = id
+        }
         let request = NativeAgentRunInput(operationId: UUID().uuidString.lowercased(), runId: UUID().uuidString.lowercased(), sessionId: sessionID,
-            branchId: branch, projectId: nil, workspaceProjectId: workspace.isEmpty ? nil : workspace, model: .init(id: modelID, accessId: accessID, source: source, deviceId: deviceID), message: message, history: journal!.histories?[sessionID])
+            branchId: branch, projectId: billingProject, workspaceProjectId: workspace.isEmpty ? nil : workspace, model: .init(id: modelID, accessId: accessID, source: source, deviceId: deviceID), message: message, history: journal!.histories?[sessionID])
         let previous = journal
         var requests = journal!.runRequests ?? [:]; requests[request.runId] = request; journal!.runRequests = requests
         var order = journal!.runOrder ?? []; order.append(request.runId); journal!.runOrder = order
