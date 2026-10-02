@@ -67,8 +67,8 @@ struct NativeChatConversation: Codable { let id: UUID; let title: String; let mo
         await restored.retryImports()
         precondition(restored.importedConversationIDs.contains(conversation.id))
         precondition(first == f.requests.last { $0.url!.path.hasSuffix("mutations") }!.httpBody)
-        let objectID = conversation.id.uuidString.lowercased()
-        let base: [String: Any] = ["operationId": UUID().uuidString.lowercased(), "objectId": objectID, "versionId": UUID().uuidString.lowercased(), "deviceId": UUID().uuidString.lowercased(), "kind": "session", "parents": [], "deleted": false, "erased": false, "cursor": 1, "value": ["title": "Synced"]]
+        let objectID = conversation.id.uuidString.lowercased(), billingProject = UUID().uuidString.lowercased()
+        let base: [String: Any] = ["operationId": UUID().uuidString.lowercased(), "objectId": objectID, "versionId": UUID().uuidString.lowercased(), "deviceId": UUID().uuidString.lowercased(), "kind": "session", "parents": [], "deleted": false, "erased": false, "cursor": 1, "value": ["title": "Synced", "projectId": billingProject]]
         f.changes = [base]
         try await restored.synchronize()
         precondition(restored.cloudObjects[objectID]?.count == 1)
@@ -81,6 +81,8 @@ struct NativeChatConversation: Codable { let id: UUID; let title: String; let mo
         precondition(restored.cloudConversations.contains { $0.id == freshID })
         let run = try await restored.execute(modelID: "cloud-model", source: .cloud, conversationID: conversation.id, message: "New turn")
         precondition(run.state == .awaiting_resolution)
+        precondition(f.runBodies[run.runId]?["projectId"] as? String == billingProject)
+        precondition(f.runBodies[run.runId]?["workspaceProjectId"] == nil)
         let createCount = f.requests.filter { $0.url!.path.hasSuffix("/runs") && $0.httpMethod == "POST" }.count
         let runRestored = NativeChatAgentCoordinator(session: session, client: client, root: folder)
         await runRestored.restore()
@@ -132,7 +134,8 @@ struct NativeChatConversation: Codable { let id: UUID; let title: String; let mo
         f.mutationCursor = 8
         let projectRun = try await projectReload.execute(modelID: "cloud-model", source: .cloud, conversationID: conversation.id, message: "Use selected files")
         precondition(f.runBodies[projectRun.runId]?["workspaceProjectId"] as? String == projectID)
-        precondition(f.runBodies[projectRun.runId]?["projectId"] == nil) // Workspace selection is not billing attribution.
+        precondition(f.runBodies[projectRun.runId]?["projectId"] as? String == billingProject) // Preserve billing independently of selected workspace.
+        precondition(projectID != billingProject)
         let mutationBody = try JSONSerialization.jsonObject(with: f.requests.last { $0.url!.path.hasSuffix("mutations") }!.httpBody!) as! [String: Any]
         var propagated = (mutationBody["operations"] as! [[String: Any]])[0]
         let propagatedValue = propagated["value"] as! [String: Any]
