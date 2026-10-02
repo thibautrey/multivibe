@@ -421,3 +421,60 @@ final class RemoteHermesHistoryTests: XCTestCase {
         XCTAssertEqual(manager.cloudConflictReview(object)?.versions.count,2)
     }
 }
+
+@MainActor final class CloudHistoryAnchorTests: XCTestCase {
+    func testExplicitRunHistoryChoicePreservesMetadataAndHiddenToolsWithoutReplay() async throws {
+        let id={UUID().uuidString.lowercased()}
+        let account=id(),sessionID=id(),branch=id(),device=id(),first=id(),second=id(),runA=id(),runB=id(),billing=id()
+        func history(_ hidden:String)->[HistoryJSON] {
+            [.object(["role":.string("user"),"content":.string("Question")]),
+             .object(["role":.string("assistant"),"content":.string(""),"tool_calls":.array([.object(["id":.string("call"),"type":.string("function"),"function":.object(["name":.string("read"),"arguments":.string("{}")])])])]),
+             .object(["role":.string("tool"),"tool_call_id":.string("call"),"content":.string(hidden)]),
+             .object(["role":.string("assistant"),"content":.string("Same visible answer")])]
+        }
+        let runs=[runA:CloudHermesRun(runId:runA,sessionId:sessionID,branchId:branch,state:"completed",generation:1,result:.init(response:"Same visible answer",history:history("hidden A"))),
+                  runB:CloudHermesRun(runId:runB,sessionId:sessionID,branchId:branch,state:"completed",generation:1,result:.init(response:"Same visible answer",history:history("hidden B")))]
+        var changes:[CloudAgentChange]=[]
+        for (index,head) in [first,second].enumerated() {
+            changes.append(.init(operationId:id(),objectId:sessionID,versionId:head,deviceId:device,kind:"session",parents:[],deleted:false,value:.object(["type":.string("hermes_session"),"branchId":.string(branch),"title":.string("Metadata \(index)"),"projectId":.string(billing),"custom":.string("Preserved")]),cursor:Int64(index+1),erased:false))
+        }
+        for (index,run) in [runA,runB].enumerated() {
+            changes.append(.init(operationId:id(),objectId:run,versionId:id(),deviceId:device,kind:"task",parents:[],deleted:false,value:.object(["type":.string("hermes_run"),"sessionId":.string(sessionID),"branchId":.string(branch),"runId":.string(run)]),cursor:Int64(index+3),erased:false))
+        }
+        let state=try CloudAgentState(accountId:account,deviceId:device).applying(.init(accountId:account,changes:changes,cursor:4,hasMore:false))
+        let json=try JSONSerialization.jsonObject(with:JSONEncoder().encode(state))
+        let data=try JSONSerialization.data(withJSONObject:["cloudAgentState":json,"conversations":[],"baseline":[],"conversationIDs":[:],"messageIDs":[:]])
+        let auth=NativeSession(accessToken:"fixture",refreshToken:"fixture",expiresAt:.distantFuture,accountId:account)
+        var mutations:[CloudAgentMutation]=[],creates=0,cancels=0
+        var services=isolatedServices(load:{auth},readLocalHistory:{_ in data})
+        services.hermesChanges={after,_ in .init(accountId:account,changes:changes.filter{$0.cursor>after},cursor:changes.last!.cursor,hasMore:false)}
+        services.hermesConsent={_ in .init(accountId:account,cloudEnabled:true,revision:1)}
+        services.hermesRead={_,run,_,cancel in if cancel { cancels += 1 };return runs[run]!}
+        services.hermesCreate={_,_,_ in creates += 1;throw APIError.invalidResponse}
+        services.hermesMutations={_,ops,_ in
+            mutations += ops
+            var receipts:[CloudAgentReceipt]=[]
+            for op in ops {
+                let cursor=changes.last!.cursor+1
+                changes.append(.init(operationId:op.operationId,objectId:op.objectId,versionId:op.versionId,deviceId:op.deviceId,kind:op.kind,parents:op.parents,deleted:false,value:op.value,cursor:cursor,erased:false))
+                receipts.append(.init(operationId:op.operationId,versionId:op.versionId,cursor:cursor,heads:[op.versionId],deleted:false))
+            }
+            return .init(accountId:account,receipts:receipts)
+        }
+        let manager=ConversationManager(services:services)
+        await manager.restore(loadRemoteModels:false)
+        for _ in 0..<100 where manager.cloudAgentSyncing { await Task.yield() }
+        let review=try XCTUnwrap(manager.cloudConflictReview(sessionID))
+        let choices=try await manager.cloudHistoryChoices(review,selectedHead:first)
+        XCTAssertEqual(choices.count,2)
+        let chosen=try XCTUnwrap(choices.first(where:{$0.id == runA}))
+        let version=try await manager.resolveCloudConflict(review,selectedHead:first,historyChoice:chosen)
+        XCTAssertTrue(manager.cloudConflictResolved(review,version:version))
+        XCTAssertEqual(mutations.count,1);XCTAssertEqual(creates,0);XCTAssertEqual(cancels,0)
+        let op=try XCTUnwrap(mutations.first)
+        XCTAssertEqual(Set(op.parents),Set([first,second]));XCTAssertNotEqual(op.value?.object?["branchId"]?.string,branch)
+        XCTAssertEqual(op.value?.object?["projectId"]?.string,billing);XCTAssertEqual(op.value?.object?["custom"]?.string,"Preserved")
+        XCTAssertEqual(manager.remoteHermesTranscript(sessionID),history("hidden A"))
+        XCTAssertFalse(manager.remoteHermesTranscript(sessionID).contains { $0.object?["content"]?.string == "hidden B" })
+    }
+}

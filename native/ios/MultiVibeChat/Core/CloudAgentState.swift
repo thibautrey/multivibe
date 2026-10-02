@@ -93,6 +93,44 @@ struct CloudAgentState: Codable, Equatable, Sendable {
         }
         return .init(operationId:UUID().uuidString.lowercased(),objectId:objectId,versionId:UUID().uuidString.lowercased(),deviceId:deviceId,kind:object.kind,parents:reviewedHeads.sorted(),deleted:false,value:value)
     }
+    func anchoredHistory(_ anchor: HistoryJSON, sessionId: String, account: String, runs: [String:CloudHermesRun]) throws -> [HistoryJSON] {
+        guard account == accountId, Self.uuid(sessionId), let a=anchor.object,
+            a["type"]?.string == "hermes_history_anchor", let source=a["source"]?.string,
+            let branch=a["sourceBranchId"]?.string, Self.uuid(branch) else { throw APIError.invalidResponse }
+        let history:[HistoryJSON]
+        if source == "run" {
+            guard Set(a.keys) == ["type","source","sourceBranchId","runId"],
+                let runId=a["runId"]?.string,Self.uuid(runId),let run=runs[runId],
+                run.runId == runId,run.sessionId == sessionId,run.branchId == branch,run.state == "completed",let result=run.result
+            else { throw APIError.server(409,"hermes_history_anchor_unavailable") }
+            history=result.history
+        } else if source == "message" {
+            guard Set(a.keys) == ["type","source","sourceBranchId","objectId","versionId"],
+                let id=a["objectId"]?.string,Self.uuid(id),let version=a["versionId"]?.string,Self.uuid(version),
+                let object=objects[id],object.kind == "message",!object.deleted,
+                let change=object.versions[version],!change.deleted,!change.erased,
+                let value=change.value?.object,value["type"]?.string == "hermes_local_turn",
+                value["sessionId"]?.string == sessionId,value["branchId"]?.string == branch,value["turnId"]?.string == id,
+                let saved=value["history"]?.array else { throw APIError.server(409,"hermes_history_anchor_unavailable") }
+            history=saved
+        } else { throw APIError.invalidResponse }
+        try RemoteHermesSession.validateHistory(history)
+        return history
+    }
+    func anchoredResolution(objectId:String, reviewedHeads:[String], selectedHead:String, account:String, anchor:HistoryJSON, runs:[String:CloudHermesRun]) throws -> CloudAgentMutation {
+        guard account == accountId,let object=objects[objectId],object.kind == "session",!object.deleted,
+            object.heads.count>1,Set(reviewedHeads)==Set(object.heads),reviewedHeads.count==object.heads.count,
+            reviewedHeads.contains(selectedHead),var value=object.versions[selectedHead]?.value?.object,
+            value["branchId"]?.string == anchor.object?["sourceBranchId"]?.string,
+            !outbox.contains(where:{$0.objectId == objectId || $0.value?.object?["sessionId"]?.string == objectId}),
+            object.heads.allSatisfy({object.versions[$0]?.value != nil && object.versions[$0]?.erased == false})
+        else { throw APIError.server(409,"agent_resolution_review_stale_or_unavailable") }
+        _ = try anchoredHistory(anchor,sessionId:objectId,account:account,runs:runs)
+        value["branchId"] = .string(UUID().uuidString.lowercased())
+        value["localTurnId"]=nil;value["messages"]=nil;value["historyAnchor"]=anchor
+        return .init(operationId:UUID().uuidString.lowercased(),objectId:objectId,versionId:UUID().uuidString.lowercased(),deviceId:deviceId,
+            kind:"session",parents:reviewedHeads.sorted(),deleted:false,value:.object(value))
+    }
     func acknowledging(_ reply:CloudAgentReceipts, submitted:[CloudAgentMutation]) throws -> Self {
         guard reply.accountId == accountId, !reply.receipts.isEmpty else { throw APIError.invalidResponse }
         var next = self; var acknowledged = Set<String>()
