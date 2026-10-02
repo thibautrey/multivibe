@@ -64,6 +64,24 @@ import Foundation
         try await relaunch.deleteConversation(accountID: context.accountID, conversationID: context.conversationID)
         let deleted = try await relaunch.begin(context, engine: "pinned")
         try expect(deleted.resumeJSON == nil, "Deleted conversation retained journal")
+        let compactContext = HermesRunContext(accountID: "compact-account", conversationID: UUID(), turnID: UUID(), modelID: "local-model")
+        let compactLease = try await store.begin(compactContext, engine: "pinned")
+        let prefix = [["role":"user","content":"old fact"],["role":"assistant","content":"old answer"]]
+        let canonical = prefix + [["role":"user","content":"new question"]]
+        let prefixJSON = String(decoding:try JSONSerialization.data(withJSONObject:prefix),as:UTF8.self)
+        let fullJSON = String(decoding:try JSONSerialization.data(withJSONObject:canonical),as:UTF8.self)
+        let compact: [String:Any] = ["version":1,"coveredCount":2,"prefixJSON":prefixJSON,"summary":"An old fact and answer."]
+        func encoded(_ value:[String:Any]) throws -> String {
+            String(decoding:try JSONSerialization.data(withJSONObject:["compaction":value]),as:UTF8.self)
+        }
+        try await store.save(compactLease,engine:"pinned",messages:fullJSON,state:encoded(compact))
+        for (key,value) in [("version",true as Any),("coveredCount",3 as Any),("coveredCount",1.5 as Any),("prefixJSON","[]" as Any),("summary","" as Any)] {
+            var malformed=compact;malformed[key]=value
+            do { try await store.save(compactLease,engine:"pinned",messages:fullJSON,state:encoded(malformed));throw NSError(domain:"Invalid compaction accepted",code:1) }
+            catch HermesCheckpointError.invalid {}
+        }
+        let compactResume = try await HermesCheckpointStore(root:root).begin(compactContext,engine:"pinned")
+        try expect(compactResume.resumeJSON?.contains("old fact") == true && compactResume.resumeJSON?.contains("An old fact and answer.") == true,"Compaction must preserve canonical transcript and durable summary")
         print("HermesCheckpointStore: reopen, unknown effect, isolation, fencing, failure, resolution and deletion checks passed")
     }
 }

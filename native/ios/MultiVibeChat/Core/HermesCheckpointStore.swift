@@ -1,3 +1,4 @@
+import CoreFoundation
 import CryptoKit
 import Foundation
 
@@ -107,6 +108,22 @@ actor HermesCheckpointStore {
     private func objects(_ messages: String, _ state: String) throws -> ([[String: Any]], [String: Any]) {
         guard let transcript = try JSONSerialization.jsonObject(with: Data(messages.utf8)) as? [[String: Any]],
               let runtime = try JSONSerialization.jsonObject(with: Data(state.utf8)) as? [String: Any] else { throw HermesCheckpointError.invalid }
+        if let raw = runtime["compaction"] {
+            guard let compact = raw as? [String: Any],
+                  Set(compact.keys) == Set(["version", "coveredCount", "prefixJSON", "summary"]),
+                  let version = compact["version"] as? NSNumber, CFGetTypeID(version) != CFBooleanGetTypeID(), version.doubleValue == 1,
+                  let count = compact["coveredCount"] as? NSNumber, CFGetTypeID(count) != CFBooleanGetTypeID(),
+                  count.doubleValue.isFinite, count.doubleValue.rounded(.towardZero) == count.doubleValue,
+                  count.doubleValue > 0, count.doubleValue < Double(transcript.count),
+                  let prefixJSON = compact["prefixJSON"] as? String,
+                  let prefix = try JSONSerialization.jsonObject(with: Data(prefixJSON.utf8)) as? [[String: Any]],
+                  prefix.count == count.intValue,
+                  NSArray(array: prefix).isEqual(to: Array(transcript.prefix(count.intValue))),
+                  let latestUser = transcript.lastIndex(where: { $0["role"] as? String == "user" }), count.intValue <= latestUser,
+                  try pending(prefix).isEmpty,
+                  let summary = compact["summary"] as? String, !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  summary.utf8.count <= 65_536 else { throw HermesCheckpointError.invalid }
+        }
         return (transcript, runtime)
     }
     /// Every assistant call must have exactly one result. A resultless call is
