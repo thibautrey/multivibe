@@ -52,6 +52,13 @@ final class ProtocolTests:XCTestCase {
         let decoded = try JSONDecoder().decode(MultiVibeConversation.self,from:JSONEncoder().encode(value))
         XCTAssertEqual(decoded.id,value.id)
     }
+    func testIsolatedChatURLContainsOnlyPublicApplicationIdentity() throws {
+        let id = "11111111-1111-4111-8111-111111111111"
+        let value = try MultiVibeIsolatedChat(configuration:.init(clientID:id,redirectURI:URL(string:"https://app.example/callback")!)).url
+        XCTAssertEqual(value.absoluteString,"https://app.multivibe.cloud/sdk/chat/isolated?client_id=\(id)")
+        XCTAssertNil(URLComponents(url:value,resolvingAgainstBaseURL:false)?.queryItems?.first(where:{$0.name != "client_id"}))
+        XCTAssertThrowsError(try MultiVibeIsolatedChat(configuration:.init(clientID:"invalid",redirectURI:URL(string:"https://app.example/callback")!)))
+    }
     func testToolDeadlineReturnsUnknownOutcome() async {
         do {
             _ = try await withToolDeadline(timeout:.milliseconds(10)) {
