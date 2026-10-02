@@ -157,3 +157,23 @@ observations are included as untrusted data and context overflow is surfaced.
 Only completed final text is displayed; proposed-call commentary is suppressed.
 Model availability and native device/Internet permissions remain required. This
 is API and codec validation, not proof of physical model tool-selection quality.
+
+## Selected Cloud workspace and skill readers
+
+The native adapter exposes selected Hermes text files through the existing
+read/edit document tools. Edits persist graph mutations with their original file
+and project parents before tool success. Reconnection drains this outbox without
+replaying the edit. Pending edits are readable but cannot be overwritten while
+awaiting acknowledgement. Binary files remain outside the text tool contract.
+
+`skills_list` and `skill_view` read only explicitly selected `SKILL.md` and
+reference documents, with the Cloud reader's JSON envelopes. They never activate
+a skill or expose scripts, assets, templates, dependencies or environment values.
+The snapshot retains the existing mobile limits of 200 files, 512 KiB total and
+64 KiB per document. Foundation and downloaded-model callers use the same reader.
+
+Native checkpoints bind the tool context to a digest. An incomplete turn cannot
+resume after its selected context changes; it asks for a new message instead of
+silently reading another revision. Completed transcript recovery and state-only
+Cloud publication do not need the old executable context. This restriction also
+applies to older incomplete checkpoints that lack the new context binding.

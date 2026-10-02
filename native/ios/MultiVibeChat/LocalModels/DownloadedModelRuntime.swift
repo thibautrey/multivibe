@@ -42,7 +42,7 @@ actor DownloadedModelRuntime {
         let automationRequest = AutomationTools.requested(messages)
         let weather = useTools && LocalDownloadedTools.isWeatherRequest(messages) && !automationRequest
         let automationAvailable = await workspace?.automationsAvailable() ?? false
-        let toolSchema = LocalDownloadedTools.schema(deviceActions: await workspace?.deviceActions() ?? [], weather: weather, automation: useTools && AutomationTools.requested(messages) && automationAvailable)
+        let toolSchema = LocalDownloadedTools.schema(deviceActions: await workspace?.deviceActions() ?? [], weather: weather, automation: useTools && AutomationTools.requested(messages) && automationAvailable, skills: await workspace?.selectedSkills?.isEmpty == false)
         var history = messages.filter { ["system", "user", "assistant"].contains($0.role) }
             .map { ["role": $0.role, "content": $0.content] as [String: Any] }
         if let initial = await workspace?.initialHermesHistory {
@@ -75,7 +75,7 @@ actor DownloadedModelRuntime {
                     // MVLlama throws on reserve exhaustion and only returns after an end-of-generation token.
                     reply["finish_reason"]="stop"
                     return String(decoding:try JSONSerialization.data(withJSONObject:reply),as:UTF8.self)
-                }, generate: { [self] messages, tools, emit in
+                }, toolContext: await workspace?.toolContextSnapshot, generate: { [self] messages, tools, emit in
                 let output = DownloadedToolOutput(onText: { text in if !weather { await emit(text) } })
                 let result = try await self.generate(path: path, messages: messages, tools: tools,
                     onText: { text in await output.append(text, inspectTools: useTools) })
@@ -202,7 +202,7 @@ enum LocalDownloadedTools {
         guard city.count >= 2, city.count <= 120 else { return false }
         return messages.suffix(6).contains { $0.role == "user" && $0.content.range(of: city, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
     }
-    static func schema(deviceActions: [String], weather: Bool = false, automation: Bool = false) -> String {
+    static func schema(deviceActions: [String], weather: Bool = false, automation: Bool = false, skills: Bool = false) -> String {
         if weather {
             let tools: [[String: Any]] = [["type": "function", "function": ["name": "weather_forecast",
                 "description": "Prévisions météo actuelles et des deux prochains jours. Utilise uniquement une ville donnée par l’utilisateur ; city vide si la ville manque, l’outil demandera la précision. Accès Internet autorisé par l’app.",
@@ -229,6 +229,7 @@ enum LocalDownloadedTools {
                     "offset": ["type": "number", "description": "Character offset, zero initially."]],
                     "required": ["url"], "additionalProperties": false]]]]
         if automation { tools.append(AutomationTools.schema) }
+        if skills { tools += HermesSkillCatalog.schemas }
         // Pi replaces these names with the versioned Hermes/Pi contracts. They
         // are deliberately absent from weather-only and no-tools turns.
         tools += ["clarify", "session_search", "web_extract", "edit_document"].map {
@@ -249,7 +250,7 @@ enum LocalDownloadedTools {
         guard let data = content.data(using: .utf8),
               let call = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               Set(call.keys) == Set(["name", "arguments"]),
-              let name = call["name"] as? String, ["fetch_website", "local_workspace", "weather_forecast", "clarify", "session_search", "web_extract", "edit_document", "automation_manage"].contains(name),
+              let name = call["name"] as? String, ["fetch_website", "local_workspace", "weather_forecast", "clarify", "session_search", "web_extract", "edit_document", "automation_manage", "skills_list", "skill_view"].contains(name),
               let arguments = call["arguments"] as? [String: Any],
               let encoded = try? JSONSerialization.data(withJSONObject: arguments),
               let json = String(data: encoded, encoding: .utf8) else { return reply }

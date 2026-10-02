@@ -10,6 +10,10 @@ struct HermesRunContext: Sendable, Equatable {
     let turnID: UUID
     let modelID: String
     var source = "downloaded-local"
+    var toolContextDigest: String? = nil
+    static func digest(_ snapshot: String) -> String {
+        SHA256.hash(data: Data(snapshot.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
     var scope: String {
         let identity = accountID.map { "account:\($0)" } ?? "anonymous-device-local"
         return SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -31,13 +35,14 @@ struct HermesIndeterminateCall: Codable, Equatable, Sendable {
 }
 
 enum HermesCheckpointError: LocalizedError {
-    case indeterminate([HermesIndeterminateCall]), staleGeneration, incompatible, invalid, tooLarge
+    case indeterminate([HermesIndeterminateCall]), staleGeneration, incompatible, contextChanged, invalid, tooLarge
     var errorDescription: String? {
         switch self {
         case .indeterminate(let calls):
             "Résultat inconnu pour \(calls.map(\.name).joined(separator: ", ")). Vérifiez les effets de ces actions avant de reprendre. Elles ne seront pas relancées automatiquement."
         case .staleGeneration: "Cette exécution Hermes a été remplacée ; aucune nouvelle action n’a été lancée."
         case .incompatible: "Le modèle ou le moteur de ce point de reprise a changé. Ouvrez un nouveau message pour continuer sans rejouer les anciennes actions."
+        case .contextChanged: "Le contexte des outils a changé depuis l’interruption. Envoyez un nouveau message pour continuer avec la sélection actuelle sans rejouer les anciennes actions."
         case .invalid: "Le point de reprise Hermes est invalide. Aucune action n’a été rejouée."
         case .tooLarge: "Le point de reprise Hermes dépasse la limite locale. Aucune nouvelle action n’a été lancée."
         }
@@ -59,6 +64,7 @@ actor HermesCheckpointStore {
         var turnID: UUID
         var modelID: String
         var source: String
+        var toolContextDigest: String? = nil
         var runID: UUID
         var generation: Int
         var messages: String
@@ -165,6 +171,8 @@ actor HermesCheckpointStore {
         let (messages, state) = try objects(envelope.messages, envelope.state)
         let unresolved = try pending(messages)
         guard unresolved.isEmpty else { throw HermesCheckpointError.indeterminate(unresolved) }
+        let completed = state["completed"] as? Bool == true || state["terminal"] as? Bool == true
+        guard completed || envelope.toolContextDigest == context.toolContextDigest else { throw HermesCheckpointError.contextChanged }
         envelope.generation += 1; envelope.updatedAt = Date()
         try write(envelope, to: url)
         leases[url.path] = envelope.runID
@@ -184,7 +192,7 @@ actor HermesCheckpointStore {
         } else if lease.generation != 1 { throw HermesCheckpointError.staleGeneration }
         let context = lease.context
         try write(Envelope(engine: engine, scope: context.scope, conversationID: context.conversationID,
-            turnID: context.turnID, modelID: context.modelID, source: context.source, runID: lease.runID,
+            turnID: context.turnID, modelID: context.modelID, source: context.source, toolContextDigest: context.toolContextDigest, runID: lease.runID,
             generation: lease.generation, messages: messages, state: state), to: url)
     }
     /// Explicit user resolution only: preserve uncertainty and prevent replay.

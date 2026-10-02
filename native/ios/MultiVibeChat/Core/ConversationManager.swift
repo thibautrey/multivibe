@@ -588,8 +588,8 @@ import Network
         guard let id=selection,let binding=cloudHermesBindings[id],binding.accountId == session?.accountId else { return ([],[],[],nil) }
         return (binding.contextMemoryIDs ?? [],binding.contextSkillIDs ?? [],binding.contextFileIDs ?? [],binding.contextProjectID)
     }
-    func localHermesSeed(conversation id: UUID, input: [ChatMessage], epoch: UUID) async throws -> (history: [HistoryJSON]?, context: String, files: [CloudHermesContext.WorkspaceFile]) {
-        guard let binding = cloudHermesBindings[id], binding.accountId == session?.accountId else { return (nil,"",[]) }
+    func localHermesSeed(conversation id: UUID, input: [ChatMessage], epoch: UUID) async throws -> (history: [HistoryJSON]?, context: String, files: [CloudHermesContext.WorkspaceFile], skills: HermesSkillCatalog?) {
+        guard let binding = cloudHermesBindings[id], binding.accountId == session?.accountId else { return (nil,"",[],nil) }
         guard binding.pending == nil, let currentTurn = input.last(where: { $0.role == "user" }) else { throw APIError.server(409,"hermes_pending_run_requires_recovery") }
         let account = binding.accountId
         var history = binding.history
@@ -609,18 +609,20 @@ import Network
         }
         var context = ""
         var workspaceFiles: [CloudHermesContext.WorkspaceFile] = []
+        var skillCatalog: HermesSkillCatalog?
         if !(binding.contextMemoryIDs ?? []).isEmpty || !(binding.contextSkillIDs ?? []).isEmpty || !(binding.contextFileIDs ?? []).isEmpty {
             guard let state = cloudAgentState else { throw APIError.invalidResponse }
             let snapshot = try CloudHermesContext.build(state:state,accountID:account,projectID:binding.contextProjectID,
                 memoryObjectIDs:binding.contextMemoryIDs ?? [],skillObjectIDs:binding.contextSkillIDs ?? [],fileObjectIDs:binding.contextFileIDs ?? [])
             workspaceFiles = snapshot.workspaceFiles
+            skillCatalog = snapshot.skillCatalog
             context = [snapshot.memory,snapshot.skills,snapshot.files].filter { !$0.isEmpty }.joined(separator:"\n\n")
         }
         guard sessionRevision == epoch, session?.accountId == account else { throw CancellationError() }
-        if history.isEmpty { return (nil,context,workspaceFiles) }
+        if history.isEmpty { return (nil,context,workspaceFiles,skillCatalog) }
         history.append(.object(["role":.string("user"),"content":.string(currentTurn.content)]))
         try RemoteHermesSession.validateHistory(history)
-        return (history,context,workspaceFiles)
+        return (history,context,workspaceFiles,skillCatalog)
     }
     /// State-only reconciliation. Checkpoints are read without creating leases or invoking tools/models.
     private func reconcileLocalTurns(consent: CloudHermesConsent, epoch: UUID) async throws {
@@ -1574,7 +1576,7 @@ import Network
                     let initial = try await localHermesSeed(conversation:id,input:input,epoch:accountRevision)
                     guard generationRevision == revision && sessionRevision == accountRevision else { throw CancellationError() }
                     let workspace = LocalAgentWorkspace(conversations: conversations, documents: localDocuments,
-                        hermesContext: checkpointContext, initialHermesHistory:initial.history, selectedCloudContext:initial.context, selectedWorkspaceFiles:initial.files,
+                        hermesContext: checkpointContext, initialHermesHistory:initial.history, selectedCloudContext:initial.context, selectedWorkspaceFiles:initial.files, selectedSkills:initial.skills,
                         saveWorkspaceFile: { file, content in
                             try await self.saveLocalHermesWorkspaceFile(file,content:content,conversation:id,generation:revision,account:accountRevision)
                         }, deviceData: deviceData,

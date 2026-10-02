@@ -90,6 +90,24 @@ import Foundation
         } catch HermesCheckpointError.invalid {}
         let compactResume = try await HermesCheckpointStore(root:root).begin(compactContext,engine:"pinned")
         try expect(compactResume.resumeJSON?.contains("old fact") == true && compactResume.resumeJSON?.contains("An old fact and answer.") == true,"Compaction must preserve canonical transcript and durable summary")
+        var scoped = HermesRunContext(accountID: "selected-context", conversationID: UUID(), turnID: UUID(), modelID: "local")
+        scoped.toolContextDigest = HermesRunContext.digest("selected-skill-v1")
+        let scopedLease = try await store.begin(scoped, engine: "pinned")
+        try await store.save(scopedLease, engine: "pinned", messages: user, state: "{}")
+        var changed = scoped; changed.toolContextDigest = HermesRunContext.digest("selected-skill-v2")
+        do { _ = try await store.begin(changed, engine: "pinned"); throw NSError(domain: "Changed tool snapshot resumed", code: 1) }
+        catch HermesCheckpointError.contextChanged {}
+        var revoked = scoped; revoked.toolContextDigest = nil
+        do { _ = try await store.begin(revoked, engine: "pinned"); throw NSError(domain: "Revoked snapshot resumed", code: 1) }
+        catch HermesCheckpointError.contextChanged {}
+        let unchanged = try await store.begin(scoped, engine: "pinned")
+        try expect(unchanged.resumeJSON != nil, "Identical snapshot must resume")
+        try await store.save(unchanged, engine: "pinned", messages: user, state: #"{"completed":true,"outputText":"done"}"#)
+        let completedWithChangedContext = try await store.begin(changed, engine: "pinned")
+        try expect(completedWithChangedContext.completed, "Completed recovery needs no tool snapshot")
+        var exportContext = scoped; exportContext.toolContextDigest = nil
+        let exportedScoped = try await store.completedMessages(exportContext, engine: "pinned")
+        try expect(exportedScoped == user, "State-only export must not require executable context")
         print("HermesCheckpointStore: reopen, unknown effect, isolation, fencing, failure, resolution and deletion checks passed")
     }
 }

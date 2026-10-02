@@ -88,6 +88,8 @@ actor LocalAgentWorkspace {
     let hermesContext: HermesRunContext?
     let initialHermesHistory: [HistoryJSON]?
     let selectedCloudContext: String
+    let selectedSkills: HermesSkillCatalog?
+    let toolContextSnapshot: String
     private let automation: (@Sendable (String) async throws -> String)?
     private let memory: @Sendable (String, String, String) async throws -> String
     private var calls = 0
@@ -109,7 +111,7 @@ actor LocalAgentWorkspace {
     private var webPages: [String: LocalWebResponse] = [:]
     private let event: @Sendable (LocalAgentEvent) async -> Void
     private let saveDocument: @Sendable (LocalDocument) async throws -> Void
-    init(conversations: [Conversation], documents: [LocalDocument], hermesContext: HermesRunContext? = nil, initialHermesHistory: [HistoryJSON]? = nil, selectedCloudContext: String = "", selectedWorkspaceFiles: [CloudHermesContext.WorkspaceFile] = [],
+    init(conversations: [Conversation], documents: [LocalDocument], hermesContext: HermesRunContext? = nil, initialHermesHistory: [HistoryJSON]? = nil, selectedCloudContext: String = "", selectedWorkspaceFiles: [CloudHermesContext.WorkspaceFile] = [], selectedSkills: HermesSkillCatalog? = nil,
          saveWorkspaceFile: (@Sendable (CloudHermesContext.WorkspaceFile, String) async throws -> Void)? = nil, deviceData: LocalDeviceSnapshot = LocalDeviceSnapshot(),
          event: @escaping @Sendable (LocalAgentEvent) async -> Void,
          saveDocument: @escaping @Sendable (LocalDocument) async throws -> Void,
@@ -124,6 +126,10 @@ actor LocalAgentWorkspace {
         self.hermesContext = hermesContext
         self.initialHermesHistory = initialHermesHistory
         self.selectedCloudContext = selectedCloudContext
+        self.selectedSkills = selectedSkills
+        let provenance = selectedWorkspaceFiles.map { ["id": $0.objectId, "parents": $0.parents.sorted().joined(separator: ","), "projectParents": $0.projectParents.sorted().joined(separator: ",")] }
+        let snapshot: [String: Any] = ["context": selectedCloudContext, "skills": selectedSkills?.sourceJSON ?? "{}", "files": provenance]
+        self.toolContextSnapshot = String(decoding: try! JSONSerialization.data(withJSONObject: snapshot, options: [.sortedKeys]), as: UTF8.self)
         self.workspaceFiles = selectedWorkspaceFiles
         self.workspaceDocuments = selectedWorkspaceFiles.compactMap { file in
             UUID(uuidString: file.objectId).map { LocalDocument(id: $0, name: "Hermes/" + file.path, text: file.content) }
@@ -180,6 +186,15 @@ actor LocalAgentWorkspace {
     /// Private transport for upstream tools. These operations are never exposed
     /// as model tools; only app-owned document UUIDs can cross this boundary.
     func executeHarnessTool(name: String, arguments: String) async throws -> PiToolResult? {
+        if ["skills_list", "skill_view"].contains(name) {
+            try Task.checkCancellation()
+            guard calls < 12, Date() < deadline, let selectedSkills else { throw LocalAgentError.invalidInput }
+            calls += 1
+            let result = selectedSkills.execute(name: name, arguments: arguments)
+            let failed = (try? JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])?["success"] as? Bool != true
+            await recordHarness(tool: name, input: arguments, output: String(result.prefix(2400)), status: failed ? "error" : "success")
+            return PiToolResult(content: result, isError: failed)
+        }
         guard ["clarify", "document_snapshot", "document_replace"].contains(name) else { return nil }
         try Task.checkCancellation()
         guard calls < 12, Date() < deadline else { throw LocalAgentError.budget }
@@ -377,7 +392,7 @@ enum LocalAgent {
             let automationAvailable = await workspace.automationsAvailable()
             let automation = AutomationTools.requested(messages) && automationAvailable
             let weather = LocalDownloadedTools.isWeatherRequest(messages) && !automation
-            let schemas = LocalDownloadedTools.schema(deviceActions: await workspace.deviceActions(), weather: weather, automation: automation)
+            let schemas = LocalDownloadedTools.schema(deviceActions: await workspace.deviceActions(), weather: weather, automation: automation, skills: await workspace.selectedSkills?.isEmpty == false)
             var transcript: [[String:Any]]
             if let initial = await workspace.initialHermesHistory {
                 try RemoteHermesSession.validateHistory(initial)
@@ -402,7 +417,7 @@ enum LocalAgent {
                 try await HermesFoundationAdapter.summary(messages:messages,reservedOutputTokens:reserve)
             } : nil
             try await harness.run(messages: json, tools: schemas, weather: weather, checkpointContext: checkpoint,
-                contextBudget:measure, summary:summarize, generate: { transcript, tools, emit in
+                contextBudget:measure, summary:summarize, toolContext: await workspace.toolContextSnapshot, generate: { transcript, tools, emit in
                 let reply = try await HermesFoundationAdapter.reply(messages: transcript, tools: tools)
                 try Task.checkCancellation()
                 if !weather, let value = try JSONSerialization.jsonObject(with: Data(reply.utf8)) as? [String: Any],

@@ -55,12 +55,15 @@ struct PiToolResult: Codable, Sendable {
         return value.intValue
     }
     func run(messages: String, tools: String, weather: Bool = false, checkpointContext: HermesRunContext? = nil,
-             contextBudget: ContextBudget? = nil, summary: Summary? = nil,
+             contextBudget: ContextBudget? = nil, summary: Summary? = nil, toolContext: String? = nil,
              generate: @escaping @Sendable (String, String, @escaping @Sendable (String) async -> Void) async throws -> String,
              execute: @escaping @Sendable (String, String) async throws -> PiToolResult,
              onText: @escaping @Sendable (String) async -> Void) async throws {
         let lease: HermesCheckpointLease?
-        if let checkpointContext { lease = try await HermesCheckpointStore.shared.begin(checkpointContext, engine: version) }
+        if var checkpointContext {
+            if let toolContext { checkpointContext.toolContextDigest = HermesRunContext.digest(toolContext) }
+            lease = try await HermesCheckpointStore.shared.begin(checkpointContext, engine: version)
+        }
         else { lease = nil }
         if let lease, lease.completed {
             if let text = lease.recoveredText, !text.isEmpty { await onText(text) }
