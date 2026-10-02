@@ -56,7 +56,35 @@ public struct MultiVibeConversation: Codable, Identifiable, Sendable, Equatable 
         self.id = id.lowercased(); self.appId = appId.lowercased(); appName = ""; revision = 0; self.title = title; self.model = model; messages = []; context = ""; updatedAt = ""
     }
 }
-public struct MultiVibeModel: Codable, Identifiable, Sendable { public let id: String; public let supportsTools: Bool? }
+public enum MultiVibeModelSection: String, CaseIterable, Sendable {
+    case cloud = "Cloud", accounts = "Mes comptes", relay = "Relay"
+}
+public struct MultiVibeModel: Codable, Identifiable, Sendable {
+    public let id: String
+    public let supportsTools: Bool?
+    public let name: String?
+    public let source: String?
+    public let available: Bool?
+    public let machineName: String?
+    public init(id: String, supportsTools: Bool? = nil, name: String? = nil, source: String? = nil, available: Bool? = nil, machineName: String? = nil) {
+        self.id = id; self.supportsTools = supportsTools; self.name = name; self.source = source; self.available = available; self.machineName = machineName
+    }
+    public var section: MultiVibeModelSection {
+        if source == "relay" || id.hasPrefix("relay/") { return .relay }
+        if source == "personal" || id.hasPrefix("personal/") { return .accounts }
+        return .cloud
+    }
+    public var displayName: String { name?.isEmpty == false ? name! : id }
+}
+public struct MultiVibeRelayAllowance: Codable, Sendable {
+    public let periodStart: String
+    public let periodEnd: String
+    public let included: Int
+    public let used: Int
+    public let reserved: Int
+    public let remaining: Int?
+    public let unlimited: Bool
+}
 public struct MultiVibeConfiguration: Sendable {
     public let clientID: String; public let redirectURI: URL; public let baseURL: URL
     public init(clientID: String, redirectURI: URL, baseURL: URL = URL(string: "https://app.multivibe.cloud")!) { self.clientID = clientID.lowercased(); self.redirectURI = redirectURI; self.baseURL = baseURL }

@@ -51,6 +51,9 @@ extension MultiVibeClient {
         guard tools.count <= 32, Set(tools.map(\.name)).count == tools.count else {throw MultiVibeError.invalidArguments}
         guard mode == .application || tools.isEmpty else {throw MultiVibeError.invalidArguments}
         guard tools.isEmpty || models.first(where:{$0.id == input.model})?.supportsTools == true else {throw MultiVibeError.unsupportedTools}
+        guard let selectedModel = models.first(where: { $0.id == input.model }), selectedModel.available != false else {
+            throw MultiVibeError.server(503, "selected_model_unavailable")
+        }
         var conversation = input
         if let contextProvider {conversation.context = try await contextProvider.context()}
         guard conversation.context.utf8.count <= 32768, conversation.messages.count < 500, conversation.messages.allSatisfy({$0.content.utf8.count <= 65536}) else {throw MultiVibeError.invalidArguments}
