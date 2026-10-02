@@ -2672,6 +2672,11 @@ private struct CloudWorkspaceView: View {
     @State private var account: String?
     @State private var editor: CloudWorkspaceEditorSelection?
     @State private var error: String?
+    @State private var importing = false
+    @State private var importDraft: ConversationManager.CloudWorkspaceDraft?
+    @State private var importBusy = false
+    @State private var downloading: Set<String> = []
+    @State private var downloaded: [String:URL] = [:]
     private var visible: Bool { account != nil && account == manager.session?.accountId }
     private var pending: [ConversationManager.CloudAgentSummary] { manager.cloudWorkspacePendingFiles(projectId:projectId) }
     private var files: [ConversationManager.CloudAgentSummary] { manager.cloudWorkspaceFiles(projectId:projectId) }
@@ -2684,23 +2689,41 @@ private struct CloudWorkspaceView: View {
             if visible {
                 Section {
                     Text("Fichiers partagés avec votre environnement Hermes. Les modifications enregistrées hors ligne seront synchronisées au retour du réseau.")
-                    Text("Texte UTF-8 · 64 Ko par fichier · 200 fichiers et 512 Ko par projet.").font(.caption).foregroundStyle(.secondary)
-                    Button("Nouveau fichier") { open(nil) }.accessibilityIdentifier("hermesWorkspaceNewFile")
+                    Text("Texte UTF-8 : 64 Ko par fichier et 512 Ko par projet. Autres fichiers : 64 Mio chacun et 256 Mio par projet, avec 200 fichiers au total.").font(.caption).foregroundStyle(.secondary)
+                    Button("Nouveau fichier texte") { open(nil) }.accessibilityIdentifier("hermesWorkspaceNewFile")
+                    Button("Importer un fichier") {
+                        do { importDraft=try manager.cloudWorkspaceArtifactDraft(projectId:projectId,fileId:nil);importing=true;error=nil }
+                        catch { self.error=error.localizedDescription }
+                    }.disabled(importBusy).accessibilityIdentifier("hermesWorkspaceImportFile")
                     Button(manager.cloudAgentSyncing ? "Synchronisation…" : "Actualiser") { Task { await manager.synchronizeCloudAgentState() } }.disabled(manager.cloudAgentSyncing)
                     if let issue=manager.cloudAgentSyncError { Text(issue).foregroundStyle(.orange) }
                     if let error { Text(error).foregroundStyle(.red) }
                 }
                 Section(title) {
-                    if files.isEmpty { Text("Aucun fichier texte.").foregroundStyle(.secondary) }
+                    if files.isEmpty { Text("Aucun fichier.").foregroundStyle(.secondary) }
                     ForEach(files) { file in
                         VStack(alignment:.leading,spacing:6) {
                             let waiting=pending.contains(where:{$0.id == file.id})
-                            Button(file.value?.object?["path"]?.string ?? file.title) { open(file.id) }
-                                .disabled(waiting || file.deleted || file.conflicted)
-                            if waiting { Text(file.deleted ? "Suppression en attente de synchronisation" : "Enregistré sur cet appareil · synchronisation en attente").font(.caption).foregroundStyle(.secondary) }
-                            if waiting, !file.deleted, let content=file.value?.object?["content"]?.string {
-                                DisclosureGroup("Voir le contenu enregistré") {
-                                    Text(content).font(.system(.caption,design:.monospaced)).textSelection(.enabled)
+                            let isArtifact=file.value?.object?["type"]?.string=="hermes_artifact_file"
+                            if isArtifact {
+                                Text(file.value?.object?["path"]?.string ?? file.title).font(.headline)
+                                if let bytes=file.value?.object?["byteLength"]?.number { Text("Fichier binaire · \(Int(bytes)) octets").font(.caption).foregroundStyle(.secondary) }
+                                if waiting { Text("Copié sur cet appareil · transfert ou publication en attente").font(.caption).foregroundStyle(.secondary) }
+                                if let url=downloaded[file.id] {
+                                    ShareLink(item:url) { Label("Partager le fichier vérifié",systemImage:"square.and.arrow.up") }
+                                } else {
+                                    Button(downloading.contains(file.id) ? "Téléchargement…" : "Télécharger et vérifier") {
+                                        downloading.insert(file.id);error=nil
+                                        Task { do { downloaded[file.id]=try await manager.downloadCloudWorkspaceArtifact(projectId:projectId,fileId:file.id) }
+                                            catch { self.error=error.localizedDescription };downloading.remove(file.id) }
+                                    }.disabled(waiting || file.deleted || file.conflicted || downloading.contains(file.id))
+                                }
+                            } else {
+                                Button(file.value?.object?["path"]?.string ?? file.title) { open(file.id) }
+                                    .disabled(waiting || file.deleted || file.conflicted)
+                                if waiting { Text(file.deleted ? "Suppression en attente de synchronisation" : "Enregistré sur cet appareil · synchronisation en attente").font(.caption).foregroundStyle(.secondary) }
+                                if waiting, !file.deleted, let content=file.value?.object?["content"]?.string {
+                                    DisclosureGroup("Voir le contenu enregistré") { Text(content).font(.system(.caption,design:.monospaced)).textSelection(.enabled) }
                                 }
                             }
                             if file.conflicted { NavigationLink("Examiner les versions en conflit") { CloudConflictReviewView(objectId:file.id) } }
@@ -2710,7 +2733,22 @@ private struct CloudWorkspaceView: View {
             } else { Text("Reconnectez-vous au compte de ce projet.") }
         }.navigationTitle("Fichiers Hermes")
             .onAppear { if account == nil { account=manager.session?.accountId } }
-            .onChange(of:manager.session?.accountId) { _,_ in account=nil;editor=nil;error=nil }
+            .onChange(of:manager.session?.accountId) { _,_ in
+                let old=Array(downloaded.values);downloaded=[:];downloading=[];account=nil;editor=nil;importDraft=nil;importing=false;error=nil
+                Task { for url in old { await manager.releaseCloudWorkspaceArtifactDownload(url) } }
+            }
+            .onDisappear { let old=Array(downloaded.values);downloaded=[:];Task { for url in old { await manager.releaseCloudWorkspaceArtifactDownload(url) } } }
+            .fileImporter(isPresented:$importing,allowedContentTypes:[.data]) { result in
+                guard let draft=importDraft else { return };importBusy=true;error=nil
+                Task {
+                    do {
+                        let source=try result.get(),granted=source.startAccessingSecurityScopedResource()
+                        defer { if granted { source.stopAccessingSecurityScopedResource() } }
+                        _=try await manager.beginCloudWorkspaceArtifactImport(draft,path:source.lastPathComponent,sourceURL:source)
+                    } catch { if manager.cloudWorkspaceDraftVisible(draft) { self.error=error.localizedDescription } }
+                    importBusy=false;importDraft=nil
+                }
+            }
             .sheet(item:$editor) { selection in CloudWorkspaceEditorView(draft:selection.draft) }
     }
 }

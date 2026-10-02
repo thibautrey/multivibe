@@ -270,7 +270,7 @@ import Network
         guard let state=cloudAgentState,state.accountId==session?.accountId,(try? state.workspaceProject(projectId)) != nil else { return [] }
         var files:[String:CloudAgentSummary]=[:]
         for (id,object) in state.objects where object.kind=="file" && !object.deleted {
-            let values=object.heads.compactMap{object.versions[$0]?.value}.filter{$0.object?["type"]?.string=="hermes_workspace_file" && $0.object?["projectId"]?.string==projectId}
+            let values=object.heads.compactMap{object.versions[$0]?.value}.filter{["hermes_workspace_file","hermes_artifact_file"].contains($0.object?["type"]?.string ?? "") && $0.object?["projectId"]?.string==projectId}
             guard !values.isEmpty else { continue }
             let paths=Set(values.compactMap{$0.object?["path"]?.string})
             files[id] = .init(id:id,kind:"file",title:paths.count==1 ? paths.first! : "Versions concurrentes",conflicted:object.heads.count>1,deleted:false,value:object.heads.count==1 ? values.first : nil)
@@ -286,7 +286,7 @@ import Network
         let operations=state.outbox.filter{$0.kind=="file"} + pendingCloudArtifacts.filter{pending in !state.outbox.contains(where:{$0.operationId==pending.operation.operationId})}.map(\.operation)
         return operations.compactMap { operation in
             let raw=operation.value?.object ?? state.objects[operation.objectId]?.versions.values.first(where:{$0.value?.object?["projectId"]?.string==projectId})?.value?.object
-            guard raw?["type"]?.string=="hermes_workspace_file",raw?["projectId"]?.string==projectId else { return nil }
+            guard ["hermes_workspace_file","hermes_artifact_file"].contains(raw?["type"]?.string ?? ""),raw?["projectId"]?.string==projectId else { return nil }
             return .init(id:operation.objectId,kind:"file",title:raw?["path"]?.string ?? "Fichier",conflicted:state.conflicts[operation.objectId] != nil,deleted:operation.deleted,value:operation.value)
         }.sorted{$0.id<$1.id}
     }
