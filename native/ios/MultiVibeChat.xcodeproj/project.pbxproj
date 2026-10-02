@@ -9,9 +9,11 @@
 /* Begin PBXBuildFile section */
 		4CD806D764BD691CA0CF711A /* CloudAgentStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FEFE1D18BE42970C813B47E /* CloudAgentStateTests.swift */; };
 		91C0AA000000000000000003 /* CloudHermesContextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91C0AA000000000000000004 /* CloudHermesContextTests.swift */; };
+		91C0BB000000000000000003 /* HermesSkillCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91C0BB000000000000000004 /* HermesSkillCatalogTests.swift */; };
 		C7FF1FE7C944FBE343910524 /* CloudAgentState.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD80E887E35614D8AAC6E385 /* CloudAgentState.swift */; };
 		4EED5163512B1AEF02BEE848 /* CloudWorkspaceArtifactStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50CFD8DB0AC7E749D88E0EA8 /* CloudWorkspaceArtifactStore.swift */; };
 		91C0AA000000000000000001 /* CloudHermesContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91C0AA000000000000000002 /* CloudHermesContext.swift */; };
+		91C0BB000000000000000001 /* HermesSkillCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91C0BB000000000000000002 /* HermesSkillCatalog.swift */; };
 		C01920000000000000000001 /* CloudHermesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01920000000000000000002 /* CloudHermesTests.swift */; };
 		3491652F996C3B28A19A7889 /* CloudWorkspaceArtifactStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09865E68F5B92BF9F6227862 /* CloudWorkspaceArtifactStoreTests.swift */; };
 		C01910000000000000000003 /* HermesFoundationAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01910000000000000000004 /* HermesFoundationAdapter.swift */; };
@@ -90,9 +92,11 @@
 /* Begin PBXFileReference section */
 		1FEFE1D18BE42970C813B47E /* CloudAgentStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudAgentStateTests.swift; sourceTree = "<group>"; };
 		91C0AA000000000000000004 /* CloudHermesContextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudHermesContextTests.swift; sourceTree = "<group>"; };
+		91C0BB000000000000000004 /* HermesSkillCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesSkillCatalogTests.swift; sourceTree = "<group>"; };
 		BD80E887E35614D8AAC6E385 /* CloudAgentState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudAgentState.swift; sourceTree = "<group>"; };
 		50CFD8DB0AC7E749D88E0EA8 /* CloudWorkspaceArtifactStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudWorkspaceArtifactStore.swift; sourceTree = "<group>"; };
 		91C0AA000000000000000002 /* CloudHermesContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudHermesContext.swift; sourceTree = "<group>"; };
+		91C0BB000000000000000002 /* HermesSkillCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesSkillCatalog.swift; sourceTree = "<group>"; };
 		C01910000000000000000004 /* HermesFoundationAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesFoundationAdapter.swift; sourceTree = "<group>"; };
 		C01920000000000000000002 /* CloudHermesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudHermesTests.swift; sourceTree = "<group>"; };
 		09865E68F5B92BF9F6227862 /* CloudWorkspaceArtifactStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudWorkspaceArtifactStoreTests.swift; sourceTree = "<group>"; };
@@ -276,6 +280,7 @@
 				BD80E887E35614D8AAC6E385 /* CloudAgentState.swift */,
 				50CFD8DB0AC7E749D88E0EA8 /* CloudWorkspaceArtifactStore.swift */,
 				91C0AA000000000000000002 /* CloudHermesContext.swift */,
+				91C0BB000000000000000002 /* HermesSkillCatalog.swift */,
 				4EC3EFFD60CE2939BD5BCD88 /* ChatAPI.swift */,
 				ED63046FBAF333333E159086 /* ConversationManager.swift */,
 				A10A5C9556D7CAFE2EE22707 /* LocalAgent.swift */,
@@ -324,6 +329,7 @@
 				B34FCAA84CB37FAFCB223316 /* AgentMemoryTests.swift */,
 				1FEFE1D18BE42970C813B47E /* CloudAgentStateTests.swift */,
 				91C0AA000000000000000004 /* CloudHermesContextTests.swift */,
+				91C0BB000000000000000004 /* HermesSkillCatalogTests.swift */,
 				C8B7BDC40696F8598713904B /* AutomationTests.swift */,
 				305C09A77B9927C7474D6147 /* DownloadedModelTests.swift */,
 				C01920000000000000000002 /* CloudHermesTests.swift */,
@@ -474,6 +480,7 @@
 				D93DCB45C9AFA5ED65425AE5 /* AgentMemoryTests.swift in Sources */,
 				4CD806D764BD691CA0CF711A /* CloudAgentStateTests.swift in Sources */,
 				91C0AA000000000000000003 /* CloudHermesContextTests.swift in Sources */,
+				91C0BB000000000000000003 /* HermesSkillCatalogTests.swift in Sources */,
 				BFFED1E87FEC0124E73AD138 /* AutomationTests.swift in Sources */,
 				8C5D2ED524FCFB0349D7B83C /* DownloadedModelTests.swift in Sources */,
 				C01920000000000000000001 /* CloudHermesTests.swift in Sources */,
@@ -492,6 +499,7 @@
 				C7FF1FE7C944FBE343910524 /* CloudAgentState.swift in Sources */,
 				4EED5163512B1AEF02BEE848 /* CloudWorkspaceArtifactStore.swift in Sources */,
 				91C0AA000000000000000001 /* CloudHermesContext.swift in Sources */,
+				91C0BB000000000000000001 /* HermesSkillCatalog.swift in Sources */,
 				C74FEFADAC73275DB726E5A6 /* AuthenticationView.swift in Sources */,
 				C5B0EF7566EBC95B7DDE1C55 /* AutomationCoordinator.swift in Sources */,
 				CFAB7A55714A5EFB15394DD9 /* AutomationStore.swift in Sources */,
