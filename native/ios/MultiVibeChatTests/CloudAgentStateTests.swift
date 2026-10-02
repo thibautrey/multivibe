@@ -54,3 +54,23 @@ final class CloudAgentStateTests:XCTestCase {
         XCTAssertThrowsError(try state.acknowledging(.init(accountId:id(9),receipts:[]),submitted:[operation]))
     }
 }
+
+extension CloudAgentStateTests {
+    func testHistoryAnchorsSelectExactMessageVersionAndRejectErasureAccountAndMissingRun() throws {
+        let session=id(20),branch=id(21),message=id(22),version=id(23),other=id(24)
+        let history:[HistoryJSON]=[.object(["role":.string("user"),"content":.string("Exact context")])]
+        let value:HistoryJSON = .object(["type":.string("hermes_local_turn"),"sessionId":.string(session),"branchId":.string(branch),"turnId":.string(message),"history":.array(history)])
+        var state=CloudAgentState(accountId:id(1),deviceId:id(3))
+        state=try state.applying(.init(accountId:id(1),changes:[
+            .init(operationId:id(25),objectId:message,versionId:version,deviceId:id(3),kind:"message",parents:[],deleted:false,value:value,cursor:1,erased:false),
+            .init(operationId:id(26),objectId:message,versionId:other,deviceId:id(3),kind:"message",parents:[version],deleted:false,value:.object(["different":.bool(true)]),cursor:2,erased:false)
+        ],cursor:2,hasMore:false))
+        let anchor:HistoryJSON = .object(["type":.string("hermes_history_anchor"),"source":.string("message"),"objectId":.string(message),"versionId":.string(version),"sourceBranchId":.string(branch)])
+        XCTAssertEqual(try state.anchoredHistory(anchor,sessionId:session,account:id(1),runs:[:]),history)
+        XCTAssertThrowsError(try state.anchoredHistory(anchor,sessionId:session,account:id(9),runs:[:]))
+        let runAnchor:HistoryJSON = .object(["type":.string("hermes_history_anchor"),"source":.string("run"),"runId":.string(id(30)),"sourceBranchId":.string(branch)])
+        XCTAssertThrowsError(try state.anchoredHistory(runAnchor,sessionId:session,account:id(1),runs:[:]))
+        state=try state.applying(.init(accountId:id(1),changes:[.init(operationId:id(27),objectId:message,versionId:id(28),deviceId:id(3),kind:"message",parents:[other],deleted:true,value:nil,cursor:3,erased:false)],cursor:3,hasMore:false))
+        XCTAssertThrowsError(try state.anchoredHistory(anchor,sessionId:session,account:id(1),runs:[:]))
+    }
+}

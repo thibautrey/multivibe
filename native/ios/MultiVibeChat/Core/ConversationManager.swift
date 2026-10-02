@@ -173,8 +173,62 @@ import Network
             cloudAgentState?.objects[review.objectId]?.heads == [version] &&
             cloudAgentState?.outbox.contains(where: { $0.versionId == version }) == false
     }
+    struct CloudHistoryChoice: Identifiable {
+        let id:String
+        let selectedHead:String
+        let cursor:Int64
+        let anchor:HistoryJSON
+        let history:[HistoryJSON]
+    }
+    private func sessionResolutionSafe(_ id:String) throws {
+        guard let state=cloudAgentState,state.accountId == session?.accountId,
+            !state.outbox.contains(where:{$0.objectId == id || $0.value?.object?["sessionId"]?.string == id}),
+            !cloudHermesBindings.values.contains(where:{$0.sessionId == id}),
+            activeCloudHermes == nil, !remoteHermesBusy else { throw APIError.server(409,"hermes_session_pending_state") }
+        if let local=remoteHermes[id] {
+            guard local.requests.allSatisfy({ request in
+                guard let run=local.results[request.input.runId] else { return false }
+                return ["completed","cancelled"].contains(run.state)
+            }) else { throw APIError.server(409,"hermes_session_pending_state") }
+        }
+        for object in state.objects.values where object.kind == "task" {
+            let values=object.versions.values.filter{$0.value?.object?["sessionId"]?.string == id}
+            if values.isEmpty { continue }
+            guard !object.deleted,object.heads.count == 1 else { throw APIError.server(409,"hermes_session_pending_state") }
+            for change in values {
+                guard let value=change.value?.object,let runId=value["runId"]?.string,let run=discoveredCloudRuns[runId],
+                    run.sessionId == id,run.branchId == value["branchId"]?.string,
+                    ["completed","cancelled"].contains(run.state) else { throw APIError.server(409,"hermes_session_pending_state") }
+            }
+        }
+    }
+    func cloudHistoryChoices(_ review:CloudConflictReview, selectedHead:String) async throws -> [CloudHistoryChoice] {
+        guard cloudConflictReviewVisible(review),!cloudAgentSyncing else { throw CancellationError() }
+        await synchronizeCloudAgentState()
+        guard cloudConflictReviewVisible(review),cloudAgentSyncError == nil,
+            let state=cloudAgentState,Set(state.objects[review.objectId]?.heads ?? []) == Set(review.versions.map(\.versionId)),
+            let selected=review.versions.first(where:{$0.versionId == selectedHead}),selected.kind == "session",
+            let branch=selected.value?.object?["branchId"]?.string,CloudAgentState.uuid(branch)
+        else { throw APIError.server(409,"agent_resolution_review_stale_or_unavailable") }
+        try sessionResolutionSafe(review.objectId)
+        var choices:[CloudHistoryChoice]=[]
+        func append(_ anchor:HistoryJSON,_ id:String) throws {
+            let history=try state.anchoredHistory(anchor,sessionId:review.objectId,account:review.account,runs:discoveredCloudRuns)
+            choices.append(.init(id:id,selectedHead:selectedHead,cursor:state.cursor,anchor:anchor,history:history))
+        }
+        for run in discoveredCloudRuns.values.sorted(by:{$0.runId<$1.runId}) where run.sessionId == review.objectId && run.branchId == branch && run.state == "completed" {
+            try append(.object(["type":.string("hermes_history_anchor"),"source":.string("run"),"runId":.string(run.runId),"sourceBranchId":.string(branch)]),run.runId)
+        }
+        if let local=selected.value?.object?["localTurnId"]?.string,let object=state.objects[local],!object.deleted {
+            for version in object.heads.sorted() {
+                try append(.object(["type":.string("hermes_history_anchor"),"source":.string("message"),"objectId":.string(local),"versionId":.string(version),"sourceBranchId":.string(branch)]),version)
+            }
+        }
+        guard !choices.isEmpty else { throw APIError.server(409,"hermes_history_anchor_unavailable") }
+        return choices
+    }
     @discardableResult
-    func resolveCloudConflict(_ review: CloudConflictReview, selectedHead: String) async throws -> String {
+    func resolveCloudConflict(_ review: CloudConflictReview, selectedHead: String, historyChoice:CloudHistoryChoice? = nil) async throws -> String {
         guard !cloudAgentSyncing, review.epoch == sessionRevision, review.account == session?.accountId else { throw CancellationError() }
         await synchronizeCloudAgentState()
         guard cloudAgentSyncError == nil, !cloudAgentSyncing, review.epoch == sessionRevision, review.account == session?.accountId else { throw CancellationError() }
@@ -185,14 +239,18 @@ import Network
             throw APIError.server(403,"agent_cloud_consent_required")
         }
         guard let state = cloudAgentState else { throw APIError.invalidResponse }
-        let mutation = try state.resolution(objectId:review.objectId,reviewedHeads:review.versions.map(\.versionId),selectedHead:selectedHead,account:review.account)
-        if mutation.kind == "session" {
-            guard remoteHermes[review.objectId] == nil,
-                !cloudHermesBindings.values.contains(where: { $0.sessionId == review.objectId }) else {
-                throw APIError.server(409,"agent_session_history_requires_resolution")
-            }
-        }
-        try enqueueCloudAgentMutation(mutation)
+        let mutation:CloudAgentMutation
+        if state.objects[review.objectId]?.kind == "session" {
+            try sessionResolutionSafe(review.objectId)
+            guard let choice=historyChoice,choice.selectedHead == selectedHead,choice.cursor == state.cursor,
+                try state.anchoredHistory(choice.anchor,sessionId:review.objectId,account:review.account,runs:discoveredCloudRuns) == choice.history
+            else { throw APIError.server(409,"hermes_history_review_required") }
+            mutation=try state.anchoredResolution(objectId:review.objectId,reviewedHeads:review.versions.map(\.versionId),selectedHead:selectedHead,account:review.account,anchor:choice.anchor,runs:discoveredCloudRuns)
+        } else { mutation=try state.resolution(objectId:review.objectId,reviewedHeads:review.versions.map(\.versionId),selectedHead:selectedHead,account:review.account) }
+        let oldState=cloudAgentState,oldRemote=remoteHermes[review.objectId]
+        var next=state;try next.enqueue(mutation);cloudAgentState=next
+        if mutation.kind == "session" { remoteHermes[review.objectId]=nil }
+        guard persist() else { cloudAgentState=oldState;remoteHermes[review.objectId]=oldRemote;throw APIError.server(0,"history_cache_write_failed") }
         await synchronizeCloudAgentState()
         guard cloudConflictReviewVisible(review) else { throw CancellationError() }
         // Return the durable identity, not a success claim: the UI verifies the exact acknowledged head.
@@ -243,12 +301,14 @@ import Network
                 while let state=cloudAgentState, !state.outbox.isEmpty {
                     var batch:[CloudAgentMutation]=[]
                     let blockedLocalSessions = Set(state.outbox.compactMap { operation -> String? in
+                        if operation.kind == "session", operation.value?.object?["historyAnchor"] != nil { return nil }
                         guard let source = operation.value?.object?["localSource"]?.string else { return nil }
                         let owner = operation.kind == "session" ? operation.objectId : operation.value?.object?["sessionId"]?.string
                         let approved = (consent.exportSources ?? []).contains(source) && cloudHermesBindings.values.contains(where: { $0.accountId == auth.accountId && $0.permitsLocalOperation(operation) })
                         return approved ? nil : owner
                     })
                     let allowed = state.outbox.filter { operation in
+                        if operation.kind == "session", operation.value?.object?["historyAnchor"] != nil { return true }
                         guard let source = operation.value?.object?["localSource"]?.string else { return true }
                         guard let owner = operation.kind == "session" ? operation.objectId : operation.value?.object?["sessionId"]?.string else { return false }
                         return !blockedLocalSessions.contains(owner) && (consent.exportSources ?? []).contains(source)
@@ -266,13 +326,23 @@ import Network
                 }
                 try await pull()
             }
-            let liveRunIDs=Set(cloudAgentObjects.filter{$0.kind == "task" && !$0.deleted && !$0.conflicted}.compactMap{$0.value?.object?["runId"]?.string})
+            let anchors=cloudAgentObjects.filter{$0.kind == "session" && !$0.deleted && !$0.conflicted}.compactMap { object -> (String,HistoryJSON)? in
+                guard let anchor=object.value?.object?["historyAnchor"] else { return nil }; return (object.id,anchor)
+            }
+            let anchorRunIDs=Set(anchors.compactMap{$0.1.object?["runId"]?.string})
+            let liveRunIDs=anchorRunIDs.union(Set(cloudAgentObjects.filter{$0.kind == "task" && !$0.deleted && !$0.conflicted}.compactMap{$0.value?.object?["runId"]?.string}))
             discoveredCloudRuns=discoveredCloudRuns.filter{liveRunIDs.contains($0.key)}
             for object in cloudAgentObjects where object.kind == "task" && !object.deleted && !object.conflicted {
                 guard let value=object.value?.object,value["type"]?.string == "hermes_run",let runID=value["runId"]?.string else { continue }
                 let run=try await services.hermesRead(auth.accountId,runID,auth.accessToken,false);try current()
                 guard run.sessionId == value["sessionId"]?.string,run.branchId == value["branchId"]?.string else { throw APIError.invalidResponse }
                 discoveredCloudRuns[runID]=run // Separate from legacy conversations and their sync.
+            }
+            for (id,anchor) in anchors where anchor.object?["source"]?.string == "run" {
+                guard let runId=anchor.object?["runId"]?.string,CloudAgentState.uuid(runId) else { throw APIError.invalidResponse }
+                let run=try await services.hermesRead(auth.accountId,runId,auth.accessToken,false);try current()
+                discoveredCloudRuns[runId]=run
+                _ = try cloudAgentState!.anchoredHistory(anchor,sessionId:id,account:auth.accountId,runs:discoveredCloudRuns)
             }
             cloudAgentSyncError=nil
         } catch { if sessionRevision == epoch { cloudAgentSyncError=error.localizedDescription } }
@@ -290,6 +360,11 @@ import Network
         guard binding.pending == nil, let currentTurn = input.last(where: { $0.role == "user" }) else { throw APIError.server(409,"hermes_pending_run_requires_recovery") }
         let account = binding.accountId
         var history = binding.history
+        if let object=cloudAgentState?.objects[binding.sessionId] {
+            guard !object.deleted,object.heads.count == 1,let value=object.versions[object.heads[0]]?.value?.object,
+                value["branchId"]?.string == binding.branchId else { throw APIError.server(409,"hermes_binding_branch_changed") }
+            if value["historyAnchor"] != nil { history=try remoteBase(binding.sessionId).history }
+        }
         for turn in binding.localTurns ?? [] where !turn.published && turn.turnId != currentTurn.id {
             let context = HermesRunContext(accountID:account,conversationID:id,turnID:turn.turnId,modelID:turn.modelId,source:turn.source)
             guard let raw = try await services.hermesLocalCheckpoint(context) else { throw APIError.server(409,"hermes_local_checkpoint_requires_recovery") }
@@ -316,6 +391,11 @@ import Network
     private func reconcileLocalTurns(consent: CloudHermesConsent, epoch: UUID) async throws {
         let account = consent.accountId
         for (id, captured) in cloudHermesBindings where captured.accountId == account && captured.cloudAuthorized != false {
+            if let object=cloudAgentState?.objects[captured.sessionId],object.heads.count == 1,
+                let branch=object.versions[object.heads[0]]?.value?.object?["branchId"]?.string,branch != captured.branchId {
+                if (captured.localTurns ?? []).contains(where:{!$0.published}) { throw APIError.server(409,"hermes_binding_branch_changed") }
+                continue
+            }
             for (index, turn) in (captured.localTurns ?? []).enumerated() where !turn.published {
                 guard (captured.localExportSources ?? []).contains(turn.source), (consent.exportSources ?? []).contains(turn.source) else { break }
                 guard captured.pending == nil else { throw APIError.server(409,"hermes_pending_run_requires_recovery") }
@@ -358,7 +438,10 @@ import Network
             let version = object.versions[object.heads[0]], let value = version.value?.object,
             let branch = value["branchId"]?.string, CloudAgentState.uuid(branch) else { throw APIError.server(409,"hermes_session_conflict_or_missing") }
         var history: [HistoryJSON] = [], cursor: Int64 = 0
-        if let local = value["localTurnId"]?.string {
+        if let anchor=value["historyAnchor"] {
+            history=try state.anchoredHistory(anchor,sessionId:id,account:state.accountId,runs:discoveredCloudRuns)
+            cursor=version.cursor
+        } else if let local = value["localTurnId"]?.string {
             guard CloudAgentState.uuid(local), let message = state.objects[local], message.kind == "message", !message.deleted,
                 message.heads.count == 1, let raw = message.versions[message.heads[0]]?.value?.object,
                 raw["type"]?.string == "hermes_local_turn", raw["sessionId"]?.string == id, raw["branchId"]?.string == branch,
@@ -375,8 +458,8 @@ import Network
                 if change.cursor > cursor, let result = run.result, run.state == "completed" { history = result.history; cursor = change.cursor }
             }
         }
-        if let local = remoteHermes[id] {
-            guard local.accountId == state.accountId, local.branchId == branch else { throw APIError.invalidResponse }
+        if let local = remoteHermes[id], local.branchId == branch {
+            guard local.accountId == state.accountId else { throw APIError.invalidResponse }
             for request in local.requests {
                 guard let run = local.results[request.input.runId], run.state == "completed", let result = run.result else { continue }
                 if request.baseCursor >= cursor { history = result.history }
@@ -1281,6 +1364,11 @@ import Network
                             liveConsent.cloudEnabled, (binding.localTurns ?? []).allSatisfy({ (liveConsent.exportSources ?? []).contains($0.source) && (binding.localExportSources ?? []).contains($0.source) }) else {
                             throw APIError.server(403,"hermes_local_export_consent_required")
                         }
+                    }
+                    if let object=cloudAgentState?.objects[binding.sessionId] {
+                        guard !object.deleted,object.heads.count == 1,let value=object.versions[object.heads[0]]?.value?.object,
+                            value["branchId"]?.string == binding.branchId else { throw APIError.server(409,"hermes_binding_branch_changed") }
+                        if value["historyAnchor"] != nil { binding.history=try remoteBase(binding.sessionId).history }
                     }
                     let prior = input.dropLast()
                     if binding.history.isEmpty && !prior.isEmpty && !binding.importApproved { throw APIError.server(403,"hermes_history_import_required") }
