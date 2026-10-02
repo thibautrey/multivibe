@@ -1,7 +1,6 @@
 import CryptoKit
 import Foundation
 import Observation
-import CryptoKit
 import Network
 
 /// Injectable boundary so rotation races can be exercised without real tokens,
@@ -24,6 +23,18 @@ import Network
     }
     var hermesChanges: @MainActor (Int64,String) async throws -> CloudAgentPage = { try await ChatAPI.shared.hermesChanges(after:$0,token:$1) }
     var hermesMutations: @MainActor (String,[CloudAgentMutation],String) async throws -> CloudAgentReceipts = { try await ChatAPI.shared.hermesMutations(accountId:$0,operations:$1,token:$2) }
+    var artifactImport: @MainActor (String,URL) async throws -> CloudArtifactLocalFile = { try await CloudWorkspaceArtifactStore.shared.importFile(accountId:$0,source:$1) }
+    var artifactLocalChunk: @MainActor (String,CloudArtifactLocalFile,Int) async throws -> Data = { try await CloudWorkspaceArtifactStore.shared.readChunk(accountId:$0,file:$1,index:$2) }
+    var artifactRemove: @MainActor (String,CloudArtifactLocalFile) async throws -> Void = { try await CloudWorkspaceArtifactStore.shared.remove(accountId:$0,file:$1) }
+    var artifactBegin: @MainActor (String,CloudArtifactIdentity,String) async throws -> CloudArtifactManifest = { try await ChatAPI.shared.hermesArtifactBegin(accountId:$0,artifact:$1,token:$2) }
+    var artifactPut: @MainActor (String,CloudArtifactIdentity,Int,Data,String) async throws -> CloudArtifactManifest = { try await ChatAPI.shared.hermesArtifactPutChunk(accountId:$0,artifact:$1,index:$2,data:$3,token:$4) }
+    var artifactComplete: @MainActor (String,CloudArtifactIdentity,String) async throws -> CloudArtifactManifest = { try await ChatAPI.shared.hermesArtifactComplete(accountId:$0,artifact:$1,token:$2) }
+    var artifactRead: @MainActor (String,CloudArtifactIdentity,String) async throws -> CloudArtifactManifest = { try await ChatAPI.shared.hermesArtifactRead(accountId:$0,artifact:$1,token:$2) }
+    var artifactReadChunk: @MainActor (String,CloudArtifactIdentity,Int,String) async throws -> Data = { try await ChatAPI.shared.hermesArtifactReadChunk(accountId:$0,artifact:$1,index:$2,token:$3) }
+    var artifactDownloadBegin: @MainActor (String,CloudArtifactIdentity) async throws -> CloudArtifactLocalFile = { try await CloudWorkspaceArtifactStore.shared.beginDownload(accountId:$0,artifact:$1) }
+    var artifactDownloadAppend: @MainActor (String,CloudArtifactLocalFile,Int,Data) async throws -> Void = { try await CloudWorkspaceArtifactStore.shared.appendDownload(accountId:$0,file:$1,index:$2,data:$3) }
+    var artifactDownloadFinish: @MainActor (String,CloudArtifactLocalFile) async throws -> CloudArtifactLocalFile = { try await CloudWorkspaceArtifactStore.shared.finishDownload(accountId:$0,file:$1) }
+    var artifactURL: @MainActor (String,CloudArtifactLocalFile) async throws -> URL = { try await CloudWorkspaceArtifactStore.shared.url(accountId:$0,file:$1) }
     var hermesConsent: @MainActor (String) async throws -> CloudHermesConsent = { try await ChatAPI.shared.hermesConsent(token:$0) }
     var hermesEnable: @MainActor (String, Int, String) async throws -> CloudHermesConsent = { try await ChatAPI.shared.hermesSetConsent(accountId:$0,revision:$1,enabled:true,token:$2) }
     var hermesAuthorizeSources: @MainActor (String,Int,[String],String) async throws -> CloudHermesConsent = { try await ChatAPI.shared.hermesSetConsent(accountId:$0,revision:$1,enabled:true,token:$3,exportSources:$2) }
@@ -130,6 +141,18 @@ import Network
     private var remoteHermes: [String: RemoteHermesSession] = [:]
     private(set) var remoteHermesBusy = false
     private(set) var remoteHermesError: String?
+    struct PendingCloudArtifact: Codable, Equatable {
+        enum Phase: String, Codable { case copied, uploading, uploaded }
+        let account: String
+        let artifact: CloudWorkspaceArtifact
+        let file: CloudArtifactLocalFile
+        let projectParents: [String]
+        let operation: CloudAgentMutation
+        var phase: Phase
+        var identity: CloudArtifactIdentity { .init(artifactId:artifact.artifactId,projectId:artifact.projectId,fileId:artifact.id,byteLength:artifact.byteLength,sha256:artifact.sha256) }
+    }
+    private var pendingCloudArtifacts: [PendingCloudArtifact] = []
+    private var artifactDownloads: [URL:(String,CloudArtifactLocalFile)] = [:]
     private var cloudAgentState: CloudAgentState?
     private(set) var cloudAgentSyncing = false
     private var cloudAgentSyncEpoch:UUID?
@@ -175,6 +198,69 @@ import Network
         try CloudAgentState.validateWorkspaceText(path:path,content:content)
         return .init(account:state.accountId,epoch:sessionRevision,projectId:projectId,objectId:fileId,path:path,content:content,parents:parents,projectParents:project.heads)
     }
+    func cloudWorkspaceArtifactDraft(projectId:String,fileId:String?) throws -> CloudWorkspaceDraft {
+        guard let state=cloudAgentState,state.accountId==session?.accountId else { throw APIError.invalidResponse }
+        let project=try state.workspaceProject(projectId)
+        guard let fileId else { return try cloudWorkspaceDraft(projectId:projectId,fileId:nil) }
+        guard let object=state.objects[fileId],!object.deleted,object.kind=="file",object.heads.count==1,
+            let raw=object.versions[object.heads[0]]?.value?.object,raw["projectId"]?.string==projectId,
+            let path=raw["path"]?.string else { throw APIError.invalidResponse }
+        return .init(account:state.accountId,epoch:sessionRevision,projectId:projectId,objectId:fileId,path:path,content:"",parents:object.heads,projectParents:project.heads)
+    }
+    func beginCloudWorkspaceArtifactImport(_ draft:CloudWorkspaceDraft,path:String,sourceURL:URL) async throws -> String {
+        guard cloudWorkspaceDraftVisible(draft) else { throw CancellationError() }
+        try CloudAgentState.validateWorkspacePath(path)
+        let file=try await services.artifactImport(draft.account,sourceURL)
+        guard cloudWorkspaceDraftVisible(draft) else {
+            try? await services.artifactRemove(draft.account,file)
+            throw CancellationError()
+        }
+        return try await importCloudWorkspaceArtifact(draft,path:path,file:file)
+    }
+    func importCloudWorkspaceArtifact(_ draft:CloudWorkspaceDraft,path:String,file:CloudArtifactLocalFile) async throws -> String {
+        let operation:CloudAgentMutation
+        do {
+            guard cloudWorkspaceDraftVisible(draft),let state=cloudAgentState else { throw CancellationError() }
+            let artifact=CloudWorkspaceArtifact(id:CloudAgentState.workspaceFileID(projectId:draft.projectId,path:path),projectId:draft.projectId,path:path,artifactId:UUID().uuidString.lowercased(),byteLength:file.byteLength,sha256:file.sha256)
+            guard !pendingCloudArtifacts.contains(where:{$0.artifact.id==artifact.id}) else { throw APIError.server(409,"workspace_file_pending") }
+            operation=try state.workspaceArtifactMutation(projectId:draft.projectId,objectId:draft.objectId,path:path,artifact:artifact,parents:draft.parents,projectParents:draft.projectParents)
+            pendingCloudArtifacts.append(.init(account:draft.account,artifact:artifact,file:file,projectParents:draft.projectParents,operation:operation,phase:.copied))
+            guard persist() else { pendingCloudArtifacts.removeLast();throw APIError.server(0,"history_cache_write_failed") }
+        } catch { try? await services.artifactRemove(draft.account,file);throw error }
+        await synchronizeCloudAgentState()
+        guard draft.account==session?.accountId,draft.epoch==sessionRevision else { throw CancellationError() }
+        return operation.versionId
+    }
+    func downloadCloudWorkspaceArtifact(projectId:String,fileId:String) async throws -> URL {
+        let draft=try cloudWorkspaceArtifactDraft(projectId:projectId,fileId:fileId)
+        guard let raw=cloudAgentState?.objects[fileId]?.versions[draft.parents[0]]?.value?.object,
+            raw["type"]?.string=="hermes_artifact_file",let artifactId=raw["artifactId"]?.string,
+            let length=raw["byteLength"]?.number,length.isFinite,length.rounded()==length,length>=0,length<=Double(CloudArtifactIdentity.maxFileBytes),let hash=raw["sha256"]?.string else { throw APIError.invalidResponse }
+        let identity=CloudArtifactIdentity(artifactId:artifactId,projectId:projectId,fileId:fileId,byteLength:Int(length),sha256:hash)
+        func current() throws {
+            guard cloudWorkspaceDraftVisible(draft),cloudAgentState?.objects[fileId]?.heads==draft.parents else { throw CancellationError() }
+            try Task.checkCancellation()
+        }
+        let auth=try await validSession();try current()
+        let manifest=try await services.artifactRead(draft.account,identity,auth.accessToken);try current()
+        guard try manifest.checked(expected:identity).state=="complete" else { throw APIError.invalidResponse }
+        let file=try await services.artifactDownloadBegin(draft.account,identity)
+        do {
+        try current()
+        for index in 0..<identity.chunkCount {
+            let bytes=try await services.artifactReadChunk(draft.account,identity,index,auth.accessToken);try current()
+            try await services.artifactDownloadAppend(draft.account,file,index,bytes);try current()
+        }
+        let complete=try await services.artifactDownloadFinish(draft.account,file);try current()
+        let url=try await services.artifactURL(draft.account,complete);try current()
+        artifactDownloads[url]=(draft.account,complete)
+        return url
+        } catch { try? await services.artifactRemove(draft.account,file);throw error }
+    }
+    func releaseCloudWorkspaceArtifactDownload(_ url:URL) async {
+        guard let (account,file)=artifactDownloads.removeValue(forKey:url) else { return }
+        try? await services.artifactRemove(account,file)
+    }
     func cloudWorkspaceDraftVisible(_ draft:CloudWorkspaceDraft) -> Bool {
         guard draft.account==session?.accountId,draft.epoch==sessionRevision,let state=cloudAgentState,state.accountId==draft.account,
             (try? state.workspaceProject(draft.projectId)) != nil else { return false }
@@ -197,7 +283,8 @@ import Network
     }
     func cloudWorkspacePendingFiles(projectId:String) -> [CloudAgentSummary] {
         guard let state=cloudAgentState,state.accountId==session?.accountId,(try? state.workspaceProject(projectId)) != nil else { return [] }
-        return state.outbox.filter{$0.kind=="file"}.compactMap { operation in
+        let operations=state.outbox.filter{$0.kind=="file"} + pendingCloudArtifacts.filter{pending in !state.outbox.contains(where:{$0.operationId==pending.operation.operationId})}.map(\.operation)
+        return operations.compactMap { operation in
             let raw=operation.value?.object ?? state.objects[operation.objectId]?.versions.values.first(where:{$0.value?.object?["projectId"]?.string==projectId})?.value?.object
             guard raw?["type"]?.string=="hermes_workspace_file",raw?["projectId"]?.string==projectId else { return nil }
             return .init(id:operation.objectId,kind:"file",title:raw?["path"]?.string ?? "Fichier",conflicted:state.conflicts[operation.objectId] != nil,deleted:operation.deleted,value:operation.value)
@@ -216,6 +303,10 @@ import Network
     func cloudWorkspaceWriteStatus(_ draft:CloudWorkspaceDraft,version:String) -> String {
         guard draft.account==session?.accountId,draft.epoch==sessionRevision,let state=cloudAgentState,state.accountId==draft.account,
             (try? state.workspaceProject(draft.projectId)) != nil else { return "unavailable" }
+        if let pending=pendingCloudArtifacts.first(where:{$0.operation.versionId==version}) {
+            if let object=state.objects[pending.artifact.id],object.heads != pending.operation.parents && !object.heads.contains(version) { return object.deleted ? "unavailable" : "conflicted" }
+            return "pending"
+        }
         if let operation=state.outbox.first(where:{$0.versionId==version}) {
             if state.conflicts[operation.objectId] != nil { return "conflicted" }
             if let object=state.objects[operation.objectId], !object.heads.contains(operation.versionId), Set(object.heads) != Set(operation.parents) { return "conflicted" }
@@ -389,11 +480,52 @@ import Network
                 }
             }
             try await pull()
+            // Applied tombstones and recovered publication changes settle journal entries after a restart.
+            let settled=pendingCloudArtifacts.filter { pending in
+                guard let state=cloudAgentState else { return false }
+                return state.objects[pending.artifact.projectId]?.deleted == true || state.objects[pending.artifact.id]?.deleted == true ||
+                    (state.objects[pending.artifact.id]?.versions[pending.operation.versionId] != nil && !state.outbox.contains(where:{$0.operationId==pending.operation.operationId}))
+            }
+            if !settled.isEmpty {
+                let old=pendingCloudArtifacts
+                let ids=Set(settled.map{$0.operation.operationId})
+                pendingCloudArtifacts.removeAll{ids.contains($0.operation.operationId)}
+                guard persist() else { pendingCloudArtifacts=old;throw APIError.server(0,"history_cache_write_failed") }
+                for pending in settled { try? await services.artifactRemove(auth.accountId,pending.file);try current() }
+            }
             let consent=try await services.hermesConsent(auth.accessToken);try current()
             guard consent.accountId == auth.accountId else { throw APIError.invalidResponse }
             if consent.cloudEnabled {
                 try await reconcileLocalTurns(consent:consent,epoch:epoch)
                 try current()
+                for saved in pendingCloudArtifacts where saved.account==auth.accountId && saved.phase != .uploaded {
+                    try current()
+                    guard let state=cloudAgentState else { throw CancellationError() }
+                    // A tombstone must never be resurrected. Conflicts retain the local copy for explicit review.
+                    if state.objects[saved.artifact.projectId]?.deleted == true || state.objects[saved.artifact.id]?.deleted == true { continue }
+                    guard (try? state.workspaceProject(saved.artifact.projectId).heads)==saved.projectParents else { continue }
+                    if let index=pendingCloudArtifacts.firstIndex(where:{$0.operation.operationId==saved.operation.operationId}) {
+                        pendingCloudArtifacts[index].phase = .uploading
+                        guard persist() else { pendingCloudArtifacts[index]=saved;throw APIError.server(0,"history_cache_write_failed") }
+                    }
+                    var manifest=try await services.artifactBegin(auth.accountId,saved.identity,auth.accessToken);try current()
+                    manifest=try manifest.checked(expected:saved.identity)
+                    if manifest.state != "complete" {
+                        for index in 0..<saved.identity.chunkCount where !manifest.received.contains(index) {
+                            let bytes=try await services.artifactLocalChunk(auth.accountId,saved.file,index);try current()
+                            let reply=try await services.artifactPut(auth.accountId,saved.identity,index,bytes,auth.accessToken);try current()
+                            _ = try reply.checked(expected:saved.identity)
+                        }
+                        manifest=try await services.artifactComplete(auth.accountId,saved.identity,auth.accessToken);try current()
+                    }
+                    guard try manifest.checked(expected:saved.identity).state=="complete" else { throw APIError.invalidResponse }
+                    guard var next=cloudAgentState,let index=pendingCloudArtifacts.firstIndex(where:{$0.operation.operationId==saved.operation.operationId}) else { throw CancellationError() }
+                    if next.objects[saved.artifact.projectId]?.deleted == true || next.objects[saved.artifact.id]?.deleted == true { continue }
+                    let previous=next,old=pendingCloudArtifacts[index]
+                    try next.enqueue(saved.operation)
+                    cloudAgentState=next;pendingCloudArtifacts[index].phase = .uploaded
+                    guard persist() else { cloudAgentState=previous;pendingCloudArtifacts[index]=old;throw APIError.server(0,"history_cache_write_failed") }
+                }
                 while let state=cloudAgentState, !state.outbox.isEmpty {
                     var batch:[CloudAgentMutation]=[]
                     let blockedLocalSessions = Set(state.outbox.compactMap { operation -> String? in
@@ -418,7 +550,12 @@ import Network
                     let reply=try await services.hermesMutations(auth.accountId,batch,auth.accessToken);try current()
                     let previous=cloudAgentState!
                     cloudAgentState=try previous.acknowledging(reply,submitted:batch)
-                    guard persist() else { cloudAgentState=previous;throw APIError.server(0,"history_cache_write_failed") }
+                    let acknowledged=Set(reply.receipts.map(\.operationId))
+                    let oldPending=pendingCloudArtifacts
+                    let settled=pendingCloudArtifacts.filter{acknowledged.contains($0.operation.operationId)}
+                    pendingCloudArtifacts.removeAll{acknowledged.contains($0.operation.operationId)}
+                    guard persist() else { cloudAgentState=previous;pendingCloudArtifacts=oldPending;throw APIError.server(0,"history_cache_write_failed") }
+                    for pending in settled { try? await services.artifactRemove(auth.accountId,pending.file);try current() }
                 }
                 try await pull()
             }
@@ -833,7 +970,7 @@ import Network
     private var syncTask: Task<Void, Never>?
     var session: NativeSession? {
         didSet {
-            if session?.accountId != oldValue?.accountId { hermesRecovery = nil; cloudHermesRecoveryRun = nil; cloudHermesBindings = [:]; cloudAgentState=nil; cloudAgentSyncing=false; discoveredCloudRuns=[:]; remoteHermes=[:]; remoteHermesBusy=false; remoteHermesError=nil; cloudHermesRestoreTask?.cancel(); cloudHermesRestoreTask = nil; cloudHermesStatus = [:]; activeCloudHermes = nil; selectedAccess = nil; requestedAccessModel = nil; accessNotice = nil }
+            if session?.accountId != oldValue?.accountId { hermesRecovery = nil; cloudHermesRecoveryRun = nil; cloudHermesBindings = [:]; cloudAgentState=nil; pendingCloudArtifacts=[]; cloudAgentSyncing=false; discoveredCloudRuns=[:]; remoteHermes=[:]; remoteHermesBusy=false; remoteHermesError=nil; cloudHermesRestoreTask?.cancel(); cloudHermesRestoreTask = nil; cloudHermesStatus = [:]; activeCloudHermes = nil; selectedAccess = nil; requestedAccessModel = nil; accessNotice = nil }
         }
     }
     init(services suppliedServices: SessionServices? = nil) {
@@ -959,6 +1096,7 @@ import Network
     private struct HistoryCache: Codable {
         var cloudHermesBindings: [UUID: CloudHermesBinding]?
         var cloudAgentState: CloudAgentState?
+        var pendingCloudArtifacts: [PendingCloudArtifact]?
         var remoteHermes: [String:RemoteHermesSession]?
         var memory: [AgentMemory]?
         var memoryBaseline: [AgentMemory]?
@@ -1016,7 +1154,7 @@ import Network
         memoryReviews.values.forEach { $0.cancel() }; memoryReviews = [:]
         titleTasks.values.forEach { $0.cancel() }; titleTasks = [:]
         memoryRecords = []; memoryBaseline = []; memoryIndex = nil; memoryDraft = nil; memorySyncEnabled = false; memoryError = nil
-        calendarEnabled = false; remindersEnabled = false; cloudHermesBindings = [:]; cloudAgentState=nil; discoveredCloudRuns=[:]; remoteHermes=[:]; remoteHermesBusy=false; remoteHermesError=nil; cloudHermesRecoveryRun = nil
+        calendarEnabled = false; remindersEnabled = false; cloudHermesBindings = [:]; cloudAgentState=nil; pendingCloudArtifacts=[]; discoveredCloudRuns=[:]; remoteHermes=[:]; remoteHermesBusy=false; remoteHermesError=nil; cloudHermesRecoveryRun = nil
         do {
             let data: Data?
             do { data = try services.readLocalHistory(storageURL()) }
@@ -1024,6 +1162,7 @@ import Network
             if let data {
                 if let cache = try? JSONDecoder().decode(HistoryCache.self, from: data) {
                     cloudAgentState = cache.cloudAgentState?.accountId == session?.accountId ? cache.cloudAgentState : nil
+                    pendingCloudArtifacts = (cache.pendingCloudArtifacts ?? []).filter { $0.account == session?.accountId }
                     remoteHermes = (cache.remoteHermes ?? [:]).filter { $0.value.accountId == session?.accountId }
                     cloudHermesBindings = (cache.cloudHermesBindings ?? [:]).filter { $0.value.accountId == session?.accountId }
                     memoryRecords = cache.memory ?? []; memoryBaseline = cache.memoryBaseline ?? []; memorySyncEnabled = cache.memorySyncEnabled ?? false
@@ -1150,7 +1289,7 @@ import Network
                     conversations = []; selection = nil
                     resetHistorySync()
                     models = []; selectedModel = ""
-                    localDocuments = []; automaticSync = false; cloudHermesBindings = [:]; cloudAgentState=nil; discoveredCloudRuns=[:]; remoteHermes=[:]; remoteHermesBusy=false; remoteHermesError=nil; cloudHermesRecoveryRun = nil
+                    localDocuments = []; automaticSync = false; cloudHermesBindings = [:]; cloudAgentState=nil; pendingCloudArtifacts=[]; discoveredCloudRuns=[:]; remoteHermes=[:]; remoteHermesBusy=false; remoteHermesError=nil; cloudHermesRecoveryRun = nil
                     await restore(loadRemoteModels: false)
                     nativeShortcut = nil
         wantsNewConversation = false; wantsVoice = false
@@ -1192,7 +1331,7 @@ import Network
         conversations = []; selection = nil
         resetHistorySync()
         models = [LocalModel.option]; selectedModel = LocalModel.id
-        localDocuments = []; automaticSync = false; cloudHermesBindings = [:]; cloudAgentState=nil; discoveredCloudRuns=[:]; remoteHermes=[:]; remoteHermesBusy=false; remoteHermesError=nil; cloudHermesRecoveryRun = nil
+        localDocuments = []; automaticSync = false; cloudHermesBindings = [:]; cloudAgentState=nil; pendingCloudArtifacts=[]; discoveredCloudRuns=[:]; remoteHermes=[:]; remoteHermesBusy=false; remoteHermesError=nil; cloudHermesRecoveryRun = nil
         await restore(loadRemoteModels: false)
         nativeShortcut = nil
         wantsNewConversation = false; wantsVoice = false
@@ -1219,7 +1358,7 @@ import Network
         resetHistorySync()
         self.session = session
         error = nil; models = []; selectedModel = ""
-        conversations = []; localDocuments = []; automaticSync = false; cloudHermesBindings = [:]; cloudAgentState=nil; discoveredCloudRuns=[:]; remoteHermes=[:]; remoteHermesBusy=false; remoteHermesError=nil; cloudHermesRecoveryRun = nil; selection = nil
+        conversations = []; localDocuments = []; automaticSync = false; cloudHermesBindings = [:]; cloudAgentState=nil; pendingCloudArtifacts=[]; discoveredCloudRuns=[:]; remoteHermes=[:]; remoteHermesBusy=false; remoteHermesError=nil; cloudHermesRecoveryRun = nil; selection = nil
         await restore()
     }
     /// Keep only the latest foreground request while authentication restores.
@@ -1634,7 +1773,7 @@ import Network
         await HermesCheckpointStore.shared.invalidateAccount(previous?.accountId)
         services.clear(); session = nil; conversations = []; selection = nil
         models = []; selectedModel = ""; wantsNewConversation = false; wantsVoice = false; wantsVoiceConversation = false; wantsImmediateVoiceCapture = false; pendingDraft = nil; error = nil
-        localDocuments = []; automaticSync = false; cloudHermesBindings = [:]; cloudAgentState=nil; discoveredCloudRuns=[:]; remoteHermes=[:]; remoteHermesBusy=false; remoteHermesError=nil; cloudHermesRecoveryRun = nil
+        localDocuments = []; automaticSync = false; cloudHermesBindings = [:]; cloudAgentState=nil; pendingCloudArtifacts=[]; discoveredCloudRuns=[:]; remoteHermes=[:]; remoteHermesBusy=false; remoteHermesError=nil; cloudHermesRecoveryRun = nil
         await restore()
         if let previous {
             do {
@@ -2280,7 +2419,7 @@ import Network
         guard !isRestoring, storageLoaded else { return false }
         do {
             let url = try storageURL()
-            try services.writeHistory(JSONEncoder().encode(HistoryCache(cloudHermesBindings: cloudHermesBindings, cloudAgentState:cloudAgentState, remoteHermes:remoteHermes, memory: memoryRecords, memoryBaseline: memoryBaseline, memorySyncEnabled: memorySyncEnabled, calendarEnabled: calendarEnabled, remindersEnabled: remindersEnabled, documents: localDocuments, importedGuestSnapshots: importedGuestSnapshots, automaticSync: automaticSync, conversations: conversations,
+            try services.writeHistory(JSONEncoder().encode(HistoryCache(cloudHermesBindings: cloudHermesBindings, cloudAgentState:cloudAgentState, pendingCloudArtifacts:pendingCloudArtifacts, remoteHermes:remoteHermes, memory: memoryRecords, memoryBaseline: memoryBaseline, memorySyncEnabled: memorySyncEnabled, calendarEnabled: calendarEnabled, remindersEnabled: remindersEnabled, documents: localDocuments, importedGuestSnapshots: importedGuestSnapshots, automaticSync: automaticSync, conversations: conversations,
                 snapshot: historySnapshot, pending: pendingHistorySave, baseline: historyBaseline,
                 conversationIDs: historyConversationIDs, messageIDs: historyMessageIDs)), url)
             return true

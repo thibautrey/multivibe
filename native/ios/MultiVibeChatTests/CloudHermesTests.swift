@@ -740,3 +740,74 @@ final class CloudWorkspaceArtifactGraphTests: XCTestCase {
         XCTAssertThrowsError(try binary(deletedProject,value))
     }
 }
+
+@MainActor final class CloudArtifactJournalTests: XCTestCase {
+    private func fixture() throws -> (NativeSession,String,Data) {
+        let account=UUID().uuidString.lowercased(),project=UUID().uuidString.lowercased(),device=UUID().uuidString.lowercased()
+        let state=try CloudAgentState(accountId:account,deviceId:device).applying(.init(accountId:account,changes:[.init(operationId:UUID().uuidString.lowercased(),objectId:project,versionId:UUID().uuidString.lowercased(),deviceId:device,kind:"project",parents:[],deleted:false,value:.object(["title":.string("Project")]),cursor:1,erased:false)],cursor:1,hasMore:false))
+        let data=try JSONSerialization.data(withJSONObject:["cloudAgentState":JSONSerialization.jsonObject(with:JSONEncoder().encode(state)),"conversations":[],"baseline":[],"conversationIDs":[:],"messageIDs":[:]])
+        return (.init(accessToken:"fixture",refreshToken:"fixture",expiresAt:.distantFuture,accountId:account),project,data)
+    }
+    private func idle(_ manager:ConversationManager) async {
+        for _ in 0..<200 { await Task.yield();if !manager.cloudAgentSyncing { return } }
+    }
+    private func manifest(_ identity:CloudArtifactIdentity,_ complete:Bool) -> CloudArtifactManifest {
+        .init(artifactId:identity.artifactId,projectId:identity.projectId,fileId:identity.fileId,byteLength:identity.byteLength,sha256:identity.sha256,chunkBytes:CloudArtifactIdentity.chunkBytes,state:complete ? "complete" : "uploading",received:[])
+    }
+    func testLostCompletionResumesSameIdentityAndPublishesOnlyAfterDurableComplete() async throws {
+        let (auth,project,data)=try fixture()
+        var saved=data,completed=false,beginIDs:[String]=[],completeCalls=0,publications=0,removals=0
+        let file=CloudArtifactLocalFile(id:UUID().uuidString.lowercased(),byteLength:0,sha256:String(repeating:"a",count:64))
+        var services=isolatedServices(load:{auth},readLocalHistory:{_ in saved})
+        services.writeHistory={bytes,_ in saved=bytes}
+        services.hermesChanges={_,_ in .init(accountId:auth.accountId,changes:[],cursor:1,hasMore:false)}
+        services.hermesConsent={_ in .init(accountId:auth.accountId,cloudEnabled:true,revision:1)}
+        services.artifactBegin={_,identity,_ in beginIDs.append(identity.artifactId);return self.manifest(identity,completed)}
+        services.artifactComplete={_,_,_ in completeCalls += 1;completed=true;throw APIError.server(503,"lost_response")}
+        services.artifactRemove={_,local in
+            XCTAssertEqual(local,file)
+            let cache=try JSONSerialization.jsonObject(with:saved) as! [String:Any]
+            XCTAssertEqual((cache["pendingCloudArtifacts"] as? [Any])?.count,0)
+            removals += 1
+        }
+        services.hermesMutations={_,operations,_ in
+            XCTAssertTrue(completed)
+            let cache=try JSONSerialization.jsonObject(with:saved) as! [String:Any]
+            let journal=try XCTUnwrap((cache["pendingCloudArtifacts"] as? [[String:Any]])?.first)
+            XCTAssertEqual(journal["phase"] as? String,"uploaded")
+            publications += 1
+            return .init(accountId:auth.accountId,receipts:operations.map{.init(operationId:$0.operationId,versionId:$0.versionId,cursor:2,heads:[$0.versionId],deleted:false)})
+        }
+        let first=ConversationManager(services:services)
+        await first.restore(loadRemoteModels:false);await idle(first)
+        let draft=try first.cloudWorkspaceArtifactDraft(projectId:project,fileId:nil)
+        _=try await first.importCloudWorkspaceArtifact(draft,path:"empty.bin",file:file)
+        XCTAssertEqual(publications,0);XCTAssertEqual(removals,0)
+        XCTAssertEqual(first.cloudWorkspacePendingFiles(projectId:project).first?.title,"empty.bin")
+        let restarted=ConversationManager(services:services)
+        await restarted.restore(loadRemoteModels:false);await idle(restarted)
+        XCTAssertEqual(completeCalls,1);XCTAssertEqual(Set(beginIDs).count,1)
+        XCTAssertEqual(publications,1);XCTAssertEqual(removals,1)
+    }
+    func testCopyFinishingAfterAccountSwitchIsDiscardedWithoutNetwork() async throws {
+        let (auth,project,data)=try fixture()
+        let file=CloudArtifactLocalFile(id:UUID().uuidString.lowercased(),byteLength:0,sha256:String(repeating:"a",count:64))
+        var release:CheckedContinuation<CloudArtifactLocalFile,Never>?,removals=0,begins=0
+        let copied=expectation(description:"Copy started")
+        var services=isolatedServices(load:{auth},readLocalHistory:{_ in data})
+        services.hermesChanges={_,_ in .init(accountId:auth.accountId,changes:[],cursor:1,hasMore:false)}
+        services.hermesConsent={_ in .init(accountId:auth.accountId,cloudEnabled:false,revision:1)}
+        services.artifactImport={_,_ in await withCheckedContinuation { release=$0;copied.fulfill() } }
+        services.artifactRemove={account,local in XCTAssertEqual(account,auth.accountId);XCTAssertEqual(local,file);removals += 1}
+        services.artifactBegin={_,_,_ in begins += 1;throw APIError.invalidResponse}
+        let manager=ConversationManager(services:services)
+        await manager.restore(loadRemoteModels:false);await idle(manager)
+        let draft=try manager.cloudWorkspaceArtifactDraft(projectId:project,fileId:nil)
+        let task=Task { try await manager.beginCloudWorkspaceArtifactImport(draft,path:"a.bin",sourceURL:URL(fileURLWithPath:"/fixture")) }
+        await fulfillment(of:[copied],timeout:3)
+        manager.session=nil
+        release?.resume(returning:file)
+        do { _=try await task.value;XCTFail("Old account import must cancel") } catch {}
+        XCTAssertEqual(removals,1);XCTAssertEqual(begins,0)
+    }
+}
