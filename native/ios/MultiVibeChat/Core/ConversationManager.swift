@@ -2152,14 +2152,22 @@ import Network
                                       conversation: UUID, generation: UUID, account: UUID) throws -> CloudHermesContext.WorkspaceFile {
         try Task.checkCancellation()
         guard generationRevision == generation, sessionRevision == account, session?.accountId == project.accountId,
-            let binding = cloudHermesBindings[conversation], binding.accountId == project.accountId,
-            binding.contextProjectID == project.projectId, let state = cloudAgentState, state.accountId == project.accountId else { throw CancellationError() }
+            var binding = cloudHermesBindings[conversation], binding.accountId == project.accountId,
+            binding.contextProjectID == project.projectId, var state = cloudAgentState, state.accountId == project.accountId else { throw CancellationError() }
         let id = CloudAgentState.workspaceFileID(projectId:project.projectId,path:path)
         guard state.objects[id] == nil, !state.outbox.contains(where: { $0.objectId == id }),
             !pendingCloudArtifacts.contains(where: { $0.operation.objectId == id }) else { throw APIError.server(409,"workspace_path_exists") }
         let operation = try state.workspaceMutation(projectId:project.projectId,objectId:id,path:path,content:content,
             parents:[],projectParents:project.parents,delete:false)
-        try enqueueCloudAgentMutation(operation)
+        let previousState = state, previousBinding = binding
+        try state.enqueue(operation)
+        binding.contextFileIDs = Array(Set((binding.contextFileIDs ?? []) + [id])).sorted()
+        guard (binding.contextFileIDs ?? []).count <= 200 else { throw APIError.server(413,"workspace_file_limit") }
+        cloudAgentState = state; cloudHermesBindings[conversation] = binding
+        guard persist() else {
+            cloudAgentState = previousState; cloudHermesBindings[conversation] = previousBinding
+            throw APIError.server(0,"history_cache_write_failed")
+        }
         Task { await self.synchronizeCloudAgentState() }
         return .init(accountId:project.accountId,projectId:project.projectId,objectId:id,path:path,content:content,parents:[],projectParents:project.parents,pending:true)
     }

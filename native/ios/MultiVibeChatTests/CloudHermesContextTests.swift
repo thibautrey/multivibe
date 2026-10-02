@@ -64,4 +64,18 @@ final class CloudHermesContextTests: XCTestCase {
         XCTAssertThrowsError(try CloudHermesContext.build(state:graph,accountID:account,projectID:session,fileObjectIDs:[file]))
     }
 
+    func testPendingNewFileRemainsReadableAfterRestartWithoutCloudObject() throws {
+        var graph = state()
+        let project = insert(&graph, kind: "project", value: .object(["name": .string("Project")]))
+        let id = CloudAgentState.workspaceFileID(projectId: project, path: "new.txt")
+        let operation = try graph.workspaceMutation(projectId: project, objectId: id, path: "new.txt", content: "offline output",
+            parents: [], projectParents: graph.objects[project]!.heads, delete: false)
+        try graph.enqueue(operation)
+        let restored = try JSONDecoder().decode(CloudAgentState.self, from: JSONEncoder().encode(graph))
+        let snapshot = try CloudHermesContext.build(state: restored, accountID: account, projectID: project, fileObjectIDs: [id])
+        XCTAssertEqual(snapshot.workspaceFiles.first?.content, "offline output")
+        XCTAssertEqual(snapshot.workspaceFiles.first?.parents, [])
+        XCTAssertEqual(snapshot.workspaceFiles.first?.pending, true)
+    }
+
 }
