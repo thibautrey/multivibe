@@ -2779,6 +2779,8 @@ private struct CloudWorkspaceEditorView: View {
                             }
                         }
                     }
+                } else if version != nil && status == "synced" {
+                    Text("Suppression synchronisée.")
                 } else { Text("Ce fichier n’est plus disponible pour ce compte. Fermez puis rouvrez le projet.") }
             }.navigationTitle(draft.objectId.isEmpty ? "Nouveau fichier" : "Modifier le fichier")
                 .toolbar { ToolbarItem(placement:.cancellationAction) {
