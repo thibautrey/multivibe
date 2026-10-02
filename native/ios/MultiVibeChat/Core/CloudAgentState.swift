@@ -47,7 +47,7 @@ struct CloudAgentState: Codable, Equatable, Sendable {
             var change = raw
             if object.deleted || raw.deleted || raw.erased {
                 object.deleted = true
-                for key in object.versions.keys { object.versions[key]?.value = nil; object.versions[key]?.erased = object.versions[key]?.deleted == false }
+                for key in object.versions.keys { object.versions[key]?.value = nil; let erased = object.versions[key]?.deleted == false; object.versions[key]?.erased = erased }
                 change.value = nil; change.erased = !change.deleted
                 if next.outbox.contains(where:{$0.objectId == raw.objectId}) { next.conflicts[raw.objectId] = "agent_object_deleted" }
                 next.outbox.removeAll(where:{$0.objectId == raw.objectId})
@@ -86,7 +86,7 @@ struct CloudAgentState: Codable, Equatable, Sendable {
             if receipt.deleted {
                 var object = next.objects[operation.objectId] ?? CloudAgentObject(kind:operation.kind)
                 object.deleted = true; object.heads = receipt.heads
-                for key in object.versions.keys { object.versions[key]?.value = nil; object.versions[key]?.erased = object.versions[key]?.deleted == false }
+                for key in object.versions.keys { object.versions[key]?.value = nil; let erased = object.versions[key]?.deleted == false; object.versions[key]?.erased = erased }
                 next.objects[operation.objectId] = object
                 next.outbox.removeAll(where:{$0.objectId == operation.objectId})
             }
