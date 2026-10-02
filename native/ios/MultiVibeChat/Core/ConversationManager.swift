@@ -281,7 +281,8 @@ import Network
                         ?? state.outbox.first(where: { $0.objectId == binding.sessionId && $0.versionId == turn.parents[0] })?.value
                     binding.localTurns?[index].parentValue = exact
                     if exact == nil && turn.parents == [binding.versionId] && state.objects[binding.sessionId] == nil {
-                        binding.localTurns?[index].parentValue = .object(["type":.string("hermes_session"),"conversationId":.string(binding.conversationId),"branchId":.string(binding.branchId),"title":.string("Hermes chat")])
+                        let initialValue: HistoryJSON = .object(["type":.string("hermes_session"),"conversationId":.string(binding.conversationId),"branchId":.string(binding.branchId),"title":.string("Hermes chat")])
+                        binding.localTurns?[index].parentValue = initialValue
                     }
                 }
                 // The first session version is durable and idempotent; later local parents never rebase automatically.
