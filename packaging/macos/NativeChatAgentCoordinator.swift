@@ -33,6 +33,7 @@ import Foundation
         var titles: [String: String]? = [:]
         var historyCursors: [String: Int64]? = [:]
         var historySources: [String: String]? = [:]
+        var workspaceSelections: [String: String]? = [:]
     }
     init(session: NativeCloudSession? = nil, client: NativeAgentClient? = nil, root: URL? = nil) {
         self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("MultiVibe/NativeAgent")
@@ -165,6 +166,32 @@ import Foundation
             if heads.count == 1, case .object(let object) = heads[0].value, case .string(let remoteTitle) = object["title"] { title = remoteTitle }
             return CloudConversation(id: uuid, title: title, conflicted: heads.count > 1)
         }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+    struct CloudProject: Identifiable { let id: String; let title: String }
+    var cloudProjects: [CloudProject] {
+        cloudObjects.compactMap { id, heads in
+            guard UUID(uuidString: id) != nil, heads.count == 1, heads[0].kind == .project,
+                  !heads[0].deleted, !heads[0].erased, case .object(let value) = heads[0].value else { return nil }
+            let title: String
+            if case .string(let name) = value["name"] ?? value["title"] { title = name } else { title = "Projet Hermes" }
+            return CloudProject(id: id, title: title)
+        }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+    func selectedWorkspaceProject(_ conversation: UUID?) -> String {
+        guard let conversation else { return "" }; let key = conversation.uuidString.lowercased()
+        if let selected = journal?.workspaceSelections?[key] { return selected }
+        if let heads = cloudObjects[key], heads.count == 1, !heads[0].deleted, !heads[0].erased,
+           case .object(let value) = heads[0].value, case .string(let id) = value["workspaceProjectId"] { return id }
+        return ""
+    }
+    func selectWorkspaceProject(_ project: String, conversation: UUID?) throws {
+        guard !busy, accountID == session?.accountID, let conversation, journal != nil,
+              project.isEmpty || cloudProjects.contains(where: { $0.id == project }) else { throw NativeAgentClientError.invalidRequest }
+        let previous = journal
+        var selections = journal!.workspaceSelections ?? [:]; selections[conversation.uuidString.lowercased()] = project
+        journal!.workspaceSelections = selections
+        do { try persist() } catch { journal = previous; throw error }
+        objectWillChange.send()
     }
     struct CloudMessage: Identifiable {
         let id: Int
@@ -316,8 +343,10 @@ import Foundation
         let branch: String
         if cloudObjects[sessionID] != nil { branch = try branchID(sessionID, versions: cloudObjects) }
         else { branch = sessionID }
+        let workspace = selectedWorkspaceProject(conversationID)
+        guard workspace.isEmpty || cloudProjects.contains(where: { $0.id == workspace }) else { throw NativeAgentClientError.invalidRequest }
         let request = NativeAgentRunInput(operationId: UUID().uuidString.lowercased(), runId: UUID().uuidString.lowercased(), sessionId: sessionID,
-            branchId: branch, projectId: nil, model: .init(id: modelID, accessId: accessID, source: source, deviceId: deviceID), message: message, history: journal!.histories?[sessionID])
+            branchId: branch, projectId: nil, workspaceProjectId: workspace.isEmpty ? nil : workspace, model: .init(id: modelID, accessId: accessID, source: source, deviceId: deviceID), message: message, history: journal!.histories?[sessionID])
         let previous = journal
         var requests = journal!.runRequests ?? [:]; requests[request.runId] = request; journal!.runRequests = requests
         var order = journal!.runOrder ?? []; order.append(request.runId); journal!.runOrder = order

@@ -99,6 +99,7 @@ struct NativeAgentRunInput: Codable, Sendable {
     let sessionId: String
     let branchId: String
     let projectId: String?
+    var workspaceProjectId: String? = nil
     let model: Model
     let message: String
     let history: [NativeAgentJSON]?
@@ -255,7 +256,7 @@ private final class NativeAgentRedirectPolicy: NSObject, URLSessionTaskDelegate,
         return reply.run
     }
     func createRun(accountID: String, run: NativeAgentRunInput) async throws -> NativeAgentRun {
-        for id in [run.operationId, run.runId, run.sessionId, run.branchId] + [run.projectId, run.model.accessId, run.model.deviceId].compactMap({ $0 }) { try uuid(id) }
+        for id in [run.operationId, run.runId, run.sessionId, run.branchId] + [run.projectId, run.workspaceProjectId, run.model.accessId, run.model.deviceId].compactMap({ $0 }) { try uuid(id) }
         guard !run.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !run.model.id.isEmpty, run.model.id.count <= 555,
               run.model.id.rangeOfCharacter(from: .controlCharacters) == nil,

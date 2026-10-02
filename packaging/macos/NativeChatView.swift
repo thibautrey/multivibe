@@ -204,6 +204,14 @@ private enum ChatPalette {
                 Text("Hermes Cloud").tag(true)
             }.frame(width: 180).disabled(agent.accountID == nil || cloudSending || store.generating != nil)
             if cloudMode {
+                Picker("Projet Hermes", selection: Binding(get: { agent.selectedWorkspaceProject(cloudSelection) }, set: { value in
+                    do { try agent.selectWorkspaceProject(value, conversation: cloudSelection) } catch { agent.error = error.localizedDescription }
+                })) {
+                    Text("Aucun projet").tag("")
+                    let selected = agent.selectedWorkspaceProject(cloudSelection)
+                    if !selected.isEmpty && !agent.cloudProjects.contains(where: { $0.id == selected }) { Text("Projet indisponible").tag(selected) }
+                    ForEach(agent.cloudProjects) { project in Text(project.title).tag(project.id) }
+                }.frame(maxWidth: 180).disabled(cloudSending || agent.busy || cloudSelection == nil)
                 Picker("Modèle Cloud", selection: $cloudModel) {
                     Text("Choisir un modèle").tag("")
                     ForEach(agent.models) { item in Text((item.source == "relay" ? "Relay · " : "Cloud · ") + (item.name ?? item.id) + (item.available == false ? " — hors ligne" : "")).tag(item.id) }
