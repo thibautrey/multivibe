@@ -24,3 +24,78 @@ test('new summary must actually shrink the measured model context',async()=>{con
 test('high but fitting active exchange passes intact without a summary',async()=>{const host=fixture(),messages=canonical.slice(0,2);const result=await prepareCompaction(messages,[],undefined,host);assert.deepEqual(result,{messages,state:undefined});assert.equal(host.summaries,0);});
 test('reused summary with no new complete exchange passes when high but still fitting',async()=>{const host=fixture(),first=await prepareCompaction(canonical,[],undefined,host);host.measure=async(m,t,r)=>({promptTokens:2800,contextTokens:4096,reservedOutputTokens:r});const result=await prepareCompaction(canonical,[],first.state,host);assert.deepEqual(result,first);assert.equal(host.summaries,1);});
 test('oversized summary input defers compaction only when existing view fits hard budget',async()=>{const host=fixture();host.measure=async(m,t,r)=>({promptTokens:m[0]?.content?.startsWith('Summarize')?5000:2800,contextTokens:4096,reservedOutputTokens:r});const result=await prepareCompaction(canonical,[],undefined,host);assert.deepEqual(result,{messages:canonical,state:undefined});assert.equal(host.summaries,0);});
+
+function longTranscript(exchanges = 9, width = 1200) {
+  const messages = [{role:'system',content:'Keep the canonical transcript.'}];
+  for(let i=0;i<exchanges;i++) messages.push(
+    {role:'user',content:`Exchange ${i}: `+'x'.repeat(width)},
+    {role:'assistant',content:'',tool_calls:[{id:`chunk-${i}`,type:'function',function:{name:'read',arguments:JSON.stringify({index:i})}}]},
+    {role:'tool',tool_call_id:`chunk-${i}`,content:`Evidence ${i}`},
+    {role:'assistant',content:`Completed ${i}`});
+  messages.push({role:'user',content:'Latest user request must stay literal.'});
+  return messages;
+}
+function chunkHost({failAt, cancelAt, controller} = {}) {
+  const measured = [], summarized = [];
+  const tokens = messages => JSON.stringify(messages).length;
+  return {
+    measured,summarized,tokens,signal:controller?.signal,
+    measure:async(messages,tools,reserve)=>{
+      measured.push({messages:structuredClone(messages),tools:structuredClone(tools),reserve});
+      return {promptTokens:tokens(messages),contextTokens:4096,reservedOutputTokens:reserve};
+    },
+    summarize:async(messages,reserve)=>{
+      assert.ok(tokens(messages)+reserve<=4096,'every summary has an exact successful preflight');
+      assert.ok(measured.some(m=>m.reserve===reserve&&m.tools.length===0&&JSON.stringify(m.messages)===JSON.stringify(messages)));
+      const payload=JSON.parse(messages.at(-1).content);
+      const pending=new Set();
+      for(const message of payload.completedExchanges){
+        for(const call of message.tool_calls??[])pending.add(call.id);
+        if(message.role==='tool')assert.ok(pending.delete(message.tool_call_id),'tool result stays with its call');
+      }
+      assert.equal(pending.size,0,'no chunk splits an atomic tool group');
+      summarized.push({payload,reserve});
+      if(cancelAt===summarized.length)controller.abort();
+      if(failAt===summarized.length)return {content:'I cannot summarize this',finish_reason:'stop'};
+      return {content:`Rolling summary ${summarized.length}`,finish_reason:'stop'};
+    },
+    execute:async()=>assert.fail('compaction must never execute tools')
+  };
+}
+test('multi-pass compaction measures and summarizes complete exchanges while retaining full canonical history',async()=>{
+  const messages=longTranscript(),before=structuredClone(messages),host=chunkHost();
+  const result=await prepareCompaction(messages,[{name:'read'}],undefined,host);
+  assert.ok(host.summarized.length>=3);assert.equal(result.state.coveredCount,messages.length-1);
+  assert.equal(result.state.prefixJSON,JSON.stringify(messages.slice(0,-1)));assert.deepEqual(messages,before);
+  assert.deepEqual(result.messages.at(-1),messages.at(-1));assert.ok(host.tokens(result.messages)+1024<=4096);
+  assert.deepEqual(host.summarized.flatMap(s=>s.payload.completedExchanges),messages.slice(1,-1));
+  assert.equal(host.summarized[0].payload.previousSummary,null);
+  for(let i=1;i<host.summarized.length;i++)assert.equal(host.summarized[i].payload.previousSummary,`Rolling summary ${i}`);
+});
+test('second-chunk refusal and cancellation publish no state and preserve prior compaction',async()=>{
+  const messages=longTranscript(),before=structuredClone(messages);
+  const previous={version:1,coveredCount:5,prefixJSON:JSON.stringify(messages.slice(0,5)),summary:'Existing saved summary'};
+  const original=structuredClone(previous);
+  for(const mode of ['refusal','cancel']){
+    const controller=new AbortController(),host=chunkHost(mode==='refusal'?{failAt:2}:{cancelAt:2,controller});
+    await assert.rejects(prepareCompaction(messages,[],previous,host),mode==='refusal'?/refused/:/cancelled/);
+    assert.equal(host.summarized.length,2);assert.deepEqual(previous,original);assert.deepEqual(messages,before);
+  }
+});
+test('previous summary is carried through newly summarized suffix chunks without revisiting old exchanges',async()=>{
+  const messages=longTranscript(),previous={version:1,coveredCount:9,prefixJSON:JSON.stringify(messages.slice(0,9)),summary:'Previous durable summary'},host=chunkHost();
+  const result=await prepareCompaction(messages,[],previous,host);
+  assert.ok(host.summarized.length>=3);assert.equal(host.summarized[0].payload.previousSummary,previous.summary);
+  assert.deepEqual(host.summarized.flatMap(s=>s.payload.completedExchanges),messages.slice(9,-1));
+  assert.equal(result.state.coveredCount,messages.length-1);assert.deepEqual(result.messages.at(-1),messages.at(-1));
+});
+test('multi-pass compaction has a strict 32-summary cap and leaves canonical transcript intact',async()=>{
+  const messages=longTranscript(70,1800),before=structuredClone(messages),host=chunkHost();
+  await assert.rejects(prepareCompaction(messages,[],undefined,host),/limit|budget|many|32/i);
+  assert.ok(host.summarized.length<=32);assert.ok(host.summarized.length>0);assert.deepEqual(messages,before);
+});
+test('indivisible oversized tool exchange fails explicitly without executing or dropping it',async()=>{
+  const messages=longTranscript(2,5000),before=structuredClone(messages),host=chunkHost();
+  await assert.rejects(prepareCompaction(messages,[],undefined,host),/budget|exceed|fit|large/i);
+  assert.equal(host.summarized.length,0);assert.deepEqual(messages,before);
+});
