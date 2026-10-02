@@ -103,7 +103,7 @@ static PreparedPrompt preparePrompt(llama_context *context, const common_chat_te
         if (_cancelled.load()) throw std::runtime_error("Réponse interrompue.");
         auto prepared = preparePrompt(_context, _templates.get(), messages, tools, reservedOutputTokens);
         const auto &formatted = prepared.formatted;
-        const auto &tokens = prepared.tokens;
+        auto &tokens = prepared.tokens;
         // Never silently remove history. Compaction belongs to the durable orchestration layer.
         if (tokens.size() > llama_n_ctx(_context) - static_cast<uint32_t>(reservedOutputTokens)) {
             if (error) *error = [NSError errorWithDomain:@"LocalInference" code:4 userInfo:@{
