@@ -365,7 +365,14 @@ enum LocalAgent {
             await workspace.recordHarness(tool: "hermes_agent", input: "", output: "Hermes mobile " + harness.version + " · Apple Foundation", status: "success")
             var checkpoint = await workspace.hermesContext
             checkpoint?.source = "apple-foundation-local"
-            try await harness.run(messages: json, tools: schemas, weather: weather, checkpointContext: checkpoint, generate: { transcript, tools, emit in
+            let measure: PiAgentHarness.ContextBudget? = HermesFoundationAdapter.supportsCompaction ? { messages, tools, reserve in
+                try await HermesFoundationAdapter.contextBudget(messages:messages,tools:tools,reservedOutputTokens:reserve)
+            } : nil
+            let summarize: PiAgentHarness.Summary? = HermesFoundationAdapter.supportsCompaction ? { messages, reserve in
+                try await HermesFoundationAdapter.summary(messages:messages,reservedOutputTokens:reserve)
+            } : nil
+            try await harness.run(messages: json, tools: schemas, weather: weather, checkpointContext: checkpoint,
+                contextBudget:measure, summary:summarize, generate: { transcript, tools, emit in
                 let reply = try await HermesFoundationAdapter.reply(messages: transcript, tools: tools)
                 try Task.checkCancellation()
                 if !weather, let value = try JSONSerialization.jsonObject(with: Data(reply.utf8)) as? [String: Any],
