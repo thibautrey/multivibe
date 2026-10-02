@@ -93,10 +93,11 @@ import Observation
             if list.data.contains(where: {$0.appId != configuration.clientID}) { throw MultiVibeError.invalidResponse }
             conversations = list.data
         }
-        let catalogue: List<MultiVibeModel> = try await read(mode == .accountOwner ? "/native/v1/models" : "/sdk/v1/models")
-        var loaded = catalogue.data
+        var loaded: [MultiVibeModel]
         relayAllowance = nil; relayCatalogueError = nil
         if mode == .accountOwner {
+            let catalogue: List<MultiVibeModel> = try await read("/native/v1/models")
+            loaded = catalogue.data
             struct RelayCatalogue: Decodable { let data: [MultiVibeModel]; let allowance: MultiVibeRelayAllowance }
             do {
                 let relay: RelayCatalogue = try await read("/relay/v1/models")
@@ -109,6 +110,11 @@ import Observation
                 loaded.removeAll { $0.section == .relay }
                 relayCatalogueError = "Relay est indisponible. Réessayez de charger les modèles."
             }
+        } else {
+            struct ApplicationCatalogue: Decodable { let data: [MultiVibeModel]; let relayAllowance: MultiVibeRelayAllowance? }
+            let catalogue: ApplicationCatalogue = try await read("/sdk/v2/models")
+            guard catalogue.data.allSatisfy({ $0.section != .relay || $0.id.hasPrefix("relay/") }) else { throw MultiVibeError.invalidResponse }
+            loaded = catalogue.data; relayAllowance = catalogue.relayAllowance
         }
         guard Set(loaded.map(\.id)).count == loaded.count else { throw MultiVibeError.invalidResponse }
         models = loaded
@@ -251,13 +257,17 @@ import Observation
         guard mode == .accountOwner, path.hasPrefix("/native/v1/sdk/") else { throw MultiVibeError.authenticationRequired }
         return try await read(path, method: body == nil ? "GET" : "POST", body: body)
     }
-    func request(_ path: String, method: String = "GET", body: Data? = nil) async throws -> URLRequest {
+    func request(_ path: String, method: String = "GET", body: Data? = nil, relayContinuation: String? = nil) async throws -> URLRequest {
         let epoch = generation
         let accessToken = try await token()
         guard epoch == generation else { throw MultiVibeError.authenticationRequired }
         var request = URLRequest(url: URL(string:path,relativeTo:configuration.baseURL)!.absoluteURL)
         request.httpMethod = method; request.httpBody = body
         request.setValue("application/json",forHTTPHeaderField:"Content-Type")
+        if let relayContinuation {
+            guard UUID(uuidString: relayContinuation) != nil else { throw MultiVibeError.invalidArguments }
+            request.setValue(relayContinuation, forHTTPHeaderField: "x-multivibe-relay-continuation")
+        }
         request.setValue("Bearer \(accessToken)",forHTTPHeaderField:"Authorization"); return request
     }
     func data(_ path: String, method: String = "GET", body: Data? = nil) async throws -> Data {
@@ -279,20 +289,23 @@ import Observation
             throw MultiVibeError.server(503, "selected_model_unavailable")
         }
         if model.section == .relay {
-            guard mode == .accountOwner, model.id.hasPrefix("relay/") else { throw MultiVibeError.invalidArguments }
-            return "/relay/v1/completions"
+            guard model.id.hasPrefix("relay/") else { throw MultiVibeError.invalidArguments }
+            return mode == .accountOwner ? "/relay/v1/completions" : "/sdk/v2/completions"
         }
-        return mode == .accountOwner ? "/native/v1/completions" : "/sdk/v1/completions"
+        return mode == .accountOwner ? "/native/v1/completions" : "/sdk/v2/completions"
     }
-    func stream(body:Data,onEvent:@MainActor (String) throws -> Void) async throws {
+    func stream(body:Data,previousRelayContinuation:String? = nil,receivedRelayContinuation:(String)->Void = {_ in},onEvent:@MainActor (String) throws -> Void) async throws {
         let epoch = generation
         if mode == .accountOwner, !isHistoryUnlocked { throw MultiVibeError.historyLocked }
         let path = try completionPath(body: body)
-        let (bytes,response) = try await transport.bytes(for:request(path,method:"POST",body:body))
+        struct Selection: Decodable { let model: String }
+        let isRelay = try JSONDecoder().decode(Selection.self, from: body).model.hasPrefix("relay/")
+        guard previousRelayContinuation == nil || isRelay else { throw MultiVibeError.invalidArguments }
+        let (bytes,response) = try await transport.bytes(for:request(path,method:"POST",body:body,relayContinuation:previousRelayContinuation))
         try validate(response)
         guard (response as? HTTPURLResponse)?.value(forHTTPHeaderField:"Content-Type")?.hasPrefix("text/event-stream") == true else {throw MultiVibeError.invalidResponse}
         var parser = SSEByteParser()
-        for try await byte in bytes {try Task.checkCancellation(); guard epoch == generation else {throw MultiVibeError.authenticationRequired}; if let event = try parser.consume(byte) {if event == "[DONE]" {return}; try onEvent(event)}}
+        for try await byte in bytes {try Task.checkCancellation(); guard epoch == generation else {throw MultiVibeError.authenticationRequired}; if let event = try parser.consume(byte) {if event == "[DONE]" {if isRelay, let receipt = (response as? HTTPURLResponse)?.value(forHTTPHeaderField:"x-multivibe-relay-continuation"), UUID(uuidString:receipt) != nil {receivedRelayContinuation(receipt)}; return}; try onEvent(event)}}
         throw MultiVibeError.invalidResponse
     }
 }

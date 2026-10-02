@@ -8,6 +8,8 @@ import XCTest
     private var exchanges:[String:CheckedContinuation<(Data,URLResponse),Error>] = [:]
     private var observers:[String:CheckedContinuation<Void,Never>] = [:]
     private(set) var revoked:[String] = []
+    var modelRows:[[String:Any]] = []
+    var relayAllowance:[String:Any]?
     init(clientID:String) {self.clientID = clientID}
     func request(_ request:URLRequest) async throws -> (Data,URLResponse) {
         let path = request.url!.path
@@ -22,7 +24,8 @@ import XCTest
             return reply([:])
         }
         if path == "/sdk/v1/session" {return reply(["accountId":request.value(forHTTPHeaderField:"Authorization")!.replacingOccurrences(of:"Bearer ",with:""),"appId":clientID])}
-        if path == "/sdk/v1/models" || path == "/sdk/v1/conversations" {return reply(["data":[]])}
+        if path == "/sdk/v2/models" {var body:[String:Any] = ["data":modelRows]; if let relayAllowance {body["relayAllowance"] = relayAllowance}; return reply(body)}
+        if path == "/sdk/v1/conversations" {return reply(["data":[]])}
         throw MultiVibeError.invalidResponse
     }
     func waitForExchange(_ key:String) async {
@@ -58,6 +61,23 @@ final class AuthenticationRaceTests:XCTestCase {
         XCTAssertNil(client.accountID)
         XCTAssertFalse(client.isConnected)
         do {_ = try await client.token();XCTFail("old token survived")} catch MultiVibeError.authenticationRequired {}
+    }
+    @MainActor func testApplicationUsesV2CatalogueAndInferenceWithRelayContinuation() async throws {
+        let (client,wire,keychain) = fixture(); defer {keychain.clear()}
+        let machine = "11111111-1111-4111-8111-111111111111"
+        wire.modelRows = [["id":"cloud/model"],["id":"relay/\(machine)/local","source":"relay","available":true]]
+        wire.relayAllowance = ["periodStart":"2026-10-01","periodEnd":"2026-11-01","included":250,"used":0,"reserved":0,"remaining":250,"unlimited":false]
+        let auth = try client.beginAuthorization(); let pending = Task {try await client.handleOpenURL(callback(auth,code:"relay"))}
+        await wire.waitForExchange("relay"); wire.finish("relay",accessToken:"account"); try await pending.value
+        XCTAssertEqual(client.models.map(\.section), [.cloud,.relay])
+        XCTAssertEqual(client.relayAllowance?.remaining,250)
+        let relayBody = try JSONEncoder().encode(["model":"relay/\(machine)/local"])
+        XCTAssertEqual(try client.completionPath(body:relayBody),"/sdk/v2/completions")
+        XCTAssertEqual(try client.completionPath(body:JSONEncoder().encode(["model":"cloud/model"])),"/sdk/v2/completions")
+        let receipt = "22222222-2222-4222-8222-222222222222"
+        let request = try await client.request("/sdk/v2/completions",method:"POST",body:relayBody,relayContinuation:receipt)
+        XCTAssertEqual(request.value(forHTTPHeaderField:"x-multivibe-relay-continuation"),receipt)
+        do {_ = try await client.request("/sdk/v2/completions",method:"POST",body:relayBody,relayContinuation:"bad\r\nheader");XCTFail()} catch MultiVibeError.invalidArguments {}
     }
     @MainActor func testLateAuthorizationCannotOverwriteNewAccountCredentials() async throws {
         let (client,wire,keychain) = fixture();defer {keychain.clear()}

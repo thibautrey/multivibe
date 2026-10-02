@@ -71,6 +71,7 @@ extension MultiVibeClient {
             conversation = try await save(conversation); update(conversation); return conversation
         }
         var callsPerformed = 0
+        var relayContinuation = RelayContinuationChain(active: selectedModel.section == .relay)
         for _ in 0..<9 {
             try Task.checkCancellation()
             var messages:[[String:JSONValue]] = []
@@ -91,8 +92,9 @@ extension MultiVibeClient {
             // must not make a possibly executed request look unsent.
             conversation = try await save(conversation); update(conversation)
             var fragments:[Int:MultiVibeToolCall] = [:]
+            var nextRelayContinuation: String?
             do {
-                try await stream(body:JSONEncoder().encode(body)) { event in
+                try await stream(body:JSONEncoder().encode(body), previousRelayContinuation: relayContinuation.previous, receivedRelayContinuation: { nextRelayContinuation = $0 }) { event in
                     struct Chunk:Decodable {
                         struct Choice:Decodable {
                             struct Delta:Decodable {
@@ -115,6 +117,7 @@ extension MultiVibeClient {
                         update(conversation)
                     }
                 }
+                try relayContinuation.finishRound(receipt: nextRelayContinuation, requiresContinuation: !fragments.isEmpty)
             } catch {
                 conversation.messages[conversation.messages.count-1].status = error is CancellationError ? "stopped" : "failed"
                 // Preserve visible partial text, but never execute incomplete tool calls.
@@ -150,6 +153,15 @@ extension MultiVibeClient {
             }
         }
         throw MultiVibeError.toolLimit
+    }
+}
+
+struct RelayContinuationChain {
+    let active: Bool
+    private(set) var previous: String?
+    mutating func finishRound(receipt: String?, requiresContinuation: Bool) throws {
+        if active, requiresContinuation, receipt == nil { throw MultiVibeError.invalidResponse }
+        previous = active ? receipt : nil
     }
 }
 
