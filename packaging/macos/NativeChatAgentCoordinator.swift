@@ -249,7 +249,12 @@ import Foundation
             var sources = next.historySources ?? [:]
             for (sessionID, sourceID) in sources {
                 let source = versions[sourceID] ?? []
-                if source.count != 1 || source[0].deleted || source[0].erased {
+                var invalid = source.count != 1 || source[0].deleted || source[0].erased
+                if !invalid, sourceID != sessionID, case .object(let value) = source[0].value {
+                    if case .string(let branch) = value["branchId"], let expected = try? branchID(sessionID, versions: versions) { invalid = branch != expected }
+                    else { invalid = true }
+                }
+                if invalid {
                     histories.removeValue(forKey: sessionID); cursors.removeValue(forKey: sessionID); sources.removeValue(forKey: sessionID)
                 }
             }
