@@ -97,7 +97,7 @@ enum CloudHermesContext {
                     path: path, content: content, parents: state.objects[id]!.heads, projectParents: owner.heads, pending: !pending.isEmpty))
             }
         } else if let projectID, !CloudAgentState.uuid(projectID) { throw Failure.projectMismatch }
-        return try Snapshot(memory: render(memories), skills: render(skills), files: render(files), skillCatalog: HermesSkillCatalog(selectedSkills: selectedSkills), workspaceFiles: workspaceFiles)
+        return try Snapshot(memory: render(memories), skills: render(skills), files: render(files), skillCatalog: selectedSkills.isEmpty ? nil : HermesSkillCatalog(selectedSkills: selectedSkills), workspaceFiles: workspaceFiles)
     }
     static func workspaceFileID(projectID: String, path: String) -> String {
         var bytes = Array(SHA256.hash(data: Data(("multivibe-workspace-v1\0" + projectID + ":" + path).utf8)).prefix(16))

@@ -7,12 +7,12 @@ final class HermesSkillCatalogTests: XCTestCase {
     }
     func testLiteralDocumentsAndExcludedFiles() throws {
         let literal = "---\ndeps: [never-install]\n---\n!`never execute`\n${ENV_SECRET}\n"
-        let catalog = try HermesSkillCatalog(selectedSkills: ["example": ["SKILL.md": literal, "references/a.md": "reference", "scripts/private.sh": "SECRET", "assets/private.txt": "SECRET", "templates/private.txt": "SECRET"]])
+        let catalog = try HermesSkillCatalog(selectedSkills: ["example": ["SKILL.md": literal, "references/a.md": "reference", "scripts/private.sh": "EXCLUDED_FILE_CONTENT", "assets/private.txt": "EXCLUDED_FILE_CONTENT", "templates/private.txt": "EXCLUDED_FILE_CONTENT"]])
         let value = try result(catalog)
         XCTAssertEqual(value["content"] as? String, literal)
         XCTAssertEqual(value["untrusted"] as? Bool, true)
         XCTAssertEqual(value["execution"] as? String, "read_only_no_activation")
-        XCTAssertFalse(catalog.sourceJSON.contains("SECRET")); XCTAssertFalse(catalog.sourceJSON.contains("private"))
+        XCTAssertFalse(catalog.sourceJSON.contains("EXCLUDED_FILE_CONTENT")); XCTAssertFalse(catalog.sourceJSON.contains("private"))
         XCTAssertEqual(try HermesSkillCatalog(sourceJSON: catalog.sourceJSON), catalog)
         XCTAssertEqual(try result(catalog, "skill_view", "{\"name\":\"example\",\"file_path\":\"scripts/private.sh\"}")["error"] as? String, "invalid_linked_path")
         let linked = try XCTUnwrap(value["linked_files"] as? [String: [String]])
