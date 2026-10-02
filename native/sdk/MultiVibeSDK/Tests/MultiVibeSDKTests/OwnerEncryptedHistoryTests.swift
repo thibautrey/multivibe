@@ -184,4 +184,22 @@ final class OwnerEncryptedHistoryTests: XCTestCase {
         client.lockHistory()
     }
 
+    @MainActor func testStaleClientCannotRemoveAnotherPendingWrite() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let wire = try OwnerWire(), history = OwnerEncryptedHistory(namespace: "shared", directory: directory)
+        try await history.unlock(accountId: wire.fixture.binding.accountId, code: wire.fixture.recoveryCode, transport: wire.request)
+        try await history.reload(transport: wire.request)
+        wire.loseReceipt = true
+        do { _ = try await history.save(history.conversations[0], operationId: UUID().uuidString, transport: wire.request); XCTFail() } catch is URLError {}
+        let location = directory.appendingPathComponent(wire.fixture.binding.accountId + ".json")
+        var newer = try JSONSerialization.jsonObject(with: Data(contentsOf: location)) as! [String: Any]
+        newer["operationId"] = UUID().uuidString.lowercased()
+        let bytes = try JSONSerialization.data(withJSONObject: newer)
+        try bytes.write(to: location)
+        do { try await history.retry(transport: wire.request); XCTFail() } catch MultiVibeError.historyWritePending {}
+        XCTAssertEqual(try Data(contentsOf: location), bytes)
+        XCTAssertTrue(history.hasPending)
+    }
+
 }
