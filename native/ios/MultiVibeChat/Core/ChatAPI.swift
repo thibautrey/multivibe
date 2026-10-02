@@ -40,9 +40,16 @@ actor ChatAPI {
         }
     }
     func hermesRequest<T: Decodable & Sendable>(_ path: String, body: Data? = nil, token: String) async throws -> T {
+        guard path.rangeOfCharacter(from:.whitespacesAndNewlines) == nil else { throw APIError.invalidResponse }
         guard path == "capabilities" || path == "consent" || path == "mutations" || path == "runs"
+            || path.range(of:"^changes\\?after=(0|[1-9][0-9]{0,15})$",options:.regularExpression) != nil
             || path.range(of: "^runs/[0-9a-f-]{36}(/cancel)?$", options: .regularExpression) != nil else { throw APIError.invalidResponse }
-        var request = URLRequest(url: base.appending(path: "/native/v2/agent/" + path))
+        var components = URLComponents(url:base,resolvingAgainstBaseURL:false)!
+        let parts = path.split(separator:"?",maxSplits:1)
+        components.path = "/native/v2/agent/" + String(parts[0])
+        if parts.count == 2 { components.percentEncodedQuery = String(parts[1]) }
+        guard let url = components.url else { throw APIError.invalidResponse }
+        var request = URLRequest(url:url)
         request.httpMethod = body == nil ? "GET" : "POST"; request.httpBody = body
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -55,6 +62,16 @@ actor ChatAPI {
             throw APIError.server(http.statusCode, code)
         }
         return try JSONDecoder().decode(T.self, from: data)
+    }
+    func hermesChanges(after:Int64,token:String) async throws -> CloudAgentPage {
+        guard after >= 0, after < 9_007_199_254_740_991 else { throw APIError.invalidResponse }
+        return try await hermesRequest("changes?after=\(after)",token:token)
+    }
+    func hermesMutations(accountId:String,operations:[CloudAgentMutation],token:String) async throws -> CloudAgentReceipts {
+        guard !operations.isEmpty, operations.count <= 100 else { throw APIError.invalidResponse }
+        for operation in operations { try CloudAgentState.validate(operation) }
+        struct Body:Encodable { let accountId:String;let operations:[CloudAgentMutation] }
+        return try await hermesRequest("mutations",body:JSONEncoder().encode(Body(accountId:accountId,operations:operations)),token:token)
     }
     func hermesConsent(token: String) async throws -> CloudHermesConsent { try await hermesRequest("consent", token: token) }
     func hermesSetConsent(accountId: String, revision: Int, enabled: Bool, token: String) async throws -> CloudHermesConsent {
