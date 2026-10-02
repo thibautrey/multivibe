@@ -85,10 +85,15 @@ and error guidance preserve the previous app behavior.
   further inference. Only the model view is compacted: Cloud exports retain the
   full transcript. A summary must fit its own measured context and shrink the
   final model view; refusals, truncation and failed persistence abort safely.
-  Inputs that still fit may defer compaction; indivisible oversized exchanges
-  remain errors. Apple Foundation does not yet provide these callbacks. This
-  bounded summarizer does not implement upstream micro-pruning, hierarchical
-  compression or its complete summary prompt, and is not full compaction parity.
+  Inputs that still fit may defer compaction. Longer histories are processed in
+  measured blocks of complete exchanges, carrying the prior summary forward.
+  Each block fits the summarizer context and preserves assistant/tool-result
+  groups; at most 32 summaries and 120 seconds of compaction work are allowed.
+  Intermediate summaries remain speculative until the final checkpoint, so a
+  refusal, cancellation or failure publishes no partial state. Indivisible
+  oversized exchanges remain errors. Apple Foundation does not yet provide
+  these callbacks. This bounded mobile extension does not implement upstream
+  micro-pruning or its complete summary prompt, and is not full compaction parity.
 - No Linux terminal, process runtime, dependency installer, background scheduler,
   Hermes SessionDB, memory consolidation, executable skills loader, delegation, provider
   failover, plugins, server guardrails, or self-improvement is ported by this module.
