@@ -2736,7 +2736,7 @@ private struct CloudWorkspaceEditorView: View {
     private func save(delete:Bool=false) {
         busy=true;error=nil
         Task {
-            do { version=try await manager.saveCloudWorkspaceFile(draft,path:path,content:content,delete:delete) }
+            do { version=try await manager.saveCloudWorkspaceFile(draft,path:path,content:delete ? draft.content : content,delete:delete) }
             catch { if visible { self.error=error.localizedDescription } }
             busy=false
         }
