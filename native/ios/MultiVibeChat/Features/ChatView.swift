@@ -2598,6 +2598,7 @@ private struct CloudHermesConsentView: View {
             }.navigationTitle("Autoriser Hermes")
                 .onAppear {
                     accountID = manager.session?.accountId; conversationID = manager.selection
+                    synchronizeLocalTurns=manager.currentLocalHermesExportApproved
                     let selected=manager.currentCloudContextSelection
                     memoryIDs=Set(selected.memory);skillIDs=Set(selected.skills);fileIDs=Set(selected.files);projectID=selected.project ?? ""
                 }

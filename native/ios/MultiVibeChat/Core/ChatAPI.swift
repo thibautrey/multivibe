@@ -422,12 +422,17 @@ struct CloudHermesLocalTurn: Codable, Sendable {
 extension CloudHermesBinding {
     static let mobileEngine = "hermes-mobile/6d49922875f60af5bc31e2bfbae78a81d2fa91fc"
     static let localSources = ["downloaded-local", "apple-foundation-local"]
+    func permitsLocalOperation(_ operation: CloudAgentMutation) -> Bool {
+        guard cloudAuthorized != false, let source=operation.value?.object?["localSource"]?.string,
+            (localExportSources ?? []).contains(source) else { return false }
+        return operation.objectId == sessionId || operation.value?.object?["sessionId"]?.string == sessionId
+    }
     mutating func recordLocalIntent(turnId: UUID, modelId: String, source: String, parents: [String]) {
         guard !(localTurns ?? []).contains(where: { $0.turnId == turnId }) else { return }
         let id = { UUID().uuidString.lowercased() }
         var turns = localTurns ?? []
         turns.append(.init(turnId:turnId,modelId:modelId,source:source,
-            parents:turns.last.map { [$0.sessionVersionId] } ?? parents,
+            parents:turns.last.flatMap { $0.published ? nil : [$0.sessionVersionId] } ?? parents,
             operationId:id(),versionId:id(),sessionOperationId:id(),sessionVersionId:id()))
         localTurns = turns
     }
