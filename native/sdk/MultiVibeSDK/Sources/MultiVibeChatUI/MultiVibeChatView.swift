@@ -8,6 +8,7 @@ import MultiVibeSDK
     @Environment(\.scenePhase) private var scenePhase
     @State private var conversation:MultiVibeConversation?
     @State private var text = ""
+    @State private var choosingModel = false
     @State private var error:String?
     @State private var task:Task<Void,Never>?
     @State private var pending:MultiVibeToolCall?
@@ -64,9 +65,9 @@ import MultiVibeSDK
                 }.disabled(task != nil || client.hasPendingHistoryWrite || !client.isHistoryUnlocked)
             }
             ToolbarItem {
-                Picker("Modèle",selection:Binding(get:{conversation?.model ?? client.models.first?.id ?? ""},set:{value in if conversation == nil, client.mode == .application {conversation = client.newConversation()}; conversation?.model = value})) {
-                    ForEach(client.models) {model in Text(model.id + (model.supportsTools == true ? " · outils" : "")).tag(model.id)}
-                }.disabled(task != nil || client.hasPendingHistoryWrite || !client.isHistoryUnlocked)
+                Button(client.models.first(where: { $0.id == conversation?.model })?.displayName ?? "Choisir un modèle") {
+                    choosingModel = true
+                }.disabled(task != nil || client.hasPendingHistoryWrite || !client.isHistoryUnlocked || (client.mode == .accountOwner && conversation == nil))
             }
             ToolbarItem {
                 Button("Recharger") {Task {do {try await client.reload(); if let id = conversation?.id {conversation = client.conversations.first(where:{$0.id == id})}} catch {self.error = error.localizedDescription}}}.disabled(task != nil || client.hasPendingHistoryWrite || !client.isHistoryUnlocked)
@@ -78,13 +79,19 @@ import MultiVibeSDK
             }
             #endif
         }
+        .sheet(isPresented: $choosingModel) {
+            MultiVibeModelPicker(client: client, selection: Binding(get: { conversation?.model ?? "" }, set: { model in
+                if conversation == nil, client.mode == .application { conversation = client.newConversation() }
+                conversation?.model = model
+            }))
+        }
         .confirmationDialog("Autoriser cette action ?",isPresented:Binding(get:{pending != nil},set:{if !$0 {resolve(false)}}),titleVisibility:.visible) {
             Button("Autoriser") {resolve(true)}; Button("Refuser",role:.cancel) {resolve(false)}
         } message: {Text(pending.map {"\($0.name)\n\($0.arguments)"} ?? "")}
         .task {do {try await client.connect(); if conversation == nil, client.mode == .application {conversation = client.conversations.first ?? client.newConversation()}} catch {self.error = error.localizedDescription}}
         .onOpenURL {url in Task {do {if let opened = try await client.conversationFromOpenURL(url) {conversation = opened} else {try await client.handleOpenURL(url); conversation = client.conversations.first ?? client.newConversation()}; error = nil} catch {self.error = error.localizedDescription}}}
         .onChange(of: client.isHistoryUnlocked) { _, unlocked in
-            if !unlocked { task?.cancel(); resolve(false); conversation = nil; text = "" }
+            if !unlocked { task?.cancel(); resolve(false); conversation = nil; text = ""; choosingModel = false }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background, client.mode == .accountOwner { client.lockHistory() }

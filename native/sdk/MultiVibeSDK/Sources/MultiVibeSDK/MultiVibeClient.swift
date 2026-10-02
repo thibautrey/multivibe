@@ -7,6 +7,8 @@ import Observation
     public let mode: Mode
     public private(set) var conversations: [MultiVibeConversation] = []
     public private(set) var models: [MultiVibeModel] = []
+    public private(set) var relayAllowance: MultiVibeRelayAllowance?
+    public private(set) var relayCatalogueError: String?
     public private(set) var accountID: String?
     public private(set) var isConnected = false
     private let ownerHistory: OwnerEncryptedHistory
@@ -79,6 +81,7 @@ import Observation
         try await reload()
     }
     public func reload() async throws {
+        let epoch = generation
         struct List<T: Decodable>: Decodable { let data: [T] }
         if mode == .accountOwner {
             if ownerHistory.unlocked {
@@ -91,8 +94,28 @@ import Observation
             conversations = list.data
         }
         let catalogue: List<MultiVibeModel> = try await read(mode == .accountOwner ? "/native/v1/models" : "/sdk/v1/models")
-        models = catalogue.data
-        if let localProvider, await localProvider.isAvailable() {models.append(MultiVibeModel(id:localProvider.modelID,supportsTools:false))}
+        var loaded = catalogue.data
+        relayAllowance = nil; relayCatalogueError = nil
+        if mode == .accountOwner {
+            struct RelayCatalogue: Decodable { let data: [MultiVibeModel]; let allowance: MultiVibeRelayAllowance }
+            do {
+                let relay: RelayCatalogue = try await read("/relay/v1/models")
+                guard relay.data.allSatisfy({ $0.id.hasPrefix("relay/") && $0.section == .relay }) else { throw MultiVibeError.invalidResponse }
+                loaded.removeAll { $0.section == .relay }
+                loaded.append(contentsOf: relay.data); relayAllowance = relay.allowance
+            } catch {
+                if case MultiVibeError.authenticationRequired = error { throw error }
+                if case MultiVibeError.server(let code, _) = error, [401, 403].contains(code) { throw error }
+                loaded.removeAll { $0.section == .relay }
+                relayCatalogueError = "Relay est indisponible. Réessayez de charger les modèles."
+            }
+        }
+        guard Set(loaded.map(\.id)).count == loaded.count else { throw MultiVibeError.invalidResponse }
+        models = loaded
+        if let localProvider, await localProvider.isAvailable() {
+            guard epoch == generation else { throw MultiVibeError.authenticationRequired }
+            models.append(MultiVibeModel(id:localProvider.modelID,supportsTools:false))
+        }
     }
     private func historyTransport(_ path: String, _ method: String, _ body: Data?) async throws -> Data {
         guard mode == .accountOwner else { throw MultiVibeError.authenticationRequired }
@@ -122,7 +145,7 @@ import Observation
         try ownerHistory.discardPending(); conversations = []; try await reload()
     }
     public func disconnect() async throws {
-        lockHistory()
+        lockHistory(); relayAllowance = nil; relayCatalogueError = nil
         let token = mode == .application ? stored?.refreshToken : nil
         // Invalidate before the network suspension: an older authorization or
         // refresh must never restore credentials while revocation is in flight.
@@ -134,7 +157,7 @@ import Observation
         // mutate the winning session while best-effort cleanup is underway.
         Task { _ = try? await form("/developers/oauth/revoke",fields:["client_id":configuration.clientID,"token":session.refreshToken]) }
     }
-    public func newConversation() -> MultiVibeConversation { MultiVibeConversation(appId: configuration.clientID, model: models.first?.id ?? "") }
+    public func newConversation() -> MultiVibeConversation { MultiVibeConversation(appId: configuration.clientID, model: models.first(where: { $0.available != false })?.id ?? "") }
     var historyPath: String { mode == .accountOwner ? "/native/v1/sdk/conversations" : "/sdk/v1/conversations" }
     public func save(_ conversation: MultiVibeConversation, operationID: String = UUID().uuidString) async throws -> MultiVibeConversation {
         guard UUID(uuidString: conversation.id) != nil, mode == .accountOwner || conversation.appId == configuration.clientID else { throw MultiVibeError.invalidArguments }
@@ -249,10 +272,23 @@ import Observation
         if response.statusCode == 409 {throw MultiVibeError.conflict}
         guard (200..<300).contains(response.statusCode) else {throw MultiVibeError.server(response.statusCode,String(data:data,encoding:.utf8) ?? "request_failed")}
     }
+    func completionPath(body: Data) throws -> String {
+        struct Selection: Decodable { let model: String }
+        let selection = try JSONDecoder().decode(Selection.self, from: body)
+        guard let model = models.first(where: { $0.id == selection.model }), model.available != false else {
+            throw MultiVibeError.server(503, "selected_model_unavailable")
+        }
+        if model.section == .relay {
+            guard mode == .accountOwner, model.id.hasPrefix("relay/") else { throw MultiVibeError.invalidArguments }
+            return "/relay/v1/completions"
+        }
+        return mode == .accountOwner ? "/native/v1/completions" : "/sdk/v1/completions"
+    }
     func stream(body:Data,onEvent:@MainActor (String) throws -> Void) async throws {
         let epoch = generation
         if mode == .accountOwner, !isHistoryUnlocked { throw MultiVibeError.historyLocked }
-        let (bytes,response) = try await transport.bytes(for:request(mode == .accountOwner ? "/native/v1/completions" : "/sdk/v1/completions",method:"POST",body:body))
+        let path = try completionPath(body: body)
+        let (bytes,response) = try await transport.bytes(for:request(path,method:"POST",body:body))
         try validate(response)
         guard (response as? HTTPURLResponse)?.value(forHTTPHeaderField:"Content-Type")?.hasPrefix("text/event-stream") == true else {throw MultiVibeError.invalidResponse}
         var parser = SSEByteParser()
