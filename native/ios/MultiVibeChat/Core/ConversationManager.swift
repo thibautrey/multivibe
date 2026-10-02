@@ -588,8 +588,8 @@ import Network
         guard let id=selection,let binding=cloudHermesBindings[id],binding.accountId == session?.accountId else { return ([],[],[],nil) }
         return (binding.contextMemoryIDs ?? [],binding.contextSkillIDs ?? [],binding.contextFileIDs ?? [],binding.contextProjectID)
     }
-    func localHermesSeed(conversation id: UUID, input: [ChatMessage], epoch: UUID) async throws -> (history: [HistoryJSON]?, context: String) {
-        guard let binding = cloudHermesBindings[id], binding.accountId == session?.accountId else { return (nil,"") }
+    func localHermesSeed(conversation id: UUID, input: [ChatMessage], epoch: UUID) async throws -> (history: [HistoryJSON]?, context: String, files: [CloudHermesContext.WorkspaceFile]) {
+        guard let binding = cloudHermesBindings[id], binding.accountId == session?.accountId else { return (nil,"",[]) }
         guard binding.pending == nil, let currentTurn = input.last(where: { $0.role == "user" }) else { throw APIError.server(409,"hermes_pending_run_requires_recovery") }
         let account = binding.accountId
         var history = binding.history
@@ -608,17 +608,19 @@ import Network
             history = history.isEmpty ? messages : history + Array(messages[start...])
         }
         var context = ""
+        var workspaceFiles: [CloudHermesContext.WorkspaceFile] = []
         if !(binding.contextMemoryIDs ?? []).isEmpty || !(binding.contextSkillIDs ?? []).isEmpty || !(binding.contextFileIDs ?? []).isEmpty {
             guard let state = cloudAgentState else { throw APIError.invalidResponse }
             let snapshot = try CloudHermesContext.build(state:state,accountID:account,projectID:binding.contextProjectID,
                 memoryObjectIDs:binding.contextMemoryIDs ?? [],skillObjectIDs:binding.contextSkillIDs ?? [],fileObjectIDs:binding.contextFileIDs ?? [])
+            workspaceFiles = snapshot.workspaceFiles
             context = [snapshot.memory,snapshot.skills,snapshot.files].filter { !$0.isEmpty }.joined(separator:"\n\n")
         }
         guard sessionRevision == epoch, session?.accountId == account else { throw CancellationError() }
-        if history.isEmpty { return (nil,context) }
+        if history.isEmpty { return (nil,context,workspaceFiles) }
         history.append(.object(["role":.string("user"),"content":.string(currentTurn.content)]))
         try RemoteHermesSession.validateHistory(history)
-        return (history,context)
+        return (history,context,workspaceFiles)
     }
     /// State-only reconciliation. Checkpoints are read without creating leases or invoking tools/models.
     private func reconcileLocalTurns(consent: CloudHermesConsent, epoch: UUID) async throws {
@@ -1572,7 +1574,10 @@ import Network
                     let initial = try await localHermesSeed(conversation:id,input:input,epoch:accountRevision)
                     guard generationRevision == revision && sessionRevision == accountRevision else { throw CancellationError() }
                     let workspace = LocalAgentWorkspace(conversations: conversations, documents: localDocuments,
-                        hermesContext: checkpointContext, initialHermesHistory:initial.history, selectedCloudContext:initial.context, deviceData: deviceData,
+                        hermesContext: checkpointContext, initialHermesHistory:initial.history, selectedCloudContext:initial.context, selectedWorkspaceFiles:initial.files,
+                        saveWorkspaceFile: { file, content in
+                            try await self.saveLocalHermesWorkspaceFile(file,content:content,conversation:id,generation:revision,account:accountRevision)
+                        }, deviceData: deviceData,
                         event: { event in
                             await self.recordLocalEvent(event, generation: revision, account: accountRevision)
                         }, saveDocument: { document in
@@ -2047,6 +2052,20 @@ import Network
     private func manageAutomation(_ arguments: String, model: String, account: UUID) async throws -> String {
         guard sessionRevision == account else { throw CancellationError() }
         return try await AutomationTools.execute(arguments, model: model, scope: session?.accountId ?? "guest")
+    }
+    func saveLocalHermesWorkspaceFile(_ file: CloudHermesContext.WorkspaceFile, content: String, conversation: UUID, generation: UUID, account: UUID) throws {
+        try Task.checkCancellation()
+        guard generationRevision == generation, sessionRevision == account, session?.accountId == file.accountId,
+              let binding = cloudHermesBindings[conversation], binding.accountId == file.accountId,
+              binding.contextProjectID == file.projectId, (binding.contextFileIDs ?? []).contains(file.objectId),
+              !file.pending, let state = cloudAgentState, state.accountId == file.accountId,
+              let object = state.objects[file.objectId], !object.deleted, object.heads.count == 1,
+              object.versions[object.heads[0]]?.value?.object?["type"]?.string == "hermes_workspace_file",
+              !pendingCloudArtifacts.contains(where: { $0.operation.objectId == file.objectId }) else { throw CancellationError() }
+        let operation = try state.workspaceMutation(projectId:file.projectId,objectId:file.objectId,path:file.path,content:content,
+            parents:file.parents,projectParents:file.projectParents,delete:false)
+        try enqueueCloudAgentMutation(operation)
+        Task { await self.synchronizeCloudAgentState() }
     }
     private func saveLocalDocument(_ document: LocalDocument, generation: UUID, account: UUID) throws {
         guard generationRevision == generation, sessionRevision == account else { throw CancellationError() }
