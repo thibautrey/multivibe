@@ -2660,6 +2660,8 @@ private struct CloudConflictReviewView: View {
     @State private var review: ConversationManager.CloudConflictReview?
     @State private var inspected: Set<String> = []
     @State private var selected: String?
+    @State private var pendingVersion: String?
+    @State private var resolved = false
     @State private var confirming = false
     @State private var busy = false
     @State private var error: String?
@@ -2673,27 +2675,36 @@ private struct CloudConflictReviewView: View {
             Section {
                 Text("Examinez chaque version puis choisissez celle à conserver. Les autres versions restent dans l’historique. Aucun outil ni commande ne sera exécuté.")
                 if let error { Text(error).foregroundStyle(.red) }
-                if review == nil { Text("Conflit indisponible, supprimé ou déjà résolu.") }
+                if resolved { Text("Résolution synchronisée.") }
+                if review == nil || review.map({ !manager.cloudConflictReviewVisible($0) }) == true { Text("Conflit indisponible ou compte déconnecté.") }
             }
-            if let review {
+            if let review, manager.cloudConflictReviewVisible(review), !resolved {
+                if let pendingVersion {
+                    Text("Résolution enregistrée sur cet appareil, en attente de confirmation Cloud. Aucun nouveau choix ne sera envoyé.")
+                    if let issue = manager.cloudAgentSyncError { Text(issue).foregroundStyle(.orange) }
+                    Button("Actualiser la confirmation") {
+                        busy=true
+                        Task { await manager.synchronizeCloudAgentState(); resolved=manager.cloudConflictResolved(review,version:pendingVersion); busy=false }
+                    }.disabled(busy)
+                }
                 ForEach(review.versions,id:\.versionId) { version in
                     Section(version.versionId) {
                         Text("Appareil : "+version.deviceId).font(.caption)
                         Text(rendered(version.value)).font(.system(.caption,design:.monospaced)).textSelection(.enabled)
                         Toggle("J’ai examiné cette version",isOn:Binding(get:{inspected.contains(version.versionId)},set:{ if $0 { inspected.insert(version.versionId) } else { inspected.remove(version.versionId); selected=nil } }))
                         Button(selected == version.versionId ? "Version choisie" : "Choisir cette version") { selected=version.versionId }
-                            .disabled(inspected.count != review.versions.count || busy)
+                            .disabled(inspected.count != review.versions.count || busy || pendingVersion != nil)
                     }
                 }
-                Button("Confirmer la résolution") { confirming=true }.disabled(selected == nil || busy || inspected.count != review.versions.count)
+                Button("Confirmer la résolution") { confirming=true }.disabled(selected == nil || busy || inspected.count != review.versions.count || pendingVersion != nil)
                 Text("Les sessions qui contiennent déjà des exécutions ou des échanges locaux nécessitent encore une résolution de leur historique et restent bloquées.").font(.caption)
             }
         }.navigationTitle("Versions concurrentes")
-            .task { review=manager.cloudConflictReview(objectId) }
+            .task { review=manager.cloudConflictReview(objectId); if let review { pendingVersion=manager.pendingCloudConflictVersion(review) } }
             .confirmationDialog("Conserver exactement la version choisie ?",isPresented:$confirming,titleVisibility:.visible) {
                 Button("Conserver cette version") {
-                    guard let review, let selected else { return }; busy=true
-                    Task { do { try await manager.resolveCloudConflict(review,selectedHead:selected); self.review=nil } catch { self.error=error.localizedDescription }; busy=false }
+                    guard let review, manager.cloudConflictReviewVisible(review), let selected else { return }; busy=true
+                    Task { do { let version=try await manager.resolveCloudConflict(review,selectedHead:selected); pendingVersion=version; resolved=manager.cloudConflictResolved(review,version:version) } catch { self.error=error.localizedDescription }; busy=false }
                 }
                 Button("Annuler",role:.cancel) {}
             } message: { Text("Une nouvelle révision réunira toutes les versions examinées. Leur contenu ne sera pas fusionné.") }

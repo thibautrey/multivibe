@@ -157,7 +157,24 @@ import Network
         guard versions.count == object.heads.count, versions.allSatisfy({ !$0.erased && !$0.deleted && $0.value != nil }) else { return nil }
         return .init(account:state.accountId,epoch:sessionRevision,objectId:id,versions:versions)
     }
-    func resolveCloudConflict(_ review: CloudConflictReview, selectedHead: String) async throws {
+    func cloudConflictReviewVisible(_ review: CloudConflictReview) -> Bool {
+        review.epoch == sessionRevision && review.account == session?.accountId &&
+            cloudAgentState?.accountId == review.account &&
+            cloudAgentState?.objects[review.objectId]?.deleted == false
+    }
+    func pendingCloudConflictVersion(_ review: CloudConflictReview) -> String? {
+        guard cloudConflictReviewVisible(review) else { return nil }
+        return cloudAgentState?.outbox.first(where: {
+            $0.objectId == review.objectId && Set($0.parents) == Set(review.versions.map(\.versionId))
+        })?.versionId
+    }
+    func cloudConflictResolved(_ review: CloudConflictReview, version: String) -> Bool {
+        cloudConflictReviewVisible(review) && cloudAgentSyncError == nil &&
+            cloudAgentState?.objects[review.objectId]?.heads == [version] &&
+            cloudAgentState?.outbox.contains(where: { $0.versionId == version }) == false
+    }
+    @discardableResult
+    func resolveCloudConflict(_ review: CloudConflictReview, selectedHead: String) async throws -> String {
         guard !cloudAgentSyncing, review.epoch == sessionRevision, review.account == session?.accountId else { throw CancellationError() }
         await synchronizeCloudAgentState()
         guard cloudAgentSyncError == nil, !cloudAgentSyncing, review.epoch == sessionRevision, review.account == session?.accountId else { throw CancellationError() }
@@ -177,6 +194,9 @@ import Network
         }
         try enqueueCloudAgentMutation(mutation)
         await synchronizeCloudAgentState()
+        guard cloudConflictReviewVisible(review) else { throw CancellationError() }
+        // Return the durable identity, not a success claim: the UI verifies the exact acknowledged head.
+        return mutation.versionId
     }
     private(set) var discoveredCloudRuns:[String:CloudHermesRun] = [:]
     /// State-only journal exchange: never starts, resumes or replays an execution.
