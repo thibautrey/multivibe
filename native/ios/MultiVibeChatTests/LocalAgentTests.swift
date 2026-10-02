@@ -352,7 +352,7 @@ import XCTest
     rememberLastUsedModel: @escaping @MainActor (String, String) -> Void = { _, _ in },
     summarizeTitle: @escaping @Sendable (String, String) async throws -> String = { _, _ in throw APIError.invalidResponse }
 ) -> SessionServices {
-    SessionServices(writeHistory: writeHistory, load: load, save: save, clear: clear,
+    var services = SessionServices(writeHistory: writeHistory, load: load, save: save, clear: clear,
         refresh: refresh, revoke: revoke, readHistory: readHistory, saveHistory: saveHistory,
         stream: stream, readLocalHistory: readLocalHistory, localAvailability: localAvailability,
         downloadedModels: downloadedModels, localRespond: localRespond,
@@ -360,6 +360,10 @@ import XCTest
         summarizeTitle: summarizeTitle,
         monitorConnectivity: monitorConnectivity, syncDelay: syncDelay, models: models,
         lastUsedModel: lastUsedModel, rememberLastUsedModel: rememberLastUsedModel)
+    services.hermesChanges = { _,_ in throw APIError.server(503,"fixture_agent_sync_unavailable") }
+    services.hermesConsent = { _ in throw APIError.server(503,"fixture_agent_sync_unavailable") }
+    services.hermesMutations = { _,_,_ in throw APIError.server(503,"fixture_agent_sync_unavailable") }
+    return services
 }
 
 @MainActor final class ConversationTitleTests: XCTestCase {

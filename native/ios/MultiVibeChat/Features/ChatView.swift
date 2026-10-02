@@ -27,6 +27,7 @@ struct ChatView: View {
     @State private var retryTarget: RetryTarget?
     private struct RetryTarget { let conversation: UUID; let message: UUID }
     @State private var documentsPresented = false
+    @State private var cloudAgentBrowserPresented = false
     @State private var cloudHermesConsentPresented = false
     @State private var privacyPresented = false
     @State private var profilePresented = false
@@ -109,6 +110,12 @@ struct ChatView: View {
                 }
                 .listSectionSpacing(8)
 
+                if manager.session != nil {
+                    Section("Hermes Cloud") {
+                        Button("Environnement synchronisé",systemImage:"cloud") { cloudAgentBrowserPresented = true }
+                            .accessibilityIdentifier("openCloudHermesState")
+                    }
+                }
                 Section("Récents") {
                     ForEach(manager.historyConversations.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }) { conversation in
                         Button {
@@ -430,6 +437,7 @@ struct ChatView: View {
         .sheet(isPresented: $manager.memoryPresented) { MemoryView() }
         .sheet(item: Binding(get: { manager.memoryPresented ? nil : manager.memoryDraft }, set: { manager.memoryDraft = $0 })) { draft in MemoryEditor(draft: draft) }
         .sheet(isPresented: $documentsPresented) { LocalDocumentsView() }
+        .sheet(isPresented: $cloudAgentBrowserPresented) { CloudAgentBrowserView() }
         .sheet(isPresented: $cloudHermesConsentPresented) { CloudHermesConsentView() }
         .sheet(isPresented: $privacyPresented) { NativePrivacyView() }
         .sheet(isPresented: $profilePresented, onDismiss: {
@@ -2561,6 +2569,44 @@ private struct CloudHermesConsentView: View {
                 .onAppear { accountID = manager.session?.accountId; conversationID = manager.selection }
                 .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() }.disabled(busy) } }
                 .interactiveDismissDisabled(busy)
+        }
+    }
+}
+
+
+private struct CloudAgentBrowserView: View {
+    @Environment(ConversationManager.self) private var manager
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text("État Hermes de votre compte. Cette liste est distincte des conversations de l’appareil et des historiques SDK chiffrés. Aucun contenu local n’est importé automatiquement.")
+                    Button(manager.cloudAgentSyncing ? "Synchronisation…" : "Actualiser") { Task { await manager.synchronizeCloudAgentState() } }.disabled(manager.cloudAgentSyncing)
+                    if let error=manager.cloudAgentSyncError { Text(error).foregroundStyle(.red) }
+                }
+                ForEach(["session","message","memory","project","file","skill","environment","task"],id:\.self) { kind in
+                    let items=manager.cloudAgentObjects.filter{$0.kind == kind}
+                    if !items.isEmpty {
+                        Section(kind) {
+                            ForEach(items) { object in
+                                VStack(alignment:.leading,spacing:6) {
+                                    Text(object.title).font(.headline)
+                                    if object.deleted { Text("Supprimé · contenu effacé").foregroundStyle(.secondary) }
+                                    else if object.conflicted { Text("Versions concurrentes conservées. Résolvez le conflit avant une nouvelle exécution.").foregroundStyle(.orange) }
+                                    else if kind == "task", let id=object.value?.object?["runId"]?.string, let run=manager.discoveredCloudRuns[id] {
+                                        Text(run.state.replacingOccurrences(of:"_",with:" ")).font(.caption)
+                                        if let response=run.result?.response { Text(response).textSelection(.enabled) }
+                                    }
+                                    Text(object.id).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+                                }
+                            }
+                        }
+                    }
+                }
+            }.navigationTitle("Hermes Cloud")
+                .toolbar { ToolbarItem(placement:.confirmationAction) { Button("Fermer") { dismiss() } } }
+                .task { await manager.synchronizeCloudAgentState() }
         }
     }
 }

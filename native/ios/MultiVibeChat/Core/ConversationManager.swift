@@ -22,6 +22,8 @@ import Network
     var stream: @MainActor (String, [ChatMessage], String, @Sendable (String) async -> Void) async throws -> Void = {
         try await ChatAPI.shared.stream(model: $0, messages: $1, token: $2, onDelta: $3)
     }
+    var hermesChanges: @MainActor (Int64,String) async throws -> CloudAgentPage = { try await ChatAPI.shared.hermesChanges(after:$0,token:$1) }
+    var hermesMutations: @MainActor (String,[CloudAgentMutation],String) async throws -> CloudAgentReceipts = { try await ChatAPI.shared.hermesMutations(accountId:$0,operations:$1,token:$2) }
     var hermesConsent: @MainActor (String) async throws -> CloudHermesConsent = { try await ChatAPI.shared.hermesConsent(token:$0) }
     var hermesEnable: @MainActor (String, Int, String) async throws -> CloudHermesConsent = { try await ChatAPI.shared.hermesSetConsent(accountId:$0,revision:$1,enabled:true,token:$2) }
     var hermesPrepare: @MainActor (String, CloudHermesBinding, String) async throws -> Void = { try await ChatAPI.shared.hermesPrepare(accountId:$0,binding:$1,token:$2) }
@@ -117,6 +119,83 @@ import Network
         let detail: String
     }
     var hermesRecovery: HermesRecovery?
+    private var cloudAgentState: CloudAgentState?
+    private(set) var cloudAgentSyncing = false
+    private(set) var cloudAgentSyncError: String?
+    struct CloudAgentSummary:Identifiable {
+        let id:String;let kind:String;let title:String;let conflicted:Bool;let deleted:Bool;let value:HistoryJSON?
+    }
+    var cloudAgentObjects:[CloudAgentSummary] {
+        (cloudAgentState?.objects ?? [:]).map { id,object in
+            let value = object.heads.count == 1 ? object.versions[object.heads[0]]?.value : nil
+            return CloudAgentSummary(id:id,kind:object.kind,title:value?.object?["title"]?.string ?? value?.object?["target"]?.string ?? object.kind,
+                conflicted:object.heads.count > 1,deleted:object.deleted,value:value)
+        }.sorted { $0.id < $1.id }
+    }
+    private(set) var discoveredCloudRuns:[String:CloudHermesRun] = [:]
+    /// State-only journal exchange: never starts, resumes or replays an execution.
+    func synchronizeCloudAgentState() async {
+        guard !cloudAgentSyncing, !isRestoring, storageLoaded, session != nil else { return }
+        let epoch=sessionRevision;cloudAgentSyncing=true
+        defer { if sessionRevision == epoch { cloudAgentSyncing=false } }
+        do {
+            let auth=try await validSession()
+            if cloudAgentState == nil {
+                cloudAgentState=CloudAgentState(accountId:auth.accountId,deviceId:UUID().uuidString.lowercased())
+                guard persist() else { throw APIError.server(0,"history_cache_write_failed") }
+            }
+            guard cloudAgentState?.accountId == auth.accountId else { throw APIError.invalidResponse }
+            func current() throws {
+                guard sessionRevision == epoch, session?.accountId == auth.accountId else { throw CancellationError() }
+                try Task.checkCancellation()
+            }
+            func pull() async throws {
+                while let state=cloudAgentState {
+                    try current()
+                    let page=try await services.hermesChanges(state.cursor,auth.accessToken)
+                    try current()
+                    // Rebase on current journal so local enqueue during network I/O is retained.
+                    let previous=cloudAgentState!
+                    cloudAgentState=try previous.applying(page)
+                    guard persist() else { cloudAgentState=previous;throw APIError.server(0,"history_cache_write_failed") }
+                    if !page.hasMore { break }
+                }
+            }
+            try await pull()
+            let consent=try await services.hermesConsent(auth.accessToken);try current()
+            guard consent.accountId == auth.accountId else { throw APIError.invalidResponse }
+            if consent.cloudEnabled {
+                while let state=cloudAgentState, !state.outbox.isEmpty {
+                    var batch:[CloudAgentMutation]=[]
+                    for operation in state.outbox.prefix(100) {
+                        if try JSONEncoder().encode(batch+[operation]).count > 900_000 { break }
+                        batch.append(operation)
+                    }
+                    guard !batch.isEmpty else { throw APIError.server(413,"agent_batch_too_large") }
+                    let reply=try await services.hermesMutations(auth.accountId,batch,auth.accessToken);try current()
+                    let previous=cloudAgentState!
+                    cloudAgentState=try previous.acknowledging(reply,submitted:batch)
+                    guard persist() else { cloudAgentState=previous;throw APIError.server(0,"history_cache_write_failed") }
+                }
+                try await pull()
+            }
+            let liveRunIDs=Set(cloudAgentObjects.filter{$0.kind == "task" && !$0.deleted && !$0.conflicted}.compactMap{$0.value?.object?["runId"]?.string})
+            discoveredCloudRuns=discoveredCloudRuns.filter{liveRunIDs.contains($0.key)}
+            for object in cloudAgentObjects where object.kind == "task" && !object.deleted && !object.conflicted {
+                guard let value=object.value?.object,value["type"]?.string == "hermes_run",let runID=value["runId"]?.string else { continue }
+                let run=try await services.hermesRead(auth.accountId,runID,auth.accessToken,false);try current()
+                guard run.sessionId == value["sessionId"]?.string,run.branchId == value["branchId"]?.string else { throw APIError.invalidResponse }
+                discoveredCloudRuns[runID]=run // Separate from legacy conversations and their sync.
+            }
+            cloudAgentSyncError=nil
+        } catch { if sessionRevision == epoch { cloudAgentSyncError=error.localizedDescription } }
+    }
+    /// Call only for explicitly authorized Hermes content; local documents/memory are never auto-enqueued.
+    func enqueueCloudAgentMutation(_ operation:CloudAgentMutation) throws {
+        guard var state=cloudAgentState,state.accountId == session?.accountId else { throw APIError.invalidResponse }
+        let previous=state;try state.enqueue(operation);cloudAgentState=state
+        guard persist() else { cloudAgentState=previous;throw APIError.server(0,"history_cache_write_failed") }
+    }
     private var cloudHermesBindings: [UUID: CloudHermesBinding] = [:]
     private(set) var cloudHermesRecoveryRun: String?
     private(set) var cloudHermesStatus: [UUID:String] = [:]
@@ -242,7 +321,7 @@ import Network
     private var syncTask: Task<Void, Never>?
     var session: NativeSession? {
         didSet {
-            if session?.accountId != oldValue?.accountId { hermesRecovery = nil; cloudHermesRecoveryRun = nil; cloudHermesBindings = [:]; cloudHermesRestoreTask?.cancel(); cloudHermesRestoreTask = nil; cloudHermesStatus = [:]; activeCloudHermes = nil; selectedAccess = nil; requestedAccessModel = nil; accessNotice = nil }
+            if session?.accountId != oldValue?.accountId { hermesRecovery = nil; cloudHermesRecoveryRun = nil; cloudHermesBindings = [:]; cloudAgentState=nil; cloudAgentSyncing=false; discoveredCloudRuns=[:]; cloudHermesRestoreTask?.cancel(); cloudHermesRestoreTask = nil; cloudHermesStatus = [:]; activeCloudHermes = nil; selectedAccess = nil; requestedAccessModel = nil; accessNotice = nil }
         }
     }
     init(services suppliedServices: SessionServices? = nil) {
@@ -367,6 +446,7 @@ import Network
     private var pendingHistorySave: PendingHistorySave?
     private struct HistoryCache: Codable {
         var cloudHermesBindings: [UUID: CloudHermesBinding]?
+        var cloudAgentState: CloudAgentState?
         var memory: [AgentMemory]?
         var memoryBaseline: [AgentMemory]?
         var memorySyncEnabled: Bool?
@@ -415,7 +495,7 @@ import Network
         let restoration = UUID()
         restorationRevision = restoration
         isRestoring = true
-        defer { if restorationRevision == restoration { isRestoring = false; scheduleAutomaticSync(); Task { await self.resumeCloudHermes() } } }
+        defer { if restorationRevision == restoration { isRestoring = false; scheduleAutomaticSync(); Task { await self.synchronizeCloudAgentState(); await self.resumeCloudHermes() } } }
         startNetworkMonitoring()
         models = [LocalModel.option] + services.downloadedModels()
         selectedModel = restoredModel(for: modelPreferenceScope, in: models) ?? LocalModel.id
@@ -423,13 +503,14 @@ import Network
         memoryReviews.values.forEach { $0.cancel() }; memoryReviews = [:]
         titleTasks.values.forEach { $0.cancel() }; titleTasks = [:]
         memoryRecords = []; memoryBaseline = []; memoryIndex = nil; memoryDraft = nil; memorySyncEnabled = false; memoryError = nil
-        calendarEnabled = false; remindersEnabled = false; cloudHermesBindings = [:]; cloudHermesRecoveryRun = nil
+        calendarEnabled = false; remindersEnabled = false; cloudHermesBindings = [:]; cloudAgentState=nil; discoveredCloudRuns=[:]; cloudHermesRecoveryRun = nil
         do {
             let data: Data?
             do { data = try services.readLocalHistory(storageURL()) }
             catch CocoaError.fileReadNoSuchFile { data = nil }
             if let data {
                 if let cache = try? JSONDecoder().decode(HistoryCache.self, from: data) {
+                    cloudAgentState = cache.cloudAgentState?.accountId == session?.accountId ? cache.cloudAgentState : nil
                     cloudHermesBindings = (cache.cloudHermesBindings ?? [:]).filter { $0.value.accountId == session?.accountId }
                     memoryRecords = cache.memory ?? []; memoryBaseline = cache.memoryBaseline ?? []; memorySyncEnabled = cache.memorySyncEnabled ?? false
                     calendarEnabled = cache.calendarEnabled ?? false
@@ -555,7 +636,7 @@ import Network
                     conversations = []; selection = nil
                     resetHistorySync()
                     models = []; selectedModel = ""
-                    localDocuments = []; automaticSync = false; cloudHermesBindings = [:]; cloudHermesRecoveryRun = nil
+                    localDocuments = []; automaticSync = false; cloudHermesBindings = [:]; cloudAgentState=nil; discoveredCloudRuns=[:]; cloudHermesRecoveryRun = nil
                     await restore(loadRemoteModels: false)
                     nativeShortcut = nil
         wantsNewConversation = false; wantsVoice = false
@@ -597,7 +678,7 @@ import Network
         conversations = []; selection = nil
         resetHistorySync()
         models = [LocalModel.option]; selectedModel = LocalModel.id
-        localDocuments = []; automaticSync = false; cloudHermesBindings = [:]; cloudHermesRecoveryRun = nil
+        localDocuments = []; automaticSync = false; cloudHermesBindings = [:]; cloudAgentState=nil; discoveredCloudRuns=[:]; cloudHermesRecoveryRun = nil
         await restore(loadRemoteModels: false)
         nativeShortcut = nil
         wantsNewConversation = false; wantsVoice = false
@@ -624,7 +705,7 @@ import Network
         resetHistorySync()
         self.session = session
         error = nil; models = []; selectedModel = ""
-        conversations = []; localDocuments = []; automaticSync = false; cloudHermesBindings = [:]; cloudHermesRecoveryRun = nil; selection = nil
+        conversations = []; localDocuments = []; automaticSync = false; cloudHermesBindings = [:]; cloudAgentState=nil; discoveredCloudRuns=[:]; cloudHermesRecoveryRun = nil; selection = nil
         await restore()
     }
     /// Keep only the latest foreground request while authentication restores.
@@ -870,7 +951,16 @@ import Network
                     cloudHermesStatus[id] = "queued"
                     activeCloudHermes = (session.accountId,request.runId,session.accessToken)
                     defer { if activeCloudHermes?.runId == request.runId { activeCloudHermes = nil } }
-                    try await services.hermesPrepare(session.accountId,binding,session.accessToken)
+                    await synchronizeCloudAgentState()
+                    guard cloudAgentSyncError == nil, cloudAgentState?.accountId == session.accountId else { throw APIError.server(409,"hermes_session_sync_required") }
+                    if cloudAgentState?.objects[binding.sessionId] == nil {
+                        try enqueueCloudAgentMutation(.init(operationId:binding.operationId,objectId:binding.sessionId,versionId:binding.versionId,deviceId:binding.deviceId,
+                            kind:"session",parents:[],deleted:false,value:.object(["type":.string("hermes_chat"),"conversationId":.string(binding.conversationId),"branchId":.string(binding.branchId),"title":.string("Hermes chat")])))
+                        await synchronizeCloudAgentState()
+                    }
+                    guard cloudAgentSyncError == nil, let synced=cloudAgentState?.objects[binding.sessionId], !synced.deleted, synced.heads.count == 1 else {
+                        throw APIError.server(409,"hermes_session_sync_required")
+                    }
                     try Task.checkCancellation()
                     guard generationRevision == revision && sessionRevision == accountRevision else { throw CancellationError() }
                     var result: CloudHermesRun
@@ -998,7 +1088,7 @@ import Network
         await HermesCheckpointStore.shared.invalidateAccount(previous?.accountId)
         services.clear(); session = nil; conversations = []; selection = nil
         models = []; selectedModel = ""; wantsNewConversation = false; wantsVoice = false; wantsVoiceConversation = false; wantsImmediateVoiceCapture = false; pendingDraft = nil; error = nil
-        localDocuments = []; automaticSync = false; cloudHermesBindings = [:]; cloudHermesRecoveryRun = nil
+        localDocuments = []; automaticSync = false; cloudHermesBindings = [:]; cloudAgentState=nil; discoveredCloudRuns=[:]; cloudHermesRecoveryRun = nil
         await restore()
         if let previous {
             do {
@@ -1331,7 +1421,7 @@ import Network
         if persist() { scheduleAutomaticSync() }
     }
     func foreground() {
-        Task { await self.resumeCloudHermes() }
+        Task { await self.synchronizeCloudAgentState(); await self.resumeCloudHermes() }
         scheduleAutomaticSync()
     }
     private func startNetworkMonitoring() {
@@ -1346,6 +1436,7 @@ import Network
         networkMonitor.start(queue: DispatchQueue(label: "cloud.multivibe.chat.connectivity"))
     }
     func connectivityChanged(_ reachable: Bool) {
+        if reachable { Task { await self.synchronizeCloudAgentState(); await self.resumeCloudHermes() } }
         online = reachable
         if reachable { scheduleAutomaticSync() }
         else { syncTask?.cancel(); syncTask = nil }
@@ -1642,7 +1733,7 @@ import Network
         guard !isRestoring, storageLoaded else { return false }
         do {
             let url = try storageURL()
-            try services.writeHistory(JSONEncoder().encode(HistoryCache(cloudHermesBindings: cloudHermesBindings, memory: memoryRecords, memoryBaseline: memoryBaseline, memorySyncEnabled: memorySyncEnabled, calendarEnabled: calendarEnabled, remindersEnabled: remindersEnabled, documents: localDocuments, importedGuestSnapshots: importedGuestSnapshots, automaticSync: automaticSync, conversations: conversations,
+            try services.writeHistory(JSONEncoder().encode(HistoryCache(cloudHermesBindings: cloudHermesBindings, cloudAgentState:cloudAgentState, memory: memoryRecords, memoryBaseline: memoryBaseline, memorySyncEnabled: memorySyncEnabled, calendarEnabled: calendarEnabled, remindersEnabled: remindersEnabled, documents: localDocuments, importedGuestSnapshots: importedGuestSnapshots, automaticSync: automaticSync, conversations: conversations,
                 snapshot: historySnapshot, pending: pendingHistorySave, baseline: historyBaseline,
                 conversationIDs: historyConversationIDs, messageIDs: historyMessageIDs)), url)
             return true
