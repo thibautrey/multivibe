@@ -73,9 +73,14 @@ and error guidance preserve the previous app behavior.
   text, without executing frontmatter or scripts. Native memories and device
   documents are not exported by this adapter, and selecting Cloud context does
   not grant native data permissions.
-- **Compaction:** native bridge has no context-budget/summary callback. The loop
-  preserves the transcript and surfaces inference overflow. It does not silently
-  truncate, claim server compression parity or replay executed tools.
+- **Compaction:** the native llama.cpp adapter now measures the fully templated
+  prompt and tool schemas with its actual tokenizer. Its preflight reports the
+  effective context and output reserve, and generation rejects overflow before
+  decoding rather than deleting old exchanges. The default output reserve remains
+  1024 tokens; a separate explicit reserve is available for future summary calls.
+  The JavaScript orchestration does not yet consume this preflight or generate
+  summaries. The full transcript is retained and overflow remains an explicit
+  error; this is not server compaction parity.
 - No Linux terminal, process runtime, dependency installer, background scheduler,
   Hermes SessionDB, memory consolidation, executable skills loader, delegation, provider
   failover, plugins, server guardrails, or self-improvement is ported by this module.
