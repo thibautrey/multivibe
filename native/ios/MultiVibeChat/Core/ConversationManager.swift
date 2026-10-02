@@ -440,7 +440,19 @@ import Network
         var history: [HistoryJSON] = [], cursor: Int64 = 0
         if let anchor=value["historyAnchor"] {
             history=try state.anchoredHistory(anchor,sessionId:id,account:state.accountId,runs:discoveredCloudRuns)
-            cursor=version.cursor
+            // Keep the introducing revision as the immutable ordering boundary across metadata edits.
+            var pending=[version.versionId],visited=Set<String>(),origins:[Int64]=[]
+            while let id=pending.popLast(),visited.insert(id).inserted {
+                guard let ancestor=object.versions[id] else { throw APIError.server(409,"hermes_history_anchor_origin_missing") }
+                if ancestor.value?.object?["historyAnchor"] == anchor,ancestor.value?.object?["branchId"]?.string == branch {
+                    origins.append(ancestor.cursor)
+                    pending.append(contentsOf:ancestor.parents.filter {
+                        object.versions[$0]?.value?.object?["historyAnchor"] == anchor && object.versions[$0]?.value?.object?["branchId"]?.string == branch
+                    })
+                }
+            }
+            guard let origin=origins.min(),origin>0 else { throw APIError.server(409,"hermes_history_anchor_origin_missing") }
+            cursor=origin
         }
         if let local = value["localTurnId"]?.string {
             guard CloudAgentState.uuid(local), let message = state.objects[local], message.kind == "message", !message.deleted,
