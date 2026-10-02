@@ -15,6 +15,7 @@ import MultiVibeSDK
     @State private var confirmation:CheckedContinuation<Bool,Never>?
     #if canImport(UIKit)
     @State private var authentication:MultiVibeAuthenticationPresenter?
+    @State private var signingIn = false
     #endif
     public init(client:MultiVibeClient,conversation:MultiVibeConversation? = nil,tools:[MultiVibeTool] = [],contextProvider:(any MultiVibeContextProvider)? = nil,initialPrompt:String = "") {
         self.client = client; self.tools = tools; self.contextProvider = contextProvider; _conversation = State(initialValue:conversation); _text = State(initialValue:initialPrompt)
@@ -74,7 +75,7 @@ import MultiVibeSDK
             }
             #if canImport(UIKit)
             ToolbarItem {
-                if !client.isConnected {Button("Se connecter") {Task {do {let presenter = MultiVibeAuthenticationPresenter(window:UIApplication.shared.connectedScenes.compactMap {$0 as? UIWindowScene}.flatMap(\.windows).first(where:{$0.isKeyWindow})); authentication = presenter; try await presenter.signIn(client:client)} catch {self.error = error.localizedDescription}}}}
+                if !client.isConnected {MultiVibeConnectButton(isBusy:signingIn) {Task {signingIn = true; defer {signingIn = false}; do {let presenter = MultiVibeAuthenticationPresenter(window:UIApplication.shared.connectedScenes.compactMap {$0 as? UIWindowScene}.flatMap(\.windows).first(where:{$0.isKeyWindow})); authentication = presenter; try await presenter.signIn(client:client)} catch {self.error = error.localizedDescription}}}}
                 else if client.mode == .application {Button("Déconnexion") {Task {do {try await client.disconnect(); conversation = nil} catch {self.error = error.localizedDescription}}}.disabled(task != nil || client.hasPendingHistoryWrite || !client.isHistoryUnlocked)}
             }
             #endif
