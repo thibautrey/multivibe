@@ -7,6 +7,29 @@
 #include <mutex>
 #include <stdexcept>
 
+namespace {
+struct PreparedPrompt {
+    common_chat_params formatted;
+    std::vector<llama_token> tokens;
+};
+// Shared by preflight and completion so tool schemas, thinking settings and special tokens agree.
+static PreparedPrompt preparePrompt(llama_context *context, const common_chat_templates *templates,
+                                    NSString *messages, NSString *tools, int reservedOutputTokens) {
+    if (!context) throw std::runtime_error("Téléchargez ce modèle avant de l’utiliser.");
+    if (reservedOutputTokens < 1 || static_cast<uint64_t>(reservedOutputTokens) >= llama_n_ctx(context))
+        throw std::runtime_error("La réserve de réponse est invalide pour ce modèle.");
+    common_chat_templates_inputs inputs;
+    inputs.messages = common_chat_msgs_parse_oaicompat(common_json::parse(messages.UTF8String));
+    if (inputs.messages.empty()) throw std::runtime_error("Une conversation est requise.");
+    inputs.tools = common_chat_tools_parse_oaicompat(common_json::parse(tools.UTF8String));
+    inputs.enable_thinking = false;
+    inputs.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
+    auto formatted = common_chat_templates_apply(templates, inputs);
+    auto tokens = common_tokenize(context, formatted.prompt, true, true);
+    return {std::move(formatted), std::move(tokens)};
+}
+}
+
 @implementation MVLlama {
     llama_model *_model;
     llama_context *_context;
@@ -60,25 +83,34 @@
     }
 }
 - (NSString *)completeMessages:(NSString *)messages tools:(NSString *)tools onText:(void (^)(NSString *))onText error:(NSError **)error {
+    return [self completeMessages:messages tools:tools reservedOutputTokens:1024 onText:onText error:error];
+}
+- (NSDictionary<NSString *, NSNumber *> *)preflightMessages:(NSString *)messages tools:(NSString *)tools
+                                      reservedOutputTokens:(int)reservedOutputTokens error:(NSError **)error {
     try {
-        if (!_context) throw std::runtime_error("Téléchargez ce modèle avant de l’utiliser.");
-        common_chat_templates_inputs inputs;
-        inputs.messages = common_chat_msgs_parse_oaicompat(common_json::parse(messages.UTF8String));
-        inputs.tools = common_chat_tools_parse_oaicompat(common_json::parse(tools.UTF8String));
-        inputs.enable_thinking = false;
-        inputs.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
-        common_chat_params formatted;
-        std::vector<llama_token> tokens;
-        // Drop whole oldest exchanges only; never leave an orphan tool result.
-        for (;;) {
-            formatted = common_chat_templates_apply(_templates.get(), inputs);
-            tokens = common_tokenize(_context, formatted.prompt, true, true);
-            if (tokens.size() + 1024 <= llama_n_ctx(_context)) break;
-            size_t first = inputs.messages.front().role == "system" ? 1 : 0;
-            size_t next = first + 1;
-            while (next < inputs.messages.size() && inputs.messages[next].role != "user") ++next;
-            if (next >= inputs.messages.size()) throw std::runtime_error("Ce message est trop long. Réduisez-le pour ce modèle.");
-            inputs.messages.erase(inputs.messages.begin() + first, inputs.messages.begin() + next);
+        if (_cancelled.load()) throw std::runtime_error("Réponse interrompue.");
+        const auto prepared = preparePrompt(_context, _templates.get(), messages, tools, reservedOutputTokens);
+        return @{@"promptTokens": @(prepared.tokens.size()), @"contextTokens": @(llama_n_ctx(_context)),
+                 @"reservedOutputTokens": @(reservedOutputTokens)};
+    } catch (const std::exception &e) {
+        if (error) *error = [NSError errorWithDomain:@"LocalInference" code:3 userInfo:@{NSLocalizedDescriptionKey: @(e.what())}];
+        return nil;
+    }
+}
+- (NSString *)completeMessages:(NSString *)messages tools:(NSString *)tools reservedOutputTokens:(int)reservedOutputTokens
+                       onText:(void (^)(NSString *))onText error:(NSError **)error {
+    try {
+        if (_cancelled.load()) throw std::runtime_error("Réponse interrompue.");
+        auto prepared = preparePrompt(_context, _templates.get(), messages, tools, reservedOutputTokens);
+        const auto &formatted = prepared.formatted;
+        const auto &tokens = prepared.tokens;
+        // Never silently remove history. Compaction belongs to the durable orchestration layer.
+        if (tokens.size() > llama_n_ctx(_context) - static_cast<uint32_t>(reservedOutputTokens)) {
+            if (error) *error = [NSError errorWithDomain:@"LocalInference" code:4 userInfo:@{
+                NSLocalizedDescriptionKey: @"Le contexte dépasse la capacité de ce modèle. Une compaction est nécessaire avant de continuer.",
+                @"promptTokens": @(tokens.size()), @"contextTokens": @(llama_n_ctx(_context)),
+                @"reservedOutputTokens": @(reservedOutputTokens)}];
+            return nil;
         }
         llama_memory_clear(llama_get_memory(_context), true);
         for (size_t pos = 0; pos < tokens.size(); pos += 256) {
@@ -106,7 +138,7 @@
         std::string output, published;
         common_chat_msg parsed;
         bool ended = false;
-        for (int i = 0; i < 1024; ++i) {
+        for (int i = 0; i < reservedOutputTokens; ++i) {
             if (_cancelled.load()) throw std::runtime_error("Réponse interrompue.");
             auto token = common_sampler_sample(sampler.get(), _context, -1);
             common_sampler_accept(sampler.get(), token, true);
