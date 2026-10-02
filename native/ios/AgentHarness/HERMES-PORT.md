@@ -177,3 +177,26 @@ resume after its selected context changes; it asks for a new message instead of
 silently reading another revision. Completed transcript recovery and state-only
 Cloud publication do not need the old executable context. This restriction also
 applies to older incomplete checkpoints that lack the new context binding.
+
+## Shared sessions and explicit offline mutations
+
+A shared web/Cloud session can be materialized as a native conversation using a
+locally available model. This action reads account-scoped cached history,
+including hidden tool exchanges, and preserves its branch and anchors. It does
+not run inference or enable local-turn export. Outstanding runs and conflicting
+sessions block this transition. Cached completed run histories support relaunch
+without requiring an immediate network request.
+
+With a selected project, `workspace_create_file` creates a new UTF-8 file through
+the same durable graph outbox. Existing paths and tombstones are never replaced.
+The device's unrelated native documents are not copied into the project.
+
+A separate per-conversation option enables `memory` for explicitly selected
+Hermes core-memory objects. Existing bindings default to read-only. The tool
+supports single add/replace/remove operations with whole-entry matching and the
+upstream character budgets. It does not import native memories or enable their
+background consolidation. Each write retains its original parent and is durable
+before success. Local-only outbox provenance rechecks the exact writer binding,
+permission and selected target before dispatch; revoking permission blocks queued
+writes but cannot undo requests already accepted by the server. A target with a
+pending write remains readable and is not writable again until reconciliation.
