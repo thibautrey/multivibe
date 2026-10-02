@@ -35,6 +35,10 @@ const bridge = {
         if (input.durable) await request(state, 'checkpoint', { messages: JSON.stringify(messages), state: JSON.stringify(runtime) });
         else state.transcript = messages; // workspace-free titles and compatibility callers only
       },
+      ...(input.compaction === true ? {
+        measure: (messages, declarations, reservedOutputTokens) => request(state, 'contextBudget', {messages: JSON.stringify(messages), tools: JSON.stringify(declarations.map(tool => ({type:'function',function:tool}))), reservedOutputTokens}),
+        summarize: (messages, reservedOutputTokens) => request(state, 'summary', {messages: JSON.stringify(messages), reservedOutputTokens})
+      } : {}),
       model: (messages, declarations) => request(state, 'model', { messages: JSON.stringify(messages), tools: JSON.stringify(declarations.map(tool => ({ type: 'function', function: tool }))) }),
       execute: (name, args, callID) => {
         const native = (name, args) => request(state, 'tool', { name, arguments: JSON.stringify(args), callID });

@@ -1,3 +1,4 @@
+import { prepareCompaction } from './hermes-compaction.mjs';
 // Portable subset of NousResearch/hermes-agent (MIT), pinned in upstream/hermes-loop/manifest.json.
 // See HERMES-PORT.md for source/function mapping and intentional mobile differences.
 export const hermesCommit = '6d49922875f60af5bc31e2bfbae78a81d2fa91fc';
@@ -61,6 +62,7 @@ export async function runHermesTurn(input, host) {
   const names = new Map(tools.map(tool => [tool.name, tool]));
   const saved = input.resume?.state ?? {};
   const repeats = new Map(saved.repeats ?? []);
+  let compaction = saved.compaction;
   // Recovered calls already had an opportunity to execute. Do not repeat even a
   // successful/explicitly skipped call if the model asks again after relaunch.
   if (input.resume) for (const message of messages) for (const call of message.tool_calls ?? []) {
@@ -69,11 +71,12 @@ export async function runHermesTurn(input, host) {
   let { unknownStrikes = 0, jsonStrikes = 0, totalCalls = 0, modelMilliseconds = 0, weatherEvidence = false, weatherRepair = 0, recovery = 0, textContinuations = 0, rounds = 0, outputText = '', finalText, terminal = false, completed = false } = saved;
   const checkpoint = async () => {
     cancelled(host.signal);
-    await host.checkpoint(clone(messages), { unknownStrikes, jsonStrikes, totalCalls, modelMilliseconds, weatherEvidence, weatherRepair, recovery, textContinuations, rounds, outputText, finalText, terminal, completed, repeats: [...repeats] });
+    await host.checkpoint(clone(messages), { unknownStrikes, jsonStrikes, totalCalls, modelMilliseconds, weatherEvidence, weatherRepair, recovery, textContinuations, rounds, outputText, finalText, terminal, completed, repeats: [...repeats], ...(compaction ? {compaction} : {}) });
     cancelled(host.signal);
   };
   const closeTail = text => { if (messages.at(-1)?.role === 'tool') messages.push({ role: 'assistant', content: text || 'Operation interrupted.' }); };
   const instruction = text => {
+    compaction = undefined; // System repair changes the canonical prefix; stale summaries cannot be reused.
     const system = messages.find(message => message.role === 'system');
     if (system) system.content += '\n' + text;
     else messages.unshift({ role: 'system', content: text });
@@ -85,12 +88,17 @@ export async function runHermesTurn(input, host) {
       rounds = round;
       cancelled(host.signal);
       if (modelMilliseconds > 120_000) throw new Error('La limite de travail local a été atteinte.');
-      // Current native contract has no compaction callback. Preserve the full
-      // transcript and surface context overflow rather than silently dropping it.
-      // A crash during inference can retry from this checkpoint: no tool is pending.
-      await checkpoint();
+      let modelMessages = clone(messages);
+      if (input.compaction === true) {
+        const start = Date.now();
+        const prepared = await prepareCompaction(messages, tools, compaction, host);
+        modelMilliseconds += Date.now() - start;
+        const previous = compaction; compaction = prepared.state;
+        try { await checkpoint(); } catch (error) { compaction = previous; throw error; }
+        modelMessages = prepared.messages;
+      } else { await checkpoint(); }
       const start = Date.now();
-      const reply = await host.model(clone(messages), tools);
+      const reply = await host.model(modelMessages, tools);
       modelMilliseconds += Date.now() - start;
       cancelled(host.signal);
       outputText += reply.content ?? '';
