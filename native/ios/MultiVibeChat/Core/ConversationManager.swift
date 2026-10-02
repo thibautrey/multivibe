@@ -219,6 +219,37 @@ import Network
             cloudAgentSyncError=nil
         } catch { if sessionRevision == epoch { cloudAgentSyncError=error.localizedDescription } }
     }
+    var currentCloudContextSelection: (memory:[String],skills:[String],files:[String],project:String?) {
+        guard let id=selection,let binding=cloudHermesBindings[id],binding.accountId == session?.accountId else { return ([],[],[],nil) }
+        return (binding.contextMemoryIDs ?? [],binding.contextSkillIDs ?? [],binding.contextFileIDs ?? [],binding.contextProjectID)
+    }
+    func localHermesSeed(conversation id: UUID, input: [ChatMessage], epoch: UUID) async throws -> (history: [HistoryJSON]?, context: String) {
+        guard let binding = cloudHermesBindings[id], binding.accountId == session?.accountId else { return (nil,"") }
+        guard binding.pending == nil, let currentTurn = input.last(where: { $0.role == "user" }) else { throw APIError.server(409,"hermes_pending_run_requires_recovery") }
+        let account = binding.accountId
+        var history = binding.history
+        for turn in binding.localTurns ?? [] where !turn.published && turn.turnId != currentTurn.id {
+            let context = HermesRunContext(accountID:account,conversationID:id,turnID:turn.turnId,modelID:turn.modelId,source:turn.source)
+            guard let raw = try await services.hermesLocalCheckpoint(context) else { throw APIError.server(409,"hermes_local_checkpoint_requires_recovery") }
+            guard sessionRevision == epoch, session?.accountId == account, conversations.contains(where: { $0.id == id }) else { throw CancellationError() }
+            let messages = try JSONDecoder().decode([HistoryJSON].self,from:Data(raw.utf8))
+            try RemoteHermesSession.validateHistory(messages)
+            guard let start = messages.lastIndex(where: { $0.object?["role"]?.string == "user" }) else { throw APIError.invalidResponse }
+            history = history.isEmpty ? messages : history + Array(messages[start...])
+        }
+        var context = ""
+        if !(binding.contextMemoryIDs ?? []).isEmpty || !(binding.contextSkillIDs ?? []).isEmpty || !(binding.contextFileIDs ?? []).isEmpty {
+            guard let state = cloudAgentState else { throw APIError.invalidResponse }
+            let snapshot = try CloudHermesContext.build(state:state,accountID:account,projectID:binding.contextProjectID,
+                memoryObjectIDs:binding.contextMemoryIDs ?? [],skillObjectIDs:binding.contextSkillIDs ?? [],fileObjectIDs:binding.contextFileIDs ?? [])
+            context = [snapshot.memory,snapshot.skills,snapshot.files].filter { !$0.isEmpty }.joined(separator:"\n\n")
+        }
+        guard sessionRevision == epoch, session?.accountId == account else { throw CancellationError() }
+        if history.isEmpty { return (nil,context) }
+        history.append(.object(["role":.string("user"),"content":.string(currentTurn.content)]))
+        try RemoteHermesSession.validateHistory(history)
+        return (history,context)
+    }
     /// State-only reconciliation. Checkpoints are read without creating leases or invoking tools/models.
     private func reconcileLocalTurns(consent: CloudHermesConsent, epoch: UUID) async throws {
         let account = consent.accountId
@@ -455,7 +486,7 @@ import Network
     }
     private var activeCloudHermes: (accountId:String, runId:String, token:String)?
     /// Call only after UI has explained server-readable storage and obtained explicit agreement.
-    func authorizeHermesCloud(importExistingConversation: Bool, synchronizeLocalTurns: Bool = false) async throws {
+    func authorizeHermesCloud(importExistingConversation: Bool, synchronizeLocalTurns: Bool = false, memoryIDs: [String] = [], skillIDs: [String] = [], fileIDs: [String] = [], projectID: String? = nil) async throws {
         guard !isStreaming, let id = selection, let conversation = current else { throw APIError.invalidResponse }
         if !conversation.messages.isEmpty && !importExistingConversation { throw APIError.server(403,"hermes_history_import_required") }
         let revision = sessionRevision, session = try await validSession()
@@ -474,6 +505,11 @@ import Network
         let uuid = { UUID().uuidString.lowercased() }
         var binding = cloudHermesBindings[id] ?? CloudHermesBinding(accountId:session.accountId,conversationId:id.uuidString.lowercased(),sessionId:uuid(),branchId:uuid(),operationId:uuid(),versionId:uuid(),deviceId:uuid(),importApproved:importExistingConversation)
         guard binding.accountId == session.accountId else { throw APIError.invalidResponse }
+        if !memoryIDs.isEmpty || !skillIDs.isEmpty || !fileIDs.isEmpty {
+            guard let state = cloudAgentState else { throw APIError.invalidResponse }
+            _ = try CloudHermesContext.build(state:state,accountID:session.accountId,projectID:projectID,memoryObjectIDs:memoryIDs,skillObjectIDs:skillIDs,fileObjectIDs:fileIDs)
+        }
+        binding.contextMemoryIDs=memoryIDs;binding.contextSkillIDs=skillIDs;binding.contextFileIDs=fileIDs;binding.contextProjectID=projectID
         binding.cloudAuthorized = true
         if synchronizeLocalTurns { binding.localExportSources = CloudHermesBinding.localSources }
         binding.importApproved = binding.importApproved || importExistingConversation
@@ -1099,8 +1135,10 @@ import Network
                     let checkpointContext = input.last(where: { $0.role == "user" }).map {
                         HermesRunContext(accountID: session?.accountId, conversationID: id, turnID: $0.id, modelID: model, source: model == LocalModel.id ? "apple-foundation-local" : "downloaded-local")
                     }
+                    let initial = try await localHermesSeed(conversation:id,input:input,epoch:accountRevision)
+                    guard generationRevision == revision && sessionRevision == accountRevision else { throw CancellationError() }
                     let workspace = LocalAgentWorkspace(conversations: conversations, documents: localDocuments,
-                        hermesContext: checkpointContext, deviceData: deviceData,
+                        hermesContext: checkpointContext, initialHermesHistory:initial.history, selectedCloudContext:initial.context, deviceData: deviceData,
                         event: { event in
                             await self.recordLocalEvent(event, generation: revision, account: accountRevision)
                         }, saveDocument: { document in

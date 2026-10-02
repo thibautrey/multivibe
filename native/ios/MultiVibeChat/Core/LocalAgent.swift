@@ -86,6 +86,8 @@ enum LocalDeviceScope {
 /// Web access is gated by a conversation decision. No shell, arbitrary file paths, or credentials.
 actor LocalAgentWorkspace {
     let hermesContext: HermesRunContext?
+    let initialHermesHistory: [HistoryJSON]?
+    let selectedCloudContext: String
     private let automation: (@Sendable (String) async throws -> String)?
     private let memory: @Sendable (String, String, String) async throws -> String
     private var calls = 0
@@ -103,7 +105,7 @@ actor LocalAgentWorkspace {
     private var webPages: [String: LocalWebResponse] = [:]
     private let event: @Sendable (LocalAgentEvent) async -> Void
     private let saveDocument: @Sendable (LocalDocument) async throws -> Void
-    init(conversations: [Conversation], documents: [LocalDocument], hermesContext: HermesRunContext? = nil, deviceData: LocalDeviceSnapshot = LocalDeviceSnapshot(),
+    init(conversations: [Conversation], documents: [LocalDocument], hermesContext: HermesRunContext? = nil, initialHermesHistory: [HistoryJSON]? = nil, selectedCloudContext: String = "", deviceData: LocalDeviceSnapshot = LocalDeviceSnapshot(),
          event: @escaping @Sendable (LocalAgentEvent) async -> Void,
          saveDocument: @escaping @Sendable (LocalDocument) async throws -> Void,
          deadline: Date = Date().addingTimeInterval(120),
@@ -115,6 +117,8 @@ actor LocalAgentWorkspace {
          automation: (@Sendable (String) async throws -> String)? = nil,
          memory: @escaping @Sendable (String, String, String) async throws -> String = { action, _, _ in action == "context_memory" ? "" : "Aucune mémoire disponible." }) {
         self.hermesContext = hermesContext
+        self.initialHermesHistory = initialHermesHistory
+        self.selectedCloudContext = selectedCloudContext
         self.conversations = conversations; self.documents = documents; self.deviceData = deviceData
         self.event = event; self.saveDocument = saveDocument; self.deadline = deadline
         self.memory = memory; self.automation = automation
@@ -344,7 +348,13 @@ enum LocalAgent {
             let automation = AutomationTools.requested(messages) && automationAvailable
             let weather = LocalDownloadedTools.isWeatherRequest(messages) && !automation
             let schemas = LocalDownloadedTools.schema(deviceActions: await workspace.deviceActions(), weather: weather, automation: automation)
-            var transcript = messages.map { ["role": $0.role, "content": $0.content] }
+            var transcript: [[String:Any]]
+            if let initial = await workspace.initialHermesHistory {
+                try RemoteHermesSession.validateHistory(initial)
+                transcript = try JSONSerialization.jsonObject(with:JSONEncoder().encode(initial)) as! [[String:Any]]
+            } else { transcript = messages.map { ["role": $0.role, "content": $0.content] } }
+            let selectedContext = await workspace.selectedCloudContext
+            if !selectedContext.isEmpty { transcript.insert(["role":"user","content":selectedContext],at:max(0,transcript.count-1)) }
             transcript.insert(["role": "system", "content": instructions
                 + "\nUse weather_forecast for weather; never invent a city. Use clarify when required information is missing."], at: 0)
             if !memoryContext.isEmpty {

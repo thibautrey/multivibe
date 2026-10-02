@@ -248,3 +248,36 @@ final class RemoteHermesHistoryTests: XCTestCase {
         XCTAssertNotNil(cache["remoteHermes"])
     }
 }
+
+@MainActor final class CloudHermesLocalSeedTests: XCTestCase {
+    func testActualLocalResponderReceivesHiddenCloudHistoryAndOnlySelectedCloudContext() async throws {
+        let id={UUID().uuidString.lowercased()}, account=UUID().uuidString.lowercased(), conversationID=UUID()
+        let oldUser:HistoryJSON = .object(["role":.string("user"),"content":.string("Old question")])
+        let call:HistoryJSON = .object(["role":.string("assistant"),"content":.null,"tool_calls":.array([.object(["id":.string("cloud-call"),"function":.object(["name":.string("read_file"),"arguments":.string("{}")])])])])
+        let tool:HistoryJSON = .object(["role":.string("tool"),"tool_call_id":.string("cloud-call"),"content":.string("Hidden Cloud evidence")])
+        var binding=CloudHermesBinding(accountId:account,conversationId:conversationID.uuidString.lowercased(),sessionId:id(),branchId:id(),operationId:id(),versionId:id(),deviceId:id(),importApproved:true)
+        binding.history=[oldUser,call,tool,.object(["role":.string("assistant"),"content":.string("Old answer")])]
+        let memoryID=id(), memoryVersion=id()
+        let memory=CloudAgentChange(operationId:id(),objectId:memoryID,versionId:memoryVersion,deviceId:id(),kind:"memory",parents:[],deleted:false,value:.object(["type":.string("hermes_core_memory"),"target":.string("user"),"content":.string("Selected Cloud memory")]),cursor:1,erased:false)
+        var graph=CloudAgentState(accountId:account,deviceId:id())
+        graph.objects[memoryID] = .init(kind:"memory",versions:[memoryVersion:memory],heads:[memoryVersion])
+        binding.contextMemoryIDs=[memoryID]
+        let conversation=Conversation(id:conversationID,model:LocalModel.id,messages:[ChatMessage(role:"user",content:"Old question"),ChatMessage(role:"assistant",content:"Old answer",completion:.completed)])
+        let payload=try JSONSerialization.data(withJSONObject:["cloudHermesBindings":JSONSerialization.jsonObject(with:JSONEncoder().encode([conversationID:binding])),"cloudAgentState":JSONSerialization.jsonObject(with:JSONEncoder().encode(graph)),"conversations":JSONSerialization.jsonObject(with:JSONEncoder().encode([conversation])),"baseline":[],"conversationIDs":[:],"messageIDs":[:]])
+        let auth=NativeSession(accessToken:"fixture",refreshToken:"fixture",expiresAt:.distantFuture,accountId:account)
+        let received=expectation(description:"Local responder got complete seeded history")
+        let services=isolatedServices(load:{auth},readLocalHistory:{_ in payload},localAvailability:{nil},localRespond:{_,workspace,delta in
+            let history=await workspace.initialHermesHistory
+            let context=await workspace.selectedCloudContext
+            XCTAssertTrue(history?.contains(tool) == true)
+            XCTAssertEqual(history?.last?.object?["content"]?.string,"Continue offline")
+            XCTAssertTrue(context.contains("Selected Cloud memory"));XCTAssertTrue(context.contains("untrusted data"))
+            await delta("Local answer");received.fulfill()
+        })
+        let manager=ConversationManager(services:services)
+        await manager.restore(loadRemoteModels:false);manager.selection=conversationID;manager.selectedModel=LocalModel.id
+        XCTAssertTrue(manager.send("Continue offline"))
+        await fulfillment(of:[received],timeout:3)
+        manager.stop()
+    }
+}

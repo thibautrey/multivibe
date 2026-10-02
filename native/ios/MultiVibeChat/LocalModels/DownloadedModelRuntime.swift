@@ -45,6 +45,13 @@ actor DownloadedModelRuntime {
         let toolSchema = LocalDownloadedTools.schema(deviceActions: await workspace?.deviceActions() ?? [], weather: weather, automation: useTools && AutomationTools.requested(messages) && automationAvailable)
         var history = messages.filter { ["system", "user", "assistant"].contains($0.role) }
             .map { ["role": $0.role, "content": $0.content] as [String: Any] }
+        if let initial = await workspace?.initialHermesHistory {
+            try RemoteHermesSession.validateHistory(initial)
+            history = try JSONSerialization.jsonObject(with:JSONEncoder().encode(initial)) as! [[String:Any]]
+        }
+        if let selectedContext = await workspace?.selectedCloudContext, !selectedContext.isEmpty {
+            history.insert(["role":"user","content":selectedContext],at:max(0,history.count-1))
+        }
         history.insert(["role": "system", "content": useTools
             ? """
             You are MultiVibe, a private assistant running on this device. Answer in the user's language.
