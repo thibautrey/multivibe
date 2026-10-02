@@ -110,13 +110,19 @@ Retrying a history write never replays inference or a tool. Local Swift tests us
 synthetic transport and real encryption; they are not signed-device or production
 proof. Locking erases in-memory history; it does not delete pending ciphertext.
 
-The official-owner model chooser has Cloud, My accounts and Relay sections.
-Relay models come from `/relay/v1/models`; their exact `relay/<machine>/<model>`
-selection is sent to `/relay/v1/completions`. Offline entries remain visible and
-cannot be selected. Catalogue errors are shown in the Relay section; they never
-switch a selected Relay model to a Cloud model. Monthly remaining messages or
-unlimited entitlement come from the server allowance, not a client-side counter.
-The Relay backend feature flag and machine availability still govern access.
+Both application and official-owner model choosers have Cloud, My accounts and
+Relay sections. Application mode obtains the combined catalogue and allowance
+from `/sdk/v2/models` and sends all inference through `/sdk/v2/completions`.
+Official-owner mode obtains Relay models from `/relay/v1/models` and sends their
+exact `relay/<machine>/<model>` selection to `/relay/v1/completions`. Offline
+entries remain visible and cannot be selected. Catalogue errors never switch a
+selected Relay model to a Cloud model. Monthly remaining messages or unlimited
+entitlement come from the server allowance, not a client-side counter.
+
+Relay tool continuations carry the server receipt only inside the current
+`respond` call. The SDK requires a receipt before executing a host tool, never
+persists it and starts every new user submission without one. The Relay backend
+feature flag and machine availability still govern access.
 
 ### Shared application tools and skills
 

@@ -60,6 +60,19 @@ final class ProtocolTests:XCTestCase {
             XCTFail("deadline ignored")
         } catch MultiVibeError.unknownToolOutcome {} catch {XCTFail("unexpected \(error)")}
     }
+    func testRelayContinuationRequiredBeforeHostToolAndScopedToOneResponse() throws {
+        var response = RelayContinuationChain(active:true)
+        XCTAssertNil(response.previous)
+        XCTAssertThrowsError(try response.finishRound(receipt:nil,requiresContinuation:true))
+        let receipt = "11111111-1111-4111-8111-111111111111"
+        try response.finishRound(receipt:receipt,requiresContinuation:true)
+        XCTAssertEqual(response.previous,receipt)
+        let nextResponse = RelayContinuationChain(active:true)
+        XCTAssertNil(nextResponse.previous)
+        var cloudResponse = RelayContinuationChain(active:false)
+        try cloudResponse.finishRound(receipt:receipt,requiresContinuation:true)
+        XCTAssertNil(cloudResponse.previous)
+    }
     @MainActor func testApplicationRejectsForeignConversationBeforeNetwork() async throws {
         let client = MultiVibeClient(configuration:.init(clientID:"first",redirectURI:URL(string:"https://first.example/callback")!))
         do {_ = try await client.save(MultiVibeConversation(appId:"other"));XCTFail("cross-app write accepted")} catch MultiVibeError.invalidArguments {} catch {XCTFail("unexpected \(error)")}
