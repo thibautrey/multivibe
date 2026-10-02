@@ -275,6 +275,15 @@ import Network
                 let history = try JSONDecoder().decode([HistoryJSON].self,from:Data(checkpoint.utf8))
                 guard var state = cloudAgentState, state.accountId == account else { throw APIError.invalidResponse }
                 let previousState = state, previousBinding = binding
+                if binding.localTurns?[index].parentValue == nil, turn.parents.count == 1 {
+                    // Compatibility: recover only the exact captured version, never a newer arbitrary head.
+                    let exact = state.objects[binding.sessionId]?.versions[turn.parents[0]]?.value
+                        ?? state.outbox.first(where: { $0.objectId == binding.sessionId && $0.versionId == turn.parents[0] })?.value
+                    binding.localTurns?[index].parentValue = exact
+                    if exact == nil && turn.parents == [binding.versionId] && state.objects[binding.sessionId] == nil {
+                        binding.localTurns?[index].parentValue = .object(["type":.string("hermes_session"),"conversationId":.string(binding.conversationId),"branchId":.string(binding.branchId),"title":.string("Hermes chat")])
+                    }
+                }
                 // The first session version is durable and idempotent; later local parents never rebase automatically.
                 if state.objects[binding.sessionId] == nil && !state.outbox.contains(where: { $0.objectId == binding.sessionId }) {
                     try state.enqueue(.init(operationId:binding.operationId,objectId:binding.sessionId,versionId:binding.versionId,deviceId:binding.deviceId,kind:"session",parents:[],deleted:false,
@@ -1142,7 +1151,9 @@ import Network
                 var binding = cloudHermesBindings[id] ?? CloudHermesBinding(accountId:account,conversationId:id.uuidString.lowercased(),sessionId:uuid(),branchId:uuid(),operationId:uuid(),versionId:uuid(),deviceId:uuid(),cloudAuthorized:false,importApproved:false)
                 let queuedParent = cloudAgentState?.outbox.last(where: { $0.objectId == binding.sessionId })?.versionId
                 let parents = queuedParent.map { [$0] } ?? cloudAgentState?.objects[binding.sessionId]?.heads ?? [binding.versionId]
-                binding.recordLocalIntent(turnId:turn.id,modelId:model,source:model == LocalModel.id ? "apple-foundation-local" : "downloaded-local",parents:parents)
+                let snapshot = cloudAgentState?.outbox.last(where: { $0.objectId == binding.sessionId })?.value
+                    ?? parents.first.flatMap { cloudAgentState?.objects[binding.sessionId]?.versions[$0]?.value }
+                binding.recordLocalIntent(turnId:turn.id,modelId:model,source:model == LocalModel.id ? "apple-foundation-local" : "downloaded-local",parents:parents,parentValue:snapshot)
                 let previous = cloudHermesBindings[id]; cloudHermesBindings[id] = binding
                 guard persist() else { cloudHermesBindings[id] = previous; isStreaming = false; setReplyCompletion(.failed); activeReply = nil; return false }
             }
