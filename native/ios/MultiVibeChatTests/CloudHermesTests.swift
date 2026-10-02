@@ -217,19 +217,38 @@ final class RemoteHermesHistoryTests: XCTestCase {
 }
 
 @MainActor final class RemoteHermesConversationTests: XCTestCase {
-    private func fixture() throws -> (ConversationManager,String,()->[String],()->Int,()->Data?) {
+    private func fixture(projectSelection: Bool = false) throws -> (ConversationManager,String,()->[String],()->Int,()->Data?,String) {
         let id = { UUID().uuidString.lowercased() }
         let account=id(), sessionID=id(), branch=id(), version=id()
         let sessionChange=CloudAgentChange(operationId:id(),objectId:sessionID,versionId:version,deviceId:id(),kind:"session",parents:[],deleted:false,value:.object(["type":.string("hermes_session"),"title":.string("Remote session"),"branchId":.string(branch),"messages":.array([.object(["role":.string("user"),"content":.string("Remote context")]),.object(["role":.string("assistant"),"content":.string("Remote answer")])])]),cursor:1,erased:false)
         var state=CloudAgentState(accountId:account,deviceId:id())
         state=try state.applying(.init(accountId:account,changes:[sessionChange],cursor:1,hasMore:false))
+        let projectID=id()
+        if projectSelection {
+            let change=CloudAgentChange(operationId:id(),objectId:projectID,versionId:id(),deviceId:id(),kind:"project",parents:[],deleted:false,value:.object(["title":.string("Selected project")]),cursor:2,erased:false)
+            state=try state.applying(.init(accountId:account,changes:[change],cursor:2,hasMore:false))
+        }
+        var serverCursor=state.cursor, serverChanges:[CloudAgentChange]=[]
         let json=try JSONSerialization.jsonObject(with:JSONEncoder().encode(state))
         let data=try JSONSerialization.data(withJSONObject:["cloudAgentState":json,"conversations":[],"baseline":[],"conversationIDs":[:],"messageIDs":[:]])
         let auth=NativeSession(accessToken:"fixture",refreshToken:"fixture",expiresAt:.distantFuture,accountId:account)
         var calls:[String]=[], creates=0, saved:Data?, runs:[String:CloudHermesRun]=[:]
         var services=isolatedServices(load:{auth},readLocalHistory:{_ in data})
         services.writeHistory={value,_ in saved=value}
-        services.hermesChanges={_,_ in .init(accountId:account,changes:[],cursor:1,hasMore:false)}
+        services.hermesChanges={after,_ in .init(accountId:account,changes:serverChanges.filter{$0.cursor>after},cursor:serverCursor,hasMore:false)}
+        services.hermesMutations={_,operations,_ in
+            calls.append("MUTATION")
+            var receipts:[CloudAgentReceipt]=[]
+            for operation in operations {
+                XCTAssertEqual(operation.objectId,sessionID);XCTAssertEqual(operation.parents,[version])
+                XCTAssertEqual(operation.value?.object?["workspaceProjectId"]?.string,projectID)
+                XCTAssertEqual(operation.value?.object?["messages"]?.array?.count,2)
+                serverCursor += 1
+                serverChanges.append(.init(operationId:operation.operationId,objectId:operation.objectId,versionId:operation.versionId,deviceId:operation.deviceId,kind:operation.kind,parents:operation.parents,deleted:false,value:operation.value,cursor:serverCursor,erased:false))
+                receipts.append(.init(operationId:operation.operationId,versionId:operation.versionId,cursor:serverCursor,heads:[operation.versionId],deleted:false))
+            }
+            return .init(accountId:account,receipts:receipts)
+        }
         services.hermesConsent={_ in .init(accountId:account,cloudEnabled:true,revision:1)}
         services.remoteHermesModel={model,_ in .init(id:model,source:"cloud",accessId:nil)}
         services.hermesRead={_,runID,_,cancel in
@@ -242,17 +261,27 @@ final class RemoteHermesHistoryTests: XCTestCase {
             calls.append("POST");creates += 1
             XCTAssertNotNil(saved)
             XCTAssertEqual(input.sessionId,sessionID);XCTAssertEqual(input.history.count,2)
-            XCTAssertEqual(input.workspaceProjectId,sessionID)
+            XCTAssertEqual(input.workspaceProjectId,projectSelection ? projectID : sessionID)
             let wire=try JSONSerialization.jsonObject(with:JSONEncoder().encode(input)) as! [String:Any]
             XCTAssertNil(wire["projectId"])
             let run=CloudHermesRun(runId:input.runId,sessionId:sessionID,branchId:branch,state:"completed",generation:1,
                 result:.init(response:"Cloud answer",history:input.history + [.object(["role":.string("user"),"content":.string(input.message)]),.object(["role":.string("assistant"),"content":.string("Cloud answer")])]))
             runs[input.runId]=run;return run
         }
-        return (ConversationManager(services:services),sessionID,{calls},{creates},{saved})
+        return (ConversationManager(services:services),sessionID,{calls},{creates},{saved},projectID)
+    }
+    func testSelectedWorkspacePublishesSessionVersionBeforeRunAndSurvivesProjection() async throws {
+        let (manager,id,calls,_,_,project)=try fixture(projectSelection:true)
+        await manager.restore(loadRemoteModels:false)
+        for _ in 0..<100 where manager.cloudAgentSyncing { await Task.yield() }
+        manager.models=[ModelOption(id:"cloud-fixture")]
+        try await manager.sendRemoteHermes(sessionId:id,model:"cloud-fixture",message:"Continue",workspaceProjectId:project)
+        XCTAssertEqual(calls().first,"MUTATION")
+        XCTAssertEqual(manager.remoteHermesWorkspaceProject(id),project)
+        XCTAssertEqual(manager.remoteHermesTranscript(id).last?.object?["content"]?.string,"Cloud answer")
     }
     func testRemoteSendUsesDurableGETBeforePOSTAndNeverCreatesDeviceConversation() async throws {
-        let (manager,id,calls,creates,saved)=try fixture()
+        let (manager,id,calls,creates,saved,_)=try fixture()
         await manager.restore(loadRemoteModels:false)
         for _ in 0..<100 where manager.cloudAgentSyncing { await Task.yield() }
         manager.models=[ModelOption(id:"cloud-fixture")]
