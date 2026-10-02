@@ -366,6 +366,7 @@ import Foundation
             for change in candidates {
                 guard case .object(let value) = change.value else { continue }
                 if change.kind == .session {
+                    var anchorOrigin: Int64?
                     if let rawAnchor = value["historyAnchor"] {
                         guard case .object(let anchor) = rawAnchor, anchor["type"] == .string("hermes_history_anchor"),
                               case .string(let sourceBranch) = anchor["sourceBranchId"], UUID(uuidString: sourceBranch) != nil,
@@ -389,6 +390,7 @@ import Foundation
                             guard !version.deleted, !version.erased, case .object(let previous) = version.value else { return false }
                             return previous["historyAnchor"] == rawAnchor && previous["branchId"] == value["branchId"]
                         }.map(\.cursor).min() ?? change.cursor
+                        anchorOrigin = origin
                         if origin >= (cursors[change.objectId] ?? -1) {
                             histories[change.objectId] = history; cursors[change.objectId] = origin; sources[change.objectId] = change.objectId
                         }
@@ -402,10 +404,10 @@ import Foundation
                         guard let local = versions[localID], local.count == 1, local[0].kind == .message,
                               !local[0].deleted, !local[0].erased, case .object(let payload) = local[0].value,
                               payload["type"] == .string("hermes_local_turn"), payload["sessionId"] == .string(change.objectId),
-                              payload["branchId"] == .string(try branchID(change.objectId, versions: versions)) else { throw NativeAgentClientError.invalidResponse }
+                              payload["turnId"] == .string(localID), payload["branchId"] == .string(try branchID(change.objectId, versions: versions)) else { throw NativeAgentClientError.invalidResponse }
                         let history = try validatedHistory(payload["history"])
-                        if change.cursor >= (cursors[change.objectId] ?? -1) {
-                            histories[change.objectId] = history; cursors[change.objectId] = change.cursor; sources[change.objectId] = change.objectId
+                        if local[0].cursor > (anchorOrigin ?? -1), local[0].cursor >= (cursors[change.objectId] ?? -1) {
+                            histories[change.objectId] = history; cursors[change.objectId] = local[0].cursor; sources[change.objectId] = localID
                         }
                     }
                     continue
