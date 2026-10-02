@@ -2595,7 +2595,9 @@ private struct CloudAgentBrowserView: View {
                         Section(kind) {
                             ForEach(items) { object in
                                 VStack(alignment:.leading,spacing:6) {
-                                    Text(object.title).font(.headline)
+                                    if kind == "session", !object.deleted, !object.conflicted {
+                                        NavigationLink(object.title) { RemoteHermesConversationView(sessionId:object.id,title:object.title) }
+                                    } else { Text(object.title).font(.headline) }
                                     if object.deleted { Text("Supprimé · contenu effacé").foregroundStyle(.secondary) }
                                     else if object.conflicted { Text("Versions concurrentes conservées. Résolvez le conflit avant une nouvelle exécution.").foregroundStyle(.orange) }
                                     else if kind == "task", let id=object.value?.object?["runId"]?.string, let run=manager.discoveredCloudRuns[id] {
@@ -2612,5 +2614,74 @@ private struct CloudAgentBrowserView: View {
                 .toolbar { ToolbarItem(placement:.confirmationAction) { Button("Fermer") { dismiss() } } }
                 .task { await manager.synchronizeCloudAgentState() }
         }
+    }
+}
+
+
+private struct RemoteHermesConversationView: View {
+    @Environment(ConversationManager.self) private var manager
+    let sessionId: String
+    let title: String
+    @State private var model = ""
+    @State private var draft = ""
+    @State private var error: String?
+    @State private var submitting = false
+    @State private var account: String?
+    private var available: Bool { manager.cloudAgentObjects.contains { $0.id == sessionId && !$0.deleted && !$0.conflicted } }
+    var body: some View {
+        List {
+            Section {
+                Text("Conversation de votre espace Cloud. Aucun message n’est copié vers l’historique de cet appareil ou les historiques SDK.").font(.caption)
+                Button("Actualiser") { Task { await manager.synchronizeCloudAgentState(); await manager.recoverRemoteHermes() } }
+                    .disabled(manager.cloudAgentSyncing || manager.remoteHermesBusy)
+                if !available { Text("Conversation supprimée ou en conflit. La continuation est bloquée.").foregroundStyle(.orange) }
+                if let error = error ?? manager.remoteHermesError ?? manager.cloudAgentSyncError { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+            }
+            Section("Conversation") {
+                ForEach(Array(manager.remoteHermesTranscript(sessionId).enumerated()),id:\.offset) { _, message in
+                    if let value = message.object, let role = value["role"]?.string, ["user","assistant"].contains(role), let content = value["content"]?.string, !content.isEmpty {
+                        VStack(alignment:.leading) { Text(role == "user" ? "Vous" : "Hermes").font(.caption).foregroundStyle(.secondary); Text(content).textSelection(.enabled) }
+                    }
+                }
+                ForEach(manager.remoteHermesRuns(sessionId),id:\.runId) { run in
+                    if run.state != "completed" {
+                        Text(manager.remoteHermesPrompt(sessionId:sessionId,runId:run.runId))
+                        Text(run.state == "awaiting_resolution" ? "Une action doit être vérifiée. Aucune réexécution automatique." : run.state).font(.caption)
+                        if run.state != "cancelled" {
+                            Button("Annuler ce run",role:.destructive) { Task { do { try await manager.cancelRemoteHermes(sessionId:sessionId,runId:run.runId) } catch { self.error=error.localizedDescription } } }.disabled(manager.remoteHermesBusy)
+                        }
+                    }
+                }
+            }
+            Section("Continuer avec Hermes") {
+                Picker("Modèle Cloud ou Relay",selection:$model) {
+                    Text("Choisir un modèle").tag("")
+                    ForEach(manager.remoteHermesModels) { option in Text((option.id.hasPrefix("relay/") ? "Relay · " : "Cloud · ")+option.displayName).tag(option.id) }
+                }
+                TextField("Message",text:$draft,axis:.vertical).lineLimit(3...8)
+                Button(submitting ? "Envoi…" : "Envoyer") {
+                    guard account == manager.session?.accountId else { return }
+                    let message=draft, chosen=model, owner=account
+                    submitting=true;error=nil
+                    Task {
+                        defer { submitting=false }
+                        do {
+                            try await manager.sendRemoteHermes(sessionId:sessionId,model:chosen,message:message)
+                            if account == owner && manager.session?.accountId == owner && draft == message { draft="" }
+                        } catch { if manager.session?.accountId == owner { self.error=error.localizedDescription } }
+                    }
+                }.disabled(!available || submitting || manager.remoteHermesBusy || model.isEmpty || draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+            }
+        }.navigationTitle(title)
+            .onAppear { account=manager.session?.accountId }
+            .onChange(of:manager.session?.accountId) { _,_ in draft="";model="";error=nil;account=nil }
+            .task {
+                await manager.synchronizeCloudAgentState(); await manager.recoverRemoteHermes()
+                while !Task.isCancelled {
+                    try? await Task.sleep(for:.seconds(2))
+                    if Task.isCancelled { return }
+                    await manager.synchronizeCloudAgentState(); await manager.recoverRemoteHermes()
+                }
+            }
     }
 }

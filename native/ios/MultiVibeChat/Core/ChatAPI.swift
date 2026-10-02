@@ -448,3 +448,42 @@ extension CloudHermesBinding {
         return [message,session]
     }
 }
+
+/// Separate from device/legacy history: ordered durable intents for synchronized Cloud sessions.
+struct RemoteHermesSession: Codable, Sendable {
+    struct Request: Codable, Sendable {
+        let input: CloudHermesRunInput
+        let baseCursor: Int64
+        let sessionHeads: [String]
+    }
+    let accountId: String
+    let sessionId: String
+    let branchId: String
+    var requests: [Request] = []
+    var results: [String: CloudHermesRun] = [:]
+    var cancellations: Set<String> = []
+    static func validateHistory(_ history: [HistoryJSON]) throws {
+        guard history.count <= 1000, try JSONEncoder().encode(history).count <= 512 * 1024 else { throw APIError.invalidResponse }
+        var open = Set<String>()
+        for message in history {
+            guard let value = message.object, let role = value["role"]?.string, ["system","user","assistant","tool"].contains(role) else { throw APIError.invalidResponse }
+            if role == "tool" {
+                guard let id = value["tool_call_id"]?.string, open.remove(id) != nil, value["content"]?.string != nil else { throw APIError.invalidResponse }
+            } else {
+                guard open.isEmpty else { throw APIError.invalidResponse }
+                let calls = value["tool_calls"]?.array ?? []
+                guard value["content"]?.string != nil || (role == "assistant" && !calls.isEmpty && value["content"] == .null) else { throw APIError.invalidResponse }
+                if !calls.isEmpty {
+                    guard role == "assistant" else { throw APIError.invalidResponse }
+                    for call in calls {
+                        guard let call = call.object, let id = call["id"]?.string, !id.isEmpty,
+                            open.insert(id).inserted, let function = call["function"]?.object,
+                            function["name"]?.string?.isEmpty == false, let arguments = function["arguments"]?.string,
+                            (try? JSONSerialization.jsonObject(with:Data(arguments.utf8))) is [String:Any] else { throw APIError.invalidResponse }
+                    }
+                }
+            }
+        }
+        guard open.isEmpty else { throw APIError.server(409,"hermes_history_has_unknown_effects") }
+    }
+}

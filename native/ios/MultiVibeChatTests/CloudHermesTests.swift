@@ -189,3 +189,62 @@ final class CloudHermesTests: XCTestCase {
         XCTAssertTrue(submitted().isEmpty);XCTAssertEqual(creates(),0)
     }
 }
+
+final class RemoteHermesHistoryTests: XCTestCase {
+    func testClosedToolIDsMayRepeatAcrossTurnsButUnknownEffectsFail() throws {
+        let assistant: HistoryJSON = .object(["role":.string("assistant"),"content":.null,"tool_calls":.array([.object(["id":.string("same"),"function":.object(["name":.string("read"),"arguments":.string("{}")])])])])
+        let tool: HistoryJSON = .object(["role":.string("tool"),"tool_call_id":.string("same"),"content":.string("data")])
+        try RemoteHermesSession.validateHistory([assistant,tool,assistant,tool])
+        XCTAssertThrowsError(try RemoteHermesSession.validateHistory([assistant]))
+        XCTAssertThrowsError(try RemoteHermesSession.validateHistory([tool]))
+    }
+}
+
+@MainActor final class RemoteHermesConversationTests: XCTestCase {
+    private func fixture() throws -> (ConversationManager,String,()->[String],()->Int,()->Data?) {
+        let id = { UUID().uuidString.lowercased() }
+        let account=id(), sessionID=id(), branch=id(), version=id()
+        let sessionChange=CloudAgentChange(operationId:id(),objectId:sessionID,versionId:version,deviceId:id(),kind:"session",parents:[],deleted:false,value:.object(["type":.string("hermes_session"),"title":.string("Remote session"),"branchId":.string(branch),"messages":.array([.object(["role":.string("user"),"content":.string("Remote context")]),.object(["role":.string("assistant"),"content":.string("Remote answer")])])]),cursor:1,erased:false)
+        var state=CloudAgentState(accountId:account,deviceId:id())
+        state=try state.applying(.init(accountId:account,changes:[sessionChange],cursor:1,hasMore:false))
+        let json=try JSONSerialization.jsonObject(with:JSONEncoder().encode(state))
+        let data=try JSONSerialization.data(withJSONObject:["cloudAgentState":json,"conversations":[],"baseline":[],"conversationIDs":[:],"messageIDs":[:]])
+        let auth=NativeSession(accessToken:"fixture",refreshToken:"fixture",expiresAt:.distantFuture,accountId:account)
+        var calls:[String]=[], creates=0, saved:Data?, runs:[String:CloudHermesRun]=[:]
+        var services=isolatedServices(load:{auth},readLocalHistory:{_ in data})
+        services.writeHistory={value,_ in saved=value}
+        services.hermesChanges={_,_ in .init(accountId:account,changes:[],cursor:1,hasMore:false)}
+        services.hermesConsent={_ in .init(accountId:account,cloudEnabled:true,revision:1)}
+        services.remoteHermesModel={model,_ in .init(id:model,source:"cloud",accessId:nil)}
+        services.hermesRead={_,runID,_,cancel in
+            calls.append(cancel ? "CANCEL" : "GET")
+            guard let run=runs[runID] else { throw APIError.server(404,"missing") }
+            if cancel { return .init(runId:runID,sessionId:sessionID,branchId:branch,state:"cancelled",generation:1,result:nil) }
+            return run
+        }
+        services.hermesCreate={_,input,_ in
+            calls.append("POST");creates += 1
+            XCTAssertNotNil(saved)
+            XCTAssertEqual(input.sessionId,sessionID);XCTAssertEqual(input.history.count,2)
+            let run=CloudHermesRun(runId:input.runId,sessionId:sessionID,branchId:branch,state:"completed",generation:1,
+                result:.init(response:"Cloud answer",history:input.history + [.object(["role":.string("user"),"content":.string(input.message)]),.object(["role":.string("assistant"),"content":.string("Cloud answer")])]))
+            runs[input.runId]=run;return run
+        }
+        return (ConversationManager(services:services),sessionID,{calls},{creates},{saved})
+    }
+    func testRemoteSendUsesDurableGETBeforePOSTAndNeverCreatesDeviceConversation() async throws {
+        let (manager,id,calls,creates,saved)=try fixture()
+        await manager.restore(loadRemoteModels:false)
+        for _ in 0..<100 where manager.cloudAgentSyncing { await Task.yield() }
+        manager.models=[ModelOption(id:"cloud-fixture")]
+        let count=manager.conversations.count
+        try await manager.sendRemoteHermes(sessionId:id,model:"cloud-fixture",message:"Continue")
+        XCTAssertEqual(Array(calls().prefix(2)),["GET","POST"])
+        XCTAssertEqual(manager.conversations.count,count)
+        XCTAssertEqual(manager.remoteHermesTranscript(id).last?.object?["content"]?.string,"Cloud answer")
+        await manager.recoverRemoteHermes()
+        XCTAssertEqual(creates(),1)
+        let cache=try JSONSerialization.jsonObject(with:XCTUnwrap(saved())) as! [String:Any]
+        XCTAssertNotNil(cache["remoteHermes"])
+    }
+}
