@@ -140,6 +140,30 @@ import CryptoKit
         XCTAssertTrue(last.contains("End of page"))
         XCTAssertFalse(last.contains("More content"))
     }
+    func testHermesCompactionUsesSilentSummaryAndPreservesLatestUser() async throws {
+        actor Evidence {
+            var summaries=0
+            func summarized() { summaries += 1 }
+        }
+        let evidence=Evidence()
+        let harness=try PiAgentHarness()
+        try await harness.run(messages:#"[{"role":"system","content":"POLICY"},{"role":"user","content":"old question"},{"role":"assistant","content":"old answer"},{"role":"user","content":"CURRENT-QUESTION"}]"#,tools:"[]",
+            contextBudget:{ messages,tools,reserve in
+                XCTAssertEqual(tools,"[]");XCTAssertTrue((1...1024).contains(reserve))
+                let tokens=messages.contains("[CONTEXT COMPACTION") ? 600 : (messages.contains("Summarize") ? 1000 : 2800)
+                return "{\"promptTokens\":\(tokens),\"contextTokens\":4096,\"reservedOutputTokens\":\(reserve)}"
+            },summary:{ messages,reserve in
+                XCTAssertTrue(messages.contains("old question"));XCTAssertTrue((1...1024).contains(reserve))
+                await evidence.summarized()
+                return #"{"role":"assistant","content":"Completed old request","finish_reason":"stop"}"#
+            },generate:{ messages,_,emit in
+                XCTAssertTrue(messages.contains("[CONTEXT COMPACTION"));XCTAssertTrue(messages.contains("CURRENT-QUESTION"));XCTAssertTrue(messages.contains("POLICY"))
+                await emit("Visible answer")
+                return #"{"role":"assistant","content":"Visible answer"}"#
+            },execute:{ _,_ in XCTFail("Summary must never dispatch tools");throw LocalAgentError.invalidInput },
+            onText:{ text in XCTAssertFalse(text.contains("Completed old request")) })
+        let summaries=await evidence.summaries;XCTAssertEqual(summaries,1)
+    }
     func testUpstreamPiDocumentEditInJavaScriptCore() async throws {
         actor State {
             var turns = 0
