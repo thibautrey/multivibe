@@ -175,17 +175,27 @@ struct NativeChatConversation: Codable { let id: UUID; let title: String; let mo
         let sourceMessage = UUID().uuidString.lowercased(), messageVersion = UUID().uuidString.lowercased()
         var anchorMessage = base; anchorMessage["objectId"] = sourceMessage; anchorMessage["kind"] = "message"; anchorMessage["versionId"] = messageVersion; anchorMessage["cursor"] = 4
         anchorMessage["value"] = ["type": "hermes_local_turn", "sessionId": anchorID, "branchId": oldBranch, "history": history]
-        var messageAnchor = anchorVersion; messageAnchor["parents"] = [anchorVersion["versionId"]!]; messageAnchor["versionId"] = UUID().uuidString.lowercased(); messageAnchor["cursor"] = 5
+        var messageAnchor = anchorVersion; messageAnchor["parents"] = [anchorVersion["versionId"]!]; messageAnchor["versionId"] = UUID().uuidString.lowercased(); messageAnchor["cursor"] = 6
         messageAnchor["value"] = ["title": "Message anchor", "branchId": UUID().uuidString.lowercased(), "historyAnchor": ["type": "hermes_history_anchor", "source": "message", "objectId": sourceMessage, "versionId": messageVersion, "sourceBranchId": oldBranch]]
-        f.changes = [anchorMessage, messageAnchor]; try await anchored.synchronize()
+        var divergentMessage = anchorMessage; divergentMessage["versionId"] = UUID().uuidString.lowercased(); divergentMessage["cursor"] = 5
+        divergentMessage["value"] = ["type": "hermes_local_turn", "sessionId": anchorID, "branchId": oldBranch, "history": [["role": "assistant", "content": "Do not pick this head"]]]
+        f.changes = [anchorMessage, divergentMessage, messageAnchor]; try await anchored.synchronize()
         precondition(anchored.synchronizedMessages(anchorSession).last?.content == "Remote answer")
-        var removed = anchorMessage; removed["parents"] = [messageVersion]; removed["versionId"] = UUID().uuidString.lowercased(); removed["cursor"] = 6; removed["deleted"] = true; removed.removeValue(forKey: "value")
+        var removed = anchorMessage; removed["parents"] = [messageVersion]; removed["versionId"] = UUID().uuidString.lowercased(); removed["cursor"] = 7; removed["deleted"] = true; removed.removeValue(forKey: "value")
         f.changes = [removed]
         do { try await anchored.synchronize(); preconditionFailure("deleted anchor accepted") } catch {}
         precondition(anchored.synchronizedMessages(anchorSession).isEmpty)
         do { _ = try await anchored.execute(modelID: "cloud-model", source: .cloud, conversationID: anchorSession, message: "Must refuse missing source"); preconditionFailure("deleted anchor executed") } catch {}
         let anchorReload = NativeChatAgentCoordinator(session: session, client: client, root: folder.appendingPathComponent("anchors")); await anchorReload.restore()
         precondition(anchorReload.synchronizedMessages(anchorSession).isEmpty)
+        let newLocalID = UUID().uuidString.lowercased()
+        let currentAnchorValue = messageAnchor["value"] as! [String: Any], currentBranch = currentAnchorValue["branchId"] as! String
+        var newerLocal = anchorMessage; newerLocal["objectId"] = newLocalID; newerLocal["versionId"] = UUID().uuidString.lowercased(); newerLocal["cursor"] = 8
+        newerLocal["value"] = ["type": "hermes_local_turn", "sessionId": anchorID, "branchId": currentBranch, "history": [["role": "user", "content": "After merge"], ["role": "assistant", "content": "New local turn wins"]]]
+        var updatedAnchor = messageAnchor; updatedAnchor["parents"] = [messageAnchor["versionId"]!]; updatedAnchor["versionId"] = UUID().uuidString.lowercased(); updatedAnchor["cursor"] = 9
+        var preservedAnchor = currentAnchorValue; preservedAnchor["localTurnId"] = newLocalID; updatedAnchor["value"] = preservedAnchor
+        f.changes = [removed, newerLocal, updatedAnchor]; try await anchored.synchronize()
+        precondition(anchored.synchronizedMessages(anchorSession).last?.content == "New local turn wins")
         f.pauseWrite = true
         let another = NativeChatConversation(id: UUID(), title: "Another", model: "local-model", messages: [])
         let epoch = restored.loginEpoch
