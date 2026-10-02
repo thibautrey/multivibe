@@ -226,6 +226,9 @@ final class RemoteHermesHistoryTests: XCTestCase {
             calls.append("POST");creates += 1
             XCTAssertNotNil(saved)
             XCTAssertEqual(input.sessionId,sessionID);XCTAssertEqual(input.history.count,2)
+            XCTAssertEqual(input.workspaceProjectId,sessionID)
+            let wire=try JSONSerialization.jsonObject(with:JSONEncoder().encode(input)) as! [String:Any]
+            XCTAssertNil(wire["projectId"])
             let run=CloudHermesRun(runId:input.runId,sessionId:sessionID,branchId:branch,state:"completed",generation:1,
                 result:.init(response:"Cloud answer",history:input.history + [.object(["role":.string("user"),"content":.string(input.message)]),.object(["role":.string("assistant"),"content":.string("Cloud answer")])]))
             runs[input.runId]=run;return run
@@ -238,7 +241,7 @@ final class RemoteHermesHistoryTests: XCTestCase {
         for _ in 0..<100 where manager.cloudAgentSyncing { await Task.yield() }
         manager.models=[ModelOption(id:"cloud-fixture")]
         let count=manager.conversations.count
-        try await manager.sendRemoteHermes(sessionId:id,model:"cloud-fixture",message:"Continue")
+        try await manager.sendRemoteHermes(sessionId:id,model:"cloud-fixture",message:"Continue",workspaceProjectId:id)
         XCTAssertEqual(Array(calls().prefix(2)),["GET","POST"])
         XCTAssertEqual(manager.conversations.count,count)
         XCTAssertEqual(manager.remoteHermesTranscript(id).last?.object?["content"]?.string,"Cloud answer")

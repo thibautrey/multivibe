@@ -53,4 +53,15 @@ final class CloudHermesContextTests: XCTestCase {
         let unsupported = insert(&graph, kind: "memory", value: .object(["type": .string("native_memory"), "target": .string("user"), "content": .string("native")]))
         XCTAssertThrowsError(try CloudHermesContext.build(state: graph, accountID: account, memoryObjectIDs: [unsupported]))
     }
+    func testImplicitSessionWorkspaceRequiresExplicitLiveSessionSelection() throws {
+        var graph=state()
+        let session=insert(&graph,kind:"session",value:.object(["type":.string("hermes_session")]))
+        let file=CloudHermesContext.workspaceFileID(projectID:session,path:"notes.txt")
+        insert(&graph,id:file,kind:"file",value:.object(["type":.string("hermes_workspace_file"),"projectId":.string(session),"path":.string("notes.txt"),"content":.string("Session-owned file")]))
+        XCTAssertThrowsError(try CloudHermesContext.build(state:graph,accountID:account,fileObjectIDs:[file]))
+        XCTAssertTrue(try CloudHermesContext.build(state:graph,accountID:account,projectID:session,fileObjectIDs:[file]).files.contains("Session-owned"))
+        graph.objects[session]!.deleted=true
+        XCTAssertThrowsError(try CloudHermesContext.build(state:graph,accountID:account,projectID:session,fileObjectIDs:[file]))
+    }
+
 }
