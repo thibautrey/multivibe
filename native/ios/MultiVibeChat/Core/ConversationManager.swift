@@ -26,6 +26,8 @@ import Network
     var hermesMutations: @MainActor (String,[CloudAgentMutation],String) async throws -> CloudAgentReceipts = { try await ChatAPI.shared.hermesMutations(accountId:$0,operations:$1,token:$2) }
     var hermesConsent: @MainActor (String) async throws -> CloudHermesConsent = { try await ChatAPI.shared.hermesConsent(token:$0) }
     var hermesEnable: @MainActor (String, Int, String) async throws -> CloudHermesConsent = { try await ChatAPI.shared.hermesSetConsent(accountId:$0,revision:$1,enabled:true,token:$2) }
+    var hermesAuthorizeSources: @MainActor (String,Int,[String],String) async throws -> CloudHermesConsent = { try await ChatAPI.shared.hermesSetConsent(accountId:$0,revision:$1,enabled:true,token:$3,exportSources:$2) }
+    var hermesLocalCheckpoint: @Sendable (HermesRunContext) async throws -> String? = { try await HermesCheckpointStore.shared.completedMessages($0,engine:CloudHermesBinding.mobileEngine) }
     var hermesPrepare: @MainActor (String, CloudHermesBinding, String) async throws -> Void = { try await ChatAPI.shared.hermesPrepare(accountId:$0,binding:$1,token:$2) }
     var hermesCreate: @MainActor (String, CloudHermesRunInput, String) async throws -> CloudHermesRun = { try await ChatAPI.shared.hermesRun(accountId:$0,run:$1,token:$2) }
     var hermesRead: @MainActor (String, String, String, Bool) async throws -> CloudHermesRun = { try await ChatAPI.shared.hermesRead(accountId:$0,runId:$1,token:$2,cancel:$3) }
@@ -165,9 +167,20 @@ import Network
             let consent=try await services.hermesConsent(auth.accessToken);try current()
             guard consent.accountId == auth.accountId else { throw APIError.invalidResponse }
             if consent.cloudEnabled {
+                try await reconcileLocalTurns(consent:consent,epoch:epoch)
+                try current()
                 while let state=cloudAgentState, !state.outbox.isEmpty {
                     var batch:[CloudAgentMutation]=[]
-                    for operation in state.outbox.prefix(100) {
+                    let revokedLocalSource = state.outbox.contains { operation in
+                        guard let source = operation.value?.object?["localSource"]?.string else { return false }
+                        return !(consent.exportSources ?? []).contains(source)
+                    }
+                    let allowed = state.outbox.filter { operation in
+                        guard let source = operation.value?.object?["localSource"]?.string else { return true }
+                        return !revokedLocalSource && (consent.exportSources ?? []).contains(source)
+                    }
+                    if allowed.isEmpty { break }
+                    for operation in allowed.prefix(100) {
                         if try JSONEncoder().encode(batch+[operation]).count > 900_000 { break }
                         batch.append(operation)
                     }
@@ -190,6 +203,35 @@ import Network
             cloudAgentSyncError=nil
         } catch { if sessionRevision == epoch { cloudAgentSyncError=error.localizedDescription } }
     }
+    /// State-only reconciliation. Checkpoints are read without creating leases or invoking tools/models.
+    private func reconcileLocalTurns(consent: CloudHermesConsent, epoch: UUID) async throws {
+        let account = consent.accountId
+        for (id, captured) in cloudHermesBindings where captured.accountId == account && captured.cloudAuthorized != false {
+            for (index, turn) in (captured.localTurns ?? []).enumerated() where !turn.published {
+                guard (captured.localExportSources ?? []).contains(turn.source), (consent.exportSources ?? []).contains(turn.source) else { break }
+                guard captured.pending == nil else { throw APIError.server(409,"hermes_pending_run_requires_recovery") }
+                let context = HermesRunContext(accountID:account,conversationID:id,turnID:turn.turnId,modelID:turn.modelId,source:turn.source)
+                guard let checkpoint = try await services.hermesLocalCheckpoint(context) else { break }
+                guard sessionRevision == epoch, session?.accountId == account,
+                    var binding = cloudHermesBindings[id], binding.accountId == account,
+                    binding.localTurns?.indices.contains(index) == true, binding.pending == nil,
+                    (binding.localExportSources ?? []).contains(turn.source), binding.cloudAuthorized != false,
+                    binding.localTurns?[index].turnId == turn.turnId, binding.localTurns?[index].published == false,
+                    conversations.contains(where: { $0.id == id }) else { throw CancellationError() }
+                let history = try JSONDecoder().decode([HistoryJSON].self,from:Data(checkpoint.utf8))
+                guard var state = cloudAgentState, state.accountId == account else { throw APIError.invalidResponse }
+                let previousState = state, previousBinding = binding
+                // The first session version is durable and idempotent; later local parents never rebase automatically.
+                if state.objects[binding.sessionId] == nil && !state.outbox.contains(where: { $0.objectId == binding.sessionId }) {
+                    try state.enqueue(.init(operationId:binding.operationId,objectId:binding.sessionId,versionId:binding.versionId,deviceId:binding.deviceId,kind:"session",parents:[],deleted:false,
+                        value:.object(["type":.string("hermes_session"),"branchId":.string(binding.branchId),"conversationId":.string(binding.conversationId),"title":.string("Hermes chat"),"localSource":.string(turn.source)])))
+                }
+                for operation in try binding.localPublication(index:index,checkpoint:history) { try state.enqueue(operation) }
+                cloudAgentState = state; cloudHermesBindings[id] = binding
+                guard persist() else { cloudAgentState = previousState; cloudHermesBindings[id] = previousBinding; throw APIError.server(0,"history_cache_write_failed") }
+            }
+        }
+    }
     /// Call only for explicitly authorized Hermes content; local documents/memory are never auto-enqueued.
     func enqueueCloudAgentMutation(_ operation:CloudAgentMutation) throws {
         guard var state=cloudAgentState,state.accountId == session?.accountId else { throw APIError.invalidResponse }
@@ -200,7 +242,7 @@ import Network
     private(set) var cloudHermesRecoveryRun: String?
     private(set) var cloudHermesStatus: [UUID:String] = [:]
     private var cloudHermesRestoreTask: Task<Void,Never>?
-    var currentCloudHermesAuthorized: Bool { guard let id = selection else { return false }; return cloudHermesBindings[id]?.accountId == session?.accountId && session != nil }
+    var currentCloudHermesAuthorized: Bool { guard let id = selection else { return false }; return cloudHermesBindings[id]?.accountId == session?.accountId && cloudHermesBindings[id]?.cloudAuthorized != false && session != nil }
     var currentCloudHermesStatus: String? { selection.flatMap { cloudHermesStatus[$0] } }
     var currentCloudHermesPending: Bool { selection.flatMap { cloudHermesBindings[$0]?.pending } != nil }
     func resumeCloudHermes() async {
@@ -279,19 +321,27 @@ import Network
     }
     private var activeCloudHermes: (accountId:String, runId:String, token:String)?
     /// Call only after UI has explained server-readable storage and obtained explicit agreement.
-    func authorizeHermesCloud(importExistingConversation: Bool) async throws {
+    func authorizeHermesCloud(importExistingConversation: Bool, synchronizeLocalTurns: Bool = false) async throws {
         guard !isStreaming, let id = selection, let conversation = current else { throw APIError.invalidResponse }
         if !conversation.messages.isEmpty && !importExistingConversation { throw APIError.server(403,"hermes_history_import_required") }
         let revision = sessionRevision, session = try await validSession()
         let consent = try await services.hermesConsent(session.accessToken)
         guard sessionRevision == revision, consent.accountId == session.accountId else { throw CancellationError() }
-        if !consent.cloudEnabled {
+        if synchronizeLocalTurns {
+            let sources = Array(Set((consent.exportSources ?? []) + CloudHermesBinding.localSources)).sorted()
+            let enabled = try await services.hermesAuthorizeSources(session.accountId,consent.revision,sources,session.accessToken)
+            guard sessionRevision == revision, selection == id, enabled.accountId == session.accountId, enabled.cloudEnabled,
+                Set(CloudHermesBinding.localSources).isSubset(of:Set(enabled.exportSources ?? [])) else { throw CancellationError() }
+        } else if !consent.cloudEnabled {
             let enabled = try await services.hermesEnable(session.accountId,consent.revision,session.accessToken)
             guard sessionRevision == revision, enabled.accountId == session.accountId, enabled.cloudEnabled else { throw CancellationError() }
         }
+        guard sessionRevision == revision, selection == id else { throw CancellationError() }
         let uuid = { UUID().uuidString.lowercased() }
         var binding = cloudHermesBindings[id] ?? CloudHermesBinding(accountId:session.accountId,conversationId:id.uuidString.lowercased(),sessionId:uuid(),branchId:uuid(),operationId:uuid(),versionId:uuid(),deviceId:uuid(),importApproved:importExistingConversation)
         guard binding.accountId == session.accountId else { throw APIError.invalidResponse }
+        binding.cloudAuthorized = true
+        if synchronizeLocalTurns { binding.localExportSources = CloudHermesBinding.localSources }
         binding.importApproved = binding.importApproved || importExistingConversation
         cloudHermesBindings[id] = binding
         guard persist() else { throw APIError.server(0,"history_cache_write_failed") }
@@ -883,6 +933,14 @@ import Network
         let accountRevision = sessionRevision
         let model = selectedModel
         if ModelExecution(model).isLocal {
+            if let account = session?.accountId, let turn = input.last(where: { $0.role == "user" }) {
+                let uuid = { UUID().uuidString.lowercased() }
+                var binding = cloudHermesBindings[id] ?? CloudHermesBinding(accountId:account,conversationId:id.uuidString.lowercased(),sessionId:uuid(),branchId:uuid(),operationId:uuid(),versionId:uuid(),deviceId:uuid(),cloudAuthorized:false,importApproved:false)
+                binding.recordLocalIntent(turnId:turn.id,modelId:model,source:model == LocalModel.id ? "apple-foundation-local" : "downloaded-local",
+                    parents:cloudAgentState?.objects[binding.sessionId]?.heads ?? [binding.versionId])
+                let previous = cloudHermesBindings[id]; cloudHermesBindings[id] = binding
+                guard persist() else { cloudHermesBindings[id] = previous; isStreaming = false; setReplyCompletion(.failed); activeReply = nil; return false }
+            }
             generationExpiresAt = Date().addingTimeInterval(120)
             armGenerationDeadline(generation: revision, account: accountRevision)
         }
@@ -893,6 +951,7 @@ import Network
                     generationExpiresAt = nil
                     generationDeadline?.cancel(); generationDeadline = nil
                     isStreaming = false; generation = nil; activeReply = nil; persist(); scheduleAutomaticSync()
+                    if ModelExecution(model).isLocal { Task { await self.synchronizeCloudAgentState() } }
                 }
             }
             do {
@@ -934,8 +993,21 @@ import Network
                     let session = try await validSession()
                     try Task.checkCancellation()
                     guard generationRevision == revision && sessionRevision == accountRevision else { return }
-                    guard var binding = cloudHermesBindings[id], binding.accountId == session.accountId,
+                    await synchronizeCloudAgentState()
+                    guard cloudAgentSyncError == nil else { throw APIError.server(409,"hermes_local_reconciliation_required") }
+                    guard var binding = cloudHermesBindings[id], binding.accountId == session.accountId, binding.cloudAuthorized != false,
                         let turn = input.last(where: { $0.role == "user" }) else { throw APIError.server(403,"agent_cloud_consent_required") }
+                    guard (binding.localTurns ?? []).allSatisfy(\.published),
+                        !(cloudAgentState?.outbox.contains(where: { $0.objectId == binding.sessionId || $0.value?.object?["sessionId"]?.string == binding.sessionId }) ?? false) else {
+                        throw APIError.server(403,"hermes_local_export_consent_or_reconciliation_required")
+                    }
+                    if !(binding.localTurns ?? []).isEmpty {
+                        let liveConsent = try await services.hermesConsent(session.accessToken)
+                        guard sessionRevision == accountRevision, liveConsent.accountId == session.accountId,
+                            liveConsent.cloudEnabled, (binding.localTurns ?? []).allSatisfy({ (liveConsent.exportSources ?? []).contains($0.source) }) else {
+                            throw APIError.server(403,"hermes_local_export_consent_required")
+                        }
+                    }
                     let prior = input.dropLast()
                     if binding.history.isEmpty && !prior.isEmpty && !binding.importApproved { throw APIError.server(403,"hermes_history_import_required") }
                     if binding.pending != nil && binding.turnId != turn.id { throw APIError.server(409,"hermes_pending_run_requires_recovery") }

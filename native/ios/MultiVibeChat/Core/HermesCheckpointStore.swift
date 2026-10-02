@@ -128,6 +128,16 @@ actor HermesCheckpointStore {
         }
         return open
     }
+    /// Read-only publication boundary. Never claims a lease or resumes any model/tool work.
+    func completedMessages(_ context: HermesRunContext, engine: String) throws -> String? {
+        guard let envelope = try read(location(context)) else { return nil }
+        try checkIdentity(envelope, context, engine: engine)
+        let (messages, state) = try objects(envelope.messages, envelope.state)
+        let unresolved = try pending(messages)
+        guard unresolved.isEmpty else { throw HermesCheckpointError.indeterminate(unresolved) }
+        guard state["completed"] as? Bool == true else { return nil }
+        return envelope.messages
+    }
     func begin(_ context: HermesRunContext, engine: String) throws -> HermesCheckpointLease {
         let url = try location(context)
         guard var envelope = try read(url) else {
