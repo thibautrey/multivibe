@@ -365,10 +365,10 @@ enum LocalAgent {
             await workspace.recordHarness(tool: "hermes_agent", input: "", output: "Hermes mobile " + harness.version + " · Apple Foundation", status: "success")
             var checkpoint = await workspace.hermesContext
             checkpoint?.source = "apple-foundation-local"
-            let measure: PiAgentHarness.ContextBudget? = HermesFoundationAdapter.supportsCompaction ? { messages, tools, reserve in
+            let measure: PiAgentHarness.ContextBudget? = HermesFoundationAdapter.supportsCompaction ? { @Sendable messages, tools, reserve in
                 try await HermesFoundationAdapter.contextBudget(messages:messages,tools:tools,reservedOutputTokens:reserve)
             } : nil
-            let summarize: PiAgentHarness.Summary? = HermesFoundationAdapter.supportsCompaction ? { messages, reserve in
+            let summarize: PiAgentHarness.Summary? = HermesFoundationAdapter.supportsCompaction ? { @Sendable messages, reserve in
                 try await HermesFoundationAdapter.summary(messages:messages,reservedOutputTokens:reserve)
             } : nil
             try await harness.run(messages: json, tools: schemas, weather: weather, checkpointContext: checkpoint,
