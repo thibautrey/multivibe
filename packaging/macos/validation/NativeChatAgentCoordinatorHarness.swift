@@ -121,6 +121,22 @@ struct NativeChatConversation: Codable { let id: UUID; let title: String; let mo
         f.changes = [conflict]; try await syncReload.synchronize()
         precondition(syncReload.synchronizedMessages(remoteID).isEmpty)
         do { _ = try await syncReload.execute(modelID: "cloud-model", source: .cloud, conversationID: remoteID, message: "Must refuse"); preconditionFailure("conflict executed") } catch {}
+        let projectID = UUID().uuidString.lowercased()
+        var project = base; project["objectId"] = projectID; project["kind"] = "project"; project["versionId"] = UUID().uuidString.lowercased(); project["cursor"] = 7; project["value"] = ["name": "Selected workspace"]
+        f.changes = [project]; try await syncReload.synchronize()
+        precondition(syncReload.cloudProjects.map(\.id) == [projectID])
+        try syncReload.selectWorkspaceProject(projectID, conversation: conversation.id)
+        let projectReload = NativeChatAgentCoordinator(session: session, client: client, root: folder); await projectReload.restore()
+        precondition(projectReload.selectedWorkspaceProject(conversation.id) == projectID)
+        let projectRun = try await projectReload.execute(modelID: "cloud-model", source: .cloud, conversationID: conversation.id, message: "Use selected files")
+        precondition(f.runBodies[projectRun.runId]?["workspaceProjectId"] as? String == projectID)
+        precondition(f.runBodies[projectRun.runId]?["projectId"] == nil) // Workspace selection is not billing attribution.
+        var projectConflict = project; projectConflict["versionId"] = UUID().uuidString.lowercased(); projectConflict["cursor"] = 8
+        f.changes = [projectConflict]; try await projectReload.synchronize()
+        precondition(projectReload.cloudProjects.isEmpty)
+        do { _ = try await projectReload.execute(modelID: "cloud-model", source: .cloud, conversationID: conversation.id, message: "Reject ambiguous workspace"); preconditionFailure("conflicted project executed") } catch {}
+        try projectReload.selectWorkspaceProject("", conversation: conversation.id)
+        precondition(projectReload.selectedWorkspaceProject(conversation.id).isEmpty)
         f.pauseWrite = true
         let another = NativeChatConversation(id: UUID(), title: "Another", model: "local-model", messages: [])
         let epoch = restored.loginEpoch
