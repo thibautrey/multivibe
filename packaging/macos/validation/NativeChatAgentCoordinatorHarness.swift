@@ -194,8 +194,9 @@ struct NativeChatConversation: Codable { let id: UUID; let title: String; let mo
         newerLocal["value"] = ["type": "hermes_local_turn", "sessionId": anchorID, "branchId": currentBranch, "history": [["role": "user", "content": "After merge"], ["role": "assistant", "content": "New local turn wins"]]]
         var updatedAnchor = messageAnchor; updatedAnchor["parents"] = [messageAnchor["versionId"]!]; updatedAnchor["versionId"] = UUID().uuidString.lowercased(); updatedAnchor["cursor"] = 9
         var preservedAnchor = currentAnchorValue; preservedAnchor["localTurnId"] = newLocalID; updatedAnchor["value"] = preservedAnchor
-        f.changes = [removed, newerLocal, updatedAnchor]; try await anchored.synchronize()
-        precondition(anchored.synchronizedMessages(anchorSession).last?.content == "New local turn wins")
+        f.changes = [removed, newerLocal, updatedAnchor]
+        do { try await anchored.synchronize(); preconditionFailure("deleted retained anchor accepted") } catch {}
+        precondition(anchored.synchronizedMessages(anchorSession).isEmpty)
         f.pauseWrite = true
         let another = NativeChatConversation(id: UUID(), title: "Another", model: "local-model", messages: [])
         let epoch = restored.loginEpoch

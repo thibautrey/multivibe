@@ -33,6 +33,7 @@ import Foundation
         var titles: [String: String]? = [:]
         var historyCursors: [String: Int64]? = [:]
         var historySources: [String: String]? = [:]
+        var anchorVersions: [String: [String: NativeAgentChange]]? = [:]
         var blockedHistorySessions: Set<String>? = []
         var workspaceSelections: [String: String]? = [:]
         var workspaceMutations: [String: NativeAgentMutation]? = [:]
@@ -317,7 +318,11 @@ import Foundation
             try check(account, epoch)
             var next = journal!
             var versions = next.versions ?? [:]
+            var archive = next.anchorVersions ?? [:]
+            for (id, heads) in versions { for head in heads { archive[id, default: [:]][head.versionId] = head } }
             for change in page.changes.sorted(by: { $0.cursor < $1.cursor }) {
+                archive[change.objectId, default: [:]][change.versionId] = change
+                if change.deleted || change.erased { archive.removeValue(forKey: change.objectId) }
                 var heads = versions[change.objectId] ?? []
                 // A tombstone cannot be resurrected by a later stale divergent version.
                 if heads.contains(where: { $0.deleted || $0.erased }) && !change.deleted && !change.erased { continue }
@@ -325,7 +330,7 @@ import Foundation
                 if change.deleted || change.erased { heads = [] }
                 heads.append(change); versions[change.objectId] = heads
             }
-            next.versions = versions; next.cursor = page.cursor
+            next.versions = versions; next.anchorVersions = archive; next.cursor = page.cursor
             var histories = next.histories ?? [:], cursors = next.historyCursors ?? [:]
             var states = next.runStates ?? [:]
             var sources = next.historySources ?? [:]
@@ -361,16 +366,7 @@ import Foundation
             for change in candidates {
                 guard case .object(let value) = change.value else { continue }
                 if change.kind == .session {
-                    if case .string(let localID) = value["localTurnId"] {
-                        guard let local = versions[localID], local.count == 1, local[0].kind == .message,
-                              !local[0].deleted, !local[0].erased, case .object(let payload) = local[0].value,
-                              payload["type"] == .string("hermes_local_turn"), payload["sessionId"] == .string(change.objectId),
-                              payload["branchId"] == .string(try branchID(change.objectId, versions: versions)) else { throw NativeAgentClientError.invalidResponse }
-                        let history = try validatedHistory(payload["history"])
-                        if change.cursor >= (cursors[change.objectId] ?? -1) {
-                            histories[change.objectId] = history; cursors[change.objectId] = change.cursor; sources[change.objectId] = change.objectId
-                        }
-                    } else if let rawAnchor = value["historyAnchor"] {
+                    if let rawAnchor = value["historyAnchor"] {
                         guard case .object(let anchor) = rawAnchor, anchor["type"] == .string("hermes_history_anchor"),
                               case .string(let sourceBranch) = anchor["sourceBranchId"], UUID(uuidString: sourceBranch) != nil,
                               let currentBranch = try? branchID(change.objectId, versions: versions), sourceBranch != currentBranch else { throw NativeAgentClientError.invalidResponse }
@@ -384,7 +380,7 @@ import Foundation
                         } else if anchor["source"] == .string("message"), case .string(let objectID) = anchor["objectId"],
                                   case .string(let versionID) = anchor["versionId"], let source = versions[objectID],
                                   !source.contains(where: { $0.deleted || $0.erased }),
-                                  let selected = source.first(where: { $0.versionId == versionID }), selected.kind == .message,
+                                  let selected = archive[objectID]?[versionID], selected.kind == .message, !selected.deleted, !selected.erased,
                                   case .object(let payload) = selected.value, payload["type"] == .string("hermes_local_turn"),
                                   payload["sessionId"] == .string(change.objectId), payload["branchId"] == .string(sourceBranch) {
                             history = try validatedHistory(payload["history"])
@@ -395,6 +391,16 @@ import Foundation
                     } else {
                         let source = value["history"] ?? value["messages"]
                         if case .array(let history) = source, change.cursor > (cursors[change.objectId] ?? -1) {
+                            histories[change.objectId] = history; cursors[change.objectId] = change.cursor; sources[change.objectId] = change.objectId
+                        }
+                    }
+                    if case .string(let localID) = value["localTurnId"] {
+                        guard let local = versions[localID], local.count == 1, local[0].kind == .message,
+                              !local[0].deleted, !local[0].erased, case .object(let payload) = local[0].value,
+                              payload["type"] == .string("hermes_local_turn"), payload["sessionId"] == .string(change.objectId),
+                              payload["branchId"] == .string(try branchID(change.objectId, versions: versions)) else { throw NativeAgentClientError.invalidResponse }
+                        let history = try validatedHistory(payload["history"])
+                        if change.cursor >= (cursors[change.objectId] ?? -1) {
                             histories[change.objectId] = history; cursors[change.objectId] = change.cursor; sources[change.objectId] = change.objectId
                         }
                     }
