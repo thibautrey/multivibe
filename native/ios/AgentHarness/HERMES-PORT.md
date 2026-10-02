@@ -86,13 +86,22 @@ and error guidance preserve the previous app behavior.
   full transcript. A summary must fit its own measured context and shrink the
   final model view; refusals, truncation and failed persistence abort safely.
   Inputs that still fit may defer compaction. Longer histories are processed in
-  measured blocks of complete exchanges, carrying the prior summary forward.
+  measured blocks of complete exchanges. Each block summary and any previously
+  checkpointed summary are preserved verbatim, then concatenated for the model.
+  They are not repeatedly rewritten by the summarizer: native tests with a small
+  model exposed forgotten earlier facts under that strategy.
   Each block fits the summarizer context and preserves assistant/tool-result
   groups; at most 32 summaries and 120 seconds of compaction work are allowed.
   Intermediate summaries remain speculative until the final checkpoint, so a
   refusal, cancellation or failure publishes no partial state. Indivisible
-  oversized exchanges remain errors. Apple Foundation does not yet provide
-  these callbacks. This bounded mobile extension does not implement upstream
+  oversized exchanges and an aggregate summary that cannot fit remain explicit
+  errors; no block is silently discarded. Apple Foundation on iOS/macOS 27 also
+  uses native transcript token counting with the exact instructions, prompt and
+  response schema. Its summary is accepted only when validated structured output
+  is nonempty and reported output usage is strictly below the reserved tokens.
+  Older Foundation runtimes retain explicit overflow errors because verified
+  output usage is unavailable to this adapter. This bounded mobile extension
+  does not implement upstream
   micro-pruning or its complete summary prompt, and is not full compaction parity.
 - No Linux terminal, process runtime, dependency installer, background scheduler,
   Hermes SessionDB, memory consolidation, executable skills loader, delegation, provider
