@@ -536,6 +536,12 @@ import Network
                         return approved ? nil : owner
                     })
                     let allowed = state.outbox.filter { operation in
+                        if let writer = state.memoryWriteScopes?[operation.operationId] {
+                            guard let conversation = UUID(uuidString: writer), let binding = cloudHermesBindings[conversation],
+                                binding.accountId == auth.accountId, binding.cloudAuthorized != false,
+                                binding.contextMemoryWritable == true, (binding.contextMemoryIDs ?? []).contains(operation.objectId),
+                                operation.kind == "memory", operation.value?.object?["type"]?.string == "hermes_core_memory" else { return false }
+                        }
                         if operation.kind == "session", operation.value?.object?["historyAnchor"] != nil, operation.value?.object?["localTurnId"] == nil { return true }
                         guard let source = operation.value?.object?["localSource"]?.string else { return true }
                         guard let owner = operation.kind == "session" ? operation.objectId : operation.value?.object?["sessionId"]?.string else { return false }
@@ -585,12 +591,12 @@ import Network
         guard let id=selection,let binding=cloudHermesBindings[id],binding.accountId == session?.accountId else { return false }
         return Set(CloudHermesBinding.localSources).isSubset(of:Set(binding.localExportSources ?? []))
     }
-    var currentCloudContextSelection: (memory:[String],skills:[String],files:[String],project:String?) {
-        guard let id=selection,let binding=cloudHermesBindings[id],binding.accountId == session?.accountId else { return ([],[],[],nil) }
-        return (binding.contextMemoryIDs ?? [],binding.contextSkillIDs ?? [],binding.contextFileIDs ?? [],binding.contextProjectID)
+    var currentCloudContextSelection: (memory:[String],skills:[String],files:[String],project:String?,memoryWritable:Bool) {
+        guard let id=selection,let binding=cloudHermesBindings[id],binding.accountId == session?.accountId else { return ([],[],[],nil,false) }
+        return (binding.contextMemoryIDs ?? [],binding.contextSkillIDs ?? [],binding.contextFileIDs ?? [],binding.contextProjectID,binding.contextMemoryWritable == true)
     }
-    func localHermesSeed(conversation id: UUID, input: [ChatMessage], epoch: UUID) async throws -> (history: [HistoryJSON]?, context: String, files: [CloudHermesContext.WorkspaceFile], skills: HermesSkillCatalog?) {
-        guard let binding = cloudHermesBindings[id], binding.accountId == session?.accountId else { return (nil,"",[],nil) }
+    func localHermesSeed(conversation id: UUID, input: [ChatMessage], epoch: UUID) async throws -> (history: [HistoryJSON]?, context: String, files: [CloudHermesContext.WorkspaceFile], skills: HermesSkillCatalog?, memory: HermesSelectedMemory?, project: CloudHermesContext.WorkspaceProject?) {
+        guard let binding = cloudHermesBindings[id], binding.accountId == session?.accountId else { return (nil,"",[],nil,nil,nil) }
         guard binding.pending == nil, let currentTurn = input.last(where: { $0.role == "user" }) else { throw APIError.server(409,"hermes_pending_run_requires_recovery") }
         let account = binding.accountId
         var history = binding.history
@@ -614,19 +620,23 @@ import Network
         var context = ""
         var workspaceFiles: [CloudHermesContext.WorkspaceFile] = []
         var skillCatalog: HermesSkillCatalog?
-        if !(binding.contextMemoryIDs ?? []).isEmpty || !(binding.contextSkillIDs ?? []).isEmpty || !(binding.contextFileIDs ?? []).isEmpty {
+        var selectedMemory: HermesSelectedMemory?
+        var selectedProject: CloudHermesContext.WorkspaceProject?
+        if binding.contextProjectID != nil || !(binding.contextMemoryIDs ?? []).isEmpty || !(binding.contextSkillIDs ?? []).isEmpty || !(binding.contextFileIDs ?? []).isEmpty {
             guard let state = cloudAgentState else { throw APIError.invalidResponse }
             let snapshot = try CloudHermesContext.build(state:state,accountID:account,projectID:binding.contextProjectID,
                 memoryObjectIDs:binding.contextMemoryIDs ?? [],skillObjectIDs:binding.contextSkillIDs ?? [],fileObjectIDs:binding.contextFileIDs ?? [])
             workspaceFiles = snapshot.workspaceFiles
             skillCatalog = snapshot.skillCatalog
+            selectedMemory = binding.contextMemoryWritable == true ? snapshot.selectedMemory : nil
+            selectedProject = snapshot.workspaceProject
             context = [snapshot.memory,snapshot.skills,snapshot.files].filter { !$0.isEmpty }.joined(separator:"\n\n")
         }
         guard sessionRevision == epoch, session?.accountId == account else { throw CancellationError() }
-        if history.isEmpty { return (nil,context,workspaceFiles,skillCatalog) }
+        if history.isEmpty { return (nil,context,workspaceFiles,skillCatalog,selectedMemory,selectedProject) }
         history.append(.object(["role":.string("user"),"content":.string(currentTurn.content)]))
         try RemoteHermesSession.validateHistory(history)
-        return (history,context,workspaceFiles,skillCatalog)
+        return (history,context,workspaceFiles,skillCatalog,selectedMemory,selectedProject)
     }
     /// State-only reconciliation. Checkpoints are read without creating leases or invoking tools/models.
     private func reconcileLocalTurns(consent: CloudHermesConsent, epoch: UUID) async throws {
@@ -968,7 +978,7 @@ import Network
     }
     private var activeCloudHermes: (accountId:String, runId:String, token:String)?
     /// Call only after UI has explained server-readable storage and obtained explicit agreement.
-    func authorizeHermesCloud(importExistingConversation: Bool, synchronizeLocalTurns: Bool = false, memoryIDs: [String] = [], skillIDs: [String] = [], fileIDs: [String] = [], projectID: String? = nil) async throws {
+    func authorizeHermesCloud(importExistingConversation: Bool, synchronizeLocalTurns: Bool = false, memoryIDs: [String] = [], skillIDs: [String] = [], fileIDs: [String] = [], projectID: String? = nil, memoryWritable: Bool = false) async throws {
         guard !isStreaming, let id = selection, let conversation = current else { throw APIError.invalidResponse }
         if !conversation.messages.isEmpty && !importExistingConversation { throw APIError.server(403,"hermes_history_import_required") }
         let revision = sessionRevision, session = try await validSession()
@@ -987,16 +997,18 @@ import Network
         let uuid = { UUID().uuidString.lowercased() }
         var binding = cloudHermesBindings[id] ?? CloudHermesBinding(accountId:session.accountId,conversationId:id.uuidString.lowercased(),sessionId:uuid(),branchId:uuid(),operationId:uuid(),versionId:uuid(),deviceId:uuid(),importApproved:importExistingConversation)
         guard binding.accountId == session.accountId else { throw APIError.invalidResponse }
-        if !memoryIDs.isEmpty || !skillIDs.isEmpty || !fileIDs.isEmpty {
+        if projectID != nil || !memoryIDs.isEmpty || !skillIDs.isEmpty || !fileIDs.isEmpty {
             guard let state = cloudAgentState else { throw APIError.invalidResponse }
             _ = try CloudHermesContext.build(state:state,accountID:session.accountId,projectID:projectID,memoryObjectIDs:memoryIDs,skillObjectIDs:skillIDs,fileObjectIDs:fileIDs)
         }
+        let previousBinding = cloudHermesBindings[id]
+        binding.contextMemoryWritable = memoryWritable && !memoryIDs.isEmpty
         binding.contextMemoryIDs=memoryIDs;binding.contextSkillIDs=skillIDs;binding.contextFileIDs=fileIDs;binding.contextProjectID=projectID
         binding.cloudAuthorized = true
         binding.localExportSources = synchronizeLocalTurns ? CloudHermesBinding.localSources : []
         binding.importApproved = binding.importApproved || importExistingConversation
         cloudHermesBindings[id] = binding
-        guard persist() else { throw APIError.server(0,"history_cache_write_failed") }
+        guard persist() else { cloudHermesBindings[id] = previousBinding; throw APIError.server(0,"history_cache_write_failed") }
     }
 
     func resolveHermesRecovery(_ recovery: HermesRecovery) async {
@@ -1628,6 +1640,12 @@ import Network
                     guard generationRevision == revision && sessionRevision == accountRevision else { throw CancellationError() }
                     let workspace = LocalAgentWorkspace(conversations: conversations, documents: localDocuments,
                         hermesContext: checkpointContext, initialHermesHistory:initial.history, selectedCloudContext:initial.context, selectedWorkspaceFiles:initial.files, selectedSkills:initial.skills,
+                        selectedMemory:initial.memory, selectedProject:initial.project,
+                        saveMemory: { proposal in
+                            try await self.saveLocalHermesMemory(proposal,conversation:id,generation:revision,account:accountRevision)
+                        }, createWorkspaceFile: { project, path, content in
+                            try await self.createLocalHermesWorkspaceFile(project,path:path,content:content,conversation:id,generation:revision,account:accountRevision)
+                        },
                         saveWorkspaceFile: { file, content in
                             try await self.saveLocalHermesWorkspaceFile(file,content:content,conversation:id,generation:revision,account:accountRevision)
                         }, deviceData: deviceData,
@@ -2105,6 +2123,45 @@ import Network
     private func manageAutomation(_ arguments: String, model: String, account: UUID) async throws -> String {
         guard sessionRevision == account else { throw CancellationError() }
         return try await AutomationTools.execute(arguments, model: model, scope: session?.accountId ?? "guest")
+    }
+    func saveLocalHermesMemory(_ proposal: HermesSelectedMemory.Proposal, conversation: UUID, generation: UUID, account: UUID) throws {
+        try Task.checkCancellation()
+        let original = proposal.original
+        guard generationRevision == generation, sessionRevision == account, session?.accountId == original.accountID,
+            let binding = cloudHermesBindings[conversation], binding.accountId == original.accountID, binding.cloudAuthorized != false,
+            binding.contextMemoryWritable == true, (binding.contextMemoryIDs ?? []).contains(original.objectID),
+            var state = cloudAgentState, state.accountId == original.accountID,
+            let object = state.objects[original.objectID], object.kind == "memory", !object.deleted,
+            object.heads == original.parents, object.heads.count == 1, state.conflicts[original.objectID] == nil,
+            let head = object.versions[object.heads[0]], !head.deleted, !head.erased,
+            var value = head.value?.object, value["type"]?.string == original.type, value["target"]?.string == original.target,
+            value["content"] == (original.content.map(HistoryJSON.string) ?? .null),
+            !state.outbox.contains(where: { $0.objectId == original.objectID }) else { throw APIError.server(409,"hermes_memory_changed_or_not_authorized") }
+        guard proposal.changed else { return }
+        value["content"] = .string(proposal.content)
+        let operation = CloudAgentMutation(operationId:UUID().uuidString.lowercased(),objectId:original.objectID,
+            versionId:UUID().uuidString.lowercased(),deviceId:state.deviceId,kind:"memory",parents:original.parents,deleted:false,value:.object(value))
+        let previous = state
+        try state.enqueue(operation)
+        var scopes = state.memoryWriteScopes ?? [:]; scopes[operation.operationId] = conversation.uuidString.lowercased(); state.memoryWriteScopes = scopes
+        cloudAgentState = state
+        guard persist() else { cloudAgentState = previous; throw APIError.server(0,"history_cache_write_failed") }
+        Task { await self.synchronizeCloudAgentState() }
+    }
+    func createLocalHermesWorkspaceFile(_ project: CloudHermesContext.WorkspaceProject, path: String, content: String,
+                                      conversation: UUID, generation: UUID, account: UUID) throws -> CloudHermesContext.WorkspaceFile {
+        try Task.checkCancellation()
+        guard generationRevision == generation, sessionRevision == account, session?.accountId == project.accountId,
+            let binding = cloudHermesBindings[conversation], binding.accountId == project.accountId,
+            binding.contextProjectID == project.projectId, let state = cloudAgentState, state.accountId == project.accountId else { throw CancellationError() }
+        let id = CloudAgentState.workspaceFileID(projectId:project.projectId,path:path)
+        guard state.objects[id] == nil, !state.outbox.contains(where: { $0.objectId == id }),
+            !pendingCloudArtifacts.contains(where: { $0.operation.objectId == id }) else { throw APIError.server(409,"workspace_path_exists") }
+        let operation = try state.workspaceMutation(projectId:project.projectId,objectId:id,path:path,content:content,
+            parents:[],projectParents:project.parents,delete:false)
+        try enqueueCloudAgentMutation(operation)
+        Task { await self.synchronizeCloudAgentState() }
+        return .init(accountId:project.accountId,projectId:project.projectId,objectId:id,path:path,content:content,parents:[],projectParents:project.parents,pending:true)
     }
     func saveLocalHermesWorkspaceFile(_ file: CloudHermesContext.WorkspaceFile, content: String, conversation: UUID, generation: UUID, account: UUID) throws {
         try Task.checkCancellation()

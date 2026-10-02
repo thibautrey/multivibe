@@ -438,6 +438,7 @@ struct CloudHermesBinding: Codable, Sendable {
     var cloudAuthorized: Bool? = nil
     var localExportSources: [String]? = nil
     var contextMemoryIDs: [String]? = nil
+    var contextMemoryWritable: Bool? = nil
     var contextSkillIDs: [String]? = nil
     var contextFileIDs: [String]? = nil
     var contextProjectID: String? = nil

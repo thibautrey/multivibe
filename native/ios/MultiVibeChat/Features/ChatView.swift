@@ -2537,6 +2537,7 @@ private struct CloudHermesConsentView: View {
     @State private var importApproved = false
     @State private var synchronizeLocalTurns = false
     @State private var memoryIDs: Set<String> = []
+    @State private var memoryWritable = false
     @State private var skillIDs: Set<String> = []
     @State private var fileIDs: Set<String> = []
     @State private var projectID = ""
@@ -2570,11 +2571,15 @@ private struct CloudHermesConsentView: View {
                     Text("Autorise les messages et résultats d’outils des modèles téléchargés et d’Apple Foundation, y compris les tours locaux déjà réalisés dans cette conversation. Ils seront envoyés au retour du réseau. Les résultats d’outils peuvent contenir des données privées. Aucune commande ne sera rejouée.")
                 }
                 Section("Contexte Cloud pour le modèle local") {
-                    Text("Choisissez la mémoire, les skills et les fichiers texte accessibles au modèle local. Ses modifications des fichiers sélectionnés sont enregistrées sur cet appareil puis synchronisées. Ces contenus restent des données non fiables. Les scripts des skills ne sont pas exécutés. Aucun document ou souvenir natif n’est importé.")
+                    Text("Choisissez la mémoire, les skills et les fichiers texte accessibles au modèle local. Ses modifications des fichiers sélectionnés et les nouveaux fichiers qu’il crée dans le projet choisi sont enregistrés sur cet appareil puis synchronisés. Ces contenus restent des données non fiables. Les scripts des skills ne sont pas exécutés. Aucun document ou souvenir natif n’est importé.")
                     Button("Actualiser les objets") { Task { await manager.synchronizeCloudAgentState() } }.disabled(manager.cloudAgentSyncing)
                     ForEach(manager.cloudAgentObjects.filter { $0.kind == "memory" && !$0.deleted && !$0.conflicted }) { item in
                         Toggle("Mémoire · \(item.title)",isOn:selectionBinding(item.id,in:$memoryIDs))
                     }
+                    Toggle("Autoriser le modèle local à modifier les mémoires Hermes sélectionnées",isOn:$memoryWritable)
+                        .disabled(memoryIDs.isEmpty)
+                        .accessibilityIdentifier("cloudHermesMemoryWriteConsent")
+                    Text("Ces modifications seront synchronisées au retour du réseau. Cette option n’importe pas vos souvenirs natifs.")
                     ForEach(manager.cloudAgentObjects.filter { $0.kind == "skill" && !$0.deleted && !$0.conflicted }) { item in
                         Toggle("Skill · \(item.title)",isOn:selectionBinding(item.id,in:$skillIDs))
                     }
@@ -2591,7 +2596,7 @@ private struct CloudHermesConsentView: View {
                     Button(busy ? "Préparation…" : "Autoriser Hermes") {
                         guard accountID == manager.session?.accountId, conversationID == manager.selection else { error = "Le compte ou la conversation a changé. Fermez puis rouvrez cette autorisation."; return }
                         busy = true
-                        Task { do { try await manager.authorizeHermesCloud(importExistingConversation:hasHistory && importApproved,synchronizeLocalTurns:synchronizeLocalTurns,memoryIDs:memoryIDs.sorted(),skillIDs:skillIDs.sorted(),fileIDs:fileIDs.sorted(),projectID:projectID.isEmpty ? nil : projectID); dismiss() }
+                        Task { do { try await manager.authorizeHermesCloud(importExistingConversation:hasHistory && importApproved,synchronizeLocalTurns:synchronizeLocalTurns,memoryIDs:memoryIDs.sorted(),skillIDs:skillIDs.sorted(),fileIDs:fileIDs.sorted(),projectID:projectID.isEmpty ? nil : projectID,memoryWritable:memoryWritable); dismiss() }
                             catch { self.error = error.localizedDescription }; busy = false }
                     }.disabled(busy || (hasHistory && !importApproved)).accessibilityIdentifier("cloudHermesAuthorize")
                 }
@@ -2600,6 +2605,7 @@ private struct CloudHermesConsentView: View {
                     accountID = manager.session?.accountId; conversationID = manager.selection
                     synchronizeLocalTurns=manager.currentLocalHermesExportApproved
                     let selected=manager.currentCloudContextSelection
+                    memoryWritable=selected.memoryWritable
                     memoryIDs=Set(selected.memory);skillIDs=Set(selected.skills);fileIDs=Set(selected.files);projectID=selected.project ?? ""
                 }
                 .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() }.disabled(busy) } }
