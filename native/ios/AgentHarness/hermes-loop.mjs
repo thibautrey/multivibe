@@ -97,6 +97,7 @@ export async function runHermesTurn(input, host) {
         try { await checkpoint(); } catch (error) { compaction = previous; throw error; }
         modelMessages = prepared.messages;
       } else { await checkpoint(); }
+      if (modelMilliseconds > 120_000) throw new Error('La limite de travail local a été atteinte.');
       const start = Date.now();
       const reply = await host.model(modelMessages, tools);
       modelMilliseconds += Date.now() - start;
