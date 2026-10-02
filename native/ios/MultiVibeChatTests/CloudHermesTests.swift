@@ -334,7 +334,7 @@ final class RemoteHermesHistoryTests: XCTestCase {
         let memory=CloudAgentChange(operationId:id(),objectId:memoryID,versionId:memoryVersion,deviceId:id(),kind:"memory",parents:[],deleted:false,value:.object(["type":.string("hermes_core_memory"),"target":.string("user"),"content":.string("Selected Cloud memory")]),cursor:1,erased:false)
         var graph=CloudAgentState(accountId:account,deviceId:id())
         graph.objects[memoryID] = .init(kind:"memory",versions:[memoryVersion:memory],heads:[memoryVersion])
-        binding.contextMemoryIDs=[memoryID]
+        binding.contextMemoryIDs=[memoryID];binding.contextMemoryWritable=true
         let project=id(),projectHead=id(),fileHead=id(),path="notes.txt"
         let fileID=CloudAgentState.workspaceFileID(projectId:project,path:path)
         let projectChange=CloudAgentChange(operationId:id(),objectId:project,versionId:projectHead,deviceId:id(),kind:"project",parents:[],deleted:false,value:.object(["title":.string("Project")]),cursor:2,erased:false)
@@ -367,6 +367,10 @@ final class RemoteHermesHistoryTests: XCTestCase {
             let request=try JSONSerialization.data(withJSONObject:["documentID":fileID,"expected":"Original workspace","content":"Saved offline by Hermes"])
             let result=try await workspace.executeHarnessTool(name:"document_replace",arguments:String(decoding:request,as:UTF8.self))
             XCTAssertTrue(result?.content.contains("synchronisation en attente") == true)
+            let memoryResult=try await workspace.executeHarnessTool(name:"memory",arguments:#"{"action":"add","target":"user","content":"New selected Hermes memory"}"#)
+            XCTAssertTrue(memoryResult?.content.contains("saved_locally_sync_pending") == true)
+            let created=try await workspace.executeHarnessTool(name:"workspace_create_file",arguments:#"{"path":"new.txt","content":"Created offline in project"}"#)
+            XCTAssertTrue(created?.content.contains("saved_locally_sync_pending") == true)
             await delta("Local answer");received.fulfill()
         })
         services.writeHistory={data,_ in persisted=data}
@@ -379,7 +383,31 @@ final class RemoteHermesHistoryTests: XCTestCase {
         let operation=try XCTUnwrap(saved.outbox.first(where:{$0.objectId==fileID}))
         XCTAssertEqual(operation.parents,[fileHead]);XCTAssertEqual(operation.value?.object?["content"]?.string,"Saved offline by Hermes")
         XCTAssertTrue(manager.localDocuments.isEmpty)
+        let memoryOperation=try XCTUnwrap(saved.outbox.first(where:{$0.objectId==memoryID}))
+        XCTAssertEqual(memoryOperation.parents,[memoryVersion])
+        XCTAssertEqual(memoryOperation.value?.object?["content"]?.string,"Selected Cloud memory" + HermesSelectedMemory.delimiter + "New selected Hermes memory")
+        XCTAssertEqual(saved.memoryWriteScopes?[memoryOperation.operationId],conversationID.uuidString.lowercased())
+        let createdID=CloudAgentState.workspaceFileID(projectId:project,path:"new.txt")
+        let createdOperation=try XCTUnwrap(saved.outbox.first(where:{$0.objectId==createdID}))
+        XCTAssertEqual(createdOperation.parents,[]);XCTAssertEqual(createdOperation.value?.object?["content"]?.string,"Created offline in project")
+        XCTAssertTrue((cache["memory"] as? [Any] ?? []).isEmpty)
         manager.stop()
+        // Restart with authorization revoked: the persisted operation's writer ledger must block export.
+        var revokedCache=cache
+        var bindings=try JSONDecoder().decode([UUID:CloudHermesBinding].self,from:JSONSerialization.data(withJSONObject:XCTUnwrap(cache["cloudHermesBindings"])))
+        bindings[conversationID]?.contextMemoryWritable=false
+        revokedCache["cloudHermesBindings"]=try JSONSerialization.jsonObject(with:JSONEncoder().encode(bindings))
+        let revokedPayload=try JSONSerialization.data(withJSONObject:revokedCache)
+        var submitted:[CloudAgentMutation]=[]
+        var revokedServices=isolatedServices(load:{auth},readLocalHistory:{_ in revokedPayload})
+        revokedServices.hermesChanges={_,_ in .init(accountId:account,changes:[],cursor:saved.cursor,hasMore:false)}
+        revokedServices.hermesConsent={_ in .init(accountId:account,cloudEnabled:true,revision:1)}
+        revokedServices.hermesMutations={_,operations,_ in submitted += operations;throw APIError.server(503,"fixture_no_network")}
+        let revoked=ConversationManager(services:revokedServices)
+        await revoked.restore(loadRemoteModels:false);await revoked.synchronizeCloudAgentState()
+        for _ in 0..<100 where revoked.cloudAgentSyncing { await Task.yield() }
+        XCTAssertFalse(submitted.contains(where:{$0.objectId==memoryID}))
+        XCTAssertTrue(submitted.contains(where:{$0.objectId==createdID}))
     }
 }
 
@@ -1028,5 +1056,33 @@ private actor CloudWorkspaceResponderHold {
             XCTAssertThrowsError(try manager.continueHermesOnDevice(sessionId:session,model:LocalModel.id,accountId:mode=="account" ? UUID().uuidString.lowercased() : auth.accountId))
             XCTAssertTrue(manager.conversations.isEmpty);XCTAssertNil(manager.selection);XCTAssertFalse(manager.isStreaming)
         }
+    }
+}
+
+@MainActor final class CloudHermesReadOnlyMemoryIntegrationTests: XCTestCase {
+    func testSelectedMemoryWithoutWritePermissionDoesNotExposeMemoryTool() async throws {
+        let id={UUID().uuidString.lowercased()},account=UUID().uuidString.lowercased(),conversationID=UUID(),memory=id(),version=id()
+        var state=CloudAgentState(accountId:account,deviceId:id())
+        let change=CloudAgentChange(operationId:id(),objectId:memory,versionId:version,deviceId:id(),kind:"memory",parents:[],deleted:false,value:.object(["type":.string("hermes_core_memory"),"target":.string("user"),"content":.string("Read only selected memory")]),cursor:1,erased:false)
+        state.objects[memory] = .init(kind:"memory",versions:[version:change],heads:[version])
+        var binding=CloudHermesBinding(accountId:account,conversationId:conversationID.uuidString.lowercased(),sessionId:id(),branchId:id(),operationId:id(),versionId:id(),deviceId:id(),importApproved:true)
+        binding.contextMemoryIDs=[memory];binding.contextMemoryWritable=false
+        let conversation=Conversation(id:conversationID,model:LocalModel.id,messages:[])
+        let payload=try JSONSerialization.data(withJSONObject:["cloudHermesBindings":JSONSerialization.jsonObject(with:JSONEncoder().encode([conversationID:binding])),"cloudAgentState":JSONSerialization.jsonObject(with:JSONEncoder().encode(state)),"conversations":JSONSerialization.jsonObject(with:JSONEncoder().encode([conversation])),"baseline":[],"conversationIDs":[:],"messageIDs":[:]])
+        let auth=NativeSession(accessToken:"fixture",refreshToken:"fixture",expiresAt:.distantFuture,accountId:account)
+        let checked=expectation(description:"Read-only memory remains context only")
+        let services=isolatedServices(load:{auth},readLocalHistory:{_ in payload},localAvailability:{nil},localRespond:{_,workspace,delta in
+            let memory=await workspace.selectedMemory
+            XCTAssertNil(memory)
+            let context=await workspace.selectedCloudContext
+            XCTAssertTrue(context.contains("Read only selected memory"))
+            let schemas=await workspace.hermesToolSchemas()
+            XCTAssertFalse(schemas.contains{($0["function"] as? [String:Any])?["name"] as? String == "memory"})
+            do { _=try await workspace.executeHarnessTool(name:"memory",arguments:#"{"action":"add","target":"user","content":"forbidden"}"#);XCTFail("Read only mutation accepted") } catch {}
+            await delta("Read only response");checked.fulfill()
+        })
+        let manager=ConversationManager(services:services)
+        await manager.restore(loadRemoteModels:false);manager.selection=conversationID;manager.selectedModel=LocalModel.id
+        XCTAssertTrue(manager.send("Read memory"));await fulfillment(of:[checked],timeout:3);manager.stop()
     }
 }
