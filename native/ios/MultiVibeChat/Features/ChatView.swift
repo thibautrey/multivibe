@@ -2680,7 +2680,15 @@ private struct CloudConflictReviewView: View {
             }
             if let review, manager.cloudConflictReviewVisible(review), !resolved {
                 if let pendingVersion {
-                    Text("Résolution enregistrée sur cet appareil, en attente de confirmation Cloud. Aucun nouveau choix ne sera envoyé.")
+                    if manager.pendingCloudConflictVersion(review) == nil, manager.cloudConflictReview(objectId) != nil {
+                        Text("De nouvelles versions concurrentes nécessitent un nouvel examen.")
+                        Button("Examiner les versions actuelles") {
+                            self.review=manager.cloudConflictReview(objectId)
+                            inspected=[]; selected=nil; self.pendingVersion=nil; error=nil
+                        }.disabled(busy)
+                    } else {
+                        Text("Résolution enregistrée sur cet appareil, en attente de confirmation Cloud. Aucun nouveau choix ne sera envoyé.")
+                    }
                     if let issue = manager.cloudAgentSyncError { Text(issue).foregroundStyle(.orange) }
                     Button("Actualiser la confirmation") {
                         busy=true
