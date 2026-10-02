@@ -301,14 +301,14 @@ import Network
                 while let state=cloudAgentState, !state.outbox.isEmpty {
                     var batch:[CloudAgentMutation]=[]
                     let blockedLocalSessions = Set(state.outbox.compactMap { operation -> String? in
-                        if operation.kind == "session", operation.value?.object?["historyAnchor"] != nil { return nil }
+                        if operation.kind == "session", operation.value?.object?["historyAnchor"] != nil, operation.value?.object?["localTurnId"] == nil { return nil }
                         guard let source = operation.value?.object?["localSource"]?.string else { return nil }
                         let owner = operation.kind == "session" ? operation.objectId : operation.value?.object?["sessionId"]?.string
                         let approved = (consent.exportSources ?? []).contains(source) && cloudHermesBindings.values.contains(where: { $0.accountId == auth.accountId && $0.permitsLocalOperation(operation) })
                         return approved ? nil : owner
                     })
                     let allowed = state.outbox.filter { operation in
-                        if operation.kind == "session", operation.value?.object?["historyAnchor"] != nil { return true }
+                        if operation.kind == "session", operation.value?.object?["historyAnchor"] != nil, operation.value?.object?["localTurnId"] == nil { return true }
                         guard let source = operation.value?.object?["localSource"]?.string else { return true }
                         guard let owner = operation.kind == "session" ? operation.objectId : operation.value?.object?["sessionId"]?.string else { return false }
                         return !blockedLocalSessions.contains(owner) && (consent.exportSources ?? []).contains(source)
@@ -438,7 +438,7 @@ import Network
             let version = object.versions[object.heads[0]], let value = version.value?.object,
             let branch = value["branchId"]?.string, CloudAgentState.uuid(branch) else { throw APIError.server(409,"hermes_session_conflict_or_missing") }
         var history: [HistoryJSON] = [], cursor: Int64 = 0
-        if let anchor=value["historyAnchor"] {
+        if let anchor=value["historyAnchor"], value["localTurnId"] == nil {
             history=try state.anchoredHistory(anchor,sessionId:id,account:state.accountId,runs:discoveredCloudRuns)
             cursor=version.cursor
         } else if let local = value["localTurnId"]?.string {
