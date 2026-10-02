@@ -432,7 +432,7 @@ final class RemoteHermesHistoryTests: XCTestCase {
              .object(["role":.string("tool"),"tool_call_id":.string("call"),"content":.string(hidden)]),
              .object(["role":.string("assistant"),"content":.string("Same visible answer")])]
         }
-        let runs=[runA:CloudHermesRun(runId:runA,sessionId:sessionID,branchId:branch,state:"completed",generation:1,result:.init(response:"Same visible answer",history:history("hidden A"))),
+        var runs=[runA:CloudHermesRun(runId:runA,sessionId:sessionID,branchId:branch,state:"completed",generation:1,result:.init(response:"Same visible answer",history:history("hidden A"))),
                   runB:CloudHermesRun(runId:runB,sessionId:sessionID,branchId:branch,state:"completed",generation:1,result:.init(response:"Same visible answer",history:history("hidden B")))]
         var changes:[CloudAgentChange]=[]
         for (index,head) in [first,second].enumerated() {
@@ -476,17 +476,25 @@ final class RemoteHermesHistoryTests: XCTestCase {
         XCTAssertEqual(op.value?.object?["projectId"]?.string,billing);XCTAssertEqual(op.value?.object?["custom"]?.string,"Preserved")
         XCTAssertEqual(manager.remoteHermesTranscript(sessionID),history("hidden A"))
         XCTAssertFalse(manager.remoteHermesTranscript(sessionID).contains { $0.object?["content"]?.string == "hidden B" })
+        // Metadata edits must not hide a completed run on the newly resolved branch.
+        let laterRun=id(),metadataVersion=id()
+        let resolvedBranch=try XCTUnwrap(op.value?.object?["branchId"]?.string)
+        runs[laterRun] = CloudHermesRun(runId:laterRun,sessionId:sessionID,branchId:resolvedBranch,state:"completed",generation:1,result:.init(response:"Later",history:history("later run")))
+        changes.append(.init(operationId:id(),objectId:laterRun,versionId:id(),deviceId:device,kind:"task",parents:[],deleted:false,value:.object(["type":.string("hermes_run"),"sessionId":.string(sessionID),"branchId":.string(resolvedBranch),"runId":.string(laterRun)]),cursor:6,erased:false))
+        changes.append(.init(operationId:id(),objectId:sessionID,versionId:metadataVersion,deviceId:device,kind:"session",parents:[version],deleted:false,value:op.value,cursor:7,erased:false))
+        await manager.synchronizeCloudAgentState()
+        XCTAssertEqual(manager.remoteHermesTranscript(sessionID),history("later run"))
         // A later local checkpoint on the new branch supersedes the immutable anchor.
         let local=id(),localVersion=id(),nextSessionVersion=id()
         let newBranch=try XCTUnwrap(op.value?.object?["branchId"]?.string)
         changes.append(.init(operationId:id(),objectId:local,versionId:localVersion,deviceId:device,kind:"message",parents:[],deleted:false,
-            value:.object(["type":.string("hermes_local_turn"),"sessionId":.string(sessionID),"branchId":.string(newBranch),"turnId":.string(local),"history":.array(history("new local hidden"))]),cursor:6,erased:false))
+            value:.object(["type":.string("hermes_local_turn"),"sessionId":.string(sessionID),"branchId":.string(newBranch),"turnId":.string(local),"history":.array(history("new local hidden"))]),cursor:8,erased:false))
         var updated=try XCTUnwrap(op.value?.object);updated["localTurnId"] = .string(local)
-        changes.append(.init(operationId:id(),objectId:sessionID,versionId:nextSessionVersion,deviceId:device,kind:"session",parents:[version],deleted:false,value:.object(updated),cursor:7,erased:false))
+        changes.append(.init(operationId:id(),objectId:sessionID,versionId:nextSessionVersion,deviceId:device,kind:"session",parents:[metadataVersion],deleted:false,value:.object(updated),cursor:9,erased:false))
         await manager.synchronizeCloudAgentState()
         XCTAssertEqual(manager.remoteHermesTranscript(sessionID),history("new local hidden"))
         XCTAssertEqual(creates,0);XCTAssertEqual(cancels,0)
-        changes.append(.init(operationId:id(),objectId:local,versionId:id(),deviceId:device,kind:"message",parents:[localVersion],deleted:true,value:nil,cursor:8,erased:false))
+        changes.append(.init(operationId:id(),objectId:local,versionId:id(),deviceId:device,kind:"message",parents:[localVersion],deleted:true,value:nil,cursor:10,erased:false))
         await manager.synchronizeCloudAgentState()
         XCTAssertTrue(manager.remoteHermesTranscript(sessionID).isEmpty) // Never fall back to old anchor after deletion.
     }
