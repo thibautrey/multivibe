@@ -47,13 +47,37 @@ and error guidance preserve the previous app behavior.
   the user verifies effects and explicitly skips replay; uncertainty is retained.
   Generation fences reject stale writers, account logout invalidates leases,
   conversation deletion removes journals, files are excluded from backups and
-  capped at 8 MiB. This is a device journal, not Hermes SessionDB or Cloud sync.
+  capped at 8 MiB. These executable recovery checkpoints remain device-owned;
+  they are not Hermes SessionDB and are not uploaded as resumable execution state.
   Workspace-free title calls and remote automation callers remain non-durable.
+- **Completed transcript synchronization:** a conversation authorized for Hermes
+  Cloud can publish completed downloaded-model or Apple Foundation turns after
+  explicit source-export consent. The account-scoped state outbox retains stable
+  operation IDs and full transcript/tool observations, then reconciles when the
+  connection returns. It does not replay pending tool effects, execute commands,
+  or import legacy encrypted conversations automatically. Conflicting session
+  heads, deleted objects and unresolved runs require recovery rather than an
+  inferred merge.
+- **Cloud-to-local continuation:** an explicitly bound conversation can seed the
+  degraded local loop with its full Cloud transcript, including hidden tool calls
+  and results. Completed unpublished local turns are read from their protected
+  checkpoints before continuation. Pending Cloud execution blocks this handoff;
+  account/session fences protect asynchronous reads. Transcript portability does
+  not provide the Cloud Linux environment or its tools on iOS.
+- **Selected Cloud context:** memory, skill and project-file object IDs are
+  selected explicitly per conversation. Core memory accepts only the Hermes
+  `memory` and `user` targets; skill context contains literal `SKILL.md` and
+  reference documents; text files must belong to the selected project. The pure
+  context adapter checks account ownership, single heads, tombstones, stable file
+  IDs and Cloud-compatible size limits. It passes documents as bounded untrusted
+  text, without executing frontmatter or scripts. Native memories and device
+  documents are not exported by this adapter, and selecting Cloud context does
+  not grant native data permissions.
 - **Compaction:** native bridge has no context-budget/summary callback. The loop
   preserves the transcript and surfaces inference overflow. It does not silently
   truncate, claim server compression parity or replay executed tools.
 - No Linux terminal, process runtime, dependency installer, background scheduler,
-  Hermes SessionDB, memory consolidation, skills loader, delegation, provider
+  Hermes SessionDB, memory consolidation, executable skills loader, delegation, provider
   failover, plugins, server guardrails, or self-improvement is ported by this module.
 - Tool-name fuzzy repair is intentionally disabled for native permission APIs.
   Schema validation is a fail-closed mobile subset, not upstream Python validation.
