@@ -5,6 +5,7 @@ import MultiVibeSDK
     private let client:MultiVibeClient
     private let tools:[MultiVibeTool]
     private let contextProvider:(any MultiVibeContextProvider)?
+    @Environment(\.scenePhase) private var scenePhase
     @State private var conversation:MultiVibeConversation?
     @State private var text = ""
     @State private var error:String?
@@ -19,6 +20,13 @@ import MultiVibeSDK
     }
     public var body: some View {
         VStack(spacing:0) {
+            if client.mode == .accountOwner, !client.isHistoryUnlocked || client.hasPendingHistoryWrite {
+                MultiVibeHistoryControls(client: client) { saved in
+                    if let saved { conversation = saved }
+                    else { conversation = nil }
+                    error = nil
+                }.padding()
+            }
             if client.mode == .accountOwner, let conversation {
                 HStack {Text(conversation.appName).bold(); Spacer(); if let raw = conversation.appURL, let url = URL(string:raw), url.scheme == "https" {Link("Ouvrir dans l’application",destination:originURL(url,conversationID:conversation.id))}}.padding()
                 Text("Les outils et les données actualisées de cette application ne sont pas disponibles ici.").font(.caption).foregroundStyle(.secondary).padding(.horizontal)
@@ -39,13 +47,13 @@ import MultiVibeSDK
             if !tools.isEmpty, client.models.first(where:{$0.id == conversation?.model})?.supportsTools != true {
                 Text("Les outils de cette application ne sont pas disponibles avec ce modèle.").font(.caption).foregroundStyle(.secondary)
             }
-            if task == nil, let last = conversation?.messages.last, last.role == "assistant", ["failed","stopped"].contains(last.status ?? "") {
+            if !client.hasPendingHistoryWrite, client.isHistoryUnlocked, task == nil, let last = conversation?.messages.last, last.role == "assistant", ["failed","stopped"].contains(last.status ?? "") {
                 Button("Reprendre la réponse") {retry()}
             }
             HStack {
                 TextField("Message",text:$text,axis:.vertical).lineLimit(1...6)
                 if task != nil {Button("Arrêter") {task?.cancel(); confirmation?.resume(returning:false); confirmation = nil; pending = nil}}
-                else {Button("Envoyer") {send()}.disabled(text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || !client.isConnected)}
+                else {Button("Envoyer") {send()}.disabled(text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || !client.isConnected || !client.isHistoryUnlocked || client.hasPendingHistoryWrite)}
             }.padding()
         }
         .toolbar {
@@ -53,20 +61,20 @@ import MultiVibeSDK
                 Menu("Conversations") {
                     if client.mode == .application {Button("Nouvelle conversation") {conversation = client.newConversation()}}
                     ForEach(client.conversations) {item in Button(item.title) {conversation = item}}
-                }.disabled(task != nil)
+                }.disabled(task != nil || client.hasPendingHistoryWrite || !client.isHistoryUnlocked)
             }
             ToolbarItem {
-                Picker("Modèle",selection:Binding(get:{conversation?.model ?? client.models.first?.id ?? ""},set:{value in if conversation == nil {conversation = client.newConversation()}; conversation?.model = value})) {
+                Picker("Modèle",selection:Binding(get:{conversation?.model ?? client.models.first?.id ?? ""},set:{value in if conversation == nil, client.mode == .application {conversation = client.newConversation()}; conversation?.model = value})) {
                     ForEach(client.models) {model in Text(model.id + (model.supportsTools == true ? " · outils" : "")).tag(model.id)}
-                }.disabled(task != nil)
+                }.disabled(task != nil || client.hasPendingHistoryWrite || !client.isHistoryUnlocked)
             }
             ToolbarItem {
-                Button("Recharger") {Task {do {try await client.reload(); if let id = conversation?.id {conversation = client.conversations.first(where:{$0.id == id})}} catch {self.error = error.localizedDescription}}}.disabled(task != nil)
+                Button("Recharger") {Task {do {try await client.reload(); if let id = conversation?.id {conversation = client.conversations.first(where:{$0.id == id})}} catch {self.error = error.localizedDescription}}}.disabled(task != nil || client.hasPendingHistoryWrite || !client.isHistoryUnlocked)
             }
             #if canImport(UIKit)
             ToolbarItem {
                 if !client.isConnected {Button("Se connecter") {Task {do {let presenter = MultiVibeAuthenticationPresenter(window:UIApplication.shared.connectedScenes.compactMap {$0 as? UIWindowScene}.flatMap(\.windows).first(where:{$0.isKeyWindow})); authentication = presenter; try await presenter.signIn(client:client)} catch {self.error = error.localizedDescription}}}}
-                else if client.mode == .application {Button("Déconnexion") {Task {do {try await client.disconnect(); conversation = nil} catch {self.error = error.localizedDescription}}}.disabled(task != nil)}
+                else if client.mode == .application {Button("Déconnexion") {Task {do {try await client.disconnect(); conversation = nil} catch {self.error = error.localizedDescription}}}.disabled(task != nil || client.hasPendingHistoryWrite || !client.isHistoryUnlocked)}
             }
             #endif
         }
@@ -75,6 +83,12 @@ import MultiVibeSDK
         } message: {Text(pending.map {"\($0.name)\n\($0.arguments)"} ?? "")}
         .task {do {try await client.connect(); if conversation == nil, client.mode == .application {conversation = client.conversations.first ?? client.newConversation()}} catch {self.error = error.localizedDescription}}
         .onOpenURL {url in Task {do {if let opened = try await client.conversationFromOpenURL(url) {conversation = opened} else {try await client.handleOpenURL(url); conversation = client.conversations.first ?? client.newConversation()}; error = nil} catch {self.error = error.localizedDescription}}}
+        .onChange(of: client.isHistoryUnlocked) { _, unlocked in
+            if !unlocked { task?.cancel(); resolve(false); conversation = nil; text = "" }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background, client.mode == .accountOwner { client.lockHistory() }
+        }
         .onDisappear {task?.cancel(); resolve(false)}
     }
     private func resolve(_ allowed:Bool) {let continuation = confirmation; confirmation = nil; pending = nil; continuation?.resume(returning:allowed)}
@@ -88,6 +102,7 @@ import MultiVibeSDK
         value.messages.removeLast();conversation = value;run(value)
     }
     private func send() {
+        guard client.isHistoryUnlocked, !client.hasPendingHistoryWrite, client.mode == .application || conversation != nil else { return }
         var value = conversation ?? client.newConversation()
         guard !value.model.isEmpty else {error = "Choisissez un modèle."; return}
         value.messages.append(MultiVibeMessage(role:"user",content:text))
@@ -98,7 +113,7 @@ import MultiVibeSDK
     private func run(_ value:MultiVibeConversation) {
         task = Task { @MainActor in
             defer {task = nil}
-            do {conversation = try await client.respond(to:value,tools:client.models.first(where:{$0.id == value.model})?.supportsTools == true ? tools : [],contextProvider:contextProvider,confirm:{call in await withCheckedContinuation {continuation in confirmation = continuation; pending = call}},update:{conversation = $0})}
+            do {let saved = try await client.respond(to:value,tools:client.models.first(where:{$0.id == value.model})?.supportsTools == true ? tools : [],contextProvider:contextProvider,confirm:{call in await withCheckedContinuation {continuation in confirmation = continuation; pending = call}},update:{if client.isHistoryUnlocked {conversation = $0}}); if client.isHistoryUnlocked {conversation = saved}}
             catch {self.error = error.localizedDescription}
         }
     }

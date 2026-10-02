@@ -14,6 +14,7 @@ import MultiVibeChatUI
 }
 
 struct SDKApplicationsView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var client = SDKAccountClient.make()
     @State private var error:String?
     @State private var connections:[Connection] = []
@@ -24,11 +25,14 @@ struct SDKApplicationsView: View {
     var body:some View {
         List {
             if let error {Text(error).foregroundStyle(.red)}
+            if !client.isHistoryUnlocked || client.hasPendingHistoryWrite {
+                Section { MultiVibeHistoryControls(client: client) }
+            }
             ForEach(Array(Dictionary(grouping:client.conversations,by: \.appId).keys).sorted(),id:\.self) {appID in
                 let conversations = client.conversations.filter {$0.appId == appID}
                 DisclosureGroup(conversations.first?.appName ?? appID) {
                     ForEach(conversations) {conversation in
-                        NavigationLink(conversation.title) {MultiVibeChatView(client:client,conversation:conversation).navigationTitle(conversation.title)}
+                        NavigationLink(conversation.title) {MultiVibeChatView(client:client,conversation:conversation).navigationTitle(client.isHistoryUnlocked ? conversation.title : "Historique verrouillé")}
                             .swipeActions {Button("Supprimer",role:.destructive) {Task {do {try await client.delete(conversation)} catch {self.error = error.localizedDescription}}}}
                     }
                 }
@@ -37,6 +41,10 @@ struct SDKApplicationsView: View {
                 ForEach(connections) {connection in HStack {Text(connection.name);Spacer();Button("Révoquer",role:.destructive) {revokeTarget = connection}}}
             }
         }.navigationTitle("Applications")
+        .toolbar {
+            if client.isHistoryUnlocked { Button("Verrouiller") { client.lockHistory() } }
+        }
+        .onChange(of: scenePhase) { _, phase in if phase == .background { client.lockHistory() } }
         .task {await reload()}
         .refreshable {await reload()}
         .confirmationDialog("Révoquer cette application ?",isPresented:Binding(get:{revokeTarget != nil},set:{if !$0 {revokeTarget = nil}}),titleVisibility:.visible) {
@@ -44,7 +52,7 @@ struct SDKApplicationsView: View {
         } message: {Text("L’application perdra son accès. Vos conversations seront conservées.")}
     }
     private func reload() async {
-        do {try await client.connect(); connections = try await client.accountRequest("/native/v1/sdk/connections",as:Connections.self).data;error = nil} catch {self.error = error.localizedDescription}
+        do {if !client.hasPendingHistoryWrite { try await client.connect() }; connections = try await client.accountRequest("/native/v1/sdk/connections",as:Connections.self).data;error = nil} catch {self.error = error.localizedDescription}
     }
 }
 
