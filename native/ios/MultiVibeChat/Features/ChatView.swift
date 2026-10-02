@@ -2636,6 +2636,12 @@ private struct CloudAgentBrowserView: View {
                                             NavigationLink("Examiner les versions") { CloudConflictReviewView(objectId:object.id) }
                                         }
                                     }
+                                    else if ["project","session"].contains(kind) {
+                                        NavigationLink("Fichiers du projet") { CloudWorkspaceView(projectId:object.id,title:object.title) }
+                                    }
+                                    else if kind == "file", let project=object.value?.object?["projectId"]?.string {
+                                        NavigationLink(object.value?.object?["path"]?.string ?? "Ouvrir les fichiers") { CloudWorkspaceView(projectId:project,title:"Fichiers") }
+                                    }
                                     else if kind == "task", let id=object.value?.object?["runId"]?.string, let run=manager.discoveredCloudRuns[id] {
                                         Text(run.state.replacingOccurrences(of:"_",with:" ")).font(.caption)
                                         if let response=run.result?.response { Text(response).textSelection(.enabled) }
@@ -2649,6 +2655,143 @@ private struct CloudAgentBrowserView: View {
             }.navigationTitle("Hermes Cloud")
                 .toolbar { ToolbarItem(placement:.confirmationAction) { Button("Fermer") { dismiss() } } }
                 .task { await manager.synchronizeCloudAgentState() }
+        }
+    }
+}
+
+
+private struct CloudWorkspaceEditorSelection: Identifiable {
+    let id = UUID()
+    let draft: ConversationManager.CloudWorkspaceDraft
+}
+
+private struct CloudWorkspaceView: View {
+    @Environment(ConversationManager.self) private var manager
+    let projectId: String
+    let title: String
+    @State private var account: String?
+    @State private var editor: CloudWorkspaceEditorSelection?
+    @State private var error: String?
+    private var visible: Bool { account != nil && account == manager.session?.accountId }
+    private var pending: [ConversationManager.CloudAgentSummary] { manager.cloudWorkspacePendingFiles(projectId:projectId) }
+    private var files: [ConversationManager.CloudAgentSummary] { manager.cloudWorkspaceFiles(projectId:projectId) }
+    private func open(_ id:String?) {
+        do { editor = .init(draft:try manager.cloudWorkspaceDraft(projectId:projectId,fileId:id));error=nil }
+        catch { self.error=error.localizedDescription }
+    }
+    var body: some View {
+        List {
+            if visible {
+                Section {
+                    Text("Fichiers partagés avec votre environnement Hermes. Les modifications enregistrées hors ligne seront synchronisées au retour du réseau.")
+                    Text("Texte UTF-8 · 64 Ko par fichier · 200 fichiers et 512 Ko par projet.").font(.caption).foregroundStyle(.secondary)
+                    Button("Nouveau fichier") { open(nil) }.accessibilityIdentifier("hermesWorkspaceNewFile")
+                    Button(manager.cloudAgentSyncing ? "Synchronisation…" : "Actualiser") { Task { await manager.synchronizeCloudAgentState() } }.disabled(manager.cloudAgentSyncing)
+                    if let issue=manager.cloudAgentSyncError { Text(issue).foregroundStyle(.orange) }
+                    if let error { Text(error).foregroundStyle(.red) }
+                }
+                Section(title) {
+                    if files.isEmpty { Text("Aucun fichier texte.").foregroundStyle(.secondary) }
+                    ForEach(files) { file in
+                        VStack(alignment:.leading,spacing:6) {
+                            let waiting=pending.contains(where:{$0.id == file.id})
+                            Button(file.value?.object?["path"]?.string ?? file.title) { open(file.id) }
+                                .disabled(waiting || file.deleted || file.conflicted)
+                            if waiting { Text(file.deleted ? "Suppression en attente de synchronisation" : "Enregistré sur cet appareil · synchronisation en attente").font(.caption).foregroundStyle(.secondary) }
+                            if waiting, !file.deleted, let content=file.value?.object?["content"]?.string {
+                                DisclosureGroup("Voir le contenu enregistré") {
+                                    Text(content).font(.system(.caption,design:.monospaced)).textSelection(.enabled)
+                                }
+                            }
+                            if file.conflicted { NavigationLink("Examiner les versions en conflit") { CloudConflictReviewView(objectId:file.id) } }
+                        }
+                    }
+                }
+            } else { Text("Reconnectez-vous au compte de ce projet.") }
+        }.navigationTitle("Fichiers Hermes")
+            .onAppear { if account == nil { account=manager.session?.accountId } }
+            .onChange(of:manager.session?.accountId) { _,_ in account=nil;editor=nil;error=nil }
+            .sheet(item:$editor) { selection in CloudWorkspaceEditorView(draft:selection.draft) }
+    }
+}
+
+private struct CloudWorkspaceEditorView: View {
+    @Environment(ConversationManager.self) private var manager
+    @Environment(\.dismiss) private var dismiss
+    let draft: ConversationManager.CloudWorkspaceDraft
+    @State private var path: String
+    @State private var content: String
+    @State private var version: String?
+    @State private var busy=false
+    @State private var error: String?
+    @State private var discard=false
+    @State private var deleting=false
+    init(draft:ConversationManager.CloudWorkspaceDraft) {
+        self.draft=draft
+        _path=State(initialValue:draft.path);_content=State(initialValue:draft.content)
+    }
+    private var dirty: Bool { version == nil && (path != draft.path || content != draft.content) }
+    private var visible: Bool { manager.cloudWorkspaceDraftVisible(draft) }
+    private var status: String { version.map { manager.cloudWorkspaceWriteStatus(draft,version:$0) } ?? "" }
+    private func save(delete:Bool=false) {
+        busy=true;error=nil
+        Task {
+            do { version=try await manager.saveCloudWorkspaceFile(draft,path:path,content:content,delete:delete) }
+            catch { if visible { self.error=error.localizedDescription } }
+            busy=false
+        }
+    }
+    var body: some View {
+        NavigationStack {
+            Form {
+                if visible {
+                    if let version {
+                        Section {
+                            switch status {
+                            case "synced": Text("Modification synchronisée.")
+                            case "pending": Text("Modification enregistrée sur cet appareil. Elle sera synchronisée au retour du réseau.")
+                            case "conflicted": Text("Une autre version existe. Examinez les versions depuis les fichiers du projet avant de poursuivre.").foregroundStyle(.orange)
+                            default: Text("La confirmation est indisponible. Actualisez la synchronisation.").foregroundStyle(.orange)
+                            }
+                            Button("Actualiser la confirmation") { busy=true;Task { await manager.synchronizeCloudAgentState();busy=false } }.disabled(busy)
+                            if let issue=manager.cloudAgentSyncError { Text(issue).foregroundStyle(.orange) }
+                            Text(version).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+                        }
+                    }
+                    Section("Chemin relatif") {
+                        TextField("notes/exemple.md",text:$path).textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .disabled(!draft.objectId.isEmpty || version != nil || busy)
+                            .accessibilityIdentifier("hermesWorkspaceFilePath")
+                    }
+                    Section("Contenu") {
+                        TextEditor(text:$content).font(.system(.body,design:.monospaced)).frame(minHeight:260)
+                            .disabled(version != nil || busy).accessibilityIdentifier("hermesWorkspaceFileContent")
+                        Text("\(content.utf8.count) / 65 536 octets").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let error { Section { Text(error).foregroundStyle(.red) } }
+                    if version == nil {
+                        Section {
+                            Button(busy ? "Enregistrement…" : "Enregistrer") { save() }
+                                .disabled(busy || path.isEmpty || content.utf8.count>65536)
+                                .accessibilityIdentifier("hermesWorkspaceSaveFile")
+                            if !draft.objectId.isEmpty {
+                                Button("Supprimer le fichier",role:.destructive) { deleting=true }.disabled(busy)
+                            }
+                        }
+                    }
+                } else { Text("Ce fichier n’est plus disponible pour ce compte. Fermez puis rouvrez le projet.") }
+            }.navigationTitle(draft.objectId.isEmpty ? "Nouveau fichier" : "Modifier le fichier")
+                .toolbar { ToolbarItem(placement:.cancellationAction) {
+                    Button("Fermer") { if dirty && visible { discard=true } else { dismiss() } }.disabled(busy)
+                } }
+                .interactiveDismissDisabled(busy || dirty)
+                .confirmationDialog("Abandonner les modifications non enregistrées ?",isPresented:$discard,titleVisibility:.visible) {
+                    Button("Abandonner",role:.destructive) { dismiss() }
+                }
+                .confirmationDialog("Supprimer ce fichier de tous les clients synchronisés ?",isPresented:$deleting,titleVisibility:.visible) {
+                    Button("Supprimer",role:.destructive) { save(delete:true) }
+                } message: { Text("Cette suppression efface aussi ses versions synchronisées. Le même chemin ne pourra pas être recréé.") }
+                .onChange(of:manager.session?.accountId) { _,_ in path="";content="";error=nil;dismiss() }
         }
     }
 }
