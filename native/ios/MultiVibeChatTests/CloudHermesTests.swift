@@ -217,10 +217,12 @@ final class RemoteHermesHistoryTests: XCTestCase {
 }
 
 @MainActor final class RemoteHermesConversationTests: XCTestCase {
-    private func fixture(projectSelection: Bool = false) throws -> (ConversationManager,String,()->[String],()->Int,()->Data?,String) {
+    private func fixture(projectSelection: Bool = false, legacyBilling: Bool = false) throws -> (ConversationManager,String,()->[String],()->Int,()->Data?,String) {
         let id = { UUID().uuidString.lowercased() }
-        let account=id(), sessionID=id(), branch=id(), version=id()
-        let sessionChange=CloudAgentChange(operationId:id(),objectId:sessionID,versionId:version,deviceId:id(),kind:"session",parents:[],deleted:false,value:.object(["type":.string("hermes_session"),"title":.string("Remote session"),"branchId":.string(branch),"messages":.array([.object(["role":.string("user"),"content":.string("Remote context")]),.object(["role":.string("assistant"),"content":.string("Remote answer")])])]),cursor:1,erased:false)
+        let account=id(), sessionID=id(), branch=id(), version=id(), billing=id()
+        var payload:[String:HistoryJSON] = ["type":.string("hermes_session"),"title":.string("Remote session"),"branchId":.string(branch),"messages":.array([.object(["role":.string("user"),"content":.string("Remote context")]),.object(["role":.string("assistant"),"content":.string("Remote answer")])])]
+        if legacyBilling { payload["projectId"] = .string(billing) }
+        let sessionChange=CloudAgentChange(operationId:id(),objectId:sessionID,versionId:version,deviceId:id(),kind:"session",parents:[],deleted:false,value:.object(payload),cursor:1,erased:false)
         var state=CloudAgentState(accountId:account,deviceId:id())
         state=try state.applying(.init(accountId:account,changes:[sessionChange],cursor:1,hasMore:false))
         let projectID=id()
@@ -261,14 +263,22 @@ final class RemoteHermesHistoryTests: XCTestCase {
             calls.append("POST");creates += 1
             XCTAssertNotNil(saved)
             XCTAssertEqual(input.sessionId,sessionID);XCTAssertEqual(input.history.count,2)
-            XCTAssertEqual(input.workspaceProjectId,projectSelection ? projectID : sessionID)
+            XCTAssertEqual(input.workspaceProjectId,legacyBilling ? nil : (projectSelection ? projectID : sessionID))
             let wire=try JSONSerialization.jsonObject(with:JSONEncoder().encode(input)) as! [String:Any]
-            XCTAssertNil(wire["projectId"])
+            if legacyBilling { XCTAssertEqual(wire["projectId"] as? String,billing) } else { XCTAssertNil(wire["projectId"]) }
             let run=CloudHermesRun(runId:input.runId,sessionId:sessionID,branchId:branch,state:"completed",generation:1,
                 result:.init(response:"Cloud answer",history:input.history + [.object(["role":.string("user"),"content":.string(input.message)]),.object(["role":.string("assistant"),"content":.string("Cloud answer")])]))
             runs[input.runId]=run;return run
         }
         return (ConversationManager(services:services),sessionID,{calls},{creates},{saved},projectID)
+    }
+    func testLegacyBillingWorkspaceDoesNotGainAnAgentWorkspaceOverride() async throws {
+        let (manager,id,calls,_,_,_)=try fixture(legacyBilling:true)
+        await manager.restore(loadRemoteModels:false)
+        for _ in 0..<100 where manager.cloudAgentSyncing { await Task.yield() }
+        manager.models=[ModelOption(id:"cloud-fixture")]
+        try await manager.sendRemoteHermes(sessionId:id,model:"cloud-fixture",message:"Legacy continue")
+        XCTAssertFalse(calls().contains("MUTATION"))
     }
     func testSelectedWorkspacePublishesSessionVersionBeforeRunAndSurvivesProjection() async throws {
         let (manager,id,calls,_,_,project)=try fixture(projectSelection:true)

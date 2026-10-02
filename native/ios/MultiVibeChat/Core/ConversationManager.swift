@@ -323,7 +323,7 @@ import Network
     func remoteHermesWorkspaceProject(_ id: String) -> String {
         guard let object=cloudAgentState?.objects[id],object.heads.count == 1,!object.deleted,
             let value=object.versions[object.heads[0]]?.value?.object else { return id }
-        return value["workspaceProjectId"]?.string ?? id
+        return value["workspaceProjectId"]?.string ?? value["projectId"]?.string ?? id
     }
     func remoteHermesTranscript(_ id: String) -> [HistoryJSON] { (try? remoteBase(id).history) ?? [] }
     func remoteHermesPrompt(sessionId: String, runId: String) -> String { remoteHermes[sessionId]?.requests.first { $0.input.runId == runId }?.input.message ?? "" }
@@ -346,10 +346,16 @@ import Network
         guard sessionRevision == epoch, session?.accountId == auth.accountId, consent.accountId == auth.accountId,
             consent.cloudEnabled, ["cloud","relay"].contains(selected.source) else { throw APIError.server(403,"agent_cloud_consent_required") }
         var base = try remoteBase(id)
-        let projectID = workspaceProjectId ?? remoteHermesWorkspaceProject(id)
-        guard CloudAgentState.uuid(projectID), let project=cloudAgentState?.objects[projectID],
-            ["project","session"].contains(project.kind), !project.deleted, project.heads.count == 1 else { throw APIError.server(409,"hermes_workspace_project_unavailable") }
-        if projectID != remoteHermesWorkspaceProject(id) {
+        let metadata = cloudAgentState?.objects[id]?.versions[base.heads[0]]?.value?.object
+        let billingProjectID = metadata?["projectId"]?.string
+        guard billingProjectID == nil || CloudAgentState.uuid(billingProjectID!) else { throw APIError.invalidResponse }
+        let selectedWorkspace = workspaceProjectId ?? metadata?["workspaceProjectId"]?.string
+        let projectID = selectedWorkspace ?? billingProjectID ?? id
+        if let selectedWorkspace {
+            guard CloudAgentState.uuid(selectedWorkspace), let project=cloudAgentState?.objects[selectedWorkspace],
+                ["project","session"].contains(project.kind), !project.deleted, project.heads.count == 1 else { throw APIError.server(409,"hermes_workspace_project_unavailable") }
+        }
+        if workspaceProjectId != nil && projectID != remoteHermesWorkspaceProject(id) {
             guard let state=cloudAgentState, let object=state.objects[id],
                 var value=object.versions[base.heads[0]]?.value?.object else { throw APIError.invalidResponse }
             value["workspaceProjectId"] = .string(projectID)
@@ -363,7 +369,7 @@ import Network
         var local = remoteHermes[id] ?? RemoteHermesSession(accountId:auth.accountId,sessionId:id,branchId:base.branch)
         guard local.requests.allSatisfy({ ["completed","cancelled"].contains(local.results[$0.input.runId]?.state ?? "") }) else { throw APIError.server(409,"hermes_pending_run_requires_recovery") }
         let input = CloudHermesRunInput(operationId:UUID().uuidString.lowercased(),runId:UUID().uuidString.lowercased(),sessionId:id,branchId:base.branch,
-            model:selected,message:message,history:base.history,workspaceProjectId:projectID)
+            model:selected,message:message,history:base.history,workspaceProjectId:selectedWorkspace,projectId:billingProjectID)
         let previous = remoteHermes[id]
         local.requests.append(.init(input:input,baseCursor:cloudAgentState!.cursor,sessionHeads:base.heads)); remoteHermes[id] = local
         guard persist() else { remoteHermes[id] = previous; throw APIError.server(0,"history_cache_write_failed") }
