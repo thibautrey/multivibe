@@ -321,11 +321,11 @@ import Foundation
             var archive = next.anchorVersions ?? [:]
             for (id, heads) in versions { for head in heads { archive[id, default: [:]][head.versionId] = head } }
             for change in page.changes.sorted(by: { $0.cursor < $1.cursor }) {
-                archive[change.objectId, default: [:]][change.versionId] = change
-                if change.deleted || change.erased { archive.removeValue(forKey: change.objectId) }
                 var heads = versions[change.objectId] ?? []
                 // A tombstone cannot be resurrected by a later stale divergent version.
                 if heads.contains(where: { $0.deleted || $0.erased }) && !change.deleted && !change.erased { continue }
+                archive[change.objectId, default: [:]][change.versionId] = change
+                if change.deleted || change.erased { archive.removeValue(forKey: change.objectId) }
                 heads.removeAll { change.parents.contains($0.versionId) || $0.versionId == change.versionId }
                 if change.deleted || change.erased { heads = [] }
                 heads.append(change); versions[change.objectId] = heads
