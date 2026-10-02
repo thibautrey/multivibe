@@ -58,6 +58,14 @@ import Observation
         try data.write(to: file(value.accountId), options: [.atomic, .completeFileProtection])
         pending = value
     }
+    private func removePendingFile(_ value: Pending) throws {
+        let location = try file(value.accountId)
+        guard FileManager.default.fileExists(atPath: location.path) else { return }
+        let stored = try JSONDecoder().decode(Pending.self, from: Data(contentsOf: location))
+        guard stored.id == value.id, stored.operationId == value.operationId,
+              try stored.body() == value.body() else { throw MultiVibeError.historyWritePending }
+        try FileManager.default.removeItem(at: location)
+    }
     func unlock(accountId: String, code: String, transport: Transport) async throws {
         guard !busy else { throw MultiVibeError.historyBusy }
         busy = true; defer { busy = false }
@@ -163,7 +171,7 @@ import Observation
             guard case .object(let fields) = document else { throw MultiVibeError.invalidResponse }
             cache = Cached(revision: receipt.revision, document: fields)
         }
-        try FileManager.default.removeItem(at: file(pending.accountId))
+        try removePendingFile(pending)
         self.pending = nil; documents[pending.id] = cache
         conversations.removeAll { $0.id == pending.id }; if let saved { conversations.insert(saved, at: 0) }
         return saved
@@ -172,7 +180,7 @@ import Observation
     func discardPending() throws {
         guard !busy else { throw MultiVibeError.historyBusy }
         guard let pending else { return }
-        try FileManager.default.removeItem(at: file(pending.accountId))
+        try removePendingFile(pending)
         self.pending = nil; conversations = []; documents = [:]
     }
     private func conversation(_ value: JSONValue, id: String, appId: String, revision: Int, updatedAt: String) throws -> MultiVibeConversation {
