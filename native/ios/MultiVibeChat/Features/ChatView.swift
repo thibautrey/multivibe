@@ -2655,6 +2655,7 @@ private struct RemoteHermesConversationView: View {
     let title: String
     @State private var model = ""
     @State private var workspaceProject = ""
+    @State private var workspaceChanged = false
     @State private var draft = ""
     @State private var error: String?
     @State private var submitting = false
@@ -2690,27 +2691,27 @@ private struct RemoteHermesConversationView: View {
                     Text("Choisir un modèle").tag("")
                     ForEach(manager.remoteHermesModels) { option in Text((option.id.hasPrefix("relay/") ? "Relay · " : "Cloud · ")+option.displayName).tag(option.id) }
                 }
-                Picker("Projet Hermes",selection:$workspaceProject) {
-                    Text("Espace de cette conversation").tag("")
-                    ForEach(manager.cloudAgentObjects.filter { ["project","session"].contains($0.kind) && !$0.deleted && !$0.conflicted }) { project in Text(project.title).tag(project.id) }
+                Picker("Projet Hermes",selection:Binding(get:{workspaceProject},set:{workspaceProject=$0;workspaceChanged=true})) {
+                    Text("Espace de cette conversation").tag(sessionId)
+                    ForEach(manager.cloudAgentObjects.filter { $0.id != sessionId && ["project","session"].contains($0.kind) && !$0.deleted && !$0.conflicted }) { project in Text(project.title).tag(project.id) }
                 }
                 TextField("Message",text:$draft,axis:.vertical).lineLimit(3...8)
                 Button(submitting ? "Envoi…" : "Envoyer") {
                     guard account == manager.session?.accountId else { return }
-                    let message=draft, chosen=model, owner=account, project=workspaceProject
+                    let message=draft, chosen=model, owner=account, project=workspaceChanged ? workspaceProject : ""
                     submitting=true;error=nil
                     Task {
                         defer { submitting=false }
                         do {
                             try await manager.sendRemoteHermes(sessionId:sessionId,model:chosen,message:message,workspaceProjectId:project.isEmpty ? nil : project)
-                            if account == owner && manager.session?.accountId == owner && draft == message { draft="" }
+                            if account == owner && manager.session?.accountId == owner && draft == message { draft="";workspaceChanged=false;workspaceProject=manager.remoteHermesWorkspaceProject(sessionId) }
                         } catch { if manager.session?.accountId == owner { self.error=error.localizedDescription } }
                     }
                 }.disabled(!available || submitting || manager.remoteHermesBusy || model.isEmpty || draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
             }
         }.navigationTitle(title)
-            .onAppear { account=manager.session?.accountId }
-            .onChange(of:manager.session?.accountId) { _,_ in draft="";model="";workspaceProject="";error=nil;account=nil }
+            .onAppear { account=manager.session?.accountId; workspaceProject=manager.remoteHermesWorkspaceProject(sessionId) }
+            .onChange(of:manager.session?.accountId) { _,_ in draft="";model="";workspaceProject="";workspaceChanged=false;error=nil;account=nil }
             .task {
                 await manager.synchronizeCloudAgentState(); await manager.recoverRemoteHermes()
                 while !Task.isCancelled {
