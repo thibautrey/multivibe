@@ -85,9 +85,13 @@ For physical validation, install signed copies of both examples and MultiVibe iO
 with the Cloud TypeScript account keyring and conversation envelope. The fixture
 in `Tests/MultiVibeSDKTests/Fixtures/history-v1.json` was produced by the Cloud
 TypeScript SDK with synthetic keys; it exercises both key generations after
-rotation. These primitives do not migrate `MultiVibeClient` or the native Chat UI:
-they still use the legacy v1 conversation transport. Do not advertise native
-end-to-end encrypted history on the strength of these primitives alone.
+rotation. The official `accountOwner` client now uses the native v2 encrypted conversation
+transport. `SDKApplicationsView` asks for the recovery code locally, decrypts
+web conversation documents, and locks on backgrounding. Keys are memory-only;
+configure a missing keyring in the MultiVibe account web surface first.
+
+The third-party `application` client still uses legacy v1 conversation transport.
+Do not advertise end-to-end encrypted history for integrating native apps yet.
 
 Account recovery codes and account root keys must remain inside a trusted
 MultiVibe surface. A native library executes inside its host application's
@@ -97,3 +101,11 @@ receive the global keyring. An isolated MultiVibe UI or an application-scoped
 key delegation protocol is required before enabling native v2 history. No such
 delegation endpoint is exposed by this change. Model providers receive inference
 context and authorized tools receive their arguments.
+
+Official-owner writes preserve unknown web document/message fields. Interrupted
+write receipts retain the exact envelope and operation ID in a file protected by
+the OS. Only ciphertext and routing metadata are persisted. The UI offers explicit
+retry or abandonment/reload, and blocks further mutations until resolution.
+Retrying a history write never replays inference or a tool. Local Swift tests use
+synthetic transport and real encryption; they are not signed-device or production
+proof. Locking erases in-memory history; it does not delete pending ciphertext.

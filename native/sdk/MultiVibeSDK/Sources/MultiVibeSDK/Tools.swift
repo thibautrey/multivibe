@@ -59,8 +59,12 @@ extension MultiVibeClient {
         conversation = try await save(conversation); update(conversation)
         if let localProvider, conversation.model == localProvider.modelID {
             guard tools.isEmpty else {throw MultiVibeError.unsupportedTools}
-            let response = try await localProvider.respond(messages:conversation.messages,context:conversation.context)
-            conversation.messages.append(MultiVibeMessage(role:"assistant",content:response,status:"completed"))
+            let inputMessages = conversation.messages
+            conversation.messages.append(MultiVibeMessage(role:"assistant",content:"",status:"interrupted"))
+            conversation = try await save(conversation); update(conversation)
+            let response = try await localProvider.respond(messages:inputMessages,context:conversation.context)
+            conversation.messages[conversation.messages.count - 1].content = response
+            conversation.messages[conversation.messages.count - 1].status = "completed"
             conversation = try await save(conversation); update(conversation); return conversation
         }
         var callsPerformed = 0
@@ -79,7 +83,10 @@ extension MultiVibeClient {
             }
             var body:[String:JSONValue] = ["model":.string(conversation.model),"stream":.bool(true),"messages":.array(messages.map(JSONValue.object))]
             if !tools.isEmpty {body["tools"] = .array(tools.map {.object(["type":.string("function"),"function":.object(["name":.string($0.name),"description":.string($0.description),"parameters":$0.parameters])])})}
-            conversation.messages.append(MultiVibeMessage(role:"assistant",content:"",status:"streaming"))
+            conversation.messages.append(MultiVibeMessage(role:"assistant",content:"",status:"interrupted"))
+            // Persist possible execution before dispatch. Restarting a client
+            // must not make a possibly executed request look unsent.
+            conversation = try await save(conversation); update(conversation)
             var fragments:[Int:MultiVibeToolCall] = [:]
             do {
                 try await stream(body:JSONEncoder().encode(body)) { event in
