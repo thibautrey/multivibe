@@ -187,13 +187,16 @@ import Network
                 try current()
                 while let state=cloudAgentState, !state.outbox.isEmpty {
                     var batch:[CloudAgentMutation]=[]
-                    let revokedLocalSource = state.outbox.contains { operation in
-                        guard let source = operation.value?.object?["localSource"]?.string else { return false }
-                        return !(consent.exportSources ?? []).contains(source) || !cloudHermesBindings.values.contains(where: { $0.accountId == auth.accountId && $0.permitsLocalOperation(operation) })
-                    }
+                    let blockedLocalSessions = Set(state.outbox.compactMap { operation -> String? in
+                        guard let source = operation.value?.object?["localSource"]?.string else { return nil }
+                        let owner = operation.kind == "session" ? operation.objectId : operation.value?.object?["sessionId"]?.string
+                        let approved = (consent.exportSources ?? []).contains(source) && cloudHermesBindings.values.contains(where: { $0.accountId == auth.accountId && $0.permitsLocalOperation(operation) })
+                        return approved ? nil : owner
+                    })
                     let allowed = state.outbox.filter { operation in
                         guard let source = operation.value?.object?["localSource"]?.string else { return true }
-                        return !revokedLocalSource && (consent.exportSources ?? []).contains(source)
+                        guard let owner = operation.kind == "session" ? operation.objectId : operation.value?.object?["sessionId"]?.string else { return false }
+                        return !blockedLocalSessions.contains(owner) && (consent.exportSources ?? []).contains(source)
                     }
                     if allowed.isEmpty { break }
                     for operation in allowed.prefix(100) {
