@@ -2693,6 +2693,9 @@ private struct RemoteHermesConversationView: View {
                 }
                 Picker("Projet Hermes",selection:Binding(get:{workspaceProject},set:{workspaceProject=$0;workspaceChanged=true})) {
                     Text("Espace de cette conversation").tag(sessionId)
+                    if workspaceProject != sessionId && !workspaceProject.isEmpty && !manager.cloudAgentObjects.contains(where: { $0.id == workspaceProject }) {
+                        Text("Espace existant de cette session").tag(workspaceProject)
+                    }
                     ForEach(manager.cloudAgentObjects.filter { $0.id != sessionId && ["project","session"].contains($0.kind) && !$0.deleted && !$0.conflicted }) { project in Text(project.title).tag(project.id) }
                 }
                 TextField("Message",text:$draft,axis:.vertical).lineLimit(3...8)
