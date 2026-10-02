@@ -2630,7 +2630,12 @@ private struct CloudAgentBrowserView: View {
                                         NavigationLink(object.title) { RemoteHermesConversationView(sessionId:object.id,title:object.title) }
                                     } else { Text(object.title).font(.headline) }
                                     if object.deleted { Text("Supprimé · contenu effacé").foregroundStyle(.secondary) }
-                                    else if object.conflicted { Text("Versions concurrentes conservées. Résolvez le conflit avant une nouvelle exécution.").foregroundStyle(.orange) }
+                                    else if object.conflicted {
+                                        Text("Versions concurrentes conservées. Résolvez le conflit avant une nouvelle exécution.").foregroundStyle(.orange)
+                                        if CloudAgentState.resolvableKinds.contains(kind) {
+                                            NavigationLink("Examiner les versions") { CloudConflictReviewView(objectId:object.id) }
+                                        }
+                                    }
                                     else if kind == "task", let id=object.value?.object?["runId"]?.string, let run=manager.discoveredCloudRuns[id] {
                                         Text(run.state.replacingOccurrences(of:"_",with:" ")).font(.caption)
                                         if let response=run.result?.response { Text(response).textSelection(.enabled) }
@@ -2648,6 +2653,52 @@ private struct CloudAgentBrowserView: View {
     }
 }
 
+
+private struct CloudConflictReviewView: View {
+    @Environment(ConversationManager.self) private var manager
+    let objectId: String
+    @State private var review: ConversationManager.CloudConflictReview?
+    @State private var inspected: Set<String> = []
+    @State private var selected: String?
+    @State private var confirming = false
+    @State private var busy = false
+    @State private var error: String?
+    private func rendered(_ value: HistoryJSON?) -> String {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted,.sortedKeys]
+        guard let value, let data = try? encoder.encode(value) else { return "Contenu indisponible" }
+        return String(decoding:data,as:UTF8.self)
+    }
+    var body: some View {
+        List {
+            Section {
+                Text("Examinez chaque version puis choisissez celle à conserver. Les autres versions restent dans l’historique. Aucun outil ni commande ne sera exécuté.")
+                if let error { Text(error).foregroundStyle(.red) }
+                if review == nil { Text("Conflit indisponible, supprimé ou déjà résolu.") }
+            }
+            if let review {
+                ForEach(review.versions,id:\.versionId) { version in
+                    Section(version.versionId) {
+                        Text("Appareil : "+version.deviceId).font(.caption)
+                        Text(rendered(version.value)).font(.system(.caption,design:.monospaced)).textSelection(.enabled)
+                        Toggle("J’ai examiné cette version",isOn:Binding(get:{inspected.contains(version.versionId)},set:{ if $0 { inspected.insert(version.versionId) } else { inspected.remove(version.versionId); selected=nil } }))
+                        Button(selected == version.versionId ? "Version choisie" : "Choisir cette version") { selected=version.versionId }
+                            .disabled(inspected.count != review.versions.count || busy)
+                    }
+                }
+                Button("Confirmer la résolution") { confirming=true }.disabled(selected == nil || busy || inspected.count != review.versions.count)
+                Text("Les sessions qui contiennent déjà des exécutions ou des échanges locaux nécessitent encore une résolution de leur historique et restent bloquées.").font(.caption)
+            }
+        }.navigationTitle("Versions concurrentes")
+            .task { review=manager.cloudConflictReview(objectId) }
+            .confirmationDialog("Conserver exactement la version choisie ?",isPresented:$confirming,titleVisibility:.visible) {
+                Button("Conserver cette version") {
+                    guard let review, let selected else { return }; busy=true
+                    Task { do { try await manager.resolveCloudConflict(review,selectedHead:selected); self.review=nil } catch { self.error=error.localizedDescription }; busy=false }
+                }
+                Button("Annuler",role:.cancel) {}
+            } message: { Text("Une nouvelle révision réunira toutes les versions examinées. Leur contenu ne sera pas fusionné.") }
+    }
+}
 
 private struct RemoteHermesConversationView: View {
     @Environment(ConversationManager.self) private var manager

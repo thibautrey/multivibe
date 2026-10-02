@@ -354,3 +354,31 @@ final class RemoteHermesHistoryTests: XCTestCase {
         manager.stop()
     }
 }
+
+@MainActor final class CloudConflictResolutionTests: XCTestCase {
+    func testRevocationBlocksReviewedResolutionWithoutMutationOrExecution() async throws {
+        let id = { UUID().uuidString.lowercased() }
+        let account=id(), object=id(), device=id(), first=id(), second=id()
+        let changes = [first,second].enumerated().map { index,version in
+            CloudAgentChange(operationId:id(),objectId:object,versionId:version,deviceId:device,kind:"memory",parents:[],deleted:false,value:.object(["content":.string("version-\(index)")]),cursor:Int64(index+1),erased:false)
+        }
+        let state=try CloudAgentState(accountId:account,deviceId:device).applying(.init(accountId:account,changes:changes,cursor:2,hasMore:false))
+        let json=try JSONSerialization.jsonObject(with:JSONEncoder().encode(state))
+        let data=try JSONSerialization.data(withJSONObject:["cloudAgentState":json,"conversations":[],"baseline":[],"conversationIDs":[:],"messageIDs":[:]])
+        let auth=NativeSession(accessToken:"fixture",refreshToken:"fixture",expiresAt:.distantFuture,accountId:account)
+        var enabled=true, mutations=0, executions=0
+        var services=isolatedServices(load:{auth},readLocalHistory:{_ in data})
+        services.hermesChanges={_,_ in .init(accountId:account,changes:[],cursor:2,hasMore:false)}
+        services.hermesConsent={_ in .init(accountId:account,cloudEnabled:enabled,revision:1)}
+        services.hermesMutations={_,_,_ in mutations += 1;throw APIError.invalidResponse}
+        services.hermesCreate={_,_,_ in executions += 1;throw APIError.invalidResponse}
+        let manager=ConversationManager(services:services)
+        await manager.restore(loadRemoteModels:false)
+        for _ in 0..<100 where manager.cloudAgentSyncing { await Task.yield() }
+        let review=try XCTUnwrap(manager.cloudConflictReview(object))
+        enabled=false
+        do { try await manager.resolveCloudConflict(review,selectedHead:first);XCTFail("Revoked resolution must fail") } catch {}
+        XCTAssertEqual(mutations,0);XCTAssertEqual(executions,0)
+        XCTAssertEqual(manager.cloudConflictReview(object)?.versions.count,2)
+    }
+}

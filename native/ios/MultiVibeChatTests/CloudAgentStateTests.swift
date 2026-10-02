@@ -15,6 +15,21 @@ final class CloudAgentStateTests:XCTestCase {
         state=try state.applying(.init(accountId:id(1),changes:[change(7,parents:[5,6])],cursor:4,hasMore:false))
         XCTAssertEqual(state.objects[id(2)]?.heads,[id(7)]);XCTAssertNil(state.conflicts[id(2)])
     }
+    func testExplicitResolutionPreservesSelectedValueAndAllParents() throws {
+        var state=try CloudAgentState(accountId:id(1),deviceId:id(3)).applying(.init(accountId:id(1),changes:[change(4),change(5,parents:[4]),change(6,parents:[4])],cursor:3,hasMore:false))
+        let operation=try state.resolution(objectId:id(2),reviewedHeads:[id(6),id(5)],selectedHead:id(5),account:id(1))
+        XCTAssertEqual(operation.value,.string("private-5")); XCTAssertEqual(operation.parents,[id(5),id(6)])
+        try state.enqueue(operation)
+        let restored=try JSONDecoder().decode(CloudAgentState.self,from:JSONEncoder().encode(state))
+        XCTAssertEqual(restored.outbox,[operation]);XCTAssertEqual(restored.objects[id(2)]?.versions.count,3)
+    }
+    func testResolutionRejectsStaleHeadsOtherAccountAndDeletion() throws {
+        var state=try CloudAgentState(accountId:id(1),deviceId:id(3)).applying(.init(accountId:id(1),changes:[change(4),change(5,parents:[4]),change(6,parents:[4])],cursor:3,hasMore:false))
+        XCTAssertThrowsError(try state.resolution(objectId:id(2),reviewedHeads:[id(5)],selectedHead:id(5),account:id(1)))
+        XCTAssertThrowsError(try state.resolution(objectId:id(2),reviewedHeads:[id(5),id(6)],selectedHead:id(5),account:id(9)))
+        state=try state.applying(.init(accountId:id(1),changes:[change(7,parents:[5],deleted:true)],cursor:4,hasMore:false))
+        XCTAssertThrowsError(try state.resolution(objectId:id(2),reviewedHeads:[id(5),id(6)],selectedHead:id(5),account:id(1)))
+    }
     func testErasurePurgesPayloadsAndOutboxWithoutResurrection() throws {
         var state=try CloudAgentState(accountId:id(1),deviceId:id(3)).applying(.init(accountId:id(1),changes:[change(4)],cursor:1,hasMore:false))
         try state.enqueue(.init(operationId:id(110),objectId:id(2),versionId:id(10),deviceId:id(3),kind:"memory",parents:[id(4)],deleted:false,value:.string("pending secret")))
