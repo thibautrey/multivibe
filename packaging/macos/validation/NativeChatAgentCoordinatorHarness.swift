@@ -102,7 +102,7 @@ struct NativeChatConversation: Codable { let id: UUID; let title: String; let mo
         var task = base; task["kind"] = "task"; task["objectId"] = remoteRunID; task["versionId"] = UUID().uuidString.lowercased(); task["cursor"] = 4
         task["value"] = ["type": "hermes_run", "runId": remoteRunID, "sessionId": remoteKey, "branchId": branch]
         f.runBodies[remoteRunID] = ["sessionId": remoteKey, "branchId": branch]; f.runResults[remoteRunID] = ["history": history, "response": "Remote answer"]; f.runState = "completed"
-        f.changes = [task, updatedSession]
+        f.changes = [updatedSession, task]
         let beforeSync = f.requests.count
         try await orderedReload.synchronize()
         precondition(f.requests.dropFirst(beforeSync).allSatisfy { $0.httpMethod == "GET" })
