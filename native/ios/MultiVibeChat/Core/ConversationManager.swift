@@ -460,7 +460,9 @@ import Network
                 message.heads.count == 1, let raw = message.versions[message.heads[0]]?.value?.object,
                 raw["type"]?.string == "hermes_local_turn", raw["sessionId"]?.string == id, raw["branchId"]?.string == branch,
                 raw["turnId"]?.string == local, let saved = raw["history"]?.array else { throw APIError.server(409,"hermes_local_checkpoint_conflict") }
-            history = saved; cursor = message.versions[message.heads[0]]!.cursor
+            let localCursor=message.versions[message.heads[0]]!.cursor
+            guard value["historyAnchor"] == nil || localCursor > cursor else { throw APIError.server(409,"hermes_history_anchor_local_turn_stale") }
+            history = saved; cursor = localCursor
         } else if value["historyAnchor"] == nil, let saved = value["messages"]?.array { history = saved }
         for task in state.objects.values where task.kind == "task" && !task.deleted {
             for head in task.heads {
