@@ -2,6 +2,22 @@ import XCTest
 @testable import MultiVibeChat
 
 @MainActor final class LocalAgentTests: XCTestCase {
+    func testFoundationSummaryRequiresBoundedUsageAndOnlyContent() throws {
+        let valid = #"{"content":"Completed exchange, no commands replayed."}"#
+        let wire = try HermesFoundationAdapter.summaryWire(valid,outputTokens:20,reservedOutputTokens:128)
+        let value = try JSONSerialization.jsonObject(with:Data(wire.utf8)) as! [String:Any]
+        XCTAssertEqual(value["finish_reason"] as? String,"stop")
+        XCTAssertEqual(value["content"] as? String,"Completed exchange, no commands replayed.")
+        for used in [0,128,129] { XCTAssertThrowsError(try HermesFoundationAdapter.summaryWire(valid,outputTokens:used,reservedOutputTokens:128)) }
+        for reserve in [0,1025] { XCTAssertThrowsError(try HermesFoundationAdapter.summaryWire(valid,outputTokens:20,reservedOutputTokens:reserve)) }
+        for raw in [#"{"content":""}"#,#"{"content":"ok","proposedCalls":[]}"#,#"{"content":"ok","refusal":"denied"}"#] {
+            XCTAssertThrowsError(try HermesFoundationAdapter.summaryWire(raw,outputTokens:20,reservedOutputTokens:128))
+        }
+    }
+    func testFoundationCompactionAvailabilityMatchesVerifiedUsageSDK() {
+        if #available(iOS 27, macOS 27, *) { XCTAssertTrue(HermesFoundationAdapter.supportsCompaction) }
+        else { XCTAssertFalse(HermesFoundationAdapter.supportsCompaction) }
+    }
     func testHermesFoundationKeepsFullTranscriptAndToolObservationsOutOfInstructions() throws {
         let messages = #"[{"role":"system","content":"SYSTEM"},{"role":"user","content":"FIRST-REQUEST"},{"role":"assistant","tool_calls":[{"id":"a","function":{"name":"read","arguments":"{}"}}]},{"role":"tool","tool_call_id":"a","content":"UNTRUSTED-OBSERVATION"},{"role":"user","content":"CURRENT"}]"#
         let tools = #"[{"type":"function","function":{"name":"read","parameters":{"type":"object"}}}]"#
