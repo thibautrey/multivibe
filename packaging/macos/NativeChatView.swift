@@ -15,6 +15,12 @@ private enum ChatPalette {
     @ObservedObject var store: NativeChatStore
     @StateObject private var agent = NativeChatAgentCoordinator()
     @State private var cloudConsent = false
+    @State private var cloudMode = false
+    @State private var cloudSelection: UUID?
+    @State private var cloudModel = ""
+    @State private var cloudDraft = ""
+    @State private var cloudSending = false
+    @State private var cloudTask: Task<Void, Never>?
     @State private var selectedImports: Set<UUID> = []
     @State private var search = ""
     @State private var models: [HostAssistantModel] = []
@@ -24,7 +30,9 @@ private enum ChatPalette {
     @State private var speech = AVSpeechSynthesizer()
     @FocusState private var composing: Bool
 
-    private var draft: Binding<String> { Binding(get: { store.current?.draft ?? "" }, set: { value in store.edit { $0.draft = value } }) }
+    private var draft: Binding<String> { Binding(get: { cloudMode ? cloudDraft : (store.current?.draft ?? "") }, set: { value in
+        if cloudMode { cloudDraft = value } else { store.edit { $0.draft = value } }
+    }) }
     private var model: Binding<String> { Binding(get: { store.current?.model ?? "" }, set: { value in store.edit { $0.model = value }; HostAssistantClient.shared.defaultModel = value }) }
     private var visible: [NativeChatConversation] {
         store.conversations.filter { (!$0.messages.isEmpty || !$0.draft.isEmpty) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.messages.contains { $0.content.localizedCaseInsensitiveContains(search) }) }
@@ -37,12 +45,27 @@ private enum ChatPalette {
                     Image(systemName: "waveform.path").foregroundStyle(ChatPalette.accent)
                     Text("MultiVibe").font(.title3.weight(.semibold))
                     Spacer()
-                    Button { store.newConversation(); composing = true } label: { Image(systemName: "square.and.pencil") }
+                    Button {
+                        if cloudMode { Task { do { cloudSelection = try await agent.newCloudConversation() } catch { agent.error = error.localizedDescription } } }
+                        else { store.newConversation() }
+                        composing = true
+                    } label: { Image(systemName: "square.and.pencil") }
                         .buttonStyle(.borderless).help("Nouvelle conversation (⌘N)")
                 }.padding()
                 TextField("Rechercher", text: $search).textFieldStyle(.roundedBorder).padding(.horizontal).padding(.bottom, 12)
                 ScrollView {
                     LazyVStack(spacing: 4) {
+                    if cloudMode {
+                        ForEach(agent.cloudConversations.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }) { conversation in
+                            Button { cloudSelection = conversation.id } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(conversation.title).lineLimit(2)
+                                    if conversation.conflicted { Text("Conflit à résoudre").font(.caption).foregroundStyle(.orange) }
+                                }.frame(maxWidth: .infinity, alignment: .leading).padding(10)
+                                    .background(cloudSelection == conversation.id ? ChatPalette.accent.opacity(0.14) : Color.clear, in: RoundedRectangle(cornerRadius: 9))
+                            }.buttonStyle(.plain)
+                        }
+                    } else {
                     ForEach(visible) { conversation in
                         Button { store.selection = conversation.id } label: {
                             VStack(alignment: .leading, spacing: 4) {
@@ -53,6 +76,7 @@ private enum ChatPalette {
                         }.buttonStyle(.plain).contextMenu {
                             Button("Supprimer", role: .destructive) { deleteID = conversation.id }.disabled(store.generating == conversation.id)
                         }
+                    }
                     }
                     }.padding(.horizontal, 8)
                 }
@@ -66,7 +90,8 @@ private enum ChatPalette {
             VStack(spacing: 0) {
                 header
                 Divider()
-                if let conversation = store.current, !conversation.messages.isEmpty { transcript(conversation) }
+                if cloudMode { cloudTranscript }
+                else if let conversation = store.current, !conversation.messages.isEmpty { transcript(conversation) }
                 else { welcome }
                 if let error = store.error {
                     HStack(alignment: .top) {
@@ -87,6 +112,14 @@ private enum ChatPalette {
             await loadModels()
         }
         .sheet(isPresented: $cloudConsent) { consentSheet }
+        .onChange(of: agent.accountID) { _ in
+            cloudTask?.cancel(); cloudSending = false; cloudDraft = ""; cloudModel = ""; cloudSelection = nil
+            if agent.accountID == nil { cloudMode = false }
+        }
+        .onChange(of: cloudSelection) { _ in cloudDraft = "" }
+        .onChange(of: cloudMode) { enabled in
+            if enabled { Task { do { try await agent.loadModels(); cloudModel = agent.models.first?.id ?? ""; cloudSelection = agent.cloudConversations.first?.id } catch { agent.error = error.localizedDescription } } }
+        }
         .onChange(of: store.selection) { _ in speech.stopSpeaking(at: .immediate) }
         .alert("Supprimer cette conversation ?", isPresented: Binding(get: { deleteID != nil }, set: { if !$0 { deleteID = nil } })) {
             Button("Annuler", role: .cancel) { deleteID = nil }
@@ -113,6 +146,16 @@ private enum ChatPalette {
                 Label("Compte Cloud connecté", systemImage: "person.crop.circle.badge.checkmark")
                 Button("Consentement et import Cloud…") { selectedImports = []; cloudConsent = true }
                 Button("Réessayer les imports autorisés") { Task { await agent.retryImports() } }
+                Button("Synchroniser l’espace Cloud") {
+                    Task { do { try await agent.synchronize(); try await agent.recoverRuns() } catch { agent.error = error.localizedDescription } }
+                }.disabled(agent.consent?.cloudEnabled != true)
+                ForEach(agent.orderedRuns, id: \.runId) { run in
+                    Text(run.state == .awaiting_resolution ? "Action Cloud à vérifier : aucune réexécution automatique." : "Agent Cloud : \(run.state.rawValue)")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if run.state != .completed && run.state != .cancelled {
+                        Button("Annuler ce run Cloud") { Task { do { try await agent.cancel(runID: run.runId) } catch { agent.error = error.localizedDescription } } }
+                    }
+                }
                 Button("Déconnecter le Cloud") { Task { await agent.disconnect() } }
             } else {
                 Button("Connecter MultiVibe Cloud") {
@@ -122,7 +165,7 @@ private enum ChatPalette {
             }
             if agent.busy { ProgressView().controlSize(.small) }
             if let error = agent.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
-            Text("Les conversations ci-dessus utilisent le Host de ce Mac. L’import Cloud est une copie explicite de l’historique choisi.")
+            Text("Le mode Host utilise ce Mac. Le mode Cloud utilise Hermes dans votre espace Cloud. Choisissez explicitement les conversations à importer.")
                 .font(.caption2).foregroundStyle(.secondary)
         }.font(.callout).padding(.horizontal).padding(.bottom, 12).disabled(agent.busy)
     }
@@ -132,7 +175,7 @@ private enum ChatPalette {
             Text("En autorisant l’espace Cloud, ses données peuvent être lues par le serveur pour exécuter l’agent. Elles sont chiffrées au repos. Sélectionnez uniquement les conversations de ce Mac que vous souhaitez copier vers votre compte.")
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                    ForEach(store.conversations.filter { !$0.messages.isEmpty }) { conversation in
+                    ForEach(store.conversations) { conversation in
                         Toggle(conversation.title, isOn: Binding(get: { selectedImports.contains(conversation.id) }, set: { checked in
                             if checked { selectedImports.insert(conversation.id) } else { selectedImports.remove(conversation.id) }
                         })).disabled(agent.importedConversationIDs.contains(conversation.id))
@@ -154,8 +197,18 @@ private enum ChatPalette {
     }
     private var header: some View {
         HStack {
-            Text(store.current?.title ?? "Nouvelle conversation").font(.headline).lineLimit(1)
+            Text(cloudMode ? (agent.cloudConversations.first { $0.id == cloudSelection }?.title ?? "Nouvelle conversation Cloud") : (store.current?.title ?? "Nouvelle conversation")).font(.headline).lineLimit(1)
             Spacer()
+            Picker("Exécution", selection: $cloudMode) {
+                Text("Host sur ce Mac").tag(false)
+                Text("Hermes Cloud").tag(true)
+            }.frame(width: 180).disabled(agent.accountID == nil || cloudSending || store.generating != nil)
+            if cloudMode {
+                Picker("Modèle Cloud", selection: $cloudModel) {
+                    Text("Choisir un modèle").tag("")
+                    ForEach(agent.models) { item in Text((item.source == "relay" ? "Relay · " : "Cloud · ") + (item.name ?? item.id) + (item.available == false ? " — hors ligne" : "")).tag(item.id) }
+                }.frame(maxWidth: 280).disabled(cloudSending)
+            } else {
             Picker("Modèle", selection: model) {
                 Text(loading ? "Chargement…" : "Choisir un modèle").tag("")
                 if let selected = store.current?.model, !selected.isEmpty, !models.contains(where: { $0.id == selected }) { Text("\(selected) — indisponible").tag(selected) }
@@ -163,7 +216,11 @@ private enum ChatPalette {
                     Label(model.displayName, systemImage: model.local == true ? "apple.logo" : "network").tag(model.id)
                 }
             }.labelsHidden().frame(maxWidth: 300).disabled(store.generating == store.selection)
-            Button { Task { await loadModels() } } label: { Image(systemName: "arrow.clockwise") }.help("Actualiser les modèles").disabled(loading)
+            }
+            Button { Task {
+                if cloudMode { do { try await agent.loadModels() } catch { agent.error = error.localizedDescription } }
+                else { await loadModels() }
+            } } label: { Image(systemName: "arrow.clockwise") }.help("Actualiser les modèles").disabled(loading)
         }.padding(16)
     }
     private var welcome: some View {
@@ -223,10 +280,14 @@ private enum ChatPalette {
             TextEditor(text: draft).font(.system(size: 15)).scrollContentBackground(.hidden).focused($composing)
                 .frame(minHeight: 64, maxHeight: 140).padding(8).accessibilityLabel("Message à MultiVibe")
             HStack {
-                Button { importing = true } label: { Image(systemName: "paperclip") }.help("Joindre un document texte")
+                Button { importing = true } label: { Image(systemName: "paperclip") }.help("Joindre un document texte").disabled(cloudMode)
                 Text("⌘↵ pour envoyer").font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                if store.generating != nil {
+                if cloudMode {
+                    Button { sendCloud() } label: { Label("Envoyer à Hermes", systemImage: "arrow.up") }
+                        .buttonStyle(.borderedProminent).keyboardShortcut(.return, modifiers: .command)
+                        .disabled(cloudSelection == nil || cloudSending || agent.busy || agent.consent?.cloudEnabled != true || cloudDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !agent.models.contains { $0.id == cloudModel && $0.available != false })
+                } else if store.generating != nil {
                     Button("Arrêter", systemImage: "stop.fill") { store.stop() }
                 } else {
                     Button { store.send() } label: { Label("Envoyer", systemImage: "arrow.up") }
@@ -238,11 +299,58 @@ private enum ChatPalette {
             .overlay(RoundedRectangle(cornerRadius: 18).stroke(ChatPalette.accent.opacity(store.generating == store.selection ? 0.6 : 0.15), lineWidth: 1))
             .padding(.horizontal, 20).padding(.top, 8)
             .safeAreaInset(edge: .bottom) {
-                Text(model.wrappedValue == AppleFoundationModel.id
+                Text(cloudMode ? "Hermes exécute ce message dans votre espace Cloud. Les modèles Relay sont exécutés via votre machine connectée."
+                     : model.wrappedValue == AppleFoundationModel.id
                      ? "Apple Foundation traite cette conversation localement sur ce Mac."
                      : "Les messages et documents sont transmis au modèle choisi via le Host.")
                     .font(.caption2).foregroundStyle(.secondary).padding(.vertical, 8)
             }
+    }
+    private var cloudTranscript: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                if agent.consent?.cloudEnabled != true {
+                    Text("Autorisez votre espace Cloud pour démarrer une conversation Hermes.")
+                    Button("Consentement Cloud…") { selectedImports = []; cloudConsent = true }
+                } else if cloudSelection == nil {
+                    Text("Sélectionnez une conversation Cloud ou créez-en une nouvelle.")
+                    Button("Nouvelle conversation Cloud") { Task { do { cloudSelection = try await agent.newCloudConversation() } catch { agent.error = error.localizedDescription } } }
+                }
+                ForEach(agent.synchronizedMessages(cloudSelection)) { message in
+                    Text(message.role == "user" ? "Vous" : "MultiVibe").font(.caption).foregroundStyle(.secondary)
+                    Text(markdown(message.content)).textSelection(.enabled)
+                }
+                ForEach(agent.orderedRuns.filter { $0.sessionId == cloudSelection?.uuidString.lowercased() }, id: \.runId) { run in
+                    Text(agent.runPrompt(run.runId)).font(.headline).textSelection(.enabled)
+                    if let response = agent.responseText(run) { Text(markdown(response)).textSelection(.enabled) }
+                    else { Text(run.state == .awaiting_resolution ? "Une action nécessite votre vérification. Elle ne sera pas rejouée automatiquement." : "État : \(run.state.rawValue)").foregroundStyle(.secondary) }
+                    if run.state != .completed && run.state != .cancelled {
+                        Button("Annuler") { Task { do { try await agent.cancel(runID: run.runId) } catch { agent.error = error.localizedDescription } } }
+                            .disabled(agent.busy)
+                    }
+                }
+                if cloudSending { ProgressView("Hermes travaille…") }
+            }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+    private func sendCloud() {
+        guard let conversationID = cloudSelection, !cloudSending, agent.models.contains(where: { $0.id == cloudModel }) else { return }
+        let prompt = cloudDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty, prompt.count <= 32_000 else { agent.error = "Saisissez entre 1 et 32 000 caractères."; return }
+        let epoch = agent.loginEpoch, modelID = cloudModel
+        let source: NativeAgentRunInput.Model.Source = agent.models.first(where: { $0.id == modelID })?.source == "relay" ? .relay : .cloud
+        cloudSending = true
+        cloudTask = Task {
+            defer { if agent.loginEpoch == epoch { cloudSending = false; cloudTask = nil } }
+            do {
+                let run = try await agent.execute(modelID: modelID, source: source, conversationID: conversationID, message: prompt)
+                guard agent.loginEpoch == epoch else { return }
+                if cloudSelection == conversationID && cloudDraft.trimmingCharacters(in: .whitespacesAndNewlines) == prompt { cloudDraft = "" }
+                _ = try await agent.poll(runID: run.runId)
+            } catch {
+                if agent.loginEpoch == epoch && !Task.isCancelled { agent.error = "Hermes : \(error.localizedDescription). Synchronisez pour retrouver une exécution déjà créée." }
+            }
+        }
     }
     private func markdown(_ text: String) -> AttributedString {
         (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)

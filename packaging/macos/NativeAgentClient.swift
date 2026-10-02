@@ -25,6 +25,16 @@ indirect enum NativeAgentJSON: Codable, Equatable, Sendable {
     }
 }
 
+struct NativeAgentCatalogModel: Decodable, Identifiable, Sendable {
+    let id: String
+    let name: String?
+    let source: String?
+    let owned_by: String
+    let available: Bool?
+    let machineName: String?
+    var supportsCloudAgent: Bool { source != "personal" && !id.hasPrefix("personal/") }
+}
+
 struct NativeAgentConsent: Codable, Sendable {
     let accountId: String
     let cloudEnabled: Bool
@@ -51,7 +61,7 @@ struct NativeAgentMutation: Codable, Sendable {
     let deleted: Bool
     let value: NativeAgentJSON?
 }
-struct NativeAgentChange: Decodable, Sendable {
+struct NativeAgentChange: Codable, Sendable {
     let operationId: String
     let objectId: String
     let versionId: String
@@ -76,9 +86,9 @@ struct NativeAgentReceipt: Decodable, Sendable {
     let heads: [String]
     let deleted: Bool
 }
-struct NativeAgentRunInput: Encodable, Sendable {
-    struct Model: Encodable, Sendable {
-        enum Source: String, Encodable, Sendable { case cloud, relay, device }
+struct NativeAgentRunInput: Codable, Sendable {
+    struct Model: Codable, Sendable {
+        enum Source: String, Codable, Sendable { case cloud, relay, device }
         let id: String
         let accessId: String?
         let source: Source
@@ -93,8 +103,8 @@ struct NativeAgentRunInput: Encodable, Sendable {
     let message: String
     let history: [NativeAgentJSON]?
 }
-struct NativeAgentRun: Decodable, Sendable {
-    enum State: String, Decodable, Sendable { case queued, running, waiting_device, awaiting_resolution, completed, cancelled }
+struct NativeAgentRun: Codable, Sendable {
+    enum State: String, Codable, Sendable { case queued, running, waiting_device, awaiting_resolution, completed, cancelled }
     let runId: String
     let sessionId: String
     let branchId: String
@@ -148,7 +158,7 @@ private final class NativeAgentRedirectPolicy: NSObject, URLSessionTaskDelegate,
         }
     }
     private func encoded<T: Encodable>(_ value: T) throws -> Data { try encoder.encode(value) }
-    private func request<T: Decodable>(_ path: String, accountID: String, method: String = "GET", body: Data? = nil) async throws -> T {
+    private func request<T: Decodable>(_ path: String, accountID: String, method: String = "GET", body: Data? = nil, catalog: String? = nil) async throws -> T {
         try Task.checkCancellation()
         guard !accountID.isEmpty, account() == nil || account() == accountID else { throw NativeAgentClientError.accountMismatch }
         guard (body?.count ?? 0) <= 1024 * 1024 else { throw NativeAgentClientError.tooLarge }
@@ -156,7 +166,7 @@ private final class NativeAgentRedirectPolicy: NSObject, URLSessionTaskDelegate,
         guard account() == accountID else { throw NativeAgentClientError.accountMismatch }
         try Task.checkCancellation()
         guard !bearer.isEmpty, !bearer.contains("\r"), !bearer.contains("\n") else { throw NativeAgentClientError.invalidRequest }
-        var req = URLRequest(url: URL(string: Self.origin + path)!)
+        var req = URLRequest(url: URL(string: catalog == "relay" ? "https://app.multivibe.cloud/relay/v1/models" : catalog == "cloud" ? "https://app.multivibe.cloud/native/v1/models" : Self.origin + path)!)
         req.httpMethod = method; req.httpBody = body; req.timeoutInterval = 60
         req.httpShouldHandleCookies = false
         req.setValue("Bearer " + bearer, forHTTPHeaderField: "Authorization")
@@ -177,6 +187,20 @@ private final class NativeAgentRedirectPolicy: NSObject, URLSessionTaskDelegate,
     }
     private func uuid(_ value: String) throws {
         guard value.range(of: "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", options: .regularExpression) != nil else { throw NativeAgentClientError.invalidRequest }
+    }
+    func models(accountID: String) async throws -> [NativeAgentCatalogModel] {
+        struct Catalog: Decodable { let object: String; let data: [NativeAgentCatalogModel] }
+        let result: Catalog = try await request("", accountID: accountID, catalog: "cloud")
+        guard result.object == "list", result.data.count <= 10_000,
+              Set(result.data.map(\.id)).count == result.data.count else { throw NativeAgentClientError.invalidResponse }
+        return result.data.filter { $0.supportsCloudAgent }
+    }
+    func relayModels(accountID: String) async throws -> [NativeAgentCatalogModel] {
+        struct Catalog: Decodable { let data: [NativeAgentCatalogModel] }
+        let result: Catalog = try await request("", accountID: accountID, catalog: "relay")
+        guard result.data.count <= 10_000, Set(result.data.map(\.id)).count == result.data.count,
+              result.data.allSatisfy({ $0.source == "relay" && $0.id.hasPrefix("relay/") }) else { throw NativeAgentClientError.invalidResponse }
+        return result.data
     }
     func capabilities(accountID: String) async throws -> NativeAgentCapabilities { try await request("capabilities", accountID: accountID) }
     func consent(accountID: String) async throws -> NativeAgentConsent {
