@@ -15,6 +15,12 @@ for a custom SwiftUI screen. Its action should invoke
 `MultiVibeAuthenticationPresenter`; the ready-made `MultiVibeChatView` already
 does this. The button receives no token, recovery code or conversation key.
 
+`MultiVibeIsolatedChatButton` opens the application-scoped Chat in Safari rather
+than inside the host process. This strict mode passes only the public application
+UUID; tokens, recovery codes, history keys and conversation content remain in the
+MultiVibe browser surface. Host tools are unavailable in this mode, and the
+application must have a verified registered domain.
+
 ## Register and embed
 
 Register an application in the MultiVibe developer portal. Verify your HTTPS callback domain using the portal's DNS challenge, register the exact callback URL and bundle identifier, and serve an Apple App Site Association document on your callback domain. That domain’s association document must identify your signed application using your own Apple Team ID and bundle identifier; the portal does not collect an Apple Team ID. Each application must have its own public client UUID. No client secret belongs in an iOS app.
