@@ -78,3 +78,22 @@ The SDK only lists and edits its application's conversations. The official app l
 Run `swift test --package-path native/sdk/MultiVibeSDK` from the monorepo root. Tests cover stream framing, OAuth callback substitution/replay input, strict schemas, application write isolation and journal non-replay. These are local protocol proofs, not Cloud or physical-device acceptance.
 
 For physical validation, install signed copies of both examples and MultiVibe iOS with working associated-domain files. Sign into one account, authorize both apps, choose an available model, read items, deny then approve creation, and verify each app sees only its own folder. In MultiVibe open each folder, continue the same conversation and follow the origin link. Then test revocation, account switching, simultaneous edits, deletion, exhausted credits and an unavailable model. Interrupt networking during streaming and after an action executes but before its result saves; verify the actual app data contains one mutation and no automatic replay. Repeat authorization with MultiVibe uninstalled to exercise the web fallback. Universal links, consumption and device behavior require a deployed Cloud and physical proof; package tests do not establish them.
+
+### Encrypted history migration boundary
+
+`EncryptedHistory.swift` contains internal, memory-only primitives compatible
+with the Cloud TypeScript account keyring and conversation envelope. The fixture
+in `Tests/MultiVibeSDKTests/Fixtures/history-v1.json` was produced by the Cloud
+TypeScript SDK with synthetic keys; it exercises both key generations after
+rotation. These primitives do not migrate `MultiVibeClient` or the native Chat UI:
+they still use the legacy v1 conversation transport. Do not advertise native
+end-to-end encrypted history on the strength of these primitives alone.
+
+Account recovery codes and account root keys must remain inside a trusted
+MultiVibe surface. A native library executes inside its host application's
+process; a secure text field or private Swift property does not isolate secrets
+from that host. Third-party apps must not ask for the account recovery code or
+receive the global keyring. An isolated MultiVibe UI or an application-scoped
+key delegation protocol is required before enabling native v2 history. No such
+delegation endpoint is exposed by this change. Model providers receive inference
+context and authorized tools receive their arguments.
