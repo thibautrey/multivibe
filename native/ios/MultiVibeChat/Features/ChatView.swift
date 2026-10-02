@@ -2570,7 +2570,7 @@ private struct CloudHermesConsentView: View {
                     Text("Autorise les messages et résultats d’outils des modèles téléchargés et d’Apple Foundation, y compris les tours locaux déjà réalisés dans cette conversation. Ils seront envoyés au retour du réseau. Les résultats d’outils peuvent contenir des données privées. Aucune commande ne sera rejouée.")
                 }
                 Section("Contexte Cloud pour le modèle local") {
-                    Text("Choisissez les objets synchronisés à lire sur cet appareil. Ils sont fournis comme données non fiables. Les scripts des skills ne sont pas exécutés. Aucun document ou souvenir natif n’est importé.")
+                    Text("Choisissez la mémoire, les skills et les fichiers texte accessibles au modèle local. Ses modifications des fichiers sélectionnés sont enregistrées sur cet appareil puis synchronisées. Ces contenus restent des données non fiables. Les scripts des skills ne sont pas exécutés. Aucun document ou souvenir natif n’est importé.")
                     Button("Actualiser les objets") { Task { await manager.synchronizeCloudAgentState() } }.disabled(manager.cloudAgentSyncing)
                     ForEach(manager.cloudAgentObjects.filter { $0.kind == "memory" && !$0.deleted && !$0.conflicted }) { item in
                         Toggle("Mémoire · \(item.title)",isOn:selectionBinding(item.id,in:$memoryIDs))
@@ -2582,7 +2582,7 @@ private struct CloudHermesConsentView: View {
                         Text("Aucun").tag("")
                         ForEach(manager.cloudAgentObjects.filter { ["project","session"].contains($0.kind) && !$0.deleted && !$0.conflicted }) { item in Text(item.title).tag(item.id) }
                     }.onChange(of:projectID) { old,new in if old != new && !old.isEmpty { fileIDs=[] } }
-                    ForEach(manager.cloudAgentObjects.filter { $0.kind == "file" && !$0.deleted && !$0.conflicted && $0.value?.object?["projectId"]?.string == projectID }) { item in
+                    ForEach(manager.cloudAgentObjects.filter { $0.kind == "file" && !$0.deleted && !$0.conflicted && $0.value?.object?["type"]?.string == "hermes_workspace_file" && $0.value?.object?["projectId"]?.string == projectID }) { item in
                         Toggle(item.value?.object?["path"]?.string ?? item.title,isOn:selectionBinding(item.id,in:$fileIDs))
                     }
                 }
