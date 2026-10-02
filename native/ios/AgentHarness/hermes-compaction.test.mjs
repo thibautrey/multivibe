@@ -70,7 +70,8 @@ test('multi-pass compaction measures and summarizes complete exchanges while ret
   assert.deepEqual(result.messages.at(-1),messages.at(-1));assert.ok(host.tokens(result.messages)+1024<=4096);
   assert.deepEqual(host.summarized.flatMap(s=>s.payload.completedExchanges),messages.slice(1,-1));
   assert.equal(host.summarized[0].payload.previousSummary,null);
-  for(let i=1;i<host.summarized.length;i++)assert.equal(host.summarized[i].payload.previousSummary,`Rolling summary ${i}`);
+  assert.ok(host.summarized.every(s=>s.payload.previousSummary===null));
+  assert.equal(result.state.summary,host.summarized.map((_,i)=>`Rolling summary ${i+1}`).join('\n\n'));
 });
 test('second-chunk refusal and cancellation publish no state and preserve prior compaction',async()=>{
   const messages=longTranscript(),before=structuredClone(messages);
@@ -82,10 +83,11 @@ test('second-chunk refusal and cancellation publish no state and preserve prior 
     assert.equal(host.summarized.length,2);assert.deepEqual(previous,original);assert.deepEqual(messages,before);
   }
 });
-test('previous summary is carried through newly summarized suffix chunks without revisiting old exchanges',async()=>{
+test('previous summary remains verbatim ahead of independent suffix summaries without revisiting old exchanges',async()=>{
   const messages=longTranscript(),previous={version:1,coveredCount:9,prefixJSON:JSON.stringify(messages.slice(0,9)),summary:'Previous durable summary'},host=chunkHost();
   const result=await prepareCompaction(messages,[],previous,host);
-  assert.ok(host.summarized.length>=3);assert.equal(host.summarized[0].payload.previousSummary,previous.summary);
+  assert.ok(host.summarized.length>=3);assert.ok(host.summarized.every(s=>s.payload.previousSummary===null));
+  assert.equal(result.state.summary,[previous.summary,...host.summarized.map((_,i)=>`Rolling summary ${i+1}`)].join('\n\n'));
   assert.deepEqual(host.summarized.flatMap(s=>s.payload.completedExchanges),messages.slice(9,-1));
   assert.equal(result.state.coveredCount,messages.length-1);assert.deepEqual(result.messages.at(-1),messages.at(-1));
 });
@@ -98,4 +100,20 @@ test('indivisible oversized tool exchange fails explicitly without executing or 
   const messages=longTranscript(2,5000),before=structuredClone(messages),host=chunkHost();
   await assert.rejects(prepareCompaction(messages,[],undefined,host),/budget|exceed|fit|large/i);
   assert.equal(host.summarized.length,0);assert.deepEqual(messages,before);
+});
+
+test('independent chunk outputs retain early facts verbatim and in order instead of repeatedly summarizing them',async()=>{
+  const messages=longTranscript(),host=chunkHost(),generate=host.summarize;
+  const answers=['Facts 1–4: alpha; beta; gamma; delta.','Facts 5–8: epsilon; zeta; eta; theta.'];
+  host.summarize=async(m,r)=>{await generate(m,r);return {content:answers[host.summarized.length-1]??`Later facts ${host.summarized.length}`,finish_reason:'stop'};};
+  const result=await prepareCompaction(messages,[],undefined,host);
+  assert.ok(host.summarized.length>=3);assert.ok(host.summarized.every(s=>s.payload.previousSummary===null));
+  const expected=host.summarized.map((_,i)=>answers[i]??`Later facts ${i+1}`).join('\n\n');
+  assert.equal(result.state.summary,expected);assert.ok(result.messages.some(m=>m.content?.includes(expected)));
+});
+test('aggregate independent summaries that exceed final model budget fail without dropping older summaries',async()=>{
+  const messages=longTranscript(12,1200),before=structuredClone(messages),host=chunkHost(),generate=host.summarize;
+  host.summarize=async(m,r)=>{await generate(m,r);return {content:`Chunk ${host.summarized.length}: `+'fact '.repeat(140),finish_reason:'stop'};};
+  await assert.rejects(prepareCompaction(messages,[],undefined,host),/usable context|budget|fit|exceed/i);
+  assert.ok(host.summarized.length>=3);assert.deepEqual(messages,before);
 });
