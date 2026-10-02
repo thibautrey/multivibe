@@ -80,6 +80,14 @@ import Foundation
             do { try await store.save(compactLease,engine:"pinned",messages:fullJSON,state:encoded(malformed));throw NSError(domain:"Invalid compaction accepted",code:1) }
             catch HermesCheckpointError.invalid {}
         }
+        let completeTools = (try JSONSerialization.jsonObject(with:Data(result.utf8)) as! [[String:Any]]) + [["role":"user","content":"next"]]
+        let splitPrefix = Array(completeTools.prefix(2))
+        var split=compact
+        split["prefixJSON"]=String(decoding:try JSONSerialization.data(withJSONObject:splitPrefix),as:UTF8.self)
+        do {
+            try await store.save(compactLease,engine:"pinned",messages:String(decoding:try JSONSerialization.data(withJSONObject:completeTools),as:UTF8.self),state:encoded(split))
+            throw NSError(domain:"Compaction split a tool result",code:1)
+        } catch HermesCheckpointError.invalid {}
         let compactResume = try await HermesCheckpointStore(root:root).begin(compactContext,engine:"pinned")
         try expect(compactResume.resumeJSON?.contains("old fact") == true && compactResume.resumeJSON?.contains("An old fact and answer.") == true,"Compaction must preserve canonical transcript and durable summary")
         print("HermesCheckpointStore: reopen, unknown effect, isolation, fencing, failure, resolution and deletion checks passed")
