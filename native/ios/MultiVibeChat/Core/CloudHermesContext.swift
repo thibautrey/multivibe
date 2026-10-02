@@ -103,9 +103,15 @@ enum CloudHermesContext {
             guard let owner = state.objects[projectID], ["project","session"].contains(owner.kind) else { throw Failure.projectMismatch }
             _ = try object(projectID, kind: owner.kind)
             for id in fileObjectIDs {
-                var value = try object(id, kind: "file")
                 let pending = state.outbox.filter { $0.objectId == id }
                 guard pending.count <= 1 else { throw Failure.conflictedObject }
+                var value: [String: HistoryJSON]
+                if state.objects[id] != nil { value = try object(id, kind: "file") }
+                else {
+                    guard let created = pending.first, created.parents.isEmpty, !created.deleted,
+                        created.kind == "file", let payload = created.value?.object else { throw Failure.missingObject }
+                    value = payload
+                }
                 if let queued = pending.first {
                     guard !queued.deleted, queued.kind == "file", let queuedValue = queued.value?.object else { throw Failure.deletedObject }
                     value = queuedValue
@@ -118,7 +124,7 @@ enum CloudHermesContext {
                 guard fileBytes <= 512 * 1024 else { throw Failure.limitExceeded }
                 files.append((path, content))
                 workspaceFiles.append(.init(accountId: accountID, projectId: projectID, objectId: id,
-                    path: path, content: content, parents: state.objects[id]!.heads, projectParents: owner.heads, pending: !pending.isEmpty))
+                    path: path, content: content, parents: state.objects[id]?.heads ?? [], projectParents: owner.heads, pending: !pending.isEmpty))
             }
         } else if let projectID, !CloudAgentState.uuid(projectID) { throw Failure.projectMismatch }
         return try Snapshot(memory: render(memories), skills: render(skills), files: render(files), skillCatalog: selectedSkills.isEmpty ? nil : HermesSkillCatalog(selectedSkills: selectedSkills), workspaceFiles: workspaceFiles, workspaceProject: workspaceProject, selectedMemory: memorySnapshots.isEmpty ? nil : HermesSelectedMemory(accountID: accountID, snapshots: memorySnapshots))
