@@ -152,6 +152,40 @@ struct NativeChatConversation: Codable { let id: UUID; let title: String; let mo
         do { _ = try await projectReload.execute(modelID: "cloud-model", source: .cloud, conversationID: conversation.id, message: "Reject ambiguous workspace"); preconditionFailure("conflicted project executed") } catch {}
         try projectReload.selectWorkspaceProject("", conversation: conversation.id)
         precondition(projectReload.selectedWorkspaceProject(conversation.id).isEmpty)
+        let anchorSession = UUID(), anchorID = anchorSession.uuidString.lowercased(), oldBranch = UUID().uuidString.lowercased(), newBranch = UUID().uuidString.lowercased(), sourceRun = UUID().uuidString.lowercased()
+        var anchorVersion = base; anchorVersion["objectId"] = anchorID; anchorVersion["versionId"] = UUID().uuidString.lowercased(); anchorVersion["cursor"] = 1
+        anchorVersion["value"] = ["title": "Anchored", "branchId": newBranch, "historyAnchor": ["type": "hermes_history_anchor", "source": "run", "runId": sourceRun, "sourceBranchId": oldBranch]]
+        f.runBodies[sourceRun] = ["sessionId": anchorID, "branchId": oldBranch]; f.runResults[sourceRun] = ["history": history, "response": "Remote answer"]
+        f.changes = [anchorVersion]
+        let anchored = NativeChatAgentCoordinator(session: session, client: client, root: folder.appendingPathComponent("anchors")); await anchored.restore()
+        let anchorStart = f.requests.count; try await anchored.synchronize()
+        precondition(f.requests.dropFirst(anchorStart).allSatisfy { $0.httpMethod == "GET" })
+        precondition(anchored.synchronizedMessages(anchorSession).last?.content == "Remote answer")
+        let anchorContinuation = try await anchored.execute(modelID: "cloud-model", source: .cloud, conversationID: anchorSession, message: "New branch continuation")
+        precondition(f.runBodies[anchorContinuation.runId]?["branchId"] as? String == newBranch)
+        precondition((f.runBodies[anchorContinuation.runId]?["history"] as? [[String: Any]])?.count == 4)
+        var staleTask = task; staleTask["objectId"] = sourceRun; staleTask["versionId"] = UUID().uuidString.lowercased(); staleTask["cursor"] = 2
+        staleTask["value"] = ["type": "hermes_run", "runId": sourceRun, "sessionId": anchorID, "branchId": oldBranch]
+        let advancedRun = UUID().uuidString.lowercased()
+        var advancedTask = staleTask; advancedTask["objectId"] = advancedRun; advancedTask["versionId"] = UUID().uuidString.lowercased(); advancedTask["cursor"] = 3
+        advancedTask["value"] = ["type": "hermes_run", "runId": advancedRun, "sessionId": anchorID, "branchId": newBranch]
+        f.runBodies[advancedRun] = ["sessionId": anchorID, "branchId": newBranch]; f.runResults[advancedRun] = ["history": [["role": "user", "content": "New branch ask"], ["role": "assistant", "content": "New branch answer"]]]
+        f.changes = [staleTask, advancedTask]; try await anchored.synchronize()
+        precondition(anchored.synchronizedMessages(anchorSession).last?.content == "New branch answer")
+        let sourceMessage = UUID().uuidString.lowercased(), messageVersion = UUID().uuidString.lowercased()
+        var anchorMessage = base; anchorMessage["objectId"] = sourceMessage; anchorMessage["kind"] = "message"; anchorMessage["versionId"] = messageVersion; anchorMessage["cursor"] = 4
+        anchorMessage["value"] = ["type": "hermes_local_turn", "sessionId": anchorID, "branchId": oldBranch, "history": history]
+        var messageAnchor = anchorVersion; messageAnchor["parents"] = [anchorVersion["versionId"]!]; messageAnchor["versionId"] = UUID().uuidString.lowercased(); messageAnchor["cursor"] = 5
+        messageAnchor["value"] = ["title": "Message anchor", "branchId": UUID().uuidString.lowercased(), "historyAnchor": ["type": "hermes_history_anchor", "source": "message", "objectId": sourceMessage, "versionId": messageVersion, "sourceBranchId": oldBranch]]
+        f.changes = [anchorMessage, messageAnchor]; try await anchored.synchronize()
+        precondition(anchored.synchronizedMessages(anchorSession).last?.content == "Remote answer")
+        var removed = anchorMessage; removed["parents"] = [messageVersion]; removed["versionId"] = UUID().uuidString.lowercased(); removed["cursor"] = 6; removed["deleted"] = true; removed.removeValue(forKey: "value")
+        f.changes = [removed]
+        do { try await anchored.synchronize(); preconditionFailure("deleted anchor accepted") } catch {}
+        precondition(anchored.synchronizedMessages(anchorSession).isEmpty)
+        do { _ = try await anchored.execute(modelID: "cloud-model", source: .cloud, conversationID: anchorSession, message: "Must refuse missing source"); preconditionFailure("deleted anchor executed") } catch {}
+        let anchorReload = NativeChatAgentCoordinator(session: session, client: client, root: folder.appendingPathComponent("anchors")); await anchorReload.restore()
+        precondition(anchorReload.synchronizedMessages(anchorSession).isEmpty)
         f.pauseWrite = true
         let another = NativeChatConversation(id: UUID(), title: "Another", model: "local-model", messages: [])
         let epoch = restored.loginEpoch

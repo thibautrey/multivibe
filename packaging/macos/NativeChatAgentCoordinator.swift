@@ -33,6 +33,7 @@ import Foundation
         var titles: [String: String]? = [:]
         var historyCursors: [String: Int64]? = [:]
         var historySources: [String: String]? = [:]
+        var blockedHistorySessions: Set<String>? = []
         var workspaceSelections: [String: String]? = [:]
         var workspaceMutations: [String: NativeAgentMutation]? = [:]
     }
@@ -232,6 +233,7 @@ import Foundation
     func synchronizedMessages(_ id: UUID?) -> [CloudMessage] {
         guard let id else { return [] }
         let key = id.uuidString.lowercased()
+        guard journal?.blockedHistorySessions?.contains(key) != true else { return [] }
         let heads = cloudObjects[key] ?? []
         let messages: [NativeAgentJSON]
         guard heads.isEmpty || (heads.count == 1 && heads[0].kind == .session && !heads[0].deleted && !heads[0].erased) else { return [] }
@@ -281,6 +283,28 @@ import Foundation
         }
         return sessionID // Explicit legacy imports use the session as their original branch.
     }
+    private func validatedHistory(_ raw: NativeAgentJSON?) throws -> [NativeAgentJSON] {
+        guard case .array(let history) = raw, !history.isEmpty, history.count <= 1000,
+              try JSONEncoder().encode(history).count <= 512 * 1024 else { throw NativeAgentClientError.invalidResponse }
+        var pending = Set<String>()
+        for message in history {
+            guard case .object(let value) = message, case .string(let role) = value["role"],
+                  ["system", "user", "assistant", "tool"].contains(role) else { throw NativeAgentClientError.invalidResponse }
+            if role == "tool" {
+                guard case .string(let id) = value["tool_call_id"], pending.remove(id) != nil else { throw NativeAgentClientError.invalidResponse }
+            } else if !pending.isEmpty { throw NativeAgentClientError.invalidResponse }
+            if let calls = value["tool_calls"] {
+                guard role == "assistant", case .array(let items) = calls else { throw NativeAgentClientError.invalidResponse }
+                for item in items {
+                    guard case .object(let call) = item, case .string(let id) = call["id"], !id.isEmpty,
+                          case .object(let function) = call["function"], case .string = function["name"],
+                          case .string = function["arguments"], pending.insert(id).inserted else { throw NativeAgentClientError.invalidResponse }
+                }
+            }
+        }
+        guard pending.isEmpty else { throw NativeAgentClientError.invalidResponse }
+        return history
+    }
     /// Pull status and complete hidden transcripts only. Discovery never creates a run.
     func synchronize() async throws {
         guard !busy, let account = accountID, consent?.cloudEnabled == true, let client, journal != nil else { throw NativeAgentClientError.invalidRequest }
@@ -323,12 +347,46 @@ import Foundation
             let candidates = versions.values.compactMap { heads -> NativeAgentChange? in
                 guard heads.count == 1, !heads[0].deleted, !heads[0].erased else { return nil }; return heads[0]
             }.sorted { $0.cursor < $1.cursor }
+            let anchoredIDs = Set(candidates.compactMap { change -> String? in
+                guard change.kind == .session, case .object(let value) = change.value, value["historyAnchor"] != nil else { return nil }
+                return change.objectId
+            })
+            // Persist the execution block before async source reads. A failed read must not leave
+            // an older branch available for a run or display after restart.
+            if !anchoredIDs.isEmpty {
+                let previous = journal
+                journal!.blockedHistorySessions = (journal!.blockedHistorySessions ?? []).union(anchoredIDs)
+                do { try persist() } catch { journal = previous; throw error }
+            }
             for change in candidates {
                 guard case .object(let value) = change.value else { continue }
                 if change.kind == .session {
-                    let source = value["history"] ?? value["messages"]
-                    if case .array(let history) = source, change.cursor > (cursors[change.objectId] ?? -1) {
-                        histories[change.objectId] = history; cursors[change.objectId] = change.cursor; sources[change.objectId] = change.objectId
+                    if let rawAnchor = value["historyAnchor"] {
+                        guard case .object(let anchor) = rawAnchor, anchor["type"] == .string("hermes_history_anchor"),
+                              case .string(let sourceBranch) = anchor["sourceBranchId"], UUID(uuidString: sourceBranch) != nil,
+                              let currentBranch = try? branchID(change.objectId, versions: versions), sourceBranch != currentBranch else { throw NativeAgentClientError.invalidResponse }
+                        let history: [NativeAgentJSON]
+                        if anchor["source"] == .string("run"), case .string(let runID) = anchor["runId"], UUID(uuidString: runID) != nil {
+                            if let source = versions[runID], source.count != 1 || source[0].deleted || source[0].erased { throw NativeAgentClientError.invalidResponse }
+                            let run = try await client.readRun(accountID: account, runID: runID); try check(account, epoch)
+                            guard run.state == .completed, run.runId == runID, run.sessionId == change.objectId,
+                                  run.branchId == sourceBranch, case .object(let result) = run.result else { throw NativeAgentClientError.invalidResponse }
+                            history = try validatedHistory(result["history"])
+                        } else if anchor["source"] == .string("message"), case .string(let objectID) = anchor["objectId"],
+                                  case .string(let versionID) = anchor["versionId"], let source = versions[objectID], source.count == 1,
+                                  source[0].versionId == versionID, source[0].kind == .message, !source[0].deleted, !source[0].erased,
+                                  case .object(let payload) = source[0].value, payload["type"] == .string("hermes_local_turn"),
+                                  payload["sessionId"] == .string(change.objectId), payload["branchId"] == .string(sourceBranch) {
+                            history = try validatedHistory(payload["history"])
+                        } else { throw NativeAgentClientError.invalidResponse }
+                        if change.cursor >= (cursors[change.objectId] ?? -1) {
+                            histories[change.objectId] = history; cursors[change.objectId] = change.cursor; sources[change.objectId] = change.objectId
+                        }
+                    } else {
+                        let source = value["history"] ?? value["messages"]
+                        if case .array(let history) = source, change.cursor > (cursors[change.objectId] ?? -1) {
+                            histories[change.objectId] = history; cursors[change.objectId] = change.cursor; sources[change.objectId] = change.objectId
+                        }
                     }
                     continue
                 }
@@ -352,6 +410,7 @@ import Foundation
                     histories[sessionID] = history; cursors[sessionID] = change.cursor; sources[sessionID] = change.objectId
                 }
             }
+            next.blockedHistorySessions = (next.blockedHistorySessions ?? []).subtracting(anchoredIDs)
             next.histories = histories; next.historyCursors = cursors; next.historySources = sources; next.runStates = states
             let previous = journal; journal = next
             do { try persist() } catch { journal = previous; throw error }
@@ -363,6 +422,7 @@ import Foundation
                  message: String, accessID: String? = nil, deviceID: String? = nil) async throws -> NativeAgentRun {
         guard !busy, let account = accountID, consent?.cloudEnabled == true, let client, journal != nil,
               source != .device else { throw NativeAgentClientError.invalidRequest }
+        guard journal!.blockedHistorySessions?.contains(conversationID.uuidString.lowercased()) != true else { throw NativeAgentClientError.invalidRequest }
         let selectedWorkspace = selectedWorkspaceProject(conversationID)
         guard selectedWorkspace.isEmpty || cloudProjects.contains(where: { $0.id == selectedWorkspace }) else { throw NativeAgentClientError.invalidRequest }
         try await publishWorkspaceSelection(conversationID)
