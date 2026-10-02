@@ -54,6 +54,22 @@ final class CloudHermesTests: XCTestCase {
         XCTAssertEqual(restored.localTurns?[0].operationId,captured.operationId)
         XCTAssertEqual(restored.localTurns?[0].parents,[parent]);XCTAssertEqual(restored.localTurns?[0].published,true)
     }
+    func testLocalRevocationRejectsQueuedMutationAndNewTurnUsesCurrentHead() throws {
+        let id={UUID().uuidString.lowercased()}
+        var binding=CloudHermesBinding(accountId:id(),conversationId:id(),sessionId:id(),branchId:id(),operationId:id(),versionId:id(),deviceId:id(),importApproved:true)
+        binding.localExportSources=["downloaded-local"]
+        binding.recordLocalIntent(turnId:UUID(),modelId:"local",source:"downloaded-local",parents:[id()])
+        let operations=try binding.localPublication(index:0,checkpoint:[.object(["role":.string("user"),"content":.string("question")]),.object(["role":.string("assistant"),"content":.string("answer")])])
+        XCTAssertTrue(operations.allSatisfy(binding.permitsLocalOperation))
+        binding.localExportSources=[]
+        XCTAssertFalse(operations.contains(where:binding.permitsLocalOperation))
+        let current=id()
+        binding.recordLocalIntent(turnId:UUID(),modelId:"local",source:"downloaded-local",parents:[current])
+        XCTAssertEqual(binding.localTurns?.last?.parents,[current])
+        let unpublished=binding.localTurns!.last!.sessionVersionId
+        binding.recordLocalIntent(turnId:UUID(),modelId:"local",source:"downloaded-local",parents:[id()])
+        XCTAssertEqual(binding.localTurns?.last?.parents,[unpublished])
+    }
     func testLocalIntentIsIdempotentAndConcurrentParentsCannotBeAutoMerged() throws {
         let id = { UUID().uuidString.lowercased() }
         var binding = CloudHermesBinding(accountId:id(),conversationId:id(),sessionId:id(),branchId:id(),operationId:id(),versionId:id(),deviceId:id(),importApproved:false)

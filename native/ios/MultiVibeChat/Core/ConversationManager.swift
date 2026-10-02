@@ -189,7 +189,7 @@ import Network
                     var batch:[CloudAgentMutation]=[]
                     let revokedLocalSource = state.outbox.contains { operation in
                         guard let source = operation.value?.object?["localSource"]?.string else { return false }
-                        return !(consent.exportSources ?? []).contains(source)
+                        return !(consent.exportSources ?? []).contains(source) || !cloudHermesBindings.values.contains(where: { $0.accountId == auth.accountId && $0.permitsLocalOperation(operation) })
                     }
                     let allowed = state.outbox.filter { operation in
                         guard let source = operation.value?.object?["localSource"]?.string else { return true }
@@ -218,6 +218,10 @@ import Network
             }
             cloudAgentSyncError=nil
         } catch { if sessionRevision == epoch { cloudAgentSyncError=error.localizedDescription } }
+    }
+    var currentLocalHermesExportApproved: Bool {
+        guard let id=selection,let binding=cloudHermesBindings[id],binding.accountId == session?.accountId else { return false }
+        return Set(CloudHermesBinding.localSources).isSubset(of:Set(binding.localExportSources ?? []))
     }
     var currentCloudContextSelection: (memory:[String],skills:[String],files:[String],project:String?) {
         guard let id=selection,let binding=cloudHermesBindings[id],binding.accountId == session?.accountId else { return ([],[],[],nil) }
@@ -515,7 +519,7 @@ import Network
         }
         binding.contextMemoryIDs=memoryIDs;binding.contextSkillIDs=skillIDs;binding.contextFileIDs=fileIDs;binding.contextProjectID=projectID
         binding.cloudAuthorized = true
-        if synchronizeLocalTurns { binding.localExportSources = CloudHermesBinding.localSources }
+        binding.localExportSources = synchronizeLocalTurns ? CloudHermesBinding.localSources : []
         binding.importApproved = binding.importApproved || importExistingConversation
         cloudHermesBindings[id] = binding
         guard persist() else { throw APIError.server(0,"history_cache_write_failed") }
@@ -1182,7 +1186,7 @@ import Network
                     if !(binding.localTurns ?? []).isEmpty {
                         let liveConsent = try await services.hermesConsent(session.accessToken)
                         guard sessionRevision == accountRevision, liveConsent.accountId == session.accountId,
-                            liveConsent.cloudEnabled, (binding.localTurns ?? []).allSatisfy({ (liveConsent.exportSources ?? []).contains($0.source) }) else {
+                            liveConsent.cloudEnabled, (binding.localTurns ?? []).allSatisfy({ (liveConsent.exportSources ?? []).contains($0.source) && (binding.localExportSources ?? []).contains($0.source) }) else {
                             throw APIError.server(403,"hermes_local_export_consent_required")
                         }
                     }
