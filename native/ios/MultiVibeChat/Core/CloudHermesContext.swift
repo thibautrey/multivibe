@@ -61,7 +61,8 @@ enum CloudHermesContext {
         var files: [(String, String)] = [], paths = Set<String>(), fileBytes = 0
         if !fileObjectIDs.isEmpty {
             guard let projectID, CloudAgentState.uuid(projectID) else { throw Failure.projectMismatch }
-            _ = try object(projectID, kind: "project")
+            guard let owner = state.objects[projectID], ["project","session"].contains(owner.kind) else { throw Failure.projectMismatch }
+            _ = try object(projectID, kind: owner.kind)
             for id in fileObjectIDs {
                 let value = try object(id, kind: "file")
                 guard value["type"] == .string("hermes_workspace_file"), value["projectId"] == .string(projectID) else { throw Failure.projectMismatch }

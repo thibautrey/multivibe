@@ -380,6 +380,7 @@ struct CloudHermesModel: Codable, Equatable, Sendable {
 struct CloudHermesRunInput: Codable, Equatable, Sendable {
     let operationId: String; let runId: String; let sessionId: String; let branchId: String
     let model: CloudHermesModel; let message: String; let history: [HistoryJSON]
+    var workspaceProjectId: String? = nil
 }
 struct CloudHermesRun: Codable, Sendable {
     struct Result: Codable, Sendable { let response: String; let history: [HistoryJSON] }

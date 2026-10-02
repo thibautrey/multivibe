@@ -2580,7 +2580,7 @@ private struct CloudHermesConsentView: View {
                     }
                     Picker("Projet des fichiers",selection:$projectID) {
                         Text("Aucun").tag("")
-                        ForEach(manager.cloudAgentObjects.filter { $0.kind == "project" && !$0.deleted && !$0.conflicted }) { item in Text(item.title).tag(item.id) }
+                        ForEach(manager.cloudAgentObjects.filter { ["project","session"].contains($0.kind) && !$0.deleted && !$0.conflicted }) { item in Text(item.title).tag(item.id) }
                     }.onChange(of:projectID) { old,new in if old != new && !old.isEmpty { fileIDs=[] } }
                     ForEach(manager.cloudAgentObjects.filter { $0.kind == "file" && !$0.deleted && !$0.conflicted && $0.value?.object?["projectId"]?.string == projectID }) { item in
                         Toggle(item.value?.object?["path"]?.string ?? item.title,isOn:selectionBinding(item.id,in:$fileIDs))
@@ -2653,6 +2653,7 @@ private struct RemoteHermesConversationView: View {
     let sessionId: String
     let title: String
     @State private var model = ""
+    @State private var workspaceProject = ""
     @State private var draft = ""
     @State private var error: String?
     @State private var submitting = false
@@ -2688,15 +2689,19 @@ private struct RemoteHermesConversationView: View {
                     Text("Choisir un modèle").tag("")
                     ForEach(manager.remoteHermesModels) { option in Text((option.id.hasPrefix("relay/") ? "Relay · " : "Cloud · ")+option.displayName).tag(option.id) }
                 }
+                Picker("Projet Hermes",selection:$workspaceProject) {
+                    Text("Espace de cette conversation").tag("")
+                    ForEach(manager.cloudAgentObjects.filter { ["project","session"].contains($0.kind) && !$0.deleted && !$0.conflicted }) { project in Text(project.title).tag(project.id) }
+                }
                 TextField("Message",text:$draft,axis:.vertical).lineLimit(3...8)
                 Button(submitting ? "Envoi…" : "Envoyer") {
                     guard account == manager.session?.accountId else { return }
-                    let message=draft, chosen=model, owner=account
+                    let message=draft, chosen=model, owner=account, project=workspaceProject
                     submitting=true;error=nil
                     Task {
                         defer { submitting=false }
                         do {
-                            try await manager.sendRemoteHermes(sessionId:sessionId,model:chosen,message:message)
+                            try await manager.sendRemoteHermes(sessionId:sessionId,model:chosen,message:message,workspaceProjectId:project.isEmpty ? nil : project)
                             if account == owner && manager.session?.accountId == owner && draft == message { draft="" }
                         } catch { if manager.session?.accountId == owner { self.error=error.localizedDescription } }
                     }
@@ -2704,7 +2709,7 @@ private struct RemoteHermesConversationView: View {
             }
         }.navigationTitle(title)
             .onAppear { account=manager.session?.accountId }
-            .onChange(of:manager.session?.accountId) { _,_ in draft="";model="";error=nil;account=nil }
+            .onChange(of:manager.session?.accountId) { _,_ in draft="";model="";workspaceProject="";error=nil;account=nil }
             .task {
                 await manager.synchronizeCloudAgentState(); await manager.recoverRemoteHermes()
                 while !Task.isCancelled {
