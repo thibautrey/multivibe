@@ -1001,6 +1001,22 @@ private actor CloudWorkspaceResponderHold {
         await fulfillment(of:[generated],timeout:3);manager.stop()
         XCTAssertEqual(calls,0)
     }
+    func testCompletedWebRunCacheAllowsOfflineContinuationAfterRelaunch() async throws {
+        let (auth,session,branch,history,data)=try fixture(pending:true)
+        var payload=try JSONSerialization.jsonObject(with:data) as! [String:Any]
+        let graph=try JSONDecoder().decode(CloudAgentState.self,from:JSONSerialization.data(withJSONObject:XCTUnwrap(payload["cloudAgentState"])))
+        let task=try XCTUnwrap(graph.objects.values.first(where:{$0.kind=="task"}))
+        let runID=try XCTUnwrap(task.versions[task.heads[0]]?.value?.object?["runId"]?.string)
+        let run=CloudHermesRun(runId:runID,sessionId:session,branchId:branch,state:"completed",generation:1,result:.init(response:"Shared answer",history:history))
+        payload["discoveredCloudRuns"]=try JSONSerialization.jsonObject(with:JSONEncoder().encode([runID:run]))
+        let restoredData=try JSONSerialization.data(withJSONObject:payload)
+        let services=isolatedServices(load:{auth},readLocalHistory:{_ in restoredData},localAvailability:{nil})
+        let manager=ConversationManager(services:services)
+        await manager.restore(loadRemoteModels:false)
+        let local=try manager.continueHermesOnDevice(sessionId:session,model:LocalModel.id,accountId:auth.accountId)
+        XCTAssertEqual(manager.selection,local);XCTAssertEqual(manager.remoteHermesTranscript(session),history)
+        XCTAssertFalse(manager.isStreaming)
+    }
     func testLocalContinuationRejectsWrongAccountConflictPendingAndRollsBackDiskFailure() async throws {
         for mode in ["account","conflict","pending","disk"] {
             let (auth,session,_,_,data)=try fixture(pending:mode=="pending",conflicted:mode=="conflict")
