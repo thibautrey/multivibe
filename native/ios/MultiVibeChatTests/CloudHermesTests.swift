@@ -630,3 +630,113 @@ final class RemoteHermesHistoryTests: XCTestCase {
         XCTAssertNil(manager.cloudAgentSyncError)
     }
 }
+
+final class CloudWorkspaceArtifactGraphTests: XCTestCase {
+    private func id(_ number:Int) -> String { String(format:"00000000-0000-4000-8000-%012d",number) }
+    private func seeded() throws -> CloudAgentState {
+        try CloudAgentState(accountId:id(1),deviceId:id(2)).applying(.init(accountId:id(1),changes:[
+            .init(operationId:id(10),objectId:id(3),versionId:id(11),deviceId:id(2),kind:"project",parents:[],deleted:false,value:.object(["type":.string("hermes_project"),"name":.string("Artifacts")]),cursor:1,erased:false)
+        ],cursor:1,hasMore:false))
+    }
+    private func artifact(_ path:String="asset.bin",size:Int=70000,artifactID:String?=nil) -> CloudWorkspaceArtifact {
+        .init(id:CloudAgentState.workspaceFileID(projectId:id(3),path:path),projectId:id(3),path:path,artifactId:artifactID ?? id(4),byteLength:size,sha256:String(repeating:"a",count:64))
+    }
+    private func binary(_ state:CloudAgentState,_ value:CloudWorkspaceArtifact,parents:[String]=[]) throws -> CloudAgentMutation {
+        try state.workspaceArtifactMutation(projectId:id(3),objectId:value.id,path:value.path,artifact:value,parents:parents,projectParents:[id(11)])
+    }
+    private func published(_ state:CloudAgentState,_ operation:CloudAgentMutation) throws -> CloudAgentState {
+        try state.applying(.init(accountId:id(1),changes:[.init(operationId:operation.operationId,objectId:operation.objectId,versionId:operation.versionId,deviceId:operation.deviceId,kind:operation.kind,parents:operation.parents,deleted:operation.deleted,value:operation.value,cursor:state.cursor+1,erased:false)],cursor:state.cursor+1,hasMore:false))
+    }
+    func testBinaryMetadataRoundTripCanonicalIdentityAndPathValidation() throws {
+        let value=artifact()
+        XCTAssertEqual(try JSONDecoder().decode(CloudWorkspaceArtifact.self,from:JSONEncoder().encode(value)),value)
+        XCTAssertEqual(try value.validated(),value)
+        let state=try seeded(),operation=try binary(state,value)
+        XCTAssertEqual(operation.objectId,value.id)
+        XCTAssertEqual(operation.value?.object?["byteLength"]?.number,70000)
+        XCTAssertEqual(operation.value?.object?["type"]?.string,"hermes_artifact_file")
+        XCTAssertNil(operation.value?.object?["content"])
+        for path in ["../escape","/absolute","a//b","a\\b",String(repeating:"💙",count:257)] {
+            XCTAssertThrowsError(try artifact(path).validated())
+        }
+        for size in [-1,64*1024*1024+1] { XCTAssertThrowsError(try artifact(size:size).validated()) }
+        _ = try artifact(size:64*1024*1024).validated()
+        _ = try artifact(size:0).validated()
+        XCTAssertThrowsError(try state.workspaceArtifactMutation(projectId:id(3),objectId:id(90),path:value.path,artifact:value,parents:[],projectParents:[id(11)]))
+        let foreign=CloudWorkspaceArtifact(id:value.id,projectId:id(99),path:value.path,artifactId:value.artifactId,byteLength:value.byteLength,sha256:value.sha256)
+        XCTAssertThrowsError(try binary(state,foreign))
+        let malformed=CloudWorkspaceArtifact(id:value.id,projectId:value.projectId,path:value.path,artifactId:value.artifactId,byteLength:1,sha256:String(repeating:"F",count:64))
+        XCTAssertThrowsError(try malformed.validated())
+    }
+    func testTextBinaryTextConversionsPreserveCustomMetadataAndOriginalParents() throws {
+        var state=try seeded()
+        let value=artifact()
+        let text=try state.workspaceMutation(projectId:id(3),objectId:"",path:value.path,content:"initial",parents:[],projectParents:[id(11)],delete:false)
+        var raw=try XCTUnwrap(text.value?.object);raw["custom"] = .object(["keep":.number(42)]);raw["mediaType"] = .string("text/plain")
+        let original=CloudAgentMutation(operationId:text.operationId,objectId:text.objectId,versionId:text.versionId,deviceId:text.deviceId,kind:text.kind,parents:text.parents,deleted:false,value:.object(raw))
+        state=try published(state,original)
+        XCTAssertThrowsError(try binary(state,value))
+        XCTAssertThrowsError(try binary(state,value,parents:[original.versionId,original.versionId]))
+        let converted=try binary(state,value,parents:[original.versionId])
+        XCTAssertEqual(converted.value?.object?["custom"],raw["custom"])
+        XCTAssertNil(converted.value?.object?["content"]);XCTAssertNil(converted.value?.object?["mediaType"])
+        state=try published(state,converted)
+        XCTAssertThrowsError(try state.workspaceMutation(projectId:id(3),objectId:value.id,path:value.path,content:"back",parents:[original.versionId],projectParents:[id(11)],delete:false))
+        let restored=try state.workspaceMutation(projectId:id(3),objectId:value.id,path:value.path,content:"back",parents:[converted.versionId],projectParents:[id(11)],delete:false)
+        XCTAssertEqual(restored.value?.object?["custom"],raw["custom"])
+        XCTAssertEqual(restored.value?.object?["content"]?.string,"back")
+        for key in ["artifactId","byteLength","sha256","mediaType"] { XCTAssertNil(restored.value?.object?[key]) }
+    }
+    func testPendingBinaryRetryIsImmutableAndRechecksProjectAndFileHeads() throws {
+        var state=try seeded();let value=artifact(),operation=try binary(state,value)
+        try state.enqueue(operation)
+        XCTAssertEqual(try binary(state,value),operation)
+        XCTAssertThrowsError(try binary(state,artifact(size:70001)))
+        state.outbox=[];state=try published(state,operation)
+        let replacement=artifact(size:17,artifactID:id(5))
+        let pending=try binary(state,replacement,parents:[operation.versionId]);try state.enqueue(pending)
+        XCTAssertEqual(try binary(state,replacement,parents:[operation.versionId]),pending)
+        let changed=CloudAgentMutation(operationId:id(51),objectId:value.id,versionId:id(52),deviceId:id(2),kind:"file",parents:[operation.versionId],deleted:false,value:operation.value)
+        state=try published(state,changed)
+        XCTAssertThrowsError(try binary(state,replacement,parents:[operation.versionId]))
+        var newProject=try seeded();newProject.objects[id(3)]?.heads=[id(91)]
+        XCTAssertThrowsError(try binary(newProject,value))
+        var pendingProject=try seeded()
+        try pendingProject.enqueue(.init(operationId:id(60),objectId:id(3),versionId:id(61),deviceId:id(2),kind:"project",parents:[id(11)],deleted:false,value:.object(["name":.string("pending")])) )
+        XCTAssertThrowsError(try binary(pendingProject,value))
+    }
+    func testMixedCountsAndIndependentTextBinaryByteBudgetsIncludeOutbox() throws {
+        var state=try seeded()
+        for index in 0..<4 { try state.enqueue(binary(state,artifact("binary-\(index)",size:64*1024*1024,artifactID:id(100+index)))) }
+        let text=try state.workspaceMutation(projectId:id(3),objectId:"",path:"text",content:String(repeating:"x",count:65536),parents:[],projectParents:[id(11)],delete:false)
+        try state.enqueue(text)
+        XCTAssertThrowsError(try binary(state,artifact("too-much",size:1)))
+        _ = try binary(state,artifact("empty",size:0))
+        state=try seeded()
+        for index in 0..<199 { try state.enqueue(state.workspaceMutation(projectId:id(3),objectId:"",path:"text-\(index)",content:"",parents:[],projectParents:[id(11)],delete:false)) }
+        try state.enqueue(binary(state,artifact(size:1)))
+        XCTAssertThrowsError(try state.workspaceMutation(projectId:id(3),objectId:"",path:"text-overflow",content:"",parents:[],projectParents:[id(11)],delete:false))
+        XCTAssertThrowsError(try binary(state,artifact("binary-overflow",size:0)))
+        state=try seeded()
+        for index in 0..<8 { try state.enqueue(state.workspaceMutation(projectId:id(3),objectId:"",path:"large-\(index)",content:String(repeating:"x",count:65536),parents:[],projectParents:[id(11)],delete:false)) }
+        _ = try binary(state,artifact(size:64*1024*1024))
+        XCTAssertThrowsError(try state.workspaceMutation(projectId:id(3),objectId:"",path:"text-overflow",content:"x",parents:[],projectParents:[id(11)],delete:false))
+    }
+    func testBinaryGraphConflictsTombstonesAndMalformedPendingBlockPublication() throws {
+        var state=try seeded();let value=artifact(),operation=try binary(state,value)
+        state=try published(state,operation)
+        let conflict=CloudAgentMutation(operationId:id(70),objectId:value.id,versionId:id(71),deviceId:id(2),kind:"file",parents:[],deleted:false,value:operation.value)
+        let conflicted=try published(state,conflict)
+        XCTAssertThrowsError(try binary(conflicted,artifact("other")))
+        XCTAssertThrowsError(try binary(conflicted,value,parents:[operation.versionId,id(71)]))
+        let deletion=try state.workspaceMutation(projectId:id(3),objectId:value.id,path:value.path,content:"",parents:[operation.versionId],projectParents:[id(11)],delete:true)
+        XCTAssertNil(deletion.value);state=try published(state,deletion)
+        XCTAssertThrowsError(try binary(state,value))
+        var malformed=try seeded(),raw=try XCTUnwrap(operation.value?.object)
+        raw["byteLength"] = .number(0.5)
+        malformed.outbox=[.init(operationId:operation.operationId,objectId:operation.objectId,versionId:operation.versionId,deviceId:operation.deviceId,kind:"file",parents:[],deleted:false,value:.object(raw))]
+        XCTAssertThrowsError(try malformed.workspaceMutation(projectId:id(3),objectId:"",path:"new",content:"",parents:[],projectParents:[id(11)],delete:false))
+        var deletedProject=try seeded();deletedProject.objects[id(3)]?.deleted=true
+        XCTAssertThrowsError(try binary(deletedProject,value))
+    }
+}

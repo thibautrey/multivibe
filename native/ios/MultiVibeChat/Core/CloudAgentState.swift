@@ -17,6 +17,24 @@ struct CloudAgentReceipts: Codable, Sendable { let accountId: String; let receip
 struct CloudAgentObject: Codable, Equatable, Sendable {
     let kind: String; var versions: [String:CloudAgentChange] = [:]; var heads: [String] = []; var deleted = false
 }
+struct CloudWorkspaceArtifact: Codable, Equatable, Sendable {
+    let id: String
+    let projectId: String
+    let path: String
+    let artifactId: String
+    let byteLength: Int
+    let sha256: String
+
+    func validated() throws -> Self {
+        try CloudAgentState.validateWorkspacePath(path)
+        guard CloudAgentState.uuid(projectId), CloudAgentState.uuid(artifactId),
+            id == CloudAgentState.workspaceFileID(projectId:projectId,path:path),
+            (0...64*1024*1024).contains(byteLength), sha256.utf8.count == 64,
+            sha256.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })
+        else { throw APIError.server(400,"invalid_workspace_artifact") }
+        return self
+    }
+}
 /// Account-owned graph/outbox only. It contains no execution requests or SDK encrypted conversations.
 struct CloudAgentState: Codable, Equatable, Sendable {
     let accountId: String; let deviceId: String
@@ -139,61 +157,106 @@ struct CloudAgentState: Codable, Equatable, Sendable {
         let chars=Array(hex)
         return [String(chars[0..<8]),String(chars[8..<12]),String(chars[12..<16]),String(chars[16..<20]),String(chars[20..<32])].joined(separator:"-")
     }
-    static func validateWorkspaceText(path:String,content:String) throws {
+    static func validateWorkspacePath(_ path:String) throws {
         let segments=path.split(separator:"/",omittingEmptySubsequences:false)
         guard path.utf16.count<=512,segments.count<=10,!segments.contains(where:{$0.isEmpty || $0=="." || $0==".."}),
-            !path.unicodeScalars.contains(where:{$0.value<32 || $0.value==127 || $0.value==92}),
-            !content.utf8.contains(0),content.utf8.count<=65536 else { throw APIError.server(400,"invalid_workspace_file") }
+            !path.unicodeScalars.contains(where:{$0.value<32 || $0.value==127 || $0.value==92})
+        else { throw APIError.server(400,"invalid_workspace_file") }
+    }
+    static func validateWorkspaceText(path:String,content:String) throws {
+        try validateWorkspacePath(path)
+        guard !content.utf8.contains(0),content.utf8.count<=65536 else { throw APIError.server(400,"invalid_workspace_file") }
     }
     func workspaceProject(_ id:String) throws -> CloudAgentObject {
         guard Self.uuid(id),let object=objects[id],["project","session"].contains(object.kind),!object.deleted,object.heads.count==1,
-            object.versions[object.heads[0]]?.value != nil,
+            let head=object.versions[object.heads[0]],head.value != nil,!head.deleted,!head.erased,
             !outbox.contains(where:{$0.objectId==id}) else { throw APIError.server(409,"workspace_project_unavailable") }
         return object
     }
     func workspaceMutation(projectId:String,objectId:String,path:String,content:String,parents:[String],projectParents:[String],delete:Bool) throws -> CloudAgentMutation {
         try Self.validateWorkspaceText(path:path,content:content)
+        return try workspaceFileMutation(projectId:projectId,objectId:objectId,path:path,
+            replacement:["type":.string("hermes_workspace_file"),"content":.string(content)],parents:parents,projectParents:projectParents,delete:delete)
+    }
+    func workspaceArtifactMutation(projectId:String,objectId:String,path:String,artifact:CloudWorkspaceArtifact,parents:[String],projectParents:[String]) throws -> CloudAgentMutation {
+        _ = try artifact.validated()
+        guard artifact.projectId==projectId,artifact.path==path else { throw APIError.server(409,"workspace_path_changed") }
+        return try workspaceFileMutation(projectId:projectId,objectId:objectId,path:path,
+            replacement:["type":.string("hermes_artifact_file"),"artifactId":.string(artifact.artifactId),"byteLength":.number(Double(artifact.byteLength)),"sha256":.string(artifact.sha256)],
+            parents:parents,projectParents:projectParents,delete:false)
+    }
+    private static func workspaceFileSize(id:String,projectId:String,value:[String:HistoryJSON]) throws -> (text:Int,binary:Int) {
+        guard value["projectId"]?.string==projectId,let path=value["path"]?.string,
+            Self.workspaceFileID(projectId:projectId,path:path)==id else { throw APIError.invalidResponse }
+        if value["type"]?.string=="hermes_workspace_file" {
+            guard let content=value["content"]?.string else { throw APIError.invalidResponse }
+            try validateWorkspaceText(path:path,content:content)
+            return (content.utf8.count,0)
+        }
+        guard value["type"]?.string=="hermes_artifact_file",let artifactId=value["artifactId"]?.string,
+            let size=value["byteLength"]?.number,size.isFinite,size>=0,size<=Double(64*1024*1024),size.rounded(.towardZero)==size,
+            let hash=value["sha256"]?.string else { throw APIError.invalidResponse }
+        let artifact=CloudWorkspaceArtifact(id:id,projectId:projectId,path:path,artifactId:artifactId,byteLength:Int(size),sha256:hash)
+        _ = try artifact.validated()
+        return (0,artifact.byteLength)
+    }
+    private func workspaceFileMutation(projectId:String,objectId:String,path:String,replacement:[String:HistoryJSON],parents:[String],projectParents:[String],delete:Bool) throws -> CloudAgentMutation {
+        try Self.validateWorkspacePath(path)
         let project=try workspaceProject(projectId)
         guard project.heads==projectParents else { throw APIError.server(409,"workspace_project_changed") }
         let id=Self.workspaceFileID(projectId:projectId,path:path)
         guard objectId.isEmpty || objectId==id else { throw APIError.server(409,"workspace_path_changed") }
         var value:[String:HistoryJSON]=[:]
         if let object=objects[id] {
-            guard !object.deleted,object.kind=="file",object.heads.count==1,Set(object.heads)==Set(parents),
-                let existing=object.versions[object.heads[0]]?.value?.object,existing["type"]?.string=="hermes_workspace_file",
+            guard !object.deleted,object.kind=="file",object.heads.count==1,object.heads==parents,
+                let head=object.versions[object.heads[0]],!head.deleted,!head.erased,
+                let existing=head.value?.object,["hermes_workspace_file","hermes_artifact_file"].contains(existing["type"]?.string ?? ""),
                 existing["projectId"]?.string==projectId,existing["path"]?.string==path else { throw APIError.server(409,"workspace_file_changed_or_deleted") }
             value=existing
         } else {
             guard parents.isEmpty,!delete else { throw APIError.server(409,"workspace_file_missing") }
         }
-        value["type"] = .string("hermes_workspace_file");value["projectId"] = .string(projectId);value["path"] = .string(path);value["content"] = .string(content)
+        // Retain custom metadata while removing fields that belong to the previous representation.
+        for key in ["content","artifactId","byteLength","sha256","mediaType"] { value[key]=nil }
+        for (key,item) in replacement { value[key]=item }
+        value["projectId"] = .string(projectId);value["path"] = .string(path)
         let payload:HistoryJSON? = delete ? nil : .object(value)
-        if let pending=outbox.first(where:{$0.objectId==id}) {
+        let pending=outbox.first(where:{$0.objectId==id})
+        if let pending {
             guard pending.kind=="file",pending.parents==parents,pending.deleted==delete,pending.value==payload else { throw APIError.server(409,"workspace_file_pending") }
-            return pending
         }
-        var files:[String:(String,String)]=[:]
+        var files:[String:[String:HistoryJSON]]=[:]
         for (key,object) in objects where object.kind=="file" && !object.deleted {
-            let related=object.versions.values.contains{$0.value?.object?["type"]?.string=="hermes_workspace_file" && $0.value?.object?["projectId"]?.string==projectId}
+            let related=object.versions.values.contains { version in
+                guard let raw=version.value?.object else { return false }
+                return ["hermes_workspace_file","hermes_artifact_file"].contains(raw["type"]?.string ?? "") && raw["projectId"]?.string==projectId
+            }
             if !related { continue }
-            guard object.heads.count==1,let raw=object.versions[object.heads[0]]?.value?.object,
-                raw["projectId"]?.string==projectId,let path=raw["path"]?.string,let content=raw["content"]?.string,
-                Self.workspaceFileID(projectId:projectId,path:path)==key else { throw APIError.server(409,"workspace_file_conflicted") }
-            files[key]=(path,content)
+            guard object.heads.count==1,let head=object.versions[object.heads[0]],!head.deleted,!head.erased,
+                let raw=head.value?.object,raw["projectId"]?.string==projectId else { throw APIError.server(409,"workspace_file_conflicted") }
+            _ = try Self.workspaceFileSize(id:key,projectId:projectId,value:raw)
+            files[key]=raw
         }
         for operation in outbox where operation.kind=="file" {
+            try Self.validate(operation)
             if operation.deleted { files[operation.objectId]=nil;continue }
             guard let raw=operation.value?.object,raw["projectId"]?.string==projectId else { continue }
-            guard raw["type"]?.string=="hermes_workspace_file",let path=raw["path"]?.string,let content=raw["content"]?.string,
-                Self.workspaceFileID(projectId:projectId,path:path)==operation.objectId else { throw APIError.invalidResponse }
-            files[operation.objectId]=(path,content)
+            _ = try Self.workspaceFileSize(id:operation.objectId,projectId:projectId,value:raw)
+            files[operation.objectId]=raw
         }
-        if delete { files[id]=nil } else { files[id]=(path,content) }
+        if delete { files[id]=nil } else { files[id]=value }
         guard files.count<=200 else { throw APIError.server(413,"workspace_file_limit") }
-        var bytes=0
-        for (path,content) in files.values { try Self.validateWorkspaceText(path:path,content:content);bytes += content.utf8.count }
-        guard bytes<=512*1024 else { throw APIError.server(413,"workspace_size_limit") }
-        return .init(operationId:UUID().uuidString.lowercased(),objectId:id,versionId:UUID().uuidString.lowercased(),deviceId:deviceId,kind:"file",parents:parents,deleted:delete,value:payload)
+        var textBytes=0,binaryBytes=0
+        for (fileId,raw) in files {
+            let size=try Self.workspaceFileSize(id:fileId,projectId:projectId,value:raw)
+            textBytes += size.text;binaryBytes += size.binary
+        }
+        guard textBytes<=512*1024 else { throw APIError.server(413,"workspace_size_limit") }
+        guard binaryBytes<=256*1024*1024 else { throw APIError.server(413,"workspace_artifact_size_limit") }
+        if let pending { return pending }
+        let operation=CloudAgentMutation(operationId:UUID().uuidString.lowercased(),objectId:id,versionId:UUID().uuidString.lowercased(),deviceId:deviceId,kind:"file",parents:parents,deleted:delete,value:payload)
+        try Self.validate(operation)
+        return operation
     }
     func acknowledging(_ reply:CloudAgentReceipts, submitted:[CloudAgentMutation]) throws -> Self {
         guard reply.accountId == accountId, !reply.receipts.isEmpty else { throw APIError.invalidResponse }
