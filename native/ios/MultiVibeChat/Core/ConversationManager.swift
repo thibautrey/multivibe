@@ -1116,8 +1116,9 @@ import Network
             if let account = session?.accountId, let turn = input.last(where: { $0.role == "user" }) {
                 let uuid = { UUID().uuidString.lowercased() }
                 var binding = cloudHermesBindings[id] ?? CloudHermesBinding(accountId:account,conversationId:id.uuidString.lowercased(),sessionId:uuid(),branchId:uuid(),operationId:uuid(),versionId:uuid(),deviceId:uuid(),cloudAuthorized:false,importApproved:false)
-                binding.recordLocalIntent(turnId:turn.id,modelId:model,source:model == LocalModel.id ? "apple-foundation-local" : "downloaded-local",
-                    parents:cloudAgentState?.objects[binding.sessionId]?.heads ?? [binding.versionId])
+                let queuedParent = cloudAgentState?.outbox.last(where: { $0.objectId == binding.sessionId })?.versionId
+                let parents = queuedParent.map { [$0] } ?? cloudAgentState?.objects[binding.sessionId]?.heads ?? [binding.versionId]
+                binding.recordLocalIntent(turnId:turn.id,modelId:model,source:model == LocalModel.id ? "apple-foundation-local" : "downloaded-local",parents:parents)
                 let previous = cloudHermesBindings[id]; cloudHermesBindings[id] = binding
                 guard persist() else { cloudHermesBindings[id] = previous; isStreaming = false; setReplyCompletion(.failed); activeReply = nil; return false }
             }
