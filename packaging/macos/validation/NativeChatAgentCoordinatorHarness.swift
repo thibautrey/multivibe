@@ -195,12 +195,25 @@ struct NativeChatConversation: Codable { let id: UUID; let title: String; let mo
         let newLocalID = UUID().uuidString.lowercased()
         let currentAnchorValue = messageAnchor["value"] as! [String: Any], currentBranch = currentAnchorValue["branchId"] as! String
         var newerLocal = anchorMessage; newerLocal["objectId"] = newLocalID; newerLocal["versionId"] = UUID().uuidString.lowercased(); newerLocal["cursor"] = 9
-        newerLocal["value"] = ["type": "hermes_local_turn", "sessionId": anchorID, "branchId": currentBranch, "history": [["role": "user", "content": "After merge"], ["role": "assistant", "content": "New local turn wins"]]]
+        newerLocal["value"] = ["type": "hermes_local_turn", "sessionId": anchorID, "branchId": currentBranch, "turnId": newLocalID, "history": [["role": "user", "content": "After merge"], ["role": "assistant", "content": "New local turn wins"]]]
         var updatedAnchor = messageAnchor; updatedAnchor["parents"] = [messageAnchor["versionId"]!]; updatedAnchor["versionId"] = UUID().uuidString.lowercased(); updatedAnchor["cursor"] = 10
         var preservedAnchor = currentAnchorValue; preservedAnchor["localTurnId"] = newLocalID; updatedAnchor["value"] = preservedAnchor
         f.changes = [removed, newerLocal, updatedAnchor]
         do { try await anchored.synchronize(); preconditionFailure("deleted retained anchor accepted") } catch {}
         precondition(anchored.synchronizedMessages(anchorSession).isEmpty)
+        // Metadata on a session referencing a local turn must not outrank a newer completed run.
+        let cursorClient = NativeChatAgentCoordinator(session: session, client: client, root: folder.appendingPathComponent("cursor-order")); await cursorClient.restore()
+        var cursorLocal = newerLocal; cursorLocal["cursor"] = 2
+        cursorLocal["value"] = ["type": "hermes_local_turn", "sessionId": anchorID, "branchId": newBranch, "turnId": newLocalID, "history": [["role": "user", "content": "Local ask"], ["role": "assistant", "content": "Older local answer"]]]
+        var cursorSession = anchorVersion; cursorSession["parents"] = [anchorVersion["versionId"]!]; cursorSession["versionId"] = UUID().uuidString.lowercased(); cursorSession["cursor"] = 4
+        var cursorValue = anchorVersion["value"] as! [String: Any]; cursorValue["localTurnId"] = newLocalID; cursorValue["title"] = "Later title"; cursorSession["value"] = cursorValue
+        f.changes = [anchorVersion, cursorLocal, advancedTask, cursorSession]; try await cursorClient.synchronize()
+        precondition(cursorClient.synchronizedMessages(anchorSession).last?.content == "New branch answer")
+        var wrongTurn = cursorLocal; wrongTurn["parents"] = [cursorLocal["versionId"]!]; wrongTurn["versionId"] = UUID().uuidString.lowercased(); wrongTurn["cursor"] = 5
+        var wrongValue = cursorLocal["value"] as! [String: Any]; wrongValue["turnId"] = UUID().uuidString.lowercased(); wrongTurn["value"] = wrongValue
+        f.changes = [wrongTurn]
+        do { try await cursorClient.synchronize(); preconditionFailure("mismatched turn ID accepted") } catch {}
+        precondition(cursorClient.synchronizedMessages(anchorSession).isEmpty)
         f.pauseWrite = true
         let another = NativeChatConversation(id: UUID(), title: "Another", model: "local-model", messages: [])
         let epoch = restored.loginEpoch
