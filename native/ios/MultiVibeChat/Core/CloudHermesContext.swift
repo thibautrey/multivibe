@@ -4,7 +4,15 @@ import CryptoKit
 /// Selected Cloud documents only. The returned text is untrusted context, never executable
 /// configuration, shell commands, native memories, or automatically selected device documents.
 enum CloudHermesContext {
-    struct Snapshot: Equatable, Sendable { let memory: String; let skills: String; let files: String }
+    struct WorkspaceFile: Equatable, Sendable {
+        let accountId: String; let projectId: String; let objectId: String
+        let path: String; let content: String; let parents: [String]; let projectParents: [String]
+        let pending: Bool
+    }
+    struct Snapshot: Equatable, Sendable {
+        let memory: String; let skills: String; let files: String
+        var workspaceFiles: [WorkspaceFile] = []
+    }
     enum Failure: Error, Equatable { case accountMismatch, projectMismatch, missingObject, conflictedObject, deletedObject, invalidObject, limitExceeded }
     static func build(state: CloudAgentState, accountID: String, projectID: String? = nil,
                       memoryObjectIDs: [String] = [], skillObjectIDs: [String] = [], fileObjectIDs: [String] = []) throws -> Snapshot {
@@ -58,13 +66,20 @@ enum CloudHermesContext {
                 if relative == "SKILL.md" || relative.hasPrefix("references/") { skills.append((path, content)) }
             }
         }
+        var workspaceFiles: [WorkspaceFile] = []
         var files: [(String, String)] = [], paths = Set<String>(), fileBytes = 0
         if !fileObjectIDs.isEmpty {
             guard let projectID, CloudAgentState.uuid(projectID) else { throw Failure.projectMismatch }
             guard let owner = state.objects[projectID], ["project","session"].contains(owner.kind) else { throw Failure.projectMismatch }
             _ = try object(projectID, kind: owner.kind)
             for id in fileObjectIDs {
-                let value = try object(id, kind: "file")
+                var value = try object(id, kind: "file")
+                let pending = state.outbox.filter { $0.objectId == id }
+                guard pending.count <= 1 else { throw Failure.conflictedObject }
+                if let queued = pending.first {
+                    guard !queued.deleted, queued.kind == "file", let queuedValue = queued.value?.object else { throw Failure.deletedObject }
+                    value = queuedValue
+                }
                 guard value["type"] == .string("hermes_workspace_file"), value["projectId"] == .string(projectID) else { throw Failure.projectMismatch }
                 let path = try string(value["path"]), parts = path.split(separator: "/", omittingEmptySubsequences: false)
                 guard path.utf16.count <= 512, parts.count <= 10, parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." && $0.range(of: "[\\\\\\x00-\\x1f\\x7f]", options: .regularExpression) == nil }), paths.insert(path).inserted,
@@ -72,9 +87,11 @@ enum CloudHermesContext {
                 let content = try text(value["content"], limit: 65_536); fileBytes += content.utf8.count
                 guard fileBytes <= 512 * 1024 else { throw Failure.limitExceeded }
                 files.append((path, content))
+                workspaceFiles.append(.init(accountId: accountID, projectId: projectID, objectId: id,
+                    path: path, content: content, parents: state.objects[id]!.heads, projectParents: owner.heads, pending: !pending.isEmpty))
             }
         } else if let projectID, !CloudAgentState.uuid(projectID) { throw Failure.projectMismatch }
-        return try Snapshot(memory: render(memories), skills: render(skills), files: render(files))
+        return try Snapshot(memory: render(memories), skills: render(skills), files: render(files), workspaceFiles: workspaceFiles)
     }
     static func workspaceFileID(projectID: String, path: String) -> String {
         var bytes = Array(SHA256.hash(data: Data(("multivibe-workspace-v1\0" + projectID + ":" + path).utf8)).prefix(16))

@@ -335,22 +335,39 @@ final class RemoteHermesHistoryTests: XCTestCase {
         var graph=CloudAgentState(accountId:account,deviceId:id())
         graph.objects[memoryID] = .init(kind:"memory",versions:[memoryVersion:memory],heads:[memoryVersion])
         binding.contextMemoryIDs=[memoryID]
+        let project=id(),projectHead=id(),fileHead=id(),path="notes.txt"
+        let fileID=CloudAgentState.workspaceFileID(projectId:project,path:path)
+        let projectChange=CloudAgentChange(operationId:id(),objectId:project,versionId:projectHead,deviceId:id(),kind:"project",parents:[],deleted:false,value:.object(["title":.string("Project")]),cursor:2,erased:false)
+        let fileChange=CloudAgentChange(operationId:id(),objectId:fileID,versionId:fileHead,deviceId:id(),kind:"file",parents:[],deleted:false,value:.object(["type":.string("hermes_workspace_file"),"projectId":.string(project),"path":.string(path),"content":.string("Original workspace")]),cursor:3,erased:false)
+        graph.objects[project] = .init(kind:"project",versions:[projectHead:projectChange],heads:[projectHead])
+        graph.objects[fileID] = .init(kind:"file",versions:[fileHead:fileChange],heads:[fileHead])
+        binding.contextProjectID=project;binding.contextFileIDs=[fileID]
         let conversation=Conversation(id:conversationID,model:LocalModel.id,messages:[ChatMessage(role:"user",content:"Old question"),ChatMessage(role:"assistant",content:"Old answer",completion:.completed)])
         let payload=try JSONSerialization.data(withJSONObject:["cloudHermesBindings":JSONSerialization.jsonObject(with:JSONEncoder().encode([conversationID:binding])),"cloudAgentState":JSONSerialization.jsonObject(with:JSONEncoder().encode(graph)),"conversations":JSONSerialization.jsonObject(with:JSONEncoder().encode([conversation])),"baseline":[],"conversationIDs":[:],"messageIDs":[:]])
         let auth=NativeSession(accessToken:"fixture",refreshToken:"fixture",expiresAt:.distantFuture,accountId:account)
         let received=expectation(description:"Local responder got complete seeded history")
-        let services=isolatedServices(load:{auth},readLocalHistory:{_ in payload},localAvailability:{nil},localRespond:{_,workspace,delta in
+        var persisted:Data?
+        var services=isolatedServices(load:{auth},readLocalHistory:{_ in payload},localAvailability:{nil},localRespond:{_,workspace,delta in
             let history=await workspace.initialHermesHistory
             let context=await workspace.selectedCloudContext
             XCTAssertTrue(history?.contains(tool) == true)
             XCTAssertEqual(history?.last?.object?["content"]?.string,"Continue offline")
             XCTAssertTrue(context.contains("Selected Cloud memory"));XCTAssertTrue(context.contains("untrusted data"))
+            let request=try JSONSerialization.data(withJSONObject:["documentID":fileID,"expected":"Original workspace","content":"Saved offline by Hermes"])
+            let result=try await workspace.executeHarnessTool(name:"document_replace",arguments:String(decoding:request,as:UTF8.self))
+            XCTAssertTrue(result?.content.contains("synchronisation en attente") == true)
             await delta("Local answer");received.fulfill()
         })
+        services.writeHistory={data,_ in persisted=data}
         let manager=ConversationManager(services:services)
         await manager.restore(loadRemoteModels:false);manager.selection=conversationID;manager.selectedModel=LocalModel.id
         XCTAssertTrue(manager.send("Continue offline"))
         await fulfillment(of:[received],timeout:3)
+        let cache=try JSONSerialization.jsonObject(with:XCTUnwrap(persisted)) as! [String:Any]
+        let saved=try JSONDecoder().decode(CloudAgentState.self,from:JSONSerialization.data(withJSONObject:XCTUnwrap(cache["cloudAgentState"])))
+        let operation=try XCTUnwrap(saved.outbox.first(where:{$0.objectId==fileID}))
+        XCTAssertEqual(operation.parents,[fileHead]);XCTAssertEqual(operation.value?.object?["content"]?.string,"Saved offline by Hermes")
+        XCTAssertTrue(manager.localDocuments.isEmpty)
         manager.stop()
     }
 }
@@ -809,5 +826,39 @@ final class CloudWorkspaceArtifactGraphTests: XCTestCase {
         release?.resume(returning:file)
         do { _=try await task.value;XCTFail("Old account import must cancel") } catch {}
         XCTAssertEqual(removals,1);XCTAssertEqual(begins,0)
+    }
+}
+
+final class CloudHermesWorkspaceProjectionTests: XCTestCase {
+    func testPendingWorkspaceIsVisibleButReadOnlyAndBinaryNeverBecomesText() throws {
+        let account=UUID().uuidString.lowercased(),device=UUID().uuidString.lowercased()
+        @discardableResult func insert(_ state:inout CloudAgentState,id:String=UUID().uuidString.lowercased(),kind:String,value:HistoryJSON)->String {
+            let version=UUID().uuidString.lowercased()
+            let change=CloudAgentChange(operationId:UUID().uuidString.lowercased(),objectId:id,versionId:version,deviceId:device,kind:kind,parents:[],deleted:false,value:value,cursor:1,erased:false)
+            state.objects[id] = .init(kind:kind,versions:[version:change],heads:[version]);return id
+        }
+        var graph=CloudAgentState(accountId:account,deviceId:device)
+        let project=insert(&graph,kind:"project",value:.object(["title":.string("Project")]))
+        let path="notes.txt",file=CloudAgentState.workspaceFileID(projectId:project,path:"notes.txt")
+        insert(&graph,id:file,kind:"file",value:.object(["type":.string("hermes_workspace_file"),"projectId":.string(project),"path":.string(path),"content":.string("old")]))
+        let parents=graph.objects[file]!.heads,projectParents=graph.objects[project]!.heads
+        try graph.enqueue(graph.workspaceMutation(projectId:project,objectId:file,path:path,content:"pending",parents:parents,projectParents:projectParents,delete:false))
+        let snapshot=try CloudHermesContext.build(state:graph,accountID:account,projectID:project,fileObjectIDs:[file])
+        XCTAssertEqual(snapshot.workspaceFiles.first?.content,"pending");XCTAssertEqual(snapshot.workspaceFiles.first?.parents,parents)
+        XCTAssertEqual(snapshot.workspaceFiles.first?.projectParents,projectParents);XCTAssertEqual(snapshot.workspaceFiles.first?.pending,true)
+        graph.outbox=[]
+        insert(&graph,id:file,kind:"file",value:.object(["type":.string("hermes_artifact_file"),"projectId":.string(project),"path":.string(path),"content":.string("not text")]))
+        XCTAssertThrowsError(try CloudHermesContext.build(state:graph,accountID:account,projectID:project,fileObjectIDs:[file]))
+        graph.objects[file]?.deleted=true
+        XCTAssertThrowsError(try CloudHermesContext.build(state:graph,accountID:account,projectID:project,fileObjectIDs:[file]))
+    }
+    func testFailedWorkspacePersistenceLeavesToolSnapshotUnchanged() async throws {
+        let file=CloudHermesContext.WorkspaceFile(accountId:UUID().uuidString.lowercased(),projectId:UUID().uuidString.lowercased(),objectId:UUID().uuidString.lowercased(),path:"notes.txt",content:"original",parents:[UUID().uuidString.lowercased()],projectParents:[UUID().uuidString.lowercased()],pending:false)
+        let workspace=LocalAgentWorkspace(conversations:[],documents:[],selectedWorkspaceFiles:[file],saveWorkspaceFile:{_,_ in throw CocoaError(.fileWriteOutOfSpace)},event:{_ in},saveDocument:{_ in XCTFail("Cloud file entered local documents")})
+        let arguments=String(decoding:try JSONSerialization.data(withJSONObject:["documentID":file.objectId,"expected":"original","content":"replacement"]),as:UTF8.self)
+        do { _=try await workspace.executeHarnessTool(name:"document_replace",arguments:arguments);XCTFail("Unsaved write succeeded") } catch {}
+        let read=String(decoding:try JSONSerialization.data(withJSONObject:["documentID":file.objectId]),as:UTF8.self)
+        let snapshot=try await workspace.executeHarnessTool(name:"document_snapshot",arguments:read)
+        XCTAssertEqual(snapshot?.content,"original")
     }
 }

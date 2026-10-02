@@ -96,6 +96,10 @@ actor LocalAgentWorkspace {
     private var deadline: Date
     private let conversations: [Conversation]
     private var documents: [LocalDocument]
+    private let workspaceFiles: [CloudHermesContext.WorkspaceFile]
+    private var workspaceDocuments: [LocalDocument]
+    private var workspaceWrites = Set<UUID>()
+    private let saveWorkspaceFile: (@Sendable (CloudHermesContext.WorkspaceFile, String) async throws -> Void)?
     private let allowedDeviceActions: Set<String>
     private let deviceData: LocalDeviceSnapshot
     private let readDevice: (@Sendable (String, String) async throws -> LocalToolResult)?
@@ -105,7 +109,8 @@ actor LocalAgentWorkspace {
     private var webPages: [String: LocalWebResponse] = [:]
     private let event: @Sendable (LocalAgentEvent) async -> Void
     private let saveDocument: @Sendable (LocalDocument) async throws -> Void
-    init(conversations: [Conversation], documents: [LocalDocument], hermesContext: HermesRunContext? = nil, initialHermesHistory: [HistoryJSON]? = nil, selectedCloudContext: String = "", deviceData: LocalDeviceSnapshot = LocalDeviceSnapshot(),
+    init(conversations: [Conversation], documents: [LocalDocument], hermesContext: HermesRunContext? = nil, initialHermesHistory: [HistoryJSON]? = nil, selectedCloudContext: String = "", selectedWorkspaceFiles: [CloudHermesContext.WorkspaceFile] = [],
+         saveWorkspaceFile: (@Sendable (CloudHermesContext.WorkspaceFile, String) async throws -> Void)? = nil, deviceData: LocalDeviceSnapshot = LocalDeviceSnapshot(),
          event: @escaping @Sendable (LocalAgentEvent) async -> Void,
          saveDocument: @escaping @Sendable (LocalDocument) async throws -> Void,
          deadline: Date = Date().addingTimeInterval(120),
@@ -119,6 +124,11 @@ actor LocalAgentWorkspace {
         self.hermesContext = hermesContext
         self.initialHermesHistory = initialHermesHistory
         self.selectedCloudContext = selectedCloudContext
+        self.workspaceFiles = selectedWorkspaceFiles
+        self.workspaceDocuments = selectedWorkspaceFiles.compactMap { file in
+            UUID(uuidString: file.objectId).map { LocalDocument(id: $0, name: "Hermes/" + file.path, text: file.content) }
+        }
+        self.saveWorkspaceFile = saveWorkspaceFile
         self.conversations = conversations; self.documents = documents; self.deviceData = deviceData
         self.event = event; self.saveDocument = saveDocument; self.deadline = deadline
         self.memory = memory; self.automation = automation
@@ -183,6 +193,26 @@ actor LocalAgentWorkspace {
             await recordHarness(tool: name, input: "", output: content, status: "needs_input")
             return PiToolResult(content: content, terminal: true)
         }
+        if let rawID = input["documentID"], let id = UUID(uuidString: rawID),
+           let index = workspaceDocuments.firstIndex(where: { $0.id == id }),
+           let file = workspaceFiles.first(where: { $0.objectId == id.uuidString.lowercased() }) {
+            if name == "document_snapshot" {
+                guard Set(input.keys) == ["documentID"] else { throw LocalAgentError.invalidInput }
+                return PiToolResult(content: workspaceDocuments[index].text)
+            }
+            guard Set(input.keys) == ["documentID", "content", "expected"], !file.pending,
+                  let content = input["content"], let expected = input["expected"], expected == workspaceDocuments[index].text,
+                  let saveWorkspaceFile, workspaceWrites.insert(id).inserted else { throw LocalAgentError.invalidInput }
+            defer { workspaceWrites.remove(id) }
+            try CloudAgentState.validateWorkspaceText(path: file.path, content: content)
+            try Task.checkCancellation()
+            try await saveWorkspaceFile(file, content)
+            try Task.checkCancellation()
+            workspaceDocuments[index].text = content
+            let result = "Fichier Hermes enregistré sur cet appareil, synchronisation en attente : \(file.path) (\(id.uuidString))."
+            await recordHarness(tool: "edit_document", input: rawID, output: result, status: "success")
+            return PiToolResult(content: result)
+        }
         guard let rawID = input["documentID"], let id = UUID(uuidString: rawID),
               let index = documents.firstIndex(where: { $0.id == id }) else { throw LocalAgentError.documentMissing }
         if name == "document_snapshot" {
@@ -243,9 +273,9 @@ actor LocalAgentWorkspace {
                 try await self.fetchAuthorized(url, method: "GET")
             }
         case "list_documents":
-            return String(documents.map { "\($0.id.uuidString): \($0.name)" }.joined(separator: "\n").prefix(2400))
+            return String((workspaceDocuments + documents.filter { local in !workspaceDocuments.contains(where: { $0.id == local.id }) }).map { "\($0.id.uuidString): \($0.name)" }.joined(separator: "\n").prefix(2400))
         case "read_document":
-            guard let id = UUID(uuidString: documentID), let document = documents.first(where: { $0.id == id }) else { throw LocalAgentError.documentMissing }
+            guard let id = UUID(uuidString: documentID), let document = (workspaceDocuments + documents).first(where: { $0.id == id }) else { throw LocalAgentError.documentMissing }
             // query optionally selects a relevant passage rather than stuffing a whole file into context.
             let lines = document.text.components(separatedBy: .newlines)
                 .filter { query.isEmpty || $0.localizedCaseInsensitiveContains(query) }
