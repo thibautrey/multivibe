@@ -138,8 +138,7 @@ import Network
                     guard let pending = saved.pending else { continue }
                     do {
                         var result = try await services.hermesRead(auth.accountId,pending.runId,auth.accessToken,false)
-                        cloudHermesStatus[id] = result.state
-                    while ["queued","running","waiting_device"].contains(result.state) {
+                        while ["queued","running","waiting_device"].contains(result.state) {
                             guard !Task.isCancelled, sessionRevision == revision, session?.accountId == auth.accountId, !isStreaming else { return }
                             guard Date() < deadline else { throw APIError.server(409,"hermes_recovery_pending") }
                             guard cloudHermesBindings[id]?.pending?.runId == pending.runId,
