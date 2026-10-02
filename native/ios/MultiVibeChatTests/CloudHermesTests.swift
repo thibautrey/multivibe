@@ -571,3 +571,62 @@ final class RemoteHermesHistoryTests: XCTestCase {
         XCTAssertEqual(creates,0);XCTAssertEqual(cancels,0)
     }
 }
+
+@MainActor final class CloudAgentSyncOwnershipTests: XCTestCase {
+    private func awaitIdle(_ manager: ConversationManager) async {
+        let idle = expectation(description:"synchronization releases its owner")
+        let observer = Task { @MainActor in
+            while manager.cloudAgentSyncing && !Task.isCancelled { await Task.yield() }
+            if !Task.isCancelled { idle.fulfill() }
+        }
+        await fulfillment(of:[idle],timeout:5)
+        observer.cancel()
+    }
+    func testAccountSwitchStartsNewSyncAndLateOldCompletionCannotReleaseItsLock() async throws {
+        let oldAccount=UUID().uuidString.lowercased(),newAccount=UUID().uuidString.lowercased()
+        let oldAuth=NativeSession(accessToken:"old",refreshToken:"old-refresh",expiresAt:Date().addingTimeInterval(3600),accountId:oldAccount)
+        let newAuth=NativeSession(accessToken:"new",refreshToken:"new-refresh",expiresAt:Date().addingTimeInterval(3600),accountId:newAccount)
+        var saved=oldAuth
+        var suspended=false,oldRequests=0,newRequests=0
+        var oldReply:CheckedContinuation<CloudAgentPage,Never>?
+        var newReply:CheckedContinuation<CloudAgentPage,Never>?
+        let initial=expectation(description:"initial account synchronization reaches consent")
+        let oldEntered=expectation(description:"old request suspended")
+        let newEntered=expectation(description:"new account synchronizes despite old request")
+        var services=isolatedServices(load:{saved},save:{saved=$0})
+        services.hermesConsent={token in
+            if !suspended { initial.fulfill() }
+            return .init(accountId:token == "old" ? oldAccount:newAccount,cloudEnabled:false,revision:1)
+        }
+        services.hermesChanges={after,token in
+            if !suspended { return .init(accountId:oldAccount,changes:[],cursor:after,hasMore:false) }
+            if token == "old" {
+                oldRequests += 1
+                return await withCheckedContinuation { continuation in oldReply=continuation;oldEntered.fulfill() }
+            }
+            newRequests += 1
+            if newRequests == 1 {
+                return await withCheckedContinuation { continuation in newReply=continuation;newEntered.fulfill() }
+            }
+            return .init(accountId:newAccount,changes:[],cursor:after,hasMore:false)
+        }
+        let manager=ConversationManager(services:services)
+        await manager.restore(loadRemoteModels:false)
+        await fulfillment(of:[initial],timeout:5);await awaitIdle(manager)
+        suspended=true
+        let oldTask=Task { await manager.synchronizeCloudAgentState() }
+        await fulfillment(of:[oldEntered],timeout:5)
+        try await manager.accept(newAuth)
+        await fulfillment(of:[newEntered],timeout:5)
+        XCTAssertTrue(manager.cloudAgentSyncing);XCTAssertEqual(newRequests,1)
+        oldReply?.resume(returning:.init(accountId:oldAccount,changes:[],cursor:0,hasMore:false));oldReply=nil
+        await oldTask.value // Observe the old operation's entire defer, not merely transport completion.
+        XCTAssertTrue(manager.cloudAgentSyncing,"old epoch must not release the new owner's lock")
+        await manager.synchronizeCloudAgentState() // Must coalesce, not enter another concurrent request.
+        XCTAssertEqual(newRequests,1);XCTAssertEqual(oldRequests,1)
+        newReply?.resume(returning:.init(accountId:newAccount,changes:[],cursor:0,hasMore:false));newReply=nil
+        await awaitIdle(manager)
+        XCTAssertEqual(manager.session?.accountId,newAccount)
+        XCTAssertNil(manager.cloudAgentSyncError)
+    }
+}
