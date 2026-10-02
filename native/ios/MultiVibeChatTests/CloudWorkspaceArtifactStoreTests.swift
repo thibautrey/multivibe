@@ -19,6 +19,20 @@ final class CloudWorkspaceArtifactStoreTests: XCTestCase {
         XCTAssertThrowsError(try corrupt.checked(accountId: account, expected: identity, index: 0))
         XCTAssertThrowsError(try chunk.checked(accountId: account, expected: identity, index: 1))
     }
+    func testArtifactRoutesRejectTraversalQueriesAndCancellationBeforeNetwork() async throws {
+        let api = ChatAPI()
+        for path in ["artifacts/../consent", "artifacts?accountId=other", "artifacts/" + id() + "/chunks/-1", "artifacts/" + id() + "/chunks/01"] {
+            do {
+                let _: CloudArtifactReply = try await api.hermesRequest(path, token: "unused")
+                XCTFail("Invalid artifact route accepted")
+            } catch APIError.invalidResponse {} catch { XCTFail("Unexpected route validation error") }
+        }
+        let task = Task { () throws -> CloudArtifactReply in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await api.hermesRequest("artifacts", token: "unused")
+        }
+        do { _ = try await task.value; XCTFail("Cancelled request continued") } catch is CancellationError {} catch { XCTFail("Cancellation was not preserved") }
+    }
     func testBoundedImportDownloadAndAccountIsolation() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(id(), isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
