@@ -558,7 +558,7 @@ struct ChatView: View {
     private var composer: some View {
         @Bindable var manager = manager
         return VStack(alignment: .leading, spacing: 8) {
-            if !ModelExecution(manager.selectedModel).isLocal && manager.session != nil {
+            if manager.session != nil && (!ModelExecution(manager.selectedModel).isLocal || manager.currentCloudHermesAuthorized) {
                 VStack(alignment:.leading,spacing:6) {
                     Label("Hermes · environnement Linux personnel",systemImage:"cloud")
                     Button(manager.currentCloudHermesAuthorized ? "Gérer les autorisations de cette conversation" : "Autoriser Hermes pour cette conversation") { cloudHermesConsentPresented = true }
@@ -2627,7 +2627,7 @@ private struct CloudAgentBrowserView: View {
                             ForEach(items) { object in
                                 VStack(alignment:.leading,spacing:6) {
                                     if kind == "session", !object.deleted, !object.conflicted {
-                                        NavigationLink(object.title) { RemoteHermesConversationView(sessionId:object.id,title:object.title) }
+                                        NavigationLink(object.title) { RemoteHermesConversationView(sessionId:object.id,title:object.title,onLocalContinue:{ dismiss() }) }
                                     } else { Text(object.title).font(.headline) }
                                     if object.deleted { Text("Supprimé · contenu effacé").foregroundStyle(.secondary) }
                                     else if object.conflicted {
@@ -2925,6 +2925,10 @@ private struct RemoteHermesConversationView: View {
     @Environment(ConversationManager.self) private var manager
     let sessionId: String
     let title: String
+    var onLocalContinue: () -> Void = {}
+    @State private var localModel = ""
+    @State private var localConsent = false
+    @State private var localPrepared = false
     @State private var model = ""
     @State private var workspaceProject = ""
     @State private var workspaceChanged = false
@@ -2936,11 +2940,32 @@ private struct RemoteHermesConversationView: View {
     var body: some View {
         List {
             Section {
-                Text("Conversation de votre espace Cloud. Aucun message n’est copié vers l’historique de cet appareil ou les historiques SDK.").font(.caption)
+                Text("Conversation de votre espace Cloud. « Continuer sur cet appareil » crée explicitement une copie locale pour utiliser un modèle installé.").font(.caption)
                 Button("Actualiser") { Task { await manager.synchronizeCloudAgentState(); await manager.recoverRemoteHermes() } }
                     .disabled(manager.cloudAgentSyncing || manager.remoteHermesBusy)
                 if !available { Text("Conversation supprimée ou en conflit. La continuation est bloquée.").foregroundStyle(.orange) }
                 if let error = error ?? manager.remoteHermesError ?? manager.cloudAgentSyncError { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+            }
+            Section("Continuer sur cet appareil") {
+                Picker("Modèle local",selection:$localModel) {
+                    Text("Choisir un modèle installé").tag("")
+                    ForEach(manager.localHermesContinuationModels) { option in Text(option.displayName).tag(option.id) }
+                }
+                Text("L’historique sera disponible sur cet appareil. Aucun modèle n’est lancé avant votre prochain message. L’envoi des nouvelles réponses locales au Cloud nécessite une autorisation explicite.").font(.caption)
+                Button("Continuer sur cet appareil") {
+                    guard let account else { return }
+                    do {
+                        try manager.continueHermesOnDevice(sessionId:sessionId,model:localModel,accountId:account)
+                        localPrepared=true;error=nil
+                    } catch { self.error=error.localizedDescription }
+                }.disabled(!available || localModel.isEmpty || submitting || manager.isStreaming || account != manager.session?.accountId)
+                if localPrepared {
+                    if !manager.currentLocalHermesExportApproved {
+                        Text("Synchronisation des nouvelles réponses locales désactivée.").font(.caption)
+                        Button("Configurer la synchronisation et le contexte") { localConsent=true }
+                    }
+                    Button("Ouvrir la conversation locale") { onLocalContinue() }
+                }
             }
             Section("Conversation") {
                 ForEach(Array(manager.remoteHermesTranscript(sessionId).enumerated()),id:\.offset) { _, message in
@@ -2985,8 +3010,9 @@ private struct RemoteHermesConversationView: View {
                 }.disabled(!available || submitting || manager.remoteHermesBusy || model.isEmpty || draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
             }
         }.navigationTitle(title)
+            .sheet(isPresented:$localConsent) { CloudHermesConsentView() }
             .onAppear { account=manager.session?.accountId; workspaceProject=manager.remoteHermesWorkspaceProject(sessionId) }
-            .onChange(of:manager.session?.accountId) { _,_ in draft="";model="";workspaceProject="";workspaceChanged=false;error=nil;account=nil }
+            .onChange(of:manager.session?.accountId) { _,_ in draft="";model="";workspaceProject="";workspaceChanged=false;error=nil;account=nil;localPrepared=false;localModel="";localConsent=false }
             .task {
                 await manager.synchronizeCloudAgentState(); await manager.recoverRemoteHermes()
                 while !Task.isCancelled {

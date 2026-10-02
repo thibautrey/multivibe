@@ -953,3 +953,64 @@ private actor CloudWorkspaceResponderHold {
         }
     }
 }
+
+@MainActor final class CloudHermesSharedLocalContinuationTests: XCTestCase {
+    private func fixture(pending:Bool=false,conflicted:Bool=false) throws -> (NativeSession,String,String,[HistoryJSON],Data) {
+        let id={UUID().uuidString.lowercased()},account=UUID().uuidString.lowercased(),session=id(),branch=id(),head=id(),device=id()
+        let history:[HistoryJSON] = [.object(["role":.string("user"),"content":.string("Read source")]),
+            .object(["role":.string("assistant"),"content":.null,"tool_calls":.array([.object(["id":.string("read-1"),"function":.object(["name":.string("read_file"),"arguments":.string("{}")])])])]),
+            .object(["role":.string("tool"),"tool_call_id":.string("read-1"),"content":.string("Hidden source")]),
+            .object(["role":.string("assistant"),"content":.string("Shared answer")])]
+        var state=CloudAgentState(accountId:account,deviceId:device)
+        let change=CloudAgentChange(operationId:id(),objectId:session,versionId:head,deviceId:device,kind:"session",parents:[],deleted:false,value:.object(["type":.string("hermes_session"),"branchId":.string(branch),"title":.string("Shared web conversation"),"messages":.array(history)]),cursor:1,erased:false)
+        state.objects[session] = .init(kind:"session",versions:[head:change],heads:conflicted ? [head,id()] : [head])
+        if pending {
+            let task=id(),version=id()
+            let taskChange=CloudAgentChange(operationId:id(),objectId:task,versionId:version,deviceId:device,kind:"task",parents:[],deleted:false,value:.object(["type":.string("hermes_run"),"sessionId":.string(session),"branchId":.string(branch),"runId":.string(id())]),cursor:2,erased:false)
+            state.objects[task] = .init(kind:"task",versions:[version:taskChange],heads:[version])
+        }
+        let data=try JSONSerialization.data(withJSONObject:["cloudAgentState":JSONSerialization.jsonObject(with:JSONEncoder().encode(state)),"conversations":[],"baseline":[],"conversationIDs":[:],"messageIDs":[:]])
+        return (.init(accessToken:"fixture",refreshToken:"fixture",expiresAt:.distantFuture,accountId:account),session,branch,history,data)
+    }
+    func testCachedWebSessionContinuesLocallyPreservingToolsWithoutRunOrConsentMutation() async throws {
+        let (auth,session,branch,history,data)=try fixture()
+        var saved:Data?,calls=0
+        let generated=expectation(description:"Explicit user send invokes local model")
+        var services=isolatedServices(load:{auth},readLocalHistory:{_ in data},localAvailability:{nil},localRespond:{_,workspace,delta in
+            let seed=await workspace.initialHermesHistory
+            XCTAssertEqual(Array(seed?.dropLast() ?? []),history)
+            XCTAssertEqual(seed?.last?.object?["content"]?.string,"Continue offline")
+            await delta("Local continuation");generated.fulfill()
+        })
+        services.writeHistory={value,_ in saved=value}
+        services.hermesCreate={_,_,_ in calls += 1;throw APIError.invalidResponse}
+        services.hermesEnable={_,_,_ in calls += 1;throw APIError.invalidResponse}
+        services.hermesAuthorizeSources={_,_,_,_ in calls += 1;throw APIError.invalidResponse}
+        let manager=ConversationManager(services:services)
+        await manager.restore(loadRemoteModels:false)
+        let local=try manager.continueHermesOnDevice(sessionId:session,model:LocalModel.id,accountId:auth.accountId)
+        XCTAssertEqual(manager.selection,local);XCTAssertEqual(manager.current?.title,"Shared web conversation")
+        XCTAssertFalse(manager.isStreaming);XCTAssertEqual(calls,0);XCTAssertFalse(manager.currentLocalHermesExportApproved)
+        let again=try manager.continueHermesOnDevice(sessionId:session,model:LocalModel.id,accountId:auth.accountId)
+        XCTAssertEqual(again,local);XCTAssertEqual(manager.conversations.count,1)
+        let json=try JSONSerialization.jsonObject(with:XCTUnwrap(saved)) as! [String:Any]
+        let bindings=try JSONDecoder().decode([UUID:CloudHermesBinding].self,from:JSONSerialization.data(withJSONObject:XCTUnwrap(json["cloudHermesBindings"])))
+        XCTAssertEqual(bindings[local]?.sessionId,session);XCTAssertEqual(bindings[local]?.branchId,branch)
+        XCTAssertEqual(bindings[local]?.history,history);XCTAssertEqual(bindings[local]?.localExportSources,[])
+        XCTAssertTrue(manager.send("Continue offline"))
+        await fulfillment(of:[generated],timeout:3);manager.stop()
+        XCTAssertEqual(calls,0)
+    }
+    func testLocalContinuationRejectsWrongAccountConflictPendingAndRollsBackDiskFailure() async throws {
+        for mode in ["account","conflict","pending","disk"] {
+            let (auth,session,_,_,data)=try fixture(pending:mode=="pending",conflicted:mode=="conflict")
+            var fail=false
+            var services=isolatedServices(load:{auth},readLocalHistory:{_ in data},localAvailability:{nil})
+            services.writeHistory={_,_ in if fail { throw CocoaError(.fileWriteOutOfSpace) } }
+            let manager=ConversationManager(services:services)
+            await manager.restore(loadRemoteModels:false);fail=mode=="disk"
+            XCTAssertThrowsError(try manager.continueHermesOnDevice(sessionId:session,model:LocalModel.id,accountId:mode=="account" ? UUID().uuidString.lowercased() : auth.accountId))
+            XCTAssertTrue(manager.conversations.isEmpty);XCTAssertNil(manager.selection);XCTAssertFalse(manager.isStreaming)
+        }
+    }
+}
