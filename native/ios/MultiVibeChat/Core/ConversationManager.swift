@@ -442,7 +442,8 @@ import Network
             history=try state.anchoredHistory(anchor,sessionId:id,account:state.accountId,runs:discoveredCloudRuns)
             // Keep the introducing revision as the immutable ordering boundary across metadata edits.
             var pending=[version.versionId],visited=Set<String>(),origins:[Int64]=[]
-            while let id=pending.popLast(),visited.insert(id).inserted {
+            while let id=pending.popLast() {
+                guard visited.insert(id).inserted else { continue }
                 guard let ancestor=object.versions[id] else { throw APIError.server(409,"hermes_history_anchor_origin_missing") }
                 if ancestor.value?.object?["historyAnchor"] == anchor,ancestor.value?.object?["branchId"]?.string == branch {
                     origins.append(ancestor.cursor)
