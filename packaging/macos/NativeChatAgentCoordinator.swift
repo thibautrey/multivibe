@@ -363,6 +363,8 @@ import Foundation
                  message: String, accessID: String? = nil, deviceID: String? = nil) async throws -> NativeAgentRun {
         guard !busy, let account = accountID, consent?.cloudEnabled == true, let client, journal != nil,
               source != .device else { throw NativeAgentClientError.invalidRequest }
+        let selectedWorkspace = selectedWorkspaceProject(conversationID)
+        guard selectedWorkspace.isEmpty || cloudProjects.contains(where: { $0.id == selectedWorkspace }) else { throw NativeAgentClientError.invalidRequest }
         try await publishWorkspaceSelection(conversationID)
         guard accountID == account, session?.accountID == account, journal != nil else { throw NativeAgentClientError.accountMismatch }
         let sessionID = conversationID.uuidString.lowercased()
