@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 struct CloudAgentMutation: Codable, Equatable, Sendable {
     let operationId: String; let objectId: String; let versionId: String; let deviceId: String
@@ -130,6 +131,69 @@ struct CloudAgentState: Codable, Equatable, Sendable {
         value["localTurnId"]=nil;value["messages"]=nil;value["historyAnchor"]=anchor
         return .init(operationId:UUID().uuidString.lowercased(),objectId:objectId,versionId:UUID().uuidString.lowercased(),deviceId:deviceId,
             kind:"session",parents:reviewedHeads.sorted(),deleted:false,value:.object(value))
+    }
+    static func workspaceFileID(projectId:String,path:String) -> String {
+        var bytes=Array(SHA256.hash(data:Data(("multivibe-workspace-v1\0"+projectId+":"+path).utf8)).prefix(16))
+        bytes[6]=(bytes[6]&15)|0x50;bytes[8]=(bytes[8]&63)|0x80
+        let hex=bytes.map{String(format:"%02x",$0)}.joined()
+        let chars=Array(hex)
+        return [String(chars[0..<8]),String(chars[8..<12]),String(chars[12..<16]),String(chars[16..<20]),String(chars[20..<32])].joined(separator:"-")
+    }
+    static func validateWorkspaceText(path:String,content:String) throws {
+        let segments=path.split(separator:"/",omittingEmptySubsequences:false)
+        guard path.utf16.count<=512,segments.count<=10,!segments.contains(where:{$0.isEmpty || $0=="." || $0==".."}),
+            !path.unicodeScalars.contains(where:{$0.value<32 || $0.value==127 || $0.value==92}),
+            !content.utf8.contains(0),content.utf8.count<=65536 else { throw APIError.server(400,"invalid_workspace_file") }
+    }
+    func workspaceProject(_ id:String) throws -> CloudAgentObject {
+        guard Self.uuid(id),let object=objects[id],["project","session"].contains(object.kind),!object.deleted,object.heads.count==1,
+            object.versions[object.heads[0]]?.value != nil,
+            !outbox.contains(where:{$0.objectId==id}) else { throw APIError.server(409,"workspace_project_unavailable") }
+        return object
+    }
+    func workspaceMutation(projectId:String,objectId:String,path:String,content:String,parents:[String],projectParents:[String],delete:Bool) throws -> CloudAgentMutation {
+        try Self.validateWorkspaceText(path:path,content:content)
+        let project=try workspaceProject(projectId)
+        guard project.heads==projectParents else { throw APIError.server(409,"workspace_project_changed") }
+        let id=Self.workspaceFileID(projectId:projectId,path:path)
+        guard objectId.isEmpty || objectId==id else { throw APIError.server(409,"workspace_path_changed") }
+        var value:[String:HistoryJSON]=[:]
+        if let object=objects[id] {
+            guard !object.deleted,object.kind=="file",object.heads.count==1,Set(object.heads)==Set(parents),
+                let existing=object.versions[object.heads[0]]?.value?.object,existing["type"]?.string=="hermes_workspace_file",
+                existing["projectId"]?.string==projectId,existing["path"]?.string==path else { throw APIError.server(409,"workspace_file_changed_or_deleted") }
+            value=existing
+        } else {
+            guard parents.isEmpty,!delete else { throw APIError.server(409,"workspace_file_missing") }
+        }
+        value["type"] = .string("hermes_workspace_file");value["projectId"] = .string(projectId);value["path"] = .string(path);value["content"] = .string(content)
+        let payload:HistoryJSON? = delete ? nil : .object(value)
+        if let pending=outbox.first(where:{$0.objectId==id}) {
+            guard pending.kind=="file",pending.parents==parents,pending.deleted==delete,pending.value==payload else { throw APIError.server(409,"workspace_file_pending") }
+            return pending
+        }
+        var files:[String:(String,String)]=[:]
+        for (key,object) in objects where object.kind=="file" && !object.deleted {
+            let related=object.versions.values.contains{$0.value?.object?["type"]?.string=="hermes_workspace_file" && $0.value?.object?["projectId"]?.string==projectId}
+            if !related { continue }
+            guard object.heads.count==1,let raw=object.versions[object.heads[0]]?.value?.object,
+                raw["projectId"]?.string==projectId,let path=raw["path"]?.string,let content=raw["content"]?.string,
+                Self.workspaceFileID(projectId:projectId,path:path)==key else { throw APIError.server(409,"workspace_file_conflicted") }
+            files[key]=(path,content)
+        }
+        for operation in outbox where operation.kind=="file" {
+            if operation.deleted { files[operation.objectId]=nil;continue }
+            guard let raw=operation.value?.object,raw["projectId"]?.string==projectId else { continue }
+            guard raw["type"]?.string=="hermes_workspace_file",let path=raw["path"]?.string,let content=raw["content"]?.string,
+                Self.workspaceFileID(projectId:projectId,path:path)==operation.objectId else { throw APIError.invalidResponse }
+            files[operation.objectId]=(path,content)
+        }
+        if delete { files[id]=nil } else { files[id]=(path,content) }
+        guard files.count<=200 else { throw APIError.server(413,"workspace_file_limit") }
+        var bytes=0
+        for (path,content) in files.values { try Self.validateWorkspaceText(path:path,content:content);bytes += content.utf8.count }
+        guard bytes<=512*1024 else { throw APIError.server(413,"workspace_size_limit") }
+        return .init(operationId:UUID().uuidString.lowercased(),objectId:id,versionId:UUID().uuidString.lowercased(),deviceId:deviceId,kind:"file",parents:parents,deleted:delete,value:payload)
     }
     func acknowledging(_ reply:CloudAgentReceipts, submitted:[CloudAgentMutation]) throws -> Self {
         guard reply.accountId == accountId, !reply.receipts.isEmpty else { throw APIError.invalidResponse }

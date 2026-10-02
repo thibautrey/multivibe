@@ -499,3 +499,41 @@ final class RemoteHermesHistoryTests: XCTestCase {
         XCTAssertTrue(manager.remoteHermesTranscript(sessionID).isEmpty) // Never fall back to old anchor after deletion.
     }
 }
+
+@MainActor final class CloudWorkspaceFileTests: XCTestCase {
+    func testOfflineWriteRetryIsDurableAndPersistenceFailureNeverQueuesOrExecutes() async throws {
+        let id={UUID().uuidString.lowercased()}
+        let account=id(),project=id(),head=id(),device=id()
+        let state=try CloudAgentState(accountId:account,deviceId:device).applying(.init(accountId:account,changes:[.init(operationId:id(),objectId:project,versionId:head,deviceId:device,kind:"project",parents:[],deleted:false,value:.object(["title":.string("Project")]),cursor:1,erased:false)],cursor:1,hasMore:false))
+        let json=try JSONSerialization.jsonObject(with:JSONEncoder().encode(state))
+        let data=try JSONSerialization.data(withJSONObject:["cloudAgentState":json,"conversations":[],"baseline":[],"conversationIDs":[:],"messageIDs":[:]])
+        let auth=NativeSession(accessToken:"fixture",refreshToken:"fixture",expiresAt:.distantFuture,accountId:account)
+        var failWrite=false,saved:Data?,operations:[CloudAgentMutation]=[],creates=0,cancels=0
+        var services=isolatedServices(load:{auth},readLocalHistory:{_ in data})
+        services.writeHistory={value,_ in if failWrite { throw CocoaError(.fileWriteOutOfSpace) };saved=value}
+        services.hermesChanges={_,_ in .init(accountId:account,changes:[],cursor:1,hasMore:false)}
+        services.hermesConsent={_ in .init(accountId:account,cloudEnabled:true,revision:1)}
+        services.hermesMutations={_,ops,_ in operations += ops;throw APIError.server(503,"offline")}
+        services.hermesCreate={_,_,_ in creates += 1;throw APIError.invalidResponse}
+        services.hermesRead={_,_,_,cancel in if cancel { cancels += 1 };throw APIError.invalidResponse}
+        let manager=ConversationManager(services:services)
+        await manager.restore(loadRemoteModels:false)
+        for _ in 0..<100 where manager.cloudAgentSyncing { await Task.yield() }
+        let draft=try manager.cloudWorkspaceDraft(projectId:project,fileId:nil)
+        let version=try await manager.saveCloudWorkspaceFile(draft,path:"notes.txt",content:"offline text")
+        XCTAssertEqual(manager.cloudWorkspaceWriteStatus(draft,version:version),"pending")
+        XCTAssertEqual(manager.cloudWorkspacePendingFiles(projectId:project).first?.value?.object?["content"]?.string,"offline text")
+        XCTAssertTrue(String(decoding:try XCTUnwrap(saved),as:UTF8.self).contains("offline text"))
+        let retry=try await manager.saveCloudWorkspaceFile(draft,path:"notes.txt",content:"offline text")
+        XCTAssertEqual(retry,version);XCTAssertEqual(Set(operations.map(\.operationId)).count,1)
+        do { _=try await manager.saveCloudWorkspaceFile(draft,path:"notes.txt",content:"changed pending");XCTFail("Pending mutation is immutable") } catch {}
+        failWrite=true
+        do { _=try await manager.saveCloudWorkspaceFile(draft,path:"failed.txt",content:"unsaved");XCTFail("Persistence failure must fail") } catch {}
+        XCTAssertEqual(manager.cloudWorkspacePendingFiles(projectId:project).count,1)
+        failWrite=false
+        await manager.logout()
+        XCTAssertFalse(manager.cloudWorkspaceDraftVisible(draft))
+        XCTAssertEqual(manager.cloudWorkspaceWriteStatus(draft,version:version),"unavailable")
+        XCTAssertEqual(creates,0);XCTAssertEqual(cancels,0)
+    }
+}

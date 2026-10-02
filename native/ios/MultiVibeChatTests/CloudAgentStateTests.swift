@@ -74,3 +74,50 @@ extension CloudAgentStateTests {
         XCTAssertThrowsError(try state.anchoredHistory(anchor,sessionId:session,account:id(1),runs:[:]))
     }
 }
+
+extension CloudAgentStateTests {
+    func testWorkspaceIdentityAndUnicodeValidationMatchCloud() throws {
+        XCTAssertEqual(CloudAgentState.workspaceFileID(projectId:id(1),path:"notes/cafe.txt"),"f27d8d37-0c00-5b9d-891f-998ffa5de55e")
+        try CloudAgentState.validateWorkspaceText(path:String(repeating:"💙",count:256),content:String(repeating:"💙",count:16384))
+        XCTAssertThrowsError(try CloudAgentState.validateWorkspaceText(path:String(repeating:"💙",count:257),content:""))
+        for path in ["","/a","a/","a//b","a/../b","./b","a\\b","a\u{7f}b",Array(repeating:"a",count:11).joined(separator:"/")] {
+            XCTAssertThrowsError(try CloudAgentState.validateWorkspaceText(path:path,content:""))
+        }
+        XCTAssertThrowsError(try CloudAgentState.validateWorkspaceText(path:"valid",content:String(repeating:"a",count:65537)))
+        XCTAssertThrowsError(try CloudAgentState.validateWorkspaceText(path:"valid",content:"nul\0value"))
+    }
+    func testWorkspaceOriginalParentsMetadataRetryAndTombstone() throws {
+        let project=id(1),head=id(2),file=CloudAgentState.workspaceFileID(projectId:project,path:"a.txt")
+        var state=CloudAgentState(accountId:id(10),deviceId:id(3))
+        state=try state.applying(.init(accountId:id(10),changes:[
+            .init(operationId:id(4),objectId:project,versionId:head,deviceId:id(3),kind:"project",parents:[],deleted:false,value:.object(["title":.string("Project")]),cursor:1,erased:false),
+            .init(operationId:id(5),objectId:file,versionId:id(6),deviceId:id(3),kind:"file",parents:[],deleted:false,value:.object(["type":.string("hermes_workspace_file"),"projectId":.string(project),"path":.string("a.txt"),"content":.string("old"),"custom":.string("keep")]),cursor:2,erased:false)
+        ],cursor:2,hasMore:false))
+        let op=try state.workspaceMutation(projectId:project,objectId:file,path:"a.txt",content:"new",parents:[id(6)],projectParents:[head],delete:false)
+        XCTAssertEqual(op.parents,[id(6)]);XCTAssertEqual(op.value?.object?["custom"]?.string,"keep")
+        try state.enqueue(op)
+        XCTAssertEqual(try state.workspaceMutation(projectId:project,objectId:file,path:"a.txt",content:"new",parents:[id(6)],projectParents:[head],delete:false),op)
+        XCTAssertThrowsError(try state.workspaceMutation(projectId:project,objectId:file,path:"a.txt",content:"different",parents:[id(6)],projectParents:[head],delete:false))
+        XCTAssertThrowsError(try state.workspaceMutation(projectId:project,objectId:file,path:"renamed",content:"new",parents:[id(6)],projectParents:[head],delete:false))
+        state.outbox=[]
+        XCTAssertThrowsError(try state.workspaceMutation(projectId:project,objectId:file,path:"a.txt",content:"new",parents:[],projectParents:[head],delete:false))
+        let deleted=try state.workspaceMutation(projectId:project,objectId:file,path:"a.txt",content:"old",parents:[id(6)],projectParents:[head],delete:true)
+        XCTAssertNil(deleted.value)
+        state=try state.applying(.init(accountId:id(10),changes:[.init(operationId:deleted.operationId,objectId:file,versionId:deleted.versionId,deviceId:id(3),kind:"file",parents:deleted.parents,deleted:true,value:nil,cursor:3,erased:false)],cursor:3,hasMore:false))
+        XCTAssertThrowsError(try state.workspaceMutation(projectId:project,objectId:"",path:"a.txt",content:"resurrect",parents:[],projectParents:[head],delete:false))
+    }
+    func testWorkspaceAggregateBoundsIncludePendingFiles() throws {
+        let project=id(1),head=id(2)
+        var state=try CloudAgentState(accountId:id(10),deviceId:id(3)).applying(.init(accountId:id(10),changes:[.init(operationId:id(4),objectId:project,versionId:head,deviceId:id(3),kind:"session",parents:[],deleted:false,value:.object(["title":.string("Session")]),cursor:1,erased:false)],cursor:1,hasMore:false))
+        for index in 0..<8 {
+            let op=try state.workspaceMutation(projectId:project,objectId:"",path:"file-\(index)",content:String(repeating:"a",count:65536),parents:[],projectParents:[head],delete:false)
+            try state.enqueue(op)
+        }
+        XCTAssertThrowsError(try state.workspaceMutation(projectId:project,objectId:"",path:"overflow",content:"a",parents:[],projectParents:[head],delete:false))
+        state.outbox=[]
+        for index in 0..<200 {
+            try state.enqueue(state.workspaceMutation(projectId:project,objectId:"",path:"file-\(index)",content:"",parents:[],projectParents:[head],delete:false))
+        }
+        XCTAssertThrowsError(try state.workspaceMutation(projectId:project,objectId:"",path:"file-201",content:"",parents:[],projectParents:[head],delete:false))
+    }
+}
