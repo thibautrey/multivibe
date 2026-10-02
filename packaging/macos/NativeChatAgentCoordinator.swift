@@ -10,6 +10,9 @@ import Foundation
     @Published private(set) var busy = false
     @Published private(set) var importedConversationIDs: Set<UUID> = []
     @Published var error: String?
+    @Published private(set) var cloudObjects: [String: [NativeAgentChange]] = [:]
+    @Published private(set) var models: [NativeAgentCatalogModel] = []
+    @Published private(set) var runs: [String: NativeAgentRun] = [:]
     private(set) var loginEpoch = UUID()
     private let session: NativeCloudSession?
     private let client: NativeAgentClient?
@@ -20,6 +23,14 @@ import Foundation
         let deviceID: String
         var imported: Set<UUID> = []
         var pending: [NativeAgentMutation] = []
+        var cursor: Int64? = 0
+        var versions: [String: [NativeAgentChange]]? = [:]
+        var runRequests: [String: NativeAgentRunInput]? = [:]
+        var runStates: [String: NativeAgentRun]? = [:]
+        var pendingCancels: Set<String>? = []
+        var histories: [String: [NativeAgentJSON]]? = [:]
+        var runOrder: [String]? = []
+        var titles: [String: String]? = [:]
     }
     init(session: NativeCloudSession? = nil, client: NativeAgentClient? = nil, root: URL? = nil) {
         self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("MultiVibe/NativeAgent")
@@ -71,7 +82,7 @@ import Foundation
     }
     private func activate() async throws {
         guard let account = session?.accountID, let client else { throw NativeAgentClientError.accountMismatch }
-        accountID = account; journal = nil; consent = nil; importedConversationIDs = []
+        accountID = account; journal = nil; consent = nil; importedConversationIDs = []; cloudObjects = [:]; runs = [:]; models = []
         let epoch = loginEpoch
         let url = journalURL(account)
         if FileManager.default.fileExists(atPath: url.path) {
@@ -80,12 +91,13 @@ import Foundation
             let saved = try JSONDecoder().decode(Journal.self, from: Data(contentsOf: url))
             guard saved.accountID == account else { throw NativeAgentClientError.accountMismatch }
             journal = saved; importedConversationIDs = saved.imported
+            cloudObjects = saved.versions ?? [:]; runs = saved.runStates ?? [:]
         } else { journal = Journal(accountID: account, deviceID: UUID().uuidString.lowercased()) }
         let remote = try await client.consent(accountID: account)
         try check(account, epoch); consent = remote
     }
     func disconnect() async {
-        loginEpoch = UUID(); accountID = nil; consent = nil; journal = nil; importedConversationIDs = []; busy = false
+        loginEpoch = UUID(); accountID = nil; consent = nil; journal = nil; importedConversationIDs = []; cloudObjects = [:]; runs = [:]; models = []; busy = false
         do { try await session?.disconnect() } catch { self.error = error.localizedDescription }
     }
     /// Each checked conversation is a separate explicit export. Pending operations survive errors.
@@ -101,6 +113,10 @@ import Foundation
                 let objectID = conversation.id.uuidString.lowercased()
                 guard !journal!.pending.contains(where: { $0.objectId == objectID }) else { continue }
                 let messages = conversation.messages.map { NativeAgentJSON.object(["id": .string($0.id.uuidString.lowercased()), "role": .string($0.role), "content": .string($0.content), "interrupted": .bool($0.interrupted)]) }
+                var histories = journal!.histories ?? [:]
+                histories[objectID] = conversation.messages.map { .object(["role": .string($0.role), "content": .string($0.content)]) }
+                journal!.histories = histories
+                var titles = journal!.titles ?? [:]; titles[objectID] = conversation.title; journal!.titles = titles
                 let value = NativeAgentJSON.object(["title": .string(conversation.title), "messages": .array(messages), "model": .string(conversation.model), "source": .string("macos-device")])
                 guard try JSONEncoder().encode(value).count <= 131_072 else { throw NativeAgentClientError.tooLarge }
                 journal!.pending.append(.init(operationId: UUID().uuidString.lowercased(), objectId: objectID, versionId: UUID().uuidString.lowercased(), deviceId: journal!.deviceID, kind: .session, parents: [], deleted: false, value: value))
@@ -120,6 +136,7 @@ import Foundation
         guard let client else { return }
         while let operations = journal?.pending, !operations.isEmpty {
             try check(account, epoch)
+            try persist()
             let batch = Array(operations.prefix(5))
             _ = try await client.mutate(accountID: account, operations: batch)
             try check(account, epoch)
@@ -131,4 +148,184 @@ import Foundation
             importedConversationIDs = next.imported
         }
     }
+    struct CloudConversation: Identifiable {
+        let id: UUID
+        let title: String
+        let conflicted: Bool
+    }
+    var cloudConversations: [CloudConversation] {
+        let ids = Set((journal?.titles ?? [:]).keys).union(cloudObjects.keys)
+        return ids.compactMap { id in
+            guard let uuid = UUID(uuidString: id) else { return nil }
+            let heads = cloudObjects[id] ?? []
+            if !heads.isEmpty && (heads.allSatisfy { $0.kind != .session } || heads.contains { $0.deleted || $0.erased }) { return nil }
+            var title = journal?.titles?[id] ?? "Conversation Cloud"
+            if heads.count == 1, case .object(let object) = heads[0].value, case .string(let remoteTitle) = object["title"] { title = remoteTitle }
+            return CloudConversation(id: uuid, title: title, conflicted: heads.count > 1)
+        }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+    struct CloudMessage: Identifiable {
+        let id: Int
+        let role: String
+        let content: String
+    }
+    func synchronizedMessages(_ id: UUID?) -> [CloudMessage] {
+        guard let id else { return [] }
+        let key = id.uuidString.lowercased()
+        let heads = cloudObjects[key] ?? []
+        let messages: [NativeAgentJSON]
+        if heads.count == 1, !heads[0].deleted, !heads[0].erased, case .object(let value) = heads[0].value, case .array(let values) = value["messages"] {
+            messages = values
+        } else if heads.isEmpty, !(journal?.runRequests ?? [:]).values.contains(where: { $0.sessionId == key }) {
+            messages = journal?.histories?[key] ?? []
+        } else { return [] }
+        return messages.enumerated().compactMap { index, message in
+            guard case .object(let value) = message, case .string(let role) = value["role"],
+                  ["user", "assistant"].contains(role), case .string(let content) = value["content"] else { return nil }
+            return CloudMessage(id: index, role: role, content: content)
+        }
+    }
+    func newCloudConversation() async throws -> UUID {
+        guard !busy, let account = accountID, consent?.cloudEnabled == true, journal != nil else { throw NativeAgentClientError.invalidRequest }
+        let id = UUID(), objectID = id.uuidString.lowercased(), epoch = loginEpoch
+        journal!.pending.append(.init(operationId: UUID().uuidString.lowercased(), objectId: objectID,
+            versionId: UUID().uuidString.lowercased(), deviceId: journal!.deviceID, kind: .session, parents: [], deleted: false,
+            value: .object(["title": .string("Nouvelle conversation Cloud"), "messages": .array([])])))
+        var titles = journal!.titles ?? [:]; titles[objectID] = "Nouvelle conversation Cloud"; journal!.titles = titles
+        try persist()
+        busy = true; defer { if loginEpoch == epoch { busy = false } }
+        try await flush(account: account, epoch: epoch)
+        return id
+    }
+    func loadModels() async throws {
+        guard let account = accountID, let client else { throw NativeAgentClientError.accountMismatch }
+        let epoch = loginEpoch
+        let catalog = try await client.models(accountID: account)
+        try check(account, epoch); models = catalog
+        do {
+            let relay = try await client.relayModels(accountID: account)
+            try check(account, epoch); models = catalog + relay
+        } catch NativeAgentClientError.http(503) {
+            // Relay is an optional server capability; managed models remain usable.
+        }
+    }
+    var orderedRuns: [NativeAgentRun] { (journal?.runOrder ?? []).compactMap { runs[$0] } }
+    func runPrompt(_ id: String) -> String { journal?.runRequests?[id]?.message ?? "" }
+    func responseText(_ run: NativeAgentRun) -> String? {
+        guard case .object(let result) = run.result, case .string(let response) = result["response"] else { return nil }
+        return response
+    }
+    /// Pull preserves concurrent heads. A tombstone erases all cached payloads for the object.
+    func synchronize() async throws {
+        guard !busy, let account = accountID, consent?.cloudEnabled == true, let client, journal != nil else { throw NativeAgentClientError.invalidRequest }
+        busy = true; let epoch = loginEpoch
+        defer { if loginEpoch == epoch { busy = false } }
+        try await flush(account: account, epoch: epoch)
+        var more = true
+        while more {
+            let page = try await client.changes(accountID: account, after: journal!.cursor ?? 0)
+            try check(account, epoch)
+            let previous = journal
+            var versions = journal!.versions ?? [:]
+            for change in page.changes {
+                var heads = versions[change.objectId] ?? []
+                heads.removeAll { change.parents.contains($0.versionId) || $0.versionId == change.versionId }
+                if change.deleted || change.erased {
+                    heads = []
+                    journal!.histories?.removeValue(forKey: change.objectId)
+                }
+                heads.append(change); versions[change.objectId] = heads
+            }
+            journal!.versions = versions; journal!.cursor = page.cursor
+            for (objectID, heads) in versions where heads.count == 1 && !heads[0].deleted && !heads[0].erased && heads[0].kind == .session {
+                if case .object(let value) = heads[0].value, case .array(let history) = value["messages"],
+                   !(journal!.runRequests ?? [:]).values.contains(where: { $0.sessionId == objectID }) {
+                    var histories = journal!.histories ?? [:]; histories[objectID] = history; journal!.histories = histories
+                }
+            }
+            do { try persist() } catch { journal = previous; throw error }
+            cloudObjects = versions; more = page.hasMore
+        }
+    }
+    /// Creates a new durable turn. Existing device history requires explicit import beforehand.
+    func execute(modelID: String, source: NativeAgentRunInput.Model.Source, conversationID: UUID,
+                 message: String, accessID: String? = nil, deviceID: String? = nil) async throws -> NativeAgentRun {
+        guard !busy, let account = accountID, consent?.cloudEnabled == true, let client, journal != nil,
+              source != .device else { throw NativeAgentClientError.invalidRequest }
+        let sessionID = conversationID.uuidString.lowercased()
+        guard journal!.imported.contains(conversationID) || cloudObjects[sessionID]?.count == 1 else { throw NativeAgentClientError.invalidRequest }
+        if let heads = cloudObjects[sessionID], heads.count != 1 || heads[0].deleted || heads[0].erased { throw NativeAgentClientError.invalidRequest }
+        guard !(journal!.runRequests ?? [:]).values.contains(where: {
+            guard $0.sessionId == sessionID else { return false }
+            let state = journal!.runStates?[$0.runId]?.state
+            return state != .completed && state != .cancelled
+        }) else { throw NativeAgentClientError.invalidRequest }
+        let request = NativeAgentRunInput(operationId: UUID().uuidString.lowercased(), runId: UUID().uuidString.lowercased(), sessionId: sessionID,
+            branchId: sessionID, projectId: nil, model: .init(id: modelID, accessId: accessID, source: source, deviceId: deviceID), message: message, history: journal!.histories?[sessionID])
+        let previous = journal
+        var requests = journal!.runRequests ?? [:]; requests[request.runId] = request; journal!.runRequests = requests
+        var order = journal!.runOrder ?? []; order.append(request.runId); journal!.runOrder = order
+        // Journal before network: unknown create outcomes are retried with these same identifiers.
+        do { try persist() } catch { journal = previous; throw error }
+        busy = true; let epoch = loginEpoch
+        defer { if loginEpoch == epoch { busy = false } }
+        let run = try await client.createRun(accountID: account, run: request)
+        try check(account, epoch); try record(run); return run
+    }
+    private func record(_ run: NativeAgentRun) throws {
+        let previous = journal
+        var states = journal!.runStates ?? [:]; states[run.runId] = run; journal!.runStates = states
+        if run.state == .completed, previous?.runStates?[run.runId]?.state != .completed, case .object(let result) = run.result, case .array(let history) = result["history"] {
+            var histories = journal!.histories ?? [:]; histories[run.sessionId] = history; journal!.histories = histories
+        }
+        do { try persist() } catch { journal = previous; throw error }
+        runs = states
+    }
+    /// Reconciles status only. awaiting_resolution never triggers a new run or command replay.
+    func recoverRuns() async throws {
+        guard !busy, let account = accountID, consent?.cloudEnabled == true, let client, journal != nil else { throw NativeAgentClientError.invalidRequest }
+        busy = true; let epoch = loginEpoch
+        defer { if loginEpoch == epoch { busy = false } }
+        try persist()
+        for request in (journal!.runOrder ?? []).compactMap({ journal!.runRequests?[$0] }) {
+            try check(account, epoch)
+            let run: NativeAgentRun
+            do { run = try await client.readRun(accountID: account, runID: request.runId) }
+            catch NativeAgentClientError.http(404) {
+                // Only an unacknowledged creation may be retried. A missing known run must not replay work.
+                guard journal!.runStates?[request.runId] == nil else { throw NativeAgentClientError.http(404) }
+                run = try await client.createRun(accountID: account, run: request)
+            }
+            try check(account, epoch); try record(run)
+            if journal!.pendingCancels?.contains(request.runId) == true {
+                let cancelled = try await client.cancelRun(accountID: account, runID: request.runId)
+                try check(account, epoch); try record(cancelled)
+                journal!.pendingCancels?.remove(request.runId); try persist()
+            }
+        }
+    }
+    func cancel(runID: String) async throws {
+        guard !busy, let account = accountID, let client, journal?.runRequests?[runID] != nil else { throw NativeAgentClientError.invalidRequest }
+        var cancels = journal!.pendingCancels ?? []; cancels.insert(runID); journal!.pendingCancels = cancels
+        try persist()
+        busy = true; let epoch = loginEpoch
+        defer { if loginEpoch == epoch { busy = false } }
+        let run = try await client.cancelRun(accountID: account, runID: runID)
+        try check(account, epoch); try record(run)
+        journal!.pendingCancels?.remove(runID); try persist()
+    }
+    func poll(runID: String, intervalNanoseconds: UInt64 = 2_000_000_000) async throws -> NativeAgentRun {
+        let epoch = loginEpoch
+        guard let account = accountID else { throw NativeAgentClientError.accountMismatch }
+        while true {
+            try check(account, epoch)
+            try await recoverRuns()
+            guard let run = runs[runID] else { throw NativeAgentClientError.invalidResponse }
+            switch run.state {
+            case .completed, .cancelled, .awaiting_resolution, .waiting_device: return run
+            case .queued, .running: try await Task.sleep(nanoseconds: intervalNanoseconds)
+            }
+        }
+    }
+
 }
