@@ -2536,11 +2536,20 @@ private struct CloudHermesConsentView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var importApproved = false
     @State private var synchronizeLocalTurns = false
+    @State private var memoryIDs: Set<String> = []
+    @State private var skillIDs: Set<String> = []
+    @State private var fileIDs: Set<String> = []
+    @State private var projectID = ""
     @State private var busy = false
     @State private var error: String?
     @State private var accountID: String?
     @State private var conversationID: UUID?
     private var hasHistory: Bool { !(manager.current?.messages.isEmpty ?? true) }
+    private func selectionBinding(_ id:String,in selected:Binding<Set<String>>) -> Binding<Bool> {
+        Binding(get:{selected.wrappedValue.contains(id)},set:{checked in
+            if checked { selected.wrappedValue.insert(id) } else { selected.wrappedValue.remove(id) }
+        })
+    }
     var body: some View {
         NavigationStack {
             Form {
@@ -2560,17 +2569,38 @@ private struct CloudHermesConsentView: View {
                         .accessibilityIdentifier("cloudHermesLocalTurnsConsent")
                     Text("Autorise les messages et résultats d’outils des modèles téléchargés et d’Apple Foundation, y compris les tours locaux déjà réalisés dans cette conversation. Ils seront envoyés au retour du réseau. Les résultats d’outils peuvent contenir des données privées. Aucune commande ne sera rejouée.")
                 }
+                Section("Contexte Cloud pour le modèle local") {
+                    Text("Choisissez les objets synchronisés à lire sur cet appareil. Ils sont fournis comme données non fiables. Les scripts des skills ne sont pas exécutés. Aucun document ou souvenir natif n’est importé.")
+                    Button("Actualiser les objets") { Task { await manager.synchronizeCloudAgentState() } }.disabled(manager.cloudAgentSyncing)
+                    ForEach(manager.cloudAgentObjects.filter { $0.kind == "memory" && !$0.deleted && !$0.conflicted }) { item in
+                        Toggle("Mémoire · \(item.title)",isOn:selectionBinding(item.id,in:$memoryIDs))
+                    }
+                    ForEach(manager.cloudAgentObjects.filter { $0.kind == "skill" && !$0.deleted && !$0.conflicted }) { item in
+                        Toggle("Skill · \(item.title)",isOn:selectionBinding(item.id,in:$skillIDs))
+                    }
+                    Picker("Projet des fichiers",selection:$projectID) {
+                        Text("Aucun").tag("")
+                        ForEach(manager.cloudAgentObjects.filter { $0.kind == "project" && !$0.deleted && !$0.conflicted }) { item in Text(item.title).tag(item.id) }
+                    }.onChange(of:projectID) { old,new in if old != new && !old.isEmpty { fileIDs=[] } }
+                    ForEach(manager.cloudAgentObjects.filter { $0.kind == "file" && !$0.deleted && !$0.conflicted && $0.value?.object?["projectId"]?.string == projectID }) { item in
+                        Toggle(item.value?.object?["path"]?.string ?? item.title,isOn:selectionBinding(item.id,in:$fileIDs))
+                    }
+                }
                 if let error { Section { Text(error).foregroundStyle(.red) } }
                 Section {
                     Button(busy ? "Préparation…" : "Autoriser Hermes") {
                         guard accountID == manager.session?.accountId, conversationID == manager.selection else { error = "Le compte ou la conversation a changé. Fermez puis rouvrez cette autorisation."; return }
                         busy = true
-                        Task { do { try await manager.authorizeHermesCloud(importExistingConversation:hasHistory && importApproved,synchronizeLocalTurns:synchronizeLocalTurns); dismiss() }
+                        Task { do { try await manager.authorizeHermesCloud(importExistingConversation:hasHistory && importApproved,synchronizeLocalTurns:synchronizeLocalTurns,memoryIDs:memoryIDs.sorted(),skillIDs:skillIDs.sorted(),fileIDs:fileIDs.sorted(),projectID:projectID.isEmpty ? nil : projectID); dismiss() }
                             catch { self.error = error.localizedDescription }; busy = false }
                     }.disabled(busy || (hasHistory && !importApproved)).accessibilityIdentifier("cloudHermesAuthorize")
                 }
             }.navigationTitle("Autoriser Hermes")
-                .onAppear { accountID = manager.session?.accountId; conversationID = manager.selection }
+                .onAppear {
+                    accountID = manager.session?.accountId; conversationID = manager.selection
+                    let selected=manager.currentCloudContextSelection
+                    memoryIDs=Set(selected.memory);skillIDs=Set(selected.skills);fileIDs=Set(selected.files);projectID=selected.project ?? ""
+                }
                 .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() }.disabled(busy) } }
                 .interactiveDismissDisabled(busy)
         }

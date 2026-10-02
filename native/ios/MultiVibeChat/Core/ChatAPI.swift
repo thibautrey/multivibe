@@ -398,6 +398,10 @@ struct CloudHermesBinding: Codable, Sendable {
     let operationId: String; let versionId: String; let deviceId: String
     var cloudAuthorized: Bool? = nil
     var localExportSources: [String]? = nil
+    var contextMemoryIDs: [String]? = nil
+    var contextSkillIDs: [String]? = nil
+    var contextFileIDs: [String]? = nil
+    var contextProjectID: String? = nil
     var localTurns: [CloudHermesLocalTurn]? = nil
     var importApproved: Bool; var history: [HistoryJSON] = []; var pending: CloudHermesRunInput?; var turnId: UUID?
 }
