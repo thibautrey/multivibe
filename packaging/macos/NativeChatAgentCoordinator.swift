@@ -31,6 +31,8 @@ import Foundation
         var histories: [String: [NativeAgentJSON]]? = [:]
         var runOrder: [String]? = []
         var titles: [String: String]? = [:]
+        var historyCursors: [String: Int64]? = [:]
+        var historySources: [String: String]? = [:]
     }
     init(session: NativeCloudSession? = nil, client: NativeAgentClient? = nil, root: URL? = nil) {
         self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("MultiVibe/NativeAgent")
@@ -174,11 +176,8 @@ import Foundation
         let key = id.uuidString.lowercased()
         let heads = cloudObjects[key] ?? []
         let messages: [NativeAgentJSON]
-        if heads.count == 1, !heads[0].deleted, !heads[0].erased, case .object(let value) = heads[0].value, case .array(let values) = value["messages"] {
-            messages = values
-        } else if heads.isEmpty, !(journal?.runRequests ?? [:]).values.contains(where: { $0.sessionId == key }) {
-            messages = journal?.histories?[key] ?? []
-        } else { return [] }
+        guard heads.isEmpty || (heads.count == 1 && heads[0].kind == .session && !heads[0].deleted && !heads[0].erased) else { return [] }
+        messages = journal?.histories?[key] ?? []
         return messages.enumerated().compactMap { index, message in
             guard case .object(let value) = message, case .string(let role) = value["role"],
                   ["user", "assistant"].contains(role), case .string(let content) = value["content"] else { return nil }
@@ -215,7 +214,16 @@ import Foundation
         guard case .object(let result) = run.result, case .string(let response) = result["response"] else { return nil }
         return response
     }
-    /// Pull preserves concurrent heads. A tombstone erases all cached payloads for the object.
+    private func branchID(_ sessionID: String, versions: [String: [NativeAgentChange]]) throws -> String {
+        guard let heads = versions[sessionID], heads.count == 1, heads[0].kind == .session,
+              !heads[0].deleted, !heads[0].erased else { throw NativeAgentClientError.invalidRequest }
+        if case .object(let value) = heads[0].value, let branch = value["branchId"] {
+            guard case .string(let id) = branch, UUID(uuidString: id) != nil else { throw NativeAgentClientError.invalidResponse }
+            return id
+        }
+        return sessionID // Explicit legacy imports use the session as their original branch.
+    }
+    /// Pull status and complete hidden transcripts only. Discovery never creates a run.
     func synchronize() async throws {
         guard !busy, let account = accountID, consent?.cloudEnabled == true, let client, journal != nil else { throw NativeAgentClientError.invalidRequest }
         busy = true; let epoch = loginEpoch
@@ -225,26 +233,66 @@ import Foundation
         while more {
             let page = try await client.changes(accountID: account, after: journal!.cursor ?? 0)
             try check(account, epoch)
-            let previous = journal
-            var versions = journal!.versions ?? [:]
-            for change in page.changes {
+            var next = journal!
+            var versions = next.versions ?? [:]
+            for change in page.changes.sorted(by: { $0.cursor < $1.cursor }) {
                 var heads = versions[change.objectId] ?? []
+                // A tombstone cannot be resurrected by a later stale divergent version.
+                if heads.contains(where: { $0.deleted || $0.erased }) && !change.deleted && !change.erased { continue }
                 heads.removeAll { change.parents.contains($0.versionId) || $0.versionId == change.versionId }
-                if change.deleted || change.erased {
-                    heads = []
-                    journal!.histories?.removeValue(forKey: change.objectId)
-                }
+                if change.deleted || change.erased { heads = [] }
                 heads.append(change); versions[change.objectId] = heads
             }
-            journal!.versions = versions; journal!.cursor = page.cursor
-            for (objectID, heads) in versions where heads.count == 1 && !heads[0].deleted && !heads[0].erased && heads[0].kind == .session {
-                if case .object(let value) = heads[0].value, case .array(let history) = value["messages"],
-                   !(journal!.runRequests ?? [:]).values.contains(where: { $0.sessionId == objectID }) {
-                    var histories = journal!.histories ?? [:]; histories[objectID] = history; journal!.histories = histories
+            next.versions = versions; next.cursor = page.cursor
+            var histories = next.histories ?? [:], cursors = next.historyCursors ?? [:]
+            var states = next.runStates ?? [:]
+            var sources = next.historySources ?? [:]
+            for (sessionID, sourceID) in sources {
+                let source = versions[sourceID] ?? []
+                if source.count != 1 || source[0].deleted || source[0].erased {
+                    histories.removeValue(forKey: sessionID); cursors.removeValue(forKey: sessionID); sources.removeValue(forKey: sessionID)
                 }
             }
+            for (id, heads) in versions where heads.count != 1 || heads[0].deleted || heads[0].erased {
+                histories.removeValue(forKey: id); cursors.removeValue(forKey: id)
+                states = states.filter { $0.value.sessionId != id && $0.key != id }
+            }
+            let candidates = versions.values.compactMap { heads -> NativeAgentChange? in
+                guard heads.count == 1, !heads[0].deleted, !heads[0].erased else { return nil }; return heads[0]
+            }.sorted { $0.cursor < $1.cursor }
+            for change in candidates {
+                guard case .object(let value) = change.value else { continue }
+                if change.kind == .session {
+                    let source = value["history"] ?? value["messages"]
+                    if case .array(let history) = source, change.cursor > (cursors[change.objectId] ?? -1) {
+                        histories[change.objectId] = history; cursors[change.objectId] = change.cursor; sources[change.objectId] = change.objectId
+                    }
+                    continue
+                }
+                guard (change.kind == .task || change.kind == .message), case .string(let type) = value["type"],
+                      ((type == "hermes_run" && change.kind == .task) || (type == "hermes_local_turn" && change.kind == .message)),
+                      case .string(let sessionID) = value["sessionId"],
+                      case .string(let branch) = value["branchId"],
+                      let expected = try? branchID(sessionID, versions: versions), branch == expected else { continue }
+                let history: [NativeAgentJSON]?
+                if type == "hermes_run" {
+                    guard case .string(let runID) = value["runId"] else { throw NativeAgentClientError.invalidResponse }
+                    let run = try await client.readRun(accountID: account, runID: runID)
+                    try check(account, epoch)
+                    guard run.runId == runID, run.sessionId == sessionID, run.branchId == branch else { throw NativeAgentClientError.invalidResponse }
+                    states[runID] = run
+                    if run.state == .completed, case .object(let result) = run.result, case .array(let values) = result["history"] { history = values }
+                    else { history = nil }
+                } else if case .array(let values) = value["history"] { history = values }
+                else { history = nil }
+                if let history, change.cursor > (cursors[sessionID] ?? -1) {
+                    histories[sessionID] = history; cursors[sessionID] = change.cursor; sources[sessionID] = change.objectId
+                }
+            }
+            next.histories = histories; next.historyCursors = cursors; next.historySources = sources; next.runStates = states
+            let previous = journal; journal = next
             do { try persist() } catch { journal = previous; throw error }
-            cloudObjects = versions; more = page.hasMore
+            cloudObjects = versions; runs = states; more = page.hasMore
         }
     }
     /// Creates a new durable turn. Existing device history requires explicit import beforehand.
@@ -260,8 +308,11 @@ import Foundation
             let state = journal!.runStates?[$0.runId]?.state
             return state != .completed && state != .cancelled
         }) else { throw NativeAgentClientError.invalidRequest }
+        let branch: String
+        if cloudObjects[sessionID] != nil { branch = try branchID(sessionID, versions: cloudObjects) }
+        else { branch = sessionID }
         let request = NativeAgentRunInput(operationId: UUID().uuidString.lowercased(), runId: UUID().uuidString.lowercased(), sessionId: sessionID,
-            branchId: sessionID, projectId: nil, model: .init(id: modelID, accessId: accessID, source: source, deviceId: deviceID), message: message, history: journal!.histories?[sessionID])
+            branchId: branch, projectId: nil, model: .init(id: modelID, accessId: accessID, source: source, deviceId: deviceID), message: message, history: journal!.histories?[sessionID])
         let previous = journal
         var requests = journal!.runRequests ?? [:]; requests[request.runId] = request; journal!.runRequests = requests
         var order = journal!.runOrder ?? []; order.append(request.runId); journal!.runOrder = order
