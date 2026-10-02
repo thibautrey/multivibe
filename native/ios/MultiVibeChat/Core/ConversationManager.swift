@@ -132,6 +132,9 @@ import Network
     private(set) var remoteHermesError: String?
     private var cloudAgentState: CloudAgentState?
     private(set) var cloudAgentSyncing = false
+    private var cloudAgentSyncEpoch:UUID?
+    private var cloudAgentSyncToken:UUID?
+    private var cloudAgentSyncRequested=false
     private(set) var cloudAgentSyncError: String?
     struct CloudAgentSummary:Identifiable {
         let id:String;let kind:String;let title:String;let conflicted:Bool;let deleted:Bool;let value:HistoryJSON?
@@ -142,6 +145,88 @@ import Network
             return CloudAgentSummary(id:id,kind:object.kind,title:value?.object?["title"]?.string ?? value?.object?["target"]?.string ?? object.kind,
                 conflicted:object.heads.count > 1,deleted:object.deleted,value:value)
         }.sorted { $0.id < $1.id }
+    }
+    struct CloudWorkspaceDraft {
+        let account:String
+        let epoch:UUID
+        let projectId:String
+        let objectId:String
+        let path:String
+        let content:String
+        let parents:[String]
+        let projectParents:[String]
+    }
+    func cloudWorkspaceDraft(projectId:String,fileId:String?) throws -> CloudWorkspaceDraft {
+        guard let state=cloudAgentState,state.accountId==session?.accountId else { throw APIError.invalidResponse }
+        let project=try state.workspaceProject(projectId)
+        guard let fileId else { return .init(account:state.accountId,epoch:sessionRevision,projectId:projectId,objectId:"",path:"",content:"",parents:[],projectParents:project.heads) }
+        let value:HistoryJSON?
+        let parents:[String]
+        if let pending=state.outbox.first(where:{$0.objectId==fileId}) {
+            guard pending.kind=="file",!pending.deleted else { throw APIError.server(409,"workspace_file_pending_delete") }
+            value=pending.value;parents=pending.parents
+        } else {
+            guard let file=state.objects[fileId],file.kind=="file",!file.deleted,file.heads.count==1 else { throw APIError.server(409,"workspace_file_unavailable") }
+            value=file.versions[file.heads[0]]?.value;parents=file.heads
+        }
+        guard let raw=value?.object,raw["type"]?.string=="hermes_workspace_file",raw["projectId"]?.string==projectId,
+            let path=raw["path"]?.string,let content=raw["content"]?.string,
+            CloudAgentState.workspaceFileID(projectId:projectId,path:path)==fileId else { throw APIError.invalidResponse }
+        try CloudAgentState.validateWorkspaceText(path:path,content:content)
+        return .init(account:state.accountId,epoch:sessionRevision,projectId:projectId,objectId:fileId,path:path,content:content,parents:parents,projectParents:project.heads)
+    }
+    func cloudWorkspaceDraftVisible(_ draft:CloudWorkspaceDraft) -> Bool {
+        guard draft.account==session?.accountId,draft.epoch==sessionRevision,let state=cloudAgentState,state.accountId==draft.account,
+            (try? state.workspaceProject(draft.projectId)) != nil else { return false }
+        return draft.objectId.isEmpty || state.objects[draft.objectId]?.deleted != true
+    }
+    func cloudWorkspaceFiles(projectId:String) -> [CloudAgentSummary] {
+        guard let state=cloudAgentState,state.accountId==session?.accountId,(try? state.workspaceProject(projectId)) != nil else { return [] }
+        var files:[String:CloudAgentSummary]=[:]
+        for (id,object) in state.objects where object.kind=="file" && !object.deleted {
+            let values=object.heads.compactMap{object.versions[$0]?.value}.filter{$0.object?["type"]?.string=="hermes_workspace_file" && $0.object?["projectId"]?.string==projectId}
+            guard !values.isEmpty else { continue }
+            let paths=Set(values.compactMap{$0.object?["path"]?.string})
+            files[id] = .init(id:id,kind:"file",title:paths.count==1 ? paths.first! : "Versions concurrentes",conflicted:object.heads.count>1,deleted:false,value:object.heads.count==1 ? values.first : nil)
+        }
+        for pending in cloudWorkspacePendingFiles(projectId:projectId) {
+            if let old=files[pending.id],old.conflicted { continue }
+            files[pending.id]=pending
+        }
+        return files.values.sorted{$0.title<$1.title}
+    }
+    func cloudWorkspacePendingFiles(projectId:String) -> [CloudAgentSummary] {
+        guard let state=cloudAgentState,state.accountId==session?.accountId,(try? state.workspaceProject(projectId)) != nil else { return [] }
+        return state.outbox.filter{$0.kind=="file"}.compactMap { operation in
+            let raw=operation.value?.object ?? state.objects[operation.objectId]?.versions.values.first(where:{$0.value?.object?["projectId"]?.string==projectId})?.value?.object
+            guard raw?["type"]?.string=="hermes_workspace_file",raw?["projectId"]?.string==projectId else { return nil }
+            return .init(id:operation.objectId,kind:"file",title:raw?["path"]?.string ?? "Fichier",conflicted:state.conflicts[operation.objectId] != nil,deleted:operation.deleted,value:operation.value)
+        }.sorted{$0.id<$1.id}
+    }
+    func saveCloudWorkspaceFile(_ draft:CloudWorkspaceDraft,path:String,content:String,delete:Bool=false) async throws -> String {
+        guard cloudWorkspaceDraftVisible(draft),let state=cloudAgentState else { throw CancellationError() }
+        let operation=try state.workspaceMutation(projectId:draft.projectId,objectId:draft.objectId,path:path,content:content,
+            parents:draft.parents,projectParents:draft.projectParents,delete:delete)
+        try enqueueCloudAgentMutation(operation)
+        // Offline edits are durable immediately. The existing consent-gated journal retries this exact operation.
+        await synchronizeCloudAgentState()
+        guard draft.account==session?.accountId,draft.epoch==sessionRevision else { throw CancellationError() }
+        return operation.versionId
+    }
+    func cloudWorkspaceWriteStatus(_ draft:CloudWorkspaceDraft,version:String) -> String {
+        guard draft.account==session?.accountId,draft.epoch==sessionRevision,let state=cloudAgentState,state.accountId==draft.account,
+            (try? state.workspaceProject(draft.projectId)) != nil else { return "unavailable" }
+        if let operation=state.outbox.first(where:{$0.versionId==version}) {
+            if state.conflicts[operation.objectId] != nil { return "conflicted" }
+            return "pending"
+        }
+        for object in state.objects.values where object.kind=="file" {
+            if let change=object.versions[version] {
+                if object.heads==[version] && (!object.deleted || change.deleted) { return "synced" }
+                return object.deleted ? "unavailable" : "conflicted"
+            }
+        }
+        return "unavailable"
     }
     struct CloudConflictReview {
         let account: String
@@ -259,18 +344,28 @@ import Network
     private(set) var discoveredCloudRuns:[String:CloudHermesRun] = [:]
     /// State-only journal exchange: never starts, resumes or replays an execution.
     func synchronizeCloudAgentState() async {
-        guard !cloudAgentSyncing, !isRestoring, storageLoaded, session != nil else { return }
-        let epoch=sessionRevision;cloudAgentSyncing=true
-        defer { if sessionRevision == epoch { cloudAgentSyncing=false } }
+        guard !isRestoring, storageLoaded, session != nil else { return }
+        let epoch=sessionRevision
+        if cloudAgentSyncing,cloudAgentSyncEpoch==epoch { cloudAgentSyncRequested=true;return }
+        let owner=UUID()
+        cloudAgentSyncing=true;cloudAgentSyncEpoch=epoch;cloudAgentSyncToken=owner;cloudAgentSyncRequested=false
+        defer {
+            if sessionRevision==epoch,cloudAgentSyncEpoch==epoch,cloudAgentSyncToken==owner {
+                cloudAgentSyncing=false;cloudAgentSyncEpoch=nil;cloudAgentSyncToken=nil
+                let requested=cloudAgentSyncRequested;cloudAgentSyncRequested=false
+                if requested { Task { await self.synchronizeCloudAgentState() } }
+            }
+        }
         do {
             let auth=try await validSession()
+            guard sessionRevision==epoch,cloudAgentSyncToken==owner,session?.accountId==auth.accountId else { throw CancellationError() }
             if cloudAgentState == nil {
                 cloudAgentState=CloudAgentState(accountId:auth.accountId,deviceId:UUID().uuidString.lowercased())
                 guard persist() else { throw APIError.server(0,"history_cache_write_failed") }
             }
             guard cloudAgentState?.accountId == auth.accountId else { throw APIError.invalidResponse }
             func current() throws {
-                guard sessionRevision == epoch, session?.accountId == auth.accountId else { throw CancellationError() }
+                guard sessionRevision == epoch, cloudAgentSyncToken==owner, session?.accountId == auth.accountId else { throw CancellationError() }
                 try Task.checkCancellation()
             }
             func pull() async throws {
@@ -345,7 +440,7 @@ import Network
                 _ = try cloudAgentState!.anchoredHistory(anchor,sessionId:id,account:auth.accountId,runs:discoveredCloudRuns)
             }
             cloudAgentSyncError=nil
-        } catch { if sessionRevision == epoch { cloudAgentSyncError=error.localizedDescription } }
+        } catch { if sessionRevision == epoch,cloudAgentSyncToken==owner { cloudAgentSyncError=error.localizedDescription } }
     }
     var currentLocalHermesExportApproved: Bool {
         guard let id=selection,let binding=cloudHermesBindings[id],binding.accountId == session?.accountId else { return false }
@@ -1555,6 +1650,7 @@ import Network
         }
     }
     private func resetHistorySync() {
+        cloudAgentSyncing=false;cloudAgentSyncEpoch=nil;cloudAgentSyncToken=nil;cloudAgentSyncRequested=false
         syncTask?.cancel(); syncTask = nil
         isSynchronizing = false
         importedGuestSnapshots = [:]
