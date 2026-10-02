@@ -41,6 +41,8 @@ struct CloudAgentState: Codable, Equatable, Sendable {
     var cursor: Int64 = 0
     var objects: [String:CloudAgentObject] = [:]
     var outbox: [CloudAgentMutation] = []
+    // Local-only authorization provenance. Never included in mutations sent to the server.
+    var memoryWriteScopes: [String: String]? = nil
     var conflicts: [String:String] = [:]
     static let kinds: Set<String> = ["session","message","memory","skill","project","file","environment","task"]
     static func uuid(_ value:String) -> Bool { value.count == 36 && UUID(uuidString:value) != nil && value == value.lowercased() }
@@ -80,6 +82,7 @@ struct CloudAgentState: Codable, Equatable, Sendable {
             last = raw.cursor
         }
         guard last == page.cursor else { throw APIError.invalidResponse }
+        next.memoryWriteScopes = next.memoryWriteScopes?.filter { id, _ in next.outbox.contains(where: { $0.operationId == id }) }
         next.cursor = page.cursor; return next
     }
     mutating func enqueue(_ operation:CloudAgentMutation) throws {
@@ -274,6 +277,7 @@ struct CloudAgentState: Codable, Equatable, Sendable {
             }
         }
         next.outbox.removeAll(where:{acknowledged.contains($0.operationId)})
+        next.memoryWriteScopes = next.memoryWriteScopes?.filter { id, _ in next.outbox.contains(where: { $0.operationId == id }) }
         return next // Cursor advances only after the corresponding change page is durably applied.
     }
 }
