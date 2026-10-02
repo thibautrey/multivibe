@@ -64,7 +64,12 @@ actor DownloadedModelRuntime {
             let json = String(decoding: try JSONSerialization.data(withJSONObject: history), as: UTF8.self)
             let harness = try await PiAgentHarness()
             if let workspace { await workspace.recordHarness(tool: "hermes_agent", input: "", output: "Hermes mobile " + harness.version, status: "success") }
-            try await harness.run(messages: json, tools: useTools ? toolSchema : "[]", weather: weather, checkpointContext: await workspace?.hermesContext, generate: { [self] messages, tools, emit in
+            try await harness.run(messages: json, tools: useTools ? toolSchema : "[]", weather: weather, checkpointContext: await workspace?.hermesContext,
+                contextBudget: { [self] messages, tools, reserve in
+                    try await self.measure(path:path,messages:messages,tools:tools,reservedOutputTokens:reserve)
+                }, summary: { [self] messages, reserve in
+                    try await self.generate(path:path,messages:messages,tools:"[]",reservedOutputTokens:reserve,onText:{ _ in })
+                }, generate: { [self] messages, tools, emit in
                 let output = DownloadedToolOutput(onText: { text in if !weather { await emit(text) } })
                 let result = try await self.generate(path: path, messages: messages, tools: tools,
                     onText: { text in await output.append(text, inspectTools: useTools) })
@@ -108,14 +113,35 @@ actor DownloadedModelRuntime {
         }
         unloadAfterCompletion = false; loadedID = nil
     }
-    private func generate(path: URL, messages: String, tools: String,
+    private func measure(path: URL, messages: String, tools: String, reservedOutputTokens: Int) async throws -> String {
+        guard (1...1024).contains(reservedOutputTokens) else { throw LocalAgentError.invalidInput }
+        try Task.checkCancellation()
+        worker.engine.resetCancellation()
+        return try await withTaskCancellationHandler {
+            let value: String = try await withCheckedThrowingContinuation { continuation in
+                worker.queue.async { [worker] in
+                    do {
+                        try worker.engine.loadPath(path.path,contextSize:4096)
+                        let measured = try worker.engine.preflightMessages(messages,tools:tools,reservedOutputTokens:Int32(reservedOutputTokens))
+                        let data = try JSONSerialization.data(withJSONObject:measured)
+                        continuation.resume(returning:String(decoding:data,as:UTF8.self))
+                    } catch { continuation.resume(throwing:error) }
+                }
+            }
+            try Task.checkCancellation()
+            return value
+        } onCancel: { [worker] in worker.cancel() }
+    }
+    private func generate(path: URL, messages: String, tools: String, reservedOutputTokens: Int = 1024,
                           onText: @escaping @Sendable (String) async -> Void) async throws -> String {
+        guard (1...1024).contains(reservedOutputTokens) else { throw LocalAgentError.invalidInput }
+        try Task.checkCancellation()
         worker.engine.resetCancellation()
         let stream = AsyncThrowingStream<Event, Error> { continuation in
             worker.queue.async { [worker] in
                 do {
                     try worker.engine.loadPath(path.path, contextSize: 4096)
-                    let result = try worker.engine.completeMessages(messages, tools: tools, onText: { text in continuation.yield(.text(text)) })
+                    let result = try worker.engine.completeMessages(messages, tools: tools, reservedOutputTokens:Int32(reservedOutputTokens), onText: { text in continuation.yield(.text(text)) })
                     continuation.yield(.result(result)); continuation.finish()
                 } catch { continuation.finish(throwing: error) }
             }

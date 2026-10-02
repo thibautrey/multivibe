@@ -1,6 +1,7 @@
 import Foundation
 import JavaScriptCore
 import Security
+import CoreFoundation
 
 struct PiToolResult: Codable, Sendable {
     var content: String
@@ -44,7 +45,17 @@ struct PiToolResult: Codable, Sendable {
         return value
     }
 
+    typealias ContextBudget = @Sendable (String, String, Int) async throws -> String
+    typealias Summary = @Sendable (String, Int) async throws -> String
+    private func reserve(_ request: [String:Any]) throws -> Int {
+        guard let value=request["reservedOutputTokens"] as? NSNumber,
+            CFGetTypeID(value) != CFBooleanGetTypeID(), value.doubleValue.isFinite,
+            value.doubleValue == Double(value.intValue), (1...1024).contains(value.intValue)
+        else { throw LocalAgentError.invalidInput }
+        return value.intValue
+    }
     func run(messages: String, tools: String, weather: Bool = false, checkpointContext: HermesRunContext? = nil,
+             contextBudget: ContextBudget? = nil, summary: Summary? = nil,
              generate: @escaping @Sendable (String, String, @escaping @Sendable (String) async -> Void) async throws -> String,
              execute: @escaping @Sendable (String, String) async throws -> PiToolResult,
              onText: @escaping @Sendable (String) async -> Void) async throws {
@@ -58,7 +69,7 @@ struct PiToolResult: Codable, Sendable {
         if !weather, let text = lease?.recoveredText, !text.isEmpty { await onText(text) }
         let resume = lease?.resumeJSON.map { ",\"resume\":" + $0 } ?? ""
         let input = "{\"messages\":" + messages + ",\"tools\":" + tools + ",\"weather\":" + String(weather)
-            + ",\"durable\":" + String(lease != nil) + resume + "}"
+            + ",\"durable\":" + String(lease != nil) + ",\"compaction\":" + String(contextBudget != nil && summary != nil) + resume + "}"
         _ = try invoke("start", [input])
         var idlePolls = 0
         do {
@@ -91,6 +102,10 @@ struct PiToolResult: Codable, Sendable {
                         if kind == "checkpoint", let lease, let messages = request["messages"] as? String, let state = request["state"] as? String {
                             try await HermesCheckpointStore.shared.save(lease, engine: version, messages: messages, state: state)
                             response = "{}"
+                        } else if kind == "contextBudget", let contextBudget, let messages=request["messages"] as? String, let tools=request["tools"] as? String {
+                            response = try await contextBudget(messages,tools,reserve(request))
+                        } else if kind == "summary", let summary, let messages=request["messages"] as? String {
+                            response = try await summary(messages,reserve(request))
                         } else if kind == "model", let messages = request["messages"] as? String, let tools = request["tools"] as? String {
                             response = try await generate(messages, tools, onText)
                         } else if kind == "tool", let name = request["name"] as? String, let arguments = request["arguments"] as? String {
