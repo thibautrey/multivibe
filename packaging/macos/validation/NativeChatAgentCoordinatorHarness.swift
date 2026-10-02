@@ -10,6 +10,7 @@ struct NativeChatConversation: Codable { let id: UUID; let title: String; let mo
     var runResults: [String: [String: Any]] = [:]
     var changes: [[String: Any]] = []
     var pauseWrite = false
+    var mutationCursor = 1
     var pending: CheckedContinuation<Void, Never>?
     func transport(_ req: URLRequest) async throws -> (Data, URLResponse) {
         requests.append(req)
@@ -37,7 +38,7 @@ struct NativeChatConversation: Codable { let id: UUID; let title: String; let mo
             if pauseWrite { await withCheckedContinuation { pending = $0 } }
             let body = try JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any]
             let ops = body["operations"] as! [[String: Any]]
-            payload["receipts"] = ops.map { ["operationId": $0["operationId"]!, "versionId": $0["versionId"]!, "cursor": 1, "heads": [$0["versionId"]!], "deleted": false] }
+            payload["receipts"] = ops.map { ["operationId": $0["operationId"]!, "versionId": $0["versionId"]!, "cursor": mutationCursor, "heads": [$0["versionId"]!], "deleted": false] }
         }
         return (try JSONSerialization.data(withJSONObject: payload), HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!)
     }
@@ -128,10 +129,21 @@ struct NativeChatConversation: Codable { let id: UUID; let title: String; let mo
         try syncReload.selectWorkspaceProject(projectID, conversation: conversation.id)
         let projectReload = NativeChatAgentCoordinator(session: session, client: client, root: folder); await projectReload.restore()
         precondition(projectReload.selectedWorkspaceProject(conversation.id) == projectID)
+        f.mutationCursor = 8
         let projectRun = try await projectReload.execute(modelID: "cloud-model", source: .cloud, conversationID: conversation.id, message: "Use selected files")
         precondition(f.runBodies[projectRun.runId]?["workspaceProjectId"] as? String == projectID)
         precondition(f.runBodies[projectRun.runId]?["projectId"] == nil) // Workspace selection is not billing attribution.
-        var projectConflict = project; projectConflict["versionId"] = UUID().uuidString.lowercased(); projectConflict["cursor"] = 8
+        let mutationBody = try JSONSerialization.jsonObject(with: f.requests.last { $0.url!.path.hasSuffix("mutations") }!.httpBody!) as! [String: Any]
+        var propagated = (mutationBody["operations"] as! [[String: Any]])[0]
+        let propagatedValue = propagated["value"] as! [String: Any]
+        precondition(propagatedValue["workspaceProjectId"] as? String == projectID && propagatedValue["title"] as? String == "Synced")
+        precondition(propagated["parents"] as? [String] == [base["versionId"] as! String])
+        propagated["cursor"] = 8; propagated["erased"] = false
+        f.changes = [base, project, propagated]
+        let otherClient = NativeChatAgentCoordinator(session: session, client: client, root: folder.appendingPathComponent("other-client"))
+        await otherClient.restore(); try await otherClient.synchronize()
+        precondition(otherClient.selectedWorkspaceProject(conversation.id) == projectID)
+        var projectConflict = project; projectConflict["versionId"] = UUID().uuidString.lowercased(); projectConflict["cursor"] = 9
         f.changes = [projectConflict]; try await projectReload.synchronize()
         precondition(projectReload.cloudProjects.isEmpty)
         do { _ = try await projectReload.execute(modelID: "cloud-model", source: .cloud, conversationID: conversation.id, message: "Reject ambiguous workspace"); preconditionFailure("conflicted project executed") } catch {}
