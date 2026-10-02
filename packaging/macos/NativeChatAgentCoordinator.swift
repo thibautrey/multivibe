@@ -34,6 +34,7 @@ import Foundation
         var historyCursors: [String: Int64]? = [:]
         var historySources: [String: String]? = [:]
         var workspaceSelections: [String: String]? = [:]
+        var workspaceMutations: [String: NativeAgentMutation]? = [:]
     }
     init(session: NativeCloudSession? = nil, client: NativeAgentClient? = nil, root: URL? = nil) {
         self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("MultiVibe/NativeAgent")
@@ -187,11 +188,41 @@ import Foundation
     func selectWorkspaceProject(_ project: String, conversation: UUID?) throws {
         guard !busy, accountID == session?.accountID, let conversation, journal != nil,
               project.isEmpty || cloudProjects.contains(where: { $0.id == project }) else { throw NativeAgentClientError.invalidRequest }
+        let id = conversation.uuidString.lowercased()
+        guard journal!.workspaceMutations?[id] == nil, let heads = cloudObjects[id], heads.count == 1,
+              heads[0].kind == .session, !heads[0].deleted, !heads[0].erased,
+              case .object(var value) = heads[0].value else { throw NativeAgentClientError.invalidRequest }
+        if project.isEmpty { value.removeValue(forKey: "workspaceProjectId") } else { value["workspaceProjectId"] = .string(project) }
+        let mutation = NativeAgentMutation(operationId: UUID().uuidString.lowercased(), objectId: id,
+            versionId: UUID().uuidString.lowercased(), deviceId: journal!.deviceID, kind: .session,
+            parents: [heads[0].versionId], deleted: false, value: .object(value))
         let previous = journal
-        var selections = journal!.workspaceSelections ?? [:]; selections[conversation.uuidString.lowercased()] = project
-        journal!.workspaceSelections = selections
+        var selections = journal!.workspaceSelections ?? [:]; selections[id] = project
+        var pending = journal!.workspaceMutations ?? [:]; pending[id] = mutation
+        journal!.workspaceSelections = selections; journal!.workspaceMutations = pending
         do { try persist() } catch { journal = previous; throw error }
         objectWillChange.send()
+    }
+    /// Commit selected workspace to the shared session before dispatching its next run.
+    /// Unknown HTTP outcomes retry the durable operation, never create another session version.
+    private func publishWorkspaceSelection(_ conversation: UUID) async throws {
+        let id = conversation.uuidString.lowercased()
+        guard let mutation = journal?.workspaceMutations?[id] else { return }
+        guard !busy, let account = accountID, let client else { throw NativeAgentClientError.invalidRequest }
+        busy = true; let epoch = loginEpoch
+        defer { if loginEpoch == epoch { busy = false } }
+        let receipts = try await client.mutate(accountID: account, operations: [mutation])
+        try check(account, epoch)
+        guard receipts.count == 1, let receipt = receipts.first, receipt.operationId == mutation.operationId,
+              receipt.versionId == mutation.versionId, !receipt.deleted, receipt.heads == [mutation.versionId] else { throw NativeAgentClientError.invalidResponse }
+        let version = NativeAgentChange(operationId: mutation.operationId, objectId: id, versionId: mutation.versionId,
+            deviceId: mutation.deviceId, kind: .session, parents: mutation.parents, deleted: false, value: mutation.value,
+            cursor: receipt.cursor, erased: false)
+        let previous = journal
+        var versions = journal!.versions ?? [:]; versions[id] = [version]; journal!.versions = versions
+        journal!.workspaceMutations?.removeValue(forKey: id); journal!.workspaceSelections?.removeValue(forKey: id)
+        do { try persist() } catch { journal = previous; throw error }
+        cloudObjects = versions // Global pull cursor remains unchanged until changes are durably pulled.
     }
     struct CloudMessage: Identifiable {
         let id: Int
@@ -332,6 +363,8 @@ import Foundation
                  message: String, accessID: String? = nil, deviceID: String? = nil) async throws -> NativeAgentRun {
         guard !busy, let account = accountID, consent?.cloudEnabled == true, let client, journal != nil,
               source != .device else { throw NativeAgentClientError.invalidRequest }
+        try await publishWorkspaceSelection(conversationID)
+        guard accountID == account, session?.accountID == account, journal != nil else { throw NativeAgentClientError.accountMismatch }
         let sessionID = conversationID.uuidString.lowercased()
         guard journal!.imported.contains(conversationID) || cloudObjects[sessionID]?.count == 1 else { throw NativeAgentClientError.invalidRequest }
         if let heads = cloudObjects[sessionID], heads.count != 1 || heads[0].deleted || heads[0].erased { throw NativeAgentClientError.invalidRequest }
