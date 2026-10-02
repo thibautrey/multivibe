@@ -78,9 +78,17 @@ and error guidance preserve the previous app behavior.
   effective context and output reserve, and generation rejects overflow before
   decoding rather than deleting old exchanges. The default output reserve remains
   1024 tokens; a separate explicit reserve is available for future summary calls.
-  The JavaScript orchestration does not yet consume this preflight or generate
-  summaries. The full transcript is retained and overflow remains an explicit
-  error; this is not server compaction parity.
+  Downloaded models now provide this preflight to the JavaScript loop. At the
+  pinned upstream threshold, completed exchanges are summarized without tools or
+  user-visible streaming; the latest user exchange and each tool batch remain
+  intact. A checkpoint binds the summary to its exact canonical prefix before
+  further inference. Only the model view is compacted: Cloud exports retain the
+  full transcript. A summary must fit its own measured context and shrink the
+  final model view; refusals, truncation and failed persistence abort safely.
+  Inputs that still fit may defer compaction; indivisible oversized exchanges
+  remain errors. Apple Foundation does not yet provide these callbacks. This
+  bounded summarizer does not implement upstream micro-pruning, hierarchical
+  compression or its complete summary prompt, and is not full compaction parity.
 - No Linux terminal, process runtime, dependency installer, background scheduler,
   Hermes SessionDB, memory consolidation, executable skills loader, delegation, provider
   failover, plugins, server guardrails, or self-improvement is ported by this module.

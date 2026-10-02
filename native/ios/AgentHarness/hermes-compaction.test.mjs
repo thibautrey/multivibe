@@ -1,3 +1,4 @@
+import {fileURLToPath} from 'node:url';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {prepareCompaction,compactionView,thresholdTokens} from './hermes-compaction.mjs';
@@ -15,7 +16,7 @@ test('threshold exactly matches executed pinned upstream extracted helpers',asyn
  const {execFileSync}=await import('node:child_process');
  const cases=[[4096,1024,.5],[8192,1024,.5],[64000,4096,.5],[128000,8192,.5],[1000000,8192,.5],[4096,1024,1],[4096,1024,.9]];
  const script='import runpy,json,sys\nc=runpy.run_path(sys.argv[1])["ContextCompressor"]\nprint(json.dumps([c._compute_threshold_tokens(ctx,pct,reserve) for ctx,reserve,pct in json.loads(sys.argv[2])]))';
- const path=new URL('./compaction-threshold-upstream.py',import.meta.url).pathname;
+ const path=fileURLToPath(new URL('./compaction-threshold-upstream.py',import.meta.url));
  assert.deepEqual(cases.map(([ctx,reserve,pct])=>thresholdTokens(ctx,reserve,pct)),JSON.parse(execFileSync('python3',['-c',script,path,JSON.stringify(cases)],{encoding:'utf8'})));
 });
 test('new summary must actually shrink the measured model context',async()=>{const host=fixture();host.measure=async(m,t,r)=>({promptTokens:m[0]?.content?.startsWith('Summarize')?1000:2800,contextTokens:4096,reservedOutputTokens:r});await assert.rejects(prepareCompaction(canonical,[],undefined,host),/did not produce/);});
