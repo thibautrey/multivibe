@@ -40,7 +40,7 @@ final class CloudHermesTests: XCTestCase {
         let parent = id(), turn = UUID()
         let oldTool: HistoryJSON = .object(["role":.string("tool"),"content":.string("Cloud private result")])
         binding.history = [oldTool]
-        binding.recordLocalIntent(turnId:turn,modelId:"downloaded",source:"downloaded-local",parents:[parent])
+        binding.recordLocalIntent(turnId:turn,modelId:"downloaded",source:"downloaded-local",parents:[parent],parentValue:.object(["branchId":.string(binding.branchId)]))
         let captured = binding.localTurns![0]
         let checkpoint: [HistoryJSON] = [.object(["role":.string("system"),"content":.string("local context")]),.object(["role":.string("user"),"content":.string("local request")]),.object(["role":.string("tool"),"content":.string("local private result")]),.object(["role":.string("assistant"),"content":.string("answer")])]
         XCTAssertThrowsError(try binding.localPublication(index:0,checkpoint:checkpoint))
@@ -54,11 +54,26 @@ final class CloudHermesTests: XCTestCase {
         XCTAssertEqual(restored.localTurns?[0].operationId,captured.operationId)
         XCTAssertEqual(restored.localTurns?[0].parents,[parent]);XCTAssertEqual(restored.localTurns?[0].published,true)
     }
+    func testOfflinePublicationPreservesCapturedWorkspaceBillingAndCustomMetadata() throws {
+        let id={UUID().uuidString.lowercased()}
+        var binding=CloudHermesBinding(accountId:id(),conversationId:id(),sessionId:id(),branchId:id(),operationId:id(),versionId:id(),deviceId:id(),importApproved:true)
+        binding.localExportSources=["downloaded-local"]
+        let parent=id(), billing=id(), workspace=id()
+        let original:HistoryJSON = .object(["type":.string("hermes_session"),"branchId":.string(binding.branchId),"projectId":.string(billing),"workspaceProjectId":.string(workspace),"title":.string("Custom title"),"custom":.object(["value":.number(42)])])
+        binding.recordLocalIntent(turnId:UUID(),modelId:"local",source:"downloaded-local",parents:[parent],parentValue:original)
+        binding=try JSONDecoder().decode(CloudHermesBinding.self,from:JSONEncoder().encode(binding))
+        let operations=try binding.localPublication(index:0,checkpoint:[.object(["role":.string("user"),"content":.string("question")]),.object(["role":.string("assistant"),"content":.string("answer")])])
+        XCTAssertEqual(operations[1].parents,[parent])
+        for key in ["projectId","workspaceProjectId","title","custom"] { XCTAssertEqual(operations[1].value?.object?[key],original.object?[key]) }
+        var missing=binding
+        missing.localTurns?[0].published=false;missing.localTurns?[0].parentValue=nil
+        XCTAssertThrowsError(try missing.localPublication(index:0,checkpoint:[.object(["role":.string("user"),"content":.string("question")])]))
+    }
     func testLocalRevocationRejectsQueuedMutationAndNewTurnUsesCurrentHead() throws {
         let id={UUID().uuidString.lowercased()}
         var binding=CloudHermesBinding(accountId:id(),conversationId:id(),sessionId:id(),branchId:id(),operationId:id(),versionId:id(),deviceId:id(),importApproved:true)
         binding.localExportSources=["downloaded-local"]
-        binding.recordLocalIntent(turnId:UUID(),modelId:"local",source:"downloaded-local",parents:[id()])
+        binding.recordLocalIntent(turnId:UUID(),modelId:"local",source:"downloaded-local",parents:[id()],parentValue:.object(["branchId":.string(binding.branchId)]))
         let operations=try binding.localPublication(index:0,checkpoint:[.object(["role":.string("user"),"content":.string("question")]),.object(["role":.string("assistant"),"content":.string("answer")])])
         XCTAssertTrue(operations.allSatisfy(binding.permitsLocalOperation))
         binding.localExportSources=[]

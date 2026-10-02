@@ -419,6 +419,7 @@ struct CloudHermesLocalTurn: Codable, Sendable {
     let sessionOperationId: String
     let sessionVersionId: String
     var published = false
+    var parentValue: HistoryJSON? = nil
 }
 extension CloudHermesBinding {
     static let mobileEngine = "hermes-mobile/6d49922875f60af5bc31e2bfbae78a81d2fa91fc"
@@ -428,13 +429,27 @@ extension CloudHermesBinding {
             (localExportSources ?? []).contains(source) else { return false }
         return operation.objectId == sessionId || operation.value?.object?["sessionId"]?.string == sessionId
     }
-    mutating func recordLocalIntent(turnId: UUID, modelId: String, source: String, parents: [String]) {
+    mutating func recordLocalIntent(turnId: UUID, modelId: String, source: String, parents: [String], parentValue: HistoryJSON? = nil) {
         guard !(localTurns ?? []).contains(where: { $0.turnId == turnId }) else { return }
         let id = { UUID().uuidString.lowercased() }
         var turns = localTurns ?? []
+        var snapshot = parentValue
+        if let last = turns.last, !last.published {
+            snapshot = nil
+            if var value = last.parentValue?.object {
+                value["type"] = .string("hermes_session"); value["localSource"] = .string(last.source)
+                value["localTurnId"] = .string(last.turnId.uuidString.lowercased())
+                snapshot = .object(value)
+            }
+        }
+        // Brand-new sessions have an exact deterministic initial value, even before first upload.
+        let effectiveParents = turns.last.flatMap { $0.published ? nil : [$0.sessionVersionId] } ?? parents
+        if snapshot == nil && effectiveParents == [versionId] {
+            snapshot = .object(["type":.string("hermes_session"),"conversationId":.string(conversationId),"branchId":.string(branchId),"title":.string("Hermes chat")])
+        }
         turns.append(.init(turnId:turnId,modelId:modelId,source:source,
-            parents:turns.last.flatMap { $0.published ? nil : [$0.sessionVersionId] } ?? parents,
-            operationId:id(),versionId:id(),sessionOperationId:id(),sessionVersionId:id()))
+            parents:effectiveParents,
+            operationId:id(),versionId:id(),sessionOperationId:id(),sessionVersionId:id(),parentValue:snapshot))
         localTurns = turns
     }
     mutating func localPublication(index: Int, checkpoint: [HistoryJSON]) throws -> [CloudAgentMutation] {
@@ -449,9 +464,12 @@ extension CloudHermesBinding {
             "engine":.string(Self.mobileEngine),"sequence":.number(Double(index)),"messages":.array(checkpoint),"history":.array(continuation)])
         let message = CloudAgentMutation(operationId:turn.operationId,objectId:turn.turnId.uuidString.lowercased(),versionId:turn.versionId,deviceId:deviceId,
             kind:"message",parents:[],deleted:false,value:value)
+        guard var sessionValue = turn.parentValue?.object, sessionValue["branchId"]?.string == branchId else { throw APIError.server(409,"hermes_original_session_snapshot_required") }
+        sessionValue["type"] = .string("hermes_session")
+        sessionValue["localSource"] = .string(turn.source)
+        sessionValue["localTurnId"] = .string(turn.turnId.uuidString.lowercased())
         let session = CloudAgentMutation(operationId:turn.sessionOperationId,objectId:sessionId,versionId:turn.sessionVersionId,deviceId:deviceId,
-            kind:"session",parents:turn.parents,deleted:false,value:.object(["type":.string("hermes_session"),"conversationId":.string(conversationId),"branchId":.string(branchId),
-                "title":.string("Hermes chat"),"localSource":.string(turn.source),"localTurnId":.string(turn.turnId.uuidString.lowercased())]))
+            kind:"session",parents:turn.parents,deleted:false,value:.object(sessionValue))
         try CloudAgentState.validate(message); try CloudAgentState.validate(session)
         // Preserve previous Cloud tool history, then the complete current local turn including its tool observations.
         history = continuation
