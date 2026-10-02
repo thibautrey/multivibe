@@ -73,6 +73,17 @@ and error guidance preserve the previous app behavior.
   text, without executing frontmatter or scripts. Native memories and device
   documents are not exported by this adapter, and selecting Cloud context does
   not grant native data permissions.
+- **Workspace editing:** the native Hermes browser opens project/session text
+  files for creation, editing and deletion. Writes use the same deterministic
+  project/path UUIDs as Linux and the web, retain reviewed parent versions and
+  preserve existing metadata. The protected account journal stores each operation
+  before network I/O; pending text can be inspected locally and retries keep the
+  same operation identity. Pending edits cannot be replaced silently. Changed
+  heads require another review, and permanent tombstones cannot be recreated.
+  Text is limited to 64 KiB per file, 200 files and 512 KiB per workspace. This
+  editor does not transfer arbitrary binary files or provide a local shell.
+  Reconnection exchanges state only; editing never launches inference or replays
+  a tool. Account transitions hide the editor and invalidate captured drafts.
 - **Compaction:** the native llama.cpp adapter now measures the fully templated
   prompt and tool schemas with its actual tokenizer. Its preflight reports the
   effective context and output reserve, and generation rejects overflow before
