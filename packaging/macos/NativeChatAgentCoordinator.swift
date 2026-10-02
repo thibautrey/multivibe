@@ -385,8 +385,12 @@ import Foundation
                                   payload["sessionId"] == .string(change.objectId), payload["branchId"] == .string(sourceBranch) {
                             history = try validatedHistory(payload["history"])
                         } else { throw NativeAgentClientError.invalidResponse }
-                        if change.cursor >= (cursors[change.objectId] ?? -1) {
-                            histories[change.objectId] = history; cursors[change.objectId] = change.cursor; sources[change.objectId] = change.objectId
+                        let origin = (archive[change.objectId] ?? [:]).values.filter { version in
+                            guard !version.deleted, !version.erased, case .object(let previous) = version.value else { return false }
+                            return previous["historyAnchor"] == rawAnchor && previous["branchId"] == value["branchId"]
+                        }.map(\.cursor).min() ?? change.cursor
+                        if origin >= (cursors[change.objectId] ?? -1) {
+                            histories[change.objectId] = history; cursors[change.objectId] = origin; sources[change.objectId] = change.objectId
                         }
                     } else {
                         let source = value["history"] ?? value["messages"]

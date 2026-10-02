@@ -172,16 +172,20 @@ struct NativeChatConversation: Codable { let id: UUID; let title: String; let mo
         f.runBodies[advancedRun] = ["sessionId": anchorID, "branchId": newBranch]; f.runResults[advancedRun] = ["history": [["role": "user", "content": "New branch ask"], ["role": "assistant", "content": "New branch answer"]]]
         f.changes = [staleTask, advancedTask]; try await anchored.synchronize()
         precondition(anchored.synchronizedMessages(anchorSession).last?.content == "New branch answer")
+        var metadataEdit = anchorVersion; metadataEdit["parents"] = [anchorVersion["versionId"]!]; metadataEdit["versionId"] = UUID().uuidString.lowercased(); metadataEdit["cursor"] = 4
+        var metadataValue = anchorVersion["value"] as! [String: Any]; metadataValue["title"] = "Renamed anchor"; metadataEdit["value"] = metadataValue
+        f.changes = [metadataEdit]; try await anchored.synchronize()
+        precondition(anchored.synchronizedMessages(anchorSession).last?.content == "New branch answer")
         let sourceMessage = UUID().uuidString.lowercased(), messageVersion = UUID().uuidString.lowercased()
-        var anchorMessage = base; anchorMessage["objectId"] = sourceMessage; anchorMessage["kind"] = "message"; anchorMessage["versionId"] = messageVersion; anchorMessage["cursor"] = 4
+        var anchorMessage = base; anchorMessage["objectId"] = sourceMessage; anchorMessage["kind"] = "message"; anchorMessage["versionId"] = messageVersion; anchorMessage["cursor"] = 5
         anchorMessage["value"] = ["type": "hermes_local_turn", "sessionId": anchorID, "branchId": oldBranch, "history": history]
-        var messageAnchor = anchorVersion; messageAnchor["parents"] = [anchorVersion["versionId"]!]; messageAnchor["versionId"] = UUID().uuidString.lowercased(); messageAnchor["cursor"] = 6
+        var messageAnchor = anchorVersion; messageAnchor["parents"] = [metadataEdit["versionId"]!]; messageAnchor["versionId"] = UUID().uuidString.lowercased(); messageAnchor["cursor"] = 7
         messageAnchor["value"] = ["title": "Message anchor", "branchId": UUID().uuidString.lowercased(), "historyAnchor": ["type": "hermes_history_anchor", "source": "message", "objectId": sourceMessage, "versionId": messageVersion, "sourceBranchId": oldBranch]]
-        var divergentMessage = anchorMessage; divergentMessage["versionId"] = UUID().uuidString.lowercased(); divergentMessage["cursor"] = 5
+        var divergentMessage = anchorMessage; divergentMessage["versionId"] = UUID().uuidString.lowercased(); divergentMessage["cursor"] = 6
         divergentMessage["value"] = ["type": "hermes_local_turn", "sessionId": anchorID, "branchId": oldBranch, "history": [["role": "assistant", "content": "Do not pick this head"]]]
         f.changes = [anchorMessage, divergentMessage, messageAnchor]; try await anchored.synchronize()
         precondition(anchored.synchronizedMessages(anchorSession).last?.content == "Remote answer")
-        var removed = anchorMessage; removed["parents"] = [messageVersion]; removed["versionId"] = UUID().uuidString.lowercased(); removed["cursor"] = 7; removed["deleted"] = true; removed.removeValue(forKey: "value")
+        var removed = anchorMessage; removed["parents"] = [messageVersion]; removed["versionId"] = UUID().uuidString.lowercased(); removed["cursor"] = 8; removed["deleted"] = true; removed.removeValue(forKey: "value")
         f.changes = [removed]
         do { try await anchored.synchronize(); preconditionFailure("deleted anchor accepted") } catch {}
         precondition(anchored.synchronizedMessages(anchorSession).isEmpty)
@@ -190,9 +194,9 @@ struct NativeChatConversation: Codable { let id: UUID; let title: String; let mo
         precondition(anchorReload.synchronizedMessages(anchorSession).isEmpty)
         let newLocalID = UUID().uuidString.lowercased()
         let currentAnchorValue = messageAnchor["value"] as! [String: Any], currentBranch = currentAnchorValue["branchId"] as! String
-        var newerLocal = anchorMessage; newerLocal["objectId"] = newLocalID; newerLocal["versionId"] = UUID().uuidString.lowercased(); newerLocal["cursor"] = 8
+        var newerLocal = anchorMessage; newerLocal["objectId"] = newLocalID; newerLocal["versionId"] = UUID().uuidString.lowercased(); newerLocal["cursor"] = 9
         newerLocal["value"] = ["type": "hermes_local_turn", "sessionId": anchorID, "branchId": currentBranch, "history": [["role": "user", "content": "After merge"], ["role": "assistant", "content": "New local turn wins"]]]
-        var updatedAnchor = messageAnchor; updatedAnchor["parents"] = [messageAnchor["versionId"]!]; updatedAnchor["versionId"] = UUID().uuidString.lowercased(); updatedAnchor["cursor"] = 9
+        var updatedAnchor = messageAnchor; updatedAnchor["parents"] = [messageAnchor["versionId"]!]; updatedAnchor["versionId"] = UUID().uuidString.lowercased(); updatedAnchor["cursor"] = 10
         var preservedAnchor = currentAnchorValue; preservedAnchor["localTurnId"] = newLocalID; updatedAnchor["value"] = preservedAnchor
         f.changes = [removed, newerLocal, updatedAnchor]
         do { try await anchored.synchronize(); preconditionFailure("deleted retained anchor accepted") } catch {}
