@@ -6,7 +6,13 @@
     "agent/turn_tool_validation.py": "a777325f15b75e617038cf554f347f57ffac14c740c7b01f7a302a57a1e49133",
     "agent/turn_tool_round.py": "70a0a896fd89943516393fafa9534dfd059ebec55ffbd498b838f4a7d977be32",
     "agent/message_sanitization.py": "c59e43abac1d93a832bc2e4acef2d18b3d04f08d2685ae9a98608fa52a29fb78",
-    "pyproject.toml": "856ddfe32a7ccbfc5ba4e2b73c43864aa673dcab794b717cc08f1354292fe9df",
+    "pyproject.toml": "ca7bd4b63806ac7b6cafd8090eb696189cc76619625fe0c79cb5dad73dc37231",
     "LICENSE": "821556e6336796450ab852d375117b48a4887e71d255794fd6318d99982a5ab6"
+  },
+  "local_modifications": {
+    "pyproject.toml": {
+      "upstream_sha256": "856ddfe32a7ccbfc5ba4e2b73c43864aa673dcab794b717cc08f1354292fe9df",
+      "reason": "Security-only dependency pin updates: PyJWT 2.13.0 -> 2.15.1; HTTPX2 2.7.0 -> 2.13.1 in all extras (Dependabot alerts #25-42)."
+    }
   }
 }
