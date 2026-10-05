@@ -17,10 +17,10 @@ import SwiftUI
             .onChange(of: manager.session?.accountId) { _, _ in configureAutomations() }
             .onChange(of: scenePhase) { _, phase in
                 AutomationCoordinator.shared.foreground(phase == .active)
-                if phase == .background { Task { await DownloadedModelRuntime.shared.unload() } }
+                if phase == .background { Task { await DownloadedModelRuntime.shared.unload(reason: .background) } }
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
-                Task { await DownloadedModelRuntime.shared.unload() }
+                Task { await DownloadedModelRuntime.shared.unload(reason: .memoryPressure) }
             }
             .sheet(item: $sdkAuthorization) { request in SDKConsentView(request: request).environment(manager) }
             .onOpenURL { url in
