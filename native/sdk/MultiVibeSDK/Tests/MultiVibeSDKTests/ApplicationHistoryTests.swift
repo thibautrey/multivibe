@@ -1,5 +1,6 @@
 import XCTest
 import CryptoKit
+import Security
 @testable import MultiVibeSDK
 
 final class ApplicationHistoryTests: XCTestCase {
@@ -73,4 +74,43 @@ final class ApplicationHistoryTests: XCTestCase {
         XCTAssertEqual(saved?.title, draft.title); XCTAssertEqual(saved?.revision, 1)
         XCTAssertEqual(bodies.count, 2); XCTAssertEqual(bodies[0], bodies[1]); XCTAssertFalse(restored.hasPending)
     }
+    @MainActor func testClientConnectsReadsAppHistoryAndLocksOnRotation() async throws {
+        let f = try fixture(), host = "sdk-test-" + UUID().uuidString.lowercased() + ".example"
+        let service = "cloud.multivibe.sdk.\(host).\(f.binding.appId)"
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: "application-history-p256"]
+        var create = query; create[kSecValueData as String] = try f.key().rawRepresentation
+        create[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        XCTAssertEqual(SecItemAdd(create as CFDictionary, nil), errSecSuccess)
+        let storage = SDKKeychain(service: service)
+        defer { storage.clear(); SecItemDelete(query as CFDictionary) }
+        try storage.save(StoredSession(accessToken: "synthetic", refreshToken: "synthetic-refresh", expiresAt: Date().addingTimeInterval(3600)))
+        let client = MultiVibeClient(configuration: .init(clientID: f.binding.appId, redirectURI: URL(string: "https://example.com/callback")!, baseURL: URL(string: "https://" + host)!))
+        var paths: [String] = []
+        client.dataTransportOverride = { request in
+            let path = request.url!.path; paths.append(path)
+            let value: [String: Any]
+            switch path {
+            case "/sdk/v2/session": value = ["accountId": f.binding.accountId, "appId": f.binding.appId]
+            case "/sdk/v2/history-keys": value = ["grant": try JSONSerialization.jsonObject(with: JSONEncoder().encode(f.grant))]
+            case "/sdk/v2/conversations": value = ["data": [["id": f.binding.conversationId, "appId": f.binding.appId, "revision": 1, "updatedAt": "2026-10-01T00:00:00Z"]], "nextCursor": NSNull()]
+            case "/sdk/v2/conversations/" + f.binding.conversationId: value = ["id": f.binding.conversationId, "accountId": f.binding.accountId, "appId": f.binding.appId, "revision": 1, "updatedAt": "2026-10-01T00:00:00Z", "envelope": try JSONSerialization.jsonObject(with: JSONEncoder().encode(f.envelope))]
+            case "/sdk/v2/models": value = ["data": [["id": "cloud/test"]]]
+            default: throw MultiVibeError.invalidResponse
+            }
+            return (try JSONSerialization.data(withJSONObject: value), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }
+        try await client.connect()
+        XCTAssertTrue(client.isHistoryUnlocked); XCTAssertEqual(client.conversations.first?.title, "Private app history")
+        XCTAssertFalse(paths.contains(where: { $0.contains("/v1/") }))
+        let response = HTTPURLResponse(url: URL(string: "https://" + host)!, statusCode: 409, httpVersion: nil, headerFields: nil)!
+        XCTAssertThrowsError(try client.validate(response, data: Data("{\"error\":\"history_keys_changed\"}".utf8)))
+        XCTAssertTrue(client.historyAuthorizationRequired); XCTAssertFalse(client.isHistoryUnlocked); XCTAssertTrue(client.conversations.isEmpty)
+        let authorization = try client.beginAuthorization()
+        let params = URLComponents(url: authorization.url(broker: false), resolvingAgainstBaseURL: false)!.queryItems!
+        let encoded = params.first(where: { $0.name == "history_key" })!.value!
+        let publicKey = try JSONDecoder().decode(ApplicationHistoryPublicKey.self, from: HistoryWire.decode(encoded, min: 1, max: 1024))
+        XCTAssertEqual(publicKey, f.grant.recipient)
+        XCTAssertFalse(authorization.url(broker: false).absoluteString.contains(f.recoveryCode))
+    }
+
 }

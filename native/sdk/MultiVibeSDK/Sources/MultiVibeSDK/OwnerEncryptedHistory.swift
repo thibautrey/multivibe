@@ -2,8 +2,8 @@ import Foundation
 import CryptoKit
 import Observation
 
-/// Official-client history. The server authenticates the owner session separately
-/// from developer grants; selecting this mode never upgrades a developer token.
+/// Shared encrypted store with separate owner and application key acquisition.
+/// The route and app boundary are fixed at initialization.
 @MainActor @Observable final class OwnerEncryptedHistory {
     typealias Transport = @MainActor (String, String, Data?) async throws -> Data
     private struct Summary: Decodable { let id: String; let appId: String; let revision: Int; let updatedAt: String }
