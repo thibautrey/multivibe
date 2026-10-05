@@ -78,6 +78,7 @@ import Network
     var memoryReviewDelay: @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(2)) }
     var monitorConnectivity = true
     var syncDelay: @Sendable (Int) async throws -> Void = { attempt in try await Task.sleep(for: .seconds(min(60, 2 << attempt))) }
+    var hermesSyncDelay: @Sendable (Int) async throws -> Void = { attempt in try await Task.sleep(for: .seconds(min(60, 2 << attempt))) }
     var models: @MainActor (String) async throws -> [ModelOption] = { try await ChatAPI.shared.models(token: $0) }
     var lastUsedModel: @MainActor (String) -> String? = { LastUsedModelStore.model(for: $0) }
     var rememberLastUsedModel: @MainActor (String, String) -> Void = { LastUsedModelStore.save($0, for: $1) }
@@ -585,7 +586,18 @@ import Network
             }
             guard persist() else { throw APIError.server(0,"history_cache_write_failed") }
             cloudAgentSyncError=nil
-        } catch { if sessionRevision == epoch,cloudAgentSyncToken==owner { cloudAgentSyncError=error.localizedDescription } }
+            cloudAgentRetryable = false
+        } catch {
+            if sessionRevision == epoch,cloudAgentSyncToken==owner {
+                cloudAgentSyncError=error.localizedDescription
+                if case APIError.server(let status, _) = error {
+                    cloudAgentRetryable = status == 429 || (500...599).contains(status)
+                } else if let transport = error as? URLError {
+                    cloudAgentRetryable = [.timedOut, .networkConnectionLost, .notConnectedToInternet, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed].contains(transport.code)
+                } else { cloudAgentRetryable = false }
+                if cloudAgentRetryable { scheduleCloudAgentRetry() }
+            }
+        }
     }
     var currentLocalHermesExportApproved: Bool {
         guard let id=selection,let binding=cloudHermesBindings[id],binding.accountId == session?.accountId else { return false }
@@ -1033,8 +1045,14 @@ import Network
     private var monitoringNetwork = false
     private var online = false
     private var syncTask: Task<Void, Never>?
+    private var cloudAgentRetryTask: Task<Void, Never>?
+    private var cloudAgentRetryOwner: UUID?
+    private var cloudAgentRetryable = false
     var session: NativeSession? {
         didSet {
+            if session?.accountId != oldValue?.accountId {
+                cloudAgentRetryTask?.cancel(); cloudAgentRetryTask = nil; cloudAgentRetryOwner = nil; cloudAgentRetryable = false
+            }
             if session?.accountId != oldValue?.accountId { hermesRecovery = nil; cloudHermesRecoveryRun = nil; cloudHermesBindings = [:]; cloudAgentState=nil; pendingCloudArtifacts=[]; cloudAgentSyncing=false; discoveredCloudRuns=[:]; remoteHermes=[:]; remoteHermesBusy=false; remoteHermesError=nil; cloudHermesRestoreTask?.cancel(); cloudHermesRestoreTask = nil; cloudHermesStatus = [:]; activeCloudHermes = nil; selectedAccess = nil; requestedAccessModel = nil; accessNotice = nil }
         }
     }
@@ -2262,7 +2280,24 @@ import Network
         if reachable { Task { await self.synchronizeCloudAgentState(); await self.resumeCloudHermes(); await self.recoverRemoteHermes() } }
         online = reachable
         if reachable { scheduleAutomaticSync() }
-        else { syncTask?.cancel(); syncTask = nil }
+        else { syncTask?.cancel(); syncTask = nil; cloudAgentRetryTask?.cancel(); cloudAgentRetryTask = nil; cloudAgentRetryOwner = nil }
+    }
+    private func scheduleCloudAgentRetry() {
+        guard cloudAgentRetryTask == nil, online, !isRestoring, let account = session?.accountId else { return }
+        let epoch = sessionRevision
+        let owner = UUID()
+        cloudAgentRetryOwner = owner
+        cloudAgentRetryTask = Task { [weak self] in
+            guard let self else { return }
+            defer { if cloudAgentRetryOwner == owner { cloudAgentRetryTask = nil; cloudAgentRetryOwner = nil } }
+            for attempt in 0..<5 {
+                do { try await services.hermesSyncDelay(attempt) } catch { return }
+                guard !Task.isCancelled, online, sessionRevision == epoch, session?.accountId == account, cloudAgentRetryable else { return }
+                // State-only exchange: never resume inference or execute a tool here.
+                await synchronizeCloudAgentState()
+                if !cloudAgentRetryable { return }
+            }
+        }
     }
     private func scheduleAutomaticSync() {
         guard automaticSync, online, session != nil, !isRestoring, !isStreaming, !hasHistoryConflict else { return }
