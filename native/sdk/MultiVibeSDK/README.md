@@ -43,7 +43,7 @@ import MultiVibeChatUI
 
 The chat view owns its navigation toolbar. Keep it in a `NavigationStack`. Pass `initialPrompt:` to prefill the composer without sending or consuming credits; the user remains in control of submission. The view handles incoming callback URLs; if authentication is initiated outside that view, deliver callbacks to `client.handleOpenURL(_:)` exactly once. Add `applinks:your-domain.example` to your app's Associated Domains entitlement. Callback URLs must be HTTPS without query or fragment. The default Cloud origin is `https://app.multivibe.cloud`.
 
-On iOS the sign-in presenter first opens the official app's universal link. If no app handles it, it opens `ASWebAuthenticationSession`, permitting an existing web session. The official app or web page presents consent. The SDK validates state, exact callback and PKCE, exchanges a one-use code, and stores its own rotating credentials in the application's private Keychain. A transport redirect cannot forward bearer credentials. Token refresh failure requires reconnection instead of replaying a possibly consumed rotating credential.
+On iOS the sign-in presenter opens `ASWebAuthenticationSession`, using the existing MultiVibe web session when available. The MultiVibe page presents app-scoped history consent and unlocks recovery locally. The app receives only keys derived for its own conversations, wrapped to a P-256 installation key held in its private Keychain. Recovery codes and global history keys never enter the integrating app. The SDK validates state, exact callback and PKCE, exchanges a one-use code, and stores rotating credentials in Keychain. Transport redirects cannot forward bearer credentials. Token refresh failure requires reconnection instead of replaying a possibly consumed credential.
 
 For UIKit, push `MultiVibeChatViewController(client:tools:contextProvider:)` onto a navigation controller. `MultiVibeAuthenticationPresenter(window:)` is available for custom sign-in screens. macOS can use the core package and SwiftUI chat after the host supplies an authorization flow using `beginAuthorization()` and `handleOpenURL(_:)`; the turnkey sign-in presenter is iOS-only.
 
@@ -76,9 +76,9 @@ Models retain their original identifiers. The interface identifies tool-capable 
 
 ## History and failure behavior
 
-The third-party SDK only lists and edits its application's legacy v1 conversations. This transport is Cloud-readable, not end-to-end encrypted. The official app uses the separate v2 encrypted store through account-owner routes. It does not list or continue those legacy v1 threads; no automatic migration or merging connects the two stores. Third-party context remains a user-role data message, never a system instruction. Origin app tools are unavailable in the official app. Its “Open in application” link includes a conversation ID; `conversationFromOpenURL(_:)` resolves it only within the authenticated application's own history store. A v2 conversation ID does not make its content available to a third-party v1 client.
+Both application and official clients use encrypted v2 conversation transport. Application mode is restricted to its own app ID; the official owner can read all application folders. New writes use application-derived keys and v2 envelopes. The owner retains read compatibility with older encrypted v1 envelopes. Legacy plaintext conversation storage is not read, merged or automatically migrated. Third-party context stays a user-role data message, never a system instruction. Origin tools are unavailable in the official app. Its “Open in application” link carries a conversation ID resolved only within the receiving application's authorized history.
 
-`save(_:operationID:)` accepts a caller-retained operation UUID for an exact network retry. The built-in UI never automatically retries uncertain writes or generation requests. A version conflict is displayed and “Reload” explicitly adopts server state. Streaming failures preserve partial text when possible; “Resume response” explicitly starts a new inference after removing the failed partial answer and may incur additional usage. Stopping cancels the active task and does not start another tool. Concurrent edits never silently overwrite another revision. Deletion is performed via the API; revoking application access preserves user history.
+`save(_:operationID:)` starts one encrypted write. After an uncertain receipt, use `retryHistoryWrite()` to resend the exact persisted envelope and operation UUID; do not call `save` again. The built-in UI never automatically retries uncertain writes or generation requests. A version conflict is displayed and “Reload” explicitly adopts server state. Streaming failures preserve partial text when possible; “Resume response” explicitly starts a new inference after removing the failed partial answer and may incur additional usage. Stopping cancels the active task and does not start another tool. Concurrent edits never silently overwrite another revision. Deletion is performed via the API; revoking application access preserves user history.
 
 `Mode.accountOwner` is reserved for the official app integration and requires an injected asynchronous token provider. The client checks server account identity and refuses an account change. Recreate it when the signed-in account changes. It never loads or persists the official session in third-party SDK credential storage.
 
@@ -88,7 +88,7 @@ The third-party SDK only lists and edits its application's legacy v1 conversatio
 
 Run `swift test --package-path native/sdk/MultiVibeSDK` from the monorepo root. Tests cover stream framing, OAuth callback substitution/replay input, strict schemas, application write isolation and journal non-replay. These are local protocol proofs, not Cloud or physical-device acceptance.
 
-For physical validation, install signed copies of both examples and MultiVibe iOS with working associated-domain files. Sign into one account, authorize both apps, choose an available model, read items, deny then approve creation, and verify each app sees only its own folder. Validate the official app separately with v2 encrypted conversations: unlock its history, open an application folder and continue a v2 conversation. Do not expect the legacy v1 example conversations to appear there. Follow an origin link and verify the receiving app resolves only conversations present in its own store, with a visible unavailable state for an unknown ID. Then test revocation, account switching, simultaneous edits, deletion, exhausted credits and an unavailable model. Interrupt networking during streaming and after an action executes but before its result saves; verify the actual app data contains one mutation and no automatic replay. Repeat authorization with MultiVibe uninstalled to exercise the web fallback. Universal links, consumption and device behavior require a deployed Cloud and physical proof; package tests do not establish them.
+For physical validation, install signed copies of both examples and MultiVibe iOS with working associated-domain files. Sign into one account, authorize both apps, choose an available model, read items, deny then approve creation, and verify each app sees only its own folder. Validate the official app separately with v2 encrypted conversations: unlock its history, open an application folder and continue a v2 conversation. New native and isolated-web v2 conversations for the same application must appear in the same folder. Legacy plaintext conversations are separate. Follow an origin link and verify the receiving app resolves only conversations present in its own store, with a visible unavailable state for an unknown ID. Then test revocation, account switching, simultaneous edits, deletion, exhausted credits and an unavailable model. Interrupt networking during streaming and after an action executes but before its result saves; verify the actual app data contains one mutation and no automatic replay. Repeat authorization with and without the official app installed; both use the MultiVibe web consent session. Universal links, consumption and device behavior require a deployed Cloud and physical proof; package tests do not establish them.
 
 ### Encrypted history migration boundary
 
@@ -101,19 +101,11 @@ transport. `SDKApplicationsView` asks for the recovery code locally, decrypts
 web conversation documents, and locks on backgrounding. Keys are memory-only;
 configure a missing keyring in the MultiVibe account web surface first.
 
-The third-party `application` client still uses legacy v1 conversation transport.
-Do not advertise end-to-end encrypted history for integrating native apps yet.
+The `application` client fetches `/sdk/v2/history-keys`, unwraps the opaque ECDH/HKDF/AES-GCM delegation, and encrypts all title, model, context and message fields before transport. `history-delegation-v2.json` is a synthetic TypeScript/WebCrypto fixture used to verify CryptoKit compatibility. A rotated or missing delegation locks the history and requests reconnection. The sign-in button authorizes it again on MultiVibe; the integrating app never prompts for recovery.
 
-Account recovery codes and account root keys must remain inside a trusted
-MultiVibe surface. A native library executes inside its host application's
-process; a secure text field or private Swift property does not isolate secrets
-from that host. Third-party apps must not ask for the account recovery code or
-receive the global keyring. An isolated MultiVibe UI or an application-scoped
-key delegation protocol is required before enabling native v2 history. No such
-delegation endpoint is exposed by this change. Model providers receive inference
-context and authorized tools receive their arguments.
+Native/custom UI runs inside the integrating app, which can read the conversations it displays for its own application. This is not isolation from the host process. Use `MultiVibeIsolatedChatButton` when the host must not receive history keys or messages. Cloud stores encrypted history; selected models receive inference context and authorized tools receive their arguments.
 
-Official-owner writes preserve unknown web document/message fields. Interrupted
+Both modes preserve unknown web document/message fields. Interrupted
 write receipts retain the exact envelope and operation ID in a file protected by
 the OS. Only ciphertext and routing metadata are persisted. The UI offers explicit
 retry or abandonment/reload, and blocks further mutations until resolution.

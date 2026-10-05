@@ -1,9 +1,8 @@
 import Foundation
 import CryptoKit
 
-// Internal primitives for trusted MultiVibe clients. Do not expose account roots
-// or recovery-code entry to an integrating application. Transport/UI migration
-// requires a separate application-scoped delegation boundary.
+// Account roots remain in the official client. Applications receive only scoped
+// derived roots through ApplicationHistoryGrant; they cannot use v1 envelopes.
 enum HistoryCryptoError: Error { case invalidFormat, authenticationFailed, locked, missingKey }
 
 struct HistoryEnvelope: Codable, Sendable {
