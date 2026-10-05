@@ -14,9 +14,9 @@ import MultiVibeSDK
         self.client = client; self.changed = changed
     }
     public var body: some View {
-        if client.mode == .accountOwner {
+        if client.mode == .accountOwner || client.hasPendingHistoryWrite {
             VStack(alignment: .leading, spacing: 10) {
-                if !client.isHistoryUnlocked {
+                if client.mode == .accountOwner, !client.isHistoryUnlocked {
                     Text("Votre historique est chiffré").font(.headline)
                     Text("Saisissez votre code de récupération MultiVibe pour le lire sur cet appareil. Il reste sur cet appareil et n’est pas enregistré.").font(.caption)
                     SecureField("Code de récupération", text: $recoveryCode)

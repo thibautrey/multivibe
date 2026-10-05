@@ -1,6 +1,7 @@
 import Foundation
 public enum MultiVibeError: Error, LocalizedError, Sendable {
     case authenticationRequired, invalidResponse, invalidCallback, conflict, unsupportedTools, unknownToolOutcome, invalidArguments, toolLimit, cancelled
+    case historyAuthorizationRequired
     case historyLocked, historyNotConfigured, historyWritePending, historyBusy
     case server(Int, String)
     public var errorDescription: String? {
@@ -14,6 +15,7 @@ public enum MultiVibeError: Error, LocalizedError, Sendable {
         case .invalidArguments: "Paramètres de l’outil invalides."
         case .toolLimit: "Limite d’exécution des outils atteinte."
         case .cancelled: "Action annulée."
+        case .historyAuthorizationRequired: "Reconnectez-vous à MultiVibe pour autoriser l’historique de cette application."
         case .historyLocked: "Déverrouillez votre historique chiffré."
         case .historyNotConfigured: "Configurez la récupération de votre historique dans votre compte MultiVibe."
         case .historyWritePending: "Une sauvegarde reste à confirmer. Réessayez la sauvegarde avant de continuer."
