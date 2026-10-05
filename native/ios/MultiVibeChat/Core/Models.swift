@@ -6,6 +6,34 @@ typealias SSEByteParser = MultiVibeSDK.SSEByteParser
 import AuthenticationServices
 import Foundation
 
+/// App-owned limits for both on-device inference adapters, independent of Cloud consent.
+struct HermesOnDeviceCapabilities: Encodable, Sendable {
+    static let current = HermesOnDeviceCapabilities()
+    let schemaVersion = 1
+    let profile = "ios_degraded"
+    let linuxShell = false
+    let packageInstallation = false
+    let skillScriptExecution = false
+    let directCloudFilesystemAccess = false
+
+    var title: String { "Hermes · sur cet appareil" }
+    var summary: String {
+        "Mode local limité : commandes Linux, installation de paquets et scripts de skills indisponibles. Les outils proposés conservent leurs autorisations habituelles."
+    }
+
+    func promptInstructions() throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let descriptor = String(decoding: try encoder.encode(self), as: UTF8.self)
+        return """
+        App-owned Hermes runtime capabilities: \(descriptor)
+        This is the degraded iOS on-device runtime. Only supplied tools and explicitly selected cached context are available; Cloud authorization does not grant Linux shell commands, package installation, skill script execution or direct Cloud filesystem access.
+        Supplied Internet, device and local automation tools remain subject to their existing permissions and availability. If no tools are supplied, do not claim tool access or execution. Do not infer that Internet is always unavailable from local inference.
+        Successful queued writes are saved on this device with synchronization pending; they are not already Cloud writes. Never claim Cloud synchronization completed without confirmation.
+        """
+    }
+}
+
 struct HomeSuggestion: Codable, Identifiable, Equatable, Sendable {
     enum InputSource: String, Codable, CaseIterable, Sendable { case none, clipboard }
     enum Behavior: String, Codable, CaseIterable, Sendable { case prepare, send }

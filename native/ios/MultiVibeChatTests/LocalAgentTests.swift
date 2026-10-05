@@ -2,6 +2,36 @@ import XCTest
 @testable import MultiVibeChat
 
 @MainActor final class LocalAgentTests: XCTestCase {
+    func testOnDeviceCapabilitiesSerializeExplicitRuntimeLimits() throws {
+        let encoded = try JSONEncoder().encode(HermesOnDeviceCapabilities.current)
+        let value = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(value["schemaVersion"] as? Int, 1)
+        XCTAssertEqual(value["profile"] as? String, "ios_degraded")
+        for key in ["linuxShell", "packageInstallation", "skillScriptExecution", "directCloudFilesystemAccess"] {
+            XCTAssertEqual(value[key] as? Bool, false, key)
+        }
+    }
+    func testOnDevicePromptKeepsPermissionsAndPendingWritesTruthful() throws {
+        let prompt = try HermesOnDeviceCapabilities.current.promptInstructions()
+        XCTAssertTrue(prompt.contains(#""profile":"ios_degraded""#))
+        XCTAssertTrue(prompt.contains("Only supplied tools and explicitly selected cached context"))
+        XCTAssertTrue(prompt.contains("Linux shell commands, package installation, skill script execution or direct Cloud filesystem access"))
+        XCTAssertTrue(prompt.contains("Internet, device and local automation tools remain subject to their existing permissions and availability"))
+        XCTAssertTrue(prompt.contains("If no tools are supplied, do not claim tool access or execution"))
+        XCTAssertTrue(prompt.contains("they are not already Cloud writes"))
+        XCTAssertEqual(prompt, try HermesOnDeviceCapabilities.current.promptInstructions())
+    }
+    func testBothLocalModelKindsRemainOnDeviceWithCloudContext() async throws {
+        let workspace = LocalAgentWorkspace(conversations: [], documents: [],
+            selectedCloudContext: "Explicitly selected cached Hermes context", event: { _ in }, saveDocument: { _ in })
+        let context = await workspace.selectedCloudContext
+        XCTAssertEqual(context, "Explicitly selected cached Hermes context")
+        XCTAssertEqual(ModelExecution(LocalModel.id), .apple)
+        XCTAssertEqual(ModelExecution("device-gguf:installed-model"), .downloaded)
+        XCTAssertTrue(ModelExecution(LocalModel.id).isLocal)
+        XCTAssertTrue(ModelExecution("device-gguf:installed-model").isLocal)
+        XCTAssertFalse(ModelExecution("relay/model").isLocal)
+    }
     func testFoundationSummaryRequiresBoundedUsageAndOnlyContent() throws {
         let valid = #"{"content":"Completed exchange, no commands replayed."}"#
         let wire = try HermesFoundationAdapter.summaryWire(valid,outputTokens:20,reservedOutputTokens:128)
