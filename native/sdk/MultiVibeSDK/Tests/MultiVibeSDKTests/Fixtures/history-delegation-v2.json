@@ -1,0 +1,69 @@
+{
+  "source": "Synthetic WebCrypto fixture generated with MultiVibe TypeScript SDK",
+  "privateKey": "TPIzoIfvy5MvayP0hNQx1CCn6TkqoKX_R3_opht9Ct8",
+  "recoveryCode": "H-tqpWMd26ROA4rWHWAcqe0gpmgQ2UzudrQbrLPWoRQ",
+  "record": {
+    "accountId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "revision": 1,
+    "activeKeyId": "ff5e8c9e-747b-4073-ac50-35cc3815dcde",
+    "keyIds": [
+      "ff5e8c9e-747b-4073-ac50-35cc3815dcde"
+    ],
+    "envelope": {
+      "version": 1,
+      "algorithm": "A256GCM",
+      "nonce": "F6dxACGvxxQOZKB9",
+      "ciphertext": "UJdoMXm0_Wct9LgmepzCghMjfjb7VuoshcoYO0MklVFAuxEAX8Dp0MlzsC8XjqZ3_AZ4qOo1sbH01VedexQpuLvtviQD2TuBCogveFcjQo4VEDEzj9lChaNPEJdPGVdYhlzWVOsshWpieA-kHzN8gF4v5BU3IRMV-4jbyx-WU4rDhwPBqnUOPk12Lg"
+    }
+  },
+  "grant": {
+    "version": 1,
+    "algorithm": "P256-HKDF-SHA256-A256GCM",
+    "accountId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "appId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "keyringRevision": 1,
+    "activeKeyId": "ff5e8c9e-747b-4073-ac50-35cc3815dcde",
+    "keyIds": [
+      "ff5e8c9e-747b-4073-ac50-35cc3815dcde"
+    ],
+    "recipient": {
+      "version": 1,
+      "algorithm": "P-256",
+      "x": "0tkOFA_A7mNf_3PpbPf29fKGOnyNkAQwfyvX07Cyg-w",
+      "y": "R_AErbivcO5Uyc--jAaRYYt8uNBGFmqjsg90vB7eu1E"
+    },
+    "ephemeral": {
+      "version": 1,
+      "algorithm": "P-256",
+      "x": "wjTj-6pNVzR3AsFym7BqQsOOTF9MhrPeIvcSKjlbo_8",
+      "y": "wapuBzxPnqdZJguScNU7LZcRjNq67RkgO32OuhmxU24"
+    },
+    "nonce": "DqJXP1RDczNxE_HN",
+    "ciphertext": "V7h7dCjyjYUfxGtW4xdEJseSzlsMrE1re6sOA8HnSP233Bz42NPFVvCddPWS2z2Vb5afeqqqyAR8n0XXHusCeGuvTlXZqfsC3GSaYvAPb6ZVeri2tGkyQYWG-9i2kZC6sWvUY3nGLVYYxm4ThQbuGNJJy4tbmVVF7r8GpTOwd4XmAyHLTQrLLqUPXg"
+  },
+  "binding": {
+    "accountId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "appId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "conversationId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    "revision": 1
+  },
+  "document": {
+    "title": "Private app history",
+    "model": "cloud/test",
+    "context": "Application A only",
+    "messages": [
+      {
+        "id": "message-1",
+        "role": "user",
+        "content": "Private message"
+      }
+    ]
+  },
+  "envelope": {
+    "version": 2,
+    "algorithm": "A256GCM",
+    "keyId": "ff5e8c9e-747b-4073-ac50-35cc3815dcde",
+    "nonce": "LoIskSn4VNHPjeER",
+    "ciphertext": "PRf4II3HER5Y2wWzYAqGQgcbE_xwg96A9PCzDECSGyvlMMdCns-66nP5WOyfjk2JjC_ouTedNkHsCZxkwW_ahy820rRekSEGkAoZDkL8Jw_yxDGzIRx9kadaMoBaYMr_IYpD22BCA1FLbZEg7ybWv6Ig4wEssLHTLGPe7lz-NBhuti4wmexHbjGPLhaGfD8XGIiFZA0lGVGk9OnjFoni9B01Wj-swjW37Q9A7NQ"
+  }
+}

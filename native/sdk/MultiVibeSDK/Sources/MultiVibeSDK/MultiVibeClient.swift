@@ -12,8 +12,9 @@ import Observation
     public private(set) var accountID: String?
     public private(set) var isConnected = false
     private let ownerHistory: OwnerEncryptedHistory
-    public var isHistoryUnlocked: Bool { mode == .application || ownerHistory.unlocked }
-    public var hasPendingHistoryWrite: Bool { mode == .accountOwner && ownerHistory.hasPending }
+    public var isHistoryUnlocked: Bool { ownerHistory.unlocked }
+    public private(set) var historyAuthorizationRequired = false
+    public var hasPendingHistoryWrite: Bool { ownerHistory.hasPending }
     let localProvider:(any MultiVibeLocalModelProvider)?
     private let tokenProvider: (@Sendable () async throws -> String)?
     private let transport: URLSession
@@ -29,7 +30,7 @@ import Observation
         precondition(configuration.redirectURI.scheme == "https" && configuration.redirectURI.query == nil && configuration.redirectURI.fragment == nil)
         precondition(mode == .accountOwner ? tokenProvider != nil : tokenProvider == nil)
         self.configuration = configuration; self.mode = mode; self.tokenProvider = tokenProvider; self.localProvider = localProvider
-        ownerHistory = OwnerEncryptedHistory(namespace: configuration.baseURL.absoluteString)
+        ownerHistory = OwnerEncryptedHistory(namespace: configuration.baseURL.absoluteString + (mode == .application ? configuration.clientID : ""), applicationId: mode == .application ? configuration.clientID : nil)
         storage = SDKKeychain(service: "cloud.multivibe.sdk.\(configuration.baseURL.host ?? "").\(configuration.clientID)")
         let config = URLSessionConfiguration.ephemeral; config.httpCookieStorage = nil; config.urlCache = nil; config.timeoutIntervalForRequest = 60; config.timeoutIntervalForResource = 300
         transport = URLSession(configuration: config, delegate: SDKTransportDelegate(), delegateQueue: nil)
@@ -38,7 +39,7 @@ import Observation
     public func beginAuthorization() throws -> MultiVibeAuthorization {
         guard mode == .application else { throw MultiVibeError.invalidCallback }
         let value = try MultiVibeAuthorization(configuration: configuration)
-        generation = UUID(); refreshTask?.cancel(); refreshTask = nil
+        lockHistory(); generation = UUID(); refreshTask?.cancel(); refreshTask = nil
         authorization = value; authorizationDate = Date(); return value
     }
     public func handleOpenURL(_ url: URL) async throws {
@@ -71,10 +72,15 @@ import Observation
     public func connect() async throws {
         struct Identity: Decodable { let accountId: String; let appId: String? }
         if mode == .application {
-            let identity: Identity = try await read("/sdk/v1/session")
+            let identity: Identity = try await read("/sdk/v2/session")
             guard identity.appId == configuration.clientID else { throw MultiVibeError.authenticationRequired }
-            if accountID != identity.accountId { conversations = []; models = [] }
+            if accountID != identity.accountId { ownerHistory.lock(); conversations = []; models = [] }
             accountID = identity.accountId
+            let key = try ApplicationHistoryKeychain(service: storage.service).loadOrCreate()
+            do {
+                try await ownerHistory.unlockApplication(accountId: identity.accountId, privateKey: key, transport: historyTransport)
+                historyAuthorizationRequired = false
+            } catch MultiVibeError.historyAuthorizationRequired { historyAuthorizationRequired = true }
         }
         if mode == .accountOwner { _ = try await token() }
         isConnected = true
@@ -83,16 +89,10 @@ import Observation
     public func reload() async throws {
         let epoch = generation
         struct List<T: Decodable>: Decodable { let data: [T] }
-        if mode == .accountOwner {
-            if ownerHistory.unlocked {
-                try await ownerHistory.reload(transport: historyTransport)
-                conversations = ownerHistory.conversations
-            } else { conversations = [] }
-        } else {
-            let list: List<MultiVibeConversation> = try await read(historyPath)
-            if list.data.contains(where: {$0.appId != configuration.clientID}) { throw MultiVibeError.invalidResponse }
-            conversations = list.data
-        }
+        if ownerHistory.unlocked {
+            if !ownerHistory.hasPending { try await ownerHistory.reload(transport: historyTransport) }
+            conversations = ownerHistory.conversations
+        } else { conversations = [] }
         var loaded: [MultiVibeModel]
         relayAllowance = nil; relayCatalogueError = nil
         if mode == .accountOwner {
@@ -124,7 +124,8 @@ import Observation
         }
     }
     private func historyTransport(_ path: String, _ method: String, _ body: Data?) async throws -> Data {
-        guard mode == .accountOwner else { throw MultiVibeError.authenticationRequired }
+        let permitted = mode == .accountOwner ? path.hasPrefix("/native/v2/") : path.hasPrefix("/sdk/v2/")
+        guard permitted else { throw MultiVibeError.authenticationRequired }
         return try await data(path, method: method, body: body)
     }
     /// Only the official account-owner surface may collect this code. Developer
@@ -139,15 +140,13 @@ import Observation
         try await ownerHistory.unlock(accountId: accountID, code: recoveryCode, transport: historyTransport)
         if !ownerHistory.hasPending { try await reload() }
     }
-    public func lockHistory() { ownerHistory.lock(); if mode == .accountOwner { generation = UUID(); conversations = [] } }
+    public func lockHistory() { ownerHistory.lock(); generation = UUID(); conversations = [] }
     @discardableResult public func retryHistoryWrite() async throws -> MultiVibeConversation? {
-        guard mode == .accountOwner else { throw MultiVibeError.authenticationRequired }
         let saved = try await ownerHistory.retry(transport: historyTransport)
         conversations = ownerHistory.conversations
         return saved
     }
     public func discardHistoryWrite() async throws {
-        guard mode == .accountOwner else { throw MultiVibeError.authenticationRequired }
         try ownerHistory.discardPending(); conversations = []; try await reload()
     }
     public func disconnect() async throws {
@@ -164,28 +163,15 @@ import Observation
         Task { _ = try? await form("/developers/oauth/revoke",fields:["client_id":configuration.clientID,"token":session.refreshToken]) }
     }
     public func newConversation() -> MultiVibeConversation { MultiVibeConversation(appId: configuration.clientID, model: models.first(where: { $0.available != false })?.id ?? "") }
-    var historyPath: String { mode == .accountOwner ? "/native/v1/sdk/conversations" : "/sdk/v1/conversations" }
     public func save(_ conversation: MultiVibeConversation, operationID: String = UUID().uuidString) async throws -> MultiVibeConversation {
         guard UUID(uuidString: conversation.id) != nil, mode == .accountOwner || conversation.appId == configuration.clientID else { throw MultiVibeError.invalidArguments }
-        if mode == .accountOwner {
-            let saved = try await ownerHistory.save(conversation, operationId: operationID, transport: historyTransport)
-            conversations = ownerHistory.conversations; return saved
-        }
-        struct Update: Encodable { let operationId: String; let revision: Int; let title: String; let model: String; let messages: [MultiVibeMessage]; let context: String }
-        let body = try JSONEncoder().encode(Update(operationId: operationID, revision: conversation.revision, title: conversation.title, model: conversation.model, messages: conversation.messages, context: conversation.context))
-        let saved: MultiVibeConversation = try await read(historyPath + "/" + conversation.id, method: "POST", body: body)
-        guard UUID(uuidString:saved.id) == UUID(uuidString:conversation.id), saved.appId.lowercased() == conversation.appId.lowercased() else { throw MultiVibeError.invalidResponse }
-        conversations.removeAll { $0.id == saved.id }; conversations.insert(saved, at: 0); return saved
+        let saved = try await ownerHistory.save(conversation, operationId: operationID, transport: historyTransport)
+        conversations = ownerHistory.conversations; return saved
     }
     public func delete(_ conversation: MultiVibeConversation) async throws {
         guard UUID(uuidString: conversation.id) != nil, mode == .accountOwner || conversation.appId == configuration.clientID else { throw MultiVibeError.invalidArguments }
-        if mode == .accountOwner {
-            try await ownerHistory.delete(conversation, transport: historyTransport)
-            conversations = ownerHistory.conversations; return
-        }
-        let body = try JSONEncoder().encode(["operationId":JSONValue.string(UUID().uuidString), "revision":.number(Double(conversation.revision))])
-        _ = try await data(historyPath + "/" + conversation.id, method: "DELETE", body: body)
-        conversations.removeAll {$0.id == conversation.id}
+        try await ownerHistory.delete(conversation, transport: historyTransport)
+        conversations = ownerHistory.conversations
     }
     func token() async throws -> String {
         if let tokenProvider {
@@ -228,7 +214,7 @@ import Observation
         let renewed:StoredSession
         do {renewed = try await task.value}
         catch {
-            if epoch == generation {stored = nil; storage.clear(); isConnected = false; accountID = nil; conversations = []; models = []; generation = UUID(); refreshTask = nil}
+            if epoch == generation {ownerHistory.lock(); stored = nil; storage.clear(); isConnected = false; accountID = nil; conversations = []; models = []; generation = UUID(); refreshTask = nil}
             throw error
         }
         try Task.checkCancellation()
@@ -279,6 +265,11 @@ import Observation
     func read<T:Decodable>(_ path:String,method:String = "GET",body:Data? = nil) async throws -> T { try JSONDecoder().decode(T.self,from:await data(path,method:method,body:body)) }
     func validate(_ response:URLResponse,data:Data = Data()) throws {
         guard let response = response as? HTTPURLResponse else {throw MultiVibeError.invalidResponse}
+        if mode == .application, !(200..<300).contains(response.statusCode),
+           let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let code = body["error"] as? String, ["history_delegation_unavailable", "history_keys_changed"].contains(code) {
+            lockHistory(); historyAuthorizationRequired = true; throw MultiVibeError.historyAuthorizationRequired
+        }
         if response.statusCode == 409 {throw MultiVibeError.conflict}
         guard (200..<300).contains(response.statusCode) else {throw MultiVibeError.server(response.statusCode,String(data:data,encoding:.utf8) ?? "request_failed")}
     }
@@ -296,7 +287,7 @@ import Observation
     }
     func stream(body:Data,previousRelayContinuation:String? = nil,receivedRelayContinuation:(String)->Void = {_ in},onEvent:@MainActor (String) throws -> Void) async throws {
         let epoch = generation
-        if mode == .accountOwner, !isHistoryUnlocked { throw MultiVibeError.historyLocked }
+        if !isHistoryUnlocked { throw MultiVibeError.historyLocked }
         let path = try completionPath(body: body)
         struct Selection: Decodable { let model: String }
         let isRelay = try JSONDecoder().decode(Selection.self, from: body).model.hasPrefix("relay/")

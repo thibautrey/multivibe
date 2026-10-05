@@ -33,9 +33,11 @@ import Observation
     private(set) var conversations: [MultiVibeConversation] = []
     var unlocked: Bool { keys != nil }
     var hasPending: Bool { pending != nil }
-    private let path = "/native/v2/sdk/conversations"
+    private let applicationId: String?
+    private var path: String { applicationId == nil ? "/native/v2/sdk/conversations" : "/sdk/v2/conversations" }
 
-    init(namespace: String, directory: URL? = nil) {
+    init(namespace: String, directory: URL? = nil, applicationId: String? = nil) {
+        self.applicationId = applicationId
         let name = SHA256.hash(data: Data(namespace.utf8)).map { String(format: "%02x", $0) }.joined()
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("MultiVibeSDK/EncryptedPending/" + name)
     }
@@ -67,6 +69,7 @@ import Observation
         try FileManager.default.removeItem(at: location)
     }
     func unlock(accountId: String, code: String, transport: Transport) async throws {
+        guard applicationId == nil else { throw MultiVibeError.authenticationRequired }
         guard !busy else { throw MultiVibeError.historyBusy }
         busy = true; defer { busy = false }
         lock(); let expected = epoch
@@ -76,13 +79,28 @@ import Observation
         let reply = try JSONDecoder().decode(Reply.self, from: response)
         guard reply.accountId == accountId, let record = reply.keyring else { throw MultiVibeError.historyNotConfigured }
         let unlocked = try HistoryKeys.unlock(record, recoveryCode: code, expectedAccountId: accountId)
+        try install(unlocked, accountId: accountId)
+    }
+    func unlockApplication(accountId: String, privateKey: P256.KeyAgreement.PrivateKey, transport: Transport) async throws {
+        guard let applicationId else { throw MultiVibeError.authenticationRequired }
+        guard !busy else { throw MultiVibeError.historyBusy }
+        busy = true; defer { busy = false }; lock(); let expected = epoch
+        struct Reply: Decodable { let grant: ApplicationHistoryGrant }
+        let bytes = try await transport("/sdk/v2/history-keys", "GET", nil)
+        guard expected == epoch else { throw MultiVibeError.historyLocked }
+        let grant = try JSONDecoder().decode(Reply.self, from: bytes).grant
+        let unlocked = try grant.unwrap(privateKey: privateKey, account: accountId, application: applicationId)
+        try install(unlocked, accountId: accountId)
+    }
+    private func install(_ unlocked: HistoryKeys, accountId: String) throws {
         do {
             let location = try file(accountId)
             if FileManager.default.fileExists(atPath: location.path) {
                 let data = try Data(contentsOf: location)
                 guard data.count <= 1_500_000 else { throw MultiVibeError.invalidResponse }
                 let value = try JSONDecoder().decode(Pending.self, from: data)
-                guard value.accountId == accountId, [value.id, value.appId, value.operationId].allSatisfy({ UUID(uuidString: $0) != nil && $0 == $0.lowercased() }), value.revision > 0, value.revision < 9_007_199_254_740_991 else { throw MultiVibeError.invalidResponse }
+                guard value.accountId == accountId, [value.id, value.appId, value.operationId].allSatisfy({ UUID(uuidString: $0) != nil && $0 == $0.lowercased() }), value.revision >= (applicationId == nil ? 1 : 0), value.revision < 9_007_199_254_740_991 else { throw MultiVibeError.invalidResponse }
+                guard applicationId == nil || value.appId == applicationId else { throw MultiVibeError.invalidResponse }
                 if let envelope = value.envelope {
                     let _: JSONValue = try unlocked.decrypt(envelope, binding: binding(value, next: true), as: JSONValue.self)
                 }
@@ -123,10 +141,15 @@ import Observation
         guard let keys else { throw MultiVibeError.historyLocked }
         guard !busy else { throw MultiVibeError.historyBusy }
         guard pending == nil else { throw MultiVibeError.historyWritePending }
-        guard UUID(uuidString: operationId) != nil,
-              let existing = conversations.first(where: { $0.id == conversation.id }), existing.appId == conversation.appId,
-              let cached = documents[conversation.id], cached.revision == conversation.revision else { throw MultiVibeError.conflict }
-        var document = cached.document
+        guard HistoryWire.uuid(operationId.lowercased()), HistoryWire.uuid(conversation.id),
+              applicationId == nil || conversation.appId == applicationId else { throw MultiVibeError.invalidArguments }
+        let cached = documents[conversation.id]
+        if let cached {
+            guard cached.revision == conversation.revision, conversations.contains(where: { $0.id == conversation.id && $0.appId == conversation.appId }) else { throw MultiVibeError.conflict }
+        } else {
+            guard applicationId != nil, conversation.revision == 0 else { throw MultiVibeError.conflict }
+        }
+        var document = cached?.document ?? [:]
         document["title"] = .string(conversation.title); document["model"] = .string(conversation.model)
         document["context"] = .string(conversation.context)
         // Retain fields belonging to other clients, including future tool receipts.

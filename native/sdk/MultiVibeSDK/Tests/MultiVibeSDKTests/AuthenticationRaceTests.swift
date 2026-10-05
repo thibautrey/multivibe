@@ -23,9 +23,10 @@ import XCTest
             if let token = query.first(where:{$0.name == "token"})?.value {revoked.append(token)}
             return reply([:])
         }
-        if path == "/sdk/v1/session" {return reply(["accountId":request.value(forHTTPHeaderField:"Authorization")!.replacingOccurrences(of:"Bearer ",with:""),"appId":clientID])}
+        if path == "/sdk/v2/session" {return reply(["accountId":request.value(forHTTPHeaderField:"Authorization")!.replacingOccurrences(of:"Bearer ",with:""),"appId":clientID])}
+        if path == "/sdk/v2/history-keys" {throw MultiVibeError.historyAuthorizationRequired}
         if path == "/sdk/v2/models" {var body:[String:Any] = ["data":modelRows]; if let relayAllowance {body["relayAllowance"] = relayAllowance}; return reply(body)}
-        if path == "/sdk/v1/conversations" {return reply(["data":[]])}
+        if path == "/sdk/v2/conversations" {return reply(["data":[]])}
         throw MultiVibeError.invalidResponse
     }
     func waitForExchange(_ key:String) async {

@@ -6,8 +6,11 @@ public struct MultiVibeAuthorization: Sendable {
     public let state: String
     public let verifier: String
     public let configuration: MultiVibeConfiguration
+    let historyPublicKey: ApplicationHistoryPublicKey
     public init(configuration: MultiVibeConfiguration) throws {
         self.configuration = configuration
+        let service = "cloud.multivibe.sdk.\(configuration.baseURL.host ?? "").\(configuration.clientID)"
+        historyPublicKey = ApplicationHistoryPublicKey(try ApplicationHistoryKeychain(service: service).loadOrCreate().publicKey)
         func random() throws -> String {
             var bytes = [UInt8](repeating: 0, count: 32)
             guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { throw MultiVibeError.invalidResponse }
@@ -18,6 +21,7 @@ public struct MultiVibeAuthorization: Sendable {
     public func url(broker: Bool) -> URL {
         var url = URLComponents(url: configuration.baseURL.appending(path: broker ? "/sdk/authorize" : "/developers/oauth/authorize"), resolvingAgainstBaseURL: false)!
         url.queryItems = [URLQueryItem(name: "client_id", value: configuration.clientID), URLQueryItem(name: "redirect_uri", value: configuration.redirectURI.absoluteString), URLQueryItem(name: "response_type", value: "code"), URLQueryItem(name: "state", value: state), URLQueryItem(name: "code_challenge_method", value: "S256"), URLQueryItem(name: "code_challenge", value: Data(SHA256.hash(data: Data(verifier.utf8))).base64URLEncoded), URLQueryItem(name: "scope", value: "models:read chat:write conversations:read conversations:write")]
+        if let encoded = try? JSONEncoder().encode(historyPublicKey) { url.queryItems?.append(URLQueryItem(name: "history_key", value: encoded.base64URLEncoded)) }
         return url.url!
     }
     public func code(from url: URL) throws -> String {

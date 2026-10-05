@@ -22,7 +22,7 @@ import MultiVibeSDK
     }
     public var body: some View {
         VStack(spacing:0) {
-            if client.mode == .accountOwner, !client.isHistoryUnlocked || client.hasPendingHistoryWrite {
+            if (client.mode == .accountOwner && !client.isHistoryUnlocked) || client.hasPendingHistoryWrite {
                 MultiVibeHistoryControls(client: client) { saved in
                     if let saved { conversation = saved }
                     else { conversation = nil }
@@ -45,6 +45,7 @@ import MultiVibeSDK
                     }
                 }.padding()
             }
+            if client.historyAuthorizationRequired { Text("Reconnectez-vous pour retrouver l’historique de cette application.").font(.caption).padding() }
             if let error {Text(error).font(.caption).foregroundStyle(.red).padding()}
             if !tools.isEmpty, client.models.first(where:{$0.id == conversation?.model})?.supportsTools != true {
                 Text("Les outils de cette application ne sont pas disponibles avec ce modèle.").font(.caption).foregroundStyle(.secondary)
@@ -75,8 +76,8 @@ import MultiVibeSDK
             }
             #if canImport(UIKit)
             ToolbarItem {
-                if !client.isConnected {MultiVibeConnectButton(isBusy:signingIn) {Task {signingIn = true; defer {signingIn = false}; do {let presenter = MultiVibeAuthenticationPresenter(window:UIApplication.shared.connectedScenes.compactMap {$0 as? UIWindowScene}.flatMap(\.windows).first(where:{$0.isKeyWindow})); authentication = presenter; try await presenter.signIn(client:client)} catch {self.error = error.localizedDescription}}}}
-                else if client.mode == .application {Button("Déconnexion") {Task {do {try await client.disconnect(); conversation = nil} catch {self.error = error.localizedDescription}}}.disabled(task != nil || client.hasPendingHistoryWrite || !client.isHistoryUnlocked)}
+                if !client.isConnected || !client.isHistoryUnlocked {MultiVibeConnectButton(isBusy:signingIn) {Task {signingIn = true; defer {signingIn = false}; do {let presenter = MultiVibeAuthenticationPresenter(window:UIApplication.shared.connectedScenes.compactMap {$0 as? UIWindowScene}.flatMap(\.windows).first(where:{$0.isKeyWindow})); authentication = presenter; try await presenter.signIn(client:client)} catch {self.error = error.localizedDescription}}}}
+                else if client.mode == .application {Button("Déconnexion") {Task {do {try await client.disconnect(); conversation = nil} catch {self.error = error.localizedDescription}}}.disabled(task != nil)}
             }
             #endif
         }
