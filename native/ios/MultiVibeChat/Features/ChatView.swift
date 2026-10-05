@@ -558,10 +558,17 @@ struct ChatView: View {
     private var composer: some View {
         @Bindable var manager = manager
         return VStack(alignment: .leading, spacing: 8) {
-            if manager.session != nil && (!ModelExecution(manager.selectedModel).isLocal || manager.currentCloudHermesAuthorized) {
+            if ModelExecution(manager.selectedModel).isLocal || manager.session != nil {
                 VStack(alignment:.leading,spacing:6) {
-                    Label("Hermes · environnement Linux personnel",systemImage:"cloud")
-                    Button(manager.currentCloudHermesAuthorized ? "Gérer les autorisations de cette conversation" : "Autoriser Hermes pour cette conversation") { cloudHermesConsentPresented = true }
+                    if ModelExecution(manager.selectedModel).isLocal {
+                        Label(HermesOnDeviceCapabilities.current.title, systemImage: "iphone")
+                        Text(HermesOnDeviceCapabilities.current.summary).font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Label("Hermes · environnement Linux personnel",systemImage:"cloud")
+                    }
+                    if manager.session != nil {
+                        Button(manager.currentCloudHermesAuthorized ? "Gérer les autorisations de cette conversation" : "Autoriser Hermes pour cette conversation") { cloudHermesConsentPresented = true }
+                    }
                     if let status = manager.currentCloudHermesStatus {
                         Text("Exécution : " + status.replacingOccurrences(of:"_",with:" ")).font(.caption)
                     }
@@ -2958,6 +2965,7 @@ private struct RemoteHermesConversationView: View {
                     ForEach(manager.localHermesContinuationModels) { option in Text(option.displayName).tag(option.id) }
                 }
                 Text("L’historique sera disponible sur cet appareil. Aucun modèle n’est lancé avant votre prochain message. L’envoi des nouvelles réponses locales au Cloud nécessite une autorisation explicite.").font(.caption)
+                Text(HermesOnDeviceCapabilities.current.summary).font(.caption).foregroundStyle(.secondary)
                 Button("Continuer sur cet appareil") {
                     guard let account else { return }
                     do {
