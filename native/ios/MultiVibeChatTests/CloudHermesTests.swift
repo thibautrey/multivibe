@@ -1,23 +1,39 @@
 import XCTest
 @testable import MultiVibeChat
 
+private actor CloudHermesRetryReleaseGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+    func wait() async {
+        if released { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func release() {
+        released = true; continuation?.resume(); continuation = nil
+    }
+}
+
 @MainActor final class CloudHermesRetryTests: XCTestCase {
-    func testTransientFailureRecoversWithoutAnotherConnectivityEventOrInference() async throws {
+    func testProlongedTransientFailureRecoversWithoutAnotherConnectivityEventOrInference() async throws {
         let account = UUID().uuidString.lowercased()
         let auth = NativeSession(accessToken:"retry",refreshToken:"retry",expiresAt:.distantFuture,accountId:account)
         let recovered = expectation(description:"state recovered")
-        var fail = false, sawFailure = false, inference = 0
+        var failuresRemaining = 0, failuresObserved = 0, inference = 0, toolRuns = 0
         var submitted: [CloudAgentMutation] = []
         let operation = CloudAgentMutation(operationId:UUID().uuidString.lowercased(),objectId:UUID().uuidString.lowercased(),versionId:UUID().uuidString.lowercased(),deviceId:UUID().uuidString.lowercased(),kind:"project",parents:[],deleted:false,value:.object(["title":.string("Offline project")]))
         var services = isolatedServices(load:{auth},stream:{_,_,_,_ in inference += 1})
         services.hermesSyncDelay = { _ in await Task.yield() }
         services.hermesConsent = { _ in .init(accountId:account,cloudEnabled:true,revision:1) }
+        services.hermesCreate = { _,_,_ in toolRuns += 1; throw APIError.invalidResponse }
         services.hermesChanges = { cursor,_ in
-            if fail { fail = false; sawFailure = true; throw APIError.server(503,"temporary") }
+            if failuresRemaining > 0 {
+                failuresRemaining -= 1; failuresObserved += 1
+                throw APIError.server(503,"temporary")
+            }
             return .init(accountId:account,changes:[],cursor:cursor,hasMore:false)
         }
         services.hermesMutations = { received, operations,_ in
-            XCTAssertEqual(received,account); XCTAssertTrue(sawFailure)
+            XCTAssertEqual(received,account); XCTAssertEqual(failuresObserved,8)
             submitted += operations
             recovered.fulfill()
             return .init(accountId:account,receipts:operations.map { .init(operationId:$0.operationId,versionId:$0.versionId,cursor:1,heads:[$0.versionId],deleted:false) })
@@ -26,12 +42,14 @@ import XCTest
         await manager.restore(loadRemoteModels:false)
         for _ in 0..<30 { await Task.yield() }
         try manager.enqueueCloudAgentMutation(operation)
-        fail = true
+        failuresRemaining = 8
         manager.connectivityChanged(true)
         await fulfillment(of:[recovered],timeout:5)
         for _ in 0..<30 { await Task.yield() }
         XCTAssertNil(manager.cloudAgentSyncError)
         XCTAssertEqual(inference,0)
+        XCTAssertEqual(toolRuns,0)
+        XCTAssertEqual(failuresObserved,8)
         XCTAssertEqual(submitted,[operation])
         manager.connectivityChanged(false)
     }
@@ -66,6 +84,40 @@ import XCTest
         XCTAssertEqual(oldCalls,before)
         XCTAssertEqual(manager.session?.accountId,new)
         manager.connectivityChanged(false)
+    }
+
+    func testSleepingRetryDoesNotRetainManagerOrDispatchAfterRelease() async throws {
+        let account = UUID().uuidString.lowercased()
+        let auth = NativeSession(accessToken:"release",refreshToken:"release",expiresAt:.distantFuture,accountId:account)
+        let sleeping = expectation(description:"backoff sleeping")
+        let woke = expectation(description:"backoff finished")
+        let gate = CloudHermesRetryReleaseGate()
+        var fail = false, failedCalls = 0
+        var services = isolatedServices(load:{auth})
+        services.hermesConsent = { _ in .init(accountId:account,cloudEnabled:false,revision:1) }
+        services.hermesChanges = { cursor,_ in
+            if fail { failedCalls += 1; throw APIError.server(503,"temporary") }
+            return .init(accountId:account,changes:[],cursor:cursor,hasMore:false)
+        }
+        services.hermesSyncDelay = { _ in
+            sleeping.fulfill()
+            await gate.wait()
+            woke.fulfill()
+        }
+        var manager: ConversationManager? = ConversationManager(services:services)
+        weak var released = manager
+        await manager!.restore(loadRemoteModels:false)
+        for _ in 0..<30 { await Task.yield() }
+        fail = true; manager!.connectivityChanged(true)
+        await fulfillment(of:[sleeping],timeout:5)
+        for _ in 0..<30 { await Task.yield() }
+        let before = failedCalls
+        manager = nil
+        XCTAssertNil(released,"backoff must not retain the manager")
+        await gate.release()
+        await fulfillment(of:[woke],timeout:5)
+        for _ in 0..<30 { await Task.yield() }
+        XCTAssertEqual(failedCalls,before,"released manager must never dispatch another retry")
     }
 }
 

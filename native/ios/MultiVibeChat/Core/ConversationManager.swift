@@ -78,7 +78,7 @@ import Network
     var memoryReviewDelay: @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(2)) }
     var monitorConnectivity = true
     var syncDelay: @Sendable (Int) async throws -> Void = { attempt in try await Task.sleep(for: .seconds(min(60, 2 << attempt))) }
-    var hermesSyncDelay: @Sendable (Int) async throws -> Void = { attempt in try await Task.sleep(for: .seconds(min(60, 2 << attempt))) }
+    var hermesSyncDelay: @Sendable (Int) async throws -> Void = { attempt in try await Task.sleep(for: .seconds(min(60, 2 << min(5, max(0, attempt))))) }
     var models: @MainActor (String) async throws -> [ModelOption] = { try await ChatAPI.shared.models(token: $0) }
     var lastUsedModel: @MainActor (String) -> String? = { LastUsedModelStore.model(for: $0) }
     var rememberLastUsedModel: @MainActor (String, String) -> Void = { LastUsedModelStore.save($0, for: $1) }
@@ -2286,16 +2286,28 @@ import Network
         guard cloudAgentRetryTask == nil, online, !isRestoring, let account = session?.accountId else { return }
         let epoch = sessionRevision
         let owner = UUID()
+        let delay = services.hermesSyncDelay
         cloudAgentRetryOwner = owner
         cloudAgentRetryTask = Task { [weak self] in
-            guard let self else { return }
-            defer { if cloudAgentRetryOwner == owner { cloudAgentRetryTask = nil; cloudAgentRetryOwner = nil } }
-            for attempt in 0..<5 {
-                do { try await services.hermesSyncDelay(attempt) } catch { return }
-                guard !Task.isCancelled, online, sessionRevision == epoch, session?.accountId == account, cloudAgentRetryable else { return }
-                // State-only exchange: never resume inference or execute a tool here.
-                await synchronizeCloudAgentState()
-                if !cloudAgentRetryable { return }
+            defer {
+                if self?.cloudAgentRetryOwner == owner {
+                    self?.cloudAgentRetryTask = nil; self?.cloudAgentRetryOwner = nil
+                }
+            }
+            var attempt = 0
+            while !Task.isCancelled {
+                guard self?.online == true, self?.sessionRevision == epoch,
+                    self?.session?.accountId == account, self?.cloudAgentRetryable == true else { return }
+                do { try await delay(attempt) } catch { return }
+                do {
+                    guard let self, !Task.isCancelled, online, sessionRevision == epoch,
+                        session?.accountId == account, cloudAgentRetryable else { return }
+                    // Hold the manager only during a state exchange, never during backoff.
+                    // State-only exchange: never resume inference or execute a tool here.
+                    await synchronizeCloudAgentState()
+                    if !cloudAgentRetryable { return }
+                }
+                attempt = min(5, attempt + 1)
             }
         }
     }
