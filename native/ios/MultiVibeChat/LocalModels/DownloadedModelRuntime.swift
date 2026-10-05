@@ -6,7 +6,12 @@ private final class NativeModelWorker: @unchecked Sendable {
     let engine = MVLlama()
     let queue = DispatchQueue(label: "cloud.multivibe.local-inference", qos: .userInitiated)
     // MVLlama.cancel only writes an atomic flag. All other native calls use queue.
-    func cancel() { engine.cancel() }
+    func cancel(reason: String) {
+        #if DEBUG
+        print("Hermes native cancellation: " + reason)
+        #endif
+        engine.cancel()
+    }
 }
 
 actor DownloadedModelRuntime {
@@ -17,9 +22,10 @@ actor DownloadedModelRuntime {
     private var unloadAfterCompletion = false
     enum Event: Sendable { case text(String), result(String) }
 
-    func unload(modelID: String? = nil) async {
+    enum UnloadReason: String { case explicit, background, memoryPressure }
+    func unload(modelID: String? = nil, reason: UnloadReason = .explicit) async {
         guard modelID == nil || loadedID == modelID else { return }
-        if busy { worker.cancel(); unloadAfterCompletion = true; return }
+        if busy { worker.cancel(reason: reason.rawValue); unloadAfterCompletion = true; return }
         await withCheckedContinuation { continuation in
             worker.queue.async { [worker] in worker.engine.unload(); continuation.resume() }
         }
@@ -137,7 +143,7 @@ actor DownloadedModelRuntime {
             }
             try Task.checkCancellation()
             return value
-        } onCancel: { [worker] in worker.cancel() }
+        } onCancel: { [worker] in worker.cancel(reason: "task") }
     }
     private func generate(path: URL, messages: String, tools: String, reservedOutputTokens: Int = 1024,
                           onText: @escaping @Sendable (String) async -> Void) async throws -> String {
@@ -160,7 +166,7 @@ actor DownloadedModelRuntime {
                 switch event { case .text(let text): await onText(text); case .result(let json): result = json }
             }
             return result
-        } onCancel: { [worker] in worker.cancel() }
+        } onCancel: { [worker] in worker.cancel(reason: "task") }
     }
 }
 
