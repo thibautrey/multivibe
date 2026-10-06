@@ -13031,6 +13031,28 @@ mod tests {
         assert_eq!(payload["model"], "Qwen3.8-27B-4bit");
     }
 
+    #[test]
+    fn embeddings_payload_preserves_vector_contract() {
+        let upstream = account("qwen");
+        let route = RouteCandidate {
+            requested_model: "embedding-alias".to_owned(),
+            model: "qwen3-embedding-8b".to_owned(),
+            provider: Some("openai-compatible".to_owned()),
+            account_ids: vec!["qwen".to_owned()],
+        };
+        let body = json!({"model":"embedding-alias", "input":["Bonjour", "Hello"], "dimensions":4096, "encoding_format":"float"});
+        let payload = prepared_payload(&body, "/v1/embeddings", &upstream, &route, None, false, false, &EdgeConfig::default());
+        let mut expected = body;
+        expected["model"] = json!("qwen3-embedding-8b");
+        assert_eq!(payload, expected);
+        let mut upstream = upstream;
+        upstream.provider = Some("openai-compatible".to_owned());
+        for base in ["http://localhost:8003", "http://localhost:8003/v1"] {
+            upstream.base_url = Some(base.to_owned());
+            assert_eq!(format!("{}/embeddings", model_discovery_url(&upstream, &EdgeConfig::default()).trim_end_matches("/models")), "http://localhost:8003/v1/embeddings");
+        }
+    }
+
     fn store_with_accounts(accounts: Vec<Account>) -> StoreFile {
         StoreFile {
             accounts,
