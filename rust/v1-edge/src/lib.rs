@@ -5441,6 +5441,11 @@ fn prepared_payload(
     claude_code: bool,
     config: &EdgeConfig,
 ) -> Value {
+    if path.ends_with("/embeddings") {
+        let mut payload = body.clone();
+        payload["model"] = Value::String(route.model.clone());
+        return payload;
+    }
     let chat_route = path.contains("chat/completions");
     let messages_route = path.ends_with("/messages");
     let compact = path.ends_with("/responses/compact");
@@ -6003,8 +6008,18 @@ async fn proxy_inference(
         .map(String::as_str)
         .unwrap_or("unknown");
     let catalog = exposed_models(state, &store, false).await;
-    let routing_model = image_aware_routing_model(&store, &catalog, body, &routing_model);
-    let routes = routes_for_model(&store, &routing_model, default_model, &catalog);
+    let embeddings_route = path.ends_with("/embeddings");
+    let routing_model = if embeddings_route {
+        routing_model
+    } else {
+        image_aware_routing_model(&store, &catalog, body, &routing_model)
+    };
+    let mut routes = routes_for_model(&store, &routing_model, default_model, &catalog);
+    // Embedding failover must preserve the indexed vector space.
+    if embeddings_route && let Some(first) = routes.first() {
+        let model = first.model.clone();
+        routes.retain(|route| route.model == model);
+    }
     let client_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let session_id = request_session_id(headers);
     let codex_session_id = request_codex_session_id(headers);
@@ -6037,6 +6052,12 @@ async fn proxy_inference(
             );
             if require_confidential {
                 accounts.retain(account_is_confidential);
+            }
+            if embeddings_route {
+                accounts.retain(|account| {
+                    normalize_provider(account) == "openai-compatible"
+                        && !account_is_confidential(account)
+                });
             }
             if accounts.is_empty() {
                 continue;
@@ -6185,12 +6206,13 @@ async fn proxy_inference(
                         }
                     }
                 }
-                let sends_chat = resolve_upstream_mode(
-                    &account,
-                    &route.model,
-                    path.contains("chat/completions"),
-                    path.ends_with("/responses/compact"),
-                );
+                let sends_chat = !embeddings_route
+                    && resolve_upstream_mode(
+                        &account,
+                        &route.model,
+                        path.contains("chat/completions"),
+                        path.ends_with("/responses/compact"),
+                    );
                 let (chat_body, chat_tools) = if sends_chat && path.ends_with("/responses") {
                     chat_tools::ChatTools::prepare(body).map_err(|message| {
                         error_response(
@@ -6224,12 +6246,19 @@ async fn proxy_inference(
                 if provider == "openai" && account.chatgpt_account_id.is_some() {
                     default_chatgpt_reasoning_effort(&mut payload, sends_chat);
                 }
-                let url = upstream_url(
-                    &account,
-                    &state.config,
-                    sends_chat,
-                    path.ends_with("/responses/compact"),
-                );
+                let url = if embeddings_route {
+                    format!(
+                        "{}/embeddings",
+                        model_discovery_url(&account, &state.config).trim_end_matches("/models")
+                    )
+                } else {
+                    upstream_url(
+                        &account,
+                        &state.config,
+                        sends_chat,
+                        path.ends_with("/responses/compact"),
+                    )
+                };
                 let serialized = match serde_json::to_vec(&payload) {
                     Ok(value) => value,
                     Err(error) => {
@@ -6883,6 +6912,13 @@ fn render_buffered_success(
     mut upstream_headers: Vec<(String, String)>,
     chat_tools: &chat_tools::ChatTools,
 ) -> BufferedReply {
+    if path.ends_with("/embeddings") {
+        return BufferedReply {
+            status: StatusCode::OK,
+            headers: upstream_headers,
+            body: bytes.clone(),
+        };
+    }
     chat_tools.add_response_headers(&mut upstream_headers);
     let text = String::from_utf8_lossy(bytes).to_string();
     let is_sse = content_type
@@ -9610,6 +9646,23 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
         Ok(value) => value,
         Err(response) => return response,
     };
+    if path.ends_with("/embeddings") {
+        let valid_input = match body.get("input") {
+            Some(Value::String(input)) => !input.trim().is_empty(),
+            Some(Value::Array(input)) => !input.is_empty(),
+            _ => false,
+        };
+        if value_string(body.get("model")).is_none()
+            || !valid_input
+            || body.get("stream").and_then(Value::as_bool) == Some(true)
+        {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "Embeddings require an explicit model, non-empty input and no streaming.",
+                "invalid_request_error",
+            );
+        }
+    }
     let model = value_string(body.get("model")).unwrap_or_else(|| {
         state
             .config
@@ -9624,6 +9677,13 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
     }
     let client_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let raw_execution = header_value(&headers, "x-multivibe-execution");
+    if path.ends_with("/embeddings") && raw_execution.as_deref() == Some("defer") {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Embeddings cannot be deferred.",
+            "invalid_request_error",
+        );
+    }
     if client_stream && raw_execution.as_deref() == Some("defer") {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -12506,6 +12566,7 @@ pub fn build_router(state: EdgeState) -> Router {
         .route("/responses", get(websocket_handler).post(inference_handler))
         .route("/responses/compact", post(inference_handler))
         .route("/chat/completions", post(inference_handler))
+        .route("/embeddings", post(inference_handler))
         .route("/messages", post(inference_handler))
         .route("/realtime/calls", post(realtime_call_handler))
         .route("/realtime/voices", get(realtime_voices_handler))
@@ -12525,6 +12586,7 @@ pub fn build_router(state: EdgeState) -> Router {
         )
         .route("/v1/responses/compact", post(inference_handler))
         .route("/v1/chat/completions", post(inference_handler))
+        .route("/v1/embeddings", post(inference_handler))
         .route("/v1/messages", post(inference_handler))
         .route("/v1/realtime/calls", post(realtime_call_handler))
         .route("/v1/realtime/voices", get(realtime_voices_handler))
