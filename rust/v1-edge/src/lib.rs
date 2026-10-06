@@ -13031,6 +13031,53 @@ mod tests {
         assert_eq!(payload["model"], "Qwen3.8-27B-4bit");
     }
 
+    #[tokio::test]
+    async fn embeddings_alias_works_without_discovery_and_rejects_invalid_requests() {
+        let response_body = json!({"object":"list", "data":[{"index":0,"embedding":[0.125,-0.5]}], "model":"qwen3-embedding-8b"});
+        let expected = response_body.clone();
+        let runtime = Router::new()
+            .route("/v1/models", get(|| async { Json(json!({"data":[]})) }))
+            .route("/v1/embeddings", post(move |Json(body): Json<Value>| {
+                let response = response_body.clone();
+                async move {
+                    assert_eq!(body, json!({"model":"qwen3-embedding-8b","input":["Bonjour"],"dimensions":4096,"encoding_format":"float"}));
+                    Json(response)
+                }
+            }));
+        let (url, runtime_task) = start_server(runtime).await;
+        let mut upstream = account("qwen");
+        upstream.provider = Some("openai-compatible".to_owned());
+        upstream.base_url = Some(format!("{url}/v1"));
+        let mut store = store_with_accounts(vec![upstream]);
+        store.model_aliases.push(ModelAlias {
+            id: "qwen3-embedding-8b".to_owned(), enabled: true,
+            rules: vec![RoutingRule { id:"default".to_owned(), candidates:vec![RoutingCandidate {
+                model:"qwen3-embedding-8b".to_owned(), provider:Some("openai-compatible".to_owned()), account_ids:vec!["qwen".to_owned()],
+            }] }], ..Default::default()
+        });
+        let store_path = temporary_path("embeddings-store");
+        let jobs_path = temporary_path("embeddings-jobs");
+        fs::write(&store_path, serde_json::to_vec(&store).unwrap()).await.unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.configured_api_keys = vec![("test".to_owned(),"secret".to_owned())];
+        let (url, edge_task) = start_server(build_router(EdgeState::new(config).await.unwrap())).await;
+        let client = reqwest::Client::new();
+        let payload = json!({"model":"qwen3-embedding-8b","input":["Bonjour"],"dimensions":4096,"encoding_format":"float"});
+        let result = client.post(format!("{url}/v1/embeddings")).bearer_auth("secret").json(&payload).send().await.unwrap();
+        assert_eq!(result.status(),StatusCode::OK);
+        assert_eq!(result.json::<Value>().await.unwrap(),expected);
+        for body in [json!({"input":"Hi"}),json!({"model":"qwen3-embedding-8b","input":[]}),json!({"model":"qwen3-embedding-8b","input":"Hi","stream":true})] {
+            assert_eq!(client.post(format!("{url}/v1/embeddings")).bearer_auth("secret").json(&body).send().await.unwrap().status(),StatusCode::BAD_REQUEST);
+        }
+        assert_eq!(client.post(format!("{url}/v1/embeddings")).bearer_auth("secret").header("x-multivibe-execution","defer").json(&payload).send().await.unwrap().status(),StatusCode::BAD_REQUEST);
+        assert_eq!(client.post(format!("{url}/v1/embeddings")).json(&payload).send().await.unwrap().status(),StatusCode::UNAUTHORIZED);
+        edge_task.abort(); runtime_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
     #[test]
     fn embeddings_payload_preserves_vector_contract() {
         let upstream = account("qwen");
