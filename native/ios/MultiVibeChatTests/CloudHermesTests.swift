@@ -1496,7 +1496,12 @@ private actor CloudWorkspaceResponderHold {
             return .init(accountId:account,receipts:operations.map { .init(operationId:$0.operationId,versionId:$0.versionId,cursor:2,heads:[$0.versionId],deleted:$0.deleted) })
         }
         let manager = ConversationManager(services:services); await manager.restore(loadRemoteModels:false)
+        // Restoration schedules journal synchronization; waiting only while its flag is true
+        // misses a task that has not started. Seed the graph explicitly before local enqueue.
+        await manager.synchronizeCloudAgentState()
         while manager.cloudAgentSyncing { await Task.yield() }
+        XCTAssertNil(manager.cloudAgentSyncError)
+        XCTAssertTrue(manager.cloudAgentObjects.contains { $0.id == object && !$0.deleted })
         try manager.enqueueCloudAgentMutation(.init(operationId:UUID().uuidString.lowercased(),objectId:UUID().uuidString.lowercased(),
             versionId:UUID().uuidString.lowercased(),deviceId:device,kind:"project",parents:[],deleted:false,value:.string("new project")))
         armed = true
