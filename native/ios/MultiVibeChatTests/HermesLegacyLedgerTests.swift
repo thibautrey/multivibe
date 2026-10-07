@@ -187,4 +187,63 @@ final class HermesLegacyLedgerTests: XCTestCase {
         XCTAssertEqual(restored, original); XCTAssertEqual(try Data(contentsOf: source), original)
     }
 
+    func testScannerExactUnknownPayloadAndOpaqueNumbers() throws {
+        let text = " \n" + #"{"conversations":[],"future":{"huge":9007199254740993123456789,"exponent":-1.2300e+999},"memory":null}"# + "\r\n"
+        let bytes = Data(text.utf8)
+        let root = try HermesLegacyJSONScanner.scan(bytes)
+        guard case .object(let members) = root.kind else { return XCTFail("Expected object") }
+        XCTAssertEqual(members.map(\.key), ["conversations", "future", "memory"])
+        guard case .object(let future) = members[1].value.kind else { return XCTFail("Expected future fields") }
+        XCTAssertEqual(String(decoding: bytes.subdata(in: future[0].value.range), as: UTF8.self), "9007199254740993123456789")
+        XCTAssertEqual(String(decoding: bytes.subdata(in: future[1].value.range), as: UTF8.self), "-1.2300e+999")
+        XCTAssertEqual(bytes.subdata(in: root.range), Data(text.trimmingCharacters(in: .whitespacesAndNewlines).utf8))
+    }
+
+    func testScannerEscapesUnicodeAndBracketStrings() throws {
+        let text = #"{"\u0069d":"quote\" slash\\ braces{}[]","emoji":"\uD83D\uDE00","utf8":"é東京"}"#
+        let bytes = Data(text.utf8)
+        let root = try HermesLegacyJSONScanner.scan(bytes)
+        guard case .object(let members) = root.kind else { return XCTFail("Expected object") }
+        XCTAssertEqual(members[0].key, "id")
+        guard case .string(let emoji) = members[1].value.kind else { return XCTFail("Expected string") }
+        XCTAssertEqual(emoji, "😀")
+        XCTAssertEqual(String(decoding: bytes.subdata(in: members[1].value.range), as: UTF8.self), #""\uD83D\uDE00""#)
+    }
+
+    func testScannerLegacyArrayNullAndAlternatingDictionaryArray() throws {
+        for text in ["[]", "{}", "null", #"[{"id":"original","messages":[]}]"#,
+                     #"{"importedGuestSnapshots":["uuid",{"id":"original"}],"memory":null}"#] {
+            let bytes = Data(text.utf8)
+            let root = try HermesLegacyJSONScanner.scan(bytes)
+            XCTAssertEqual(bytes.subdata(in: root.range), bytes)
+        }
+    }
+
+    func testScannerRejectsMalformedGrammarAndUnicode() {
+        for text in ["", "[", "{", "[1,]", #"{"id":}"#, "true false", "01", "-01", "1.", "1e", "+1", "NaN",
+                     #""\x""#, #""\uD800""#, #""\uDC00""#, #""\uD800\u0041""#, #""\uZZZZ""#,
+                     "\"raw\nnewline\"", #"{"a":1 "b":2}"#] {
+            XCTAssertThrowsError(try HermesLegacyJSONScanner.scan(Data(text.utf8)), text)
+        }
+        XCTAssertThrowsError(try HermesLegacyJSONScanner.scan(Data([34, 0xFF, 34])))
+        XCTAssertThrowsError(try HermesLegacyJSONScanner.scan(Data([34, 0xED, 0xA0, 0x80, 34])))
+    }
+
+    func testScannerRejectsDuplicateDecodedKeysAtEveryDepth() {
+        for text in [#"{"id":1,"id":2}"#, #"{"id":1,"\u0069d":2}"#,
+                     #"[{"unknown":{"state":null,"st\u0061te":"deleted"}}]"#] {
+            XCTAssertThrowsError(try HermesLegacyJSONScanner.scan(Data(text.utf8)))
+        }
+    }
+
+    func testScannerResourceLimitsBeforeRecursion() throws {
+        XCTAssertNoThrow(try HermesLegacyJSONScanner.scan(Data("[]".utf8), maximumDepth: 0, maximumNodes: 1))
+        XCTAssertThrowsError(try HermesLegacyJSONScanner.scan(Data("[0]".utf8), maximumDepth: 0))
+        XCTAssertThrowsError(try HermesLegacyJSONScanner.scan(Data("[0,1]".utf8), maximumNodes: 2))
+        XCTAssertNoThrow(try HermesLegacyJSONScanner.scan(Data("[0,1]".utf8), maximumNodes: 3))
+        let deep = String(repeating: "[", count: 65) + "0" + String(repeating: "]", count: 65)
+        XCTAssertThrowsError(try HermesLegacyJSONScanner.scan(Data(deep.utf8)))
+        XCTAssertThrowsError(try HermesLegacyJSONScanner.scan(Data(repeating: 32, count: HermesLegacyLedger.maximumBytes + 1)))
+    }
+
 }
