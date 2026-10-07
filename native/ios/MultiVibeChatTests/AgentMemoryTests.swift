@@ -30,33 +30,96 @@ import XCTest
     }
 
     func testCompletedRemoteReplyUsesSameModelForBackgroundMemory() async throws {
-        var calls: [String] = []
-        var source: ChatMessage?
-        var services = isolatedServices(load: { NativeSession(accessToken: "test", refreshToken: "test", expiresAt: .distantFuture, accountId: "a") },
+        struct PersistedHistory: Decodable { let memory: [AgentMemory]; let conversations: [Conversation] }
+        let account = UUID().uuidString.lowercased()
+        let access = SelectedModelAccess(id: "cloud", modelId: "same-model", label: "Cloud fixture", method: "cloud")
+        let expectedModel = try CloudHermesModel.selected(access.modelId, access: access)
+        let savedMemory = expectation(description: "memory and review marker persisted")
+        var memoryModels: [String] = [], replyModels: [CloudHermesModel] = []
+        var source: ChatMessage?, persisted: Data?, memorySaved = false
+        var cursor: Int64 = 0, changes: [CloudAgentChange] = []
+        var services = isolatedServices(writeHistory: { data, _ in
+            persisted = data
+            let snapshot = try JSONDecoder().decode(PersistedHistory.self, from: data)
+            if !memorySaved, snapshot.memory.count == 1,
+               snapshot.conversations.first?.memoryReviewedThrough != nil {
+                memorySaved = true; savedMemory.fulfill()
+            }
+        }, load: { NativeSession(accessToken: "test", refreshToken: "test", expiresAt: .distantFuture, accountId: account) },
             stream: { model, messages, _, output in
-                calls.append(model)
-                if messages.first?.role == "system" {
-                    let message = try XCTUnwrap(source)
-                    let change = AutomaticMemory.Change(topic: "Langue", text: message.content, kind: .preference,
-                        messageID: message.id, quote: message.content)
-                    await output(String(decoding: try JSONEncoder().encode([change]), as: UTF8.self))
-                } else {
-                    source = messages.last
-                    await output("Entendu")
+                if messages.count == 1, messages.first?.role == "user",
+                   messages.first?.content.hasPrefix(ConversationTitle.instructions + "\n\n") == true {
+                    // The independent title request is not a conversational reply.
+                    XCTAssertEqual(model, access.modelId)
+                    await output("Préférence de langue")
+                    return
                 }
-            }, models: { _ in [ModelOption(id: "same-model")] })
+                guard messages.first?.role == "system", messages.first?.content == AutomaticMemory.instructions else {
+                    XCTFail("A conversational reply must use Hermes, never legacy streaming")
+                    throw APIError.invalidResponse
+                }
+                memoryModels.append(model)
+                let message = try XCTUnwrap(source)
+                let change = AutomaticMemory.Change(topic: "Langue", text: message.content, kind: .preference,
+                    messageID: message.id, quote: message.content)
+                await output(String(decoding: try JSONEncoder().encode([change]), as: UTF8.self))
+            }, models: { _ in [ModelOption(id: access.modelId)] })
+        services.hermesConsent = { _ in .init(accountId: account, cloudEnabled: true, revision: 1) }
+        services.hermesChanges = { after, _ in
+            .init(accountId: account, changes: changes.filter { $0.cursor > after }, cursor: cursor, hasMore: false)
+        }
+        services.hermesMutations = { received, operations, _ in
+            XCTAssertEqual(received, account)
+            var receipts: [CloudAgentReceipt] = []
+            for operation in operations {
+                cursor += 1
+                changes.append(.init(operationId: operation.operationId, objectId: operation.objectId,
+                    versionId: operation.versionId, deviceId: operation.deviceId, kind: operation.kind,
+                    parents: operation.parents, deleted: operation.deleted, value: operation.value, cursor: cursor, erased: false))
+                receipts.append(.init(operationId: operation.operationId, versionId: operation.versionId,
+                    cursor: cursor, heads: [operation.versionId], deleted: operation.deleted))
+            }
+            return .init(accountId: account, receipts: receipts)
+        }
+        services.hermesRead = { received, _, _, cancel in
+            XCTAssertEqual(received, account); XCTAssertFalse(cancel)
+            throw APIError.server(404, "fixture_run_missing")
+        }
+        services.hermesCreate = { received, input, _ in
+            XCTAssertEqual(received, account); XCTAssertEqual(input.model, expectedModel)
+            XCTAssertEqual(input.message, "Je préfère le français"); XCTAssertTrue(input.history.isEmpty)
+            XCTAssertNotNil(persisted)
+            replyModels.append(input.model)
+            return .init(runId: input.runId, sessionId: input.sessionId, branchId: input.branchId,
+                state: "completed", generation: 1, result: .init(response: "Entendu", history: [
+                    .object(["role": .string("user"), "content": .string(input.message)]),
+                    .object(["role": .string("assistant"), "content": .string("Entendu")])]))
+        }
         services.memoryReviewDelay = { await Task.yield() }
         let manager = ConversationManager(services: services)
         await manager.restore(loadRemoteModels: false)
         await manager.reloadModels()
-        manager.selectedModel = "same-model"
+        manager.applyAccess(access)
+        manager.newConversation()
+        try await manager.authorizeHermesCloud(importExistingConversation: false)
         XCTAssertTrue(manager.send("Je préfère le français"))
-        for _ in 0..<3000 { if manager.memoryItems.count == 1 { break }; await Task.yield() }
-        XCTAssertEqual(calls, ["same-model", "same-model"])
+        source = try XCTUnwrap(manager.current?.messages.first)
+        await fulfillment(of: [savedMemory], timeout: 5)
+        XCTAssertEqual(replyModels, [expectedModel])
+        XCTAssertEqual(memoryModels, [access.modelId])
         XCTAssertEqual(manager.memoryItems.first?.memory.text, "Je préfère le français")
+        XCTAssertEqual(manager.memoryItems.first?.memory.evidence?.messageID, source?.id)
+        XCTAssertEqual(manager.memoryItems.first?.memory.evidence?.quote, source?.content)
+        XCTAssertEqual(manager.memoryItems.first?.memory.evidence?.origin, .userMessage)
         XCTAssertEqual(manager.current?.messages.count, 2)
+        XCTAssertEqual(manager.current?.messages.last?.content, "Entendu")
+        XCTAssertEqual(manager.current?.messages.last?.completion, .completed)
         XCTAssertNil(manager.memoryDraft)
         XCTAssertEqual(manager.current?.memoryReviewedThrough, manager.current?.messages.last?.id)
+        let restored = try JSONDecoder().decode(PersistedHistory.self, from: XCTUnwrap(persisted))
+        XCTAssertEqual(restored.memory.first?.evidence, manager.memoryItems.first?.memory.evidence)
+        XCTAssertEqual(restored.memory.first?.text, "Je préfère le français")
+        XCTAssertEqual(restored.conversations.first?.memoryReviewedThrough, restored.conversations.first?.messages.last?.id)
     }
 
     private func memory(_ text: String = "Je préfère le français", topic: String = "Langue", scope: String = "") -> AgentMemory {
