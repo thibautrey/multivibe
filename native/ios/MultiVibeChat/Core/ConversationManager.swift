@@ -623,10 +623,11 @@ import Network
                         guard persist() else { cloudAgentState = previous; throw APIError.server(0,"history_cache_write_failed") }
                     }
                 }
-                while let state=cloudAgentState, !state.outbox.isEmpty {
+                while cloudAgentState?.outbox.isEmpty == false {
                     let sendConsent = try await services.hermesConsent(auth.accessToken); try current()
                     guard sendConsent.accountId == auth.accountId else { throw APIError.invalidResponse }
                     if !sendConsent.cloudEnabled { break }
+                    guard let state = cloudAgentState else { throw CancellationError() }
 
                     var batch:[CloudAgentMutation]=[]
                     let blockedLocalSessions = Set(state.outbox.compactMap { operation -> String? in

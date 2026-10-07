@@ -1470,4 +1470,46 @@ private actor CloudWorkspaceResponderHold {
         manager.connectivityChanged(false)
     }
 
+    func testSendBatchReadsCurrentOutboxAfterSuspendedConsent() async throws {
+        let account = UUID().uuidString.lowercased(), object = UUID().uuidString.lowercased(), version = UUID().uuidString.lowercased(), device = UUID().uuidString.lowercased()
+        let auth = NativeSession(accessToken:"legacy",refreshToken:"legacy",expiresAt:.distantFuture,accountId:account)
+        let entered = expectation(description:"send consent suspended")
+        var consentReply: CheckedContinuation<CloudHermesConsent,Never>?
+        var armed = false, consentCalls = 0, batches: [[CloudAgentMutation]] = []
+        var services = isolatedServices(load:{auth})
+        services.hermesChanges = { after,_ in
+            let existing = CloudAgentChange(operationId:UUID().uuidString.lowercased(),objectId:object,versionId:version,
+                deviceId:device,kind:"memory",parents:[],deleted:false,value:.string("existing"),cursor:1,erased:false)
+            return .init(accountId:account,changes:after < 1 ? [existing] : [],cursor:max(after,1),hasMore:false)
+        }
+        services.hermesConsent = { _ in
+            if armed {
+                consentCalls += 1
+                if consentCalls == 2 {
+                    return await withCheckedContinuation { continuation in consentReply = continuation; entered.fulfill() }
+                }
+            }
+            return .init(accountId:account,cloudEnabled:armed,revision:1)
+        }
+        services.hermesMutations = { _,operations,_ in
+            batches.append(operations)
+            return .init(accountId:account,receipts:operations.map { .init(operationId:$0.operationId,versionId:$0.versionId,cursor:2,heads:[$0.versionId],deleted:$0.deleted) })
+        }
+        let manager = ConversationManager(services:services); await manager.restore(loadRemoteModels:false)
+        while manager.cloudAgentSyncing { await Task.yield() }
+        try manager.enqueueCloudAgentMutation(.init(operationId:UUID().uuidString.lowercased(),objectId:UUID().uuidString.lowercased(),
+            versionId:UUID().uuidString.lowercased(),deviceId:device,kind:"project",parents:[],deleted:false,value:.string("new project")))
+        armed = true
+        let sync = Task { await manager.synchronizeCloudAgentState() }
+        await fulfillment(of:[entered],timeout:5)
+        let deletion = CloudAgentMutation(operationId:UUID().uuidString.lowercased(),objectId:object,versionId:UUID().uuidString.lowercased(),
+            deviceId:device,kind:"memory",parents:[version],deleted:true,value:nil)
+        try manager.enqueueCloudAgentMutation(deletion)
+        consentReply?.resume(returning:.init(accountId:account,cloudEnabled:true,revision:1)); consentReply = nil
+        await sync.value
+        XCTAssertTrue(batches.first?.contains(deletion) == true)
+        XCTAssertEqual(batches.count,1)
+        manager.connectivityChanged(false)
+    }
+
 }
