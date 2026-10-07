@@ -1510,8 +1510,18 @@ private actor CloudWorkspaceResponderHold {
         let deletion = CloudAgentMutation(operationId:UUID().uuidString.lowercased(),objectId:object,versionId:UUID().uuidString.lowercased(),
             deviceId:device,kind:"memory",parents:[version],deleted:true,value:nil)
         try manager.enqueueCloudAgentMutation(deletion)
+        let finished = expectation(description:"actual synchronization owner finishes after consent resumes")
+        let observer = Task { @MainActor in
+            while manager.cloudAgentSyncing && !Task.isCancelled { await Task.yield() }
+            if !Task.isCancelled { finished.fulfill() }
+        }
         consentReply?.resume(returning:.init(accountId:account,cloudEnabled:true,revision:1)); consentReply = nil
+        // A restore-scheduled owner can suspend while the explicit sync call coalesces and returns.
+        // Observe the actual owner's completion before inspecting the sent batch.
         await sync.value
+        await fulfillment(of:[finished],timeout:5)
+        observer.cancel()
+        XCTAssertNil(manager.cloudAgentSyncError)
         XCTAssertTrue(batches.first?.contains(deletion) == true)
         XCTAssertEqual(batches.count,1)
         manager.connectivityChanged(false)
