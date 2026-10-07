@@ -351,6 +351,52 @@ final class HermesLegacyLedgerTests: XCTestCase {
         XCTAssertNil(manager.error)
     }
 
+    @MainActor func testSameAccountRestoreInvalidatesSuspendedJournalOwnerBeforeClearingState() async throws {
+        let account = UUID().uuidString.lowercased()
+        let auth = NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: account)
+        let bytes = try restorationBytes(title: "same account")
+        let oldEntered = expectation(description: "old journal suspended")
+        let preserveEntered = expectation(description: "second preservation suspended")
+        let newEntered = expectation(description: "new journal suspended")
+        let oldGate = LegacyRestorationGate(), preserveGate = LegacyRestorationGate(), newGate = LegacyRestorationGate()
+        var changes = 0, preserves = 0, writes = 0
+        var services = isolatedServices(writeHistory: { _, _ in writes += 1 }, load: { auth }, readLocalHistory: { _ in bytes })
+        services.preserveLegacyHistory = { _, _, _ in
+            preserves += 1
+            if preserves == 2 { preserveEntered.fulfill(); try await preserveGate.wait() }
+        }
+        services.hermesChanges = { _, _ in
+            changes += 1
+            if changes == 1 {
+                oldEntered.fulfill(); try await oldGate.wait()
+                return .init(accountId: account, changes: [], cursor: 99, hasMore: false)
+            }
+            newEntered.fulfill(); try await newGate.wait()
+            return .init(accountId: account, changes: [], cursor: 2, hasMore: false)
+        }
+        services.hermesConsent = { _ in .init(accountId: account, cloudEnabled: false, revision: 1) }
+        let manager = ConversationManager(services: services)
+        await manager.restore(loadRemoteModels: false)
+        await fulfillment(of: [oldEntered], timeout: 2)
+        let second = Task { await manager.restore(loadRemoteModels: false) }
+        await fulfillment(of: [preserveEntered], timeout: 2)
+        let writesBeforeRelease = writes
+        XCTAssertTrue(manager.isRestoring); XCTAssertFalse(manager.cloudAgentSyncing)
+        oldGate.release()
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertEqual(writes, writesBeforeRelease)
+        XCTAssertNil(manager.cloudAgentSyncError); XCTAssertNil(manager.error)
+        XCTAssertTrue(manager.cloudAgentObjects.isEmpty)
+        preserveGate.release(); await second.value
+        await fulfillment(of: [newEntered], timeout: 2)
+        XCTAssertTrue(manager.cloudAgentSyncing)
+        newGate.release()
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertFalse(manager.cloudAgentSyncing)
+        XCTAssertNil(manager.cloudAgentSyncError); XCTAssertNil(manager.error)
+        XCTAssertTrue(manager.nativeDataReady); XCTAssertEqual(changes, 2)
+    }
+
 }
 
 @MainActor private final class LegacyRestorationGate {
