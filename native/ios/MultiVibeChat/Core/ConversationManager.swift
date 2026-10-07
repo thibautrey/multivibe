@@ -904,8 +904,9 @@ import Network
         guard !isRestoring, storageLoaded, !remoteHermesBusy, !remoteHermes.isEmpty, session != nil else { return }
         remoteHermesBusy = true; let epoch = sessionRevision
         let restoration = restorationRevision, account = session?.accountId
-        let current = { self.sessionRevision == epoch && self.restorationRevision == restoration && self.session?.accountId == account && !Task.isCancelled }
-        defer { if current() { remoteHermesBusy = false } }
+        let ownsRecovery = { self.sessionRevision == epoch && self.restorationRevision == restoration && self.session?.accountId == account }
+        let current = { ownsRecovery() && !Task.isCancelled }
+        defer { if ownsRecovery() { remoteHermesBusy = false } }
         do {
             let auth = try await validSession()
             guard current() else { return }
@@ -1030,9 +1031,9 @@ import Network
             } }
         }
         cloudHermesRestoreTask = task; await task.value
-        if !Task.isCancelled, restorationRevision == restoration, sessionRevision == revision, session?.accountId == account {
+        if restorationRevision == restoration, sessionRevision == revision, session?.accountId == account {
             cloudHermesRestoreTask = nil
-            if cloudHermesRecoveryRetryable { scheduleCloudHermesRecoveryRetry() }
+            if !Task.isCancelled, cloudHermesRecoveryRetryable { scheduleCloudHermesRecoveryRetry() }
         }
     }
     private func applyCloudHermesRecovery(_ run:CloudHermesRun, conversation id:UUID, binding saved:CloudHermesBinding) throws {
