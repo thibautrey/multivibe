@@ -120,4 +120,60 @@ extension CloudAgentStateTests {
         }
         XCTAssertThrowsError(try state.workspaceMutation(projectId:project,objectId:"",path:"file-201",content:"",parents:[],projectParents:[head],delete:false))
     }
+    func testAmbiguousSendRestartSettlesOnlyExactPulledMutation() throws {
+        let raw = change(4)
+        var state = CloudAgentState(accountId:id(1),deviceId:id(3))
+        try state.enqueue(raw.mutation)
+        state.memoryWriteScopes = [raw.operationId: id(20)]
+        let restart = try JSONDecoder().decode(CloudAgentState.self,from:JSONEncoder().encode(state))
+        let settled = try restart.applying(.init(accountId:id(1),changes:[raw],cursor:1,hasMore:false))
+        XCTAssertTrue(settled.outbox.isEmpty)
+        XCTAssertEqual(settled.objects[raw.objectId]?.versions[raw.versionId]?.mutation,raw.mutation)
+        XCTAssertTrue(settled.memoryWriteScopes?.isEmpty == true)
+        XCTAssertThrowsError(try restart.applying(.init(accountId:id(9),changes:[raw],cursor:1,hasMore:false)))
+        XCTAssertEqual(restart.outbox,[raw.mutation])
+    }
+    func testPulledReusedIdentifiersRejectEveryImmutableFieldMismatch() throws {
+        let raw = change(4)
+        var state = CloudAgentState(accountId:id(1),deviceId:id(3)); try state.enqueue(raw.mutation)
+        let variants: [CloudAgentChange] = [
+            .init(operationId:raw.operationId,objectId:id(21),versionId:raw.versionId,deviceId:raw.deviceId,kind:raw.kind,parents:raw.parents,deleted:false,value:raw.value,cursor:1,erased:false),
+            .init(operationId:raw.operationId,objectId:raw.objectId,versionId:raw.versionId,deviceId:id(21),kind:raw.kind,parents:raw.parents,deleted:false,value:raw.value,cursor:1,erased:false),
+            .init(operationId:raw.operationId,objectId:raw.objectId,versionId:raw.versionId,deviceId:raw.deviceId,kind:"message",parents:raw.parents,deleted:false,value:raw.value,cursor:1,erased:false),
+            .init(operationId:raw.operationId,objectId:raw.objectId,versionId:raw.versionId,deviceId:raw.deviceId,kind:raw.kind,parents:[id(22)],deleted:false,value:raw.value,cursor:1,erased:false),
+            .init(operationId:raw.operationId,objectId:raw.objectId,versionId:raw.versionId,deviceId:raw.deviceId,kind:raw.kind,parents:raw.parents,deleted:false,value:.string("different"),cursor:1,erased:false),
+            .init(operationId:id(23),objectId:raw.objectId,versionId:raw.versionId,deviceId:raw.deviceId,kind:raw.kind,parents:raw.parents,deleted:false,value:raw.value,cursor:1,erased:false)
+        ]
+        for mismatch in variants {
+            XCTAssertThrowsError(try state.applying(.init(accountId:id(1),changes:[mismatch],cursor:1,hasMore:false)))
+            XCTAssertEqual(state.outbox,[raw.mutation]); XCTAssertTrue(state.objects.isEmpty)
+        }
+    }
+    func testRecoveredErasureAndLaterStaleChangeCannotRestorePendingObject() throws {
+        let raw = change(4)
+        var state = CloudAgentState(accountId:id(1),deviceId:id(3)); try state.enqueue(raw.mutation)
+        let erased = change(4,erased:true)
+        state = try state.applying(.init(accountId:id(1),changes:[erased],cursor:1,hasMore:false))
+        XCTAssertTrue(state.outbox.isEmpty); XCTAssertTrue(state.objects[raw.objectId]?.deleted == true)
+        XCTAssertNil(state.objects[raw.objectId]?.versions[raw.versionId]?.value)
+        let later = change(5,parents:[4])
+        state = try state.applying(.init(accountId:id(1),changes:[later],cursor:2,hasMore:false))
+        XCTAssertNil(state.objects[raw.objectId]?.versions[later.versionId]?.value)
+        XCTAssertTrue(state.objects[raw.objectId]?.deleted == true)
+        XCTAssertThrowsError(try state.enqueue(later.mutation))
+    }
+
+    func testTombstoneCannotHideLaterReusedPendingIdentifierInSamePage() throws {
+        let pending = change(5)
+        var state = CloudAgentState(accountId:id(1),deviceId:id(3)); try state.enqueue(pending.mutation)
+        let tombstone = change(4,deleted:true)
+        let mismatch = CloudAgentChange(operationId:pending.operationId,objectId:pending.objectId,versionId:pending.versionId,
+            deviceId:pending.deviceId,kind:pending.kind,parents:pending.parents,deleted:false,value:.string("wrong"),cursor:2,erased:false)
+        XCTAssertThrowsError(try state.applying(.init(accountId:id(1),changes:[tombstone,mismatch],cursor:2,hasMore:false)))
+        XCTAssertEqual(state.outbox,[pending.mutation]); XCTAssertTrue(state.objects.isEmpty)
+        let erased = try state.applying(.init(accountId:id(1),changes:[tombstone,pending],cursor:2,hasMore:false))
+        XCTAssertTrue(erased.outbox.isEmpty); XCTAssertTrue(erased.objects[pending.objectId]?.deleted == true)
+        XCTAssertNil(erased.objects[pending.objectId]?.versions[pending.versionId]?.value)
+    }
+
 }
