@@ -246,4 +246,22 @@ final class HermesLegacyLedgerTests: XCTestCase {
         XCTAssertThrowsError(try HermesLegacyJSONScanner.scan(Data(repeating: 32, count: HermesLegacyLedger.maximumBytes + 1)))
     }
 
+    func testScannerAcceptsDistinctCanonicallyEquivalentScalarKeys() throws {
+        let bytes = Data(#"{"\u00e9":1,"e\u0301":2}"#.utf8)
+        let root = try HermesLegacyJSONScanner.scan(bytes)
+        guard case .object(let members) = root.kind else { return XCTFail("Expected object") }
+        XCTAssertEqual(members.count, 2)
+        XCTAssertNotEqual(Data(members[0].key.utf8), Data(members[1].key.utf8))
+        XCTAssertEqual(bytes.subdata(in: members[0].value.range), Data("1".utf8))
+        XCTAssertEqual(bytes.subdata(in: members[1].value.range), Data("2".utf8))
+        XCTAssertThrowsError(try HermesLegacyJSONScanner.scan(Data(#"{"id":1,"\u0069d":2}"#.utf8)))
+    }
+
+    func testScannerRejectsCallerNodeLimitsAboveHardCeiling() {
+        for limit in [0, -1, 100_001, Int.max] {
+            XCTAssertThrowsError(try HermesLegacyJSONScanner.scan(Data("[]".utf8), maximumNodes: limit))
+        }
+        XCTAssertNoThrow(try HermesLegacyJSONScanner.scan(Data("[]".utf8), maximumNodes: 100_000))
+    }
+
 }

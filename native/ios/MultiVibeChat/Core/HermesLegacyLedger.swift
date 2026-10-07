@@ -280,7 +280,7 @@ enum HermesLegacyJSONScanner {
 
     static func scan(_ data: Data, maximumDepth: Int = 64, maximumNodes: Int = 100_000) throws -> HermesLegacyJSONValue {
         guard data.count <= HermesLegacyLedger.maximumBytes else { throw Failure.tooLarge }
-        guard maximumDepth >= 0, maximumDepth <= 64, maximumNodes > 0,
+        guard maximumDepth >= 0, maximumDepth <= 64, maximumNodes > 0, maximumNodes <= 100_000,
               String(data: data, encoding: .utf8) != nil else { throw Failure.invalid }
         var parser = Parser(bytes: Array(data), maximumDepth: maximumDepth, maximumNodes: maximumNodes)
         let value = try parser.value(depth: 0)
@@ -375,11 +375,11 @@ enum HermesLegacyJSONScanner {
             case 123:
                 index += 1; whitespace()
                 var members: [HermesLegacyJSONValue.Member] = []
-                var keys = Set<String>()
+                var keys = Set<Data>()
                 if current != 125 {
                     while true {
                         let key = try string()
-                        guard keys.insert(key).inserted else { throw Failure.invalid }
+                        guard keys.insert(Data(key.utf8)).inserted else { throw Failure.invalid }
                         whitespace(); try consume(58)
                         guard depth < maximumDepth else { throw Failure.depthLimit }
                         members.append(.init(key: key, value: try value(depth: depth + 1)))
