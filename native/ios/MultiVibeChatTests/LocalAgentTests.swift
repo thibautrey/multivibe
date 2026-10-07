@@ -186,19 +186,30 @@ import XCTest
     }
 
     func testGuestHistoryRestoresWithoutNetwork() async throws {
-        var storage: [String: Data] = [:]
-        let services = isolatedServices(writeHistory: { storage[$1.lastPathComponent] = $0 }, load: { nil },
-            readLocalHistory: { url in
-                guard let data = storage[url.lastPathComponent] else { throw CocoaError(.fileReadNoSuchFile) }; return data
-            },
-            localAvailability: { nil }, localRespond: { _, _, output in await output("Réponse locale") })
+        struct StoredHistory: Decodable { let conversations: [Conversation] }
+        var storage: [String: Data] = [:], settled = false
+        let completed = expectation(description: "reply and title persisted")
+        var services = isolatedServices(writeHistory: { data, url in
+            storage[url.lastPathComponent] = data
+            let snapshot = try JSONDecoder().decode(StoredHistory.self, from: data)
+            if !settled, let conversation = snapshot.conversations.first,
+               conversation.messages.last?.completion == .completed, conversation.titleGeneratedFor != nil {
+                settled = true; completed.fulfill()
+            }
+        }, load: { nil }, readLocalHistory: { url in
+            guard let data = storage[url.lastPathComponent] else { throw CocoaError(.fileReadNoSuchFile) }; return data
+        }, localAvailability: { nil }, localRespond: { _, _, output in await output("Réponse locale") },
+            summarizeTitle: { _, _ in "Salutation" })
+        services.preserveLegacyHistory = { _, _, _ in }
+        services.memoryReviewDelay = { throw CancellationError() }
         let first = ConversationManager(services: services)
         await first.restore()
         XCTAssertTrue(first.send("Bonjour"))
-        for _ in 0..<1000 { if !first.isStreaming { break }; await Task.yield() }
+        await fulfillment(of: [completed], timeout: 2)
+        let expected = first.conversations
         let second = ConversationManager(services: services)
         await second.restore()
-        XCTAssertEqual(second.conversations, first.conversations)
+        XCTAssertEqual(second.conversations, expected)
         XCTAssertEqual(storage.keys.sorted(), ["history-guest.json"])
     }
 
@@ -245,18 +256,45 @@ import XCTest
         NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: expired ? .distantPast : .distantFuture, accountId: account)
     }
     func testExpiredAccountCanRunLocalWithoutRefresh() async {
+        struct StoredHistory: Decodable { let conversations: [Conversation] }
         let account = credentials(UUID().uuidString, expired: true)
-        let manager = ConversationManager(services: isolatedServices(writeHistory: { _, _ in }, load: { account },
-            refresh: { _ in XCTFail("Offline inference must not refresh"); throw APIError.invalidResponse },
-            stream: { _, _, _, _ in XCTFail("No remote inference") },
+        let refreshEntered = expectation(description: "background refresh suspended")
+        let refreshFinished = expectation(description: "offline transport finished")
+        let replySaved = expectation(description: "local reply persisted without refreshed credentials")
+        let refreshGate = OfflineFixtureRefreshGate()
+        var refreshCalls = 0, localSaved = false
+        var services = isolatedServices(writeHistory: { data, _ in
+            let snapshot = try JSONDecoder().decode(StoredHistory.self, from: data)
+            if !localSaved, snapshot.conversations.first?.messages.last?.completion == .completed {
+                localSaved = true; replySaved.fulfill()
+            }
+        }, load: { account }, refresh: { _ in
+            refreshCalls += 1; refreshEntered.fulfill()
+            defer { refreshFinished.fulfill() }
+            await refreshGate.wait()
+            throw URLError(.notConnectedToInternet)
+        }, stream: { _, _, _, _ in XCTFail("No remote inference") },
             readLocalHistory: { _ in throw CocoaError(.fileReadNoSuchFile) }, localAvailability: { nil },
-            localRespond: { _, _, output in await output("Hors ligne") }, monitorConnectivity: false))
+            localRespond: { _, _, output in await output("Hors ligne") }, monitorConnectivity: false,
+            summarizeTitle: { _, _ in throw CancellationError() })
+        services.memoryReviewDelay = { throw CancellationError() }
+        let manager = ConversationManager(services: services)
         await manager.restore(loadRemoteModels: false)
+        await fulfillment(of: [refreshEntered], timeout: 2)
         XCTAssertTrue(manager.send("Bonjour"))
-        for _ in 0..<1000 { if !manager.isStreaming { break }; await Task.yield() }
+        await fulfillment(of: [replySaved], timeout: 2)
         XCTAssertEqual(manager.current?.messages.last?.content, "Hors ligne")
         XCTAssertEqual(manager.session?.accountId, account.accountId)
+        XCTAssertEqual(manager.session?.accessToken, account.accessToken)
+        XCTAssertEqual(refreshCalls, 1)
+        // Local inference completed while automatic recovery still awaited the
+        // transport. Invalidate this fixture's owner before releasing it, so
+        // later tests cannot inherit pending recovery from an expired account.
+        manager.session = nil
+        refreshGate.release()
+        await fulfillment(of: [refreshFinished], timeout: 2)
     }
+
     func testCorruptLocalStorageCannotBeOverwrittenByNewRun() async {
         var writes = 0
         let manager = ConversationManager(services: isolatedServices(writeHistory: { _, _ in writes += 1 }, load: { nil },
@@ -268,15 +306,26 @@ import XCTest
         XCTAssertEqual(writes, 0)
     }
     func testGuestImportIsExplicitAccountScopedAndIdempotent() async throws {
-        var files: [String: Data] = [:]
-        let services = isolatedServices(writeHistory: { files[$1.lastPathComponent] = $0 }, load: { nil }, save: { _ in }, clear: {}, revoke: { _ in },
+        struct StoredHistory: Decodable { let conversations: [Conversation] }
+        let replySaved = expectation(description: "guest reply persisted")
+        var files: [String: Data] = [:], settled = false
+        var services = isolatedServices(writeHistory: { data, url in
+            files[url.lastPathComponent] = data
+            let snapshot = try JSONDecoder().decode(StoredHistory.self, from: data)
+            if !settled, snapshot.conversations.first?.messages.last?.completion == .completed {
+                settled = true; replySaved.fulfill()
+            }
+        }, load: { nil }, save: { _ in }, clear: {}, revoke: { _ in },
             readLocalHistory: { url in
                 guard let data = files[url.lastPathComponent] else { throw CocoaError(.fileReadNoSuchFile) }; return data
-            }, localAvailability: { nil }, localRespond: { _, _, output in await output("Privé") }, monitorConnectivity: false, models: { _ in [] })
+            }, localAvailability: { nil }, localRespond: { _, _, output in await output("Privé") }, monitorConnectivity: false, models: { _ in [] },
+            summarizeTitle: { _, _ in throw CancellationError() })
+        services.preserveLegacyHistory = { _, _, _ in }
+        services.memoryReviewDelay = { throw CancellationError() }
         let manager = ConversationManager(services: services)
         await manager.restore()
         XCTAssertTrue(manager.send("Message invité"))
-        for _ in 0..<1000 { if !manager.isStreaming { break }; await Task.yield() }
+        await fulfillment(of: [replySaved], timeout: 2)
         let guest = manager.conversations
         try await manager.accept(credentials("account-A"))
         XCTAssertTrue(manager.conversations.isEmpty, "Login must not silently upload guest data")
@@ -686,4 +735,10 @@ final class PublicWebFetchDeviceTests: XCTestCase {
         XCTAssertTrue(head.text.contains("Content-Type:"))
         #endif
     }
+}
+
+@MainActor private final class OfflineFixtureRefreshGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    func wait() async { await withCheckedContinuation { continuation = $0 } }
+    func release() { continuation?.resume(); continuation = nil }
 }
