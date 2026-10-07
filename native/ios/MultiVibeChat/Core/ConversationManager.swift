@@ -853,9 +853,16 @@ import Network
         try await reconcileRemote(id,auth:auth,epoch:epoch)
     }
     private func reconcileRemote(_ id: String, auth: NativeSession, epoch: UUID) async throws {
+        let restoration = restorationRevision
+        func current() throws {
+            try Task.checkCancellation()
+            guard restorationRevision == restoration, sessionRevision == epoch,
+                  session?.accountId == auth.accountId else { throw CancellationError() }
+        }
+        try current()
         guard let captured = remoteHermes[id], captured.accountId == auth.accountId else { return }
         for request in captured.requests {
-            try Task.checkCancellation()
+            try current()
             guard sessionRevision == epoch, session?.accountId == auth.accountId, remoteHermes[id] != nil else { throw CancellationError() }
             guard let object = cloudAgentState?.objects[id], !object.deleted, object.heads.count == 1 else { throw APIError.server(409,"hermes_session_conflict_or_missing") }
             let input = request.input
@@ -863,6 +870,7 @@ import Network
             var run: CloudHermesRun
             do { run = try await services.hermesRead(auth.accountId,input.runId,auth.accessToken,false) }
             catch APIError.server(let status, _) where status == 404 {
+                try current()
                 guard remoteHermes[id]?.results[input.runId] == nil, let state = cloudAgentState,
                     let object = state.objects[id], !object.deleted, object.heads == request.sessionHeads else { throw APIError.server(409,"hermes_remote_request_conflict") }
                 if remoteHermes[id]?.cancellations.contains(input.runId) == true {
@@ -873,14 +881,17 @@ import Network
                     continue
                 }
                 let consent = try await services.hermesConsent(auth.accessToken)
+                try current()
                 guard sessionRevision == epoch, consent.accountId == auth.accountId, consent.cloudEnabled else { throw APIError.server(403,"agent_cloud_consent_required") }
                 run = try await services.hermesCreate(auth.accountId,input,auth.accessToken)
             }
+            try current()
             guard sessionRevision == epoch, session?.accountId == auth.accountId, var live = remoteHermes[id], live.accountId == auth.accountId,
                 run.runId == input.runId, run.sessionId == id, run.branchId == input.branchId else { throw CancellationError() }
             if let result = run.result { try RemoteHermesSession.validateHistory(result.history) }
             if live.cancellations.contains(input.runId) {
                 run = try await services.hermesRead(auth.accountId,input.runId,auth.accessToken,true)
+                try current()
                 guard sessionRevision == epoch, session?.accountId == auth.accountId, remoteHermes[id] != nil,
                     run.runId == input.runId, run.sessionId == id, run.branchId == input.branchId else { throw CancellationError() }
                 live.cancellations.remove(input.runId)
@@ -890,14 +901,21 @@ import Network
         }
     }
     func recoverRemoteHermes() async {
-        guard !remoteHermesBusy, !remoteHermes.isEmpty, session != nil else { return }
+        guard !isRestoring, storageLoaded, !remoteHermesBusy, !remoteHermes.isEmpty, session != nil else { return }
         remoteHermesBusy = true; let epoch = sessionRevision
-        defer { if sessionRevision == epoch { remoteHermesBusy = false } }
+        let restoration = restorationRevision, account = session?.accountId
+        let current = { self.sessionRevision == epoch && self.restorationRevision == restoration && self.session?.accountId == account && !Task.isCancelled }
+        defer { if current() { remoteHermesBusy = false } }
         do {
             let auth = try await validSession()
-            for id in remoteHermes.keys.sorted() { try await reconcileRemote(id,auth:auth,epoch:epoch) }
+            guard current() else { return }
+            for id in remoteHermes.keys.sorted() {
+                guard current() else { return }
+                try await reconcileRemote(id,auth:auth,epoch:epoch)
+            }
+            guard current() else { return }
             remoteHermesError = nil
-        } catch { if sessionRevision == epoch { remoteHermesError = error.localizedDescription } }
+        } catch { if current() { remoteHermesError = error.localizedDescription } }
     }
     func cancelRemoteHermes(sessionId: String, runId: String) async throws {
         guard !remoteHermesBusy, var local = remoteHermes[sessionId], local.accountId == session?.accountId,
@@ -969,46 +987,50 @@ import Network
         guard !isRestoring, storageLoaded, !isStreaming, session != nil else { return }
         if let task = cloudHermesRestoreTask { await task.value; return }
         let revision = sessionRevision
+        let restoration = restorationRevision, account = session?.accountId
         cloudHermesRecoveryRetryable = false
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 var auth = try await validSession()
+                guard !Task.isCancelled, restorationRevision == restoration, sessionRevision == revision, session?.accountId == account else { return }
                 let deadline = Date().addingTimeInterval(9 * 60)
                 for (id,saved) in cloudHermesBindings where saved.accountId == auth.accountId && saved.pending != nil {
-                    guard sessionRevision == revision, session?.accountId == auth.accountId, !isStreaming else { return }
+                    guard !Task.isCancelled, restorationRevision == restoration, sessionRevision == revision, session?.accountId == auth.accountId, !isStreaming else { return }
                     guard let pending = saved.pending else { continue }
                     do {
                         var result = try await services.hermesRead(auth.accountId,pending.runId,auth.accessToken,false)
+                        guard !Task.isCancelled, restorationRevision == restoration, sessionRevision == revision, session?.accountId == account else { return }
                         while ["queued","running","waiting_device"].contains(result.state) {
-                            guard !Task.isCancelled, sessionRevision == revision, session?.accountId == auth.accountId, !isStreaming else { return }
+                            guard !Task.isCancelled, restorationRevision == restoration, sessionRevision == revision, session?.accountId == auth.accountId, !isStreaming else { return }
                             guard Date() < deadline else { throw APIError.server(409,"hermes_recovery_pending") }
                             guard cloudHermesBindings[id]?.pending?.runId == pending.runId,
                                 cloudHermesStatus[id] != "cancelled", cloudHermesStatus[id] != "completed" else { break }
                             cloudHermesStatus[id] = result.state
                             try await services.hermesPollDelay()
+                            guard !Task.isCancelled, restorationRevision == restoration, sessionRevision == revision, session?.accountId == account else { return }
                             auth = try await validSession()
-                            guard sessionRevision == revision, auth.accountId == saved.accountId else { return }
+                            guard !Task.isCancelled, restorationRevision == restoration, sessionRevision == revision, auth.accountId == saved.accountId else { return }
                             result = try await services.hermesRead(auth.accountId,pending.runId,auth.accessToken,false)
                         }
-                        guard !Task.isCancelled, sessionRevision == revision, session?.accountId == auth.accountId, !isStreaming else { return }
+                        guard !Task.isCancelled, restorationRevision == restoration, sessionRevision == revision, session?.accountId == auth.accountId, !isStreaming else { return }
                         guard cloudHermesBindings[id]?.pending?.runId == pending.runId else { continue }
                         try applyCloudHermesRecovery(result, conversation:id, binding:saved)
                     } catch {
-                        guard sessionRevision == revision, session?.accountId == auth.accountId else { return }
+                        guard !Task.isCancelled, restorationRevision == restoration, sessionRevision == revision, session?.accountId == auth.accountId else { return }
                         guard cloudHermesBindings[id]?.pending?.runId == pending.runId else { continue }
                         cloudHermesRecoveryRetryable = cloudHermesRecoveryRetryable || Self.temporaryCloudHermesRecoveryFailure(error)
                         cloudHermesStatus[id] = "recovery_unavailable"
                         self.error = "Impossible de vérifier l’exécution Hermes. Aucun nouveau lancement n’a été créé. " + error.localizedDescription
                     }
                 }
-            } catch { if sessionRevision == revision {
+            } catch { if !Task.isCancelled, restorationRevision == restoration, sessionRevision == revision, session?.accountId == account {
                 cloudHermesRecoveryRetryable = Self.temporaryCloudHermesRecoveryFailure(error)
                 self.error = error.localizedDescription
             } }
         }
         cloudHermesRestoreTask = task; await task.value
-        if sessionRevision == revision {
+        if !Task.isCancelled, restorationRevision == restoration, sessionRevision == revision, session?.accountId == account {
             cloudHermesRestoreTask = nil
             if cloudHermesRecoveryRetryable { scheduleCloudHermesRecoveryRetry() }
         }
@@ -1297,6 +1319,12 @@ import Network
         let capturedAccount = session?.accountId
         let capturedSession = sessionRevision
         restorationRevision = restoration
+        // Invalidate suspended owners before clearing their journals on the same account.
+        cloudAgentSyncToken = nil; cloudAgentSyncEpoch = nil
+        cloudAgentSyncing = false; cloudAgentSyncRequested = false
+        cloudAgentRetryTask?.cancel(); cloudAgentRetryTask = nil; cloudAgentRetryOwner = nil; cloudAgentRetryable = false
+        cloudHermesRestoreTask?.cancel(); cloudHermesRestoreTask = nil
+        cancelCloudHermesRecoveryRetry()
         isRestoring = true
         let ownsRestoration = { self.restorationRevision == restoration && self.sessionRevision == capturedSession && self.session?.accountId == capturedAccount }
         defer {
