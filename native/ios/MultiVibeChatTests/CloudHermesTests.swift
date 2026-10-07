@@ -1512,4 +1512,118 @@ private actor CloudWorkspaceResponderHold {
         manager.connectivityChanged(false)
     }
 
+    func testDiscoveryReportsFamiliesAndGuestsWithoutGrantingOrExporting() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let account = UUID().uuidString.lowercased(), ledger = HermesLegacyLedger(root:root.appendingPathComponent("ledger"))
+        let journal = HermesLegacyExportJournal(root:root.appendingPathComponent("export")); try await preserve(ledger,account:account,guest:"guest-original")
+        let auth = NativeSession(accessToken:"legacy",refreshToken:"legacy",expiresAt:.distantFuture,accountId:account)
+        var writes = 0, sends = 0
+        var services = isolatedServices(load:{auth}); configure(&services,root:root,ledger:ledger,journal:journal)
+        services.hermesChanges = { after,_ in .init(accountId:account,changes:[],cursor:after,hasMore:false) }
+        services.hermesConsent = { _ in .init(accountId:account,cloudEnabled:false,revision:7,exportSources:["downloaded-model"]) }
+        services.hermesUpdateConsent = { _,_,_,_,_ in writes += 1; throw APIError.invalidResponse }
+        services.hermesMutations = { _,_,_ in sends += 1; throw APIError.invalidResponse }
+        let manager = ConversationManager(services:services); await manager.restore(loadRemoteModels:false)
+        let discovery = try await manager.discoverLegacyExports()
+        XCTAssertEqual(discovery.accountID,account); XCTAssertFalse(discovery.cloudEnabled); XCTAssertTrue(discovery.approvedSources.isEmpty)
+        XCTAssertEqual(discovery.sources.map(\.id),["legacy-native-memory","legacy-guest"])
+        XCTAssertEqual(discovery.sources.first?.count,1); XCTAssertEqual(discovery.sources.first?.guestCount,1)
+        XCTAssertEqual(discovery.sources.first?.exportableCount,1)
+        XCTAssertEqual(writes,0); XCTAssertEqual(sends,0)
+        let state = try await journal.snapshot(accountID:account); XCTAssertTrue(state.intents.isEmpty)
+        manager.connectivityChanged(false)
+    }
+    func testExplicitConsentNarrowMergePreservesOtherGrantsAndRevokesWithoutEnabling() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let account = UUID().uuidString.lowercased(), ledger = HermesLegacyLedger(root:root.appendingPathComponent("ledger"))
+        let journal = HermesLegacyExportJournal(root:root.appendingPathComponent("export")); try await preserve(ledger,account:account,guest:"guest-original")
+        let auth = NativeSession(accessToken:"legacy",refreshToken:"legacy",expiresAt:.distantFuture,accountId:account)
+        var current = CloudHermesConsent(accountId:account,cloudEnabled:false,revision:4,exportSources:["downloaded-model","legacy-native-history"])
+        var updates: [(Bool,[String])] = []
+        var services = isolatedServices(load:{auth}); configure(&services,root:root,ledger:ledger,journal:journal)
+        services.hermesChanges = { after,_ in .init(accountId:account,changes:[],cursor:after,hasMore:false) }
+        services.hermesConsent = { _ in current }
+        services.hermesUpdateConsent = { received,revision,enabled,sources,_ in
+            XCTAssertEqual(received,account); XCTAssertEqual(revision,current.revision)
+            updates.append((enabled,sources)); current = .init(accountId:account,cloudEnabled:enabled,revision:revision+1,exportSources:sources)
+            return current
+        }
+        let manager = ConversationManager(services:services); await manager.restore(loadRemoteModels:false)
+        let revoked = try await manager.setLegacyExportConsent(selectedSources:[])
+        XCTAssertFalse(revoked.cloudEnabled); XCTAssertEqual(updates[0].1,["downloaded-model"])
+        let approved = try await manager.setLegacyExportConsent(selectedSources:["legacy-native-memory","legacy-guest"])
+        XCTAssertTrue(approved.cloudEnabled)
+        XCTAssertEqual(updates[1].1,["downloaded-model","legacy-guest","legacy-native-memory"])
+        manager.connectivityChanged(false)
+    }
+    func testInvalidUnavailableGuestOnlyAndMisroutedConsentRejectBeforeUpdate() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let account = UUID().uuidString.lowercased(), ledger = HermesLegacyLedger(root:root.appendingPathComponent("ledger"))
+        let journal = HermesLegacyExportJournal(root:root.appendingPathComponent("export")); try await preserve(ledger,account:account,guest:"guest-original")
+        let auth = NativeSession(accessToken:"legacy",refreshToken:"legacy",expiresAt:.distantFuture,accountId:account)
+        var misroute = false, updates = 0
+        var services = isolatedServices(load:{auth}); configure(&services,root:root,ledger:ledger,journal:journal)
+        services.hermesChanges = { after,_ in .init(accountId:account,changes:[],cursor:after,hasMore:false) }
+        services.hermesConsent = { _ in .init(accountId:misroute ? UUID().uuidString.lowercased() : account,cloudEnabled:false,revision:1) }
+        services.hermesUpdateConsent = { _,_,_,_,_ in updates += 1; throw APIError.invalidResponse }
+        let manager = ConversationManager(services:services); await manager.restore(loadRemoteModels:false)
+        for selection in [["unknown"],["legacy-cloud-history"],["legacy-guest"],["legacy-native-memory","legacy-native-memory"]] {
+            do { _ = try await manager.setLegacyExportConsent(selectedSources:selection); XCTFail() } catch {}
+        }
+        misroute = true
+        do { _ = try await manager.setLegacyExportConsent(selectedSources:["legacy-native-memory"]); XCTFail() } catch {}
+        do { _ = try await manager.discoverLegacyExports(); XCTFail() } catch {}
+        XCTAssertEqual(updates,0); manager.connectivityChanged(false)
+    }
+    func testConsentConflictAndInvalidResponseNeverRetryOrOverwrite() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let account = UUID().uuidString.lowercased(), ledger = HermesLegacyLedger(root:root.appendingPathComponent("ledger"))
+        let journal = HermesLegacyExportJournal(root:root.appendingPathComponent("export")); try await preserve(ledger,account:account)
+        let auth = NativeSession(accessToken:"legacy",refreshToken:"legacy",expiresAt:.distantFuture,accountId:account)
+        var invalidResponse = false, updates = 0
+        var services = isolatedServices(load:{auth}); configure(&services,root:root,ledger:ledger,journal:journal)
+        services.hermesChanges = { after,_ in .init(accountId:account,changes:[],cursor:after,hasMore:false) }
+        services.hermesConsent = { _ in .init(accountId:account,cloudEnabled:false,revision:6) }
+        services.hermesUpdateConsent = { _,_,_,_,_ in
+            updates += 1
+            if !invalidResponse { throw APIError.server(409,"agent_consent_conflict") }
+            return .init(accountId:account,cloudEnabled:true,revision:7,exportSources:["legacy-native-memory","unexpected-source"])
+        }
+        let manager = ConversationManager(services:services); await manager.restore(loadRemoteModels:false)
+        do { _ = try await manager.setLegacyExportConsent(selectedSources:["legacy-native-memory"]); XCTFail() } catch {}
+        XCTAssertEqual(updates,1)
+        invalidResponse = true
+        do { _ = try await manager.setLegacyExportConsent(selectedSources:["legacy-native-memory"]); XCTFail() } catch {}
+        XCTAssertEqual(updates,2); manager.connectivityChanged(false)
+    }
+
+    func testAccountSwitchDuringConsentCASRejectsOldResponseAndSchedulesNoOldExport() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let old = UUID().uuidString.lowercased(), new = UUID().uuidString.lowercased()
+        let ledger = HermesLegacyLedger(root:root.appendingPathComponent("ledger"))
+        let journal = HermesLegacyExportJournal(root:root.appendingPathComponent("export")); try await preserve(ledger,account:old)
+        let auth = NativeSession(accessToken:"old",refreshToken:"old",expiresAt:.distantFuture,accountId:old)
+        let replacement = NativeSession(accessToken:"new",refreshToken:"new",expiresAt:.distantFuture,accountId:new)
+        var updates = 0, sends = 0
+        var manager: ConversationManager?
+        var services = isolatedServices(load:{auth}); configure(&services,root:root,ledger:ledger,journal:journal)
+        services.hermesChanges = { after,token in .init(accountId:token == "old" ? old : new,changes:[],cursor:after,hasMore:false) }
+        services.hermesConsent = { token in .init(accountId:token == "old" ? old : new,cloudEnabled:false,revision:1) }
+        services.hermesMutations = { _,_,_ in sends += 1; throw APIError.invalidResponse }
+        services.hermesUpdateConsent = { account,revision,enabled,sources,_ in
+            updates += 1; try await manager?.accept(replacement)
+            return .init(accountId:account,cloudEnabled:enabled,revision:revision+1,exportSources:sources)
+        }
+        manager = ConversationManager(services:services); await manager!.restore(loadRemoteModels:false)
+        do { _ = try await manager!.setLegacyExportConsent(selectedSources:["legacy-native-memory"]); XCTFail() } catch is CancellationError {} catch { XCTFail("Expected ownership cancellation") }
+        XCTAssertEqual(manager?.session?.accountId,new); XCTAssertEqual(updates,1); XCTAssertEqual(sends,0)
+        let state = try await journal.snapshot(accountID:old); XCTAssertTrue(state.intents.isEmpty)
+        manager?.connectivityChanged(false); manager = nil
+    }
+
 }
