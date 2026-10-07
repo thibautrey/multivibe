@@ -455,6 +455,9 @@ import XCTest
         summarizeTitle: summarizeTitle,
         monitorConnectivity: monitorConnectivity, syncDelay: syncDelay, models: models,
         lastUsedModel: lastUsedModel, rememberLastUsedModel: rememberLastUsedModel)
+    services.preserveLegacyHistory = { _, _, _ in }
+    services.legacySnapshot = { _, _ in nil }
+    services.legacyExportSnapshot = { _, account in .init(schemaVersion: 1, accountID: account) }
     services.hermesChanges = { _,_ in throw APIError.server(503,"fixture_agent_sync_unavailable") }
     services.hermesConsent = { _ in throw APIError.server(503,"fixture_agent_sync_unavailable") }
     services.hermesMutations = { _,_,_ in throw APIError.server(503,"fixture_agent_sync_unavailable") }

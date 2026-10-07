@@ -49,6 +49,9 @@ actor HermesLegacyExportJournal {
         func field(_ text: String) -> String { "\(text.utf8.count):\(text)" }
         return field(record.kind.rawValue) + field(provenance.source) + (provenance.guestOrigin.map { "value:" + field($0) } ?? "nil:") + field(record.id)
     }
+    static func mappedObjectID(record: HermesLegacyRecord, snapshot: Snapshot) throws -> String? {
+        snapshot.mappings[try identity(record)]
+    }
     private static func sources(_ source: String, guest: String?) throws -> [String] {
         let required: String
         switch source {
