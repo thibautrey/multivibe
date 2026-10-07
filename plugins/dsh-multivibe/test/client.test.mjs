@@ -11,7 +11,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve))
 
 // Pure handler/lifecycle tests. This tiny hook harness is NOT a React DOM renderer.
 function boot({ hostname = '127.0.0.1', language = 'en', fetch = async () => response(status()), locale = true, timers } = {}) {
-  const cells = [], effects = [], cleanups = [], styles = [], locales = [], disposers = []
+  const cells = [], effects = [], cleanups = [], styles = [], locales = [], disposers = [], registrations = [], navigation = []
   let cursor = 0, loaded, registration, Component, tree, panelProps, password = null, passwordRef = null, removed = false
   const React = {
     Fragment: 'fragment',
@@ -33,9 +33,10 @@ function boot({ hostname = '127.0.0.1', language = 'en', fetch = async () => res
   plugin.apply({
     effect(factory) { const dispose = factory(); if (dispose) disposers.push(dispose) },
     slots: {
-      inject(name, factory) { assert.equal(name, 'settings.plugins.tab'); const dispose = factory(); if (dispose) disposers.push(dispose) },
-      register(options, component) { registration = options; Component = component; return () => { removed = true } },
+      inject(name, factory) { assert.ok(['main', 'sidebar.panellist', 'plugins.bundle.config'].includes(name)); const dispose = factory(); if (dispose) disposers.push(dispose) },
+      register(options, component) { registrations.push({ options, component }); if (options.name === 'main') { registration = options; Component = component; } return () => { removed = true } },
     },
+    layout: { selectPanel: id => navigation.push(id) },
     ...(locale ? { locale: {
       register(namespace, dictionaries) { locales.push({ namespace, dictionaries }); return () => { locales[0].removed = true } },
       bind: () => key => locales[0]?.dictionaries[language]?.[key] || key,
@@ -77,7 +78,7 @@ function boot({ hostname = '127.0.0.1', language = 'en', fetch = async () => res
     collect(tree); return values.join(' ')
   }
   const unmount = () => { for (const cleanup of cleanups.splice(0)) cleanup?.(); passwordRef?.(null); passwordRef = null }
-  return { loaded, plugin, registration, injected, styles, locales, mount, render, nodes, input, button, change, submit, text, unmount,
+  return { loaded, plugin, registration, registrations, navigation, injected, styles, locales, mount, render, nodes, input, button, change, submit, text, unmount,
     get password() { return password }, get removed() { return removed }, dispose() { unmount(); for (const dispose of disposers.reverse()) dispose() } }
 }
 const checkboxes = harness => harness.nodes(node => node.type === 'input' && node.props.type === 'checkbox')
@@ -88,9 +89,15 @@ const plain = value => JSON.parse(JSON.stringify(value))
 test('SDK loader, slot, FR/EN dictionaries, optional locale and scoped cleanup', () => {
   const harness = boot({ language: 'fr' })
   assert.equal(harness.loaded.id, 'dsh-multivibe')
-  assert.deepEqual(Array.from(harness.plugin.inject), ['slots', 'locale'])
-  assert.equal(harness.registration.id, 'multivibe'); assert.equal(harness.registration.name, 'settings.plugins.tab')
-  assert.equal(harness.registration.label(), 'MultiVibe')
+  assert.deepEqual(Array.from(harness.plugin.inject), ['slots', 'locale', 'layout'])
+  assert.equal(harness.registration.key, 'multivibe'); assert.equal(harness.registration.name, 'main')
+  const sidebar = harness.registrations.find(row => row.options.name === 'sidebar.panellist')
+  assert.equal(sidebar.options.id, harness.registration.key); assert.equal(sidebar.options.label(), 'MultiVibe')
+  const bundle = harness.registrations.find(row => row.options.name === 'plugins.bundle.config')
+  assert.equal(bundle.options.key, 'dsh-multivibe')
+  const launcher = bundle.component(bundle.options.inject())
+  launcher.children.find(node => node.type === 'button').props.onClick()
+  assert.deepEqual(harness.navigation, ['multivibe'])
   assert.ok(harness.locales[0].dictionaries.fr.connect); assert.ok(harness.locales[0].dictionaries.en.connect)
   harness.dispose()
   assert.equal(harness.styles[0].removed, true); assert.equal(harness.locales[0].removed, true); assert.equal(harness.removed, true)
@@ -266,3 +273,15 @@ test('multiple provider namespaces require an explicit choice', async () => {
   assert.equal(connects, 0); assert.ok(harness.text().includes('NAMESPACE'))
   harness.change('settingsNs', 'b'); harness.submit(); await flush(); harness.render(); assert.equal(connects, 1); harness.dispose()
 })
+
+ test('existing manual providers are visible without claiming a managed connection or leaking a key', async () => {
+  const harness = boot()
+  await harness.mount(async () => status({ existingProviders: [{ providerId: 'multivibe', settingsNs: 'models-runtime', displayName: 'My MultiVibe', baseURL: 'http://127.0.0.1:1455/v1', protocol: 'openai-completions', credentialConfigured: false, models: [{ id: 'model/manual', name: 'Manual model', contextWindow: 8192 }] }] }))
+  assert.match(harness.text(), /My MultiVibe/)
+  assert.match(harness.text(), /model\/manual/)
+  assert.match(harness.text(), /credentialMissing/)
+  assert.match(harness.text(), /disconnected/)
+  assert.equal(harness.input('providerId').props.value, 'multivibe-companion')
+  assert.equal(harness.nodes(node => node.type === 'details' && node.props.className === 'mvSetup')[0].props.open, false)
+  harness.dispose()
+ })

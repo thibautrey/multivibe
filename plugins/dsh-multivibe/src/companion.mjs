@@ -58,6 +58,31 @@ export function createCompanion(ctx, { stateKey = 'dsh-multivibe/connection', fe
     // Compare the authored override, not the live value expanded with SDK defaults.
     return formFor(connection.settingsNs).user?.providers?.[connection.providerId];
   }
+  async function configuredProviders(connection) {
+    const allowed = new Set((await namespaces()).map(item => item.settingsNs));
+    const result = [];
+    for (const form of forms()) {
+      if (!allowed.has(form.ns)) continue;
+      for (const [providerId, config] of Object.entries(form.value?.providers ?? {})) {
+        if (!config || typeof config !== 'object' || typeof config.baseURL !== 'string') continue;
+        let baseURL;
+        try { baseURL = normalizeGatewayURL(config.baseURL).baseURL; } catch { continue; }
+        const endpoint = new URL(baseURL);
+        const known = baseURL === connection?.baseURL || /multivibe/i.test(`${providerId} ${config.displayName ?? ''}`)
+          || (['localhost', '127.0.0.1', '[::1]'].includes(endpoint.hostname) && endpoint.port === '1455');
+        if (!known || connection?.settingsNs === form.ns && connection?.providerId === providerId) continue;
+        const models = (Array.isArray(config.models) ? config.models : []).slice(0, 256).filter(model => model && typeof model.id === 'string').map(model => ({
+          id: model.id.slice(0, 512), name: typeof model.name === 'string' ? model.name.slice(0, 512) : model.id.slice(0, 512),
+          ...(Number.isSafeInteger(model.contextWindow) && model.contextWindow > 0 ? { contextWindow: model.contextWindow } : {}),
+          ...(Number.isSafeInteger(model.maxTokens) && model.maxTokens > 0 ? { maxTokens: model.maxTokens } : {}),
+        }));
+        const credentialConfigured = typeof config.apiKeyEnv === 'string' && (await ctx.credentials.describe(config.apiKeyEnv)).configured === true;
+        result.push({ providerId, settingsNs: form.ns, displayName: typeof config.displayName === 'string' ? config.displayName.slice(0, 160) : providerId,
+          baseURL, protocol: ['openai-completions', 'openai-responses'].includes(config.api) ? config.api : null, credentialConfigured, models });
+      }
+    }
+    return result;
+  }
   async function status() {
     const state = await read();
     let matches = false;
@@ -71,6 +96,7 @@ export function createCompanion(ctx, { stateKey = 'dsh-multivibe/connection', fe
         protocol: state.connection.providerConfig.api, modelCount: state.connection.providerConfig.models.length, connectedAt: state.connection.connectedAt,
         modified: !matches, credentialConfigured: configured } : null,
       providers: await namespaces(),
+      existingProviders: await configuredProviders(state.connection),
       retainedCredentialRefs: state.retainedCredentialRefs ?? [],
     };
   }

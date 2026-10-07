@@ -1,6 +1,6 @@
 {
   "name": "dsh-multivibe",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Connect DSH to a MultiVibe gateway and inspect available models and connection status.",
   "type": "module",
   "license": "Apache-2.0",
@@ -9,9 +9,20 @@
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
     "./package.json": "./package.json",
-    "./cordis.patch.yml": "./cordis.patch.yml"
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
   },
-  "files": ["lib/index.js", "lib/client.js", "cordis.patch.yml", "README.md", "LICENSE"],
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "locale/en.json",
+    "locale/fr.json",
+    "icon.svg"
+  ],
   "scripts": {
     "build": "node scripts/build.mjs",
     "test": "node --test test/*.test.mjs",
@@ -23,17 +34,38 @@
     "directory": "plugins/dsh-multivibe"
   },
   "homepage": "https://github.com/thibautrey/multivibe/tree/main/plugins/dsh-multivibe",
-  "bugs": { "url": "https://github.com/thibautrey/multivibe/issues" },
-  "keywords": ["dsh-plugin", "deepseek-harness", "multivibe", "gateway", "models"],
-  "engines": { "node": ">=22.0.0" },
-  "publishConfig": { "access": "public" },
+  "bugs": {
+    "url": "https://github.com/thibautrey/multivibe/issues"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "multivibe",
+    "gateway",
+    "models"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "dsh": {
     "manifestVersion": 1,
-    "engines": { "dsh": "^0.2.0-rc.2" },
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "engines": {
+      "dsh": "^0.2.0-rc.2"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
-      "inject": ["@deepseek-ai/dsh-client-locale", "@deepseek-ai/dsh-client-ui-settings-plugins"]
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
     }
   },
   "peerDependencies": {
@@ -41,12 +73,17 @@
     "@deepseek-ai/cordis": "~4.0.4",
     "@deepseek-ai/dsh-client-connection": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-client-locale": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-client-ui-settings-plugins": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-credentials": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-llm": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-llm-pi-ai": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-settings": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-tools": "^0.2.0-rc.2"
+    "@deepseek-ai/dsh-tools": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-layout": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-plugin-manager": "^0.2.0-rc.2"
   },
-  "devDependencies": { "esbuild": "0.28.2" }
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  },
+  "icon": "./icon.svg"
 }

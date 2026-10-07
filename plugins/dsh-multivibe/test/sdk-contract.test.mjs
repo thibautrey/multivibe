@@ -111,7 +111,7 @@ test('built browser module renders with the installed React renderer', { skip: !
     navigator: { language: 'en' }, URL, AbortController, setTimeout, clearTimeout, fetch: globalThis.fetch });
   vm.runInContext(await readFile(new URL('../lib/client.js', import.meta.url), 'utf8'), context);
   const plugin = module.factory(name => { assert.equal(name, 'react'); return react; });
-  plugin.apply({ effect: callback => callback(), slots: { inject: (_name, callback) => callback(), register: (spec, component) => { Component = component; props = spec.inject(); } } });
+  plugin.apply({ layout: { selectPanel() {} }, effect: callback => callback(), slots: { inject: (_name, callback) => callback(), register: (spec, component) => { if (spec.name === 'main') { Component = component; props = spec.inject(); } } } });
   const html = renderToStaticMarkup(react.createElement(Component, props));
   assert.match(html, /MultiVibe/);
   assert.match(html, /data-testid="multivibe-panel"/);

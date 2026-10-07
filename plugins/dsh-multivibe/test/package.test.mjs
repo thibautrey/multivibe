@@ -23,7 +23,9 @@ test('distribution contains the native loader factory and external Host SDK impo
   const client = await readFile(new URL('lib/client.js', root), 'utf8');
   const host = await readFile(new URL('lib/index.js', root), 'utf8');
   assert.match(client, /__ModuleLoader__\.load/);
-  assert.match(client, /settings\.plugins\.tab/);
+  assert.match(client, /sidebar\.panellist/);
+  assert.match(client, /plugins\.bundle\.config/);
+  assert.doesNotMatch(client, /settings\.plugins\.tab/);
   assert.match(host, /from "@deepseek-ai\/dsh-tools"/);
   assert.match(host, /from "@deepseek-ai\/dsh-credentials"/);
   assert.doesNotMatch(host, /process\.env\.(?:ADMIN_TOKEN|PROXY_API_KEY)/);

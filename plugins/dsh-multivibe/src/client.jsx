@@ -4,14 +4,16 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react')
     const h = React.createElement
-    const NS = 'settings.multivibe'
+    const NS = 'multivibe'
+    const PANEL_ID = 'multivibe'
     const PAGE_SIZE = 50
     const MAX_SELECTED = 256
     const messages = {
       fr: {
         title: 'MultiVibe', description: 'Connectez votre gateway aux modèles de DSH, sans partager de jeton administrateur.',
+        purpose: 'Utilisez les modèles de MultiVibe dans vos conversations DSH. Ce panneau affiche votre configuration et vous permet de connecter une gateway.', existing: 'Fournisseurs MultiVibe configurés dans DSH', existingHint: 'Ces fournisseurs existent déjà, indépendamment du plugin. La configuration affichée ne prouve pas que la gateway répond. Sélectionnez leur modèle dans une conversation DSH.', configured: 'Modèles configurés', credential: 'Clé disponible dans DSH', credentialMissing: 'Clé absente du processus DSH', setup: 'Configurer une connexion gérée', openPanel: 'Ouvrir le panneau MultiVibe', pluginActive: 'Plugin actif', configuration: 'Connexion gérée par le plugin',
         loading: 'Chargement…', working: 'Opération en cours…', refresh: 'Actualiser l’état',
-        connected: 'Connecté', disconnected: 'Non connecté', provider: 'Identifiant du fournisseur',
+        connected: 'Connexion gérée active', disconnected: 'Aucune connexion gérée', provider: 'Identifiant du fournisseur',
         namespace: 'Configuration DSH', chooseNamespace: 'Choisir une configuration', baseURL: 'URL de la gateway',
         apiKey: 'Clé API proxy dédiée à DSH', keyHint: 'La clé reste dans ce formulaire jusqu’à la connexion. Elle n’est jamais ajoutée à une URL.',
         clearKey: 'Effacer la clé', protocol: 'Protocole', discover: 'Découvrir les modèles', connect: 'Connecter MultiVibe',
@@ -47,8 +49,9 @@ window.__ModuleLoader__.load({
       },
       en: {
         title: 'MultiVibe', description: 'Connect your gateway to DSH models without sharing an administrator token.',
+        purpose: 'Use MultiVibe models in your DSH conversations. This panel shows your configuration and lets you connect a gateway.', existing: 'MultiVibe providers configured in DSH', existingHint: 'These providers already exist independently of the plugin. Displayed configuration does not prove the gateway is responding. Select their model in a DSH conversation.', configured: 'Configured models', credential: 'Key available in DSH', credentialMissing: 'Key absent from the DSH process', setup: 'Set up a managed connection', openPanel: 'Open MultiVibe panel', pluginActive: 'Plugin active', configuration: 'Connection managed by this plugin',
         loading: 'Loading…', working: 'Operation in progress…', refresh: 'Refresh status',
-        connected: 'Connected', disconnected: 'Not connected', provider: 'Provider ID',
+        connected: 'Managed connection active', disconnected: 'No managed connection', provider: 'Provider ID',
         namespace: 'DSH configuration', chooseNamespace: 'Choose a configuration', baseURL: 'Gateway URL',
         apiKey: 'Dedicated DSH proxy API key', keyHint: 'The key stays in this form until connection succeeds. It is never added to a URL.',
         clearKey: 'Clear key', protocol: 'Protocol', discover: 'Discover models', connect: 'Connect MultiVibe',
@@ -84,8 +87,8 @@ window.__ModuleLoader__.load({
       },
     }
     const css = `
-      .mvDsh{max-width:860px;padding:20px;color:var(--dsw-alias-label-primary,inherit);font-size:14px;line-height:1.5}
-      .mvDsh h2,.mvDsh h3{margin:0 0 8px}.mvDsh p{margin:8px 0}.mvDsh small,.mvDsh .mvHint{color:var(--dsw-alias-label-tertiary,inherit)}
+      .mvDsh{box-sizing:border-box;width:100%;height:100%;overflow:auto;max-width:1040px;margin:0 auto;padding:calc(var(--dsh-frame-top-clearance,0px) + 20px) 24px 28px;color:var(--dsw-alias-label-primary,inherit);font-size:14px;line-height:1.5}
+      .mvDsh .mvProvider{padding:16px;border:1px solid var(--dsw-alias-border-l4,#888);border-radius:12px;margin:12px 0}.mvDsh .mvSetup{margin-top:24px}.mvDsh summary{cursor:pointer;font-weight:600}.mvDsh code{overflow-wrap:anywhere}.mvDsh button:focus-visible,.mvDsh summary:focus-visible{outline:2px solid #6758d6;outline-offset:3px}.mvDsh h2,.mvDsh h3{margin:0 0 8px}.mvDsh p{margin:8px 0}.mvDsh small,.mvDsh .mvHint{color:var(--dsw-alias-label-tertiary,inherit)}
       .mvDsh fieldset{border:0;padding:0;margin:0;min-width:0}.mvDsh .mvFields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
       .mvDsh label{display:flex;flex-direction:column;gap:5px}.mvDsh input:not([type=checkbox]),.mvDsh select{box-sizing:border-box;width:100%;min-width:0;padding:8px;border:1px solid var(--dsw-alias-border-l4,#888);border-radius:8px;color:inherit;background:var(--dsw-alias-bg-layer-3,transparent);font:inherit}
       .mvDsh .mvActions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:14px 0}.mvDsh button,.mvDsh .mvDashboard{padding:7px 12px;border:1px solid var(--dsw-alias-border-l4,#888);border-radius:8px;font:inherit;color:inherit;background:var(--dsw-alias-bg-layer-3,transparent);cursor:pointer}
@@ -114,7 +117,7 @@ window.__ModuleLoader__.load({
     function readStatus(value) {
       if (!value || value.revision == null || typeof value.connected !== 'boolean' || typeof value.pending !== 'boolean' || !Array.isArray(value.providers)) throw apiError('RESPONSE')
       if (value.connected && (!value.connection || typeof value.connection.providerId !== 'string' || typeof value.connection.baseURL !== 'string')) throw apiError('RESPONSE')
-      return { ...value, providers: value.providers.filter(provider => provider && typeof provider.settingsNs === 'string' && provider.settingsNs) }
+      return { ...value, existingProviders: Array.isArray(value.existingProviders) ? value.existingProviders.filter(provider => provider && typeof provider.providerId === 'string' && typeof provider.baseURL === 'string' && Array.isArray(provider.models)) : [], providers: value.providers.filter(provider => provider && typeof provider.settingsNs === 'string' && provider.settingsNs) }
     }
     const positiveInteger = value => (typeof value === 'number' || typeof value === 'string') && Number.isSafeInteger(Number(value)) && Number(value) > 0 && String(value).trim() !== ''
     function readCatalog(value) {
@@ -196,6 +199,7 @@ window.__ModuleLoader__.load({
       const invalidateCatalog = () => { setModels([]); setSelectedIds([]); setCapacities({}); setDiscovered(false); setPage(0); setNote(''); setError('') }
       const acceptStatus = next => {
         setStatus(next)
+        setProviderId(previous => !next.connection && next.existingProviders.some(provider => provider.providerId === previous) ? 'multivibe-companion' : previous)
         setSettingsNs(previous => next.providers.some(provider => provider.settingsNs === previous) ? previous : next.providers.length === 1 ? next.providers[0].settingsNs : '')
         setConfirmDisconnect(false)
       }
@@ -301,6 +305,18 @@ window.__ModuleLoader__.load({
         !local && h('p', { className: 'mvAlert' }, t('remote')),
         h('div', { className: 'mvActions' }, h('strong', null, status ? t(status?.connected ? 'connected' : 'disconnected') : t(busy ? 'loading' : 'stale')),
           h('button', { type: 'button', disabled: Boolean(busy), onClick: reloadStatus }, t('refresh'))),
+        h('p', { className: 'mvHint' }, t('purpose')),
+        status && h('p', { role: 'status' }, t('pluginActive')),
+        status?.existingProviders.length > 0 && h('section', { 'aria-label': t('existing') },
+          h('h3', null, t('existing')), h('p', { className: 'mvHint' }, t('existingHint')),
+          status.existingProviders.map(provider => h('article', { className: 'mvProvider', key: `${provider.settingsNs}:${provider.providerId}` },
+            h('h3', null, provider.displayName || provider.providerId), h('code', null, provider.baseURL),
+            h('p', null, `${provider.protocol || '—'} · ${provider.models.length} ${t('configured')}`),
+            h('p', { className: 'mvHint' }, t(provider.credentialConfigured ? 'credential' : 'credentialMissing')),
+            h('details', null, h('summary', null, t('models')), h('ul', null, provider.models.map(model => h('li', { key: model.id },
+              h('strong', null, model.name || model.id), ' · ', h('code', null, model.id),
+              model.contextWindow && ` · ${t('context')}: ${model.contextWindow}`, model.maxTokens && ` · ${t('output')}: ${model.maxTokens}`))))))),
+        h('h3', null, t('configuration')),
         status?.pending && h('div', { className: 'mvAlert', role: 'alert' }, h('p', null, t('pending')),
           h('button', { type: 'button', disabled: !local || Boolean(busy), onClick: () => mutate('recover', 'recovered') }, t('recover'))),
         status?.connection && h(React.Fragment, null,
@@ -322,7 +338,7 @@ window.__ModuleLoader__.load({
               h('button', { type: 'button', disabled: Boolean(busy), onClick: () => setConfirmDisconnect(false) }, t('cancel'))))),
         Array.isArray(status?.retainedCredentialRefs) && status.retainedCredentialRefs.length > 0 && h('details', { className: 'mvAlert' },
           h('summary', null, t('retainedKeys')), h('ul', null, status.retainedCredentialRefs.filter(ref => typeof ref === 'string' && /^MULTIVIBE_DSH_[A-F0-9]{32}$/.test(ref)).map(ref => h('li', { key: ref }, h('code', null, ref))))),
-        status && !status.connection && h('form', { onSubmit: connect },
+        status && !status.connection && h('details', { className: 'mvSetup', open: status.existingProviders.length === 0 }, h('summary', null, t('setup')), h('form', { onSubmit: connect },
           h('fieldset', { disabled: !writable }, h('div', { className: 'mvFields' },
             field('baseURL', { name: 'baseURL', type: 'url', required: true, value: baseURL, autoComplete: 'off', spellCheck: false, onChange: event => { setBaseURL(event.target.value); invalidateCatalog() } }),
             field('provider', { name: 'providerId', value: providerId, required: true, maxLength: 64, autoComplete: 'off', spellCheck: false, onChange: event => { setProviderId(event.target.value); setError('') } }),
@@ -336,7 +352,7 @@ window.__ModuleLoader__.load({
             h('button', { type: 'button', disabled: !hasKey || !baseURL, onClick: discover }, t('discover'))),
           !discovered && h('p', { className: 'mvHint' }, t('discoverHint')),
           discovered && h('p', { className: 'mvHint' }, t('capacityHint')),
-          h('button', { className: 'mvPrimary', type: 'submit', disabled: !discovered || !hasKey || !selectedIds.length || !settingsNs }, t('connect')))),
+          h('button', { className: 'mvPrimary', type: 'submit', disabled: !discovered || !hasKey || !selectedIds.length || !settingsNs }, t('connect'))))),
         (discovered || status?.connected && models.length > 0) && h('div', { className: 'mvModels' },
           h('h3', null, t('models'), !status?.connected && ` · ${selectedIds.length}/${MAX_SELECTED} ${t('selected')}`),
           !models.length && h('p', { role: 'status' }, t('empty')),
@@ -363,7 +379,7 @@ window.__ModuleLoader__.load({
         error && h('p', { className: 'mvError', role: 'alert' }, t(error)))
     }
     return {
-      inject: ['slots', 'locale'],
+      inject: ['slots', 'locale', 'layout'],
       apply(ctx) {
         const fallback = key => {
           const language = String(document.documentElement?.lang || navigator.language || 'en').toLowerCase().startsWith('fr') ? 'fr' : 'en'
@@ -381,10 +397,21 @@ window.__ModuleLoader__.load({
           document.head.appendChild(style)
           return () => style.remove()
         }, 'multivibe styles')
-        ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
-          name: 'settings.plugins.tab', id: 'multivibe', label: () => t('title'),
-          ...(ctx.locale ? { locale: NS } : {}), inject: () => ({ t, callApi }),
+        // Public global-panel contract: the sidebar id addresses the main key.
+        ctx.slots.inject('main', () => ctx.slots.register({
+          name: 'main', key: PANEL_ID, locale: NS, inject: () => ({ t, callApi }),
         }, MultivibePanel))
+        ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+          name: 'sidebar.panellist', id: PANEL_ID, order: 30, label: () => t('title'), locale: NS,
+        }, ({ size = 16 }) => h('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', 'aria-hidden': true },
+          h('path', { d: 'M4 19V5l8 10 8-10v14', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' }))))
+        // Configuration lives on the installed bundle's detail page. A launcher
+        // selects the one global panel instead of mounting a second keyed form.
+        ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
+          name: 'plugins.bundle.config', key: 'dsh-multivibe', locale: NS,
+          inject: () => ({ t, open: () => ctx.layout.selectPanel(PANEL_ID) }),
+        }, ({ t, open }) => h('div', { className: 'mvLauncher' }, h('p', null, t('purpose')),
+          h('button', { type: 'button', onClick: open }, t('openPanel')))))
       },
     }
   },
