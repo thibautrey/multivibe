@@ -93,4 +93,50 @@ final class HermesLegacyExportJournalTests: XCTestCase {
         XCTAssertEqual(saved.intents[native.mutation.operationId]?.mutation, native.mutation)
     }
 
+    func testDifferentOperationDeletionWinsInBothPageOrdersAndStaysBlocked() async throws {
+        for reverse in [false, true] {
+            let root = root(); defer { try? FileManager.default.removeItem(at: root) }
+            let journal = HermesLegacyExportJournal(root: root)
+            let intent = try await journal.prepare(conversion(), accountID: account, deviceID: device, parents: [], consent: consent())
+            _ = try await journal.queue(accountID: account, operationID: intent.mutation.operationId, consent: consent())
+            let op = intent.mutation
+            let exact = CloudAgentChange(operationId: op.operationId, objectId: op.objectId, versionId: op.versionId,
+                deviceId: op.deviceId, kind: op.kind, parents: op.parents, deleted: false, value: op.value, cursor: 1, erased: false)
+            let erased = CloudAgentChange(operationId: UUID().uuidString.lowercased(), objectId: op.objectId,
+                versionId: UUID().uuidString.lowercased(), deviceId: op.deviceId, kind: op.kind,
+                parents: [op.versionId], deleted: true, value: nil, cursor: 2, erased: false)
+            let state = try await journal.reconcile(accountID: account, changes: reverse ? [erased, exact] : [exact, erased])
+            XCTAssertEqual(state.intents[op.operationId]?.phase, .blocked)
+            let restart = HermesLegacyExportJournal(root: root)
+            let stale = try await restart.reconcile(accountID: account, changes: [exact])
+            XCTAssertEqual(stale.intents[op.operationId]?.phase, .blocked)
+            XCTAssertNil(stale.intents[op.operationId]?.confirmation)
+            let receipt = CloudAgentReceipts(accountId: account, receipts: [.init(operationId: op.operationId,
+                versionId: op.versionId, cursor: 1, heads: [op.versionId], deleted: false)])
+            do { _ = try await restart.acknowledge(accountID: account, submitted: [op], reply: receipt); XCTFail() } catch {}
+        }
+    }
+    func testReceiptProofSurvivesRestartAndConflictCannotBeReset() async throws {
+        let root = root(); defer { try? FileManager.default.removeItem(at: root) }
+        let journal = HermesLegacyExportJournal(root: root)
+        let intent = try await journal.prepare(conversion(), accountID: account, deviceID: device, parents: [], consent: consent())
+        let op = intent.mutation
+        _ = try await journal.queue(accountID: account, operationID: op.operationId, consent: consent())
+        let heads = [op.versionId, UUID().uuidString.lowercased()]
+        _ = try await journal.acknowledge(accountID: account, submitted: [op], reply: .init(accountId: account,
+            receipts: [.init(operationId: op.operationId, versionId: op.versionId, cursor: 17, heads: heads, deleted: false)]))
+        let restart = HermesLegacyExportJournal(root: root)
+        let saved = try await restart.snapshot(accountID: account)
+        XCTAssertEqual(saved.intents[op.operationId]?.confirmation?.receipt?.cursor, 17)
+        XCTAssertEqual(saved.intents[op.operationId]?.confirmation?.receipt?.heads, heads)
+        let wrong = CloudAgentChange(operationId: op.operationId, objectId: UUID().uuidString.lowercased(),
+            versionId: op.versionId, deviceId: op.deviceId, kind: op.kind, parents: op.parents, deleted: false,
+            value: op.value, cursor: 17, erased: false)
+        _ = try await restart.reconcile(accountID: account, changes: [wrong])
+        let exact = CloudAgentChange(operationId: op.operationId, objectId: op.objectId, versionId: op.versionId,
+            deviceId: op.deviceId, kind: op.kind, parents: op.parents, deleted: false, value: op.value, cursor: 17, erased: false)
+        let blocked = try await restart.reconcile(accountID: account, changes: [exact])
+        XCTAssertEqual(blocked.intents[op.operationId]?.phase, .blocked)
+    }
+
 }
