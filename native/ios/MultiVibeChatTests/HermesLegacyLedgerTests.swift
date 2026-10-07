@@ -397,14 +397,98 @@ final class HermesLegacyLedgerTests: XCTestCase {
         XCTAssertTrue(manager.nativeDataReady); XCTAssertEqual(changes, 2)
     }
 
+    @MainActor private func cancellationRecoveryFixture(remote: Bool) throws -> (NativeSession, Data, CloudHermesRunInput) {
+        let id = { UUID().uuidString.lowercased() }
+        let account = id(), session = id(), branch = id(), head = id(), device = id(), conversationID = UUID()
+        let auth = NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: account)
+        let input = CloudHermesRunInput(operationId: id(), runId: id(), sessionId: session, branchId: branch,
+            model: .init(id: "fixture", source: "cloud", accessId: nil), message: "question", history: [])
+        let change = CloudAgentChange(operationId: id(), objectId: session, versionId: head, deviceId: device,
+            kind: "session", parents: [], deleted: false,
+            value: .object(["type": .string("hermes_session"), "branchId": .string(branch), "messages": .array([])]), cursor: 1, erased: false)
+        var state = CloudAgentState(accountId: account, deviceId: device)
+        state.objects[session] = .init(kind: "session", versions: [head: change], heads: [head])
+        let conversation = Conversation(id: conversationID, title: "fixture")
+        var object: [String: Any] = ["conversations": try JSONSerialization.jsonObject(with: JSONEncoder().encode([conversation])),
+            "baseline": [], "conversationIDs": [:], "messageIDs": [:],
+            "cloudAgentState": try JSONSerialization.jsonObject(with: JSONEncoder().encode(state))]
+        if remote {
+            var record = RemoteHermesSession(accountId: account, sessionId: session, branchId: branch)
+            record.requests = [.init(input: input, baseCursor: 0, sessionHeads: [head])]
+            object["remoteHermes"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode([session: record]))
+        } else {
+            var binding = CloudHermesBinding(accountId: account, conversationId: conversationID.uuidString.lowercased(),
+                sessionId: session, branchId: branch, operationId: id(), versionId: id(), deviceId: device, importApproved: true)
+            binding.pending = input
+            object["cloudHermesBindings"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode([conversationID: binding]))
+        }
+        return (auth, try JSONSerialization.data(withJSONObject: object), input)
+    }
+
+    @MainActor func testCancelledRemoteRecoveryReleasesItsOwnBusyFlag() async throws {
+        let (auth, bytes, input) = try cancellationRecoveryFixture(remote: true)
+        let entered = expectation(description: "remote recovery transport entered")
+        let gate = LegacyRestorationGate(), syncGate = LegacyRestorationGate()
+        var reads = 0
+        var services = isolatedServices(load: { auth }, readLocalHistory: { _ in bytes })
+        services.preserveLegacyHistory = { _, _, _ in }
+        services.hermesChanges = { _, _ in try await syncGate.wait(); throw CancellationError() }
+        services.hermesRead = { _, _, _, _ in
+            reads += 1
+            if reads == 1 { entered.fulfill(); try await gate.wait() }
+            return .init(runId: input.runId, sessionId: input.sessionId, branchId: input.branchId,
+                         state: "awaiting_resolution", generation: 1, result: nil)
+        }
+        let manager = ConversationManager(services: services)
+        await manager.restore(loadRemoteModels: false)
+        let pending = Task { await manager.recoverRemoteHermes() }
+        await fulfillment(of: [entered], timeout: 2)
+        pending.cancel(); gate.release(); await pending.value
+        XCTAssertFalse(manager.remoteHermesBusy); XCTAssertNil(manager.remoteHermesError)
+        await manager.recoverRemoteHermes()
+        XCTAssertEqual(reads, 2); XCTAssertFalse(manager.remoteHermesBusy)
+        syncGate.release(throwing: CancellationError())
+    }
+
+    @MainActor func testCancelledResumeCallerReleasesCompletedTaskHandle() async throws {
+        let (auth, bytes, input) = try cancellationRecoveryFixture(remote: false)
+        let entered = expectation(description: "resume transport entered")
+        let gate = LegacyRestorationGate(), syncGate = LegacyRestorationGate()
+        var reads = 0
+        var services = isolatedServices(load: { auth }, readLocalHistory: { _ in bytes })
+        services.preserveLegacyHistory = { _, _, _ in }
+        services.hermesChanges = { _, _ in try await syncGate.wait(); throw CancellationError() }
+        services.hermesRead = { _, _, _, _ in
+            reads += 1
+            if reads == 1 { entered.fulfill(); try await gate.wait() }
+            return .init(runId: input.runId, sessionId: input.sessionId, branchId: input.branchId,
+                         state: "awaiting_resolution", generation: 1, result: nil)
+        }
+        let manager = ConversationManager(services: services)
+        await manager.restore(loadRemoteModels: false)
+        let pending = Task { await manager.resumeCloudHermes() }
+        await fulfillment(of: [entered], timeout: 2)
+        pending.cancel(); gate.release(); await pending.value
+        await manager.resumeCloudHermes()
+        XCTAssertEqual(reads, 2)
+        syncGate.release(throwing: CancellationError())
+    }
+
 }
 
 @MainActor private final class LegacyRestorationGate {
     private var continuation: CheckedContinuation<Void, Error>?
+    private var released = false
+    private var releaseError: Error?
     func wait() async throws {
+        if released {
+            if let releaseError { throw releaseError }
+            return
+        }
         try await withCheckedThrowingContinuation { continuation = $0 }
     }
     func release(throwing error: Error? = nil) {
+        released = true; releaseError = error
         if let error { continuation?.resume(throwing: error) }
         else { continuation?.resume() }
         continuation = nil
