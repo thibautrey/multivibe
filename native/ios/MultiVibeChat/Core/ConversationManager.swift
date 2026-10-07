@@ -82,6 +82,11 @@ import Network
     var models: @MainActor (String) async throws -> [ModelOption] = { try await ChatAPI.shared.models(token: $0) }
     var lastUsedModel: @MainActor (String) -> String? = { LastUsedModelStore.model(for: $0) }
     var rememberLastUsedModel: @MainActor (String, String) -> Void = { LastUsedModelStore.save($0, for: $1) }
+    /// Device-only byte preservation. This does not convert records or grant Cloud consent.
+    var preserveLegacyHistory: @MainActor (Data, URL, String?) async throws -> Void = { data, source, account in
+        let root = source.deletingLastPathComponent().appendingPathComponent("hermes-legacy", isDirectory: true)
+        try await HermesLegacyLedger(root: root).archive(data, accountID: account)
+    }
 }
 
 @MainActor @Observable final class ConversationManager {
@@ -1289,9 +1294,27 @@ import Network
 
     func restore(loadRemoteModels: Bool = true) async {
         let restoration = UUID()
+        let capturedAccount = session?.accountId
+        let capturedSession = sessionRevision
         restorationRevision = restoration
         isRestoring = true
-        defer { if restorationRevision == restoration { isRestoring = false; scheduleAutomaticSync(); Task { await self.synchronizeCloudAgentState(); await self.resumeCloudHermes(); await self.recoverRemoteHermes() } } }
+        let ownsRestoration = { self.restorationRevision == restoration && self.sessionRevision == capturedSession && self.session?.accountId == capturedAccount }
+        defer {
+            if ownsRestoration() {
+                isRestoring = false
+                if storageLoaded && !Task.isCancelled {
+                    scheduleAutomaticSync()
+                    Task {
+                        guard ownsRestoration(), self.storageLoaded, !Task.isCancelled else { return }
+                        await self.synchronizeCloudAgentState()
+                        guard ownsRestoration(), self.storageLoaded, !Task.isCancelled else { return }
+                        await self.resumeCloudHermes()
+                        guard ownsRestoration(), self.storageLoaded, !Task.isCancelled else { return }
+                        await self.recoverRemoteHermes()
+                    }
+                }
+            }
+        }
         startNetworkMonitoring()
         models = [LocalModel.option] + services.downloadedModels()
         selectedModel = restoredModel(for: modelPreferenceScope, in: models) ?? LocalModel.id
@@ -1301,10 +1324,15 @@ import Network
         memoryRecords = []; memoryBaseline = []; memoryIndex = nil; memoryDraft = nil; memorySyncEnabled = false; memoryError = nil
         calendarEnabled = false; remindersEnabled = false; cloudHermesBindings = [:]; cloudAgentState=nil; pendingCloudArtifacts=[]; discoveredCloudRuns=[:]; remoteHermes=[:]; remoteHermesBusy=false; remoteHermesError=nil; cloudHermesRecoveryRun = nil
         do {
+            let capturedURL = try storageURL()
+            try Task.checkCancellation()
             let data: Data?
-            do { data = try services.readLocalHistory(storageURL()) }
+            do { data = try services.readLocalHistory(capturedURL) }
             catch CocoaError.fileReadNoSuchFile { data = nil }
             if let data {
+                try await services.preserveLegacyHistory(data, capturedURL, capturedAccount)
+                try Task.checkCancellation()
+                guard ownsRestoration() else { return }
                 if let cache = try? JSONDecoder().decode(HistoryCache.self, from: data) {
                     cloudAgentState = cache.cloudAgentState?.accountId == session?.accountId ? cache.cloudAgentState : nil
                     discoveredCloudRuns = cloudAgentState == nil ? [:] : (cache.discoveredCloudRuns ?? [:])
@@ -1331,11 +1359,19 @@ import Network
             }
             storageLoaded = true
             do {
-                memoryIndex = try services.memoryIndex(storageURL().deletingPathExtension().appendingPathExtension("memory.sqlite"))
+                memoryIndex = try services.memoryIndex(capturedURL.deletingPathExtension().appendingPathExtension("memory.sqlite"))
                 try memoryIndex?.rebuild(memoryItems)
             } catch { memoryError = MemoryError.storage.localizedDescription }
-            if loadRemoteModels && session != nil { Task { await self.reloadModels() } }
-        } catch { self.error = error.localizedDescription }
+            if loadRemoteModels && session != nil {
+                Task {
+                    guard ownsRestoration(), self.storageLoaded, !Task.isCancelled else { return }
+                    await self.reloadModels()
+                }
+            }
+        } catch {
+            guard ownsRestoration(), !Task.isCancelled, !(error is CancellationError) else { return }
+            self.error = error.localizedDescription
+        }
     }
     /// Explicit network recovery without re-reading or replacing local history.
     func refreshDownloadedModels() {
