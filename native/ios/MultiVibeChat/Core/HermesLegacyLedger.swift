@@ -112,6 +112,56 @@ actor HermesLegacyLedger {
     }
     private func location(_ scope: String) -> URL { root.appendingPathComponent(scope + ".json") }
 
+    private func archiveLocation(_ hash: String, namespace: String) throws -> URL {
+        guard hash.utf8.count == 64, hash.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+            throw HermesLegacyLedgerError.invalid
+        }
+        return root.appendingPathComponent(namespace, isDirectory: true)
+            .appendingPathComponent("raw-archives", isDirectory: true).appendingPathComponent(hash + ".raw")
+    }
+
+    /// Exact original cache bytes, independent of conversion, inference and publication.
+    /// The digest identifies immutable content within the supplied account/guest namespace.
+    @discardableResult
+    func archive(_ original: Data, accountID: String?) throws -> String {
+        transactionLock.lock(); defer { transactionLock.unlock() }
+        guard original.count <= Self.maximumBytes else { throw HermesLegacyLedgerError.tooLarge }
+        let namespace = try scope(accountID)
+        let hash = digest(original)
+        let url = try archiveLocation(hash, namespace: namespace)
+        if let existing = try readArchive(hash, namespace: namespace) {
+            guard existing == original else { throw HermesLegacyLedgerError.invalid }
+            return hash
+        }
+        let directory = url.deletingLastPathComponent()
+        var attributes: [FileAttributeKey: Any] = [.posixPermissions: 0o700]
+        #if os(iOS)
+        attributes[.protectionKey] = FileProtectionType.complete
+        #endif
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: attributes)
+        var values = URLResourceValues(); values.isExcludedFromBackup = true
+        var excluded = root; try excluded.setResourceValues(values)
+        // Only a previously absent digest path is written. Source history is never opened or modified.
+        try writeFile(original, url)
+        return hash
+    }
+
+    func archivedBytes(digest hash: String, accountID: String?) throws -> Data? {
+        transactionLock.lock(); defer { transactionLock.unlock() }
+        return try readArchive(hash, namespace: scope(accountID))
+    }
+
+    private func readArchive(_ hash: String, namespace: String) throws -> Data? {
+        let url = try archiveLocation(hash, namespace: namespace)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard size <= Self.maximumBytes else { throw HermesLegacyLedgerError.tooLarge }
+        let bytes = try Data(contentsOf: url)
+        guard bytes.count <= Self.maximumBytes else { throw HermesLegacyLedgerError.tooLarge }
+        guard digest(bytes) == hash else { throw HermesLegacyLedgerError.invalid }
+        return bytes
+    }
+
     func snapshot(accountID: String?) throws -> HermesLegacyLedgerSnapshot? {
         transactionLock.lock(); defer { transactionLock.unlock() }
         return try readSnapshot(accountID: accountID)
