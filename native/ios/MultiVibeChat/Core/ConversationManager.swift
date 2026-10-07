@@ -911,6 +911,52 @@ import Network
     private(set) var cloudHermesRecoveryRun: String?
     private(set) var cloudHermesStatus: [UUID:String] = [:]
     private var cloudHermesRestoreTask: Task<Void,Never>?
+    private var cloudHermesRecoveryRetryTask: Task<Void,Never>?
+    private var cloudHermesRecoveryRetryOwner: UUID?
+    private var cloudHermesRecoveryRetryable = false
+    private func cancelCloudHermesRecoveryRetry() {
+        cloudHermesRecoveryRetryTask?.cancel(); cloudHermesRecoveryRetryTask = nil
+        cloudHermesRecoveryRetryOwner = nil; cloudHermesRecoveryRetryable = false
+    }
+    private static func temporaryCloudHermesRecoveryFailure(_ error: Error) -> Bool {
+        if case APIError.server(let status, let detail) = error {
+            return status == 429 || (500...599).contains(status)
+                || (status == 409 && detail == "hermes_recovery_pending")
+                || (status == 0 && detail == "history_cache_write_failed")
+        }
+        if let transport = error as? URLError {
+            return [.timedOut, .networkConnectionLost, .notConnectedToInternet, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed].contains(transport.code)
+        }
+        return false
+    }
+    private func scheduleCloudHermesRecoveryRetry() {
+        guard cloudHermesRecoveryRetryTask == nil, cloudHermesRecoveryRetryable, online,
+            !isRestoring, let account = session?.accountId else { return }
+        let epoch = sessionRevision, owner = UUID(), delay = services.hermesSyncDelay
+        cloudHermesRecoveryRetryOwner = owner
+        cloudHermesRecoveryRetryTask = Task { [weak self] in
+            defer {
+                if self?.cloudHermesRecoveryRetryOwner == owner {
+                    self?.cloudHermesRecoveryRetryTask = nil; self?.cloudHermesRecoveryRetryOwner = nil
+                }
+            }
+            var attempt = 0
+            while !Task.isCancelled {
+                guard self?.online == true, self?.sessionRevision == epoch,
+                    self?.session?.accountId == account, self?.cloudHermesRecoveryRetryOwner == owner,
+                    self?.cloudHermesRecoveryRetryable == true else { return }
+                do { try await delay(attempt) } catch { return }
+                do {
+                    guard let self, !Task.isCancelled, online, sessionRevision == epoch,
+                        session?.accountId == account, cloudHermesRecoveryRetryOwner == owner,
+                        cloudHermesRecoveryRetryable else { return }
+                    // GET-only pending-run observation; never creates or replays an execution.
+                    await resumeCloudHermes()
+                }
+                attempt = min(5, attempt + 1)
+            }
+        }
+    }
     var currentCloudHermesAuthorized: Bool { guard let id = selection else { return false }; return cloudHermesBindings[id]?.accountId == session?.accountId && cloudHermesBindings[id]?.cloudAuthorized != false && session != nil }
     var currentCloudHermesStatus: String? { selection.flatMap { cloudHermesStatus[$0] } }
     var currentCloudHermesPending: Bool { selection.flatMap { cloudHermesBindings[$0]?.pending } != nil }
@@ -918,6 +964,7 @@ import Network
         guard !isRestoring, storageLoaded, !isStreaming, session != nil else { return }
         if let task = cloudHermesRestoreTask { await task.value; return }
         let revision = sessionRevision
+        cloudHermesRecoveryRetryable = false
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
@@ -945,14 +992,21 @@ import Network
                     } catch {
                         guard sessionRevision == revision, session?.accountId == auth.accountId else { return }
                         guard cloudHermesBindings[id]?.pending?.runId == pending.runId else { continue }
+                        cloudHermesRecoveryRetryable = cloudHermesRecoveryRetryable || Self.temporaryCloudHermesRecoveryFailure(error)
                         cloudHermesStatus[id] = "recovery_unavailable"
                         self.error = "Impossible de vérifier l’exécution Hermes. Aucun nouveau lancement n’a été créé. " + error.localizedDescription
                     }
                 }
-            } catch { if sessionRevision == revision { self.error = error.localizedDescription } }
+            } catch { if sessionRevision == revision {
+                cloudHermesRecoveryRetryable = Self.temporaryCloudHermesRecoveryFailure(error)
+                self.error = error.localizedDescription
+            } }
         }
         cloudHermesRestoreTask = task; await task.value
-        if sessionRevision == revision { cloudHermesRestoreTask = nil }
+        if sessionRevision == revision {
+            cloudHermesRestoreTask = nil
+            if cloudHermesRecoveryRetryable { scheduleCloudHermesRecoveryRetry() }
+        }
     }
     private func applyCloudHermesRecovery(_ run:CloudHermesRun, conversation id:UUID, binding saved:CloudHermesBinding) throws {
         guard let pending = saved.pending,
@@ -961,6 +1015,8 @@ import Network
             cloudHermesStatus[id] != "cancelled", cloudHermesStatus[id] != "completed",
             run.runId == pending.runId, let stableReplyID = UUID(uuidString:run.runId), run.sessionId == saved.sessionId,
             run.branchId == saved.branchId, let index = conversations.firstIndex(where:{$0.id == id}) else { throw APIError.invalidResponse }
+        let previousConversation = conversations[index], previousStatus = cloudHermesStatus[id]
+        let previousRecoveryRun = cloudHermesRecoveryRun
         var binding = current
         if run.state == "completed", let completed = run.result {
             guard let turn = binding.turnId, let userIndex = conversations[index].messages.firstIndex(where:{$0.id == turn}),
@@ -975,7 +1031,11 @@ import Network
         else if run.state == "awaiting_resolution" { cloudHermesRecoveryRun = run.runId }
         cloudHermesBindings[id] = binding
         cloudHermesStatus[id] = run.state
-        guard persist() else { throw APIError.server(0,"history_cache_write_failed") }
+        guard persist() else {
+            conversations[index] = previousConversation; cloudHermesBindings[id] = current
+            cloudHermesStatus[id] = previousStatus; cloudHermesRecoveryRun = previousRecoveryRun
+            throw APIError.server(0,"history_cache_write_failed")
+        }
     }
     func cancelPendingCloudHermes() async {
         guard let id = selection, let binding = cloudHermesBindings[id], let pending = binding.pending else { return }
@@ -1051,6 +1111,7 @@ import Network
     var session: NativeSession? {
         didSet {
             if session?.accountId != oldValue?.accountId {
+                cancelCloudHermesRecoveryRetry()
                 cloudAgentRetryTask?.cancel(); cloudAgentRetryTask = nil; cloudAgentRetryOwner = nil; cloudAgentRetryable = false
             }
             if session?.accountId != oldValue?.accountId { hermesRecovery = nil; cloudHermesRecoveryRun = nil; cloudHermesBindings = [:]; cloudAgentState=nil; pendingCloudArtifacts=[]; cloudAgentSyncing=false; discoveredCloudRuns=[:]; remoteHermes=[:]; remoteHermesBusy=false; remoteHermesError=nil; cloudHermesRestoreTask?.cancel(); cloudHermesRestoreTask = nil; cloudHermesStatus = [:]; activeCloudHermes = nil; selectedAccess = nil; requestedAccessModel = nil; accessNotice = nil }
@@ -2280,7 +2341,7 @@ import Network
         if reachable { Task { await self.synchronizeCloudAgentState(); await self.resumeCloudHermes(); await self.recoverRemoteHermes() } }
         online = reachable
         if reachable { scheduleAutomaticSync() }
-        else { syncTask?.cancel(); syncTask = nil; cloudAgentRetryTask?.cancel(); cloudAgentRetryTask = nil; cloudAgentRetryOwner = nil }
+        else { cancelCloudHermesRecoveryRetry(); cloudHermesRestoreTask?.cancel(); syncTask?.cancel(); syncTask = nil; cloudAgentRetryTask?.cancel(); cloudAgentRetryTask = nil; cloudAgentRetryOwner = nil }
     }
     private func scheduleCloudAgentRetry() {
         guard cloudAgentRetryTask == nil, online, !isRestoring, let account = session?.accountId else { return }

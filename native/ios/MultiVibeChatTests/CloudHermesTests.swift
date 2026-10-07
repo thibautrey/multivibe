@@ -221,7 +221,7 @@ final class CloudHermesTests: XCTestCase {
 }
 
 @MainActor final class CloudHermesRecoveryTests: XCTestCase {
-    private func fixture(state: String, beforeRead: @escaping @MainActor (Bool) async -> Void = { _ in }) throws -> (ConversationManager, UUID, () -> [String]) {
+    private func fixture(state: String, configure: (inout SessionServices) -> Void = { _ in }, beforeRead: @escaping @MainActor (Bool) async throws -> Void = { _ in }) throws -> (ConversationManager, UUID, () -> [String]) {
         let account = UUID().uuidString.lowercased(), conversationID = UUID(), turnID = UUID(), runID = UUID().uuidString.lowercased()
         let sessionID = UUID().uuidString.lowercased(), branchID = UUID().uuidString.lowercased()
         var conversation = Conversation(id:conversationID,model:"vendor/model",messages:[ChatMessage(id:turnID,role:"user",content:"question"),ChatMessage(role:"assistant",content:"",completion:.stopped)])
@@ -235,16 +235,108 @@ final class CloudHermesTests: XCTestCase {
         let auth = NativeSession(accessToken:"fixture",refreshToken:"fixture",expiresAt:.distantFuture,accountId:account)
         var calls:[String] = []
         var services = isolatedServices(load:{auth},readLocalHistory:{_ in data})
+        // Keep journal sync independent of the pending-run recovery under test.
+        services.hermesChanges = { cursor,_ in .init(accountId:account,changes:[],cursor:cursor,hasMore:false) }
+        services.hermesConsent = { _ in .init(accountId:account,cloudEnabled:false,revision:0) }
         services.hermesCreate = {_,_,_ in calls.append("POST");throw APIError.invalidResponse}
         services.hermesEnable = {_,_,_ in calls.append("CONSENT");throw APIError.invalidResponse}
         services.hermesRead = {receivedAccount,receivedRun,_,cancel in
             XCTAssertEqual(receivedAccount,account);XCTAssertEqual(receivedRun,runID)
             calls.append(cancel ? "CANCEL" : "GET")
-            await beforeRead(cancel)
+            try await beforeRead(cancel)
             return CloudHermesRun(runId:runID,sessionId:sessionID,branchId:branchID,state:cancel ? "cancelled" : state,generation:2,
                 result:state == "completed" ? .init(response:"recovered answer",history:[.object(["role":.string("tool"),"content":.string("preserved hidden result")])]) : nil)
         }
+        configure(&services)
         return (ConversationManager(services:services),conversationID,{calls})
+    }
+    func testTemporaryReadRetriesWithoutAnotherConnectivityEventOrExecution() async throws {
+        var reads = 0, retries = 0
+        let (manager,id,calls) = try fixture(state:"completed",configure:{ services in
+            services.hermesSyncDelay = { _ in await MainActor.run { retries += 1 }; await Task.yield() }
+        },beforeRead:{ _ in
+            reads += 1
+            if reads <= 3 { throw URLError(.networkConnectionLost) }
+        })
+        await manager.restore(loadRemoteModels:false); manager.selection = id
+        manager.connectivityChanged(true)
+        for _ in 0..<1000 {
+            if !manager.currentCloudHermesPending { break }
+            await Task.yield()
+        }
+        XCTAssertGreaterThanOrEqual(retries,1)
+        XCTAssertEqual(reads,4)
+        XCTAssertFalse(manager.currentCloudHermesPending)
+        XCTAssertEqual(manager.current?.messages.last?.content,"recovered answer")
+        XCTAssertFalse(calls().contains("POST")); XCTAssertFalse(calls().contains("CONSENT"))
+        manager.connectivityChanged(false)
+    }
+    func testPermanentRecoveryFailureDoesNotScheduleBackoff() async throws {
+        var retries = 0
+        let (manager,id,calls) = try fixture(state:"completed",configure:{ services in
+            services.hermesSyncDelay = { _ in await MainActor.run { retries += 1 } }
+        },beforeRead:{ _ in throw APIError.server(409,"hermes_history_conflict") })
+        await manager.restore(loadRemoteModels:false); manager.selection = id
+        manager.connectivityChanged(true)
+        await manager.resumeCloudHermes()
+        for _ in 0..<100 { await Task.yield() }
+        XCTAssertEqual(retries,0)
+        XCTAssertTrue(manager.currentCloudHermesPending)
+        XCTAssertFalse(calls().contains("POST"))
+        manager.connectivityChanged(false)
+    }
+    func testFailedRecoveryPersistenceRestoresPendingAndReplyBeforeRetry() async throws {
+        var failWrites = false, injectFailure = true
+        let (manager,id,calls) = try fixture(state:"completed",configure:{ services in
+            services.writeHistory = { _,_ in if failWrites { throw CocoaError(.fileWriteOutOfSpace) } }
+        },beforeRead:{ _ in if injectFailure { failWrites = true } })
+        await manager.restore(loadRemoteModels:false); manager.selection = id
+        await manager.resumeCloudHermes()
+        XCTAssertTrue(manager.currentCloudHermesPending)
+        XCTAssertEqual(manager.current?.messages.count,2)
+        XCTAssertEqual(manager.current?.messages.last?.content,"")
+        XCTAssertEqual(manager.current?.messages.last?.completion,.stopped)
+        XCTAssertNotEqual(manager.currentCloudHermesStatus,"completed")
+        injectFailure = false; failWrites = false
+        await manager.resumeCloudHermes(); await manager.resumeCloudHermes()
+        XCTAssertFalse(manager.currentCloudHermesPending)
+        XCTAssertEqual(manager.current?.messages.count,2)
+        XCTAssertEqual(manager.current?.messages.last?.content,"recovered answer")
+        XCTAssertFalse(calls().contains("POST"))
+    }
+    func testOfflineCancelsSleepingRecoveryRetryBeforeDispatch() async throws {
+        let gate = CloudHermesRetryReleaseGate()
+        var reads = 0, sleeping = false
+        let (manager,id,_) = try fixture(state:"completed",configure:{ services in
+            services.hermesSyncDelay = { _ in await MainActor.run { sleeping = true }; await gate.wait() }
+        },beforeRead:{ _ in reads += 1; throw URLError(.timedOut) })
+        await manager.restore(loadRemoteModels:false); manager.selection = id
+        manager.connectivityChanged(true)
+        for _ in 0..<1000 { if sleeping { break }; await Task.yield() }
+        XCTAssertTrue(sleeping)
+        manager.connectivityChanged(false)
+        let before = reads
+        await gate.release()
+        for _ in 0..<100 { await Task.yield() }
+        XCTAssertEqual(reads,before)
+        XCTAssertTrue(manager.currentCloudHermesPending)
+    }
+    func testAccountReplacementCancelsSleepingRecoveryRetry() async throws {
+        let gate = CloudHermesRetryReleaseGate()
+        var reads = 0, sleeping = false
+        let (manager,id,_) = try fixture(state:"completed",configure:{ services in
+            services.hermesSyncDelay = { _ in await MainActor.run { sleeping = true }; await gate.wait() }
+        },beforeRead:{ _ in reads += 1; throw URLError(.timedOut) })
+        await manager.restore(loadRemoteModels:false); manager.selection = id
+        manager.connectivityChanged(true)
+        for _ in 0..<1000 { if sleeping { break }; await Task.yield() }
+        XCTAssertTrue(sleeping)
+        manager.session = NativeSession(accessToken:"replacement",refreshToken:"replacement",expiresAt:.distantFuture,accountId:UUID().uuidString.lowercased())
+        let before = reads
+        await gate.release()
+        for _ in 0..<100 { await Task.yield() }
+        XCTAssertEqual(reads,before)
+        manager.connectivityChanged(false)
     }
     func testRestoreReadsSameRunAndAppliesCompletedReplyOnceWithoutCreatingOrGrantingConsent() async throws {
         let (manager,id,calls) = try fixture(state:"completed")
