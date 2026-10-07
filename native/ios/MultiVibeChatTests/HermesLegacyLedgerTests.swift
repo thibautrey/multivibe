@@ -264,4 +264,103 @@ final class HermesLegacyLedgerTests: XCTestCase {
         XCTAssertNoThrow(try HermesLegacyJSONScanner.scan(Data("[]".utf8), maximumNodes: 100_000))
     }
 
+    @MainActor private func restorationBytes(title: String) throws -> Data {
+        let conversation = Conversation(title: title, messages: [.init(role: "assistant", content: "partial", completion: .streaming)])
+        let encoded = try JSONEncoder().encode([conversation])
+        return Data(("{\"future\": {\"unknown\": [1,2]}, \"conversations\":" + String(decoding: encoded, as: UTF8.self) + ",\"baseline\":[],\"conversationIDs\":{},\"messageIDs\":{}}\n").utf8)
+    }
+
+    @MainActor func testRestorePreservesOriginalBytesBeforeStreamingMutation() async throws {
+        let bytes = try restorationBytes(title: "original")
+        var preserved: Data?, readURL: URL?, preservedURL: URL?, memoryURL: URL?
+        var services = isolatedServices(readLocalHistory: { url in readURL = url; return bytes })
+        services.preserveLegacyHistory = { data, url, account in
+            preserved = data; preservedURL = url; XCTAssertNil(account)
+            XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("streaming"))
+        }
+        services.memoryIndex = { url in memoryURL = url; return try MemoryIndex(url: nil) }
+        let manager = ConversationManager(services: services)
+        await manager.restore(loadRemoteModels: false)
+        XCTAssertEqual(preserved, bytes); XCTAssertEqual(readURL, preservedURL)
+        XCTAssertEqual(memoryURL, readURL?.deletingPathExtension().appendingPathExtension("memory.sqlite"))
+        XCTAssertEqual(manager.conversations.first?.messages.first?.completion, .stopped)
+        XCTAssertTrue(manager.nativeDataReady)
+    }
+
+    @MainActor func testRestorePreservationFailureBlocksWritesAndRecovery() async throws {
+        let bytes = try restorationBytes(title: "unarchived")
+        var writes = 0, remote = 0
+        let auth = NativeSession(accessToken: "fixture", refreshToken: "fixture", expiresAt: .distantFuture, accountId: "a")
+        var services = isolatedServices(writeHistory: { _, _ in writes += 1 }, load: { auth }, readLocalHistory: { _ in bytes })
+        services.preserveLegacyHistory = { _, _, _ in throw CocoaError(.fileWriteOutOfSpace) }
+        services.hermesChanges = { _, _ in remote += 1; throw CancellationError() }
+        services.hermesConsent = { _ in remote += 1; throw CancellationError() }
+        let manager = ConversationManager(services: services)
+        await manager.restore(loadRemoteModels: false)
+        for _ in 0..<5 { await Task.yield() }
+        XCTAssertFalse(manager.nativeDataReady); XCTAssertFalse(manager.isRestoring)
+        XCTAssertTrue(manager.conversations.isEmpty); XCTAssertNotNil(manager.error)
+        XCTAssertEqual(writes, 0); XCTAssertEqual(remote, 0)
+    }
+
+    @MainActor func testRestoreAccountReplacementRejectsSuspendedFailureWithoutErrorLeak() async throws {
+        let old = NativeSession(accessToken: "old", refreshToken: "old", expiresAt: .distantFuture, accountId: "old")
+        let new = NativeSession(accessToken: "new", refreshToken: "new", expiresAt: .distantFuture, accountId: "new")
+        let oldBytes = try restorationBytes(title: "old"), newBytes = try restorationBytes(title: "new")
+        let entered = expectation(description: "old preservation entered")
+        let gate = LegacyRestorationGate()
+        var reads = 0, archivedAccounts: [String?] = []
+        var services = isolatedServices(load: { old }, readLocalHistory: { _ in reads += 1; return reads == 1 ? oldBytes : newBytes })
+        services.preserveLegacyHistory = { _, _, account in
+            archivedAccounts.append(account)
+            if account == "old" { entered.fulfill(); try await gate.wait() }
+        }
+        services.hermesChanges = { _, _ in throw CancellationError() }
+        services.hermesConsent = { _ in throw CancellationError() }
+        let manager = ConversationManager(services: services)
+        let pending = Task { await manager.restore(loadRemoteModels: false) }
+        await fulfillment(of: [entered], timeout: 2)
+        manager.session = new
+        await manager.restore(loadRemoteModels: false)
+        gate.release(throwing: CocoaError(.fileWriteOutOfSpace))
+        await pending.value
+        XCTAssertEqual(archivedAccounts.compactMap { $0 }, ["old", "new"])
+        XCTAssertEqual(manager.conversations.first?.title, "new")
+        XCTAssertTrue(manager.nativeDataReady); XCTAssertFalse(manager.isRestoring)
+        XCTAssertNil(manager.error)
+    }
+
+    @MainActor func testRepeatedRestoreTokenDiscardsSuspendedOlderResult() async throws {
+        let firstBytes = try restorationBytes(title: "older"), secondBytes = try restorationBytes(title: "latest")
+        let entered = expectation(description: "first preservation entered")
+        let gate = LegacyRestorationGate()
+        var reads = 0, preserves = 0
+        var services = isolatedServices(readLocalHistory: { _ in reads += 1; return reads == 1 ? firstBytes : secondBytes })
+        services.preserveLegacyHistory = { _, _, _ in
+            preserves += 1
+            if preserves == 1 { entered.fulfill(); try await gate.wait() }
+        }
+        let manager = ConversationManager(services: services)
+        let pending = Task { await manager.restore(loadRemoteModels: false) }
+        await fulfillment(of: [entered], timeout: 2)
+        await manager.restore(loadRemoteModels: false)
+        gate.release()
+        await pending.value
+        XCTAssertEqual(manager.conversations.first?.title, "latest")
+        XCTAssertTrue(manager.nativeDataReady); XCTAssertFalse(manager.isRestoring)
+        XCTAssertNil(manager.error)
+    }
+
+}
+
+@MainActor private final class LegacyRestorationGate {
+    private var continuation: CheckedContinuation<Void, Error>?
+    func wait() async throws {
+        try await withCheckedThrowingContinuation { continuation = $0 }
+    }
+    func release(throwing error: Error? = nil) {
+        if let error { continuation?.resume(throwing: error) }
+        else { continuation?.resume() }
+        continuation = nil
+    }
 }
