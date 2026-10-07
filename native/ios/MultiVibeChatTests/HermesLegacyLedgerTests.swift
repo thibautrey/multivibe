@@ -358,21 +358,26 @@ final class HermesLegacyLedgerTests: XCTestCase {
         let oldEntered = expectation(description: "old journal suspended")
         let preserveEntered = expectation(description: "second preservation suspended")
         let newEntered = expectation(description: "new journal suspended")
+        let oldReturned = expectation(description: "old transport released")
+        let newPersisted = expectation(description: "new journal persisted")
         let oldGate = LegacyRestorationGate(), preserveGate = LegacyRestorationGate(), newGate = LegacyRestorationGate()
-        var changes = 0, preserves = 0, writes = 0
-        var services = isolatedServices(writeHistory: { _, _ in writes += 1 }, load: { auth }, readLocalHistory: { _ in bytes })
+        var changes = 0, preserves = 0, writes = 0, newReleased = false, observedNewWrite = false
+        var services = isolatedServices(writeHistory: { _, _ in
+            writes += 1
+            if newReleased, !observedNewWrite { observedNewWrite = true; newPersisted.fulfill() }
+        }, load: { auth }, readLocalHistory: { _ in bytes })
         services.preserveLegacyHistory = { _, _, _ in
             preserves += 1
             if preserves == 2 { preserveEntered.fulfill(); try await preserveGate.wait() }
         }
-        services.hermesChanges = { _, _ in
+        services.hermesChanges = { requestedCursor, _ in
             changes += 1
             if changes == 1 {
-                oldEntered.fulfill(); try await oldGate.wait()
+                oldEntered.fulfill(); try await oldGate.wait(); oldReturned.fulfill()
                 return .init(accountId: account, changes: [], cursor: 99, hasMore: false)
             }
             newEntered.fulfill(); try await newGate.wait()
-            return .init(accountId: account, changes: [], cursor: 2, hasMore: false)
+            return .init(accountId: account, changes: [], cursor: requestedCursor, hasMore: false)
         }
         services.hermesConsent = { _ in .init(accountId: account, cloudEnabled: false, revision: 1) }
         let manager = ConversationManager(services: services)
@@ -383,15 +388,15 @@ final class HermesLegacyLedgerTests: XCTestCase {
         let writesBeforeRelease = writes
         XCTAssertTrue(manager.isRestoring); XCTAssertFalse(manager.cloudAgentSyncing)
         oldGate.release()
-        for _ in 0..<10 { await Task.yield() }
+        await fulfillment(of: [oldReturned], timeout: 2)
         XCTAssertEqual(writes, writesBeforeRelease)
         XCTAssertNil(manager.cloudAgentSyncError); XCTAssertNil(manager.error)
         XCTAssertTrue(manager.cloudAgentObjects.isEmpty)
         preserveGate.release(); await second.value
         await fulfillment(of: [newEntered], timeout: 2)
         XCTAssertTrue(manager.cloudAgentSyncing)
-        newGate.release()
-        for _ in 0..<20 { await Task.yield() }
+        newReleased = true; newGate.release()
+        await fulfillment(of: [newPersisted], timeout: 2)
         XCTAssertFalse(manager.cloudAgentSyncing)
         XCTAssertNil(manager.cloudAgentSyncError); XCTAssertNil(manager.error)
         XCTAssertTrue(manager.nativeDataReady); XCTAssertEqual(changes, 2)
