@@ -5,6 +5,16 @@ import CryptoKit
 actor HermesLegacyExportJournal {
     enum Failure: Error { case invalid, consentRequired, identityConflict, tooLarge }
     enum Phase: String, Codable, Sendable { case prepared, queued, receiptConfirmed, blocked }
+    struct Confirmation: Codable, Equatable, Sendable {
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.accountID == rhs.accountID && lhs.change == rhs.change && lhs.receipt?.operationId == rhs.receipt?.operationId &&
+            lhs.receipt?.versionId == rhs.receipt?.versionId && lhs.receipt?.cursor == rhs.receipt?.cursor &&
+            lhs.receipt?.heads == rhs.receipt?.heads && lhs.receipt?.deleted == rhs.receipt?.deleted
+        }
+        let accountID: String
+        let receipt: CloudAgentReceipt?
+        let change: CloudAgentChange?
+    }
     struct Intent: Codable, Equatable, Sendable {
         let accountID: String
         let identity: String
@@ -14,6 +24,7 @@ actor HermesLegacyExportJournal {
         let consentRevision: Int
         var phase: Phase
         var reason: String?
+        var confirmation: Confirmation? = nil
     }
     struct Snapshot: Codable, Equatable, Sendable {
         let schemaVersion: Int
@@ -80,8 +91,31 @@ actor HermesLegacyExportJournal {
                         archiveDigest: decoded.envelope.provenance.archiveSHA256)))),
                   ["session", "message", "memory"].contains(intent.mutation.kind) else { throw Failure.invalid }
         }
+        for intent in state.intents.values {
+            let source = intent.mutation.value?.object?["source"]?.string
+            let expectedKind = source == "nativeMemory" ? "memory" : ["nativeMessage", "cloudRepositoryNode"].contains(source ?? "") ? "message" : "session"
+            guard intent.mutation.kind == expectedKind else { throw Failure.invalid }
+            if intent.phase == .receiptConfirmed {
+                guard let proof = intent.confirmation else { throw Failure.invalid }
+                guard proof.accountID == accountID else { throw Failure.invalid }
+                try Self.validate(proof, operation: intent.mutation)
+            } else if intent.confirmation != nil { throw Failure.invalid }
+        }
         guard state.mappings.values.allSatisfy(CloudAgentState.uuid), Set(state.mappings.values).count == state.mappings.count else { throw Failure.invalid }
         return state
+    }
+    private static func validate(_ proof: Confirmation, operation: CloudAgentMutation) throws {
+        guard (proof.receipt == nil) != (proof.change == nil) else { throw Failure.invalid }
+        if let change = proof.change {
+            guard !change.erased, !change.deleted, change.mutation == operation,
+                  change.cursor > 0, change.cursor < 9_007_199_254_740_991 else { throw Failure.invalid }
+        }
+        if let receipt = proof.receipt {
+            guard receipt.operationId == operation.operationId, receipt.versionId == operation.versionId,
+                  !receipt.deleted, receipt.cursor > 0, receipt.cursor < 9_007_199_254_740_991,
+                  !receipt.heads.isEmpty, receipt.heads.allSatisfy(CloudAgentState.uuid),
+                  Set(receipt.heads).count == receipt.heads.count else { throw Failure.invalid }
+        }
     }
     private func save(_ state: Snapshot) throws {
         let bytes = try JSONEncoder().encode(state)
@@ -137,14 +171,23 @@ actor HermesLegacyExportJournal {
     func reconcile(accountID: String, changes: [CloudAgentChange]) throws -> Snapshot {
         transactionLock.lock(); defer { transactionLock.unlock() }
         var state = try snapshot(accountID: accountID)
-        for change in changes {
-            for key in state.intents.keys {
-                guard var intent = state.intents[key], change.operationId == key || change.versionId == intent.mutation.versionId else { continue }
-                if !change.erased && change.mutation == intent.mutation {
-                    intent.phase = .receiptConfirmed; intent.reason = nil
-                } else { intent.phase = .blocked; intent.reason = "legacy_export_operation_mismatch_or_erased" }
-                state.intents[key] = intent
+        // Terminal object erasure wins over stale publication evidence in either page order.
+        let erasedObjects = Set(changes.filter { $0.deleted || $0.erased }.map(\.objectId))
+        for key in Array(state.intents.keys) {
+            guard var intent = state.intents[key], intent.phase != .blocked else { continue }
+            if erasedObjects.contains(intent.mutation.objectId) {
+                intent.phase = .blocked; intent.reason = "legacy_export_object_erased"; intent.confirmation = nil
+            } else {
+                let related = changes.filter { $0.operationId == key || $0.versionId == intent.mutation.versionId }
+                if related.contains(where: { $0.erased || $0.mutation != intent.mutation }) {
+                    intent.phase = .blocked; intent.reason = "legacy_export_operation_mismatch_or_erased"; intent.confirmation = nil
+                } else if let exact = related.last {
+                    let proof = Confirmation(accountID: accountID, receipt: nil, change: exact)
+                    try Self.validate(proof, operation: intent.mutation)
+                    intent.phase = .receiptConfirmed; intent.reason = nil; intent.confirmation = proof
+                }
             }
+            state.intents[key] = intent
         }
         try save(state); return state
     }
@@ -159,7 +202,9 @@ actor HermesLegacyExportJournal {
                   receipt.cursor > 0, receipt.cursor < 9_007_199_254_740_991,
                   !receipt.heads.isEmpty, receipt.heads.allSatisfy(CloudAgentState.uuid), Set(receipt.heads).count == receipt.heads.count,
                   seen.insert(receipt.operationId).inserted else { throw Failure.invalid }
-            intent.phase = .receiptConfirmed; state.intents[receipt.operationId] = intent
+            intent.phase = .receiptConfirmed; intent.confirmation = Confirmation(accountID: accountID, receipt: receipt, change: nil)
+            try Self.validate(intent.confirmation!, operation: intent.mutation)
+            state.intents[receipt.operationId] = intent
         }
         try save(state); return state
     }
