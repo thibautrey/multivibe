@@ -82,4 +82,57 @@ final class HermesLegacyExtractorTests: XCTestCase {
         XCTAssertTrue(malformedDictionary.records.isEmpty)
         XCTAssertEqual(malformedDictionary.diagnostics.first?.reason, "invalid_dictionary_array")
     }
+    func testAdapterHistoricalV1RecordDecodesWithoutChangingIdentityOrBindings() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let oldJSON = #"{"kind":"memory","id":"old","revision":"old-v","container":"scope","payload":"e30=","deleted":false,"inferenceUsable":false}"#
+        let record = try JSONDecoder().decode(HermesLegacyRecord.self, from: Data(oldJSON.utf8))
+        XCTAssertNil(record.provenance)
+        let first = try await HermesLegacyLedger(root: root).convert([record], accountID: "a")
+        XCTAssertNotNil(first.bindings["memory:scope"])
+        let restored = try await HermesLegacyLedger(root: root).convert([record], accountID: "a")
+        XCTAssertEqual(first, restored)
+    }
+
+    func testAdapterSeparatesNativeCloudAndGuestOriginalIdentities() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let extraction = try extract(#"{"conversations":[{"id":"same"}],"snapshot":{"conversations":[{"id":"same","repository":{"messages":[]}}]},"importedGuestSnapshots":["guest-one",{"id":"same"},"guest-two",{"id":"same"}]}"#)
+        let result = try await HermesLegacyLedger(root: root).convertExtraction(extraction, accountID: "a")
+        XCTAssertEqual(result.conversions.count, 4); XCTAssertTrue(result.quarantine.isEmpty)
+        XCTAssertEqual(result.conversions.map { $0.record.id }, ["same", "same", "same", "same"])
+        XCTAssertEqual(result.bindings.count, 4)
+        XCTAssertEqual(result.conversions.map { $0.record.provenance?.guestOrigin }, [nil, nil, "guest-one", "guest-two"])
+    }
+
+    func testAdapterPreservesAllMemoryPayloadsIncludingConflictsAndTombstones() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let extraction = try extract(#"{"memory":[{"id":"m","version":"dead","state":"deleted","scope":""}],"memoryBaseline":[{"id":"m","version":"live","state":"confirmed","scope":"project","future":true}],"snapshot":{"memory":[{"id":"m","version":"live","state":"confirmed","scope":"project","future":false}]},"pending":{"memory":[{"id":"m","version":"older","state":"proposed","scope":"project"}],"snapshot":{"memory":[{"id":"other","version":"v","state":"future"}]}}}"#)
+        let result = try await HermesLegacyLedger(root: root).convertExtraction(extraction, accountID: "a")
+        XCTAssertEqual(result.conversions.count, 4); XCTAssertEqual(result.quarantine.count, 1)
+        let preserved = result.conversions.map { $0.record.payload } + result.quarantine.map { $0.record.payload }
+        for record in extraction.records { XCTAssertTrue(preserved.contains(record.payload)) }
+        XCTAssertEqual(result.conversions.last?.record.revision, "dead")
+        XCTAssertTrue(result.conversions.last?.record.deleted == true)
+        XCTAssertEqual(Set(result.conversions.map { $0.record.container }), ["native-memory"])
+        XCTAssertTrue(result.inferenceCandidates.isEmpty)
+        XCTAssertTrue(result.conversions.allSatisfy { !$0.record.inferenceUsable && $0.publication == .converted })
+    }
+
+    func testAdapterRepeatsAreIdempotentAndMetadataCollisionQuarantined() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let extraction = try extract(#"{"memory":[{"id":"m","version":"v","state":"confirmed"}],"memoryBaseline":[{"id":"m","version":"v","state":"confirmed"}]}"#)
+        let ledger = HermesLegacyLedger(root: root)
+        let first = try await ledger.convertExtraction(extraction, accountID: "a")
+        let repeated = try await HermesLegacyLedger(root: root).convertExtraction(extraction, accountID: "a")
+        XCTAssertEqual(first, repeated)
+        XCTAssertEqual(first.conversions.count, 1); XCTAssertEqual(first.quarantine.count, 1)
+        XCTAssertNotEqual(first.conversions[0].record.provenance?.sourcePath, first.quarantine[0].record.provenance?.sourcePath)
+        XCTAssertEqual(first.conversions[0].record.payload, first.quarantine[0].record.payload)
+        XCTAssertEqual(first.conversions[0].record.provenance?.rawRange, extraction.records[0].range)
+        XCTAssertEqual(first.conversions[0].record.provenance?.archiveDigest.count, 64)
+    }
+
 }

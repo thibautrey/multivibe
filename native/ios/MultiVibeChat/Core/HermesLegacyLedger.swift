@@ -8,12 +8,21 @@ struct HermesLegacyRecord: Codable, Equatable, Sendable {
     let kind: Kind
     let id: String
     let revision: String
-    /// Original containing conversation, or original memory scope. Never a generated project ID.
+    /// Stable original conversation container or account-local memory container; scope stays in raw payload.
     let container: String
     let payload: Data
     let deleted: Bool
     /// Explicit retrieval policy, separate from preservation of invalid/proposed/expired memories.
     let inferenceUsable: Bool
+    struct Provenance: Codable, Equatable, Sendable {
+        let source: String
+        let guestOrigin: String?
+        let sourcePath: String
+        let rawRange: Range<Int>
+        let archiveDigest: String
+    }
+    /// Optional for backward-compatible decoding of historical version-1 journals.
+    var provenance: Provenance? = nil
 }
 
 struct HermesLegacyConversion: Codable, Equatable, Sendable {
@@ -66,7 +75,21 @@ struct HermesLegacyLedgerSnapshot: Codable, Equatable, Sendable {
 private struct LegacyIdentity: Hashable {
     let kind: String
     let id: String
-    init(_ record: HermesLegacyRecord) { kind = record.kind.rawValue; id = record.id }
+    let source: String?
+    let guest: String?
+    init(_ record: HermesLegacyRecord) {
+        kind = record.kind.rawValue; id = record.id
+        source = record.provenance?.source; guest = record.provenance?.guestOrigin
+    }
+}
+
+private func legacyBindingKey(_ record: HermesLegacyRecord) -> String {
+    let historical = (record.kind == .memory ? "memory:" : "conversation:") + record.container
+    guard let provenance = record.provenance else { return historical }
+    // Length prefixes distinguish arbitrary guest IDs and nil from empty without delimiter ambiguity.
+    let source = provenance.source
+    let guest = provenance.guestOrigin.map { "value:\($0.utf8.count):\($0)" } ?? "nil"
+    return "provenance:\(source.utf8.count):\(source):\(guest):" + historical
 }
 
 /// Locks only this app process; this is not an app-group or cross-process coordination protocol.
@@ -182,6 +205,19 @@ actor HermesLegacyLedger {
         return result
     }
 
+    private func validateRecord(_ record: HermesLegacyRecord) throws {
+        guard let provenance = record.provenance else { return }
+        let kinds: [String: HermesLegacyRecord.Kind] = ["nativeConversation": .conversation, "cloudConversation": .conversation,
+            "nativeMessage": .message, "cloudRepositoryNode": .message, "nativeMemory": .memory]
+        guard kinds[provenance.source] == record.kind, !provenance.sourcePath.isEmpty,
+              provenance.rawRange.lowerBound >= 0, provenance.rawRange.upperBound <= Self.maximumBytes,
+              provenance.rawRange.count == record.payload.count,
+              provenance.archiveDigest.utf8.count == 64,
+              provenance.archiveDigest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+            throw HermesLegacyLedgerError.invalid
+        }
+    }
+
     private func validate(_ snapshot: HermesLegacyLedgerSnapshot) throws {
         let zero = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
         var identifiers = Set<UUID>()
@@ -198,6 +234,7 @@ actor HermesLegacyLedger {
         var usedBindings = Set<String>()
         for conversion in snapshot.conversions {
             let record = conversion.record
+            try validateRecord(record)
             let identity = LegacyIdentity(record)
             guard !record.id.isEmpty, !record.revision.isEmpty,
                   conversion.digest == digest(record.payload),
@@ -208,7 +245,7 @@ actor HermesLegacyLedger {
             revisions[identity, default: []].insert(record.revision)
             containers[identity] = record.container
             if record.deleted { tombstones.insert(identity) }
-            usedBindings.insert((record.kind == .memory ? "memory:" : "conversation:") + record.container)
+            usedBindings.insert(legacyBindingKey(record))
             try claim(conversion.operationID); try claim(conversion.versionID)
         }
         guard usedBindings == Set(snapshot.bindings.keys) else { throw HermesLegacyLedgerError.invalid }
@@ -222,11 +259,13 @@ actor HermesLegacyLedger {
         let prior = try readSnapshot(accountID: accountID)
         var next = prior ?? .init(formatVersion: 1, scope: namespace, deviceID: UUID())
         for record in records {
+            try validateRecord(record)
             guard !record.id.isEmpty, !record.revision.isEmpty,
                   record.payload.count <= Self.maximumBytes else { throw HermesLegacyLedgerError.invalid }
             let hash = digest(record.payload)
-            let history = next.conversions.filter { $0.record.kind == record.kind && $0.record.id == record.id }
-            let sameRevision = next.conversions.first { $0.record.kind == record.kind && $0.record.id == record.id && $0.record.revision == record.revision }
+            let identity = LegacyIdentity(record)
+            let history = next.conversions.filter { LegacyIdentity($0.record) == identity }
+            let sameRevision = history.first { $0.record.revision == record.revision }
             var reason: String?
             if let existing = sameRevision {
                 if existing.record == record && existing.digest == hash { continue }
@@ -242,7 +281,7 @@ actor HermesLegacyLedger {
                 continue
             }
             // Memory scopes remain independent; conversation/message containers share a binding.
-            let bindingKey = (record.kind == .memory ? "memory:" : "conversation:") + record.container
+            let bindingKey = legacyBindingKey(record)
             if next.bindings[bindingKey] == nil {
                 next.bindings[bindingKey] = .init(bindingID: UUID(), sessionID: UUID(), branchID: UUID())
             }
