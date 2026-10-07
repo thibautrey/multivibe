@@ -150,4 +150,75 @@ final class HermesLegacyExtractorTests: XCTestCase {
         XCTAssertEqual(restored, result)
     }
 
+    func testPreserveHistoryKeepsMalformedRawArchiveWithoutConversion() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = Data("{ malformed original bytes\n".utf8)
+        let ledger = HermesLegacyLedger(root: root)
+        do { _ = try await ledger.preserveHistory(bytes, accountID: "a"); XCTFail("Expected scanner rejection") } catch {}
+        let noWrite = HermesLegacyLedger(root: root, writeFile: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
+        let hash = try await noWrite.archive(bytes, accountID: "a")
+        let archived = try await noWrite.archivedBytes(digest: hash, accountID: "a")
+        let snapshot = try await noWrite.snapshot(accountID: "a")
+        XCTAssertEqual(archived, bytes); XCTAssertNil(snapshot)
+    }
+
+    func testPreserveHistoryKeepsArchiveWhenEncodedLedgerExceedsBound() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var bytes = Data(#"{"conversations":[{"id":"large","future":""#.utf8)
+        bytes.append(Data(repeating: 65, count: 24 * 1_048_576))
+        bytes.append(Data(#""}]}"#.utf8))
+        XCTAssertLessThan(bytes.count, HermesLegacyLedger.maximumBytes)
+        let ledger = HermesLegacyLedger(root: root)
+        do {
+            _ = try await ledger.preserveHistory(bytes, accountID: "a")
+            XCTFail("Expected base64 ledger size rejection")
+        } catch HermesLegacyLedgerError.tooLarge {} catch { XCTFail("Unexpected error: \(error)") }
+        let noWrite = HermesLegacyLedger(root: root, writeFile: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
+        let hash = try await noWrite.archive(bytes, accountID: "a")
+        let archived = try await noWrite.archivedBytes(digest: hash, accountID: "a")
+        let snapshot = try await noWrite.snapshot(accountID: "a")
+        XCTAssertEqual(archived, bytes); XCTAssertNil(snapshot)
+    }
+
+    func testPreserveHistorySeparatesGuestAndAccountsWithoutEligibility() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = Data(#"[{"id":"same","messages":[{"id":"message"}]}]"#.utf8)
+        let ledger = HermesLegacyLedger(root: root)
+        let guest = try await ledger.preserveHistory(bytes, accountID: nil)
+        let account = try await ledger.preserveHistory(bytes, accountID: "a")
+        XCTAssertNotEqual(guest.scope, account.scope)
+        XCTAssertNotEqual(guest.deviceID, account.deviceID)
+        XCTAssertEqual(guest.conversions.count, 2); XCTAssertEqual(account.conversions.count, 2)
+        XCTAssertTrue(guest.inferenceCandidates.isEmpty); XCTAssertTrue(account.inferenceCandidates.isEmpty)
+        XCTAssertTrue(account.conversions.allSatisfy { !$0.record.inferenceUsable && $0.publication == .converted })
+    }
+
+    @MainActor func testRestoreCallbackProducesLocalConversionsWithoutExport() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let conversation = Conversation(title: "restored", messages: [.init(role: "assistant", content: "partial", completion: .streaming)])
+        let encoded = try JSONEncoder().encode([conversation])
+        let bytes = Data(("{\"future\":true,\"conversations\":" + String(decoding: encoded, as: UTF8.self) + ",\"baseline\":[],\"conversationIDs\":{},\"messageIDs\":{}}").utf8)
+        var snapshot: HermesLegacyLedgerSnapshot?, exports = 0
+        var services = isolatedServices(readLocalHistory: { _ in bytes })
+        services.preserveLegacyHistory = { original, _, account in
+            snapshot = try await HermesLegacyLedger(root: root).preserveHistory(original, accountID: account)
+        }
+        services.hermesMutations = { _, _, _ in exports += 1; throw APIError.invalidResponse }
+        services.hermesCreate = { _, _, _ in exports += 1; throw APIError.invalidResponse }
+        let manager = ConversationManager(services: services)
+        await manager.restore(loadRemoteModels: false)
+        XCTAssertTrue(manager.nativeDataReady); XCTAssertNil(manager.error)
+        XCTAssertEqual(manager.conversations.first?.messages.first?.completion, .stopped)
+        let preserved = try XCTUnwrap(snapshot)
+        XCTAssertEqual(preserved.conversions.count, 2)
+        XCTAssertTrue(String(decoding: preserved.conversions[1].record.payload, as: UTF8.self).contains("streaming"))
+        XCTAssertTrue(preserved.inferenceCandidates.isEmpty)
+        XCTAssertTrue(preserved.conversions.allSatisfy { $0.publication == .converted && !$0.record.inferenceUsable })
+        XCTAssertEqual(exports, 0)
+    }
+
 }
