@@ -181,3 +181,20 @@ test('model limits and missing capabilities reject before credential persistence
   assert.equal(f.secrets.size, 0);
   assert.equal(f.state(), undefined);
 });
+
+test('status projects only nonsecret existing MultiVibe providers without networking or mutation', async () => {
+  const f = fixture();
+  f.user.providers.multivibe = { displayName: 'My gateway', baseURL: 'http://127.0.0.1:1455/v1', api: 'openai-completions', apiKeyEnv: 'EXISTING_KEY', apiKey: 'never-return-this', headers: { Authorization: 'never-return-header' }, models: [{ id: 'model/manual', name: 'Manual', contextWindow: 8192, apiKey: 'never-return-model-key' }] };
+  f.secrets.set('EXISTING_KEY', 'never-return-key');
+  f.user.providers.invalid = { displayName: 'multivibe', baseURL: 'https://user:secret@example.com/v1', models: [] };
+  const before = structuredClone(f.user);
+  const result = await f.companion.status();
+  assert.equal(result.connected, false);
+  assert.equal(result.existingProviders.length, 1);
+  assert.equal(result.existingProviders[0].credentialConfigured, true);
+  assert.equal(result.existingProviders[0].models[0].id, 'model/manual');
+  assert.doesNotMatch(JSON.stringify(result), /never-return|EXISTING_KEY|Authorization|user:secret/);
+  assert.equal(f.calls(), 0);
+  assert.deepEqual(f.events, []);
+  assert.deepEqual(f.user, before);
+});
