@@ -1,0 +1,52 @@
+{
+  "name": "dsh-multivibe",
+  "version": "0.1.0",
+  "description": "Connect DSH to a MultiVibe gateway and inspect available models and connection status.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": ["lib/index.js", "lib/client.js", "cordis.patch.yml", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check": "npm run test && npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thibautrey/multivibe.git",
+    "directory": "plugins/dsh-multivibe"
+  },
+  "homepage": "https://github.com/thibautrey/multivibe/tree/main/plugins/dsh-multivibe",
+  "bugs": { "url": "https://github.com/thibautrey/multivibe/issues" },
+  "keywords": ["dsh-plugin", "deepseek-harness", "multivibe", "gateway", "models"],
+  "engines": { "node": ">=22.0.0" },
+  "publishConfig": { "access": "public" },
+  "dsh": {
+    "manifestVersion": 1,
+    "engines": { "dsh": "^0.2.0-rc.2" },
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "inject": ["@deepseek-ai/dsh-client-locale", "@deepseek-ai/dsh-client-ui-settings-plugins"]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "~3.18.4",
+    "@deepseek-ai/cordis": "~4.0.4",
+    "@deepseek-ai/dsh-client-connection": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-locale": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings-plugins": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-credentials": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-llm": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-llm-pi-ai": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-settings": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "^0.2.0-rc.2"
+  },
+  "devDependencies": { "esbuild": "0.28.2" }
+}

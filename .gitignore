@@ -26,3 +26,7 @@ artifacts/.DS_Store
 # Swift package build and local workspace data
 .build/
 .swiftpm/
+
+# Local DSH SDK audit and isolated runtime fixtures (never publish).
+.dsh-plugin-dev/
+plugins/dsh-multivibe/*.tgz

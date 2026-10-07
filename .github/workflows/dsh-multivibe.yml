@@ -1,0 +1,35 @@
+name: DSH MultiVibe plugin
+
+on:
+  push:
+    paths:
+      - 'plugins/dsh-multivibe/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/dsh-multivibe.yml'
+  pull_request:
+    paths:
+      - 'plugins/dsh-multivibe/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/dsh-multivibe.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run test:dsh-plugin
+      - run: npm run build:dsh-plugin
+      - name: Verify committed distribution is reproducible
+        run: git diff --exit-code -- plugins/dsh-multivibe/lib
+      - name: Check installable package content
+        run: npm pack ./plugins/dsh-multivibe --ignore-scripts --dry-run
