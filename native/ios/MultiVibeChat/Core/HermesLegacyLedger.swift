@@ -87,7 +87,12 @@ private func legacyBindingKey(_ record: HermesLegacyRecord) -> String {
     let historical = (record.kind == .memory ? "memory:" : "conversation:") + record.container
     guard let provenance = record.provenance else { return historical }
     // Length prefixes distinguish arbitrary guest IDs and nil from empty without delimiter ambiguity.
-    let source = provenance.source
+    let source: String
+    switch provenance.source {
+    case "nativeConversation", "nativeMessage": source = "native-history"
+    case "cloudConversation", "cloudRepositoryNode": source = "cloud-history"
+    default: source = "native-memory"
+    }
     let guest = provenance.guestOrigin.map { "value:\($0.utf8.count):\($0)" } ?? "nil"
     return "provenance:\(source.utf8.count):\(source):\(guest):" + historical
 }
@@ -280,7 +285,7 @@ actor HermesLegacyLedger {
                 if !next.quarantine.contains(item) { next.quarantine.append(item) }
                 continue
             }
-            // Memory scopes remain independent; conversation/message containers share a binding.
+            // A parent and its messages share their source-family/guest binding; record identities stay exact.
             let bindingKey = legacyBindingKey(record)
             if next.bindings[bindingKey] == nil {
                 next.bindings[bindingKey] = .init(bindingID: UUID(), sessionID: UUID(), branchID: UUID())
