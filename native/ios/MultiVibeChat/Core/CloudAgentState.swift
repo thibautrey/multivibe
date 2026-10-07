@@ -63,6 +63,21 @@ struct CloudAgentState: Codable, Equatable, Sendable {
                 let placeholder = CloudAgentMutation(operationId:raw.operationId,objectId:raw.objectId,versionId:raw.versionId,deviceId:raw.deviceId,kind:raw.kind,parents:raw.parents,deleted:false,value:.null)
                 try Self.validate(placeholder)
             } else { try Self.validate(raw.mutation) }
+            // An ambiguous send is settled only by its exact immutable operation. Inspect the
+            // original outbox so a preceding tombstone cannot hide a later reused identifier.
+            let candidates = outbox.filter { $0.operationId == raw.operationId || $0.versionId == raw.versionId }
+            for pending in candidates {
+                var recovered = raw.mutation
+                if raw.erased && !raw.deleted {
+                    // Erasure removes payload bytes; it proves terminal deletion, never successful publication.
+                    recovered = .init(operationId:raw.operationId,objectId:raw.objectId,versionId:raw.versionId,
+                        deviceId:raw.deviceId,kind:raw.kind,parents:raw.parents,deleted:false,value:pending.value)
+                }
+                guard pending == recovered else { throw APIError.server(409,"agent_operation_reused") }
+            }
+            if !raw.erased, candidates.contains(raw.mutation) {
+                next.outbox.removeAll { $0.operationId == raw.operationId }
+            }
             var object = next.objects[raw.objectId] ?? CloudAgentObject(kind:raw.kind)
             guard object.kind == raw.kind else { throw APIError.invalidResponse }
             var change = raw
