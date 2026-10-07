@@ -150,3 +150,34 @@ enum HermesLegacyExtractor {
         }
     }
 }
+
+/// Explicit local-only adapter. Calling this never queues a Cloud mutation or changes consent.
+/// Collection order is not revision chronology: batch tombstones are accepted after preserved live entries.
+extension HermesLegacyLedger {
+    @discardableResult
+    func convertExtraction(_ extraction: HermesLegacyExtraction, accountID: String?) throws -> HermesLegacyLedgerSnapshot {
+        let archiveDigest = SHA256.hash(data: extraction.original).map { String(format: "%02x", $0) }.joined()
+        let ordered = extraction.records.filter { $0.tombstone != true } + extraction.records.filter { $0.tombstone == true }
+        guard extraction.original.count <= Self.maximumBytes else { throw HermesLegacyLedgerError.tooLarge }
+        let records = try ordered.map { record -> HermesLegacyRecord in
+            guard record.range.lowerBound >= 0, record.range.upperBound <= extraction.original.count,
+                  extraction.original.subdata(in: record.range) == record.payload else { throw HermesLegacyLedgerError.invalid }
+            let kind: HermesLegacyRecord.Kind
+            switch record.source {
+            case .nativeConversation, .cloudConversation: kind = .conversation
+            case .nativeMessage, .cloudRepositoryNode: kind = .message
+            case .nativeMemory: kind = .memory
+            }
+            let revision: String
+            switch record.revision {
+            case .original(let original): revision = original
+            case .contentIdentity(let identity): revision = identity
+            }
+            return .init(kind: kind, id: record.id, revision: revision, container: record.container,
+                         payload: record.payload, deleted: record.tombstone == true, inferenceUsable: false,
+                         provenance: .init(source: record.source.rawValue, guestOrigin: record.guestOrigin,
+                                           sourcePath: record.path, rawRange: record.range, archiveDigest: archiveDigest))
+        }
+        return try convert(records, accountID: accountID)
+    }
+}
