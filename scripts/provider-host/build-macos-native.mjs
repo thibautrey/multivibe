@@ -10,9 +10,8 @@ const run = (program, args, env = process.env) => execFileSync(program, args, { 
 const swiftConstantValuesRelativePath = 'usr/share/swift/SwiftConstantValues/AppIntents.json';
 
 // The Swift toolchain is selected through DEVELOPER_DIR. `xcode-select -p` can
-// name an installation whose toolchain is incomplete, so probe every installed
-// Xcode for the App Intents protocol definition and report the installation
-// each candidate came from when none of them satisfies the requirement.
+// name an incomplete installation, so probe full Xcode installations for both
+// extraction tools and prefer an available toolchain protocol definition.
 function developerDirectories() {
   const candidates = [];
   const add = (value) => {
