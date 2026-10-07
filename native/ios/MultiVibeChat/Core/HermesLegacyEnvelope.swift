@@ -49,6 +49,8 @@ enum HermesLegacyEnvelopeCodec {
     static func encode(_ record: HermesLegacyRecord) throws -> Data {
         guard record.payload.count <= maximumPayloadBytes else { throw Failure.tooLarge }
         guard let provenance = record.provenance else { throw Failure.invalid }
+        try bounded(provenance.source)
+        guard sources.contains(provenance.source), validDigest(provenance.archiveDigest) else { throw Failure.invalid }
         for text in [record.id, record.revision, record.container, provenance.sourcePath, provenance.guestOrigin ?? ""] { try bounded(text) }
         let value = HermesLegacyEnvelope(schemaVersion: 1, type: "hermes-legacy-preservation", source: provenance.source,
             originalID: record.id, revision: record.revision, container: record.container,
