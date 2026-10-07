@@ -623,6 +623,9 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
+      - name: Verify Docker daemon access
+        shell: bash
+        run: source scripts/provider-host/release-docker.sh
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: provider-host-linux
@@ -632,6 +635,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          source scripts/provider-host/release-docker.sh
           version="${{ needs.validate-tag.outputs.version }}"
           archive="release-linux/multivibe-host_${version}_linux_amd64.tar.gz"
           npm run verify:provider-host -- "$archive"
@@ -663,6 +667,7 @@ jobs:
           GHCR_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          source scripts/provider-host/release-docker.sh
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           image="${{ steps.image.outputs.image }}"
           version="${{ steps.image.outputs.version }}"
@@ -694,6 +699,13 @@ jobs:
           node scripts/provider-host/provider-host-container-release.mjs build \
             "$image" "$version" "$digest" "$GITHUB_SHA" container-release
           printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+      - name: Remove registry credentials
+        if: always()
+        shell: bash
+        run: |
+          if [[ -d "$RUNNER_TEMP/multivibe-release-docker-config" ]]; then
+            rm -rf -- "$RUNNER_TEMP/multivibe-release-docker-config"
+          fi
       - name: Attest the published container image
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
