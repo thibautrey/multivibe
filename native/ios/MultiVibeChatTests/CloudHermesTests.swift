@@ -1299,3 +1299,175 @@ private actor CloudWorkspaceResponderHold {
         XCTAssertTrue(manager.send("Read memory"));await fulfillment(of:[checked],timeout:3);manager.stop()
     }
 }
+
+@MainActor final class CloudHermesLegacyExportIntegrationTests: XCTestCase {
+    private func configure(_ services: inout SessionServices, root: URL, ledger: HermesLegacyLedger, journal: HermesLegacyExportJournal) {
+        services.legacySnapshot = { _, account in try await ledger.snapshot(accountID: account) }
+        services.legacyExportSnapshot = { _, account in try await journal.snapshot(accountID: account) }
+        services.legacyExportPrepare = { _, conversion, account, device, parents, consent in
+            try await journal.prepare(conversion, accountID: account, deviceID: device, parents: parents, consent: consent)
+        }
+        services.legacyExportQueue = { _, account, operation, consent in try await journal.queue(accountID: account, operationID: operation, consent: consent) }
+        services.legacyExportReconcile = { _, account, changes in try await journal.reconcile(accountID: account, changes: changes) }
+        services.legacyExportAcknowledge = { _, account, submitted, receipts in try await journal.acknowledge(accountID: account, submitted: submitted, reply: receipts) }
+        services.hermesSyncDelay = { _ in throw CancellationError() }
+    }
+    private func preserve(_ ledger: HermesLegacyLedger, account: String, guest: String? = nil) async throws {
+        let raw = Data(#"{"original":"opaque","n":9007199254740993123456789}"#.utf8)
+        _ = try await ledger.convert([.init(kind: .memory, id: "original", revision: "v1", container: "native-memory",
+            payload: raw, deleted: false, inferenceUsable: false,
+            provenance: .init(source: "nativeMemory", guestOrigin: guest, sourcePath: "$.memory[0]",
+                rawRange: 0..<raw.count, archiveDigest: String(repeating: "a", count: 64)))], accountID: account)
+    }
+    private func pulled(_ operations: [CloudAgentMutation], after: Int64, account: String) -> CloudAgentPage {
+        let changes = operations.enumerated().map { offset, op in
+            CloudAgentChange(operationId: op.operationId, objectId: op.objectId, versionId: op.versionId,
+                deviceId: op.deviceId, kind: op.kind, parents: op.parents, deleted: op.deleted, value: op.value,
+                cursor: Int64(offset + 1), erased: false)
+        }.filter { $0.cursor > after }
+        return .init(accountId: account, changes: changes, cursor: max(after,Int64(operations.count)), hasMore: false)
+    }
+    func testGuestConsentAndRepeatedSynchronizationPublishOnlyOnePreservationCapsule() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let account = UUID().uuidString.lowercased(), ledger = HermesLegacyLedger(root: root.appendingPathComponent("ledger"))
+        let journal = HermesLegacyExportJournal(root: root.appendingPathComponent("export"))
+        try await preserve(ledger, account: account, guest: "guest-original")
+        let auth = NativeSession(accessToken:"legacy",refreshToken:"legacy",expiresAt:.distantFuture,accountId:account)
+        var sources: [String] = [], submitted: [CloudAgentMutation] = [], inference = 0
+        var services = isolatedServices(load:{auth}); configure(&services,root:root,ledger:ledger,journal:journal)
+        services.hermesConsent = { _ in .init(accountId:account,cloudEnabled:true,revision:1,exportSources:sources) }
+        services.hermesChanges = { after,_ in self.pulled(submitted,after:after,account:account) }
+        services.hermesCreate = { _,_,_ in inference += 1; throw APIError.invalidResponse }
+        services.hermesMutations = { _,operations,_ in
+            submitted += operations
+            return .init(accountId:account,receipts:operations.map { .init(operationId:$0.operationId,versionId:$0.versionId,cursor:1,heads:[$0.versionId],deleted:false) })
+        }
+        let manager = ConversationManager(services:services); await manager.restore(loadRemoteModels:false)
+        sources = ["legacy-native-memory"]; await manager.synchronizeCloudAgentState(); XCTAssertTrue(submitted.isEmpty)
+        sources.append("legacy-guest"); await manager.synchronizeCloudAgentState(); await manager.synchronizeCloudAgentState()
+        XCTAssertEqual(submitted.count,1); XCTAssertEqual(inference,0)
+        let capsule = try HermesLegacyEnvelopeCodec.decode(JSONEncoder().encode(XCTUnwrap(submitted.first?.value)))
+        XCTAssertEqual(capsule.envelope.provenance.guestOrigin,"guest-original")
+        XCTAssertFalse(submitted[0].deleted)
+        let proof = try await journal.snapshot(accountID:account)
+        XCTAssertEqual(proof.intents[submitted[0].operationId]?.phase,.receiptConfirmed)
+        manager.connectivityChanged(false)
+    }
+    func testAmbiguousReplyReconcilesAppliedOperationWithoutDuplicateSend() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let account = UUID().uuidString.lowercased(), ledger = HermesLegacyLedger(root:root.appendingPathComponent("ledger"))
+        let journal = HermesLegacyExportJournal(root:root.appendingPathComponent("export")); try await preserve(ledger,account:account)
+        let auth = NativeSession(accessToken:"legacy",refreshToken:"legacy",expiresAt:.distantFuture,accountId:account)
+        var approved = false, applied:[CloudAgentMutation] = [], sends = 0
+        var services = isolatedServices(load:{auth}); configure(&services,root:root,ledger:ledger,journal:journal)
+        services.hermesConsent = { _ in .init(accountId:account,cloudEnabled:true,revision:1,exportSources:approved ? ["legacy-native-memory"] : []) }
+        services.hermesChanges = { after,_ in self.pulled(applied,after:after,account:account) }
+        services.hermesMutations = { _,operations,_ in sends += 1; applied += operations; throw URLError(.networkConnectionLost) }
+        let manager = ConversationManager(services:services); await manager.restore(loadRemoteModels:false)
+        approved = true; await manager.synchronizeCloudAgentState(); await manager.synchronizeCloudAgentState()
+        XCTAssertEqual(sends,1)
+        let state = try await journal.snapshot(accountID:account)
+        XCTAssertEqual(state.intents[applied[0].operationId]?.phase,.receiptConfirmed)
+        manager.connectivityChanged(false)
+    }
+    func testDurableReceiptSurvivesManagerPersistenceFailureWithoutReplay() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let account = UUID().uuidString.lowercased(), ledger = HermesLegacyLedger(root:root.appendingPathComponent("ledger"))
+        let journal = HermesLegacyExportJournal(root:root.appendingPathComponent("export")); try await preserve(ledger,account:account)
+        let auth = NativeSession(accessToken:"legacy",refreshToken:"legacy",expiresAt:.distantFuture,accountId:account)
+        var approved = false, failWrites = false, sends = 0
+        var services = isolatedServices(writeHistory:{_,_ in if failWrites { throw CocoaError(.fileWriteOutOfSpace) } },load:{auth})
+        configure(&services,root:root,ledger:ledger,journal:journal)
+        services.hermesConsent = { _ in .init(accountId:account,cloudEnabled:true,revision:1,exportSources:approved ? ["legacy-native-memory"] : []) }
+        services.hermesChanges = { after,_ in .init(accountId:account,changes:[],cursor:after,hasMore:false) }
+        services.hermesMutations = { _,operations,_ in
+            sends += 1; failWrites = true
+            return .init(accountId:account,receipts:operations.map { .init(operationId:$0.operationId,versionId:$0.versionId,cursor:1,heads:[$0.versionId],deleted:false) })
+        }
+        let manager = ConversationManager(services:services); await manager.restore(loadRemoteModels:false)
+        approved = true; await manager.synchronizeCloudAgentState()
+        let proof = try await journal.snapshot(accountID:account)
+        XCTAssertEqual(proof.intents.values.first?.confirmation?.receipt?.cursor,1)
+        failWrites = false; await manager.synchronizeCloudAgentState(); XCTAssertEqual(sends,1)
+        manager.connectivityChanged(false)
+    }
+    func testConsentRevokedDuringPreparationPreventsQueueAndSend() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let account = UUID().uuidString.lowercased(), ledger = HermesLegacyLedger(root:root.appendingPathComponent("ledger"))
+        let journal = HermesLegacyExportJournal(root:root.appendingPathComponent("export")); try await preserve(ledger,account:account)
+        let auth = NativeSession(accessToken:"legacy",refreshToken:"legacy",expiresAt:.distantFuture,accountId:account)
+        var approved = false, revoked = false, sends = 0
+        var services = isolatedServices(load:{auth}); configure(&services,root:root,ledger:ledger,journal:journal)
+        services.hermesConsent = { _ in .init(accountId:account,cloudEnabled:!revoked,revision:1,
+            exportSources:approved && !revoked ? ["legacy-native-memory"] : []) }
+        services.hermesChanges = { after,_ in .init(accountId:account,changes:[],cursor:after,hasMore:false) }
+        services.legacyExportPrepare = { _,conversion,account,device,parents,consent in
+            let prepared = try await journal.prepare(conversion,accountID:account,deviceID:device,parents:parents,consent:consent)
+            revoked = true; return prepared
+        }
+        services.hermesMutations = { _,_,_ in sends += 1; throw APIError.invalidResponse }
+        let manager = ConversationManager(services:services); await manager.restore(loadRemoteModels:false)
+        approved = true; await manager.synchronizeCloudAgentState(); XCTAssertEqual(sends,0)
+        let state = try await journal.snapshot(accountID:account)
+        XCTAssertEqual(state.intents.values.first?.phase,.prepared)
+        manager.connectivityChanged(false)
+    }
+    func testAccountSwitchAfterJournalPreparationFencesOldAccountSend() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let old = UUID().uuidString.lowercased(), new = UUID().uuidString.lowercased()
+        let ledger = HermesLegacyLedger(root:root.appendingPathComponent("ledger"))
+        let journal = HermesLegacyExportJournal(root:root.appendingPathComponent("export")); try await preserve(ledger,account:old)
+        let auth = NativeSession(accessToken:"old",refreshToken:"old",expiresAt:.distantFuture,accountId:old)
+        let replacement = NativeSession(accessToken:"new",refreshToken:"new",expiresAt:.distantFuture,accountId:new)
+        var approved = false, sends = 0
+        var manager: ConversationManager?
+        var services = isolatedServices(load:{auth}); configure(&services,root:root,ledger:ledger,journal:journal)
+        services.hermesConsent = { token in .init(accountId:token == "old" ? old : new,cloudEnabled:true,revision:1,
+            exportSources:approved ? ["legacy-native-memory"] : []) }
+        services.hermesChanges = { after,token in .init(accountId:token == "old" ? old : new,changes:[],cursor:after,hasMore:false) }
+        services.legacyExportPrepare = { _,conversion,account,device,parents,consent in
+            let prepared = try await journal.prepare(conversion,accountID:account,deviceID:device,parents:parents,consent:consent)
+            try await manager?.accept(replacement); return prepared
+        }
+        services.hermesMutations = { _,_,_ in sends += 1; throw APIError.invalidResponse }
+        manager = ConversationManager(services:services); await manager!.restore(loadRemoteModels:false)
+        approved = true; await manager!.synchronizeCloudAgentState()
+        XCTAssertEqual(manager?.session?.accountId,new); XCTAssertEqual(sends,0)
+        let previous = try await journal.snapshot(accountID:old), current = try await journal.snapshot(accountID:new)
+        XCTAssertEqual(previous.intents.values.first?.phase,.prepared); XCTAssertTrue(current.intents.isEmpty)
+        manager?.connectivityChanged(false); manager = nil
+    }
+
+    func testCloudDeletionAfterAmbiguousSendBlocksPreservationWithoutResurrection() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let account = UUID().uuidString.lowercased(), ledger = HermesLegacyLedger(root:root.appendingPathComponent("ledger"))
+        let journal = HermesLegacyExportJournal(root:root.appendingPathComponent("export")); try await preserve(ledger,account:account)
+        let auth = NativeSession(accessToken:"legacy",refreshToken:"legacy",expiresAt:.distantFuture,accountId:account)
+        var approved = false, sent: CloudAgentMutation?, sends = 0
+        var services = isolatedServices(load:{auth}); configure(&services,root:root,ledger:ledger,journal:journal)
+        services.hermesConsent = { _ in .init(accountId:account,cloudEnabled:true,revision:1,exportSources:approved ? ["legacy-native-memory"] : []) }
+        services.hermesChanges = { after,_ in
+            guard let op = sent else { return .init(accountId:account,changes:[],cursor:after,hasMore:false) }
+            let erased = CloudAgentChange(operationId:op.operationId,objectId:op.objectId,versionId:op.versionId,
+                deviceId:op.deviceId,kind:op.kind,parents:op.parents,deleted:false,value:nil,cursor:1,erased:true)
+            let deletion = CloudAgentChange(operationId:UUID().uuidString.lowercased(),objectId:op.objectId,versionId:UUID().uuidString.lowercased(),
+                deviceId:op.deviceId,kind:op.kind,parents:[op.versionId],deleted:true,value:nil,cursor:2,erased:false)
+            return .init(accountId:account,changes:[erased,deletion].filter { $0.cursor > after },cursor:max(after,2),hasMore:false)
+        }
+        services.hermesMutations = { _,operations,_ in sends += 1; sent = operations.first; throw URLError(.networkConnectionLost) }
+        let manager = ConversationManager(services:services); await manager.restore(loadRemoteModels:false)
+        approved = true; await manager.synchronizeCloudAgentState(); await manager.synchronizeCloudAgentState(); await manager.synchronizeCloudAgentState()
+        XCTAssertEqual(sends,1)
+        let state = try await journal.snapshot(accountID:account)
+        XCTAssertEqual(state.intents.values.first?.phase,.blocked)
+        XCTAssertTrue(manager.cloudAgentObjects.contains { $0.id == sent?.objectId && $0.deleted })
+        manager.connectivityChanged(false)
+    }
+
+}

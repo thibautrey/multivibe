@@ -87,6 +87,29 @@ import Network
         let root = source.deletingLastPathComponent().appendingPathComponent("hermes-legacy", isDirectory: true)
         try await HermesLegacyLedger(root: root).preserveHistory(data, accountID: account)
     }
+    var legacySnapshot: @MainActor (URL, String) async throws -> HermesLegacyLedgerSnapshot? = { source, account in
+        try await HermesLegacyLedger(root: source.deletingLastPathComponent().appendingPathComponent("hermes-legacy", isDirectory: true)).snapshot(accountID: account)
+    }
+    var legacyExportSnapshot: @MainActor (URL, String) async throws -> HermesLegacyExportJournal.Snapshot = { source, account in
+        try await HermesLegacyExportJournal(root: source.deletingLastPathComponent().appendingPathComponent("hermes-legacy-export", isDirectory: true)).snapshot(accountID: account)
+    }
+    var legacyExportPrepare: @MainActor (URL, HermesLegacyConversion, String, String, [String], CloudHermesConsent) async throws -> HermesLegacyExportJournal.Intent = { source, conversion, account, device, parents, consent in
+        try await HermesLegacyExportJournal(root: source.deletingLastPathComponent().appendingPathComponent("hermes-legacy-export", isDirectory: true))
+            .prepare(conversion, accountID: account, deviceID: device, parents: parents, consent: consent)
+    }
+    var legacyExportQueue: @MainActor (URL, String, String, CloudHermesConsent) async throws -> HermesLegacyExportJournal.Intent = { source, account, operation, consent in
+        try await HermesLegacyExportJournal(root: source.deletingLastPathComponent().appendingPathComponent("hermes-legacy-export", isDirectory: true))
+            .queue(accountID: account, operationID: operation, consent: consent)
+    }
+    var legacyExportReconcile: @MainActor (URL, String, [CloudAgentChange]) async throws -> HermesLegacyExportJournal.Snapshot = { source, account, changes in
+        try await HermesLegacyExportJournal(root: source.deletingLastPathComponent().appendingPathComponent("hermes-legacy-export", isDirectory: true))
+            .reconcile(accountID: account, changes: changes)
+    }
+    var legacyExportAcknowledge: @MainActor (URL, String, [CloudAgentMutation], CloudAgentReceipts) async throws -> HermesLegacyExportJournal.Snapshot = { source, account, submitted, receipts in
+        try await HermesLegacyExportJournal(root: source.deletingLastPathComponent().appendingPathComponent("hermes-legacy-export", isDirectory: true))
+            .acknowledge(accountID: account, submitted: submitted, reply: receipts)
+    }
+
 }
 
 @MainActor @Observable final class ConversationManager {
@@ -439,6 +462,18 @@ import Network
         // Return the durable identity, not a success claim: the UI verifies the exact acknowledged head.
         return mutation.versionId
     }
+    private static func legacySourcesApproved(record: HermesLegacyRecord, consent: CloudHermesConsent) -> Bool {
+        guard consent.cloudEnabled, let provenance = record.provenance else { return false }
+        let family: String
+        switch provenance.source {
+        case "nativeConversation", "nativeMessage": family = "legacy-native-history"
+        case "nativeMemory": family = "legacy-native-memory"
+        case "cloudConversation", "cloudRepositoryNode": family = "legacy-cloud-history"
+        default: return false
+        }
+        let approved = Set(consent.exportSources ?? [])
+        return approved.contains(family) && (provenance.guestOrigin == nil || approved.contains("legacy-guest"))
+    }
     private(set) var discoveredCloudRuns:[String:CloudHermesRun] = [:]
     /// State-only journal exchange: never starts, resumes or replays an execution.
     func synchronizeCloudAgentState() async {
@@ -466,6 +501,27 @@ import Network
                 guard sessionRevision == epoch, cloudAgentSyncToken==owner, session?.accountId == auth.accountId else { throw CancellationError() }
                 try Task.checkCancellation()
             }
+            let legacySource = try storageURL()
+            var exportJournal = try await services.legacyExportSnapshot(legacySource, auth.accountId); try current()
+            func settleConfirmedExports() throws {
+                guard var state = cloudAgentState else { throw CancellationError() }
+                let previous = state
+                for intent in exportJournal.intents.values where intent.phase == .receiptConfirmed || intent.phase == .blocked {
+                    let related = state.outbox.filter { $0.operationId == intent.mutation.operationId || $0.versionId == intent.mutation.versionId }
+                    guard related.allSatisfy({ $0 == intent.mutation }) else { throw APIError.server(409,"agent_operation_reused") }
+                    state.outbox.removeAll { $0 == intent.mutation }
+                }
+                state.memoryWriteScopes = state.memoryWriteScopes?.filter { id, _ in state.outbox.contains { $0.operationId == id } }
+                if state != previous {
+                    cloudAgentState = state
+                    guard persist() else { cloudAgentState = previous; throw APIError.server(0,"history_cache_write_failed") }
+                }
+            }
+            if !exportJournal.intents.isEmpty, let restored = cloudAgentState {
+                exportJournal = try await services.legacyExportReconcile(legacySource, auth.accountId,
+                    restored.objects.values.flatMap { Array($0.versions.values) }); try current()
+            }
+            try settleConfirmedExports()
             func pull() async throws {
                 while let state=cloudAgentState {
                     try current()
@@ -482,6 +538,10 @@ import Network
                         }
                     }
                     guard persist() else { remoteHermes=previousRemote;cloudAgentState=previous;throw APIError.server(0,"history_cache_write_failed") }
+                    if !exportJournal.intents.isEmpty {
+                        exportJournal = try await services.legacyExportReconcile(legacySource, auth.accountId, page.changes); try current()
+                        try settleConfirmedExports()
+                    }
                     if !page.hasMore { break }
                 }
             }
@@ -532,16 +592,57 @@ import Network
                     cloudAgentState=next;pendingCloudArtifacts[index].phase = .uploaded
                     guard persist() else { cloudAgentState=previous;pendingCloudArtifacts[index]=old;throw APIError.server(0,"history_cache_write_failed") }
                 }
+                let ledger = try await services.legacySnapshot(legacySource, auth.accountId); try current()
+                if let ledger {
+                    for conversion in ledger.conversions {
+                        try current()
+                        let opID = conversion.operationID.uuidString.lowercased()
+                        if let saved = exportJournal.intents[opID], saved.phase == .blocked || saved.phase == .receiptConfirmed { continue }
+                        guard Self.legacySourcesApproved(record: conversion.record, consent: consent) else { continue }
+                        guard let state = cloudAgentState else { throw CancellationError() }
+                        let mapped = try HermesLegacyExportJournal.mappedObjectID(record: conversion.record, snapshot: exportJournal)
+                        if let mapped, let object = state.objects[mapped], object.deleted || object.heads.count > 1 || state.conflicts[mapped] != nil { continue }
+                        let parents = mapped.flatMap { state.objects[$0]?.heads } ?? []
+                        // New intent is durable before enqueue. Existing intent retains its original captured parents.
+                        let prepared: HermesLegacyExportJournal.Intent
+                        do {
+                            prepared = try await services.legacyExportPrepare(legacySource, conversion, auth.accountId,
+                                ledger.deviceID.uuidString.lowercased(), parents, consent); try current()
+                        } catch HermesLegacyEnvelopeCodec.Failure.tooLarge { continue }
+                        exportJournal.intents[opID] = prepared
+                        exportJournal.mappings[prepared.identity] = prepared.mutation.objectId
+                        let fresh = try await services.hermesConsent(auth.accessToken); try current()
+                        guard fresh.accountId == auth.accountId else { throw APIError.invalidResponse }
+                        guard Self.legacySourcesApproved(record: conversion.record, consent: fresh) else { continue }
+                        let queued = try await services.legacyExportQueue(legacySource, auth.accountId, opID, fresh); try current()
+                        exportJournal.intents[opID] = queued
+                        guard var next = cloudAgentState else { throw CancellationError() }
+                        if let object = next.objects[queued.mutation.objectId], object.deleted || object.heads.count > 1 { continue }
+                        let previous = next
+                        try next.enqueue(queued.mutation); cloudAgentState = next
+                        guard persist() else { cloudAgentState = previous; throw APIError.server(0,"history_cache_write_failed") }
+                    }
+                }
                 while let state=cloudAgentState, !state.outbox.isEmpty {
+                    let sendConsent = try await services.hermesConsent(auth.accessToken); try current()
+                    guard sendConsent.accountId == auth.accountId else { throw APIError.invalidResponse }
+                    if !sendConsent.cloudEnabled { break }
+
                     var batch:[CloudAgentMutation]=[]
                     let blockedLocalSessions = Set(state.outbox.compactMap { operation -> String? in
                         if operation.kind == "session", operation.value?.object?["historyAnchor"] != nil, operation.value?.object?["localTurnId"] == nil { return nil }
                         guard let source = operation.value?.object?["localSource"]?.string else { return nil }
                         let owner = operation.kind == "session" ? operation.objectId : operation.value?.object?["sessionId"]?.string
-                        let approved = (consent.exportSources ?? []).contains(source) && cloudHermesBindings.values.contains(where: { $0.accountId == auth.accountId && $0.permitsLocalOperation(operation) })
+                        let approved = (sendConsent.exportSources ?? []).contains(source) && cloudHermesBindings.values.contains(where: { $0.accountId == auth.accountId && $0.permitsLocalOperation(operation) })
                         return approved ? nil : owner
                     })
                     let allowed = state.outbox.filter { operation in
+                        if operation.value?.object?["type"]?.string == "hermes-legacy-preservation" {
+                            guard let intent = exportJournal.intents[operation.operationId], intent.phase == .queued,
+                                  intent.mutation == operation, !operation.deleted,
+                                  Set(intent.requiredSources).isSubset(of: Set(sendConsent.exportSources ?? [])) else { return false }
+                            return state.objects[operation.objectId]?.deleted != true && state.conflicts[operation.objectId] == nil
+                        }
                         if let writer = state.memoryWriteScopes?[operation.operationId] {
                             guard let conversation = UUID(uuidString: writer), let binding = cloudHermesBindings[conversation],
                                 binding.accountId == auth.accountId, binding.cloudAuthorized != false,
@@ -551,7 +652,7 @@ import Network
                         if operation.kind == "session", operation.value?.object?["historyAnchor"] != nil, operation.value?.object?["localTurnId"] == nil { return true }
                         guard let source = operation.value?.object?["localSource"]?.string else { return true }
                         guard let owner = operation.kind == "session" ? operation.objectId : operation.value?.object?["sessionId"]?.string else { return false }
-                        return !blockedLocalSessions.contains(owner) && (consent.exportSources ?? []).contains(source)
+                        return !blockedLocalSessions.contains(owner) && (sendConsent.exportSources ?? []).contains(source)
                     }
                     if allowed.isEmpty { break }
                     for operation in allowed.prefix(100) {
@@ -560,7 +661,16 @@ import Network
                     }
                     guard !batch.isEmpty else { throw APIError.server(413,"agent_batch_too_large") }
                     let reply=try await services.hermesMutations(auth.accountId,batch,auth.accessToken);try current()
-                    let previous=cloudAgentState!
+                    _ = try cloudAgentState!.acknowledging(reply,submitted:batch)
+                    let legacyBatch = batch.filter { exportJournal.intents[$0.operationId]?.mutation == $0 }
+                    let legacyIDs = Set(legacyBatch.map(\.operationId))
+                    let legacyReceipts = reply.receipts.filter { legacyIDs.contains($0.operationId) }
+                    if !legacyReceipts.isEmpty {
+                        exportJournal = try await services.legacyExportAcknowledge(legacySource, auth.accountId, legacyBatch,
+                            .init(accountId: reply.accountId, receipts: legacyReceipts)); try current()
+                    }
+                    // Rebase receipt handling on the current state after journal actor suspension.
+                    let previous = cloudAgentState!
                     cloudAgentState=try previous.acknowledging(reply,submitted:batch)
                     let acknowledged=Set(reply.receipts.map(\.operationId))
                     let oldPending=pendingCloudArtifacts
