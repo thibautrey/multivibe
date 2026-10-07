@@ -154,6 +154,15 @@ enum HermesLegacyExtractor {
 /// Explicit local-only adapter. Calling this never queues a Cloud mutation or changes consent.
 /// Collection order is not revision chronology: batch tombstones are accepted after preserved live entries.
 extension HermesLegacyLedger {
+    /// Account-local preservation transaction: original bytes survive even when parsing/conversion rejects them.
+    /// No suspension between archive, extraction and conversion; publication remains converted-only.
+    @discardableResult
+    func preserveHistory(_ original: Data, accountID: String?) throws -> HermesLegacyLedgerSnapshot {
+        try archive(original, accountID: accountID)
+        let extraction = try HermesLegacyExtractor.extract(original)
+        return try convertExtraction(extraction, accountID: accountID)
+    }
+
     @discardableResult
     func convertExtraction(_ extraction: HermesLegacyExtraction, accountID: String?) throws -> HermesLegacyLedgerSnapshot {
         let archiveDigest = SHA256.hash(data: extraction.original).map { String(format: "%02x", $0) }.joined()

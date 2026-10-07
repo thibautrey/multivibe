@@ -82,10 +82,10 @@ import Network
     var models: @MainActor (String) async throws -> [ModelOption] = { try await ChatAPI.shared.models(token: $0) }
     var lastUsedModel: @MainActor (String) -> String? = { LastUsedModelStore.model(for: $0) }
     var rememberLastUsedModel: @MainActor (String, String) -> Void = { LastUsedModelStore.save($0, for: $1) }
-    /// Device-only byte preservation. This does not convert records or grant Cloud consent.
+    /// Device-only raw preservation and local conversion; this grants no inference or Cloud consent.
     var preserveLegacyHistory: @MainActor (Data, URL, String?) async throws -> Void = { data, source, account in
         let root = source.deletingLastPathComponent().appendingPathComponent("hermes-legacy", isDirectory: true)
-        try await HermesLegacyLedger(root: root).archive(data, accountID: account)
+        try await HermesLegacyLedger(root: root).preserveHistory(data, accountID: account)
     }
 }
 
