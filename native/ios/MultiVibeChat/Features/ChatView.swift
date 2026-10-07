@@ -1893,6 +1893,7 @@ private struct AccountProfileView: View {
     @State private var profileFailed = false
     @State private var balanceFailed = false
     @State private var billingPresented = false
+    @State private var legacyArchivesPresented = false
 
     private var isSignedIn: Bool { manager.session != nil }
     private var email: String? { profile?.email }
@@ -1945,6 +1946,11 @@ private struct AccountProfileView: View {
             .sheet(isPresented: $billingPresented, onDismiss: { Task { await reloadBalance() } }) {
                 if let accountId = manager.session?.accountId {
                     CloudBillingView(accountId: accountId)
+                }
+            }
+            .sheet(isPresented: $legacyArchivesPresented) {
+                if let accountId = manager.session?.accountId {
+                    LegacyArchivesConsentView(accountID: accountId).id(accountId)
                 }
             }
         }
@@ -2014,6 +2020,12 @@ private struct AccountProfileView: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("openCloudBilling")
+            AccountSettingsDivider()
+            Button { legacyArchivesPresented = true } label: {
+                AccountSettingsRow(icon: "archivebox", title: "Archives de cet appareil", showsChevron: true)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("openLegacyArchivesConsent")
             if balanceFailed {
                 AccountSettingsDivider()
                 Button("Réessayer le chargement du solde", systemImage: "arrow.clockwise") {
@@ -2538,6 +2550,160 @@ private struct ProviderConnectView: View {
 }
 
 
+/// Account-wide archive publication is separate from per-conversation inference authorization.
+private struct LegacyArchivesConsentView: View {
+    let accountID: String
+    @Environment(ConversationManager.self) private var manager
+    @Environment(\.dismiss) private var dismiss
+    @State private var discovery: ConversationManager.LegacyExportDiscovery?
+    @State private var selected: Set<String> = []
+    @State private var busy = false
+    @State private var error: String?
+    @State private var status: String?
+    @State private var requestID = UUID()
+
+    private var families: [ConversationManager.LegacyExportSource] {
+        discovery?.sources.filter { $0.id != "legacy-guest" } ?? []
+    }
+    private var guest: ConversationManager.LegacyExportSource? {
+        discovery?.sources.first { $0.id == "legacy-guest" }
+    }
+    private var canSelectGuest: Bool {
+        families.contains { selected.contains($0.id) && $0.guestCount > 0 }
+    }
+    private var unavailableApprovals: Bool {
+        guard let discovery else { return false }
+        return !Set(discovery.approvedSources).subtracting(Set(discovery.sources.map(\.id))).isEmpty
+    }
+    private func selection(_ source: String) -> Binding<Bool> {
+        Binding(get: { selected.contains(source) }, set: { checked in
+            if checked { selected.insert(source) } else { selected.remove(source) }
+            if !canSelectGuest { selected.remove("legacy-guest") }
+            status = nil
+        })
+    }
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Conserver vos archives dans Cloud") {
+                    Text("Choisissez les archives de ce compte que vous autorisez à envoyer. Les nouvelles catégories restent désactivées jusqu’à votre accord.")
+                    Text("Les archives envoyées sont chiffrées au repos et lisibles par le serveur. Ce stockage n’est pas chiffré de bout en bout.")
+                    Text("La conservation des archives n’autorise pas automatiquement leur utilisation pour l’inférence par les modèles. Cette autorisation reste distincte des réglages d’une conversation Hermes.")
+                    Text("Une autorisation d’envoi active l’espace Cloud si nécessaire. Aucun appel de modèle ni aucune commande n’est lancé par cet écran.")
+                }
+                if let discovery {
+                    if families.isEmpty {
+                        Section { Text("Aucune archive disponible pour ce compte sur cet appareil.").foregroundStyle(.secondary) }
+                    } else {
+                        Section("Archives disponibles") {
+                            ForEach(families) { source in
+                                Toggle(isOn: selection(source.id)) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(source.title)
+                                        Text("\(source.count) éléments conservés · \(source.exportableCount) pouvant être envoyés")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                        if source.guestCount > 0 {
+                                            Text("Dont \(source.guestCount) éléments provenant du mode invité")
+                                                .font(.caption).foregroundStyle(.secondary)
+                                        }
+                                        if source.exportableCount < source.count {
+                                            Text("Les éléments trop volumineux ou non compatibles restent conservés sur cet appareil.")
+                                                .font(.caption).foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                                .accessibilityIdentifier("legacyArchiveSource-" + source.id)
+                                .disabled(busy)
+                            }
+                        }
+                    }
+                    if let guest {
+                        Section("Archives provenant du mode invité") {
+                            Toggle(isOn: selection("legacy-guest")) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("J’autorise aussi les archives du mode invité")
+                                    Text("\(guest.count) éléments · \(guest.exportableCount) pouvant être envoyés")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            .disabled(busy || !canSelectGuest)
+                            .accessibilityIdentifier("legacyArchiveGuestConsent")
+                            Text("Sélectionnez une catégorie contenant des archives invitées pour activer cette autorisation supplémentaire. Les archives invitées ne sont pas envoyées avec la seule autorisation de leur catégorie.")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                    }
+                    if unavailableApprovals {
+                        Section {
+                            Text("Certaines autorisations concernent des archives absentes de cet appareil. Enregistrer retirera ces autorisations d’archives.")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Section {
+                        Button(busy ? "Enregistrement…" : "Enregistrer les autorisations") {
+                            Task { await save(selected.sorted()) }
+                        }
+                        .disabled(busy || (selected.contains("legacy-guest") && !canSelectGuest))
+                        .accessibilityIdentifier("saveLegacyArchivesConsent")
+                        if !discovery.approvedSources.isEmpty {
+                            Button("Retirer toutes les autorisations d’archives", role: .destructive) {
+                                Task { await save([]) }
+                            }
+                            .disabled(busy)
+                            .accessibilityIdentifier("revokeLegacyArchivesConsent")
+                        }
+                        Text("Retirer une autorisation arrête les nouveaux envois. Les archives déjà envoyées restent dans Cloud et les copies de cet appareil sont conservées.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                } else if busy { Section { ProgressView("Chargement des archives…") } }
+                if let status { Section { Text(status).foregroundStyle(.secondary) } }
+                if let error { Section { Text(error).foregroundStyle(.red) } }
+                Section {
+                    Button("Actualiser les archives et les autorisations") { Task { await load() } }
+                        .disabled(busy).accessibilityIdentifier("reloadLegacyArchivesConsent")
+                }
+            }
+            .navigationTitle("Archives de cet appareil")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Fermer") { dismiss() }.disabled(busy) } }
+            .interactiveDismissDisabled(busy)
+            .task(id: accountID) { await load() }
+            .onChange(of: manager.session?.accountId) { _, current in
+                if current != accountID { requestID = UUID(); discovery = nil; selected = []; dismiss() }
+            }
+            .onDisappear { requestID = UUID() }
+        }
+    }
+    @MainActor private func load() async {
+        guard !busy, manager.session?.accountId == accountID else { return }
+        let owner = UUID(); requestID = owner; busy = true; error = nil; status = nil
+        defer { if requestID == owner { busy = false } }
+        do {
+            let result = try await manager.discoverLegacyExports()
+            guard !Task.isCancelled, requestID == owner, manager.session?.accountId == accountID, result.accountID == accountID else { return }
+            discovery = result
+            selected = Set(result.approvedSources).intersection(Set(result.sources.map(\.id)))
+        } catch {
+            guard !Task.isCancelled, requestID == owner, manager.session?.accountId == accountID else { return }
+            self.error = error.localizedDescription
+        }
+    }
+    @MainActor private func save(_ sources: [String]) async {
+        guard !busy, discovery?.accountID == accountID, manager.session?.accountId == accountID else { return }
+        let owner = UUID(); requestID = owner; busy = true; error = nil; status = nil
+        defer { if requestID == owner { busy = false } }
+        do {
+            let result = try await manager.setLegacyExportConsent(selectedSources: sources)
+            guard !Task.isCancelled, requestID == owner, manager.session?.accountId == accountID, result.accountID == accountID else { return }
+            discovery = result; selected = Set(result.approvedSources).intersection(Set(result.sources.map(\.id)))
+            status = sources.isEmpty ? "Autorisations d’archives retirées." : "Autorisations d’archives enregistrées. Les envois autorisés reprendront avec la connexion."
+        } catch {
+            guard !Task.isCancelled, requestID == owner, manager.session?.accountId == accountID else { return }
+            if case APIError.server(409, _) = error {
+                self.error = "Les autorisations ont changé ailleurs. Actualisez-les avant de réessayer."
+            } else { self.error = error.localizedDescription }
+        }
+    }
+}
+
 private struct CloudHermesConsentView: View {
     @Environment(ConversationManager.self) private var manager
     @Environment(\.dismiss) private var dismiss
@@ -2580,7 +2746,7 @@ private struct CloudHermesConsentView: View {
                 Section("Contexte Cloud pour le modèle local") {
                     Text("Choisissez la mémoire, les skills et les fichiers texte accessibles au modèle local. Ses modifications des fichiers sélectionnés et les nouveaux fichiers qu’il crée dans le projet choisi sont enregistrés sur cet appareil puis synchronisés. Ces contenus restent des données non fiables. Les scripts des skills ne sont pas exécutés. Aucun document ou souvenir natif n’est importé.")
                     Button("Actualiser les objets") { Task { await manager.synchronizeCloudAgentState() } }.disabled(manager.cloudAgentSyncing)
-                    ForEach(manager.cloudAgentObjects.filter { $0.kind == "memory" && !$0.deleted && !$0.conflicted }) { item in
+                    ForEach(manager.cloudAgentObjects.filter { $0.kind == "memory" && !$0.deleted && !$0.conflicted && $0.value?.object?["type"]?.string == "hermes_core_memory" }) { item in
                         Toggle("Mémoire · \(item.title)",isOn:selectionBinding(item.id,in:$memoryIDs))
                     }
                     Toggle("Autoriser le modèle local à modifier les mémoires Hermes sélectionnées",isOn:$memoryWritable)
