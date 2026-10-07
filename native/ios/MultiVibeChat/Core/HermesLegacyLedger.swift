@@ -14,7 +14,6 @@ struct HermesLegacyRecord: Codable, Equatable, Sendable {
     let deleted: Bool
     /// Explicit retrieval policy, separate from preservation of invalid/proposed/expired memories.
     let inferenceUsable: Bool
-    var usableForInference: Bool { inferenceUsable && !deleted }
 }
 
 struct HermesLegacyConversion: Codable, Equatable, Sendable {
@@ -42,6 +41,45 @@ struct HermesLegacyLedgerSnapshot: Codable, Equatable, Sendable {
     var bindings: [String: Binding] = [:]
     var conversions: [HermesLegacyConversion] = []
     var quarantine: [Quarantine] = []
+
+    /// Latest means last locally accepted entry, never lexical/chronological revision ordering.
+    /// Any accepted tombstone excludes the entire identity, including its preserved older payloads.
+    var inferenceCandidates: [HermesLegacyRecord] {
+        var latest: [LegacyIdentity: HermesLegacyRecord] = [:]
+        var deleted = Set<LegacyIdentity>()
+        for conversion in conversions {
+            let record = conversion.record
+            let identity = LegacyIdentity(record)
+            latest[identity] = record
+            if record.deleted { deleted.insert(identity) }
+        }
+        return conversions.compactMap { conversion in
+            let record = conversion.record
+            let identity = LegacyIdentity(record)
+            guard !deleted.contains(identity), record.inferenceUsable,
+                  latest[identity]?.revision == record.revision else { return nil }
+            return record
+        }
+    }
+}
+
+private struct LegacyIdentity: Hashable {
+    let kind: String
+    let id: String
+    init(_ record: HermesLegacyRecord) { kind = record.kind.rawValue; id = record.id }
+}
+
+/// Locks only this app process; this is not an app-group or cross-process coordination protocol.
+private final class LegacyLedgerLocks: @unchecked Sendable {
+    static let shared = LegacyLedgerLocks()
+    private let registryLock = NSLock()
+    private var roots: [String: NSLock] = [:]
+    func lock(for root: URL) -> NSLock {
+        registryLock.lock(); defer { registryLock.unlock() }
+        let key = root.standardizedFileURL.resolvingSymlinksInPath().path
+        if let existing = roots[key] { return existing }
+        let created = NSLock(); roots[key] = created; return created
+    }
 }
 
 enum HermesLegacyLedgerError: Error { case invalid, unsupportedVersion, tooLarge }
@@ -51,6 +89,7 @@ enum HermesLegacyLedgerError: Error { case invalid, unsupportedVersion, tooLarge
 actor HermesLegacyLedger {
     static let maximumBytes = 32 * 1_048_576
     private let root: URL
+    private let transactionLock: NSLock
     private let writeFile: @Sendable (Data, URL) throws -> Void
     init(root: URL, writeFile: @escaping @Sendable (Data, URL) throws -> Void = { data, url in
         #if os(iOS)
@@ -58,7 +97,11 @@ actor HermesLegacyLedger {
         #else
         try data.write(to: url, options: .atomic)
         #endif
-    }) { self.root = root; self.writeFile = writeFile }
+    }) {
+        self.root = root.standardizedFileURL.resolvingSymlinksInPath()
+        self.transactionLock = LegacyLedgerLocks.shared.lock(for: self.root)
+        self.writeFile = writeFile
+    }
 
     private func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
@@ -70,6 +113,11 @@ actor HermesLegacyLedger {
     private func location(_ scope: String) -> URL { root.appendingPathComponent(scope + ".json") }
 
     func snapshot(accountID: String?) throws -> HermesLegacyLedgerSnapshot? {
+        transactionLock.lock(); defer { transactionLock.unlock() }
+        return try readSnapshot(accountID: accountID)
+    }
+
+    private func readSnapshot(accountID: String?) throws -> HermesLegacyLedgerSnapshot? {
         let namespace = try scope(accountID)
         let url = location(namespace)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
@@ -80,14 +128,48 @@ actor HermesLegacyLedger {
         let result = try JSONDecoder().decode(HermesLegacyLedgerSnapshot.self, from: data)
         guard result.formatVersion == 1 else { throw HermesLegacyLedgerError.unsupportedVersion }
         guard result.scope == namespace else { throw HermesLegacyLedgerError.invalid }
+        try validate(result)
         return result
+    }
+
+    private func validate(_ snapshot: HermesLegacyLedgerSnapshot) throws {
+        let zero = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+        var identifiers = Set<UUID>()
+        func claim(_ id: UUID) throws {
+            guard id != zero, identifiers.insert(id).inserted else { throw HermesLegacyLedgerError.invalid }
+        }
+        try claim(snapshot.deviceID)
+        for binding in snapshot.bindings.values {
+            try claim(binding.bindingID); try claim(binding.sessionID); try claim(binding.branchID)
+        }
+        var revisions: [LegacyIdentity: Set<String>] = [:]
+        var containers: [LegacyIdentity: String] = [:]
+        var tombstones = Set<LegacyIdentity>()
+        var usedBindings = Set<String>()
+        for conversion in snapshot.conversions {
+            let record = conversion.record
+            let identity = LegacyIdentity(record)
+            guard !record.id.isEmpty, !record.revision.isEmpty,
+                  conversion.digest == digest(record.payload),
+                  !(revisions[identity]?.contains(record.revision) ?? false),
+                  containers[identity].map({ $0 == record.container }) ?? true,
+                  record.deleted || !tombstones.contains(identity),
+                  conversion.publication == .converted else { throw HermesLegacyLedgerError.invalid }
+            revisions[identity, default: []].insert(record.revision)
+            containers[identity] = record.container
+            if record.deleted { tombstones.insert(identity) }
+            usedBindings.insert((record.kind == .memory ? "memory:" : "conversation:") + record.container)
+            try claim(conversion.operationID); try claim(conversion.versionID)
+        }
+        guard usedBindings == Set(snapshot.bindings.keys) else { throw HermesLegacyLedgerError.invalid }
     }
 
     /// Atomic batch; exact repeats do not write. Raw payloads and every accepted revision remain intact.
     @discardableResult
     func convert(_ records: [HermesLegacyRecord], accountID: String?) throws -> HermesLegacyLedgerSnapshot {
+        transactionLock.lock(); defer { transactionLock.unlock() }
         let namespace = try scope(accountID)
-        let prior = try snapshot(accountID: accountID)
+        let prior = try readSnapshot(accountID: accountID)
         var next = prior ?? .init(formatVersion: 1, scope: namespace, deviceID: UUID())
         for record in records {
             guard !record.id.isEmpty, !record.revision.isEmpty,
@@ -117,6 +199,7 @@ actor HermesLegacyLedger {
             next.conversions.append(.init(record: record, digest: hash, operationID: UUID(), versionID: UUID()))
         }
         if prior == next { return next }
+        try validate(next)
         let data = try JSONEncoder().encode(next)
         guard data.count <= Self.maximumBytes else { throw HermesLegacyLedgerError.tooLarge }
         var attributes: [FileAttributeKey: Any] = [.posixPermissions: 0o700]

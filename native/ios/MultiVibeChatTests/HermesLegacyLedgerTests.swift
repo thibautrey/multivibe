@@ -18,7 +18,7 @@ final class HermesLegacyLedgerTests: XCTestCase {
         XCTAssertEqual(first.conversions.first?.record.payload, original.payload)
         XCTAssertEqual(first.conversions.first?.record.id, "memory-original")
         XCTAssertEqual(first.conversions.first?.publication, .converted)
-        XCTAssertFalse(first.conversions[0].record.usableForInference)
+        XCTAssertTrue(first.inferenceCandidates.isEmpty)
         let noWrite = HermesLegacyLedger(root: root, writeFile: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
         let repeated = try await noWrite.convert([original], accountID: "a")
         XCTAssertEqual(repeated, first)
@@ -75,6 +75,60 @@ final class HermesLegacyLedgerTests: XCTestCase {
             XCTFail("Expected corrupt ledger rejection")
         } catch {}
         XCTAssertEqual(try Data(contentsOf: url), corrupt)
+    }
+
+    func testValidJSONPayloadTamperingIsRejectedWithoutReplacement() async throws {
+        let root = directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let ledger = HermesLegacyLedger(root: root)
+        _ = try await ledger.convert([record()], accountID: "a")
+        let url = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).first)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        var conversions = try XCTUnwrap(object["conversions"] as? [[String: Any]])
+        var source = try XCTUnwrap(conversions[0]["record"] as? [String: Any])
+        source["payload"] = Data("tampered".utf8).base64EncodedString()
+        conversions[0]["record"] = source; object["conversions"] = conversions
+        let tampered = try JSONSerialization.data(withJSONObject: object)
+        try tampered.write(to: url, options: .atomic)
+        do {
+            _ = try await ledger.convert([record("r2")], accountID: "a")
+            XCTFail("Expected digest validation failure")
+        } catch {}
+        XCTAssertEqual(try Data(contentsOf: url), tampered)
+    }
+
+    func testConcurrentActorsRetainEveryAcceptedRecord() async throws {
+        let root = directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let actors = (0..<20).map { _ in HermesLegacyLedger(root: root) }
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for (index, ledger) in actors.enumerated() {
+                group.addTask {
+                    let item = HermesLegacyRecord(kind: .memory, id: "memory-\(index)", revision: "r1",
+                        container: "scope", payload: Data("payload-\(index)".utf8), deleted: false, inferenceUsable: true)
+                    _ = try await ledger.convert([item], accountID: "a")
+                }
+            }
+            try await group.waitForAll()
+        }
+        let snapshot = try await HermesLegacyLedger(root: root).snapshot(accountID: "a")
+        XCTAssertEqual(snapshot?.conversions.count, 20)
+        XCTAssertEqual(Set(snapshot?.conversions.map { $0.record.id } ?? []).count, 20)
+    }
+
+    func testTombstoneExcludesHistoricalUsableMemoryAndKeepsPayload() async throws {
+        let root = directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let ledger = HermesLegacyLedger(root: root)
+        let live = HermesLegacyRecord(kind: .memory, id: "memory", revision: "z",
+            container: "scope", payload: Data("original rich memory".utf8), deleted: false, inferenceUsable: true)
+        let newer = HermesLegacyRecord(kind: .memory, id: "memory", revision: "a",
+            container: "scope", payload: Data("locally accepted later".utf8), deleted: false, inferenceUsable: true)
+        let before = try await ledger.convert([live, newer], accountID: "a")
+        XCTAssertEqual(before.inferenceCandidates, [newer])
+        let dead = HermesLegacyRecord(kind: .memory, id: "memory", revision: "deleted",
+            container: "scope", payload: Data("original tombstone".utf8), deleted: true, inferenceUsable: false)
+        let after = try await ledger.convert([dead], accountID: "a")
+        XCTAssertTrue(after.inferenceCandidates.isEmpty)
+        XCTAssertEqual(after.conversions[0].record, live)
+        XCTAssertEqual(after.conversions[1].record, newer)
     }
 
 }
