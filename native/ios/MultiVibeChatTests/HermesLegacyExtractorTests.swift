@@ -135,4 +135,19 @@ final class HermesLegacyExtractorTests: XCTestCase {
         XCTAssertEqual(first.conversions[0].record.provenance?.archiveDigest.count, 64)
     }
 
+    func testAdapterParentMessageBindingsShareSourceFamilyAndSeparateGuest() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let extraction = try extract(#"{"conversations":[{"id":"parent","messages":[{"id":"message"}]}],"snapshot":{"conversations":[{"id":"parent","repository":{"messages":[{"message":{"id":"message"}}]}}]},"importedGuestSnapshots":["guest",{"id":"parent","messages":[{"id":"message"}]}]}"#)
+        let result = try await HermesLegacyLedger(root: root).convertExtraction(extraction, accountID: "a")
+        XCTAssertEqual(result.conversions.count, 6); XCTAssertTrue(result.quarantine.isEmpty)
+        XCTAssertEqual(result.bindings.count, 3)
+        XCTAssertEqual(result.bindings.keys.filter { $0.contains("native-history") }.count, 2)
+        XCTAssertEqual(result.bindings.keys.filter { $0.contains("cloud-history") }.count, 1)
+        XCTAssertEqual(result.conversions.map { $0.record.provenance?.source },
+            ["nativeConversation", "nativeMessage", "cloudConversation", "cloudRepositoryNode", "nativeConversation", "nativeMessage"])
+        let restored = try await HermesLegacyLedger(root: root).convertExtraction(extraction, accountID: "a")
+        XCTAssertEqual(restored, result)
+    }
+
 }
