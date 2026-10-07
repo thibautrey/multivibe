@@ -131,4 +131,60 @@ final class HermesLegacyLedgerTests: XCTestCase {
         XCTAssertEqual(after.conversions[1].record, newer)
     }
 
+    func testRawArchiveRestartPreservesUnknownFieldsAndFormatting() async throws {
+        let root = directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let original = Data(" { \"unknownTopLevel\": [1, {\"future\":true}], \"conversations\": [] }\n".utf8)
+        let ledger = HermesLegacyLedger(root: root)
+        let hash = try await ledger.archive(original, accountID: "account/a")
+        let restarted = HermesLegacyLedger(root: root, writeFile: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
+        let repeated = try await restarted.archive(original, accountID: "account/a")
+        let restored = try await restarted.archivedBytes(digest: hash, accountID: "account/a")
+        XCTAssertEqual(hash, repeated); XCTAssertEqual(restored, original)
+        let snapshot = try await restarted.snapshot(accountID: "account/a")
+        XCTAssertNil(snapshot) // Preservation does not create conversions or grant eligibility.
+    }
+
+    func testRawArchiveAccountGuestSeparation() async throws {
+        let root = directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let ledger = HermesLegacyLedger(root: root)
+        let bytes = Data("[]".utf8)
+        let hash = try await ledger.archive(bytes, accountID: "a")
+        let absentGuest = try await ledger.archivedBytes(digest: hash, accountID: nil)
+        let absentB = try await ledger.archivedBytes(digest: hash, accountID: "b")
+        XCTAssertNil(absentGuest); XCTAssertNil(absentB)
+        _ = try await ledger.archive(bytes, accountID: nil)
+        let guest = try await ledger.archivedBytes(digest: hash, accountID: nil)
+        XCTAssertEqual(guest, bytes)
+    }
+
+    func testCorruptRawArchiveFailsClosedWithoutReplacement() async throws {
+        let root = directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let ledger = HermesLegacyLedger(root: root)
+        let bytes = Data("original".utf8)
+        let hash = try await ledger.archive(bytes, accountID: "a")
+        let entries = try XCTUnwrap(FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)?.allObjects as? [URL])
+        let url = try XCTUnwrap(entries.first { $0.lastPathComponent == hash + ".raw" })
+        let corrupt = Data("corrupt".utf8); try corrupt.write(to: url, options: .atomic)
+        do { _ = try await ledger.archive(bytes, accountID: "a"); XCTFail("Expected corrupt archive failure") } catch {}
+        do { _ = try await ledger.archivedBytes(digest: hash, accountID: "a"); XCTFail("Expected read validation failure") } catch {}
+        XCTAssertEqual(try Data(contentsOf: url), corrupt)
+    }
+
+    func testRawArchiveBoundsAndDiskFailurePreserveSourceAndPriorArchive() async throws {
+        let root = directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let ledger = HermesLegacyLedger(root: root)
+        let source = root.appendingPathComponent("history-source.json")
+        let original = Data("original history".utf8)
+        let hash = try await ledger.archive(original, accountID: "a")
+        try original.write(to: source, options: .atomic)
+        let failing = HermesLegacyLedger(root: root, writeFile: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
+        do { _ = try await failing.archive(Data("new bytes".utf8), accountID: "a"); XCTFail("Expected disk failure") } catch {}
+        do {
+            _ = try await ledger.archive(Data(repeating: 0, count: HermesLegacyLedger.maximumBytes + 1), accountID: "a")
+            XCTFail("Expected archive size failure")
+        } catch HermesLegacyLedgerError.tooLarge {} catch { XCTFail("Unexpected error: \(error)") }
+        let restored = try await ledger.archivedBytes(digest: hash, accountID: "a")
+        XCTAssertEqual(restored, original); XCTAssertEqual(try Data(contentsOf: source), original)
+    }
+
 }
