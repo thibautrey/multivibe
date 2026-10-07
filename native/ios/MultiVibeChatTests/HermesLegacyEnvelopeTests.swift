@@ -70,4 +70,17 @@ final class HermesLegacyEnvelopeTests: XCTestCase {
         XCTAssertEqual(decoded.envelope.provenance.archiveSHA256, String(repeating: "b", count: 64))
         XCTAssertEqual(decoded.payload, Data(" {\"n\":9007199254740993123456789,\"future\":true}\n".utf8))
     }
+    func testEncodeRejectsOversizedUnsupportedSourceAndArchiveBeforeSerialization() throws {
+        let original = record(Data("{}".utf8))
+        let provenance = try XCTUnwrap(original.provenance)
+        for (source, archive) in [(String(repeating: "a", count: HermesLegacyEnvelopeCodec.maximumEnvelopeBytes + 1), provenance.archiveDigest),
+                                  ("unknown-source", provenance.archiveDigest),
+                                  (provenance.source, String(repeating: "a", count: HermesLegacyEnvelopeCodec.maximumEnvelopeBytes + 1))] {
+            var candidate = original
+            candidate.provenance = .init(source: source, guestOrigin: provenance.guestOrigin, sourcePath: provenance.sourcePath,
+                                         rawRange: provenance.rawRange, archiveDigest: archive)
+            XCTAssertThrowsError(try HermesLegacyEnvelopeCodec.encode(candidate))
+        }
+    }
+
 }
