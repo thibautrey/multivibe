@@ -38,6 +38,10 @@ import Network
     var hermesConsent: @MainActor (String) async throws -> CloudHermesConsent = { try await ChatAPI.shared.hermesConsent(token:$0) }
     var hermesEnable: @MainActor (String, Int, String) async throws -> CloudHermesConsent = { try await ChatAPI.shared.hermesSetConsent(accountId:$0,revision:$1,enabled:true,token:$2) }
     var hermesAuthorizeSources: @MainActor (String,Int,[String],String) async throws -> CloudHermesConsent = { try await ChatAPI.shared.hermesSetConsent(accountId:$0,revision:$1,enabled:true,token:$3,exportSources:$2) }
+    /// General consent CAS; disabling/revoking must preserve the caller's Cloud flag.
+    var hermesUpdateConsent: @MainActor (String, Int, Bool, [String], String) async throws -> CloudHermesConsent = { account, revision, enabled, sources, token in
+        try await ChatAPI.shared.hermesSetConsent(accountId: account, revision: revision, enabled: enabled, token: token, exportSources: sources)
+    }
     var hermesLocalCheckpoint: @Sendable (HermesRunContext) async throws -> String? = { try await HermesCheckpointStore.shared.completedMessages($0,engine:CloudHermesBinding.mobileEngine) }
     var hermesPrepare: @MainActor (String, CloudHermesBinding, String) async throws -> Void = { try await ChatAPI.shared.hermesPrepare(accountId:$0,binding:$1,token:$2) }
     var hermesCreate: @MainActor (String, CloudHermesRunInput, String) async throws -> CloudHermesRun = { try await ChatAPI.shared.hermesRun(accountId:$0,run:$1,token:$2) }
@@ -461,6 +465,116 @@ import Network
         guard cloudConflictReviewVisible(review) else { throw CancellationError() }
         // Return the durable identity, not a success claim: the UI verifies the exact acknowledged head.
         return mutation.versionId
+    }
+    struct LegacyExportSource: Identifiable, Equatable, Sendable {
+        let id: String
+        let title: String
+        let count: Int
+        let exportableCount: Int
+        let guestCount: Int
+    }
+    struct LegacyExportDiscovery: Equatable, Sendable {
+        let accountID: String
+        let sources: [LegacyExportSource]
+        let approvedSources: [String]
+        let cloudEnabled: Bool
+        let consentRevision: Int
+    }
+    private static let legacyExportScopes: Set<String> = ["legacy-native-history", "legacy-native-memory", "legacy-cloud-history", "legacy-guest"]
+    private static func legacyFamily(_ source: String) -> String? {
+        switch source {
+        case "nativeConversation", "nativeMessage": return "legacy-native-history"
+        case "nativeMemory": return "legacy-native-memory"
+        case "cloudConversation", "cloudRepositoryNode": return "legacy-cloud-history"
+        default: return nil
+        }
+    }
+    private static func validateLegacyLedger(_ ledger: HermesLegacyLedgerSnapshot?, account: String) throws {
+        if let ledger {
+            let scope = SHA256.hash(data: Data(("account:" + account).utf8)).map { String(format: "%02x", $0) }.joined()
+            guard ledger.formatVersion == 1, ledger.scope == scope else { throw APIError.invalidResponse }
+        }
+    }
+    private static func legacyDiscovery(account: String, ledger: HermesLegacyLedgerSnapshot?, consent: CloudHermesConsent) -> LegacyExportDiscovery {
+        let definitions = [("legacy-native-history", "Historique de cet appareil"), ("legacy-native-memory", "Mémoire de cet appareil"),
+            ("legacy-cloud-history", "Ancien historique Cloud"), ("legacy-guest", "Données conservées en mode invité")]
+        var sources: [LegacyExportSource] = []
+        for (id, title) in definitions {
+            let records = (ledger?.conversions ?? []).filter { conversion in
+                guard let provenance = conversion.record.provenance, legacyFamily(provenance.source) != nil else { return false }
+                return id == "legacy-guest" ? provenance.guestOrigin != nil : legacyFamily(provenance.source) == id
+            }
+            if !records.isEmpty {
+                sources.append(.init(id: id, title: title, count: records.count,
+                    exportableCount: records.filter { (try? HermesLegacyEnvelopeCodec.encode($0.record)) != nil }.count,
+                    guestCount: records.filter { $0.record.provenance?.guestOrigin != nil }.count))
+            }
+        }
+        return .init(accountID: account, sources: sources,
+            approvedSources: (consent.exportSources ?? []).filter { legacyExportScopes.contains($0) }.sorted(),
+            cloudEnabled: consent.cloudEnabled, consentRevision: consent.revision)
+    }
+    /// Reads preservation and live consent only. Discovery does not enqueue, authorize, or execute anything.
+    func discoverLegacyExports() async throws -> LegacyExportDiscovery {
+        guard !isRestoring, storageLoaded, session != nil else { throw CancellationError() }
+        let epoch = sessionRevision, restoration = restorationRevision
+        let auth = try await validSession()
+        guard sessionRevision == epoch, restorationRevision == restoration, session?.accountId == auth.accountId else { throw CancellationError() }
+        let source = try storageURL()
+        func current() throws {
+            guard !isRestoring, storageLoaded, sessionRevision == epoch, restorationRevision == restoration,
+                  session?.accountId == auth.accountId, try storageURL() == source else { throw CancellationError() }
+            try Task.checkCancellation()
+        }
+        let ledger = try await services.legacySnapshot(source, auth.accountId); try current()
+        try Self.validateLegacyLedger(ledger, account: auth.accountId)
+        let consent = try await services.hermesConsent(auth.accessToken); try current()
+        guard consent.accountId == auth.accountId, consent.revision >= 0,
+              Set(consent.exportSources ?? []).count == (consent.exportSources ?? []).count else { throw APIError.invalidResponse }
+        return Self.legacyDiscovery(account: auth.accountId, ledger: ledger, consent: consent)
+    }
+    /// Exact replacement of the four preservation grants only; all other authorizations survive.
+    @discardableResult
+    func setLegacyExportConsent(selectedSources: [String]) async throws -> LegacyExportDiscovery {
+        guard !isRestoring, storageLoaded, session != nil else { throw CancellationError() }
+        let selected = Set(selectedSources)
+        guard selected.count == selectedSources.count, selected.isSubset(of: Self.legacyExportScopes) else {
+            throw APIError.server(400, "invalid_legacy_export_sources")
+        }
+        let epoch = sessionRevision, restoration = restorationRevision
+        let auth = try await validSession()
+        guard sessionRevision == epoch, restorationRevision == restoration, session?.accountId == auth.accountId else { throw CancellationError() }
+        let source = try storageURL()
+        func current() throws {
+            guard !isRestoring, storageLoaded, sessionRevision == epoch, restorationRevision == restoration,
+                  session?.accountId == auth.accountId, try storageURL() == source else { throw CancellationError() }
+            try Task.checkCancellation()
+        }
+        let ledger = try await services.legacySnapshot(source, auth.accountId); try current()
+        try Self.validateLegacyLedger(ledger, account: auth.accountId)
+        let consent = try await services.hermesConsent(auth.accessToken); try current()
+        guard consent.accountId == auth.accountId, consent.revision >= 0, consent.revision < 9_007_199_254_740_990,
+              Set(consent.exportSources ?? []).count == (consent.exportSources ?? []).count else { throw APIError.invalidResponse }
+        let available = Self.legacyDiscovery(account: auth.accountId, ledger: ledger, consent: consent)
+        guard selected.isSubset(of: Set(available.sources.map(\.id))) else { throw APIError.server(400, "legacy_export_source_unavailable") }
+        if selected.contains("legacy-guest") {
+            guard available.sources.contains(where: { $0.id != "legacy-guest" && $0.guestCount > 0 && selected.contains($0.id) }) else {
+                throw APIError.server(400, "legacy_guest_family_required")
+            }
+        }
+        let merged = Set(consent.exportSources ?? []).subtracting(Self.legacyExportScopes).union(selected).sorted()
+        let enabled = consent.cloudEnabled || !selected.isEmpty
+        let updated = try await services.hermesUpdateConsent(auth.accountId, consent.revision, enabled, merged, auth.accessToken); try current()
+        guard updated.accountId == auth.accountId, updated.revision == consent.revision + 1, updated.cloudEnabled == enabled,
+              Set(updated.exportSources ?? []) == Set(merged), (updated.exportSources ?? []).count == merged.count else {
+            throw APIError.invalidResponse
+        }
+        Task { @MainActor [weak self] in
+            guard let self, self.sessionRevision == epoch, self.restorationRevision == restoration,
+                  self.session?.accountId == auth.accountId, (try? self.storageURL()) == source else { return }
+            await self.synchronizeCloudAgentState()
+        }
+        return Self.legacyDiscovery(account: auth.accountId, ledger: ledger, consent: updated)
     }
     private static func legacySourcesApproved(record: HermesLegacyRecord, consent: CloudHermesConsent) -> Bool {
         guard consent.cloudEnabled, let provenance = record.provenance else { return false }
