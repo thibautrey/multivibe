@@ -152,3 +152,28 @@ test('completed resume returns saved answer without model or tool work', async (
   const result = await runHermesTurn({ ...input, resume: first.checkpoints.at(-1) }, second);
   assert.equal(result.finalText, 'Final answer'); assert.equal(second.modelInputs.length, 0);
 });
+
+test('tool schemas and history are byte stable across equivalent insertion orders', async () => {
+  const firstTools = [
+    { name: 'z', description: '  ZWO\n', parameters: { properties: { b: { type: 'number' }, a: { type: 'string' } }, type: 'object' } },
+    { name: 'a', parameters: { type: 'object', properties: {} } },
+  ];
+  const secondTools = [
+    { parameters: { properties: {}, type: 'object' }, name: 'a' },
+    { parameters: { type: 'object', properties: { a: { type: 'string' }, b: { type: 'number' } } }, description: '  ZWO\n', name: 'z' },
+  ];
+  const original = JSON.stringify(firstTools);
+  const captured = [];
+  for (const tools of [firstTools, secondTools]) {
+    const h = host([]);
+    h.model = async (messages, schemas) => {
+      assert.deepEqual(messages, input.messages);
+      captured.push(JSON.stringify(schemas));
+      return { content: 'Done' };
+    };
+    await runHermesTurn({ ...input, tools }, h);
+  }
+  assert.equal(captured[0], captured[1]);
+  assert.equal(JSON.stringify(firstTools), original);
+  assert.equal(JSON.parse(captured[0])[1].description, '  ZWO\n');
+});
