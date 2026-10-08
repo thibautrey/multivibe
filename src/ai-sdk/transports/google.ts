@@ -11,7 +11,7 @@ import {
   type SdkToolDefinition,
   type SdkUsage,
 } from "../model.js";
-import { sseData, throwResponseError } from "../transport-utils.js";
+import { optionalUsageToken, sseData, throwResponseError } from "../transport-utils.js";
 
 export type GoogleConfig = {
   modelId: string;
@@ -41,19 +41,21 @@ function mapFinishReason(reason: string | null | undefined): SdkFinishReason {
 
 function convertUsage(usageMetadata: any): SdkUsage {
   if (usageMetadata == null || typeof usageMetadata !== "object") return unknownUsage();
-  const promptTokens = usageMetadata.promptTokenCount ?? 0;
-  const candidatesTokens = usageMetadata.candidatesTokenCount ?? 0;
-  const cachedContentTokens = usageMetadata.cachedContentTokenCount ?? 0;
-  const thoughtsTokens = usageMetadata.thoughtsTokenCount ?? 0;
+  const promptTokens = optionalUsageToken(usageMetadata.promptTokenCount);
+  const candidatesTokens = optionalUsageToken(usageMetadata.candidatesTokenCount);
+  const cachedContentTokens = optionalUsageToken(usageMetadata.cachedContentTokenCount);
+  const thoughtsTokens = optionalUsageToken(usageMetadata.thoughtsTokenCount);
   return {
     inputTokens: {
       total: promptTokens,
-      noCache: promptTokens - cachedContentTokens,
+      noCache: promptTokens !== undefined && cachedContentTokens !== undefined ? promptTokens - cachedContentTokens : undefined,
       cacheRead: cachedContentTokens,
       cacheWrite: undefined,
     },
     outputTokens: {
-      total: candidatesTokens + thoughtsTokens,
+      total: optionalUsageToken(usageMetadata.totalTokenCount) !== undefined && promptTokens !== undefined
+        ? usageMetadata.totalTokenCount - promptTokens
+        : candidatesTokens !== undefined && thoughtsTokens !== undefined ? candidatesTokens + thoughtsTokens : undefined,
       text: candidatesTokens,
       reasoning: thoughtsTokens,
     },

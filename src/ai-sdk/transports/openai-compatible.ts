@@ -11,7 +11,7 @@ import {
   type SdkStreamPart,
   type SdkUsage,
 } from "../model.js";
-import { parseToolInput, sseData, throwResponseError } from "../transport-utils.js";
+import { optionalUsageToken, parseToolInput, sseData, throwResponseError } from "../transport-utils.js";
 
 export type OpenAICompatibleConfig = {
   provider: string;
@@ -38,20 +38,20 @@ function mapFinishReason(reason: string | null | undefined): SdkFinishReason {
 
 function convertUsage(usage: any): SdkUsage {
   if (usage == null || typeof usage !== "object") return unknownUsage();
-  const promptTokens = usage.prompt_tokens ?? 0;
-  const completionTokens = usage.completion_tokens ?? 0;
-  const cacheReadTokens = usage.prompt_tokens_details?.cached_tokens ?? 0;
-  const reasoningTokens = usage.completion_tokens_details?.reasoning_tokens ?? 0;
+  const promptTokens = optionalUsageToken(usage.prompt_tokens);
+  const completionTokens = optionalUsageToken(usage.completion_tokens);
+  const cacheReadTokens = optionalUsageToken(usage.prompt_tokens_details?.cached_tokens);
+  const reasoningTokens = optionalUsageToken(usage.completion_tokens_details?.reasoning_tokens);
   return {
     inputTokens: {
       total: promptTokens,
-      noCache: promptTokens - cacheReadTokens,
+      noCache: promptTokens !== undefined && cacheReadTokens !== undefined ? promptTokens - cacheReadTokens : undefined,
       cacheRead: cacheReadTokens,
       cacheWrite: undefined,
     },
     outputTokens: {
       total: completionTokens,
-      text: Math.max(0, completionTokens - reasoningTokens),
+      text: completionTokens !== undefined && reasoningTokens !== undefined ? Math.max(0, completionTokens - reasoningTokens) : undefined,
       reasoning: reasoningTokens,
     },
     raw: usage,

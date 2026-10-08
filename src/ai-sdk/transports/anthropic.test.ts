@@ -80,6 +80,9 @@ test("anthropic stream assembles thinking, text and tool input blocks", async ()
   assert.deepEqual(toolCall.input, { q: "x" });
   const finish = parts.find((part) => part.type === "finish");
   assert.equal(finish.finishReason.unified, "tool-calls");
-  assert.equal(finish.usage.inputTokens.total, 5);
+  assert.equal(finish.usage.inputTokens.total, undefined);
+  assert.equal(finish.usage.inputTokens.noCache, 5);
+  assert.equal(finish.usage.inputTokens.cacheRead, undefined);
+  assert.equal(finish.usage.inputTokens.cacheWrite, undefined);
   assert.equal(finish.usage.outputTokens.total, 9);
 });

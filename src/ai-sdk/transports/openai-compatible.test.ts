@@ -140,3 +140,21 @@ test("compatible stream maps an error payload to a provider error", async () => 
   const { stream } = await model.doStream({ prompt: [{ role: "user", content: [{ type: "text", text: "Hi" }] }] });
   await assert.rejects(async () => { for await (const _part of stream) { /* consume */ } }, /context length exceeded/);
 });
+
+test("compatible cache measurements distinguish absent, invalid and explicit zero", async () => {
+  for (const cached of [undefined, null, "0", 0, 3]) {
+    const model = createOpenAICompatibleModel({
+      provider: "fixture", modelId: "model", baseURL: "https://fixture.invalid/v1", apiKey: "fixture",
+      fetch: async () => Response.json({
+        choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 10, completion_tokens: 2,
+          ...(cached === undefined ? {} : { prompt_tokens_details: { cached_tokens: cached } }) },
+      }),
+    });
+    const result = await model.doGenerate({ prompt: [{ role: "user", content: [{ type: "text", text: "source" }] }] });
+    const expected = typeof cached === "number" ? cached : undefined;
+    assert.equal(result.usage.inputTokens.cacheRead, expected);
+    assert.equal(result.usage.inputTokens.noCache, expected === undefined ? undefined : 10 - expected);
+    assert.equal(result.usage.inputTokens.total, 10);
+  }
+});

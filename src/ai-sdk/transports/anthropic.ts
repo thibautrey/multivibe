@@ -12,7 +12,7 @@ import {
   type SdkToolDefinition,
   type SdkUsage,
 } from "../model.js";
-import { parseToolInput, sseData, throwResponseError } from "../transport-utils.js";
+import { optionalUsageToken, parseToolInput, sseData, throwResponseError } from "../transport-utils.js";
 
 export type AnthropicConfig = {
   modelId: string;
@@ -46,29 +46,32 @@ function textOf(content: unknown): string {
 
 export function convertAnthropicUsage(usage: Record<string, any> | null | undefined, rawUsage?: Record<string, unknown>): SdkUsage {
   if (usage == null || typeof usage !== "object") return unknownUsage();
-  const cacheCreationTokens = usage.cache_creation_input_tokens ?? 0;
-  const cacheReadTokens = usage.cache_read_input_tokens ?? 0;
-  const reasoningTokens = usage.output_tokens_details?.thinking_tokens ?? undefined;
-  let inputTokens: number = usage.input_tokens ?? 0;
-  let outputTokens: number = usage.output_tokens ?? 0;
+  const cacheCreationTokens = optionalUsageToken(usage.cache_creation_input_tokens);
+  const cacheReadTokens = optionalUsageToken(usage.cache_read_input_tokens);
+  const reasoningTokens = optionalUsageToken(usage.output_tokens_details?.thinking_tokens);
+  let inputTokens = optionalUsageToken(usage.input_tokens);
+  let outputTokens = optionalUsageToken(usage.output_tokens);
   const servedByFallback = Array.isArray(usage.iterations) && usage.iterations.some((iteration: any) => iteration?.type === "fallback_message");
   if (Array.isArray(usage.iterations) && usage.iterations.length > 0 && !servedByFallback) {
     const executorIterations = usage.iterations.filter((iteration: any) => iteration?.type === "compaction" || iteration?.type === "message");
     if (executorIterations.length > 0) {
-      inputTokens = executorIterations.reduce((sum: number, iteration: any) => sum + Number(iteration.input_tokens ?? 0), 0);
-      outputTokens = executorIterations.reduce((sum: number, iteration: any) => sum + Number(iteration.output_tokens ?? 0), 0);
+      inputTokens = executorIterations.every((iteration: any) => optionalUsageToken(iteration.input_tokens) !== undefined)
+        ? executorIterations.reduce((sum: number, iteration: any) => sum + iteration.input_tokens, 0) : undefined;
+      outputTokens = executorIterations.every((iteration: any) => optionalUsageToken(iteration.output_tokens) !== undefined)
+        ? executorIterations.reduce((sum: number, iteration: any) => sum + iteration.output_tokens, 0) : undefined;
     }
   }
   return {
     inputTokens: {
-      total: inputTokens + cacheCreationTokens + cacheReadTokens,
+      total: inputTokens !== undefined && cacheCreationTokens !== undefined && cacheReadTokens !== undefined
+        ? inputTokens + cacheCreationTokens + cacheReadTokens : undefined,
       noCache: inputTokens,
       cacheRead: cacheReadTokens,
       cacheWrite: cacheCreationTokens,
     },
     outputTokens: {
       total: outputTokens,
-      text: reasoningTokens == null ? undefined : outputTokens - reasoningTokens,
+      text: reasoningTokens === undefined || outputTokens === undefined ? undefined : outputTokens - reasoningTokens,
       reasoning: reasoningTokens,
     },
     raw: rawUsage ?? usage,
