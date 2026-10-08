@@ -7,6 +7,7 @@ import { patchRhoPromptCache } from './patch-rho-prompt-cache.mjs';
 
 test('refuses unreviewed upstream versions', () => {
   assert.throws(() => patchRhoPromptCache('unknown source'), /Unsupported Rho/);
+  assert.throws(() => patchRhoPromptCache('// MULTIVIBE-103: runtime context belongs to the current turn.\nunknown source'), /Unsupported Rho/);
 });
 
 test('actual Rho hook keeps runtime fresh without changing system bytes', {
