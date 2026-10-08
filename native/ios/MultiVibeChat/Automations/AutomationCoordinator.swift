@@ -7,7 +7,7 @@ import UserNotifications
 
 @MainActor @Observable final class AutomationCoordinator: NSObject, @preconcurrency CLLocationManagerDelegate {
     static let shared = AutomationCoordinator()
-    static let backgroundID = "cloud.multivibe.chat.automations"
+    static let backgroundID = NativeApplicationIdentity.identifier("automations")
     private(set) var store: AutomationStore?
     private(set) var scope = ""
     var error: String?

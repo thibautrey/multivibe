@@ -1,4 +1,8 @@
 name: MultiVibeChat
+configs:
+  Debug: debug
+  Release: release
+  QA: debug
 options:
   developmentLanguage: fr
   bundleIdPrefix: cloud.multivibe
@@ -39,9 +43,18 @@ targets:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         PRODUCT_BUNDLE_IDENTIFIER: cloud.multivibe.chat
+        DEVELOPMENT_TEAM: 5E2CNR9H47
+        MULTIVIBE_DISPLAY_NAME: MultiVibe
+        MULTIVIBE_URL_SCHEME: multivibe-chat
         INFOPLIST_FILE: MultiVibeChat/Resources/Info.plist
         CODE_SIGN_ENTITLEMENTS: MultiVibeChat/Resources/MultiVibeChat.entitlements
         GENERATE_INFOPLIST_FILE: NO
+      configs:
+        QA:
+          PRODUCT_BUNDLE_IDENTIFIER: cloud.multivibe.chat.qa
+          MULTIVIBE_DISPLAY_NAME: MultiVibe QA
+          MULTIVIBE_URL_SCHEME: multivibe-chat-qa
+          CODE_SIGN_ENTITLEMENTS: MultiVibeChat/Resources/MultiVibeChatQA.entitlements
     scheme:
       testTargets: [MultiVibeChatTests, MultiVibeChatUITests]
   MultiVibeChatTests:
@@ -53,6 +66,9 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+      configs:
+        QA:
+          PRODUCT_BUNDLE_IDENTIFIER: cloud.multivibe.chat.qa.tests
   MultiVibeChatUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -63,3 +79,33 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: YES
         TEST_TARGET_NAME: MultiVibeChat
+      configs:
+        QA:
+          PRODUCT_BUNDLE_IDENTIFIER: cloud.multivibe.chat.qa.uitests
+schemes:
+  MultiVibeHermesQA:
+    build:
+      targets:
+        MultiVibeChat: [run, test, analyze]
+        MultiVibeChatTests: [test]
+    run:
+      config: QA
+    test:
+      config: QA
+      targets:
+        - name: MultiVibeChatTests
+          parallelizable: false
+          selectedTests:
+            - DownloadedModelDeviceTests/testInstalledQwenUsesUpstreamDocumentEdit()
+            - NativeApplicationIdentityTests
+    analyze:
+      config: QA
+    # XcodeGen emits these actions unconditionally. Keep their configuration
+    # isolated and exclude their build types above.
+    profile:
+      config: QA
+    archive:
+      config: QA
+      revealArchiveInOrganizer: false
+    management:
+      shared: true

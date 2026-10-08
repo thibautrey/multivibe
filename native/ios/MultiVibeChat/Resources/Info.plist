@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>MultiVibe</string>
+	<string>$(MULTIVIBE_DISPLAY_NAME)</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -20,10 +20,10 @@
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>cloud.multivibe.chat</string>
+			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>multivibe-chat</string>
+				<string>$(MULTIVIBE_URL_SCHEME)</string>
 			</array>
 		</dict>
 	</array>
@@ -54,7 +54,7 @@
 <string>Rechercher et ouvrir vos contacts lorsque vous utilisez les outils de contacts de MultiVibe.</string>
 <key>NSLocationWhenInUseUsageDescription</key>
 <string>Indiquer votre position lorsque vous le demandez à l’agent local.</string>
-<key>BGTaskSchedulerPermittedIdentifiers</key><array><string>cloud.multivibe.chat.automations</string></array>
+<key>BGTaskSchedulerPermittedIdentifiers</key><array><string>$(PRODUCT_BUNDLE_IDENTIFIER).automations</string></array>
 <key>NSLocationAlwaysAndWhenInUseUsageDescription</key><string>Déclencher les automatisations que vous configurez lorsque vous arrivez dans une zone ou la quittez, même lorsque MultiVibe est fermé.</string>
 </dict>
 </plist>

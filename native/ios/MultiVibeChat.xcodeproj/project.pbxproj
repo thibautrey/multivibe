@@ -81,6 +81,7 @@
 		F1D6D7802498EC8BC30B8023 /* AutomationUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63B3E34A764DACD69B7AB0B0 /* AutomationUITests.swift */; };
 		FE355EA09A71428B7CF119AB /* MultiVibeLocalInference.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 16EA3BB8F0EBD6ADB21388D9 /* MultiVibeLocalInference.xcframework */; };
 		FE9F141E961C8316B702D426 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D23AAC6A6C06292DD31EC37 /* ChatView.swift */; };
+		62492105ACF7C46D3D8B5DB4 /* NativeApplicationIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A9764498BB340F8623FA6CA /* NativeApplicationIdentityTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -178,6 +179,7 @@
 		EF18EF613BF5858C8BAB2F5F /* llama-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "llama-LICENSE.txt"; sourceTree = "<group>"; };
 		F821AA010F4443A441EF6DF0 /* MultiVibeSDK */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MultiVibeSDK; path = ../sdk/MultiVibeSDK; sourceTree = SOURCE_ROOT; };
 		F9178B9C07BCDF95DFE9A7DA /* RealtimeVoiceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeVoiceView.swift; sourceTree = "<group>"; };
+		7A9764498BB340F8623FA6CA /* NativeApplicationIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeApplicationIdentityTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -353,6 +355,7 @@
 		EB53AE013465F9A3A0975BF0 /* MultiVibeChatTests */ = {
 			isa = PBXGroup;
 			children = (
+				7A9764498BB340F8623FA6CA /* NativeApplicationIdentityTests.swift */,
 				B34FCAA84CB37FAFCB223316 /* AgentMemoryTests.swift */,
 				1FEFE1D18BE42970C813B47E /* CloudAgentStateTests.swift */,
 				91C0AA000000000000000004 /* CloudHermesContextTests.swift */,
@@ -510,6 +513,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				62492105ACF7C46D3D8B5DB4 /* NativeApplicationIdentityTests.swift in Sources */,
 				D93DCB45C9AFA5ED65425AE5 /* AgentMemoryTests.swift in Sources */,
 				4CD806D764BD691CA0CF711A /* CloudAgentStateTests.swift in Sources */,
 				91C0AA000000000000000003 /* CloudHermesContextTests.swift in Sources */,
@@ -751,6 +755,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				MULTIVIBE_DISPLAY_NAME = MultiVibe;
+				MULTIVIBE_URL_SCHEME = "multivibe-chat";
 				PRODUCT_BUNDLE_IDENTIFIER = cloud.multivibe.chat;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -774,6 +780,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				MULTIVIBE_DISPLAY_NAME = MultiVibe;
+				MULTIVIBE_URL_SCHEME = "multivibe-chat";
 				PRODUCT_BUNDLE_IDENTIFIER = cloud.multivibe.chat;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -849,6 +857,134 @@
 			};
 			name = Debug;
 		};
+		5AE7F64017A678B1125B99AB /* QA */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = cloud.multivibe.chat.qa.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = MultiVibeChat;
+			};
+			name = QA;
+		};
+		7B90911403FAC2D28B7F4523 /* QA */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MARKETING_VERSION = 1.0.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = QA;
+		};
+		8E6E81358ECEAB384182D74A /* QA */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = MultiVibeChat/Resources/MultiVibeChatQA.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = 5E2CNR9H47;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".build\"",
+				);
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = MultiVibeChat/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MULTIVIBE_DISPLAY_NAME = "MultiVibe QA";
+				MULTIVIBE_URL_SCHEME = "multivibe-chat-qa";
+				PRODUCT_BUNDLE_IDENTIFIER = cloud.multivibe.chat.qa;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = QA;
+		};
+		D256228DD8B2F21F31F9C72F /* QA */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = cloud.multivibe.chat.qa.tests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MultiVibeChat.app/MultiVibeChat";
+			};
+			name = QA;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -857,6 +993,7 @@
 			buildConfigurations = (
 				C9669EC1E0F06EFF39552B7E /* Debug */,
 				B778F51862E9747047829ECD /* Release */,
+				8E6E81358ECEAB384182D74A /* QA */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
@@ -866,6 +1003,7 @@
 			buildConfigurations = (
 				1AEEA522BA640FE5C007E2B3 /* Debug */,
 				87755962CEABABB5573C2744 /* Release */,
+				5AE7F64017A678B1125B99AB /* QA */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
@@ -875,6 +1013,7 @@
 			buildConfigurations = (
 				D786A16DEAA5752F783C6D57 /* Debug */,
 				6CF1F678CC137B084FEB8E00 /* Release */,
+				7B90911403FAC2D28B7F4523 /* QA */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
@@ -884,6 +1023,7 @@
 			buildConfigurations = (
 				63E01F36306CADC2E3A3088A /* Debug */,
 				625D874EDD03458AA4AFD6B4 /* Release */,
+				D256228DD8B2F21F31F9C72F /* QA */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
