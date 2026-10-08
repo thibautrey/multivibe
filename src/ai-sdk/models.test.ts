@@ -14,7 +14,7 @@ for (const provider of ["anthropic", "google", "groq", "mammouth"]) test(`uses t
       assert.equal(url, "https://api.anthropic.com/v1/messages");
       assert.equal(headers.get("x-api-key"), "account-key");
       assert.equal(body.messages[0].content[0].text, "Hello");
-      return Response.json({id: "msg_test", type: "message", role: "assistant", model: "claude-sonnet-4-6", content: [{type: "text", text: "Hi"}], stop_reason: "end_turn", stop_sequence: null, usage: {input_tokens: 5, output_tokens: 2}});
+      return Response.json({id: "msg_test", type: "message", role: "assistant", model: "claude-sonnet-4-6", content: [{type: "text", text: "Hi"}], stop_reason: "end_turn", stop_sequence: null, usage: {input_tokens: 5, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0}});
     }
     if (provider === "google") {
       assert.match(url, /^https:\/\/generativelanguage\.googleapis\.com\/v1beta\/models\/.+:generateContent$/);
@@ -55,4 +55,18 @@ test("Mammouth streams through the compatible transport with the upstream model 
   assert.ok(parts.some((part) => part.type === "text-delta" && part.delta === "Hello"));
   assert.ok(parts.some((part) => part.type === "finish" && part.finishReason.unified === "stop"));
   assert.ok(!parts.some((part) => part.type === "error"));
+});
+
+test("incomplete Anthropic cache partitions retain unknown totals without inventing usage", async () => {
+  const account: Account = { id: "fixture", provider: "ai-sdk", sdkProvider: "anthropic", accessToken: "fixture", enabled: true };
+  const model = createSdkModel(account, "fixture", async () => Response.json({
+    content: [{ type: "text", text: "ok" }], stop_reason: "end_turn",
+    usage: { input_tokens: 5, output_tokens: 2 },
+  }));
+  const generated = await model.doGenerate(sdkCallOptions({ messages: [{ role: "user", content: "source" }] }, new AbortController().signal));
+  assert.equal(generated.usage.inputTokens.noCache, 5);
+  assert.equal(generated.usage.inputTokens.total, undefined);
+  assert.equal(generated.usage.inputTokens.cacheRead, undefined);
+  assert.equal(generated.usage.inputTokens.cacheWrite, undefined);
+  assert.equal(chatResult("fixture", generated).usage, null);
 });
