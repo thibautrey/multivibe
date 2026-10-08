@@ -215,7 +215,7 @@ enum LocalDownloadedTools {
                 "description": "Prévisions météo actuelles et des deux prochains jours. Utilise uniquement une ville donnée par l’utilisateur ; city vide si la ville manque, l’outil demandera la précision. Accès Internet autorisé par l’app.",
                 "parameters": ["type": "object", "properties": ["city": ["type": "string", "description": "Ville donnée par l’utilisateur, ou chaîne vide."]],
                     "required": ["city"], "additionalProperties": false]]]]
-            return String(decoding: try! JSONSerialization.data(withJSONObject: tools), as: UTF8.self)
+            return String(decoding: try! JSONSerialization.data(withJSONObject: tools, options: [.sortedKeys]), as: UTF8.self)
         }
         let personal = Set(["read_calendar", "read_reminders", "read_contacts", "current_location", "read_mail"])
         let available = actions.filter { !personal.contains($0) || deviceActions.contains($0) }
