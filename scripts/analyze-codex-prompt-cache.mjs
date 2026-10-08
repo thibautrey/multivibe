@@ -53,6 +53,11 @@ function median(values) {
     : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
+function optionalTokenCount(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value : undefined;
+}
+
 async function walkRollouts(root, cutoffMs) {
   const files = [];
 
@@ -73,7 +78,7 @@ async function walkRollouts(root, cutoffMs) {
   return files;
 }
 
-async function scanRollout(file, excludedSession) {
+async function scanRollout(file, excludedSession, cutoffMs) {
   const stream = fs.createReadStream(file, { encoding: "utf8" });
   const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
   let sessionId = "";
@@ -115,19 +120,18 @@ async function scanRollout(file, excludedSession) {
     const call = {
       model: model || "unknown",
       inputTokens,
-      cachedTokens: safeNumber(usage.cached_input_tokens),
-      cacheWriteTokens: safeNumber(usage.cache_write_input_tokens),
-      cachedFieldPresent: Object.hasOwn(usage, "cached_input_tokens"),
-      cacheWriteFieldPresent: Object.hasOwn(
-        usage,
-        "cache_write_input_tokens",
-      ),
+      cachedTokens: optionalTokenCount(usage.cached_input_tokens),
+      cacheWriteTokens: optionalTokenCount(usage.cache_write_input_tokens),
+      cachedFieldPresent: optionalTokenCount(usage.cached_input_tokens) !== undefined,
+      cacheWriteFieldPresent: optionalTokenCount(usage.cache_write_input_tokens) !== undefined,
       outputTokens: safeNumber(usage.output_tokens),
       reasoningTokens: safeNumber(usage.reasoning_output_tokens),
     };
     const usageSignature = JSON.stringify(call);
     if (usageSignature === previousUsageSignature) continue;
     previousUsageSignature = usageSignature;
+    const eventTime = Date.parse(row.timestamp);
+    if (!Number.isFinite(eventTime) || eventTime < cutoffMs) continue;
     calls.push(call);
   }
 
@@ -136,13 +140,13 @@ async function scanRollout(file, excludedSession) {
 
 function summarize(calls) {
   const inputTokens = calls.map((call) => call.inputTokens);
-  const cacheRatios = calls.map((call) =>
-    call.inputTokens > 0 ? call.cachedTokens / call.inputTokens : 0,
-  );
+  const measuredCalls = calls.filter((call) => call.cachedFieldPresent);
+  const measuredInput = measuredCalls.reduce((sum, call) => sum + call.inputTokens, 0);
+  const cacheRatios = measuredCalls.map((call) => call.cachedTokens / call.inputTokens);
   const totalInput = calls.reduce((sum, call) => sum + call.inputTokens, 0);
-  const totalCached = calls.reduce((sum, call) => sum + call.cachedTokens, 0);
+  const totalCached = calls.reduce((sum, call) => sum + (call.cachedTokens ?? 0), 0);
   const totalCacheWrite = calls.reduce(
-    (sum, call) => sum + call.cacheWriteTokens,
+    (sum, call) => sum + (call.cacheWriteTokens ?? 0),
     0,
   );
   const totalOutput = calls.reduce((sum, call) => sum + call.outputTokens, 0);
@@ -168,9 +172,10 @@ function summarize(calls) {
     reasoningTokens: totalReasoning,
     inputMedian: median(inputTokens),
     inputP95: percentile(inputTokens, 0.95),
-    cacheRatioMedian: median(cacheRatios),
-    cacheRatioP05: percentile(cacheRatios, 0.05),
-    aggregateCacheRatio: totalInput > 0 ? totalCached / totalInput : 0,
+    cacheMeasuredInputTokens: measuredInput,
+    cacheRatioMedian: cacheRatios.length ? median(cacheRatios) : undefined,
+    cacheRatioP05: cacheRatios.length ? percentile(cacheRatios, 0.05) : undefined,
+    aggregateCacheRatio: measuredInput > 0 ? totalCached / measuredInput : undefined,
     cacheReadCalls: calls.filter((call) => call.cachedTokens > 0).length,
     cacheWriteCalls: calls.filter((call) => call.cacheWriteTokens > 0).length,
     cachedFieldPresentCalls: calls.filter((call) => call.cachedFieldPresent)
@@ -179,11 +184,12 @@ function summarize(calls) {
       (call) => call.cacheWriteFieldPresent,
     ).length,
     eligibleZeroCacheCalls: eligibleCalls.filter(
-      (call) => call.cachedTokens === 0,
+      (call) => call.cachedFieldPresent && call.cachedTokens === 0,
     ).length,
-    gpt56InputRateEquivalent,
-    gpt56SavingsVsUncached:
-      totalInput > 0 ? 1 - gpt56InputRateEquivalent / totalInput : 0,
+    gpt56InputRateEquivalent: calls.length && calls.every((call) => call.cachedFieldPresent && call.cacheWriteFieldPresent)
+      ? gpt56InputRateEquivalent : undefined,
+    gpt56SavingsVsUncached: totalInput > 0 && calls.every((call) => call.cachedFieldPresent && call.cacheWriteFieldPresent)
+      ? 1 - gpt56InputRateEquivalent / totalInput : undefined,
   };
 }
 
@@ -264,7 +270,7 @@ async function main() {
   const files = await walkRollouts(sessionsDir, cutoffMs);
   const calls = (
     await Promise.all(
-      files.map((file) => scanRollout(file, excludedSession)),
+      files.map((file) => scanRollout(file, excludedSession, cutoffMs)),
     )
   ).flat();
   const byModel = Object.fromEntries(
@@ -284,6 +290,7 @@ async function main() {
     source: {
       type: "local_codex_rollouts",
       horizonDays: days,
+      eventTimestampFiltered: true,
       rolloutFiles: files.length,
       excludedCurrentSession: Boolean(excludedSession),
       rawContentPersisted: false,
