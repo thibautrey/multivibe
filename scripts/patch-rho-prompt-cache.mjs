@@ -3,11 +3,12 @@ import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 const BASELINE_SHA256 = '9a8a1ba36fd84ad2bac897b09d39e21fddb791e619adc9d9838007f8a433648e';
+const PATCHED_SHA256 = 'e5de3e3e406f094dfd5d36e766f49730cf2ac28b95e961045213c291163a0c2b';
 const MARKER = '// MULTIVIBE-103: runtime context belongs to the current turn.';
 const digest = text => createHash('sha256').update(text).digest('hex');
 
 export function patchRhoPromptCache(source) {
-  if (source.includes(MARKER)) return source;
+  if (digest(source) === PATCHED_SHA256) return source;
   if (digest(source) !== BASELINE_SHA256) throw new Error('Unsupported Rho source; audit the new version before patching.');
   function replaceOnce(from, to) {
     if (source.split(from).length !== 2) throw new Error('Rho patch boundary is ambiguous.');
