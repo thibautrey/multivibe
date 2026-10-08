@@ -1,5 +1,5 @@
 import type {SdkUsage} from "./model.js";
-/** Google usage normalization defaults absent native counters to zero. Preserve
+/** Preserve absent native counters as unknown and reject
  * incomplete/contradictory evidence instead of presenting invented token usage.
  * This validates token accounting, not model pricing or execution authority. */
 export function googleUsageEligible(usage:SdkUsage):boolean {
@@ -16,6 +16,9 @@ export function googleUsageEligible(usage:SdkUsage):boolean {
  const output=raw.candidatesTokenCount+thinking,total=raw.promptTokenCount+output;
  return Number.isSafeInteger(output)&&Number.isSafeInteger(total)&&raw.totalTokenCount===total
   &&cached<=raw.promptTokenCount&&usage.inputTokens.total===raw.promptTokenCount
-  &&usage.inputTokens.noCache===raw.promptTokenCount-cached&&usage.inputTokens.cacheRead===cached
-  &&usage.outputTokens.total===output&&usage.outputTokens.reasoning===thinking;
+  &&(raw.cachedContentTokenCount===undefined
+   ? usage.inputTokens.noCache===undefined&&usage.inputTokens.cacheRead===undefined
+   : usage.inputTokens.noCache===raw.promptTokenCount-cached&&usage.inputTokens.cacheRead===cached)
+  &&usage.outputTokens.total===output
+  &&usage.outputTokens.reasoning===(raw.thoughtsTokenCount===undefined?undefined:thinking);
 }
