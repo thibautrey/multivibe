@@ -1,0 +1,545 @@
+{
+  "llm-prefix-inventory-expanded": [
+    {
+      "repository": "referal-tool",
+      "candidateFiles": [
+        "./backend/prisma/seed.ts"
+      ]
+    },
+    {
+      "repository": "cce-server",
+      "candidateFiles": [
+        "./src/cce_server/models_runtime.py"
+      ]
+    },
+    {
+      "repository": "proxy-of-proxy",
+      "candidateFiles": []
+    },
+    {
+      "repository": "multivibe-landing",
+      "candidateFiles": [
+        "./openapi.json"
+      ]
+    },
+    {
+      "repository": "Pleiades Solutions/price-tracker",
+      "candidateFiles": [
+        "./backend/services/blogArticleAgent.service.ts",
+        "./astronomy-cloud/api/src/services/public-comment-review-service.ts",
+        "./backend/services/productSearchBoost.service.ts",
+        "./backend/parlant/runtime.py",
+        "./backend/services/emailFolderAgent.service.ts",
+        "./astronomy-cloud/api/src/services/assistant-pi-runtime.ts",
+        "./astronomy-cloud/api/src/services/public-image-review-service.ts",
+        "./backend/services/shippingAgentAITrainer.service.ts",
+        "./backend/libs/openaiClient.ts",
+        "./backend/types/ai.types.ts",
+        "./backend/libs/ollamaClient.ts",
+        "./backend/services/ai/aiText.service.ts",
+        "./backend/services/ai/providers/OpenAIProvider.ts",
+        "./backend/libs/openaiImageClient.ts",
+        "./backend/services/scheduledAssistantTask.service.ts",
+        "./backend/services/shippingAgentHarness.service.ts",
+        "./backend/services/blogTopic/drafts.ts",
+        "./backend/routes/assistantPi/router.ts",
+        "./backend/routes/assistantPi/frameworkRuntime.ts"
+      ]
+    },
+    {
+      "repository": "codex-speech",
+      "candidateFiles": []
+    },
+    {
+      "repository": "even-stars",
+      "candidateFiles": [
+        "./src/speech/llmFallback.ts"
+      ]
+    },
+    {
+      "repository": "Pleiades Solutions/dashboard-astronomy-store",
+      "candidateFiles": []
+    },
+    {
+      "repository": "toulousecraft",
+      "candidateFiles": []
+    },
+    {
+      "repository": "voyages",
+      "candidateFiles": [
+        "./server/vendor/multivibe/routes.ts"
+      ]
+    },
+    {
+      "repository": "Pleiades Solutions/competitor-excel-updator",
+      "candidateFiles": [
+        "./src/competitorDiscoveryService.ts",
+        "./src/productBuilderAssistant/runtime.ts",
+        "./src/competitorAnomalyAgent/cycle.ts",
+        "./src/openai.ts.orig",
+        "./src/openai.ts"
+      ]
+    },
+    {
+      "repository": "phonebook",
+      "candidateFiles": []
+    },
+    {
+      "repository": "even-travel-companion",
+      "candidateFiles": []
+    },
+    {
+      "repository": "dashboard",
+      "candidateFiles": [
+        "./src/features/workspace/provider-presets.ts",
+        "./electron/pi-sdk-runtime.ts"
+      ]
+    },
+    {
+      "repository": "on-demand-web-index",
+      "candidateFiles": []
+    },
+    {
+      "repository": "Pleiades Solutions/astronomy-store",
+      "candidateFiles": []
+    },
+    {
+      "repository": "Pleiades Solutions/appstore-shopify-translator",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PlateformeArtisans",
+      "candidateFiles": []
+    },
+    {
+      "repository": "Pleiades Solutions/astronomy-store-theme",
+      "candidateFiles": []
+    },
+    {
+      "repository": "Pleiades Solutions/pleiades-extensions",
+      "candidateFiles": []
+    },
+    {
+      "repository": "Pleiades Solutions/shopify-translator",
+      "candidateFiles": [
+        "./apps/api/src/services/multiVibeBatchTranslation.ts",
+        "./apps/api/scripts/benchmark-prefix-cache.ts",
+        "./apps/api/src/middlewares/ollamaClient.ts",
+        "./apps/api/src/services/providerDiagnostics.ts",
+        "./apps/api/src/services/providers/DeepseekProvider.ts",
+        "./apps/api/src/services/providers/AnthropicProvider.ts",
+        "./apps/api/src/services/providers/OllamaProvider.ts",
+        "./apps/api/src/services/providers/DeepseekChatProvider.ts",
+        "./apps/api/src/services/providers/OpenAIChatProvider.ts",
+        "./apps/api/src/services/providers/OpenAIProvider.ts"
+      ]
+    },
+    {
+      "repository": "pixatwin-production",
+      "candidateFiles": []
+    },
+    {
+      "repository": "Pleiades Solutions/shop-chat-agent",
+      "candidateFiles": []
+    },
+    {
+      "repository": "Pleiades Solutions/pleiades-solutions",
+      "candidateFiles": []
+    },
+    {
+      "repository": "Pleiades Solutions/translation-shopify",
+      "candidateFiles": []
+    },
+    {
+      "repository": "portfolio",
+      "candidateFiles": []
+    },
+    {
+      "repository": "investment-tracker",
+      "candidateFiles": []
+    },
+    {
+      "repository": "AirAstro",
+      "candidateFiles": []
+    },
+    {
+      "repository": "materiel-albireo",
+      "candidateFiles": []
+    },
+    {
+      "repository": "Pleiades Solutions/svbony-theme",
+      "candidateFiles": []
+    },
+    {
+      "repository": "chaton",
+      "candidateFiles": [
+        "./workspace-handlers.js",
+        "./apps/runtime-headless/server.ts",
+        "./apps/cloud-api/store/shared.ts",
+        "./workspace-pi.js",
+        "./src/features/workspace/provider-presets.ts",
+        "./electron/ipc/workspace-pi.ts",
+        "./electron/ipc/workspace-autocomplete.ts",
+        "./electron/ipc/workspace-handlers.ts",
+        "./electron/pi-sdk-runtime.ts"
+      ]
+    },
+    {
+      "repository": "even-messages",
+      "candidateFiles": []
+    },
+    {
+      "repository": "pixatwin",
+      "candidateFiles": []
+    },
+    {
+      "repository": "Pleiades Solutions/shopify-email-marketing",
+      "candidateFiles": []
+    },
+    {
+      "repository": "Pleiades Solutions/multivibe",
+      "candidateFiles": [
+        "./src/team-api-key-validation.ts",
+        "./src/github-copilot.ts",
+        "./src/team-machine-directory.ts",
+        "./src/local-preparation-chat.ts",
+        "./src/team-machine-sharing.ts",
+        "./src/local-runtime-discovery.ts",
+        "./src/traces.ts",
+        "./src/config.ts",
+        "./src/server.ts",
+        "./src/managed/native-anthropic.ts",
+        "./src/confidential-inference.ts",
+        "./provider-agent/worker_cloud_integration_test.go",
+        "./src/ai-sdk/providers.ts",
+        "./src/managed/provider.ts",
+        "./src/ai-sdk/routes.ts",
+        "./src/ai-sdk/transports/openai-compatible.ts",
+        "./src/ai-sdk/transports/anthropic.ts",
+        "./src/ai-sdk/transports/google.ts",
+        "./src/managed/provider-proxy-fetch.ts",
+        "./provider-agent/community_outbound_worker.go",
+        "./provider-agent/runtime_backend.go",
+        "./provider-agent/community_outbound_worker_test.go",
+        "./packaging/macos/HostAssistantClient.swift",
+        "./packages/ui/src/components/tabs/docsCatalog.ts",
+        "./provider-agent/managed_engines_test.go",
+        "./native/ios/AgentHarness/upstream/hermes-loop/agent/turn_tool_round.py",
+        "./native/ios/AgentHarness/upstream/hermes-loop/agent/conversation_loop.py",
+        "./packages/ui/src/components/tabs/AccountsTab.tsx",
+        "./provider-agent/local_preparation_probe.go",
+        "./web/demo/fixtures.ts",
+        "./rust/v1-edge/src/confidential.rs",
+        "./rust/v1-edge/src/lib.rs",
+        "./rust/v1-edge/src/idempotency.rs",
+        "./provider-agent/local_preparation_probe_test.go",
+        "./docs/design/macos-native-dashboard-mockups.html",
+        "./provider-agent/worker.go",
+        "./provider-agent/worker_test_test.go",
+        "./scripts/opencode/runtime.mjs",
+        "./scripts/generate-release-notes.mjs"
+      ]
+    },
+    {
+      "repository": "Pleiades Solutions/multivibe-cloud",
+      "candidateFiles": [
+        "./src/managed-core-activation-writer.ts",
+        "./src/inference-http.ts",
+        "./web/src/main.tsx",
+        "./src/confidential-inference.ts",
+        "./src/secured-worker-compute.ts",
+        "./src/provider-proxy-fetch.ts",
+        "./src/provider-execution-shadow.ts",
+        "./runtime/core-credential-broker.mjs",
+        "./runtime/managed-provider-broker.mjs",
+        "./src/personal-relay-host.ts",
+        "./src/agent-gateway-http.ts",
+        "./src/inference-protocol.ts",
+        "./rust/managed-provider-broker/src/lib.rs",
+        "./src/vendor/multivibe-core/confidential-inference.ts",
+        "./src/workspace-jobs.ts",
+        "./src/personal-provider-inference.ts",
+        "./src/community-inference-relay.ts",
+        "./src/provider-credential-validation.ts",
+        "./vendor/multivibe-ui/src/components/tabs/docsCatalog.ts",
+        "./src/developer-portal.ts",
+        "./src/app.ts",
+        "./vendor/multivibe-ui/src/components/tabs/AccountsTab.tsx",
+        "./src/browser-chat.ts",
+        "./src/types.ts",
+        "./src/developer-sdk-docs.ts",
+        "./src/managed-broker-inference-transport.ts",
+        "./src/workspace-routing-simulation.ts",
+        "./src/native-automations.ts",
+        "./src/agent-commerce-discovery.ts",
+        "./src/restricted-connect-proxy-fetch.ts",
+        "./migrations/0001_managed_shadow.sql",
+        "./agent-runtime/tests/test_adapter.py",
+        "./agent-runtime/adapter.py",
+        "./scripts/validate_supply_chain.py",
+        "./rust/provider-egress-proxy/src/lib.rs",
+        "./scripts/verify-team-device-sync.mjs",
+        "./sdk/android/src/main/kotlin/cloud/multivibe/Routes.kt",
+        "./sdk/swift/Sources/MultiVibe/Routes.swift",
+        "./sdk/go/routes.go",
+        "./sdk/flutter/lib/routes.dart",
+        "./sdk/contract/v1.json",
+        "./sdk/typescript/src/routes.ts",
+        "./sdk/python/multivibe/routes.py",
+        "./sdk/php/src/Routes.php",
+        "./sdk/rust/src/routes.rs",
+        "./sdk/java/src/main/java/cloud/multivibe/Routes.java",
+        "./scripts/verify-team-device-core.mjs",
+        "./scripts/verify-team-egress-chain.mjs",
+        "./scripts/verify-managed-provider-e2e.ts"
+      ]
+    },
+    {
+      "repository": "Pleiades Solutions/multivibe-landing",
+      "candidateFiles": [
+        "./openapi.json",
+        "./lib/integration-pages.mjs",
+        "./data/blog/background-ai-jobs-interactive-work.json",
+        "./data/pages/recipes.json"
+      ]
+    },
+    {
+      "repository": "Pleiades Solutions/devis-pdf-builder",
+      "candidateFiles": [
+        "./server/routes/admin.ts",
+        "./server/lib/mastraDocumentAgent.ts",
+        "./server/lib/llm.ts"
+      ]
+    },
+    {
+      "repository": "Pleiades Solutions/PixalabFosseStockholm",
+      "candidateFiles": []
+    },
+    {
+      "repository": "Pleiades Solutions/3pl-service",
+      "candidateFiles": []
+    },
+    {
+      "repository": "Pleiades Solutions/wild-explorer-theme",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/settings",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/capture",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/viewer-debug",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/measurement",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/client-projects",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/admin-documentation",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/project-overlay-alignment",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/team-submission-upload",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/admin-access",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/team-home",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/basemap-alignment",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/layer-controls",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/admin-users",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/project-camera-default",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/no-project-state",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/team-model-correction",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/profile",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/support",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/performance-monitor",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/pedestrian",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/admin-features",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/submissions",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/admin-projects",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/parcel-edit",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/documents",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/admin-diagnostics",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/admin-logs",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/solar-shadows",
+      "candidateFiles": []
+    },
+    {
+      "repository": "PixatwinModules/pedestrian-anchor-admin",
+      "candidateFiles": []
+    }
+  ],
+  "llm-prefix-indirect-inventory": [
+    {
+      "repository": "Pleiades Solutions/price-tracker",
+      "candidateFiles": [
+        "./backend/services/reminder.service.ts",
+        "./backend/routes/rss-feed.routes.ts",
+        "./backend/routes/flows/ai.ts",
+        "./backend/services/supplierReconciliation.service.ts",
+        "./backend/routes/competitors_stock_mapping.ts",
+        "./backend/services/blog.service.ts",
+        "./backend/services/marketplaceFinder.service.ts",
+        "./backend/services/spaceTranslation.service.ts",
+        "./backend/routes/workflow-ideas.ts",
+        "./backend/services/orderAssistant.service.ts",
+        "./backend/routes/inventory/items.ts",
+        "./backend/services/associationEventDeduplication.service.ts",
+        "./backend/services/customerSentiment.service.ts",
+        "./backend/services/purchase-order-email-template.service.ts",
+        "./backend/services/callRecording.service.ts",
+        "./backend/services/spaceKnowledgeAutoReview.service.ts",
+        "./backend/routes/blog/blogImageGeneration.ts",
+        "./backend/routes/smart-assistance.ts",
+        "./backend/services/flowExecutor/monthlySkyBlogAction.ts",
+        "./backend/services/flowExecutor/notificationAndAiActions.ts",
+        "./backend/services/productAssistant.service.ts",
+        "./backend/services/priceChangeApprovalAiReview.service.ts",
+        "./backend/services/productTypeAudit.service.ts",
+        "./backend/routes/ai-text-edit.ts",
+        "./backend/routes/assistantPi/runtime.ts",
+        "./backend/services/workflow/authoring/providers/AiSettingsAuthoringAgent.ts",
+        "./backend/routes/analytics-overview-views.ts",
+        "./backend/services/chatwootReplyAssistant.service.ts",
+        "./backend/services/associationEventLocation.service.ts",
+        "./backend/services/ecologic.service.ts",
+        "./backend/services/associationFeed.service.ts",
+        "./backend/services/ai/aiText.service.ts",
+        "./backend/services/ai/aiModeration.service.ts",
+        "./backend/services/productTypeDefinitions.service.ts",
+        "./backend/services/assistantOrchestrator.service.ts",
+        "./backend/services/emailReplyWebAssistant.service.ts",
+        "./backend/services/seoReport.service.ts",
+        "./backend/services/productKnowledge.service.ts",
+        "./backend/services/productTypeClassification.service.ts",
+        "./backend/services/emailReplyAssistant.service.ts",
+        "./backend/services/socialPost/generation.service.ts",
+        "./backend/services/emailProofreading.service.ts",
+        "./backend/services/emailAutoTriage.service.ts",
+        "./backend/services/classification.service.ts",
+        "./backend/services/skyTonightCommunityPhotoModeration.service.ts",
+        "./backend/services/classifiedsAiAssist.service.ts",
+        "./backend/services/productKnowledgeExtraction.service.ts",
+        "./backend/services/agentHarness.service.ts",
+        "./backend/services/customerGender.service.ts",
+        "./backend/services/blog-template.service.ts",
+        "./backend/services/classifieds.service.ts",
+        "./backend/services/customerAssistant.service.ts",
+        "./backend/services/smartAssistanceTraining.service.ts",
+        "./backend/services/smartAssistance.service.ts",
+        "./backend/services/storefrontAssistantConversation.service.ts",
+        "./backend/services/blogTopic/drafts.ts",
+        "./backend/services/callActionAnalysis.service.ts"
+      ]
+    },
+    {
+      "repository": "toulousecraft",
+      "candidateFiles": [
+        "./src/main/java/fr/craftservermanager/api/MessageManager.java"
+      ]
+    },
+    {
+      "repository": "Pleiades Solutions/competitor-excel-updator",
+      "candidateFiles": [
+        "./src/openai.ts.orig",
+        "./src/openai.ts"
+      ]
+    },
+    {
+      "repository": "Pleiades Solutions/shopify-translator",
+      "candidateFiles": [
+        "./apps/api/src/services/providers/OllamaProvider.ts",
+        "./apps/api/src/services/providers/OllamaChatProvider.ts"
+      ]
+    },
+    {
+      "repository": "Pleiades Solutions/shop-chat-agent",
+      "candidateFiles": [
+        "./app/services/claude.server.js"
+      ]
+    },
+    {
+      "repository": "Pleiades Solutions/translation-shopify",
+      "candidateFiles": [
+        "./translate/translate.js"
+      ]
+    },
+    {
+      "repository": "Pleiades Solutions/devis-pdf-builder",
+      "candidateFiles": [
+        "./server/lib/llm.ts"
+      ]
+    }
+  ]
+}
