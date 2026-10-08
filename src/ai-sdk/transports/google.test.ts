@@ -88,3 +88,20 @@ test("google stream resolves function calls into complete tool calls", async () 
   assert.ok(parts.some((part) => part.type === "tool-input-start" && part.id === "call_g" && part.toolName === "lookup"));
   assert.deepEqual(parts.find((part) => part.type === "tool-call").input, { q: "x" });
 });
+
+test("Google cache usage remains unknown unless measured, including explicit zero", async () => {
+  for (const cached of [undefined, 0, 2]) {
+    const model = createGoogleModel({ modelId: "fixture", apiKey: "fixture",
+      fetch: async () => Response.json({
+        candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+        usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 2, totalTokenCount: 6,
+          ...(cached === undefined ? {} : { cachedContentTokenCount: cached }) },
+      }),
+    });
+    const result = await model.doGenerate({ prompt: [{ role: "user", content: [{ type: "text", text: "source" }] }] });
+    assert.equal(result.usage.inputTokens.cacheRead, cached);
+    assert.equal(result.usage.inputTokens.noCache, cached === undefined ? undefined : 4 - cached);
+    assert.equal(result.usage.outputTokens.total, 2);
+    assert.equal(result.usage.outputTokens.reasoning, undefined);
+  }
+});

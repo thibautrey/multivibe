@@ -1,5 +1,10 @@
 import { SdkProviderError } from "./model.js";
 
+/** Absent or malformed provider measurements are unknown, never synthetic zero. */
+export function optionalUsageToken(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
 /** Throw a transport failure that preserves the provider envelope. */
 export async function throwResponseError(response: Response): Promise<never> {
   const responseBody = await response.text().catch(() => undefined);
