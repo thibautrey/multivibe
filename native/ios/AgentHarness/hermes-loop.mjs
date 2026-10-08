@@ -58,7 +58,7 @@ export async function runHermesTurn(input, host) {
   const messages = clone(input.resume?.messages ?? input.messages);
   validateTranscript(messages);
   if (!input.resume && messages.at(-1)?.role !== 'user') throw new Error('A user message is required');
-  const tools = input.tools ?? [];
+  const tools = (input.tools ?? []).map(stable).sort((a, b) => a.name.localeCompare(b.name));
   const names = new Map(tools.map(tool => [tool.name, tool]));
   const saved = input.resume?.state ?? {};
   const repeats = new Map(saved.repeats ?? []);
