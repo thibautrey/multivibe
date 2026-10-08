@@ -43,7 +43,7 @@ struct DownloadMeter: Sendable {
 
 @MainActor @Observable final class LocalModelLibrary: NSObject {
     static let shared = LocalModelLibrary()
-    static let sessionIdentifier = "cloud.multivibe.chat.model-downloads.v1"
+    static let sessionIdentifier = NativeApplicationIdentity.identifier("model-downloads.v1")
     private(set) var installations: [ModelInstallation] = []
     private(set) var meters: [String: DownloadMeter] = [:]
     private(set) var cachedModels: [DownloadableModel] = []
