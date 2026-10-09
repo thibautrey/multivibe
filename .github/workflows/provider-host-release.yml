@@ -285,7 +285,15 @@ jobs:
           }
           certificate_fingerprint="$(openssl x509 -in "$certificate_pem" -noout -fingerprint -sha1 | cut -d= -f2 | tr -d :)"
           security list-keychains -d user > "$RUNNER_TEMP/multivibe-original-keychains.txt"
-          security default-keychain -d user > "$RUNNER_TEMP/multivibe-original-default-keychain.txt"
+          default_keychain_error="$RUNNER_TEMP/multivibe-default-keychain-error.txt"
+          if ! security default-keychain -d user > "$RUNNER_TEMP/multivibe-original-default-keychain.txt" 2> "$default_keychain_error"; then
+            # Headless runners can legitimately have no default keychain.
+            if ! grep -Fq 'A default keychain could not be found.' "$default_keychain_error"; then
+              cat "$default_keychain_error" >&2
+              exit 1
+            fi
+          fi
+          rm -f -- "$default_keychain_error"
           security create-keychain -p "$keychain_password" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
