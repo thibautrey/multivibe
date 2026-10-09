@@ -14501,8 +14501,29 @@ mod tests {
                             break traces;
                         }
                     }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(10)).await;
+            })
+            .await
+            .expect("dropping after response.completed should finalize the trace");
+            for trace in traces.iter().filter(|trace| {
+                matches!(
+                    trace["traceKind"].as_str(),
+                    Some("client-request" | "upstream-attempt")
+                )
+            }) {
+                assert_eq!(trace["status"], 200);
+                assert_eq!(trace["isError"], expected_error);
+                assert_eq!(trace["lifecycleState"], "completed");
+                assert_eq!(trace["clientDisconnected"], true);
+                if expected_error {
+                    assert_eq!(
+                        trace["error"],
+                        "server_overloaded: Selected model is at capacity"
+                    );
+                } else {
+                    assert!(trace.get("error").is_none());
+                }
             }
 
             edge_task.abort();
