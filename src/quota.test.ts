@@ -645,3 +645,27 @@ test("credit-balance snapshots refresh sooner than subscription quota windows", 
     false,
   );
 });
+
+
+test("Z.ai missing Coding Plan clears stale quota errors without hiding other provider failures", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const body = { success: false, code: 500, msg: "当前用户不存在coding plan" };
+  globalThis.fetch = async () => new Response(JSON.stringify(body), { status: 200 });
+  const a: Account = {
+    id: "zai-no-plan", provider: "zai", accessToken: "test-token", enabled: true,
+    usage: { primary: { usedPercent: 0 }, quotaStatus: "error", fetchedAt: 0 },
+    state: { lastError: "Z.ai usage response reports a provider error" },
+  };
+  const refreshed = await refreshUsageIfNeeded(a, "https://api.z.ai", true);
+  assert.equal(refreshed.usage?.quotaStatus, "unsupported");
+  assert.match(refreshed.usage?.quotaMessage ?? "", /no Coding Plan subscription/);
+  assert.equal(refreshed.usage?.primary, undefined);
+  assert.equal(refreshed.state?.lastError, undefined);
+  const { parseZaiUsage } = await import("./quota.js");
+  for (const failure of [
+    { success: false, code: 500, msg: "Internal server error" },
+    { success: false, code: 401, msg: body.msg },
+    { ...body, error: { code: 1000 } },
+  ]) assert.throws(() => parseZaiUsage(failure), /provider error/);
+});
