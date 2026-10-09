@@ -70,3 +70,6 @@ actor Recorder {
       } catch { print("MODEL_ERROR: \(error)"); exit(1) }
     }
 }
+
+// Presentation resources are not included in this tool-only harness.
+enum OpenUIPresentation { static let instructions = "" }

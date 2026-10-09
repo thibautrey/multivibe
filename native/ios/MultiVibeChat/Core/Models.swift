@@ -859,3 +859,49 @@ enum ModelPublisher {
         return canonical(repository.split(separator: "/").first.map(String.init))
     }
 }
+
+/// Contract and renderer are generated together from the web chat's OpenUI library.
+enum OpenUIPresentation {
+    static let html: String? = Bundle.main.url(forResource: "OpenUI", withExtension: "html")
+        .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+    static let instructions: String = Bundle.main.url(forResource: "OpenUI-prompt", withExtension: "txt")
+        .flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
+    struct Segment { let text: String; let ui: Bool; let streaming: Bool }
+    static func segments(_ text: String) -> [Segment] {
+        guard let marker = try? NSRegularExpression(pattern: #"^(`{3,}|~{3,})([^\r\n]*)\r?\n?$"#) else {
+            return [.init(text: text, ui: false, streaming: false)]
+        }
+        let string = text as NSString; var offset = 0; var position = 0
+        var codeFence: String?; var uiStart: Int?; var output: [Segment] = []
+        let lines = text.components(separatedBy: "\n")
+        for (index, value) in lines.enumerated() {
+            let line = value + (index < lines.count - 1 ? "\n" : "")
+            let ns = line as NSString
+            if let match = marker.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) {
+                let ticks = ns.substring(with: match.range(at: 1))
+                let info = ns.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespacesAndNewlines)
+                if let fence = codeFence {
+                    if ticks.first == fence.first && ticks.count >= fence.count && info.isEmpty { codeFence = nil }
+                } else if let start = uiStart {
+                    if ticks == "```" && info.isEmpty {
+                        output.append(.init(text: string.substring(with: NSRange(location: start, length: position - start)), ui: true, streaming: false))
+                        offset = position + ns.length; uiStart = nil
+                    }
+                } else if ticks == "```" && info == "openui" && line.hasSuffix("\n") {
+                    if position > offset { output.append(.init(text: string.substring(with: NSRange(location: offset, length: position - offset)), ui: false, streaming: false)) }
+                    uiStart = position + ns.length
+                } else { codeFence = ticks }
+            }
+            position += ns.length
+        }
+        if let start = uiStart { output.append(.init(text: string.substring(from: start), ui: true, streaming: true)) }
+        else if offset < string.length { output.append(.init(text: string.substring(from: offset), ui: false, streaming: false)) }
+        return output
+    }
+    static func history(_ messages: [HistoryJSON]) -> [HistoryJSON] {
+        guard !instructions.isEmpty else { return messages }
+        return [.object(["role": .string("system"), "content": .string(instructions)])] + messages.filter {
+            !($0.object?["role"]?.string == "system" && $0.object?["content"]?.string?.hasPrefix("MultiVibe OpenUI presentation v1.") == true)
+        }
+    }
+}
