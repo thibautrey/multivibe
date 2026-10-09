@@ -520,7 +520,6 @@ async function signMacApplication(application, identity) {
     path.join(contents, "Helpers", "multivibe-host-updater"),
     path.join(contents, "Helpers", "multivibe-v1-edge"),
     path.join(contents, "MacOS", "multivibe-host"),
-    path.join(contents, "MacOS", "MultiVibe Host"),
   ])) {
     await command("codesign", ["--force", "--sign", identity, "--options", "runtime", "--timestamp", binary]);
   }
@@ -532,6 +531,7 @@ async function signMacApplication(application, identity) {
   await command("codesign", [
     "--force", "--sign", identity, "--options", "runtime", "--timestamp",
     "--entitlements", path.join(repositoryRoot, "packaging", "macos", "MultiVibe.entitlements"),
+    // Signing the bundle signs CFBundleExecutable after its nested extension is sealed.
     application,
   ]);
   await command("codesign", ["--verify", "--deep", "--strict", "--verbose=2", application]);
