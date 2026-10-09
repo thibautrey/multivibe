@@ -12,11 +12,11 @@ test('Apple processor help is usable when printed to stderr with exit status 255
 });
 
 test('App Intents processor receives the file-list options supported by its Xcode version', () => {
-  const inputs = { sources: '/tmp/sources', constants: '/tmp/constants', version: '27A266a', bundleIdentifier: 'cloud.multivibe.host' };
+  const inputs = { sources: '/tmp/sources', constants: '/tmp/Host.swiftconstvalues', constantList: '/tmp/constant-files', version: '27A266a', bundleIdentifier: 'cloud.multivibe.host' };
   assert.deepEqual(appIntentsFileArguments('USAGE: --source-files <path> --swift-const-vals <path>', inputs),
     ['--source-files', inputs.sources, '--swift-const-vals', inputs.constants]);
   assert.deepEqual(appIntentsFileArguments('USAGE: --source-file-list <path> --swift-const-vals-list <path> --xcode-version <version> --no-app-shortcuts-localization', inputs),
-    ['--source-file-list', inputs.sources, '--swift-const-vals-list', inputs.constants, '--xcode-version', inputs.version, '--no-app-shortcuts-localization']);
+    ['--source-file-list', inputs.sources, '--swift-const-vals-list', inputs.constantList, '--xcode-version', inputs.version, '--no-app-shortcuts-localization']);
   assert.throws(() => appIntentsFileArguments('USAGE: --source-files <path>', inputs), /--swift-const-vals/u);
 });
 
