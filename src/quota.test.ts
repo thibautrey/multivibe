@@ -695,3 +695,33 @@ test("OpenAI free monthly quota is recognized and exhausted accounts remain bloc
   assert.equal(accountUsable(refreshed, "test-model"), false);
   assert.equal(refreshed.state?.modelBlocks?.["test-model"]?.until, resetAt * 1000 + 60000);
 });
+
+
+test("OpenAI Codex credits coexist with subscription quotas and keep unknown balances distinct from zero", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const cases = [
+    [{ has_credits: true, unlimited: false, balance: "62499.5500000000" }, 62499.55],
+    [{ has_credits: false, unlimited: false, balance: null }, undefined],
+    [{ has_credits: false, unlimited: false, balance: "0" }, 0],
+    [{ has_credits: true, unlimited: true, balance: null }, undefined],
+    [{ has_credits: true, balance: "invalid" }, undefined],
+    [{ has_credits: true, balance: "" }, undefined],
+    [{ has_credits: true, balance: -1 }, undefined],
+  ] as const;
+  for (const [credits, remaining] of cases) {
+    globalThis.fetch = async () => Response.json({ credits, rate_limit: {
+      primary_window: { used_percent: 85, limit_window_seconds: 604800 },
+    } });
+    const a: Account = { id: "codex-credit-account", provider: "openai", accessToken: "test", enabled: true };
+    const result = await refreshUsageIfNeeded(a, "https://chatgpt.example", true);
+    assert.equal(result.usage?.codexCredits?.remaining, remaining);
+    assert.equal(result.usage?.codexCredits?.hasCredits, credits.has_credits);
+    assert.equal(result.usage?.codexCredits?.unlimited, 'unlimited' in credits ? credits.unlimited : undefined);
+    assert.equal(result.usage?.secondary?.usedPercent, 85);
+    assert.equal(result.usage?.balance, undefined);
+    const { accountHeadroom, hasCreditBalanceSnapshot } = await import("./quota.js");
+    assert.equal(accountHeadroom(result), 15);
+    assert.equal(hasCreditBalanceSnapshot(result), false);
+  }
+});
