@@ -942,7 +942,15 @@ export const HOST_HARNESS_DEFINITIONS: readonly HostHarnessDefinition[] = [
   definition("semantic-kernel", "Semantic Kernel", "framework", ["semantic-kernel"], [".config/semantic-kernel"], undefined, projectReason),
   definition("llamaindex-agents", "LlamaIndex Agents", "framework", ["llamaindex-cli"], [".config/llamaindex"], undefined, projectReason),
   definition("langchain-agents", "LangChain Agents", "framework", ["langchain"], [".config/langchain"], undefined, projectReason),
-  definition("deepseek-harness", "deepseek-harness", "agent", ["deepseek-harness"], [".deepseek-harness"], undefined, projectReason),
+  definition("deepseek-harness", "DeepSeek Harness (DSH)", "agent", ["dsh", "dsh.cmd", "deepseek-harness"], [
+    ".dsh",
+    ".deepseek-harness",
+    "Library/Application Support/dsh-desktop/harness",
+    ".config/dsh-desktop/harness",
+    "AppData/Roaming/dsh-desktop/harness",
+    "Applications/DSH Desktop.app",
+    "/Applications/DSH Desktop.app",
+  ], undefined, "Connect MultiVibe manually in DSH's Models page using an OpenAI-compatible provider and a MultiVibe API key. DSH uses profile overlays and a separate credential store; automatic edits could replace existing providers. Custom DSH_HOME and --home directories must be configured manually."),
 ];
 
 const DEFAULT_EXECUTABLE_DIRECTORIES = [
@@ -1529,7 +1537,9 @@ export class HostHarnessIntegrationManager {
       }
     }
     for (const footprint of definition.footprints) {
-      if (await footprintExists(this.homeDirectory, footprint)) detectedBy.push(`path:~/${footprint}`);
+      if (await footprintExists(this.homeDirectory, footprint)) {
+        detectedBy.push(`path:${path.isAbsolute(footprint) ? footprint : `~/${footprint}`}`);
+      }
     }
     const installation = state.installations[definition.id];
     const detected = detectedBy.length > 0 || Boolean(installation);
