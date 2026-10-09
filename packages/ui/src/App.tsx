@@ -1017,7 +1017,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
       method: "POST",
       body: JSON.stringify({ flowId }),
     });
-    if (result?.status === "success") await loadBase();
+    if (result?.status === "success") await loadBase().catch(handleError);
     return result;
   };
 

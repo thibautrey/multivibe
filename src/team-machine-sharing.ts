@@ -141,7 +141,7 @@ export class TeamMachineSharing {
   adminRouter(connection?: () => Promise<{organizationId:string;instanceId:string}>) {
     const router = Router();
     router.get('/',(_req,res)=>res.json(this.status()));
-    router.get('/connection',async(_req,res)=>{try{if(!connection)throw new Error();res.json(await connection());}catch{res.status(403).json({error:'active_team_required'});}});
+    router.get('/connection',async(_req,res)=>{try{if(!connection)throw new Error();res.json(await connection());}catch{res.json(null);}});
     router.get('/runtimes',async(_req,res)=>res.json({runtimes:await this.inventory()}));
     router.post('/consent',async(req,res)=>{try {
       if(req.body?.authorizeRemoteManagement!==true) return res.status(400).json({error:'explicit_consent_required'});

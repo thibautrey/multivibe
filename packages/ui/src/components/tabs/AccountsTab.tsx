@@ -168,6 +168,7 @@ type OAuthDialogState = {
   expiresAt?: number;
   callbackInput: string;
   isSubmitting: boolean;
+  pollingError?: string;
   mode: "create" | "reauth";
   accountId?: string;
   pendingPriority?: number;
@@ -506,7 +507,7 @@ export function AccountsTab(props: Props) {
   const [resetCredits, setResetCredits] = useState<Record<string, number | undefined>>({});
   const [resetCreditRefresh, setResetCreditRefresh] = useState(0);
   const resetCreditAccounts = JSON.stringify(
-    accounts.filter(account => isOpenAiAccount(account) && account.actions?.quotaReset !== false).map((account) => [account.id, account.usage?.fetchedAt]),
+    accounts.filter(account => isOpenAiAccount(account) && !account.state?.needsTokenRefresh && account.actions?.quotaReset !== false).map((account) => [account.id, account.usage?.fetchedAt]),
   );
 
   useEffect(() => {
@@ -1108,7 +1109,7 @@ export function AccountsTab(props: Props) {
   }, [oauthDialog]);
 
   useEffect(() => {
-    if (!oauthDialog || oauthDialog.method !== "device") return;
+    if (!oauthDialog || oauthDialog.method !== "device" || oauthDialog.pollingError) return;
 
     let cancelled = false;
     const delayMs = Math.max(1, oauthDialog.intervalSeconds ?? 5) * 1000;
@@ -1163,7 +1164,11 @@ export function AccountsTab(props: Props) {
         });
         if (!cancelled) {
           setOauthDialog((current) =>
-            current ? { ...current, isSubmitting: false } : current,
+            current ? {
+              ...current, isSubmitting: false,
+              ...((err instanceof ApiError && [400, 404, 410, 500].includes(err.status))
+                ? { pollingError: "Sign-in could not be completed. Close this dialog and start a new sign-in." } : {}),
+            } : current,
           );
         }
       } finally {
@@ -3435,6 +3440,7 @@ export function AccountsTab(props: Props) {
                 </button>
               </div>
             </div>
+            {oauthDialog.pollingError && <p role="alert">{oauthDialog.pollingError}</p>}
             <div className="grid modal-grid">
               <label>
                 Email {oauthDialog.provider !== "openai" ? "(from provider after approval)" : ""}

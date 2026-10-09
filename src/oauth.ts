@@ -281,6 +281,13 @@ export function mergeTokenIntoAccount(account: Account, tokenData: TokenResponse
     expiresAt,
     chatgptAccountId: identity.chatgptAccountId ?? account.chatgptAccountId,
     email: account.email ?? identity.email,
+    state: {
+      ...account.state,
+      needsTokenRefresh: false,
+      authBlockedUntil: undefined,
+      lastError: /^(?:refresh token failed|OpenAI usage probe failed 401)/.test(account.state?.lastError ?? "")
+        ? undefined : account.state?.lastError,
+    },
   };
 }
 
