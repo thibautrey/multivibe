@@ -199,10 +199,12 @@ function parseUsage(data: any): UsageSnapshot {
     windows.find((window) => window.windowSeconds === WEEKLY_WINDOW_SECONDS) ??
     (positionalSecondary?.windowSeconds === undefined ? positionalSecondary : undefined);
 
-  if (!primary && !secondary) {
+  // Free accounts can expose a single rolling 30-day window.
+  const monthly = windows.find((window) => window.windowSeconds === 30 * 24 * 60 * 60);
+  if (!primary && !secondary && !monthly) {
     throw new Error("OpenAI usage response contains no recognized quota windows");
   }
-  return { primary, secondary, quotaStatus: "available", fetchedAt: Date.now() };
+  return { primary, secondary, monthly, quotaStatus: "available", fetchedAt: Date.now() };
 }
 
 function parseOpenAIUsage(data: any): UsageSnapshot {

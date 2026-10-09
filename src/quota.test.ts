@@ -669,3 +669,25 @@ test("Z.ai missing Coding Plan clears stale quota errors without hiding other pr
     { ...body, error: { code: 1000 } },
   ]) assert.throws(() => parseZaiUsage(failure), /provider error/);
 });
+
+
+test("OpenAI free monthly quota is recognized and exhausted accounts remain blocked", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const resetAt = Math.floor((Date.now() + 2000000000) / 1000);
+  globalThis.fetch = async () => Response.json({ plan_type: "free", rate_limit: {
+    allowed: false, limit_reached: true,
+    primary_window: { used_percent: 100, limit_window_seconds: 2592000, reset_at: resetAt },
+    secondary_window: null,
+  } });
+  const a: Account = { id: "free-monthly", provider: "openai", accessToken: "test-token", enabled: true,
+    state: { lastError: "OpenAI usage response contains no recognized quota windows" } };
+  const refreshed = await refreshUsageIfNeeded(a, "https://chatgpt.example", true);
+  assert.equal(refreshed.usage?.quotaStatus, "available");
+  assert.equal(refreshed.usage?.primary, undefined);
+  assert.equal(refreshed.usage?.secondary, undefined);
+  assert.equal(refreshed.usage?.monthly?.usedPercent, 100);
+  assert.equal(refreshed.usage?.monthly?.resetAt, resetAt * 1000);
+  assert.equal(refreshed.state?.lastError, undefined);
+  assert.equal(chooseAccount([refreshed]), null);
+});
