@@ -82,6 +82,8 @@
 		FE355EA09A71428B7CF119AB /* MultiVibeLocalInference.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 16EA3BB8F0EBD6ADB21388D9 /* MultiVibeLocalInference.xcframework */; };
 		FE9F141E961C8316B702D426 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D23AAC6A6C06292DD31EC37 /* ChatView.swift */; };
 		62492105ACF7C46D3D8B5DB4 /* NativeApplicationIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A9764498BB340F8623FA6CA /* NativeApplicationIdentityTests.swift */; };
+		109A00000000000000000001 /* OpenUI.html in Resources */ = {isa = PBXBuildFile; fileRef = 109A00000000000000000002 /* OpenUI.html */; };
+		109A00000000000000000003 /* OpenUI-prompt.txt in Resources */ = {isa = PBXBuildFile; fileRef = 109A00000000000000000004 /* OpenUI-prompt.txt */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -180,6 +182,8 @@
 		F821AA010F4443A441EF6DF0 /* MultiVibeSDK */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MultiVibeSDK; path = ../sdk/MultiVibeSDK; sourceTree = SOURCE_ROOT; };
 		F9178B9C07BCDF95DFE9A7DA /* RealtimeVoiceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeVoiceView.swift; sourceTree = "<group>"; };
 		7A9764498BB340F8623FA6CA /* NativeApplicationIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeApplicationIdentityTests.swift; sourceTree = "<group>"; };
+		109A00000000000000000002 /* OpenUI.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; path = "OpenUI.html"; sourceTree = "<group>"; };
+		109A00000000000000000004 /* OpenUI-prompt.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "OpenUI-prompt.txt"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -212,6 +216,8 @@
 		0DA66C4F0BF02D9969E0A4EA /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				109A00000000000000000004 /* OpenUI-prompt.txt */,
+				109A00000000000000000002 /* OpenUI.html */,
 				B3F9F268516DD34F81AB7817 /* Assets.xcassets */,
 				EE89CDEC6389DF7D57D2960C /* Info.plist */,
 				EF18EF613BF5858C8BAB2F5F /* llama-LICENSE.txt */,
@@ -497,6 +503,8 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				109A00000000000000000003 /* OpenUI-prompt.txt in Resources */,
+				109A00000000000000000001 /* OpenUI.html in Resources */,
 				D82AAFC3C8F507B521619C45 /* Assets.xcassets in Resources */,
 				E897D566713EF64EA43668E0 /* LocalModelManifest.json in Resources */,
 				9D053541A18A2D53C94E927F /* PiAgentCore-LICENSES.txt in Resources */,

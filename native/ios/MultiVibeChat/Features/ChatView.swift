@@ -1208,6 +1208,81 @@ private struct NativeMessageContent: View {
     let content: String
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            ForEach(Array(OpenUIPresentation.segments(content).enumerated()), id: \.offset) { _, segment in
+                if segment.ui, let html = OpenUIPresentation.html {
+                    OfflineOpenUIView(content: segment.text, streaming: segment.streaming, html: html)
+                } else { MarkdownMessageContent(content: segment.text) }
+            }
+        }
+    }
+}
+
+private struct OfflineOpenUIView: View {
+    let content: String
+    let streaming: Bool
+    let html: String
+    @State private var height: CGFloat = 120
+    var body: some View {
+        OfflineOpenUIWebView(content: content, streaming: streaming, html: html, height: $height)
+            .frame(height: height)
+    }
+}
+
+/// A local, nonpersistent presentation sandbox. No model HTML or remote scripts.
+private struct OfflineOpenUIWebView: UIViewRepresentable {
+    let content: String
+    let streaming: Bool
+    let html: String
+    @Binding var height: CGFloat
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeUIView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.userContentController.add(context.coordinator, name: "openuiHeight")
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        view.navigationDelegate = context.coordinator
+        view.isOpaque = false; view.backgroundColor = .clear
+        view.scrollView.isScrollEnabled = false
+        view.loadHTMLString(html, baseURL: nil)
+        return view
+    }
+    func updateUIView(_ view: WKWebView, context: Context) {
+        context.coordinator.parent = self
+        if context.coordinator.ready { context.coordinator.render(view) }
+    }
+    static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "openuiHeight")
+        view.navigationDelegate = nil; view.stopLoading()
+    }
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+        var parent: OfflineOpenUIWebView
+        var ready = false
+        init(_ parent: OfflineOpenUIWebView) { self.parent = parent }
+        func render(_ view: WKWebView) {
+            // Arguments cross as data, never interpolated executable JavaScript.
+            view.callAsyncJavaScript("window.renderOpenUI(text, streaming)",
+                arguments: ["text": parent.content, "streaming": parent.streaming],
+                in: nil, contentWorld: .page) { _ in }
+        }
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { ready = true; render(webView) }
+        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard message.name == "openuiHeight", let number = message.body as? NSNumber else { return }
+            let value = number.doubleValue
+            guard value.isFinite, value > 0 else { return }
+            parent.height = CGFloat(min(value, 1500))
+            message.webView?.scrollView.isScrollEnabled = value > 1500
+        }
+        func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
+                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            decisionHandler(action.request.url?.absoluteString == "about:blank" && action.navigationType == .other ? .allow : .cancel)
+        }
+    }
+}
+
+private struct MarkdownMessageContent: View {
+    let content: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(MessageBlock.parse(content).enumerated()), id: \.offset) { _, block in
                 switch block {
                 case .prose(let text):

@@ -2073,7 +2073,7 @@ import Network
                     if binding.pending == nil {
                         let history: [HistoryJSON] = binding.history.isEmpty ? prior.map { .object(["role":.string($0.role),"content":.string($0.content)]) } : binding.history
                         binding.pending = CloudHermesRunInput(operationId:UUID().uuidString.lowercased(),runId:UUID().uuidString.lowercased(),sessionId:binding.sessionId,branchId:binding.branchId,
-                            model:try CloudHermesModel.selected(model,access:conversations.first(where:{$0.id == id})?.modelAccess),message:turn.content,history:history)
+                            model:try CloudHermesModel.selected(model,access:conversations.first(where:{$0.id == id})?.modelAccess),message:turn.content,history:OpenUIPresentation.history(history))
                         binding.turnId = turn.id; cloudHermesBindings[id] = binding
                         guard persist() else { throw APIError.server(0,"history_cache_write_failed") }
                     }
