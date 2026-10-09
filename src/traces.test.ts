@@ -1129,6 +1129,49 @@ test("completed trace observers receive measured HTTP and SSE usage after persis
   } finally { await fs.rm(directory,{recursive:true,force:true}); }
 });
 
+test("HTTP 200 SSE failures survive materialization, legacy loading and stats", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-sse-errors-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, "traces.jsonl");
+  const diagnostics = (event: string, terminal = event) => ({
+    eventCount: 1, eventTypes: { [event]: 1 }, customToolCalls: [],
+    invalidDataPayloadCount: 0, outputTextDeltaCount: 0, outputTextDoneCount: 0,
+    reasoningEventCount: 0, refusalEventCount: 0, functionCallCount: 0,
+    hiddenFunctionCallCount: 0, sanitizerDroppedEventCount: 0,
+    sanitizerDroppedTextEventCount: 0, terminalEventType: terminal,
+    sawResponseCompleted: event === "response.completed", sawChatCompletionChunk: false,
+  });
+  const legacy = ["response.failed", "response.incomplete", "error", "response.completed"]
+    .map((event) => ({
+      id: event, at: Date.now(), route: "/responses", traceKind: "client-request",
+      status: 200, isError: false, stream: true, latencyMs: 10,
+      lifecycleState: "completed", responseStreamDiagnostics: diagnostics(event),
+    }));
+  // The event counts remain authoritative even if an older terminal field says completed.
+  legacy.push({ ...legacy[0], id: "mixed-terminal", responseStreamDiagnostics: diagnostics("error", "response.completed") });
+  await fs.writeFile(filePath, legacy.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+  const manager = createTraceManager({ filePath, externalWriter: true });
+  await manager.initialize();
+  const entries = await manager.readTraceWindow();
+  assert.equal(entries.length, 5);
+  for (const entry of entries) {
+    assert.equal(entry.status, 200);
+    assert.equal(entry.isError, entry.id !== "response.completed", entry.id);
+  }
+  assert.equal((await manager.getTraceStats()).stats.totals.errors, 4);
+
+  const writer = createTraceManager({ filePath: path.join(directory, "writer.jsonl") });
+  await writer.initialize();
+  await writer.appendTrace({
+    at: Date.now(), route: "/responses", status: 200, stream: true, latencyMs: 1,
+    error: "server_overloaded: Selected model is at capacity",
+  });
+  const [entry] = await writer.readTraceWindow();
+  assert.equal(entry.isError, true);
+  assert.equal(entry.status, 200);
+  assert.equal((await writer.readStatsHistory())[0].isError, true);
+});
+
 test("external Rust journal updates cached totals and survives restart without double counting", async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-native-usage-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
