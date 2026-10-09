@@ -699,6 +699,14 @@ jobs:
           node scripts/provider-host/provider-host-container-release.mjs build \
             "$image" "$version" "$digest" "$GITHUB_SHA" container-release
           printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest the published container image
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/multivibe-release-docker-config
+        with:
+          subject-name: ${{ steps.image.outputs.image }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true
       - name: Remove registry credentials
         if: always()
         shell: bash
@@ -708,12 +716,6 @@ jobs:
             # credentials live only in config.json; unlink it from the runner-owned directory.
             rm -f -- "$RUNNER_TEMP/multivibe-release-docker-config/config.json"
           fi
-      - name: Attest the published container image
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
-        with:
-          subject-name: ${{ steps.image.outputs.image }}
-          subject-digest: ${{ steps.publish.outputs.digest }}
-          push-to-registry: true
       - name: Attest the container release metadata
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
