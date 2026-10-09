@@ -668,7 +668,8 @@ jobs:
         run: |
           set -euo pipefail
           source scripts/provider-host/release-docker.sh
-          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          # Registry login needs no daemon; keep its private config owned by the runner.
+          printf '%s' "$GHCR_TOKEN" | command docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           image="${{ steps.image.outputs.image }}"
           version="${{ steps.image.outputs.version }}"
 
