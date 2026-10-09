@@ -93,9 +93,7 @@ struct NativeChatConversation: Codable, Identifiable {
             defer { generating = nil; task = nil; save() }
             do {
                 try await HostAssistantClient.shared.stream(messages.map { ["role": $0.role, "content": $0.content] }, model: model) { text in
-                    guard let index = self.conversations.firstIndex(where: { $0.id == id }) else { return }
-                    let last = self.conversations[index].messages.count - 1
-                    self.conversations[index].messages[last].content = text
+                    self.updateStreamedReply(text, conversationID: id)
                 }
                 if let index = conversations.firstIndex(where: { $0.id == id }) {
                     conversations[index].messages[conversations[index].messages.count - 1].interrupted = false
@@ -104,5 +102,11 @@ struct NativeChatConversation: Codable, Identifiable {
                 if !Task.isCancelled { self.error = error.localizedDescription }
             }
         }
+    }
+
+    private func updateStreamedReply(_ text: String, conversationID: UUID) {
+        guard let index = conversations.firstIndex(where: { $0.id == conversationID }),
+              let last = conversations[index].messages.indices.last else { return }
+        conversations[index].messages[last].content = text
     }
 }

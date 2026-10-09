@@ -145,7 +145,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         popover.delegate = self
         popoverController.openAssistant = { [weak self] in
             self?.popover.performClose(nil)
-            Task { @MainActor in self?.showAssistant() }
+            Task { @MainActor [weak self] in self?.showAssistant() }
         }
         popoverController.openDashboard = { [weak self] in
             self?.openDashboard()
