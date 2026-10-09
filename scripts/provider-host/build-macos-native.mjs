@@ -85,7 +85,7 @@ export async function buildMacOSNative({ binary, resources, architecture = 'arm6
     const constants = path.join(temporary, 'Host.swiftconstvalues');
     const target = `${architecture}-apple-macos${minimum}`;
     selectedRun('xcrun', ['swiftc', '-parse-as-library', '-O', '-whole-module-optimization', '-module-name', 'MultiVibeHost', '-target', target,
-      '-emit-const-values-path', constants, '-const-gather-protocols-list', protocols, ...sources, '-o', binary]);
+      '-emit-const-values-path', constants, '-Xfrontend', '-const-gather-protocols-list', '-Xfrontend', protocols, ...sources, '-o', binary]);
     const sourceList = path.join(temporary, 'sources');
     const constantList = path.join(temporary, 'constants');
     await writeFile(sourceList, `${sources.join('\n')}\n`);

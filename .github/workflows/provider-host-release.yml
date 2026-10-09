@@ -19,7 +19,7 @@ concurrency:
 
 env:
   NODE_VERSION: 22.23.2
-  GO_VERSION: "1.25.13"
+  GO_VERSION: "1.26.9"
 
 jobs:
   validate-tag:
