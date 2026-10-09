@@ -170,9 +170,27 @@ export type ResponseStreamDiagnostics = {
     | "response.failed"
     | "response.incomplete"
     | "error";
+  /** Bounded upstream error details, retained without the complete SSE payload. */
+  errorCode?: string | null;
+  errorMessage?: string | null;
   sawResponseCompleted: boolean;
   sawChatCompletionChunk: boolean;
 };
+
+function hasTraceFailure(trace: {
+  status: number;
+  isError?: boolean;
+  error?: string;
+  upstreamError?: string;
+  responseStreamDiagnostics?: ResponseStreamDiagnostics;
+}): boolean {
+  const diagnostics = trace.responseStreamDiagnostics;
+  return trace.status >= 400 || trace.isError === true || Boolean(trace.error) ||
+    Boolean(trace.upstreamError) || ["response.failed", "response.incomplete", "error"].some(
+      (event) => diagnostics?.terminalEventType === event ||
+        (diagnostics?.eventTypes?.[event] ?? 0) > 0,
+    );
+}
 
 export type CustomToolCallDiagnostic = {
   _key?: string;
@@ -674,7 +692,7 @@ function normalizeTrace(raw: any): TraceEntry | null {
     resolvedModel:
       typeof raw.resolvedModel === "string" ? raw.resolvedModel : undefined,
     status,
-    isError: typeof raw.isError === "boolean" ? raw.isError : status >= 400,
+    isError: hasTraceFailure({ ...raw, status }),
     stream: Boolean(raw.stream),
     latencyMs,
     ttftMs:
@@ -2238,7 +2256,7 @@ export function createTraceManager(config: TraceManagerConfig) {
       ...traceEntry,
       ...project,
       id,
-      isError: entry.status >= 400,
+      isError: hasTraceFailure(entry),
       startedAt,
       completedAt,
       tokensInput: normalizedTokens.tokensInput,

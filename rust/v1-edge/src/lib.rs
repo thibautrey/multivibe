@@ -4004,6 +4004,8 @@ struct NativeStreamDiagnostics {
     custom_tool_calls: Vec<NativeCustomToolCall>,
     usage: Option<Value>,
     finish_reason: Option<String>,
+    error_code: Option<String>,
+    error_message: Option<String>,
 }
 
 #[derive(Default, Clone)]
@@ -4083,6 +4085,28 @@ impl NativeStreamDiagnostics {
                 }
                 if event_type == "response.completed" {
                     self.saw_response_completed = true;
+                } else {
+                    let detail = event
+                        .get("response")
+                        .and_then(|response| response.get("error"))
+                        .filter(|value| !value.is_null())
+                        .or_else(|| event.get("error").filter(|value| !value.is_null()))
+                        .unwrap_or(event);
+                    if self.error_code.is_none() {
+                        self.error_code =
+                            value_string(detail.get("code")).map(|value| trace_string(&value, 100));
+                    }
+                    if self.error_message.is_none() {
+                        self.error_message = value_string(detail.get("message"))
+                            .map(|value| trace_string(&value, 500));
+                    }
+                    if self.error_message.is_none() && event_type == "response.incomplete" {
+                        self.error_message = event
+                            .get("response")
+                            .and_then(|response| response.get("incomplete_details"))
+                            .and_then(|detail| value_string(detail.get("reason")))
+                            .map(|value| trace_string(&value, 500));
+                    }
                 }
                 self.finish_reason = value_string(event.get("status"))
                     .or_else(|| value_string(event.get("stop_reason")))
@@ -4236,9 +4260,29 @@ impl NativeStreamDiagnostics {
             "sanitizerDroppedEventCount": self.sanitizer_dropped_event_count,
             "sanitizerDroppedTextEventCount": self.sanitizer_dropped_text_event_count,
             "terminalEventType": self.terminal_event_type,
+            "errorCode": self.error_code,
+            "errorMessage": self.error_message,
             "sawResponseCompleted": self.saw_response_completed,
             "sawChatCompletionChunk": self.saw_chat_completion_chunk,
         })
+    }
+
+    fn upstream_failure(&self) -> Option<String> {
+        let failed = ["response.failed", "response.incomplete", "error"]
+            .iter()
+            .find(|event| {
+                self.event_types
+                    .get(**event)
+                    .is_some_and(|count| *count > 0)
+            })?;
+        let code = self.error_code.as_deref().unwrap_or(failed);
+        Some(trace_string(
+            &match self.error_message.as_deref() {
+                Some(message) => format!("{code}: {message}"),
+                None => code.to_owned(),
+            },
+            500,
+        ))
     }
 
     fn assistant_empty_output(&self) -> bool {
@@ -4261,17 +4305,32 @@ impl SseTraceObserver {
 
     fn push(&mut self, bytes: &[u8]) {
         self.buffer.push_str(&String::from_utf8_lossy(bytes));
-        while let Some(index) = self.buffer.find("\n\n") {
+        loop {
+            let delimiter = self
+                .buffer
+                .find("\n\n")
+                .map(|index| (index, 2))
+                .into_iter()
+                .chain(self.buffer.find("\r\n\r\n").map(|index| (index, 4)))
+                .min_by_key(|(index, _)| *index);
+            let Some((index, length)) = delimiter else {
+                break;
+            };
             let frame = self.buffer[..index].to_owned();
-            self.buffer.drain(..index + 2);
+            self.buffer.drain(..index + length);
             self.diagnostics.inspect_frame(&frame);
         }
     }
 
-    fn finish(mut self) -> NativeStreamDiagnostics {
+    fn flush_pending(&mut self) {
         if !self.buffer.trim().is_empty() {
             self.diagnostics.inspect_frame(&self.buffer);
         }
+        self.buffer.clear();
+    }
+
+    fn finish(mut self) -> NativeStreamDiagnostics {
+        self.flush_pending();
         self.diagnostics
     }
 }
@@ -4562,13 +4621,17 @@ fn buffered_trace_outcome(
     let diagnostics = observer.map(|observer| observer.finish());
     let usage = usage_from_payload(&payload)
         .or_else(|| diagnostics.as_ref().and_then(|value| value.usage.clone()));
+    let error = diagnostics
+        .as_ref()
+        .and_then(NativeStreamDiagnostics::upstream_failure)
+        .or_else(|| (reply.status.as_u16() >= 400).then(|| trace_string(&text, 500)));
     TraceOutcome {
         status: reply.status.as_u16(),
         completed_at: now_ms(),
         lifecycle_state: "completed",
         usage,
-        error: (reply.status.as_u16() >= 400).then(|| trace_string(&text, 500)),
-        upstream_error: (reply.status.as_u16() >= 400).then(|| trace_string(&text, 500)),
+        error: error.clone(),
+        upstream_error: error,
         upstream_content_type: (!content_type.trim().is_empty()).then(|| content_type.to_owned()),
         upstream_empty_body: Some(upstream_empty_body),
         ttft_ms: None,
@@ -4647,7 +4710,7 @@ impl TraceSink {
             "recoveredRetry": context.recovered_retry,
             "application": context.application,
             "status": outcome.status,
-            "isError": outcome.status >= 400,
+            "isError": outcome.status >= 400 || outcome.error.is_some() || outcome.upstream_error.is_some(),
             "stream": context.stream,
             "latencyMs": outcome.completed_at.saturating_sub(context.started_at),
             "lifecycleState": outcome.lifecycle_state,
@@ -4858,13 +4921,15 @@ impl StreamingTrace {
         client_disconnected: Option<bool>,
     ) -> TraceOutcome {
         let diagnostics = self.observer.diagnostics.clone();
+        let upstream_error = diagnostics.upstream_failure().or_else(|| error.clone());
+        let error = error.or_else(|| upstream_error.clone());
         TraceOutcome {
             status,
             completed_at,
             lifecycle_state,
             usage: diagnostics.usage.clone(),
-            error: error.clone(),
-            upstream_error: error,
+            error,
+            upstream_error,
             upstream_content_type: self.upstream_content_type.clone(),
             upstream_empty_body: Some(!self.saw_bytes),
             ttft_ms: self.ttft_ms,
@@ -4885,8 +4950,8 @@ impl StreamingTrace {
             return;
         }
         self.finished = true;
+        self.observer.flush_pending();
         let completed_at = now_ms();
-        let client_error = error.clone();
         let outcome = self.outcome(
             status,
             completed_at,
@@ -4898,6 +4963,7 @@ impl StreamingTrace {
             error,
             client_disconnected,
         );
+        let client_error = outcome.error.clone();
         self.sink.record(&self.context, outcome).await;
         self.sink
             .record(
@@ -4929,14 +4995,15 @@ impl Drop for StreamingTrace {
         let context = self.context.clone();
         let client_context = self.client_context.clone();
         let completed_at = now_ms();
-        if self.observer.diagnostics.saw_response_completed {
+        if self.observer.diagnostics.terminal_event_type.is_some() {
             let outcome = self.outcome(self.status, completed_at, "completed", None, Some(true));
+            let client_error = outcome.error.clone();
             let status = self.status;
             handle.spawn(async move {
                 sink.record(&context, outcome).await;
                 sink.record(
                     &client_context,
-                    client_trace_outcome(status, completed_at, None, Some(true)),
+                    client_trace_outcome(status, completed_at, client_error, Some(true)),
                 )
                 .await;
             });
@@ -14346,102 +14413,104 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn completed_sse_is_not_traced_as_499_when_client_drops_before_eof() {
-        let upstream = Router::new()
-            .route(
-                "/backend-api/codex/models",
-                get(|| async { Json(json!({"models": [{"slug": "gpt-completed"}]})) }),
+    async fn terminal_sse_is_not_traced_as_499_when_client_drops_before_eof() {
+        for event in [
+            "response.completed",
+            "response.failed",
+            "response.incomplete",
+            "error",
+        ] {
+            let expected_error = event != "response.completed";
+            let terminal = if event == "error" {
+                json!({"type": event, "code": "server_overloaded", "message": "Selected model is at capacity"})
+            } else {
+                json!({"type": event, "response": {"status": if expected_error {"failed"} else {"completed"}, "output": [], "error": if expected_error { json!({"code": "server_overloaded", "message": "Selected model is at capacity"}) } else { Value::Null }}})
+            };
+            let frame = sse_frame(event, &terminal);
+            let upstream = Router::new()
+                .route(
+                    "/backend-api/codex/models",
+                    get(|| async { Json(json!({"models": [{"slug": "gpt-completed"}]})) }),
+                )
+                .route(
+                    "/backend-api/codex/responses",
+                    post(move || {
+                        let frame = frame.clone();
+                        async move {
+                            let body = stream! {
+                                yield Ok::<Bytes, Infallible>(Bytes::from(frame));
+                                std::future::pending::<()>().await;
+                            };
+                            Response::builder()
+                                .status(StatusCode::OK)
+                                .header(header::CONTENT_TYPE, "text/event-stream")
+                                .body(Body::from_stream(body))
+                                .unwrap()
+                        }
+                    }),
+                );
+            let (upstream_url, upstream_task) = start_server(upstream).await;
+
+            let store_path = temporary_path("completed-drop-store");
+            let jobs_path = temporary_path("completed-drop-jobs");
+            let trace_path = temporary_path("completed-drop-trace");
+            fs::write(
+                &store_path,
+                serde_json::to_vec(&store_with_accounts(vec![account("completed-drop")])).unwrap(),
             )
-            .route(
-                "/backend-api/codex/responses",
-                post(|| async {
-                    let body = stream! {
-                        yield Ok::<Bytes, Infallible>(Bytes::from_static(
-                            b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n",
-                        ));
-                        std::future::pending::<()>().await;
-                    };
-                    Response::builder()
-                        .status(StatusCode::OK)
-                        .header(header::CONTENT_TYPE, "text/event-stream")
-                        .body(Body::from_stream(body))
-                        .unwrap()
-                }),
-            );
-        let (upstream_url, upstream_task) = start_server(upstream).await;
-
-        let store_path = temporary_path("completed-drop-store");
-        let jobs_path = temporary_path("completed-drop-jobs");
-        let trace_path = temporary_path("completed-drop-trace");
-        fs::write(
-            &store_path,
-            serde_json::to_vec(&store_with_accounts(vec![account("completed-drop")])).unwrap(),
-        )
-        .await
-        .unwrap();
-        let mut config = EdgeConfig::default();
-        config.store_path = store_path.clone();
-        config.jobs_path = jobs_path.clone();
-        config.chatgpt_base_url = upstream_url;
-        config.configured_api_keys = vec![("completed-app".to_owned(), "edge-secret".to_owned())];
-        config.models_cache_ttl = Duration::from_secs(60);
-        config.upstream_timeout = Duration::from_secs(5);
-        config.trace_path = Some(trace_path.clone());
-
-        let state = EdgeState::new(config).await.unwrap();
-        let (edge_url, edge_task) = start_server(build_router(state)).await;
-        let mut response = reqwest::Client::new()
-            .post(format!("{edge_url}/v1/responses"))
-            .header("authorization", "Bearer edge-secret")
-            .json(&json!({
-                "model": "gpt-completed",
-                "input": "hello",
-                "stream": true
-            }))
-            .send()
             .await
             .unwrap();
-        let chunk = response.chunk().await.unwrap().unwrap();
-        assert!(String::from_utf8_lossy(&chunk).contains("response.completed"));
-        drop(response);
+            let mut config = EdgeConfig::default();
+            config.store_path = store_path.clone();
+            config.jobs_path = jobs_path.clone();
+            config.chatgpt_base_url = upstream_url;
+            config.configured_api_keys =
+                vec![("completed-app".to_owned(), "edge-secret".to_owned())];
+            config.models_cache_ttl = Duration::from_secs(60);
+            config.upstream_timeout = Duration::from_secs(5);
+            config.trace_path = Some(trace_path.clone());
 
-        let traces = timeout(Duration::from_secs(2), async {
-            loop {
-                if let Ok(contents) = fs::read_to_string(&trace_path).await {
-                    let traces = contents
-                        .lines()
-                        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-                        .collect::<Vec<_>>();
-                    if traces
-                        .iter()
-                        .any(|trace| trace["traceKind"] == "client-request")
-                    {
-                        break traces;
+            let state = EdgeState::new(config).await.unwrap();
+            let (edge_url, edge_task) = start_server(build_router(state)).await;
+            let mut response = reqwest::Client::new()
+                .post(format!("{edge_url}/v1/responses"))
+                .header("authorization", "Bearer edge-secret")
+                .json(&json!({
+                    "model": "gpt-completed",
+                    "input": "hello",
+                    "stream": true
+                }))
+                .send()
+                .await
+                .unwrap();
+            let chunk = response.chunk().await.unwrap().unwrap();
+            assert!(String::from_utf8_lossy(&chunk).contains(event));
+            drop(response);
+
+            let traces = timeout(Duration::from_secs(2), async {
+                loop {
+                    if let Ok(contents) = fs::read_to_string(&trace_path).await {
+                        let traces = contents
+                            .lines()
+                            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                            .collect::<Vec<_>>();
+                        if traces
+                            .iter()
+                            .any(|trace| trace["traceKind"] == "client-request")
+                        {
+                            break traces;
+                        }
                     }
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-        })
-        .await
-        .expect("dropping after response.completed should finalize the trace");
-        for trace in traces.iter().filter(|trace| {
-            matches!(
-                trace["traceKind"].as_str(),
-                Some("client-request" | "upstream-attempt")
-            )
-        }) {
-            assert_eq!(trace["status"], 200);
-            assert_eq!(trace["isError"], false);
-            assert_eq!(trace["lifecycleState"], "completed");
-            assert_eq!(trace["clientDisconnected"], true);
-            assert!(trace.get("error").is_none());
-        }
 
-        edge_task.abort();
-        upstream_task.abort();
-        let _ = fs::remove_file(store_path).await;
-        let _ = fs::remove_file(jobs_path).await;
-        let _ = fs::remove_file(trace_path).await;
+            edge_task.abort();
+            upstream_task.abort();
+            let _ = fs::remove_file(store_path).await;
+            let _ = fs::remove_file(jobs_path).await;
+            let _ = fs::remove_file(trace_path).await;
+        }
     }
 
     #[test]
@@ -17321,6 +17390,179 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 .iter()
                 .any(|entry| entry["traceKind"] == "client-request")
         );
+
+        edge_task.abort();
+        upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+        let _ = fs::remove_file(trace_path).await;
+    }
+
+    #[test]
+    fn sse_failures_are_detected_when_fragmented_or_buffered() {
+        for (event, expected) in [
+            (
+                json!({"type": "error", "code": "auth_error", "message": "Please sign in"}),
+                Some("auth_error: Please sign in"),
+            ),
+            (
+                json!({"type": "response.failed", "response": {"error": {"code": "server_overloaded", "message": "At capacity"}}}),
+                Some("server_overloaded: At capacity"),
+            ),
+            (json!({"type": "response.failed"}), Some("response.failed")),
+            (
+                json!({"type": "response.incomplete", "response": {"incomplete_details": {"reason": "max_output_tokens"}}}),
+                Some("response.incomplete: max_output_tokens"),
+            ),
+            (
+                json!({"type": "response.completed", "response": {"status": "completed"}}),
+                None,
+            ),
+        ] {
+            let frame = format!("data: {event}\r\n\r\n");
+            let mut observer = SseTraceObserver::new();
+            for bytes in frame.as_bytes().chunks(3) {
+                observer.push(bytes);
+            }
+            let diagnostics = observer.finish();
+            assert_eq!(diagnostics.event_count, 1);
+            assert_eq!(diagnostics.upstream_failure().as_deref(), expected);
+            let reply = BufferedReply {
+                status: StatusCode::OK,
+                headers: vec![],
+                body: Bytes::from(frame),
+            };
+            let outcome = buffered_trace_outcome(&reply, "text/event-stream", false);
+            assert_eq!(outcome.status, 200);
+            assert_eq!(outcome.error.as_deref(), expected);
+            assert_eq!(outcome.upstream_error.as_deref(), expected);
+        }
+        let mut observer = SseTraceObserver::new();
+        observer.push(
+            format!(
+                "data: {}",
+                json!({"type": "error", "code": "x".repeat(150), "message": "y".repeat(1000)})
+            )
+            .as_bytes(),
+        );
+        let diagnostics = observer.finish();
+        assert_eq!(diagnostics.error_code.as_ref().unwrap().len(), 100);
+        assert_eq!(diagnostics.error_message.as_ref().unwrap().len(), 500);
+        assert_eq!(diagnostics.upstream_failure().unwrap().len(), 500);
+    }
+
+    #[tokio::test]
+    async fn native_failed_sse_preserves_payload_and_marks_both_traces_as_errors() {
+        let upstream = Router::new()
+            .route(
+                "/backend-api/codex/models",
+                get(|| async {
+                    Json(json!({
+                        "models": [{"slug": "gpt-5.6-sol", "display_name": "GPT 5.6 Sol"}]
+                    }))
+                }),
+            )
+            .route(
+                "/backend-api/codex/responses",
+                post(|| async {
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .body(Body::from(concat!(
+                            "event: response.failed\r\n",
+                            "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_overloaded\",\"message\":\"Selected model is at capacity\"}}}\r\n\r\n",
+                            "event: error\r\n",
+                            "data: {\"type\":\"error\",\"code\":\"server_overloaded\",\"message\":\"Selected model is at capacity\"}",
+                        )))
+                        .unwrap()
+                }),
+            );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+
+        let store_path = temporary_path("native-stream");
+        let jobs_path = temporary_path("native-stream-jobs");
+        let trace_path = temporary_path("native-stream-trace");
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![account("openai-1")])).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.chatgpt_base_url = upstream_url;
+        config.configured_api_keys = vec![("stream-app".to_owned(), "stream-key".to_owned())];
+        config.models_cache_ttl = Duration::from_secs(60);
+        config.upstream_timeout = Duration::from_secs(5);
+        config.trace_path = Some(trace_path.clone());
+
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let response = reqwest::Client::new()
+            .post(format!("{edge_url}/v1/responses"))
+            .header("authorization", "Bearer stream-key")
+            .json(&json!({
+                "model": "gpt-5.6-sol",
+                "input": "hello",
+                "stream": true
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.starts_with("text/event-stream"))
+        );
+        let body = response.text().await.unwrap();
+        assert_eq!(
+            body,
+            concat!(
+                "event: response.failed\r\n",
+                "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_overloaded\",\"message\":\"Selected model is at capacity\"}}}\r\n\r\n",
+                "event: error\r\n",
+                "data: {\"type\":\"error\",\"code\":\"server_overloaded\",\"message\":\"Selected model is at capacity\"}",
+            )
+        );
+        let trace_contents = fs::read_to_string(&trace_path).await.unwrap();
+        let traces = trace_contents
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|entry| entry["route"] == "/v1/responses")
+            .collect::<Vec<_>>();
+        for kind in ["upstream-attempt", "client-request"] {
+            let trace = traces
+                .iter()
+                .find(|entry| entry["traceKind"] == kind)
+                .unwrap();
+            assert_eq!(trace["status"], 200);
+            assert_eq!(trace["isError"], true);
+            assert_eq!(
+                trace["error"],
+                "server_overloaded: Selected model is at capacity"
+            );
+            assert_eq!(trace["clientDisconnected"], false);
+        }
+        let trace = traces
+            .iter()
+            .find(|entry| entry["traceKind"] == "upstream-attempt")
+            .unwrap();
+        assert_eq!(
+            trace["upstreamError"],
+            "server_overloaded: Selected model is at capacity"
+        );
+        assert_eq!(
+            trace["responseStreamDiagnostics"]["errorCode"],
+            "server_overloaded"
+        );
+        assert_eq!(
+            trace["responseStreamDiagnostics"]["errorMessage"],
+            "Selected model is at capacity"
+        );
+        assert_eq!(trace["responseStreamDiagnostics"]["eventTypes"]["error"], 1);
 
         edge_task.abort();
         upstream_task.abort();
