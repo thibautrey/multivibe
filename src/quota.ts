@@ -168,6 +168,19 @@ export function buildAccountSelectionTelemetry(
   };
 }
 
+function parseCodexCredits(credits: any): UsageSnapshot["codexCredits"] {
+  if (!credits || typeof credits !== "object" || Array.isArray(credits)) return undefined;
+  const raw = credits.balance;
+  const value = typeof raw === "number" || (typeof raw === "string" && raw.trim() !== "")
+    ? Number(raw) : NaN;
+  return {
+    remaining: Number.isFinite(value) && value >= 0 ? value : undefined,
+    hasCredits: typeof credits.has_credits === "boolean" ? credits.has_credits : undefined,
+    unlimited: typeof credits.unlimited === "boolean" ? credits.unlimited : undefined,
+    overageLimitReached: typeof credits.overage_limit_reached === "boolean" ? credits.overage_limit_reached : undefined,
+  };
+}
+
 function parseUsage(data: any): UsageSnapshot {
   const upstreamPrimary = data?.rate_limit?.primary_window;
   const upstreamSecondary = data?.rate_limit?.secondary_window;
@@ -204,7 +217,7 @@ function parseUsage(data: any): UsageSnapshot {
   if (!primary && !secondary && !monthly) {
     throw new Error("OpenAI usage response contains no recognized quota windows");
   }
-  return { primary, secondary, monthly, quotaStatus: "available", fetchedAt: Date.now() };
+  return { primary, secondary, monthly, codexCredits: parseCodexCredits(data?.credits), quotaStatus: "available", fetchedAt: Date.now() };
 }
 
 function parseOpenAIUsage(data: any): UsageSnapshot {

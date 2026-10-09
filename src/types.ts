@@ -42,6 +42,7 @@ export type UsageWindow = {
 };
 
 export type UsageSnapshot = {
+  codexCredits?: { remaining?: number; hasCredits?: boolean; unlimited?: boolean; overageLimitReached?: boolean }; // additive Codex credits, independent of subscription windows
   balance?: { remaining: number; unit: string }; // absolute balance; never infer a percentage without a total
   spend?: { amount: number; unit: string };
   allowances?: Array<UsageWindow & { label: string }>; // informational allowances, not hard inference limits

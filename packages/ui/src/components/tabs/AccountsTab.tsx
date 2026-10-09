@@ -2309,6 +2309,18 @@ export function AccountsTab(props: Props) {
                             {renderUsageCell(a.usage?.monthly?.usedPercent, a.usage?.monthly?.resetAt, a.usage?.quotaStatus === "unsupported", a.usage?.quotaStatus === "error")}
                           </div>
                         )}
+                        {a.usage?.codexCredits && (
+                          <div className="provider-quota-item">
+                            <span className="provider-quota-label">Codex credits</span>
+                            <span>
+                              {a.usage.codexCredits.unlimited === true ? "Unlimited"
+                                : typeof a.usage.codexCredits.remaining === "number"
+                                  ? `${a.usage.codexCredits.remaining.toLocaleString(undefined, { maximumFractionDigits: 2 })} credits`
+                                  : a.usage.codexCredits.hasCredits === false ? "No credits" : "Unavailable"}
+                              {a.usage.quotaStatus === "error" ? " (stale)" : ""}
+                            </span>
+                          </div>
+                        )}
                         {a.usage?.balance && (
                           <div className="provider-quota-item">
                             <span className="provider-quota-label">Available balance</span>
