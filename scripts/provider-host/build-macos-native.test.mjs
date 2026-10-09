@@ -3,7 +3,16 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { constValueCompilerArguments, readConstValueProtocols, resolveMacOSDeveloperDirectory } from './build-macos-native.mjs';
+import { appIntentsFileArguments, constValueCompilerArguments, readConstValueProtocols, resolveMacOSDeveloperDirectory } from './build-macos-native.mjs';
+
+test('App Intents processor receives the file-list options supported by its Xcode version', () => {
+  const inputs = { sources: '/tmp/sources', constants: '/tmp/constants', version: '27A266a', bundleIdentifier: 'cloud.multivibe.host' };
+  assert.deepEqual(appIntentsFileArguments('USAGE: --source-files <path> --swift-const-vals <path>', inputs),
+    ['--source-files', inputs.sources, '--swift-const-vals', inputs.constants]);
+  assert.deepEqual(appIntentsFileArguments('USAGE: --source-file-list <path> --swift-const-vals-list <path> --xcode-version <version> --no-app-shortcuts-localization', inputs),
+    ['--source-file-list', inputs.sources, '--swift-const-vals-list', inputs.constants, '--xcode-version', inputs.version, '--no-app-shortcuts-localization']);
+  assert.throws(() => appIntentsFileArguments('USAGE: --source-files <path>', inputs), /--swift-const-vals/u);
+});
 
 test('App Intents compiler flags follow the selected Swift frontend capabilities', () => {
   for (const option of ['-const-gather-protocols-list', '-const-gather-protocols-file']) {

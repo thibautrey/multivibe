@@ -2,7 +2,7 @@ import { mkdtemp, readFile, readdir, writeFile, rm, stat, mkdir } from 'node:fs/
 import { existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -76,6 +76,33 @@ export function constValueCompilerArguments(frontendHelp, protocols) {
   return ['-Xfrontend', option, '-Xfrontend', protocols];
 }
 
+function commandHelp(program, args, env) {
+  const result = spawnSync(program, args, { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  if (result.error) throw result.error;
+  // Some Xcode versions print help to stderr and exit with status 1.
+  const help = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+  if (result.status !== 0 && !(result.status === 1 && /usage:/iu.test(help))) {
+    throw new Error(`could not inspect ${program} ${args.join(' ')}: ${help}`);
+  }
+  return help;
+}
+
+export function appIntentsFileArguments(help, { sources, constants, version, bundleIdentifier }) {
+  const supported = new Set(help.match(/--[a-z][a-z-]*/gu) ?? []);
+  const required = (candidates, value) => {
+    const option = candidates.find(candidate => supported.has(candidate));
+    if (!option) throw new Error(`App Intents processor does not support ${candidates.join(' or ')}`);
+    return [option, value];
+  };
+  return [
+    ...required(['--source-file-list', '--source-files'], sources),
+    ...required(['--swift-const-vals-list', '--swift-const-vals'], constants),
+    ...(supported.has('--xcode-version') ? ['--xcode-version', version] : []),
+    ...(supported.has('--bundle-identifier') ? ['--bundle-identifier', bundleIdentifier] : []),
+    ...(supported.has('--no-app-shortcuts-localization') ? ['--no-app-shortcuts-localization'] : []),
+  ];
+}
+
 // Kept identical for release packaging and local signed-app verification.
 export async function buildMacOSNative({ binary, resources, architecture = 'arm64', minimum = '13.0' }) {
   const temporary = await mkdtemp(path.join(tmpdir(), 'multivibe-native-'));
@@ -103,10 +130,12 @@ export async function buildMacOSNative({ binary, resources, architecture = 'arm6
     const contents = path.dirname(resources);
     const appInfo = selectedRun('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(contents, 'Info.plist')]);
     const info = JSON.parse(appInfo);
+    const fileArguments = appIntentsFileArguments(commandHelp('xcrun', ['appintentsmetadataprocessor', '--help'], env),
+      { sources: sourceList, constants: constantList, version, bundleIdentifier: info.CFBundleIdentifier });
     const output = selectedRun('xcrun', ['appintentsmetadataprocessor', '--output', resources, '--toolchain-dir', toolchain,
-      '--module-name', 'MultiVibeHost', '--bundle-identifier', info.CFBundleIdentifier, '--binary-file', binary,
-      '--compile-time-extraction', '--deployment-aware-processing', '--no-app-shortcuts-localization', '--sdk-root', sdk, '--xcode-version', version, '--platform-family', 'macOS',
-      '--deployment-target', minimum, '--target-triple', target, '--source-file-list', sourceList, '--swift-const-vals-list', constantList]);
+      '--module-name', 'MultiVibeHost', '--binary-file', binary,
+      '--compile-time-extraction', '--deployment-aware-processing', '--sdk-root', sdk, '--platform-family', 'macOS',
+      '--deployment-target', minimum, '--target-triple', target, ...fileArguments]);
     console.log(output);
     await stat(path.join(resources, 'Metadata.appintents', 'extract.actionsdata'));
     const extension = path.join(contents, 'PlugIns', 'MultiVibeShare.appex', 'Contents');
