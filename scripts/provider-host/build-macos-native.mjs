@@ -87,7 +87,7 @@ export function commandHelp(program, args, env) {
   return help;
 }
 
-export function appIntentsFileArguments(help, { sources, constants, version, bundleIdentifier }) {
+export function appIntentsFileArguments(help, { sources, constants, constantList, version, bundleIdentifier }) {
   const supported = new Set(help.match(/--[a-z][a-z-]*/gu) ?? []);
   const required = (candidates, value) => {
     const option = candidates.find(candidate => supported.has(candidate));
@@ -96,7 +96,8 @@ export function appIntentsFileArguments(help, { sources, constants, version, bun
   };
   return [
     ...required(['--source-file-list', '--source-files'], sources),
-    ...required(['--swift-const-vals-list', '--swift-const-vals'], constants),
+    // Xcode 15 reads the compiler JSON directly; newer processors read a list of JSON paths.
+    ...required(['--swift-const-vals-list', '--swift-const-vals'], supported.has('--swift-const-vals-list') ? constantList : constants),
     ...(supported.has('--xcode-version') ? ['--xcode-version', version] : []),
     ...(supported.has('--bundle-identifier') ? ['--bundle-identifier', bundleIdentifier] : []),
     ...(supported.has('--no-app-shortcuts-localization') ? ['--no-app-shortcuts-localization'] : []),
@@ -131,7 +132,7 @@ export async function buildMacOSNative({ binary, resources, architecture = 'arm6
     const appInfo = selectedRun('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(contents, 'Info.plist')]);
     const info = JSON.parse(appInfo);
     const fileArguments = appIntentsFileArguments(commandHelp('xcrun', ['appintentsmetadataprocessor', '--help'], env),
-      { sources: sourceList, constants: constantList, version, bundleIdentifier: info.CFBundleIdentifier });
+      { sources: sourceList, constants, constantList, version, bundleIdentifier: info.CFBundleIdentifier });
     const output = selectedRun('xcrun', ['appintentsmetadataprocessor', '--output', resources, '--toolchain-dir', toolchain,
       '--module-name', 'MultiVibeHost', '--binary-file', binary,
       '--compile-time-extraction', '--deployment-aware-processing', '--sdk-root', sdk, '--platform-family', 'macOS',
