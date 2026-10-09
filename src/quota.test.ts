@@ -689,5 +689,9 @@ test("OpenAI free monthly quota is recognized and exhausted accounts remain bloc
   assert.equal(refreshed.usage?.monthly?.usedPercent, 100);
   assert.equal(refreshed.usage?.monthly?.resetAt, resetAt * 1000);
   assert.equal(refreshed.state?.lastError, undefined);
-  assert.equal(chooseAccount([refreshed]), null);
+  const { accountHeadroom, markQuotaHit, accountUsable } = await import("./quota.js");
+  assert.equal(accountHeadroom(refreshed), 0);
+  markQuotaHit(refreshed, "test-model", "429", "usage_limit_reached");
+  assert.equal(accountUsable(refreshed, "test-model"), false);
+  assert.equal(refreshed.state?.modelBlocks?.["test-model"]?.until, resetAt * 1000 + 60000);
 });
