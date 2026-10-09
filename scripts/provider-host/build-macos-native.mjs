@@ -76,12 +76,12 @@ export function constValueCompilerArguments(frontendHelp, protocols) {
   return ['-Xfrontend', option, '-Xfrontend', protocols];
 }
 
-function commandHelp(program, args, env) {
+export function commandHelp(program, args, env) {
   const result = spawnSync(program, args, { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   if (result.error) throw result.error;
-  // Some Xcode versions print help to stderr and exit with status 1.
+  // Apple tools can print valid help to stderr and return a nonzero status (including 255).
   const help = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-  if (result.status !== 0 && !(result.status === 1 && /usage:/iu.test(help))) {
+  if (result.signal || (result.status !== 0 && !/usage:/iu.test(help))) {
     throw new Error(`could not inspect ${program} ${args.join(' ')}: ${help}`);
   }
   return help;
