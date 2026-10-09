@@ -356,6 +356,16 @@ function parseZaiWindow(window: any): UsageSnapshot["primary"] {
 }
 
 export function parseZaiUsage(data: any): UsageSnapshot {
+  // This explicit entitlement response means subscription quotas do not apply.
+  // Other HTTP-200 provider errors must remain errors (including auth failures).
+  if (data?.success === false && Number(data?.code) === 500 &&
+      data?.msg === "当前用户不存在coding plan" && !data?.error) {
+    return {
+      quotaStatus: "unsupported",
+      quotaMessage: "This Z.ai account has no Coding Plan subscription. Subscription quotas are unavailable; request token usage is tracked separately.",
+      fetchedAt: Date.now(),
+    };
+  }
   if (data?.success === false || (data?.code !== undefined && ![0, 200].includes(Number(data.code))) || data?.error) {
     throw new Error("Z.ai usage response reports a provider error");
   }
