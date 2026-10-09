@@ -129,3 +129,23 @@ test("Copilot device login, pending polling, completion and reauth preserve the 
     assert.equal(manual.status, 400);
   });
 });
+
+
+test("completed OpenAI device polls are idempotent even after the device code expires", async () => {
+  const account = { id: "openai-reauth", accessToken: "private-access", refreshToken: "private-refresh", enabled: true };
+  const flow = { id: "completed", method: "device", provider: "openai", status: "success", accountId: account.id, expiresAt: 1 };
+  await withServer(options({
+    store: { listAccounts: async () => [account] } as any,
+    oauthStore: { get: async () => flow } as any,
+  }), async (base) => {
+    for (let i = 0; i < 2; i++) {
+      const response = await fetch(base + "/admin/oauth/device/poll", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ flowId: flow.id }) });
+      assert.equal(response.status, 200);
+      const body = await response.json();
+      assert.equal(body.status, "success");
+      assert.equal(body.account.id, account.id);
+      assert.equal(JSON.stringify(body).includes("private-access"), false);
+      assert.equal(JSON.stringify(body).includes("private-refresh"), false);
+    }
+  });
+});

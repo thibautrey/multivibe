@@ -11011,7 +11011,11 @@ async fn list_models_handler(
             return error_response(StatusCode::SERVICE_UNAVAILABLE, error, "store_unavailable");
         }
     };
-    if let Err(response) = authorize(&headers, path, &store, &state.config) {
+    if path == "/admin/dashboard/models" {
+        if !dashboard::request_authorized(&headers, &state.config) {
+            return json_response(StatusCode::UNAUTHORIZED, json!({"error": "unauthorized"}));
+        }
+    } else if let Err(response) = authorize(&headers, path, &store, &state.config) {
         return response;
     }
     if is_claude_code_request(&headers) {
@@ -12543,6 +12547,7 @@ pub fn build_router(state: EdgeState) -> Router {
             post(dashboard::desktop_session_create),
         )
         .route("/desktop/session", get(dashboard::desktop_session_consume))
+        .route("/admin/dashboard/models", get(list_models_handler).post(method_not_allowed))
         // Every inference route, both the canonical `/v1` surface and its
         // historical root aliases, terminates in this native edge. Node
         // remains a control-plane peer and hosts the internal adapter for SDK
@@ -18100,6 +18105,8 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
             .await
             .unwrap();
         assert_eq!(session, json!({"authenticated": false}));
+        assert_eq!(client.get(format!("{edge_url}/admin/dashboard/models"))
+            .send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
 
         let invalid = client
             .post(format!("{edge_url}/admin/session"))
@@ -18139,6 +18146,10 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
             .await
             .unwrap();
         assert_eq!(session, json!({"authenticated": true}));
+        let catalog = client.get(format!("{edge_url}/admin/dashboard/models"))
+            .header(header::COOKIE, &cookie).send().await.unwrap();
+        assert_eq!(catalog.status(), StatusCode::OK);
+        assert!(catalog.json::<Value>().await.unwrap()["data"].is_array());
 
         let keys: Value = client
             .get(format!("{edge_url}/admin/proxy-api-keys"))

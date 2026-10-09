@@ -2756,13 +2756,13 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     if (flow.method !== "device") {
       return res.status(400).json({ error: "flow is not a device authorization flow" });
     }
-    if (flow.provider === "github-copilot") {
-      if (flow.status === "success") {
-        const account = (await store.listAccounts()).find((account) => account.id === flow.accountId);
-        return res.json({ ok: true, status: "success", account: account ? redact(account) : undefined });
-      }
-      if (flow.status === "error") return res.status(400).json({ error: flow.error ?? "GitHub authorization failed" });
+    // Authorization codes are single-use. A dashboard refresh failure must not
+    // exchange an already completed code again on the next poll.
+    if (flow.status === "success") {
+      const account = (await store.listAccounts()).find((account) => account.id === flow.accountId);
+      return res.json({ ok: true, status: "success", account: account ? redact(account) : undefined });
     }
+    if (flow.status === "error") return res.status(400).json({ error: "Device authorization failed. Start a new sign-in." });
     if (flow.expiresAt && flow.expiresAt < Date.now()) {
       await oauthStore.update(flow.id, {
         status: "error",
