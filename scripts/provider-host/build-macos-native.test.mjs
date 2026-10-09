@@ -3,7 +3,13 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { appIntentsFileArguments, constValueCompilerArguments, readConstValueProtocols, resolveMacOSDeveloperDirectory } from './build-macos-native.mjs';
+import { appIntentsFileArguments, commandHelp, constValueCompilerArguments, readConstValueProtocols, resolveMacOSDeveloperDirectory } from './build-macos-native.mjs';
+
+test('Apple processor help is usable when printed to stderr with exit status 255', () => {
+  const help = commandHelp(process.execPath, ['-e', 'console.error("USAGE: --source-files <path>"); process.exit(255)'], process.env);
+  assert.match(help, /--source-files/u);
+  assert.throws(() => commandHelp(process.execPath, ['-e', 'console.error("tool unavailable"); process.exit(1)'], process.env), /could not inspect/u);
+});
 
 test('App Intents processor receives the file-list options supported by its Xcode version', () => {
   const inputs = { sources: '/tmp/sources', constants: '/tmp/constants', version: '27A266a', bundleIdentifier: 'cloud.multivibe.host' };
