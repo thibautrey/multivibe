@@ -704,7 +704,9 @@ jobs:
         shell: bash
         run: |
           if [[ -d "$RUNNER_TEMP/multivibe-release-docker-config" ]]; then
-            rm -rf -- "$RUNNER_TEMP/multivibe-release-docker-config"
+            # sudo Docker may create a root-owned buildx cache here. Registry
+            # credentials live only in config.json; unlink it from the runner-owned directory.
+            rm -f -- "$RUNNER_TEMP/multivibe-release-docker-config/config.json"
           fi
       - name: Attest the published container image
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
