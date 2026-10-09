@@ -3,7 +3,16 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { readConstValueProtocols, resolveMacOSDeveloperDirectory } from './build-macos-native.mjs';
+import { constValueCompilerArguments, readConstValueProtocols, resolveMacOSDeveloperDirectory } from './build-macos-native.mjs';
+
+test('App Intents compiler flags follow the selected Swift frontend capabilities', () => {
+  for (const option of ['-const-gather-protocols-list', '-const-gather-protocols-file']) {
+    assert.deepEqual(constValueCompilerArguments(`  ${option} <path>\n    Specify protocols`, '/tmp/protocols.json'),
+      ['-Xfrontend', option, '-Xfrontend', '/tmp/protocols.json']);
+  }
+  assert.throws(() => constValueCompilerArguments('  -unrelated-option <path>\n', '/tmp/protocols.json'), /compatible full Xcode/u);
+  assert.throws(() => constValueCompilerArguments('description mentions -const-gather-protocols-list', '/tmp/protocols.json'), /compatible full Xcode/u);
+});
 
 test('App Intents extraction supports modern, legacy and absent toolchain protocol lists', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'host-xcode-test-'));
