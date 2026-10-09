@@ -88,3 +88,13 @@ test("new OAuth accounts use the upstream account id as their stable id", () => 
   assert.equal(created.id, "chatgpt-account-1");
   assert.equal(created.chatgptAccountId, "chatgpt-account-1");
 });
+
+test("reauth clears stale authentication failures and preserves unrelated provider errors", () => {
+  const stale = account({ state: { needsTokenRefresh: true, authBlockedUntil: Date.now() + 60000, lastError: "refresh token failed: expired" } });
+  const recovered = mergeTokenIntoAccount(stale, token());
+  assert.equal(recovered.state?.needsTokenRefresh, false);
+  assert.equal(recovered.state?.authBlockedUntil, undefined);
+  assert.equal(recovered.state?.lastError, undefined);
+  const other = mergeTokenIntoAccount(account({ state: { lastError: "model unavailable" } }), token());
+  assert.equal(other.state?.lastError, "model unavailable");
+});
