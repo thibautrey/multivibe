@@ -68,6 +68,14 @@ export async function readConstValueProtocols(toolchain) {
   return hostConstValueProtocols;
 }
 
+export function constValueCompilerArguments(frontendHelp, protocols) {
+  // Swift versions differ in the name of this frontend-only option.
+  const option = ['-const-gather-protocols-list', '-const-gather-protocols-file']
+    .find(candidate => new RegExp(`^\\s*${candidate}\\s`, 'mu').test(frontendHelp));
+  if (!option) throw new Error('selected Swift frontend cannot extract App Intents constant values; install a compatible full Xcode');
+  return ['-Xfrontend', option, '-Xfrontend', protocols];
+}
+
 // Kept identical for release packaging and local signed-app verification.
 export async function buildMacOSNative({ binary, resources, architecture = 'arm64', minimum = '13.0' }) {
   const temporary = await mkdtemp(path.join(tmpdir(), 'multivibe-native-'));
@@ -83,9 +91,11 @@ export async function buildMacOSNative({ binary, resources, architecture = 'arm6
     const protocols = path.join(temporary, 'protocols.json');
     await writeFile(protocols, JSON.stringify(await readConstValueProtocols(toolchain)));
     const constants = path.join(temporary, 'Host.swiftconstvalues');
+    const extractionArguments = constValueCompilerArguments(
+      selectedRun('xcrun', ['swiftc', '-frontend', '-help-hidden']), protocols);
     const target = `${architecture}-apple-macos${minimum}`;
     selectedRun('xcrun', ['swiftc', '-parse-as-library', '-O', '-whole-module-optimization', '-module-name', 'MultiVibeHost', '-target', target,
-      '-emit-const-values-path', constants, '-Xfrontend', '-const-gather-protocols-list', '-Xfrontend', protocols, ...sources, '-o', binary]);
+      '-emit-const-values-path', constants, ...extractionArguments, ...sources, '-o', binary]);
     const sourceList = path.join(temporary, 'sources');
     const constantList = path.join(temporary, 'constants');
     await writeFile(sourceList, `${sources.join('\n')}\n`);
