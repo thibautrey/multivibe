@@ -30,3 +30,4 @@ artifacts/.DS_Store
 # Local DSH SDK audit and isolated runtime fixtures (never publish).
 .dsh-plugin-dev/
 plugins/dsh-multivibe/*.tgz
+.DS_Store

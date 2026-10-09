@@ -26,7 +26,7 @@ const requestedNames = [
   "Mentat", "GPT-Pilot", "Plandex", "Cursor Agent", "Windsurf Cascade", "Devin", "Pythagora",
   "Agent Zero", "OpenManus", "Manus", "AutoGen", "CrewAI", "LangGraph", "smolagents",
   "Letta", "AutoGPT", "BabyAGI", "MetaGPT", "SuperAGI", "AgentGPT", "CAMEL", "PydanticAI",
-  "Mastra", "Agno", "Semantic Kernel", "LlamaIndex Agents", "LangChain Agents", "deepseek-harness",
+  "Mastra", "Agno", "Semantic Kernel", "LlamaIndex Agents", "LangChain Agents", "DeepSeek Harness (DSH)",
 ];
 
 test("the host registry covers every requested harness exactly once", () => {
@@ -35,6 +35,82 @@ test("the host registry covers every requested harness exactly once", () => {
     requestedNames.sort(),
   );
   assert.equal(new Set(HOST_HARNESS_DEFINITIONS.map((entry) => entry.id)).size, HOST_HARNESS_DEFINITIONS.length);
+});
+
+test("DeepSeek Harness detects its real CLI without executing it or rewriting profile settings", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-dsh-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const home = path.join(root, "home");
+  const bin = path.join(home, "bin");
+  await fs.mkdir(bin, { recursive: true });
+  const sentinel = path.join(root, "executed");
+  await fs.writeFile(path.join(bin, "dsh"), `#!/bin/sh\ntouch '${sentinel}'\n`, { mode: 0o755 });
+  const configPath = path.join(home, ".dsh", "cordis.patch.yml");
+  const original = "- id: llm-pi-ai\n  config:\n    providers:\n      existing: {}\n";
+  await fs.mkdir(path.dirname(configPath), { recursive: true });
+  await fs.writeFile(configPath, original);
+  const definition = HOST_HARNESS_DEFINITIONS.find((entry) => entry.id === "deepseek-harness")!;
+  const manager = new HostHarnessIntegrationManager({
+    homeDirectory: home,
+    statePath: path.join(home, ".multivibe", "harnesses.json"),
+    baseUrl: "http://127.0.0.1:1455",
+    definitions: [{ ...definition, footprints: [".dsh"] }],
+    executableDirectories: [bin],
+  });
+  const detected = await manager.get(definition.id);
+  assert.equal(detected.name, "DeepSeek Harness (DSH)");
+  assert.equal(detected.detected, true);
+  assert.deepEqual(detected.detectedBy, ["command:dsh", "path:~/.dsh"]);
+  assert.equal(detected.canInstall, false);
+  assert.equal(detected.managed, false);
+  assert.match(detected.unavailableReason!, /Models page/);
+  await assert.rejects(manager.install(definition.id, {
+    apiKeyId: "key-dsh", apiKey: "mv_dsh", application: "harness-deepseek-harness",
+  }), /profile overlays/);
+  assert.equal(await fs.readFile(configPath, "utf8"), original);
+  await assert.rejects(fs.stat(sentinel), { code: "ENOENT" });
+});
+
+test("DeepSeek Harness detects Desktop footprints and retains legacy detection", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-dsh-desktop-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const definition = HOST_HARNESS_DEFINITIONS.find((entry) => entry.id === "deepseek-harness")!;
+  const footprints = [
+    "Library/Application Support/dsh-desktop/harness",
+    ".config/dsh-desktop/harness",
+    "AppData/Roaming/dsh-desktop/harness",
+    "Applications/DSH Desktop.app",
+    ".deepseek-harness",
+  ];
+  assert.ok(definition.footprints.includes("/Applications/DSH Desktop.app"));
+  assert.ok(definition.executables.includes("deepseek-harness"));
+  for (const [index, footprint] of footprints.entries()) {
+    assert.ok(definition.footprints.includes(footprint));
+    const home = path.join(root, String(index));
+    await fs.mkdir(path.join(home, footprint), { recursive: true });
+    const manager = new HostHarnessIntegrationManager({
+      homeDirectory: home,
+      statePath: path.join(home, ".multivibe", "harnesses.json"),
+      baseUrl: "http://127.0.0.1:1455",
+      definitions: [{ ...definition, footprints: [footprint] }],
+      executableDirectories: [],
+    });
+    const detected = await manager.get(definition.id);
+    assert.equal(detected.detected, true, footprint);
+    assert.deepEqual(detected.detectedBy, [`path:~/${footprint}`]);
+    assert.equal(detected.canInstall, false);
+  }
+  const home = path.join(root, "absolute-home");
+  const appPath = path.join(root, "DSH Desktop.app");
+  await fs.mkdir(appPath);
+  const manager = new HostHarnessIntegrationManager({
+    homeDirectory: home,
+    statePath: path.join(home, "harnesses.json"),
+    baseUrl: "http://127.0.0.1:1455",
+    definitions: [{ ...definition, footprints: [appPath] }],
+    executableDirectories: [],
+  });
+  assert.deepEqual((await manager.get(definition.id)).detectedBy, [`path:${appPath}`]);
 });
 
 test("rejects a relative host home directory", () => {

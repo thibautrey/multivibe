@@ -11,6 +11,33 @@ Detection is not a claim that a real task has completed through that harness. Au
 
 MultiVibe configures an authenticated `multivibe` Responses API provider and `model_catalog_json` at the user level in `~/.codex/config.toml`, and maintains the discovered catalog in `~/.codex/multivibe-models.json`. The provider's `experimental_bearer_token` supplies the managed proxy API key; redirecting the built-in `openai` provider with `openai_base_url` alone instead sends OpenAI credentials and fails proxy authentication. The config is written with owner-only permissions. While Host is running, it polls the authoritative MultiVibe catalog and atomically refreshes this managed file when providers or models change; clients that watch `config.toml` also receive a reload event, while the documented fallback remains starting a new Codex process. Existing OpenAI login files are preserved. “Repair connection” migrates the URL-only configuration to the authenticated provider, refreshes the catalog, and keeps exact restore metadata for disconnect. After updating Host, repair the Codex connection and restart Codex to apply the credentials. The generated catalog preserves Codex-native model capabilities returned by Host, including image input support; synthetic fallback entries are used only for models that do not publish native Codex metadata.
 
+## DeepSeek Harness (DSH)
+
+DSH was already listed as a manual integration under `deepseek-harness`. Host now detects the actual `dsh` CLI (including the Windows `dsh.cmd` shim), `~/.dsh`, and DSH Desktop's user data on macOS, Linux, and Windows. On macOS it also detects `/Applications/DSH Desktop.app` and `~/Applications/DSH Desktop.app`. The registry ID remains `deepseek-harness` for compatibility; the display name is **DeepSeek Harness (DSH)**. Legacy `deepseek-harness` command and `~/.deepseek-harness` detection remain supported.
+
+### Connect through the DSH interface
+
+1. Create a dedicated proxy API key in MultiVibe. Use the Host URL reachable from DSH, normally `http://127.0.0.1:1455/v1` (replace the port if your Host uses another one).
+2. In DSH, open **Settings → Models → Add model provider → Custom model API**.
+3. Set **Provider ID** to `multivibe`, **Display name** to `MultiVibe`, **Base URL** to the URL above, **API protocol** to **OpenAI Chat Completions**, and **API key** to the dedicated MultiVibe proxy key. **OpenAI Responses** is also available when using MultiVibe's Responses endpoint.
+4. Use **Fetch available models → Add selected**, or **Add model** and enter an exact routable model ID from MultiVibe. A model's display name is not its routable ID. For manually added models, set capacity/input options from the actual model rather than guessing.
+5. Choose **Create provider** (or **Apply** when editing an existing provider), then select the MultiVibe provider and model in the chat picker.
+
+The GUI stores the key through DSH's credential service; do not put it in an `Authorization` configuration header or commit it in a profile. This manual connection is not marked as managed/configured by MultiVibe Host; Host detects DSH but does not inspect its credential store or verify its effective profiles. A successful real request is the connectivity check, not detection alone.
+
+### Why automatic configuration remains unavailable
+
+The installed DSH build inspected for this integration (Desktop 0.11.0 / Harness 0.2.0-rc.2) uses Cordis YAML patch lists, not a `~/.deepseek-harness` JSON configuration:
+
+- CLI home defaults to `~/.dsh`; `DSH_HOME` and `--home` can override it.
+- Desktop home is Electron's application-data directory plus `dsh-desktop/harness`: `~/Library/Application Support/dsh-desktop/harness` on macOS, `${XDG_CONFIG_HOME:-~/.config}/dsh-desktop/harness` on Linux, and `%APPDATA%\dsh-desktop\harness` on Windows.
+- Desktop boots the **web** profile: `profiles/web/cordis.patch.yml`. The home-level `cordis.patch.yml` takes precedence over profile patches. Never edit `cordis.yml`: DSH regenerates that root file.
+- Provider configuration belongs to the `llm-pi-ai` patch row, under `config.providers.multivibe`. Its field names are `api: openai-completions` (or `openai-responses`), `baseURL`, `apiKeyEnv`, and a `models` list with exact model IDs.
+- A patch row replaces the plugin's **whole configuration**, rather than deep-merging its provider dictionary. Blindly appending a MultiVibe block can discard existing providers.
+- Keys live separately in the home-level `.credentials.yaml` store. DSH requires private permissions and coordinates writes with a cross-process lock.
+
+Host deliberately does not rewrite these files. Non-default CLI homes, custom Linux configuration roots, and development Desktop installations need manual setup and may not appear in discovery. Connecting DSH through MultiVibe does not automatically import DSH's existing provider subscriptions or credentials into MultiVibe.
+
 ## September 2026 expansion
 
 The registry expansion below was checked against upstream project documentation on 2026-09-10.
