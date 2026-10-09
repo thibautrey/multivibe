@@ -700,10 +700,21 @@ jobs:
           node scripts/provider-host/provider-host-container-release.mjs build \
             "$image" "$version" "$digest" "$GITHUB_SHA" container-release
           printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+      - name: Expose job credentials to the OCI attestation library
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The pinned OCI library reads ~/.docker/config.json, ignoring DOCKER_CONFIG.
+          config="$HOME/.docker/config.json"
+          backup="$RUNNER_TEMP/multivibe-release-docker-config/attestation-config-backup.json"
+          test ! -e "$backup" && test ! -L "$backup"
+          mkdir -p "$HOME/.docker"
+          if [[ -e "$config" || -L "$config" ]]; then
+            mv -- "$config" "$backup"
+          fi
+          ln -s -- "$RUNNER_TEMP/multivibe-release-docker-config/config.json" "$config"
       - name: Attest the published container image
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
-        env:
-          DOCKER_CONFIG: ${{ runner.temp }}/multivibe-release-docker-config
         with:
           subject-name: ${{ steps.image.outputs.image }}
           subject-digest: ${{ steps.publish.outputs.digest }}
@@ -712,6 +723,16 @@ jobs:
         if: always()
         shell: bash
         run: |
+          config="$HOME/.docker/config.json"
+          backup="$RUNNER_TEMP/multivibe-release-docker-config/attestation-config-backup.json"
+          job_config="$RUNNER_TEMP/multivibe-release-docker-config/config.json"
+          if [[ -L "$config" && "$(readlink "$config")" == "$job_config" ]]; then
+            rm -- "$config"
+          fi
+          if [[ -e "$backup" || -L "$backup" ]]; then
+            test ! -e "$config" && test ! -L "$config"
+            mv -- "$backup" "$config"
+          fi
           if [[ -d "$RUNNER_TEMP/multivibe-release-docker-config" ]]; then
             # sudo Docker may create a root-owned buildx cache here. Registry
             # credentials live only in config.json; unlink it from the runner-owned directory.
