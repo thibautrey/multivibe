@@ -95,24 +95,20 @@ function activityViewFromSearch(search: string): ActivityView {
     : "overview";
 }
 
-/** Own-property lookup that never resolves inherited `Object.prototype` keys. */
-function ownEntry<T>(record: Readonly<Record<string, T>> | undefined, key: string): T | undefined {
-  return record && Object.prototype.hasOwnProperty.call(record, key) ? record[key] : undefined;
-}
-
 /**
- * Resolve an own entry that is guaranteed to be a callable function. The key can
- * originate from the host `activePage` prop or the URL, so this both rejects
- * inherited `Object.prototype` members and requires a `typeof` function check
- * before the value is ever invoked as a dynamic method.
+ * Resolve an own entry from a record addressed by a possibly user-controlled key.
+ * The key can originate from the host `activePage` prop or the URL, so this never
+ * reads `record[key]` directly: it iterates the record's own enumerable entries
+ * and returns the value whose key matches exactly. That excludes inherited
+ * `Object.prototype` members (`__proto__`, `constructor`, ...) and never produces
+ * a dynamic property read keyed by untrusted input.
  */
-function functionEntry<T extends (...args: never[]) => unknown>(
-  record: Readonly<Record<string, unknown>> | undefined,
-  key: string,
-): T | undefined {
-  if (!record || !Object.prototype.hasOwnProperty.call(record, key)) return undefined;
-  const value = record[key];
-  return typeof value === "function" ? (value as T) : undefined;
+function ownEntry<T>(record: Readonly<Record<string, T>> | undefined, key: string): T | undefined {
+  if (!record) return undefined;
+  for (const [entryKey, value] of Object.entries(record)) {
+    if (entryKey === key) return value;
+  }
+  return undefined;
 }
 
 const demo = import.meta.env.DEV && import.meta.env.MODE === "demo";
@@ -1250,11 +1246,10 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
 
   const pageContext = { accounts, models, refresh: loadBase };
   const customPage = pages.find(page => page.id === tab);
-  // Resolve page overrides/addons through function-guarded own-property lookups:
-  // `tab` can originate from the host `activePage` prop or the URL, so an
-  // unvalidated dynamic dispatch could resolve `__proto__`/`constructor` or a
-  // non-function value and throw.
-  const override = functionEntry<(context: DashboardPageContext) => React.ReactNode>(pageOverrides, tab);
+  // Resolve page overrides/addons through own-entry lookups: `tab` can originate
+  // from the host `activePage` prop or the URL, so an unvalidated dynamic dispatch
+  // could resolve `__proto__`/`constructor` or a non-function value and throw.
+  const override = ownEntry<(context: DashboardPageContext) => React.ReactNode>(pageOverrides, tab);
   const pageAddon = ownEntry(pageAddons, tab);
   return (
     <div className="page">
