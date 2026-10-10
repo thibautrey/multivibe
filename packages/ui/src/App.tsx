@@ -95,6 +95,11 @@ function activityViewFromSearch(search: string): ActivityView {
     : "overview";
 }
 
+/** Own-property lookup that never resolves inherited `Object.prototype` keys. */
+function ownEntry<T>(record: Readonly<Record<string, T>> | undefined, key: string): T | undefined {
+  return record && Object.prototype.hasOwnProperty.call(record, key) ? record[key] : undefined;
+}
+
 const demo = import.meta.env.DEV && import.meta.env.MODE === "demo";
 
 const initialTab = tabFromSearch(window.location.search);
@@ -1230,7 +1235,10 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
 
   const pageContext = { accounts, models, refresh: loadBase };
   const customPage = pages.find(page => page.id === tab);
-  const override = pageOverrides[tab];
+  // Guard record lookups against prototype keys: `tab` can originate from the
+  // host `activePage` prop or the URL, so never resolve `__proto__`/`constructor`.
+  const override = ownEntry(pageOverrides, tab);
+  const pageAddon = ownEntry(pageAddons, tab);
   return (
     <div className="page">
       <div className={`shell app-shell${tab === "models" ? " app-shell-models" : ""}`}>
@@ -1474,7 +1482,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
           {error && <div className="panel error workspace-error">{error}</div>}
 
           <main className={`workspace-content workspace-${tab}`}>
-        {pageAddons[tab]?.before?.(pageContext)}
+        {pageAddon?.before?.(pageContext)}
         {override ? override(pageContext) : customPage ? customPage.render(pageContext) : <>
 
         {tab === "overview" && capabilities.teamHome && teamWorkspace.state === "team" && (
@@ -1640,7 +1648,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
           />
         )}
         </>}
-        {pageAddons[tab]?.after?.(pageContext)}
+        {pageAddon?.after?.(pageContext)}
           </main>
         </div>
       </div>
