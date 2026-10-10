@@ -1,4 +1,4 @@
-import type { SharedDashboardProps } from "./SharedDashboard";
+import type { DashboardPageContext, SharedDashboardProps } from "./SharedDashboard";
 import { useDashboardApi, useDashboardRuntime } from "./adapter";
 import { InvoicesTab } from "./components/tabs/InvoicesTab";
 import { configuredInvoiceProviders, type InvoiceOverview } from "./domain/provider-invoices";
@@ -98,6 +98,21 @@ function activityViewFromSearch(search: string): ActivityView {
 /** Own-property lookup that never resolves inherited `Object.prototype` keys. */
 function ownEntry<T>(record: Readonly<Record<string, T>> | undefined, key: string): T | undefined {
   return record && Object.prototype.hasOwnProperty.call(record, key) ? record[key] : undefined;
+}
+
+/**
+ * Resolve an own entry that is guaranteed to be a callable function. The key can
+ * originate from the host `activePage` prop or the URL, so this both rejects
+ * inherited `Object.prototype` members and requires a `typeof` function check
+ * before the value is ever invoked as a dynamic method.
+ */
+function functionEntry<T extends (...args: never[]) => unknown>(
+  record: Readonly<Record<string, unknown>> | undefined,
+  key: string,
+): T | undefined {
+  if (!record || !Object.prototype.hasOwnProperty.call(record, key)) return undefined;
+  const value = record[key];
+  return typeof value === "function" ? (value as T) : undefined;
 }
 
 const demo = import.meta.env.DEV && import.meta.env.MODE === "demo";
@@ -1235,9 +1250,11 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
 
   const pageContext = { accounts, models, refresh: loadBase };
   const customPage = pages.find(page => page.id === tab);
-  // Guard record lookups against prototype keys: `tab` can originate from the
-  // host `activePage` prop or the URL, so never resolve `__proto__`/`constructor`.
-  const override = ownEntry(pageOverrides, tab);
+  // Resolve page overrides/addons through function-guarded own-property lookups:
+  // `tab` can originate from the host `activePage` prop or the URL, so an
+  // unvalidated dynamic dispatch could resolve `__proto__`/`constructor` or a
+  // non-function value and throw.
+  const override = functionEntry<(context: DashboardPageContext) => React.ReactNode>(pageOverrides, tab);
   const pageAddon = ownEntry(pageAddons, tab);
   return (
     <div className="page">
@@ -1482,8 +1499,8 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
           {error && <div className="panel error workspace-error">{error}</div>}
 
           <main className={`workspace-content workspace-${tab}`}>
-        {pageAddon?.before?.(pageContext)}
-        {override ? override(pageContext) : customPage ? customPage.render(pageContext) : <>
+        {typeof pageAddon?.before === "function" ? pageAddon.before(pageContext) : null}
+        {typeof override === "function" ? override(pageContext) : customPage ? customPage.render(pageContext) : <>
 
         {tab === "overview" && capabilities.teamHome && teamWorkspace.state === "team" && (
           <section className="panel team-workspace-home">
@@ -1648,7 +1665,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
           />
         )}
         </>}
-        {pageAddon?.after?.(pageContext)}
+        {typeof pageAddon?.after === "function" ? pageAddon.after(pageContext) : null}
           </main>
         </div>
       </div>
