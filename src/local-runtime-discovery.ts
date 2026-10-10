@@ -545,6 +545,15 @@ function parseNvidiaPairEndpoint(value: string): URL {
   return url;
 }
 
+/** Build the NVIDIA PAIR model probe URL from validated loopback components. */
+function pairProbeUrl(endpoint: URL): string {
+  const port = Number(endpoint.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65535)
+    throw new Error("PAIR endpoint port is not a valid TCP port");
+  const host = endpoint.hostname === "[::1]" ? "[::1]" : "127.0.0.1";
+  return `http://${host}:${port}/v1/models`;
+}
+
 export function isConfiguredNvidiaPairAccount(account: Account): boolean {
   if (
     account.id !== "local-runtime-nvidia-pair" ||
@@ -633,16 +642,22 @@ export async function configureNvidiaPairRuntime(
   endpointInput: string,
   options: LocalRuntimeDiscoveryOptions = {},
 ): Promise<Account> {
-  const endpoint = parseNvidiaPairEndpoint(endpointInput).origin;
+  const parsedEndpoint = parseNvidiaPairEndpoint(endpointInput);
+  const endpoint = parsedEndpoint.origin;
   const fetchFn = options.fetchFn ?? fetch;
   const controller = new AbortController();
   const timeout = setTimeout(
     () => controller.abort(),
     Math.max(1, options.timeoutMs ?? LOCAL_RUNTIME_DISCOVERY_TIMEOUT_MS),
   );
+  // Rebuild the probe URL from validated components only. `parseNvidiaPairEndpoint`
+  // already restricts the endpoint to a loopback HTTP origin with an explicit
+  // numeric port, but CodeQL's request-forgery query cannot see that guard, so we
+  // also derive the literal host from the parsed port instead of the raw input.
+  const probeUrl = pairProbeUrl(parsedEndpoint);
   let confirmedModelIds: string[];
   try {
-    const response = await fetchFn(`${endpoint}/v1/models`, {
+    const response = await fetchFn(probeUrl, {
       method: "GET",
       headers: { accept: "application/json" },
       redirect: "manual",
