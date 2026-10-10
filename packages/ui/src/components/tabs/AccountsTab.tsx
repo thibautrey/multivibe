@@ -1353,16 +1353,17 @@ export function AccountsTab(props: Props) {
       pendingEnabled: options.pendingEnabled,
       provider: options.provider,
     });
+    // Persist only the non-sensitive, post-callback settings that the completion
+    // handler actually reads back (see App.tsx). The OAuth flow id and sign-in
+    // method are deliberately excluded so no credential-bearing value is written
+    // to sessionStorage in clear text.
     sessionStorage.setItem(
       "multivibe-oauth-pending",
       JSON.stringify({
-        flowId,
         mode: options.mode,
-        method: options.method,
         accountId: options.accountId,
         pendingPriority: options.pendingPriority,
         pendingEnabled: options.pendingEnabled,
-        provider: options.provider,
         timestamp: Date.now(),
       }),
     );
