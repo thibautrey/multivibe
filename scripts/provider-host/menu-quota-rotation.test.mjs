@@ -68,6 +68,10 @@ selection.update(ids: ids, activity: ProviderActivity(providerId: "opencode", us
 check(selection.selected == "opencode", "startup accepts usage older than thirty seconds")
 selection.update(ids: ids, activity: ProviderActivity(providerId: "zai", usedAt: 2000000), now: 2065)
 check(selection.selected == "zai", "rolling-window winner can change without a new request timestamp")
+selection.update(ids: ids, activity: ProviderActivity(providerId: "openai", usedAt: 1999000), now: 2070)
+check(selection.selected == "openai", "eligible inventory can expose an older recommendation")
+selection.update(ids: ids, activity: ProviderActivity(providerId: "zai", usedAt: 2100000), now: 2075)
+check(selection.selected == "openai", "future timestamps cannot hijack selection")
 `);
     execFileSync("swift", [file], { stdio: "pipe", timeout: 60000 });
   } finally {
