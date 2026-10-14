@@ -10,6 +10,7 @@ import {
 } from "./sanitizers.js";
 
 import express from "express";
+import { optimizeCodexPrefix } from "./codex-prefix.js";
 import { randomUUID } from "node:crypto";
 
 export function extractUsageFromPayload(payload: any) {
@@ -164,7 +165,7 @@ export function inspectAssistantPayload(payload: any): {
 }
 
 export function normalizeResponsesPayload(body: any, sessionId?: string) {
-  const b = { ...(body ?? {}) };
+  const b = { ...(optimizeCodexPrefix(body) ?? {}) };
   if (!Array.isArray(b.input)) {
     const text =
       typeof b.input === "string"
@@ -322,7 +323,7 @@ export function responsesToChatCompletionsPayload(
   body: any,
   options?: { ensureReasoningContinuation?: boolean },
 ) {
-  const payload = { ...(body ?? {}) };
+  const payload = { ...(optimizeCodexPrefix(body) ?? {}) };
   const input = Array.isArray(payload.input) ? payload.input : [];
   const messages: any[] = [];
 
@@ -396,7 +397,7 @@ export function responsesToChatCompletionsPayload(
     const role =
       item?.role === "assistant"
         ? "assistant"
-        : item?.role === "system"
+        : item?.role === "system" || item?.role === "developer"
           ? "system"
           : "user";
     const content = Array.isArray(item?.content)

@@ -7,6 +7,7 @@
 //! boundary on the hot path.
 
 mod chat_tools;
+mod codex_prefix;
 mod confidential;
 mod dashboard;
 mod idempotency;
@@ -2281,11 +2282,10 @@ fn responses_to_chat_completions(
                         }
                     }
                     _ => {
-                        let role = if item.get("role").and_then(Value::as_str) == Some("assistant")
-                        {
-                            "assistant"
-                        } else {
-                            "user"
+                        let role = match item.get("role").and_then(Value::as_str) {
+                            Some("assistant") => "assistant",
+                            Some("system" | "developer") => "system",
+                            _ => "user",
                         };
                         let content = item
                             .get("content")
@@ -5537,6 +5537,11 @@ fn prepared_payload(
     let chat_route = path.contains("chat/completions");
     let messages_route = path.ends_with("/messages");
     let compact = path.ends_with("/responses/compact");
+    let optimized = if !chat_route && !messages_route && !compact
+        && account.multivibe_cloud != Some(true) {
+        codex_prefix::optimize(body)
+    } else { None };
+    let body = optimized.as_ref().unwrap_or(body);
     let sends_chat = resolve_upstream_mode(account, &route.model, chat_route, compact);
     let mut payload = if account.multivibe_cloud == Some(true) && !sends_chat && !chat_route {
         // Cloud owns and validates its Responses contract. Codex parity
@@ -14942,6 +14947,28 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 "unexpected managed Cloud field: {field}"
             );
         }
+    }
+
+    #[test]
+    fn codex_prefix_precedes_provider_projection_and_excludes_compaction_and_cloud() {
+        let fixture: Value = serde_json::from_str(include_str!("../../../test-fixtures/codex-prefix.json")).unwrap();
+        let mut upstream = account("prefix");
+        upstream.provider = Some("openai-compatible".to_owned());
+        upstream.compatibility_mode = Some("responses".to_owned());
+        let route = RouteCandidate {
+            requested_model: "local-model".to_owned(), model: "local-model".to_owned(),
+            provider: Some("openai-compatible".to_owned()), account_ids: vec![upstream.id.clone()],
+        };
+        let prepare = |account: &Account, path: &str| prepared_payload(
+            &fixture["input"], path, account, &route, None, false, false, &EdgeConfig::default());
+        assert_eq!(prepare(&upstream, "/v1/responses")["input"], fixture["expected"]["input"]);
+        assert_eq!(prepare(&upstream, "/v1/responses/compact")["input"], fixture["input"]["input"]);
+        let mut chat = upstream.clone();
+        chat.compatibility_mode = Some("chat_completions".to_owned());
+        let optimized_chat = responses_to_chat_completions(&fixture["expected"], false, false);
+        assert_eq!(prepare(&chat, "/v1/responses")["messages"], optimized_chat["messages"]);
+        upstream.multivibe_cloud = Some(true);
+        assert_eq!(prepare(&upstream, "/v1/responses")["input"], fixture["input"]["input"]);
     }
 
     #[test]
