@@ -618,11 +618,13 @@ fn response_usage_from_chat_usage(value: Option<&Value>) -> Option<Value> {
             _ => json!(0),
         });
 
-    Some(json!({
-        "input_tokens": input,
-        "output_tokens": output,
-        "total_tokens": total,
-    }))
+    let mut result = json!({ "input_tokens": input, "output_tokens": output, "total_tokens": total });
+    for (source, target) in [("prompt_tokens_details", "input_tokens_details"), ("completion_tokens_details", "output_tokens_details")] {
+        if let Some(details) = usage.get(source).or_else(|| usage.get(target)).filter(|value| !value.is_null()) {
+            result[target] = details.clone();
+        }
+    }
+    Some(result)
 }
 
 fn usage_number(value: Option<&Value>) -> Option<f64> {
