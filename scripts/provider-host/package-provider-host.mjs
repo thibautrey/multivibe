@@ -192,38 +192,60 @@ function validateDependency(name, dependency, expectedArchive) {
   return dependency;
 }
 
-async function download(url, destination, expectedSHA256, maximumBytes) {
+const pause = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const transientDownloadFailure = (error) => ["TimeoutError", "AbortError"].includes(error.name) ||
+  ["ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_SOCKET"]
+    .includes(error.cause?.code ?? error.code);
+
+export async function download(url, destination, expectedSHA256, maximumBytes, {
+  fetchDependency = fetch, wait = pause,
+} = {}) {
   const parsed = new URL(url);
   if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.hash || !downloadHosts.has(parsed.hostname)) {
     throw new Error("dependency URL must be credential-free HTTPS");
   }
-  const response = await fetch(parsed, { redirect: "follow", signal: AbortSignal.timeout(10 * 60_000) });
-  if (!response.ok || !response.body) throw new Error(`dependency download failed with HTTP ${response.status}`);
-  const finalURL = new URL(response.url);
-  if (finalURL.protocol !== "https:" || finalURL.username || finalURL.password || !downloadHosts.has(finalURL.hostname)) {
-    throw new Error("dependency download redirected to an unapproved origin");
-  }
-  const declared = Number(response.headers.get("content-length") ?? 0);
-  if (!Number.isSafeInteger(declared) || declared < 0 || declared > maximumBytes) {
-    throw new Error("dependency size is invalid or exceeds the package ceiling");
-  }
-  const file = await open(destination, "wx", 0o600);
-  const digest = createHash("sha256");
-  let received = 0;
-  try {
-    for await (const chunk of response.body) {
-      received += chunk.byteLength;
-      if (received > maximumBytes) throw new Error("dependency exceeds the package ceiling");
-      digest.update(chunk);
-      await file.write(chunk);
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    let ownsDestination = false;
+    try {
+      const response = await fetchDependency(parsed, { redirect: "follow", signal: AbortSignal.timeout(10 * 60_000) });
+      if (!response.ok || !response.body) throw new Error(`dependency download failed with HTTP ${response.status}`);
+      const finalURL = new URL(response.url);
+      if (finalURL.protocol !== "https:" || finalURL.username || finalURL.password || !downloadHosts.has(finalURL.hostname)) {
+        throw new Error("dependency download redirected to an unapproved origin");
+      }
+      const declared = Number(response.headers.get("content-length") ?? 0);
+      if (!Number.isSafeInteger(declared) || declared < 0 || declared > maximumBytes) {
+        throw new Error("dependency size is invalid or exceeds the package ceiling");
+      }
+      const file = await open(destination, "wx", 0o600);
+      ownsDestination = true;
+      const digest = createHash("sha256");
+      let received = 0;
+      try {
+        for await (const chunk of response.body) {
+          received += chunk.byteLength;
+          if (received > maximumBytes) throw new Error("dependency exceeds the package ceiling");
+          digest.update(chunk);
+          await file.write(chunk);
+        }
+        await file.sync();
+      } finally {
+        await file.close();
+      }
+      if (declared > 0 && received !== declared) throw new Error("dependency download is truncated");
+      if (received < 1) throw new Error("dependency download is empty");
+      if (digest.digest("hex") !== expectedSHA256) throw new Error("dependency digest mismatch");
+      return;
+    } catch (error) {
+      // Remove only files created by this attempt, never a pre-existing destination.
+      if (ownsDestination) await rm(destination);
+      if (!transientDownloadFailure(error) || attempt === 3) {
+        throw new Error(`dependency download from ${parsed.hostname} failed (attempt ${attempt}/3): ${error.message}`, { cause: error });
+      }
+      console.warn(`dependency download from ${parsed.hostname} interrupted; retrying (attempt ${attempt + 1}/3)`);
+      await wait(attempt * 1000);
     }
-    await file.sync();
-  } finally {
-    await file.close();
   }
-  if (declared > 0 && received !== declared) throw new Error("dependency download is truncated");
-  if (received < 1) throw new Error("dependency download is empty");
-  if (digest.digest("hex") !== expectedSHA256) throw new Error("dependency digest mismatch");
 }
 
 async function extractTar(archive, destination, format, profile, maximumFileBytes, maximumExtractedBytes) {
@@ -570,7 +592,7 @@ const crashedNotaryClient = (error) => error.signal === "SIGBUS";
 const transientNotaryFailure = (error) => (crashedNotaryClient(error) || /abortedUpload|Connection reset by peer|Network\.NWError|NSURLErrorDomain|The network connection was lost|The request timed out/iu
   .test(`${error.stdout ?? ""}\n${error.stderr ?? ""}\n${error.message ?? ""}`));
 
-export async function submitMacNotarization(file, profile, run = command, attempts = 3) {
+export async function submitMacNotarization(file, profile, run = command, attempts = 3, wait = pause) {
   const credentials = ["--keychain-profile", profile];
   let output;
   for (let attempt = 1; ; attempt += 1) {
@@ -588,6 +610,7 @@ export async function submitMacNotarization(file, profile, run = command, attemp
         throw new Error(`notarytool submit aborted ${attempts} times without a submission ID: ${error.message}`, { cause: error });
       }
       console.warn(`notarytool submit failed before creating a submission; retrying (attempt ${attempt + 1}/${attempts})`);
+      await wait(attempt * 1000);
     }
   }
   const id = output.match(submissionIDPattern)?.[1];
@@ -599,8 +622,9 @@ export async function submitMacNotarization(file, profile, run = command, attemp
       result = await run("xcrun", ["notarytool", "wait", id, ...credentials,
         "--timeout", "15m", "--output-format", "json"], { capture: true });
     } catch (error) {
-      if (error.signal === "SIGBUS" && attempt < 3) {
-        console.warn(`notarytool wait crashed; resuming submission ${id} (attempt ${attempt + 1}/3)`);
+      if (transientNotaryFailure(error) && attempt < 3) {
+        console.warn(`notarytool wait interrupted; resuming submission ${id} (attempt ${attempt + 1}/3)`);
+        await wait(attempt * 1000);
         continue;
       }
       throw new Error(`Notarization ${id} could not be verified: ${error.message}`, { cause: error });

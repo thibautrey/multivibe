@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { gunzipSync } from "node:zlib";
@@ -7,7 +8,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { argumentsFrom, archiveBundle, commandInvocation, submitMacNotarization, validateOllamaWindowsFiles } from "./package-provider-host.mjs";
+import { argumentsFrom, archiveBundle, commandInvocation, download, submitMacNotarization, validateOllamaWindowsFiles } from "./package-provider-host.mjs";
 
 const packager = fileURLToPath(new URL("./package-provider-host.mjs", import.meta.url));
 const verifier = fileURLToPath(new URL("./verify-provider-host.mjs", import.meta.url));
@@ -362,4 +363,128 @@ test("a lone client crash without an ID stops instead of resubmitting forever", 
     throw notaryCrash();
   }), /aborted 3 times without a submission ID/u);
   assert.equal(submits, 3);
+});
+
+const dependencyURL = "https://nodejs.org/test-archive";
+const dependencyPayload = Buffer.from("verified dependency");
+const dependencyDigest = createHash("sha256").update(dependencyPayload).digest("hex");
+function dependencyResponse(body = dependencyPayload, url = dependencyURL) {
+  const response = new Response(body);
+  Object.defineProperty(response, "url", { value: url });
+  return response;
+}
+
+test("download retries a transport timeout before headers", async () => {
+  const work = await mkdtemp(path.join(tmpdir(), "multivibe-download-"));
+  const destination = path.join(work, "dependency");
+  let attempts = 0;
+  try {
+    await download(dependencyURL, destination, dependencyDigest, 1024, {
+      wait: async () => {}, fetchDependency: async () => {
+        if (++attempts === 1) throw new DOMException("timed out", "TimeoutError");
+        return dependencyResponse();
+      },
+    });
+    assert.equal(attempts, 2);
+    assert.deepEqual(await readFile(destination), dependencyPayload);
+  } finally { await rm(work, { recursive: true, force: true }); }
+});
+
+test("download removes partial data before retrying a disconnected body", async () => {
+  const work = await mkdtemp(path.join(tmpdir(), "multivibe-download-"));
+  const destination = path.join(work, "dependency");
+  let attempts = 0;
+  try {
+    await download(dependencyURL, destination, dependencyDigest, 1024, {
+      wait: async () => {}, fetchDependency: async () => {
+        if (++attempts !== 1) return dependencyResponse();
+        let reads = 0;
+        return dependencyResponse(new ReadableStream({ pull(controller) {
+          if (++reads === 1) controller.enqueue(Buffer.from("partial"));
+          else controller.error(Object.assign(new Error("reset"), { code: "ECONNRESET" }));
+        } }));
+      },
+    });
+    assert.equal(attempts, 2);
+    assert.deepEqual(await readFile(destination), dependencyPayload);
+  } finally { await rm(work, { recursive: true, force: true }); }
+});
+
+test("download retries a timeout that aborts body streaming", async () => {
+  const work = await mkdtemp(path.join(tmpdir(), "multivibe-download-"));
+  const destination = path.join(work, "dependency");
+  let attempts = 0;
+  try {
+    await download(dependencyURL, destination, dependencyDigest, 1024, {
+      wait: async () => {}, fetchDependency: async () => {
+        if (++attempts !== 1) return dependencyResponse();
+        let reads = 0;
+        return dependencyResponse(new ReadableStream({ pull(controller) {
+          if (++reads === 1) controller.enqueue(Buffer.from("partial"));
+          else controller.error(new DOMException("The operation was aborted", "AbortError"));
+        } }));
+      },
+    });
+    assert.equal(attempts, 2);
+    assert.deepEqual(await readFile(destination), dependencyPayload);
+  } finally { await rm(work, { recursive: true, force: true }); }
+});
+
+test("download stops after three transport failures", async () => {
+  let attempts = 0;
+  await assert.rejects(download(dependencyURL, "unused", dependencyDigest, 1024, {
+    wait: async () => {}, fetchDependency: async () => {
+      attempts++;
+      throw new DOMException("timed out", "TimeoutError");
+    },
+  }), /attempt 3\/3/);
+  assert.equal(attempts, 3);
+});
+
+test("download retains integrity, origin, size and existing-file checks", async (t) => {
+  for (const scenario of ["digest", "origin", "size", "existing"]) {
+    await t.test(scenario, async () => {
+      const work = await mkdtemp(path.join(tmpdir(), "multivibe-download-"));
+      const destination = path.join(work, "dependency");
+      let attempts = 0;
+      try {
+        if (scenario === "existing") await writeFile(destination, "user data");
+        await assert.rejects(download(dependencyURL, destination,
+          scenario === "digest" ? "0".repeat(64) : dependencyDigest,
+          scenario === "size" ? 1 : 1024, {
+            wait: async () => {}, fetchDependency: async () => {
+              attempts++;
+              return dependencyResponse(dependencyPayload, scenario === "origin" ? "https://example.com/" : dependencyURL);
+            },
+          }));
+        assert.equal(attempts, 1);
+        if (scenario === "existing") assert.equal(await readFile(destination, "utf8"), "user data");
+        else await assert.rejects(readFile(destination), { code: "ENOENT" });
+      } finally { await rm(work, { recursive: true, force: true }); }
+    });
+  }
+});
+
+test("notarization resumes the same submission after an offline network error", async () => {
+  const actions = [];
+  await submitMacNotarization("Host.zip", "release", async (_program, args) => {
+    actions.push(args[1]);
+    if (args[1] === "submit") return `id: ${notaryID}`;
+    assert.equal(args[2], notaryID);
+    if (actions.length === 2) throw Object.assign(new Error("xcrun failed with exit 1"), {
+      stderr: 'NSURLErrorDomain Code=-1009 "The Internet connection appears to be offline."',
+    });
+    return notaryAccepted;
+  });
+  assert.deepEqual(actions, ["submit", "wait", "wait"]);
+});
+
+test("notarization stops after three offline waits", async () => {
+  let waits = 0;
+  await assert.rejects(submitMacNotarization("Host.zip", "release", async (_program, args) => {
+    if (args[1] === "submit") return `id: ${notaryID}`;
+    waits++;
+    throw Object.assign(new Error("xcrun failed with exit 1"), { stderr: "NSURLErrorDomain Code=-1009" });
+  }), /could not be verified/);
+  assert.equal(waits, 3);
 });
