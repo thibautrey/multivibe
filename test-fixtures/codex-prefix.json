@@ -1,0 +1,158 @@
+{
+  "input": {
+    "model": "local-model",
+    "instructions": "Base instructions unchanged.",
+    "tools": [
+      {
+        "type": "function",
+        "name": "z"
+      },
+      {
+        "type": "function",
+        "name": "a"
+      }
+    ],
+    "input": [
+      {
+        "role": "system",
+        "content": "Higher priority base."
+      },
+      {
+        "type": "message",
+        "role": "developer",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "<app-context>\nFixed app guidance.\n</app-context>\n\n### Projectless Chat\nUse /Users/example/session/outputs for results.\n"
+          },
+          {
+            "type": "input_text",
+            "text": "## Memory\nFixed memory rules.\n\n========= MEMORY_SUMMARY BEGINS =========\nVariable facts.\n========= MEMORY_SUMMARY ENDS ========="
+          },
+          {
+            "type": "input_text",
+            "text": "<skills_instructions>\nFixed skill catalog.\n</skills_instructions>"
+          },
+          {
+            "type": "input_text",
+            "text": "<permissions instructions>\nFixed permissions.\n</permissions instructions>"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": "Keep my request in place."
+      },
+      {
+        "role": "developer",
+        "content": "<codex_apps_client_time_context>date</codex_apps_client_time_context>"
+      },
+      {
+        "type": "function_call_output",
+        "call_id": "call-1",
+        "output": "opaque"
+      },
+      {
+        "type": "reasoning",
+        "encrypted_content": "opaque-reasoning"
+      }
+    ]
+  },
+  "expected": {
+    "model": "local-model",
+    "instructions": "Base instructions unchanged.",
+    "tools": [
+      {
+        "type": "function",
+        "name": "z"
+      },
+      {
+        "type": "function",
+        "name": "a"
+      }
+    ],
+    "input": [
+      {
+        "role": "system",
+        "content": "Higher priority base."
+      },
+      {
+        "type": "message",
+        "role": "developer",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "<permissions instructions>\nFixed permissions.\n</permissions instructions>"
+          }
+        ]
+      },
+      {
+        "type": "message",
+        "role": "developer",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "## Memory\nFixed memory rules.\n\n"
+          }
+        ]
+      },
+      {
+        "type": "message",
+        "role": "developer",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "<app-context>\nFixed app guidance.\n</app-context>\n\n"
+          }
+        ]
+      },
+      {
+        "type": "message",
+        "role": "developer",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "<skills_instructions>\nFixed skill catalog.\n</skills_instructions>"
+          }
+        ]
+      },
+      {
+        "type": "message",
+        "role": "developer",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "========= MEMORY_SUMMARY BEGINS =========\nVariable facts.\n========= MEMORY_SUMMARY ENDS ========="
+          }
+        ]
+      },
+      {
+        "type": "message",
+        "role": "developer",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "### Projectless Chat\nUse /Users/example/session/outputs for results.\n"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": "Keep my request in place."
+      },
+      {
+        "role": "developer",
+        "content": "<codex_apps_client_time_context>date</codex_apps_client_time_context>"
+      },
+      {
+        "type": "function_call_output",
+        "call_id": "call-1",
+        "output": "opaque"
+      },
+      {
+        "type": "reasoning",
+        "encrypted_content": "opaque-reasoning"
+      }
+    ]
+  }
+}
