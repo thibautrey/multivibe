@@ -1,3 +1,4 @@
+import type { TraceEntry } from "../traces.js";
 import type { Account, UsageWindow } from "../types.js";
 
 export const GITHUB_STAR_OUTPUT_TOKEN_THRESHOLD = 5_000_000;
@@ -65,14 +66,60 @@ export function providerName(account: Account): string {
   }[account.provider ?? "openai"];
 }
 
-// Ephemeral routing activity: no account identifiers or credentials are exposed.
-let latestActivity: { providerId: string; usedAt: number } | undefined;
-export function recordHostMenuProviderUsage(account: Pick<Account, "provider" | "sdkProvider">, now = Date.now()): void {
-  latestActivity = { providerId: hostMenuProviderId(account), usedAt: now };
+// Request counts use bounded per-second buckets rather than retaining traces or credentials.
+const RECENT_USAGE_MS = 15 * 60 * 1000;
+export function createHostMenuProviderActivityTracker() {
+  const buckets = new Map<string, Map<number, { count: number; latest: number }>>();
+  function prune(now: number) {
+    for (const [id, seconds] of buckets) {
+      for (const [second] of seconds) {
+        if ((second + 1) * 1000 <= now - RECENT_USAGE_MS) seconds.delete(second);
+      }
+      if (!seconds.size) buckets.delete(id);
+    }
+  }
+  function record(account: Pick<Account, "provider" | "sdkProvider">, now = Date.now()) {
+    if (!Number.isFinite(now)) return;
+    prune(now);
+    const id = hostMenuProviderId(account);
+    const seconds = buckets.get(id) ?? new Map<number, { count: number; latest: number }>();
+    const second = Math.floor(now / 1000);
+    const previous = seconds.get(second);
+    seconds.set(second, { count: (previous?.count ?? 0) + 1, latest: Math.max(previous?.latest ?? now, now) });
+    buckets.set(id, seconds);
+  }
+  function recordTrace(trace: TraceEntry, accounts: Account[], now = Date.now()) {
+    if ((trace.traceKind !== undefined && trace.traceKind !== "upstream-attempt")
+      || trace.isError || trace.status < 200 || trace.status >= 300
+      || trace.lifecycleState === "started" || trace.lifecycleState === "interrupted") return;
+    const account = accounts.find((account) => account.id === trace.accountId);
+    if (account) record(account, now);
+  }
+  function get(now = Date.now(), eligibleIds?: string[]) {
+    prune(now);
+    let winner: { providerId: string; count: number; latest: number } | undefined;
+    let usedAt = 0;
+    for (const [providerId, seconds] of buckets) {
+      if (eligibleIds && !eligibleIds.includes(providerId)) continue;
+      let count = 0, latest = 0;
+      for (const bucket of seconds.values()) {
+        count += bucket.count;
+        latest = Math.max(latest, bucket.latest);
+      }
+      usedAt = Math.max(usedAt, latest);
+      if (!winner || count > winner.count || (count === winner.count && latest > winner.latest)) {
+        winner = { providerId, count, latest };
+      }
+    }
+    // The recommendation can change as buckets expire, without a new request.
+    return winner ? { providerId: winner.providerId, usedAt } : undefined;
+  }
+  return { record, recordTrace, get };
 }
-export function getHostMenuProviderActivity() {
-  return latestActivity;
-}
+const providerActivityTracker = createHostMenuProviderActivityTracker();
+export const recordHostMenuProviderUsage = providerActivityTracker.record;
+export const recordHostMenuTraceUsage = providerActivityTracker.recordTrace;
+export const getHostMenuProviderActivity = providerActivityTracker.get;
 
 function durationLabel(seconds: number): string {
   if (seconds === 604800) return "Weekly";
