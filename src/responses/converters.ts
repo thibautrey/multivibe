@@ -91,6 +91,8 @@ function usageChatToResponses(usage: any) {
     input_tokens: input,
     output_tokens: output,
     total_tokens: total,
+    ...((usage.prompt_tokens_details ?? usage.input_tokens_details) != null ? { input_tokens_details: usage.prompt_tokens_details ?? usage.input_tokens_details } : {}),
+    ...((usage.completion_tokens_details ?? usage.output_tokens_details) != null ? { output_tokens_details: usage.completion_tokens_details ?? usage.output_tokens_details } : {}),
   };
 }
 
@@ -150,6 +152,8 @@ function usageResponsesToChat(usage: any) {
     prompt_tokens: prompt,
     completion_tokens: completion,
     total_tokens: total,
+    ...((usage.input_tokens_details ?? usage.prompt_tokens_details) != null ? { prompt_tokens_details: usage.input_tokens_details ?? usage.prompt_tokens_details } : {}),
+    ...((usage.output_tokens_details ?? usage.completion_tokens_details) != null ? { completion_tokens_details: usage.output_tokens_details ?? usage.completion_tokens_details } : {}),
   };
 }
 
@@ -628,11 +632,7 @@ function chatCompletionStreamFrame(
         finish_reason: finishReason,
       },
     ],
-    usage: {
-      prompt_tokens: usage?.prompt_tokens ?? 0,
-      completion_tokens: usage?.completion_tokens ?? 0,
-      total_tokens: usage?.total_tokens ?? 0,
-    },
+    usage: usageResponsesToChat(usage),
   };
   return [
     content ? `data: ${JSON.stringify(deltaPayload)}\n\n` : "",
@@ -1034,11 +1034,7 @@ export function responseObjectToChatCompletion(resp: any, model: string) {
     created: Math.floor(Date.now() / 1000),
     model,
     choices: [{ index: 0, message, finish_reason: finishReason }],
-    usage: {
-      prompt_tokens: prompt,
-      completion_tokens: completion,
-      total_tokens: total,
-    },
+    usage: usageResponsesToChat(usage),
   };
 }
 
@@ -1138,10 +1134,6 @@ export function parseResponsesSSEToChatCompletion(
         finish_reason: "stop",
       },
     ],
-    usage: {
-      prompt_tokens: prompt,
-      completion_tokens: completion,
-      total_tokens: total,
-    },
+    usage: usageResponsesToChat(usage),
   };
 }

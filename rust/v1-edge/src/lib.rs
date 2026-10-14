@@ -2960,12 +2960,33 @@ fn response_to_chat(value: &Value, model: &str) -> Value {
         "created": now_ms() / 1000,
         "model": model,
         "choices": [{"index": 0, "message": message, "finish_reason": if message.get("tool_calls").is_some() { "tool_calls" } else { "stop" }}],
-        "usage": {
-            "prompt_tokens": usage.get("input_tokens").or_else(|| usage.get("prompt_tokens")).and_then(Value::as_u64).unwrap_or(0),
-            "completion_tokens": usage.get("output_tokens").or_else(|| usage.get("completion_tokens")).and_then(Value::as_u64).unwrap_or(0),
-            "total_tokens": usage.get("total_tokens").and_then(Value::as_u64).unwrap_or(0),
-        }
+        "usage": response_usage_to_chat_usage(&usage)
     })
+}
+
+fn response_usage_to_chat_usage(usage: &Value) -> Value {
+    let mut result = json!({
+        "prompt_tokens": usage.get("input_tokens").or_else(|| usage.get("prompt_tokens")).and_then(Value::as_u64).unwrap_or(0),
+        "completion_tokens": usage.get("output_tokens").or_else(|| usage.get("completion_tokens")).and_then(Value::as_u64).unwrap_or(0),
+        "total_tokens": usage.get("total_tokens").and_then(Value::as_u64).unwrap_or(0),
+    });
+    for (source, target) in [("input_tokens_details", "prompt_tokens_details"), ("output_tokens_details", "completion_tokens_details")] {
+        if let Some(details) = usage.get(source).or_else(|| usage.get(target)).filter(|value| !value.is_null()) {
+            result[target] = details.clone();
+        }
+    }
+    result
+}
+
+#[test]
+fn response_bridge_preserves_cache_observations() {
+    for cached in [0, 81924] {
+        let converted = response_to_chat(&json!({"usage": {"input_tokens": 81946, "output_tokens": 3,
+            "input_tokens_details": {"cached_tokens": cached}, "output_tokens_details": {"reasoning_tokens": 0}}}), "test");
+        assert_eq!(converted["usage"]["prompt_tokens_details"]["cached_tokens"], cached);
+        assert_eq!(converted["usage"]["completion_tokens_details"]["reasoning_tokens"], 0);
+    }
+    assert!(response_to_chat(&json!({"usage": {"input_tokens": 100}}), "test")["usage"].get("prompt_tokens_details").is_none());
 }
 
 fn sse_frame(event: &str, data: &Value) -> String {
