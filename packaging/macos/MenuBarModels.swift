@@ -74,9 +74,9 @@ struct QuotaSelection {
 
     mutating func update(ids: [String], activity: ProviderActivity?, now: TimeInterval) {
         guard !ids.isEmpty else { selected = nil; pending = nil; return }
-        if let activity, activity.usedAt > observedUsage {
+        if let activity, activity.usedAt >= observedUsage {
             observedUsage = activity.usedAt
-            if now - activity.usedAt / 1000 < 30, ids.contains(activity.providerId) {
+            if now - activity.usedAt / 1000 < 15 * 60, ids.contains(activity.providerId) {
                 pending = activity
             }
         }
@@ -87,7 +87,7 @@ struct QuotaSelection {
         }
         if !ids.contains(selected ?? "") { select(pending?.providerId ?? ids[0], now: now) }
         if let activity = pending {
-            if now - activity.usedAt / 1000 >= 30 || !ids.contains(activity.providerId) {
+            if now - activity.usedAt / 1000 >= 15 * 60 || !ids.contains(activity.providerId) {
                 pending = nil
             } else if selected == activity.providerId || now - changedAt >= 5 {
                 select(activity.providerId, now: now)

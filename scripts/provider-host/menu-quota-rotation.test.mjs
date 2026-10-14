@@ -61,8 +61,13 @@ check(selection.selected == nil, "empty inventory")
 selection.pin = nil
 selection.update(ids: ids, activity: ProviderActivity(providerId: "zai", usedAt: 600000), now: 600)
 check(selection.selected == "zai", "initial fresh activity wins")
-selection.update(ids: ids, activity: ProviderActivity(providerId: "openai", usedAt: 601000), now: 640)
+selection.update(ids: ids, activity: ProviderActivity(providerId: "openai", usedAt: 601000), now: 1602)
 check(selection.selected == "zai", "stale activity cannot hijack the stable selection")
+selection = QuotaSelection()
+selection.update(ids: ids, activity: ProviderActivity(providerId: "opencode", usedAt: 2000000), now: 2060)
+check(selection.selected == "opencode", "startup accepts usage older than thirty seconds")
+selection.update(ids: ids, activity: ProviderActivity(providerId: "zai", usedAt: 2000000), now: 2065)
+check(selection.selected == "zai", "rolling-window winner can change without a new request timestamp")
 `);
     execFileSync("swift", [file], { stdio: "pipe", timeout: 60000 });
   } finally {

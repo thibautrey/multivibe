@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createHostMenuProviderActivityTracker,
   buildHostMenuBarAccountsSummary,
   buildHostMenuBarGitHubStarPrompt,
   recordHostMenuProviderUsage,
@@ -183,7 +184,7 @@ test("provider groups separate SDK providers and incompatible quota periods", ()
   assert.equal(summary.providers[2].windows[0].label, "Credits");
   recordHostMenuProviderUsage(accounts[0], 100);
   recordHostMenuProviderUsage(accounts[2], 200);
-  assert.deepEqual(getHostMenuProviderActivity(), { providerId: "ai-sdk:anthropic", usedAt: 200 });
+  assert.deepEqual(getHostMenuProviderActivity(200), { providerId: "ai-sdk:anthropic", usedAt: 200 });
 });
 
 test("buildHostMenuBarAccountsSummary reports spendable credit for pay-as-you-go providers", () => {
@@ -278,4 +279,53 @@ test("buildHostMenuBarAccountsSummary ignores blank or non-finite balances", () 
   assert.equal(provider?.balance, undefined);
   assert.equal(summary.accounts[0].balance, undefined);
   assert.equal(summary.accounts[0].usageStatus, "pending");
+});
+
+
+test("menu activity favors recent request frequency, then recency, and expires idle traffic", () => {
+  const activity = createHostMenuProviderActivityTracker();
+  const openai = { provider: "openai" as const };
+  const zai = { provider: "zai" as const };
+  activity.record(openai, 1000);
+  activity.record(openai, 2000);
+  activity.record(zai, 3000);
+  assert.deepEqual(activity.get(3000), { providerId: "openai", usedAt: 3000 });
+  activity.record(zai, 4000);
+  assert.deepEqual(activity.get(4000), { providerId: "zai", usedAt: 4000 });
+  activity.record(openai, 5000);
+  assert.deepEqual(activity.get(5000), { providerId: "openai", usedAt: 5000 });
+  assert.equal(activity.get(5000, ["zai"])?.providerId, "zai");
+  assert.equal(activity.get(5000, []) , undefined);
+  assert.equal(activity.get(15 * 60 * 1000 + 6000), undefined);
+});
+
+test("rolling activity changes recommendation when old traffic expires without a new request", () => {
+  const activity = createHostMenuProviderActivityTracker();
+  activity.record({ provider: "openai" }, 1000);
+  activity.record({ provider: "openai" }, 1001);
+  activity.record({ provider: "zai" }, 5000);
+  assert.equal(activity.get(5000)?.providerId, "openai");
+  assert.deepEqual(activity.get(902000), { providerId: "zai", usedAt: 5000 });
+});
+
+test("completed upstream traces resolve exact SDK accounts and exclude failed or duplicate client traces", () => {
+  const activity = createHostMenuProviderActivityTracker();
+  const accounts: Account[] = [{ id: "sdk", provider: "ai-sdk", sdkProvider: "anthropic", enabled: true, accessToken: "private" }];
+  const trace = { id: "trace", at: 1000, route: "/v1/responses", traceKind: "upstream-attempt" as const,
+    accountId: "sdk", status: 200, isError: false, stream: true, latencyMs: 100 };
+  for (const invalid of [
+    { ...trace, traceKind: "client-request" as const },
+    { ...trace, traceKind: "diagnostic" as const },
+    { ...trace, isError: true }, { ...trace, status: 429 },
+    { ...trace, lifecycleState: "started" as const },
+    { ...trace, lifecycleState: "interrupted" as const },
+    { ...trace, accountId: "removed" },
+  ]) activity.recordTrace(invalid, accounts, 1000);
+  assert.equal(activity.get(1000), undefined);
+  activity.recordTrace(trace, accounts, 1000);
+  assert.deepEqual(activity.get(1000), { providerId: "ai-sdk:anthropic", usedAt: 1000 });
+  // Client summary must not count as an additional request for its provider.
+  activity.recordTrace({ ...trace, traceKind: "client-request" }, accounts, 2000);
+  activity.record({ provider: "openai" }, 3000);
+  assert.equal(activity.get(3000)?.providerId, "openai");
 });

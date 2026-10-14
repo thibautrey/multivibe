@@ -14,7 +14,7 @@ import { createServer as createTeamHttpsServer } from "node:https";
 import { TeamMachineDirectory } from "./team-machine-directory.js";
 import { readFile as readTeamIdentity } from "node:fs/promises";
 import { TeamMachineSharing } from "./team-machine-sharing.js";
-import { getHostMenuProviderActivity } from "./host/menu-bar.js";
+import { getHostMenuProviderActivity, recordHostMenuTraceUsage } from "./host/menu-bar.js";
 import { automaticRouterManifest, createAutomaticRouter } from "./automatic-router.js";
 import { codingEconomyManifest, createCodingEconomy } from "./coding-economy.js";
 import { syncVirtualModelAliases } from "./virtual-model-registry.js";
@@ -270,6 +270,7 @@ moduleManager.registerBuiltin(automaticRouterManifest, createAutomaticRouter());
 moduleManager.registerBuiltin(codingEconomyManifest, createCodingEconomy());
 const traceManager = createTraceManager({
   onCompleted: async (trace) => {
+    recordHostMenuTraceUsage(trace, store.getCachedAccounts());
     const principal = trace.application
       ? store.getCachedProxyApiKeys().find((entry) => entry.application === trace.application)?.principal
         ?? { type: "service" as const, id: trace.application, name: trace.application }
@@ -710,7 +711,10 @@ if (!MULTIVIBE_CONTROL_PLANE) {
 
 app.get("/admin/host/menu-bar/activity", adminGuard, (_req, res) => {
   res.setHeader("cache-control", "no-store");
-  res.json({ activity: getHostMenuProviderActivity() ?? null, ...(MULTIVIBE_HOST_APPLICATION ? { deviceSignIn: takeDeviceSignIn() ?? null } : {}) });
+  const eligibleIds = buildHostMenuBarAccountsSummary(store.getCachedAccounts()).providers
+    .filter((provider) => provider.windows.length > 0 || provider.balance !== undefined)
+    .map((provider) => provider.id);
+  res.json({ activity: getHostMenuProviderActivity(Date.now(), eligibleIds) ?? null, ...(MULTIVIBE_HOST_APPLICATION ? { deviceSignIn: takeDeviceSignIn() ?? null } : {}) });
 });
 
 app.get("/admin/host/menu-bar", adminGuard, async (req, res) => {
