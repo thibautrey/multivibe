@@ -1528,25 +1528,13 @@ export function isHiddenTraceRoute(route: string | undefined): boolean {
 }
 
 export function buildBucketTraceStats(buckets: Iterable<TraceBucketAggregate>, totalStored: number, sinceMs?: number, untilMs?: number): { totalStored: number; matched: number; stats: TraceStats } {
-    const selectedBuckets = Array.from(buckets)
-      .filter((bucket) => {
-        if (
-          typeof sinceMs === "number" &&
-          Number.isFinite(sinceMs) &&
-          bucket.at + HOUR_MS <= sinceMs
-        ) {
-          return false;
-        }
-        if (
-          typeof untilMs === "number" &&
-          Number.isFinite(untilMs) &&
-          bucket.at > untilMs
-        ) {
-          return false;
-        }
-        return true;
-      })
-      .sort((a, b) => a.at - b.at);
+    function* selectedBuckets() {
+      for (const bucket of buckets) {
+        if (typeof sinceMs === "number" && Number.isFinite(sinceMs) && bucket.at + HOUR_MS <= sinceMs) continue;
+        if (typeof untilMs === "number" && Number.isFinite(untilMs) && bucket.at > untilMs) continue;
+        yield bucket;
+      }
+    }
 
     const modelMap = new Map<string, TraceModelStats>();
     const ttftGroups = new Map<string, MutableTraceTtftStats>();
@@ -1569,7 +1557,8 @@ export function buildBucketTraceStats(buckets: Iterable<TraceBucketAggregate>, t
     let costUsdWithoutCache = 0;
     let latencyWeightedTotal = 0;
 
-    const timeseries = selectedBuckets.map((bucket) => {
+    const timeseries: TraceTimeseriesBucket[] = [];
+    for (const bucket of selectedBuckets()) {
       requests += bucket.requests;
       upstreamAttempts += bucket.upstreamAttempts;
       retriedRequests += bucket.retriedRequests;
@@ -1607,7 +1596,7 @@ export function buildBucketTraceStats(buckets: Iterable<TraceBucketAggregate>, t
         }
       }
 
-      return {
+      timeseries.push({
         at: bucket.at,
         requests: bucket.requests,
         upstreamAttempts: bucket.upstreamAttempts,
@@ -1623,8 +1612,9 @@ export function buildBucketTraceStats(buckets: Iterable<TraceBucketAggregate>, t
         costUsd: bucket.costUsd,
         latencyP50Ms: percentile(bucket.latencies, 50),
         latencyP95Ms: percentile(bucket.latencies, 95),
-      };
-    });
+      });
+    }
+    timeseries.sort((a, b) => a.at - b.at);
 
     return {
       totalStored,
@@ -2187,7 +2177,7 @@ export function createTraceManager(config: TraceManagerConfig) {
   ): Promise<{ totalStored: number; matched: number; stats: TraceStats }> {
     await syncExternalTraces();
     if (analytics) return analytics.call("stats", { sinceMs, untilMs });
-    return buildBucketTraceStats(statsBuckets.values(), totalStored, sinceMs, untilMs);
+    return buildBucketTraceStats([...statsBuckets.values()].sort((a, b) => a.at - b.at), totalStored, sinceMs, untilMs);
   }
 
   async function appendTrace(
