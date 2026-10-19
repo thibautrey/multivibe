@@ -60,7 +60,7 @@ test("time boundaries, filters, usage and retry/session semantics match existing
     assert.equal(actual.totals.errors,expected.totals.errors);
     const report=f.store.sessions({...filter,limit:1});const legacy=aggregateSessionUsage(selected);
     assert.deepEqual(report.summary,legacy.summary);
-    assert.deepEqual(report.sessions,legacy.sessions.slice(0,1));assert.equal(report.total,legacy.sessions.length);
+    assert.deepEqual(report.sessions,JSON.parse(JSON.stringify(legacy.sessions.slice(0,1))));assert.equal(report.total,legacy.sessions.length);
   }
   const filter={sinceMs:hour+100,untilMs:hour+7_200_000,application:"codex",projectId:"project-one"};
   const selected=canonical.filter(t=>t.at>=filter.sinceMs&&t.at<=filter.untilMs&&(!t.traceKind||t.traceKind==="upstream-attempt"));

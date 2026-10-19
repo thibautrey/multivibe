@@ -20,7 +20,7 @@ try {
   const migrationMs=performance.now()-start;
   const bounds={sinceMs:end-24*3_600_000,untilMs:end};
   const measurements={};
-  for(const [name,action,args] of [['stats','stats',bounds],['usage','usage',bounds],['sessions','sessions',{...bounds,limit:10}],['sessionsRepeat','sessions',{...bounds,limit:10,untilMs:end+1}],['allTimeSessions','sessions',{limit:10}],['allTimeSessionsRepeat','sessions',{limit:10,untilMs:Date.now()}]]){
+  for(const [name,action,args] of [['stats','stats',bounds],['usage','usage',bounds],['sessions','sessions',{...bounds,limit:10}],['sessionsRepeat','sessions',{...bounds,limit:10,untilMs:end+1}],['allTimeSessions','sessions',{limit:10,untilMs:end}],['allTimeSessionsRepeat','sessions',{limit:10,untilMs:end+1}]]){
     const t=performance.now();const result=await manager.queryAnalytics(action,args);measurements[name]={ms:Math.round(performance.now()-t),returnedSessions:result.sessions?.length};
     if(name==='stats')assert.equal(result.stats.totals.tokensTotal,Math.min(rows,250000)*25);
     if(name==='allTimeSessions')assert.equal(result.summary.totalAttempts,rows);
