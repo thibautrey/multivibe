@@ -292,6 +292,7 @@ const traceManager = createTraceManager({
   filePath: TRACE_FILE_PATH,
   externalWriter: MULTIVIBE_CONTROL_PLANE,
   historyFilePath: TRACE_STATS_HISTORY_PATH,
+  indexedHistoryPath: process.env.TRACE_ANALYTICS_DB_PATH ?? `${TRACE_STATS_HISTORY_PATH}.sqlite`,
   retentionMax: TRACE_RETENTION_MAX,
   resolveCodexProject: (sessionId, projectRoot, projectHost) =>
     codexProjectRegistry.resolve(sessionId, projectRoot, projectHost),
@@ -915,6 +916,7 @@ async function shutdown(signal: NodeJS.Signals) {
         codexProjectRegistry.flushPendingWrites(),
         traceManager.flushPendingWrites(),
       ]);
+      await traceManager.close();
       moduleManager.close();
       jobStore.close();
       if (error) throw error;

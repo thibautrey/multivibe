@@ -199,6 +199,9 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   const [traceStatsLoading, setTraceStatsLoading] = useState(true);
   const [traceStatsLoaded, setTraceStatsLoaded] = useState(false);
   const traceStatsPendingRef = useRef(0);
+  const tracingInFlightRef = useRef(false);
+  const traceStatsInFlightRef = useRef(false);
+  const traceRequestEpochRef = useRef(0);
   const [traceStats, setTraceStats] = useState<TraceStats>(EMPTY_TRACE_STATS);
   const [projectUsageStats, setProjectUsageStats] = useState<ProjectUsageStats>({
     byProject: [],
@@ -632,7 +635,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   };
 
   const traceRangeParams = (range: TraceRange) => {
-    const { sinceMs, untilMs } = getRangeBounds(range);
+    const { sinceMs, untilMs } = getRangeBounds(range, Math.floor(Date.now() / 10_000) * 10_000);
     const params = new URLSearchParams();
     if (typeof sinceMs === "number") params.set("sinceMs", String(sinceMs));
     if (typeof untilMs === "number") params.set("untilMs", String(untilMs));
@@ -640,6 +643,9 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   };
 
   const loadTraceStats = async (range: TraceRange = traceRange) => {
+    if (traceStatsInFlightRef.current) return;
+    traceStatsInFlightRef.current = true;
+    const epoch = traceRequestEpochRef.current;
     traceStatsPendingRef.current += 1;
     setTraceStatsLoading(true);
     try {
@@ -648,10 +654,12 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
         api(`stats/traces?${params}`),
         api(`stats/usage?${params}`),
       ]);
+      if (epoch !== traceRequestEpochRef.current) return;
       setTraceStats((statsRes.stats ?? EMPTY_TRACE_STATS) as TraceStats);
       setTraceStatsLoaded(true);
       setProjectUsageStats({ byProject: usageRes.byProject ?? [] });
     } finally {
+      traceStatsInFlightRef.current = false;
       traceStatsPendingRef.current -= 1;
       setTraceStatsLoading(traceStatsPendingRef.current > 0);
     }
@@ -660,10 +668,12 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   const loadSessionStats = async (range: TraceRange = traceRange, background = false) => {
     if (sessionStatsInFlightRef.current) return;
     sessionStatsInFlightRef.current = true;
+    const epoch = traceRequestEpochRef.current;
     const params = traceRangeParams(range).toString();
     if (!background) setSessionStatsLoading(true);
     try {
       const res = await api(`stats/sessions?${params}`);
+      if (epoch !== traceRequestEpochRef.current) return;
       setSessionStats((res ?? EMPTY_SESSIONS_RESPONSE) as SessionsResponse);
       sessionStatsLoadedRef.current = params;
     } finally {
@@ -689,6 +699,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   };
 
   useEffect(() => {
+    traceRequestEpochRef.current += 1;
     setExpandedSessionKey(null);
     setSessionTurns([]);
     sessionStatsLoadedRef.current = null;
@@ -701,12 +712,15 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
       void loadSessionStats(traceRange).catch(() => undefined);
     }
     const timer = window.setInterval(() => {
-      void loadSessionStats(traceRangeRef.current, true).catch(() => undefined);
+      if (!document.hidden) void loadSessionStats(traceRangeRef.current, true).catch(() => undefined);
     }, 10_000);
     return () => window.clearInterval(timer);
   }, [activityView, tab, traceRange]);
 
   const loadTracing = async (page: number, range: TraceRange = traceRange, background = false) => {
+    if (tracingInFlightRef.current) return;
+    tracingInFlightRef.current = true;
+    const epoch = traceRequestEpochRef.current;
     // Poll in place: loading placeholders are only for explicit navigation.
     if (!background) {
       traceStatsPendingRef.current += 1;
@@ -723,6 +737,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
         api(`stats/traces?${params.toString()}`),
         api(`stats/usage?${traceRangeParams(range).toString()}`),
       ]);
+      if (epoch !== traceRequestEpochRef.current) return;
       setTraces((tr.traces ?? []) as Trace[]);
       setTraceStats((statsRes.stats ?? tr.stats ?? EMPTY_TRACE_STATS) as TraceStats);
       setTraceStatsLoaded(true);
@@ -733,6 +748,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
         setExpandedTrace(null);
       }
     } finally {
+      tracingInFlightRef.current = false;
       if (!background) {
         traceStatsPendingRef.current -= 1;
         setTraceStatsLoading(traceStatsPendingRef.current > 0);
@@ -862,7 +878,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   }, []);
 
   useEffect(() => {
-    if (tab !== "tracing") return;
+    if (tab !== "tracing" || activityView === "sessions") return;
     const load = async () => {
       try {
         setError("");
@@ -872,15 +888,15 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
       }
     };
     void load();
-  }, [tab, traceRange]);
+  }, [tab, traceRange, activityView]);
 
   useEffect(() => {
-    if (tab !== "tracing") return;
+    if (tab !== "tracing" || activityView === "sessions") return;
     const timer = window.setInterval(() => {
-      void loadTracing(tracePagination.page, traceRange, true).catch(handleError);
+      if (!document.hidden) void loadTracing(tracePagination.page, traceRange, true).catch(handleError);
     }, 10_000);
     return () => window.clearInterval(timer);
-  }, [tab, tracePagination.page, traceRange]);
+  }, [tab, tracePagination.page, traceRange, activityView]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {

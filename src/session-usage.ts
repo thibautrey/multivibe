@@ -259,7 +259,7 @@ function finalizeTurn(turn: MutableTurn): SessionTurnUsage {
 }
 
 function collectSessions(
-  traces: TraceEntry[],
+  traces: Iterable<TraceEntry>,
 ): {
   sessions: MutableSession[];
   attempts: number;
@@ -352,7 +352,7 @@ function finalizeSession(session: MutableSession): SessionUsage {
     totalTokens,
     medianInputTokens: median(measured.map((turn) => turn.inputTokens)),
     maxInputTokens: measured.length
-      ? Math.max(...measured.map((turn) => turn.inputTokens))
+      ? measured.reduce((max, turn) => Math.max(max, turn.inputTokens), 0)
       : undefined,
     medianOutputTokens: median(
       turns.filter((turn) => turn.inputTokens > 0).map((turn) => turn.outputTokens),
@@ -378,7 +378,7 @@ function finalizeSession(session: MutableSession): SessionUsage {
   };
 }
 
-export function aggregateSessionUsage(traces: TraceEntry[]): SessionUsageReport {
+export function aggregateSessionUsage(traces: Iterable<TraceEntry>): SessionUsageReport {
   const { sessions: mutableSessions, attempts, totalAttempts } = collectSessions(traces);
   const sessions = mutableSessions
     .map(finalizeSession)
@@ -463,7 +463,7 @@ export function aggregateSessionUsage(traces: TraceEntry[]): SessionUsageReport 
 }
 
 export function sessionTurnsFor(
-  traces: TraceEntry[],
+  traces: Iterable<TraceEntry>,
   sessionKey: string,
 ): SessionTurnUsage[] {
   const { sessions } = collectSessions(traces);

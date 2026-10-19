@@ -104,6 +104,7 @@ pub struct EdgeConfig {
     pub models_cache_path: Option<PathBuf>,
     pub legacy_jobs_db_path: Option<PathBuf>,
     pub trace_path: Option<PathBuf>,
+    pub trace_journal_max_bytes: u64,
     pub trace_include_body: bool,
     pub trace_include_headers: bool,
     pub request_body_limit: usize,
@@ -166,6 +167,7 @@ impl Default for EdgeConfig {
             models_cache_path: None,
             legacy_jobs_db_path: Some(PathBuf::from("/data/jobs.sqlite")),
             trace_path: None,
+            trace_journal_max_bytes: 0,
             trace_include_body: false,
             trace_include_headers: false,
             request_body_limit: 100 * 1024 * 1024,
@@ -280,6 +282,7 @@ impl EdgeConfig {
             models_cache_path,
             legacy_jobs_db_path,
             trace_path: env("TRACE_FILE_PATH").map(PathBuf::from),
+            trace_journal_max_bytes: env("TRACE_JOURNAL_MAX_BYTES").and_then(|v| v.parse().ok()).unwrap_or(0),
             trace_include_body: env("TRACE_INCLUDE_BODY")
                 .is_some_and(|value| value.eq_ignore_ascii_case("true")),
             trace_include_headers: env("TRACE_INCLUDE_HEADERS")
@@ -4711,10 +4714,26 @@ fn trace_string(value: &str, max: usize) -> String {
 
 struct TraceSink {
     path: Option<PathBuf>,
+    max_bytes: u64,
     lock: Mutex<()>,
 }
 
 impl TraceSink {
+    async fn rotate_if_needed(&self, path: &std::path::Path) {
+            // The consumer deletes .previous only after its SQLite cursor commits.
+            // Never overwrite an unacknowledged segment, even if the live file grows.
+            if self.max_bytes > 0 {
+                let previous = PathBuf::from(format!("{}.previous", path.display()));
+                if !fs::try_exists(&previous).await.unwrap_or(true)
+                    && fs::metadata(path).await.is_ok_and(|m| m.len() >= self.max_bytes)
+                {
+                    if let Err(error) = fs::rename(path, &previous).await {
+                        eprintln!("trace journal rotation failed: {error}");
+                    }
+                }
+            }
+    }
+
     async fn record(&self, context: &TraceContext, outcome: TraceOutcome) {
         let Some(path) = self.path.as_ref() else {
             return;
@@ -4878,6 +4897,7 @@ impl TraceSink {
             if let Some(parent) = path.parent() {
                 let _ = fs::create_dir_all(parent).await;
             }
+            self.rotate_if_needed(path).await;
             if let Ok(mut file) = fs::OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -5132,6 +5152,7 @@ impl EdgeState {
             ),
             trace: Arc::new(TraceSink {
                 path: config.trace_path.clone(),
+                max_bytes: config.trace_journal_max_bytes,
                 lock: Mutex::new(()),
             }),
             config: Arc::new(config),
@@ -19310,4 +19331,22 @@ mod provider_error_tests {
             "overloaded_error"
         );
     }
+    #[tokio::test]
+    async fn trace_rotation_waits_for_consumer_acknowledgement() {
+        let path = temporary_path("trace-rotation");
+        let previous = PathBuf::from(format!("{}.previous", path.display()));
+        let sink = TraceSink { path: Some(path.clone()), max_bytes: 8, lock: Mutex::new(()) };
+        fs::write(&path, b"first-segment\n").await.unwrap();
+        sink.rotate_if_needed(&path).await;
+        assert_eq!(fs::read(&previous).await.unwrap(), b"first-segment\n");
+        fs::write(&path, b"second-segment\n").await.unwrap();
+        sink.rotate_if_needed(&path).await;
+        assert_eq!(fs::read(&previous).await.unwrap(), b"first-segment\n");
+        assert_eq!(fs::read(&path).await.unwrap(), b"second-segment\n");
+        fs::remove_file(&previous).await.unwrap();
+        sink.rotate_if_needed(&path).await;
+        assert_eq!(fs::read(&previous).await.unwrap(), b"second-segment\n");
+        fs::remove_file(previous).await.unwrap();
+    }
+
 }
