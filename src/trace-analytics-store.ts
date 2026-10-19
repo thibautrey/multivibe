@@ -9,7 +9,7 @@ import {
   type TraceEntry, type TraceBucketAggregate, type UsageAggregate, ttftInputTokenBucket,
 } from "./traces.js";
 import { emptyUsage, addTrace, finalizeUsage, type MutableUsage } from "./project-usage.js";
-import { aggregateSessionUsage, sessionTurnsFor } from "./session-usage.js";
+import { aggregateSessionUsage, sessionTurnsFor, createTurn, addTraceToTurn } from "./session-usage.js";
 import { sessionKeyOf } from "./session-identity.js";
 import type { AnalyticsStatus } from "./trace-analytics-client.js";
 
