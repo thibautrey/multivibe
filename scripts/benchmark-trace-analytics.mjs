@@ -31,6 +31,9 @@ try {
     if(name==='stats')assert.equal(result.stats.totals.tokensTotal,Math.min(rows,249999)*25);
     if(name==='allTimeSessions')assert.equal(result.summary.totalAttempts,rows);
   }
-  const all=await manager.getTraceStats();assert.equal(all.stats.totals.tokensTotal,rows*25);
+  await manager.queryAnalytics('append',{entries:[{id:'new-live-event',at:end+2,route:'/responses',status:200,isError:false,stream:true,latencyMs:100,lifecycleState:'completed',provider:'openai',model:'gpt-4o-mini',usageStatus:'measured',tokensInput:20,tokensOutput:5,tokensTotal:25,application:'bench',codexSessionId:'session-0',clientRequestId:'new-live-request',projectId:'project-0'}]});
+  const updateStart=performance.now();const updated=await manager.queryAnalytics('sessions',{untilMs:end+3,limit:10});
+  measurements.incrementalSession={ms:Math.round(performance.now()-updateStart)};assert.equal(updated.summary.totalAttempts,rows+1);
+  const all=await manager.getTraceStats();assert.equal(all.stats.totals.tokensTotal,(rows+1)*25);
   lag.disable();clearInterval(memoryTimer);console.log(JSON.stringify({rows,sessionCount,peakRssMiB:Math.round(peakRss/1048576),migrationMs:Math.round(migrationMs),measurements,parentEventLoopMaxMs:lag.max/1e6,rssMiB:Math.round(process.memoryUsage().rss/1048576),totalsVerified:true},null,2));
 } finally {await manager?.close();await fs.rm(root,{recursive:true,force:true});}
