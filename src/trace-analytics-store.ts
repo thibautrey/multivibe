@@ -295,7 +295,9 @@ export class TraceAnalyticsStore {
     let lastAt=MIN,lastId="";
     let meta:TraceEntry|undefined;
     for(;;) {
-      const page=[...this.range(args,"AND session_key=? AND (at,id)>(?,?) ORDER BY at,id LIMIT 256",[key,lastAt,lastId])];
+      // Keep the scalar lower bound at the cursor too: SQLite otherwise seeks
+      // from the original window start on every page and rechecks old rows.
+      const page=[...this.range({...args,sinceMs:Math.max(since,lastAt)},"AND session_key=? AND (at,id)>(?,?) ORDER BY at,id LIMIT 256",[key,lastAt,lastId])];
       if(!page.length)break;
       this.db.transaction(()=>{for(const t of page){
         lastAt=t.at;lastId=t.id;if(!attempt(t))continue;
