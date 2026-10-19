@@ -6,7 +6,7 @@ import {
   normalizeTrace, toStatsHistoryEntry, isHiddenTraceRoute,
   createEmptyBucket, addTraceToBucket, buildBucketTraceStats,
   createUsageAggregate, addTraceToAggregate, finalizeAggregate,
-  type TraceEntry, type TraceBucketAggregate, type UsageAggregate,
+  type TraceEntry, type TraceBucketAggregate, type UsageAggregate, ttftInputTokenBucket,
 } from "./traces.js";
 import { emptyUsage, addTrace, finalizeUsage, type MutableUsage } from "./project-usage.js";
 import { aggregateSessionUsage, sessionTurnsFor } from "./session-usage.js";
@@ -57,7 +57,7 @@ export class TraceAnalyticsStore {
       CREATE TABLE IF NOT EXISTS entries (id TEXT PRIMARY KEY, at INTEGER NOT NULL, completed_at INTEGER NOT NULL, session_key TEXT, application TEXT, project_id TEXT, payload TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS entries_at ON entries(at);
       CREATE INDEX IF NOT EXISTS entries_completed ON entries(completed_at);
-      CREATE INDEX IF NOT EXISTS entries_session_at ON entries(session_key, at);
+      CREATE INDEX IF NOT EXISTS entries_session_at ON entries(session_key, at, id);
       CREATE INDEX IF NOT EXISTS entries_project_at ON entries(project_id, at);
       CREATE INDEX IF NOT EXISTS entries_application_at ON entries(application, at);
       CREATE TABLE IF NOT EXISTS buckets (at INTEGER PRIMARY KEY, payload TEXT NOT NULL);
@@ -258,6 +258,42 @@ export class TraceAnalyticsStore {
     return { totals: finalizeAggregate(global), byAccount: by(0, "accountId"), byRoute: by(1, "route"), byApplication: by(2, "application"), byProject, tracesEvaluated, tracesMatched: global.requests };
   }
 
+  /** Oversized sessions spill turn state to SQLite instead of growing a JS map without limit. */
+  private sessionReport(args: Filter, key: string): any {
+    const [since,until]=bounds(args);
+    const n=(this.db.prepare("SELECT count(*) AS n FROM entries WHERE session_key=? AND at>=? AND at<=?").get(key,since,until) as any).n;
+    if(n<=10000) return aggregateSessionUsage(this.range(args,"AND session_key=? ORDER BY at,id",[key])).sessions[0];
+    this.db.exec("CREATE TEMP TABLE IF NOT EXISTS large_session_turns (id TEXT PRIMARY KEY, payload TEXT); DELETE FROM large_session_turns;");
+    let lastAt=MIN,lastId="";
+    let meta:TraceEntry|undefined;
+    for(;;) {
+      const page=[...this.range(args,"AND session_key=? AND (at,id)>(?,?) ORDER BY at,id LIMIT 256",[key,lastAt,lastId])];
+      if(!page.length)break;
+      this.db.transaction(()=>{for(const t of page){
+        lastAt=t.at;lastId=t.id;if(!attempt(t))continue;
+        meta??=t;meta.application??=t.application;meta.projectId??=t.projectId;meta.projectName??=t.projectName;
+        const turnId=t.clientRequestId??t.id;
+        const row=this.db.prepare("SELECT payload FROM large_session_turns WHERE id=?").get(turnId) as any;
+        const turn=row?JSON.parse(row.payload):createTurn(t,turnId);
+        addTraceToTurn(turn,t);
+        this.db.prepare("INSERT OR REPLACE INTO large_session_turns VALUES (?,?)").run(turnId,JSON.stringify(turn));
+      }})();
+    }
+    if(!meta)return;
+    const field=(name:string)=>`json_extract(payload,'$.${name}')`;
+    const count=(condition="1")=>(this.db.prepare(`SELECT count(*) AS n FROM large_session_turns WHERE ${condition}`).get() as any).n as number;
+    const sum=(name:string)=>(this.db.prepare(`SELECT COALESCE(sum(${field(name)}),0) AS n FROM large_session_turns`).get() as any).n as number;
+    const median=(name:string,condition="1")=>{const n=count(condition);if(!n)return undefined;return (this.db.prepare(`SELECT avg(value) AS n FROM (SELECT ${field(name)} AS value FROM large_session_turns WHERE ${condition} ORDER BY value LIMIT ? OFFSET ?)`).get(n%2?1:2,Math.floor((n-1)/2)) as any).n;};
+    const turn=(condition:string,order:string)=>{const r=this.db.prepare(`SELECT payload FROM large_session_turns WHERE ${condition} ORDER BY ${field("at")} ${order},id ${order} LIMIT 1`).get() as any;return r?JSON.parse(r.payload):undefined;};
+    const first=turn("1","ASC"),last=turn("1","DESC"),initial=turn(`${field("inputTokens")}>0`,"ASC"),final=turn(`${field("inputTokens")}>0`,"DESC");
+    const models=(this.db.prepare(`SELECT ${field("model")} AS model,count(*) AS n FROM large_session_turns WHERE ${field("model")} IS NOT NULL GROUP BY model ORDER BY n DESC,model`).all() as any[]).map(r=>r.model);
+    const measured=`${field("inputTokens")}>0`;
+    const growthN=Math.max(0,count(measured)-1);
+    const medianGrowth=growthN?(this.db.prepare(`SELECT avg(value) AS n FROM (SELECT value FROM (SELECT ${field("inputTokens")}-lag(${field("inputTokens")}) OVER (ORDER BY ${field("at")},id) AS value FROM large_session_turns WHERE ${measured}) WHERE value IS NOT NULL ORDER BY value LIMIT ? OFFSET ?)`).get(growthN%2?1:2,Math.floor((growthN-1)/2)) as any).n:undefined;
+    const inputTokens=sum("inputTokens"),cachedInputTokens=sum("cachedInputTokens"),costUsd=sum("costUsd"),costUsdWithoutCache=sum("costUsdWithoutCache");
+    return {sessionKey:key,application:meta.application,projectId:meta.projectId,projectName:meta.projectName,provider:last.provider,models,turns:count(),firstAt:first.at,lastAt:last.lastAt,durationMs:Math.max(0,last.lastAt-first.at),initialInputTokens:initial?.inputTokens,initialInputTokenBucket:ttftInputTokenBucket(initial?.inputTokens),inputTokens,cachedInputTokens,cacheWriteTokens:sum("cacheWriteTokens"),outputTokens:sum("outputTokens"),totalTokens:sum("totalTokens"),medianInputTokens:median("inputTokens",measured),maxInputTokens:initial?(this.db.prepare(`SELECT max(${field("inputTokens")}) AS n FROM large_session_turns`).get() as any).n:undefined,medianOutputTokens:median("outputTokens",measured),cachedInputRatio:inputTokens?Math.max(0,Math.min(1,cachedInputTokens/inputTokens)):undefined,cacheHitTurns:count(`${field("cachedInputTokens")}>0`),cacheMissTurns:count(`${field("inputTokens")}>0 AND ${field("cachedInputTokens")}=0`),cacheWriteTurns:count(`${field("cacheWriteTokens")}>0`),contextGrowthTokens:initial&&final?final.inputTokens-initial.inputTokens:undefined,medianTurnGrowthTokens:medianGrowth,errorTurns:count(`${field("isError")}=1`),costUsd,costUsdWithoutCache,cacheSavingsUsd:Math.max(0,costUsdWithoutCache-costUsd)};
+  }
+
   sessions(args: Filter & { limit?: number; offset?: number }) {
     // Recompute only sessions touched since the last durable report for this window.
     // A rolling live window reuses its scope until its lower bound changes.
@@ -279,7 +315,7 @@ export class TraceAnalyticsStore {
       if (!keys.length) break;
       for (const {key} of keys) {
         lastKey = key;
-      const session=aggregateSessionUsage(this.range(args,"AND session_key=? ORDER BY at,id",[key])).sessions[0];
+      const session=this.sessionReport(args,key);
       if(session) this.db.prepare("INSERT OR REPLACE INTO session_reports VALUES (?,?,?,?,?,?)").run(scope,session.sessionKey,JSON.stringify(session),session.costUsd,session.turns,session.lastAt);
       else this.db.prepare("DELETE FROM session_reports WHERE scope=? AND key=?").run(scope,key);
     }

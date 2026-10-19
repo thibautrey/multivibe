@@ -96,3 +96,12 @@ test("worker RPC queries remain independent from synchronous HTTP-thread storage
   assert.ok(results.every(result=>result.stats.totals.requests===1));
   assert.equal(manager.getPersistenceStatus().analytics?.ready,true);
 });
+
+test("oversized sessions spill to disk while preserving turn medians, growth and retry costs",async t=>{
+  const f=await fixture(t);
+  const records=Array.from({length:10002},(_,i)=>({...trace(`large-${i}`,BASE+i),tokensInput:20+i,clientRequestId:`turn-${i}`}));
+  for(let i=0;i<records.length;i+=1000)f.store.append(records.slice(i,i+1000));
+  const actual=f.store.sessions({limit:1}).sessions[0];
+  const expected=aggregateSessionUsage(records.map(t=>normalizeTrace(toStatsHistoryEntry(t))!)).sessions[0];
+  assert.deepEqual(actual,JSON.parse(JSON.stringify(expected)));
+});

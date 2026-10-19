@@ -86,7 +86,7 @@ export type SessionUsageReport = {
   sessions: SessionUsage[];
 };
 
-type MutableTurn = {
+export type MutableTurn = {
   at: number;
   lastAt: number;
   lastMeasuredAt: number;
@@ -177,7 +177,7 @@ function median(values: number[]): number | undefined {
     : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
-function createTurn(trace: TraceEntry, turnKey: string): MutableTurn {
+export function createTurn(trace: TraceEntry, turnKey: string): MutableTurn {
   return {
     at: trace.at,
     lastAt: trace.at,
@@ -204,7 +204,7 @@ function createTurn(trace: TraceEntry, turnKey: string): MutableTurn {
   };
 }
 
-function addTraceToTurn(turn: MutableTurn, trace: TraceEntry) {
+export function addTraceToTurn(turn: MutableTurn, trace: TraceEntry) {
   turn.at = Math.min(turn.at, trace.at);
   turn.upstreamAttempts += 1;
   if (trace.at >= turn.lastAt) {
@@ -233,7 +233,7 @@ function addTraceToTurn(turn: MutableTurn, trace: TraceEntry) {
   turn.costUsdWithoutCache += traceCostUsdWithoutCache(trace);
 }
 
-function finalizeTurn(turn: MutableTurn): SessionTurnUsage {
+export function finalizeTurn(turn: MutableTurn): SessionTurnUsage {
   return {
     at: turn.at,
     lastAt: turn.lastAt,
