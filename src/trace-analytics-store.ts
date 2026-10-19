@@ -69,7 +69,11 @@ export class TraceAnalyticsStore {
       CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS entry_revisions (id TEXT PRIMARY KEY, revision INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS entry_revisions_number ON entry_revisions(revision);
-      CREATE TABLE IF NOT EXISTS stored_session_turns (scope TEXT, session_key TEXT, id TEXT, payload TEXT, PRIMARY KEY(scope,session_key,id));
+      CREATE TABLE IF NOT EXISTS stored_session_turns (scope TEXT, session_key TEXT, id TEXT, payload TEXT, at INTEGER, last_at INTEGER, input_tokens REAL, cached_input REAL, cache_write REAL, output_tokens REAL, total_tokens REAL, cost REAL, cost_without REAL, is_error INTEGER, model TEXT, provider TEXT, PRIMARY KEY(scope,session_key,id));
+      CREATE INDEX IF NOT EXISTS stored_turns_at ON stored_session_turns(scope,session_key,at,id,input_tokens);
+      CREATE INDEX IF NOT EXISTS stored_turns_input ON stored_session_turns(scope,session_key,input_tokens);
+      CREATE INDEX IF NOT EXISTS stored_turns_output ON stored_session_turns(scope,session_key,output_tokens,input_tokens);
+      CREATE INDEX IF NOT EXISTS stored_turns_model ON stored_session_turns(scope,session_key,model);
       CREATE TABLE IF NOT EXISTS session_turn_states (scope TEXT, session_key TEXT, revision INTEGER, until_ms INTEGER, meta TEXT, PRIMARY KEY(scope,session_key));
       CREATE TABLE IF NOT EXISTS session_dirty (key TEXT PRIMARY KEY, revision INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS session_dirty_revision ON session_dirty(revision);
@@ -298,7 +302,7 @@ export class TraceAnalyticsStore {
     const state=this.db.prepare("SELECT revision,until_ms,meta FROM session_turn_states WHERE scope=? AND session_key=?").get(scope,key) as any;
     const rebuild=!state || until<state.until_ms;
     const readTurn=this.db.prepare("SELECT payload FROM stored_session_turns WHERE scope=? AND session_key=? AND id=?");
-    const writeTurn=this.db.prepare("INSERT OR REPLACE INTO stored_session_turns VALUES (?,?,?,?)");
+    const writeTurn=this.db.prepare("INSERT OR REPLACE INTO stored_session_turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
     let meta:TraceEntry|undefined=rebuild?undefined:JSON.parse(state.meta);
     this.db.transaction(()=>{
       if(rebuild)this.db.prepare("DELETE FROM stored_session_turns WHERE scope=? AND session_key=?").run(scope,key);
@@ -317,7 +321,7 @@ export class TraceAnalyticsStore {
           const row=readTurn.get(scope,key,turnId) as any;
           const turn=row?JSON.parse(row.payload):createTurn(t,turnId);
           addTraceToTurn(turn,t);
-          writeTurn.run(scope,key,turnId,JSON.stringify(turn));
+          writeTurn.run(scope,key,turnId,JSON.stringify(turn),turn.at,turn.lastAt,turn.inputTokens,turn.cachedInputTokens,turn.cacheWriteTokens,turn.outputTokens,turn.totalTokens,turn.costUsd,turn.costUsdWithoutCache,Number(turn.isError),turn.model??null,turn.provider??null);
         }
       }
       if(meta)this.db.prepare("INSERT OR REPLACE INTO session_turn_states VALUES (?,?,?,?,?)").run(scope,key,this.status.indexed,until,JSON.stringify(meta));
@@ -325,11 +329,14 @@ export class TraceAnalyticsStore {
     // A scoped view lets exact medians/counters use SQLite without loading turns.
     // quote() is SQLite's own literal encoder, never interpolated user SQL.
     const quote=(value:string)=>(this.db.prepare("SELECT quote(?) AS value").get(value) as any).value;
-    this.db.exec(`DROP VIEW IF EXISTS temp.large_session_turns; CREATE TEMP VIEW large_session_turns AS SELECT id,payload FROM stored_session_turns WHERE scope=${quote(scope)} AND session_key=${quote(key)};`);
+    this.db.exec(`DROP VIEW IF EXISTS temp.large_session_turns; CREATE TEMP VIEW large_session_turns AS SELECT id,payload,at,last_at AS lastAt,input_tokens AS inputTokens,cached_input AS cachedInputTokens,cache_write AS cacheWriteTokens,output_tokens AS outputTokens,total_tokens AS totalTokens,cost AS costUsd,cost_without AS costUsdWithoutCache,is_error AS isError,model,provider FROM stored_session_turns WHERE scope=${quote(scope)} AND session_key=${quote(key)};`);
     if(!meta)return;
-    const field=(name:string)=>`json_extract(payload,'$.${name}')`;
-    const count=(condition="1")=>(this.db.prepare(`SELECT count(*) AS n FROM large_session_turns WHERE ${condition}`).get() as any).n as number;
-    const sum=(name:string)=>(this.db.prepare(`SELECT COALESCE(sum(${field(name)}),0) AS n FROM large_session_turns`).get() as any).n as number;
+    const field=(name:string)=>`"${name}"`;
+    const sums=["inputTokens","cachedInputTokens","cacheWriteTokens","outputTokens","totalTokens","costUsd","costUsdWithoutCache"];
+    const totals=this.db.prepare(`SELECT count(*) AS turns,${sums.map(name=>`COALESCE(sum(${field(name)}),0) AS ${name}`).join(",")},sum(inputTokens>0) AS measured,sum(cachedInputTokens>0) AS hits,sum(inputTokens>0 AND cachedInputTokens=0) AS misses,sum(cacheWriteTokens>0) AS writes,sum(isError=1) AS errors,max(inputTokens) AS maxInput FROM large_session_turns`).get() as any;
+    const knownCounts:Record<string,number>={"1":totals.turns,[`${field("inputTokens")}>0`]:totals.measured,[`${field("cachedInputTokens")}>0`]:totals.hits,[`${field("inputTokens")}>0 AND ${field("cachedInputTokens")}=0`]:totals.misses,[`${field("cacheWriteTokens")}>0`]:totals.writes,[`${field("isError")}=1`]:totals.errors};
+    const count=(condition="1")=>knownCounts[condition]??(this.db.prepare(`SELECT count(*) AS n FROM large_session_turns WHERE ${condition}`).get() as any).n;
+    const sum=(name:string)=>totals[name] as number;
     const median=(name:string,condition="1")=>{const n=count(condition);if(!n)return undefined;return (this.db.prepare(`SELECT avg(value) AS n FROM (SELECT ${field(name)} AS value FROM large_session_turns WHERE ${condition} ORDER BY value LIMIT ? OFFSET ?)`).get(n%2?1:2,Math.floor((n-1)/2)) as any).n;};
     const turn=(condition:string,order:string)=>{const r=this.db.prepare(`SELECT payload FROM large_session_turns WHERE ${condition} ORDER BY ${field("at")} ${order},id ${order} LIMIT 1`).get() as any;return r?JSON.parse(r.payload):undefined;};
     const first=turn("1","ASC"),last=turn("1","DESC"),initial=turn(`${field("inputTokens")}>0`,"ASC"),final=turn(`${field("inputTokens")}>0`,"DESC");
@@ -338,7 +345,7 @@ export class TraceAnalyticsStore {
     const growthN=Math.max(0,count(measured)-1);
     const medianGrowth=growthN?(this.db.prepare(`SELECT avg(value) AS n FROM (SELECT value FROM (SELECT ${field("inputTokens")}-lag(${field("inputTokens")}) OVER (ORDER BY ${field("at")},id) AS value FROM large_session_turns WHERE ${measured}) WHERE value IS NOT NULL ORDER BY value LIMIT ? OFFSET ?)`).get(growthN%2?1:2,Math.floor((growthN-1)/2)) as any).n:undefined;
     const inputTokens=sum("inputTokens"),cachedInputTokens=sum("cachedInputTokens"),costUsd=sum("costUsd"),costUsdWithoutCache=sum("costUsdWithoutCache");
-    return {sessionKey:key,application:meta.application,projectId:meta.projectId,projectName:meta.projectName,provider:last.provider,models,turns:count(),firstAt:first.at,lastAt:last.lastAt,durationMs:Math.max(0,last.lastAt-first.at),initialInputTokens:initial?.inputTokens,initialInputTokenBucket:ttftInputTokenBucket(initial?.inputTokens),inputTokens,cachedInputTokens,cacheWriteTokens:sum("cacheWriteTokens"),outputTokens:sum("outputTokens"),totalTokens:sum("totalTokens"),medianInputTokens:median("inputTokens",measured),maxInputTokens:initial?(this.db.prepare(`SELECT max(${field("inputTokens")}) AS n FROM large_session_turns`).get() as any).n:undefined,medianOutputTokens:median("outputTokens",measured),cachedInputRatio:inputTokens?Math.max(0,Math.min(1,cachedInputTokens/inputTokens)):undefined,cacheHitTurns:count(`${field("cachedInputTokens")}>0`),cacheMissTurns:count(`${field("inputTokens")}>0 AND ${field("cachedInputTokens")}=0`),cacheWriteTurns:count(`${field("cacheWriteTokens")}>0`),contextGrowthTokens:initial&&final?final.inputTokens-initial.inputTokens:undefined,medianTurnGrowthTokens:medianGrowth,errorTurns:count(`${field("isError")}=1`),costUsd,costUsdWithoutCache,cacheSavingsUsd:Math.max(0,costUsdWithoutCache-costUsd)};
+    return {sessionKey:key,application:meta.application,projectId:meta.projectId,projectName:meta.projectName,provider:last.provider,models,turns:count(),firstAt:first.at,lastAt:last.lastAt,durationMs:Math.max(0,last.lastAt-first.at),initialInputTokens:initial?.inputTokens,initialInputTokenBucket:ttftInputTokenBucket(initial?.inputTokens),inputTokens,cachedInputTokens,cacheWriteTokens:sum("cacheWriteTokens"),outputTokens:sum("outputTokens"),totalTokens:sum("totalTokens"),medianInputTokens:median("inputTokens",measured),maxInputTokens:initial?totals.maxInput:undefined,medianOutputTokens:median("outputTokens",measured),cachedInputRatio:inputTokens?Math.max(0,Math.min(1,cachedInputTokens/inputTokens)):undefined,cacheHitTurns:count(`${field("cachedInputTokens")}>0`),cacheMissTurns:count(`${field("inputTokens")}>0 AND ${field("cachedInputTokens")}=0`),cacheWriteTurns:count(`${field("cacheWriteTokens")}>0`),contextGrowthTokens:initial&&final?final.inputTokens-initial.inputTokens:undefined,medianTurnGrowthTokens:medianGrowth,errorTurns:count(`${field("isError")}=1`),costUsd,costUsdWithoutCache,cacheSavingsUsd:Math.max(0,costUsdWithoutCache-costUsd)};
   }
 
   sessions(args: Filter & { limit?: number; offset?: number }) {
