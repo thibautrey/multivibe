@@ -23,6 +23,9 @@ type Props = {
   expandedSessionKey: string | null;
   sessionTurns: SessionTurn[];
   sessionTurnsLoading: boolean;
+  sessionTurnsTotal?: number;
+  sessionTurnsOffset?: number;
+  loadSessionTurnsPage?: (offset: number) => void;
   toggleSession: (sessionKey: string) => void;
 };
 
@@ -130,6 +133,9 @@ export function TracingSessions({
   expandedSessionKey,
   sessionTurns,
   sessionTurnsLoading,
+  sessionTurnsTotal = 0,
+  sessionTurnsOffset = 0,
+  loadSessionTurnsPage,
   toggleSession,
 }: Props) {
   const summary = sessionStats.summary;
@@ -261,6 +267,11 @@ export function TracingSessions({
                               <span className="badge">{session.turns} turns · {fmt(session.firstAt)}</span>
                             </div>
                             <SessionTurnDetails turns={sessionTurns} loading={sessionTurnsLoading} />
+                            {sessionTurnsTotal > 200 && <div className="pagination">
+                              <button className="btn secondary" disabled={sessionTurnsLoading || sessionTurnsOffset === 0} onClick={() => loadSessionTurnsPage?.(Math.max(0, sessionTurnsOffset - 200))}>Previous turns</button>
+                              <span>Turns {sessionTurnsOffset + 1}–{Math.min(sessionTurnsOffset + 200, sessionTurnsTotal)} of {sessionTurnsTotal}</span>
+                              <button className="btn secondary" disabled={sessionTurnsLoading || sessionTurnsOffset + 200 >= sessionTurnsTotal} onClick={() => loadSessionTurnsPage?.(sessionTurnsOffset + 200)}>Next turns</button>
+                            </div>}
                           </div>
                         </td>
                       </tr>

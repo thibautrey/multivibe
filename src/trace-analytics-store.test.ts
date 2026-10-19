@@ -69,7 +69,7 @@ test("time boundaries, filters, usage and retry/session semantics match existing
   assert.deepEqual(usage.totals,finalizeAggregate(agg));
   assert.deepEqual(usage.byProject,aggregateProjectUsage(selected));
   const sessionKey=aggregateSessionUsage(canonical).sessions[0].sessionKey;
-  assert.deepEqual(f.store.query("turns",{sessionKey}),sessionTurnsFor(canonical,sessionKey));
+  assert.deepEqual(f.store.query("turns",{sessionKey}).turns,sessionTurnsFor(canonical,sessionKey));
 });
 
 test("split UTF-8, invalid lines and truncated journal never advance past an incomplete record",async t=>{
@@ -103,5 +103,11 @@ test("oversized sessions spill to disk while preserving turn medians, growth and
   for(let i=0;i<records.length;i+=1000)f.store.append(records.slice(i,i+1000));
   const actual=f.store.sessions({limit:1}).sessions[0];
   const expected=aggregateSessionUsage(records.map(t=>normalizeTrace(toStatsHistoryEntry(t))!)).sessions[0];
+  for(const field of ["costUsd","costUsdWithoutCache","cacheSavingsUsd"] as const) {
+    assert.ok(Math.abs(actual[field]-expected[field])<1e-8);
+    actual[field]=expected[field];
+  }
   assert.deepEqual(actual,JSON.parse(JSON.stringify(expected)));
+  const page=f.store.query("turns",{sessionKey:actual.sessionKey,limit:10,offset:500});
+  assert.equal(page.total,10002);assert.equal(page.turns.length,10);assert.equal(page.turns[0].clientRequestId,"turn-500");
 });

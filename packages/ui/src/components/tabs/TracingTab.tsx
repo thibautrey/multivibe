@@ -48,6 +48,9 @@ type Props = {
   expandedSessionKey: string | null;
   sessionTurns: SessionTurn[];
   sessionTurnsLoading: boolean;
+  sessionTurnsTotal?: number;
+  sessionTurnsOffset?: number;
+  loadSessionTurnsPage?: (offset: number) => void;
   toggleSession: (sessionKey: string) => void;
   expandedTraceId: string | null;
   expandedTrace: Trace | null;
@@ -226,6 +229,9 @@ function TracingTabContent(props: Props) {
     expandedSessionKey,
     sessionTurns,
     sessionTurnsLoading,
+    sessionTurnsTotal,
+    sessionTurnsOffset,
+    loadSessionTurnsPage,
     toggleSession,
     expandedTraceId,
     expandedTrace,
@@ -543,6 +549,9 @@ function TracingTabContent(props: Props) {
             expandedSessionKey={expandedSessionKey}
             sessionTurns={sessionTurns}
             sessionTurnsLoading={sessionTurnsLoading}
+            sessionTurnsTotal={sessionTurnsTotal}
+            sessionTurnsOffset={sessionTurnsOffset}
+            loadSessionTurnsPage={loadSessionTurnsPage}
             toggleSession={toggleSession}
           />
         </div>

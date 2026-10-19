@@ -54,10 +54,11 @@ export class TraceAnalyticsStore {
     this.db.pragma("cache_size = -32768");
     this.db.pragma("temp_store = FILE");
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS entries (id TEXT PRIMARY KEY, at INTEGER NOT NULL, completed_at INTEGER NOT NULL, session_key TEXT, application TEXT, project_id TEXT, payload TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS entries (id TEXT PRIMARY KEY, at INTEGER NOT NULL, completed_at INTEGER NOT NULL, session_key TEXT, application TEXT, project_id TEXT, turn_id TEXT NOT NULL, kind TEXT, payload TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS entries_at ON entries(at);
       CREATE INDEX IF NOT EXISTS entries_completed ON entries(completed_at);
       CREATE INDEX IF NOT EXISTS entries_session_at ON entries(session_key, at, id);
+      CREATE INDEX IF NOT EXISTS entries_turn_at ON entries(session_key,turn_id,at,id);
       CREATE INDEX IF NOT EXISTS entries_project_at ON entries(project_id, at);
       CREATE INDEX IF NOT EXISTS entries_application_at ON entries(application, at);
       CREATE TABLE IF NOT EXISTS buckets (at INTEGER PRIMARY KEY, payload TEXT NOT NULL);
@@ -89,7 +90,7 @@ export class TraceAnalyticsStore {
   append(entries: TraceEntry[], cursor?: { identity: string; offset: number }, journal = false) {
     const buckets = new Map<number, TraceBucketAggregate>();
     const rollups = new Map<string, { at: number; key: string; value: Rollup }>();
-    const insert = this.db.prepare("INSERT OR IGNORE INTO entries VALUES (?,?,?,?,?,?,?)");
+    const insert = this.db.prepare("INSERT OR IGNORE INTO entries VALUES (?,?,?,?,?,?,?,?,?)");
     const deleteRecent = this.db.prepare("DELETE FROM recent WHERE id=?");
     const insertRecent = this.db.prepare("INSERT INTO recent(id,payload) VALUES (?,?)");
     const getBucket = this.db.prepare("SELECT payload FROM buckets WHERE at=?");
@@ -105,7 +106,7 @@ export class TraceAnalyticsStore {
         }
         if (normalized.lifecycleState === "started" || !visible(normalized)) continue;
         const t = normalizeTrace(toStatsHistoryEntry(normalized))!;
-        if (!insert.run(t.id, t.at, t.completedAt ?? t.at, sessionKeyOf(t) ?? null, t.application ?? null, t.projectId ?? null, JSON.stringify(t)).changes) continue;
+        if (!insert.run(t.id, t.at, t.completedAt ?? t.at, sessionKeyOf(t) ?? null, t.application ?? null, t.projectId ?? null, t.clientRequestId ?? t.id, t.traceKind ?? null, JSON.stringify(t)).changes) continue;
         inserted++;
         const sessionKey = attempt(t) ? sessionKeyOf(t) : undefined;
         if (sessionKey) this.db.prepare("INSERT OR REPLACE INTO session_dirty VALUES (?,?)").run(sessionKey, this.status.indexed + inserted);
@@ -350,6 +351,18 @@ export class TraceAnalyticsStore {
     return { summary, total, sessions };
   }
 
+  private turns(args: Filter & {sessionKey:string;limit?:number;offset?:number}) {
+    const [since,until]=bounds(args);
+    const limit=Math.max(1,Math.min(500,Math.floor(args.limit??200)));
+    const offset=Math.max(0,Math.floor(args.offset??0));
+    const clause="session_key=? AND at>=? AND at<=? AND (kind IS NULL OR kind='upstream-attempt')";
+    const total=(this.db.prepare(`SELECT count(DISTINCT turn_id) AS n FROM entries WHERE ${clause}`).get(args.sessionKey,since,until) as any).n;
+    const keys=this.db.prepare(`SELECT turn_id FROM entries WHERE ${clause} GROUP BY turn_id ORDER BY min(at),turn_id LIMIT ? OFFSET ?`).all(args.sessionKey,since,until,limit,offset) as {turn_id:string}[];
+    const turns=[];
+    for(const {turn_id} of keys) turns.push(...sessionTurnsFor(this.range(args,"AND session_key=? AND turn_id=? ORDER BY at,id",[args.sessionKey,turn_id]),args.sessionKey));
+    return {turns,total,limit,offset};
+  }
+
   query(action: string, args: any): any {
     if (action === "append") { this.append(args.entries); return; }
     if (action === "status") return this.status;
@@ -362,7 +375,7 @@ export class TraceAnalyticsStore {
     if (action === "stats") value=this.stats(args);
     else if (action === "usage") value=this.usage(args);
     else if (action === "sessions") value=this.sessions(args);
-    else if (action === "turns") value=sessionTurnsFor(this.range(args, "AND session_key=? ORDER BY at,id", [args.sessionKey]), args.sessionKey);
+    else if (action === "turns") value=this.turns(args);
     else if (action === "anonymous") {
       const totals=new Map<string,number>();
       for(const row of this.db.prepare("SELECT payload FROM entries WHERE completed_at>=? AND completed_at<?").iterate(args.sinceMs,args.untilMs) as Iterable<any>) { const t:TraceEntry=JSON.parse(row.payload); if(t.lifecycleState!=="completed" || t.isError) continue; const model=args.modelAllowlist[t.requestedModel ?? t.model ?? ""]; if(!model)continue; const n=Math.max(0,Math.floor(t.tokensOutput??0)); if(n)totals.set(model,Math.min(1_000_000_000,(totals.get(model)??0)+n)); }

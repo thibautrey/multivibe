@@ -2258,9 +2258,9 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     const sinceMs = parseQueryNumber(req.query.sinceMs);
     const untilMs = parseQueryNumber(req.query.untilMs);
     if (traceManager.queryAnalytics) {
-      const turns = await traceManager.queryAnalytics("turns", { sinceMs, untilMs, sessionKey });
-      if (!turns.length) return res.status(404).json({ error: "not found" });
-      return res.json({ ok: true, filters: { sinceMs, untilMs }, sessionKey, turns, analytics: traceManager.getPersistenceStatus().analytics });
+      const report = await traceManager.queryAnalytics("turns", { sinceMs, untilMs, sessionKey, limit: parseQueryNumber(req.query.limit), offset: parseQueryNumber(req.query.offset) });
+      if (!report.total) return res.status(404).json({ error: "not found" });
+      return res.json({ ok: true, filters: { sinceMs, untilMs }, sessionKey, ...report, analytics: traceManager.getPersistenceStatus().analytics });
     }
     const traces = filterVisibleTraces(
       await readStatsHistoryRange(sinceMs, untilMs),
