@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { open, unlink, mkdir, chmod } from "node:fs/promises";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { setImmediate as yieldToQueries } from "node:timers/promises";
 import {
   normalizeTrace, toStatsHistoryEntry, isHiddenTraceRoute,
@@ -145,7 +146,15 @@ export class TraceAnalyticsStore {
     try { handle = await open(file, "r"); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return "missing"; throw e; }
     try {
       const info = await handle.stat();
-      const identity = `${info.dev}:${info.ino}:${info.birthtimeMs}`;
+      // Unraid shfs reports birthtime=0 and can reuse inode numbers after rotation.
+      // Bind the cursor to the immutable journal prefix as well as the inode.
+      let signature = String(info.birthtimeMs);
+      if (!info.birthtimeMs) {
+        const prefix = Buffer.alloc(Math.min(256, info.size));
+        await handle.read(prefix, 0, prefix.length, 0);
+        signature = createHash("sha256").update(prefix).digest("hex");
+      }
+      const identity = `${info.dev}:${info.ino}:${signature}`;
       let offset = Number((this.db.prepare("SELECT offset FROM cursors WHERE identity=?").get(identity) as any)?.offset ?? 0);
       if (offset > info.size) offset = 0;
       this.status.pendingBytes = Math.max(0, info.size - offset); this.emit();
