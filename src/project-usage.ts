@@ -37,7 +37,7 @@ export type ProjectUsage = Omit<ProjectUsageModel, "model"> & {
   models: ProjectUsageModel[];
 };
 
-type MutableUsage = {
+export type MutableUsage = {
   requests: number;
   ok: number;
   errors: number;
@@ -55,7 +55,7 @@ type MutableUsage = {
   statusCounts: Record<string, number>;
 };
 
-const emptyUsage = (): MutableUsage => ({
+export const emptyUsage = (): MutableUsage => ({
   requests: 0,
   ok: 0,
   errors: 0,
@@ -93,7 +93,7 @@ function traceCostUsd(trace: TraceEntry): number | undefined {
   );
 }
 
-function addTrace(usage: MutableUsage, trace: TraceEntry) {
+export function addTrace(usage: MutableUsage, trace: TraceEntry) {
   const input = trace.tokensInput ?? 0;
   const output = trace.tokensOutput ?? 0;
   const total = trace.tokensTotal ?? input + output;
@@ -118,10 +118,11 @@ function addTrace(usage: MutableUsage, trace: TraceEntry) {
   usage.tokensOutput += output;
   usage.tokensTotal += total;
   usage.latencyMsTotal += latency;
-  usage.latencies.push(latency);
+  if (usage.latencies.length < 1024) usage.latencies.push(latency);
+  else usage.latencies[usage.requests % 1024] = latency;
 }
 
-function finalizeUsage(usage: MutableUsage) {
+export function finalizeUsage(usage: MutableUsage) {
   return {
     requests: usage.requests,
     ok: usage.ok,
@@ -149,7 +150,7 @@ function finalizeUsage(usage: MutableUsage) {
   };
 }
 
-export function aggregateProjectUsage(traces: TraceEntry[]): ProjectUsage[] {
+export function aggregateProjectUsage(traces: Iterable<TraceEntry>): ProjectUsage[] {
   const projects = new Map<string, {
     projectName?: string;
     projectRemote?: string;

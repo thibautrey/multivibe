@@ -1,3 +1,4 @@
+import { TraceAnalyticsClient } from "./trace-analytics-client.js";
 import {
   estimateCostUsd,
   estimateCostUsdWithoutCache,
@@ -321,6 +322,8 @@ export type TraceManagerConfig = {
   historyFilePath?: string;
   /** Another process appends traces; consume its journal without rewriting it. */
   externalWriter?: boolean;
+  /** Durable analytics index; queries and ingestion run off the HTTP event loop. */
+  indexedHistoryPath?: string;
   retentionMax?: number;
   pageSizeMax?: number;
   legacyLimitMax?: number;
@@ -336,7 +339,7 @@ export type AnonymousModelOutputTotal = {
   outputTokens: number;
 };
 
-type TraceBucketAggregate = {
+export type TraceBucketAggregate = {
   at: number;
   requests: number;
   upstreamAttempts: number;
@@ -354,7 +357,8 @@ type TraceBucketAggregate = {
   costUsdWithoutCache: number;
   latencyMsTotal: number;
   latencies: number[];
-  inferenceSpeeds: number[];
+  inferenceSpeedTotal: number;
+  inferenceSpeedCount: number;
   models: Map<string, TraceModelStats>;
   ttftGroups: Map<string, MutableTraceTtftStats>;
   accountSelection: MutableAccountSelectionSummary;
@@ -516,7 +520,7 @@ function normalizeTokenFields(
   };
 }
 
-function normalizeTrace(raw: any): TraceEntry | null {
+export function normalizeTrace(raw: any): TraceEntry | null {
   if (!raw || typeof raw !== "object") return null;
   const at = safeNumber(raw.at);
   const route = typeof raw.route === "string" ? raw.route : "";
@@ -1048,7 +1052,7 @@ function usageToTokens(
   return { promptTokens, completionTokens, totalTokens };
 }
 
-function createUsageAggregate(): UsageAggregate {
+export function createUsageAggregate(): UsageAggregate {
   return {
     requests: 0,
     ok: 0,
@@ -1063,7 +1067,7 @@ function createUsageAggregate(): UsageAggregate {
   };
 }
 
-function addTraceToAggregate(agg: UsageAggregate, trace: TraceEntry) {
+export function addTraceToAggregate(agg: UsageAggregate, trace: TraceEntry) {
   const status = Number(trace.status);
   const statusKey = Number.isFinite(status) ? String(status) : "unknown";
   const tokens = usageToTokens(trace.usage, trace);
@@ -1095,7 +1099,7 @@ function addTraceToAggregate(agg: UsageAggregate, trace: TraceEntry) {
   }
 }
 
-function finalizeAggregate(agg: UsageAggregate) {
+export function finalizeAggregate(agg: UsageAggregate) {
   const avgLatencyMs = agg.requests
     ? Math.round((agg.latencyMsTotal / agg.requests) * 100) / 100
     : 0;
@@ -1258,7 +1262,8 @@ export function buildTraceStats(traces: TraceEntry[]): TraceStats {
       tokensTotal: number;
       costUsd: number;
       latencies: number[];
-      inferenceSpeeds: number[];
+      inferenceSpeedTotal: number;
+  inferenceSpeedCount: number;
     }
   >();
   for (const trace of traces) {
@@ -1292,7 +1297,8 @@ export function buildTraceStats(traces: TraceEntry[]): TraceStats {
       bucket.tokensTotal += trace.tokensTotal ?? 0;
       const inferenceSpeed = traceInferenceTokensPerSecond(trace);
       if (typeof inferenceSpeed === "number") {
-        bucket.inferenceSpeeds.push(inferenceSpeed);
+        bucket.inferenceSpeedTotal += inferenceSpeed;
+    bucket.inferenceSpeedCount += 1;
       }
       bucket.costUsd +=
         typeof trace.costUsd === "number"
@@ -1321,8 +1327,8 @@ export function buildTraceStats(traces: TraceEntry[]): TraceStats {
         tokensInputCached: bucket.tokensInputCached,
         tokensOutput: bucket.tokensOutput,
         tokensTotal: bucket.tokensTotal,
-        inferenceTokensPerSecond: average(bucket.inferenceSpeeds),
-        inferenceRequests: bucket.inferenceSpeeds.length,
+        inferenceTokensPerSecond: bucket.inferenceSpeedCount ? bucket.inferenceSpeedTotal / bucket.inferenceSpeedCount : undefined,
+        inferenceRequests: bucket.inferenceSpeedCount,
         costUsd: bucket.costUsd,
         latencyP50Ms: percentile(bucket.latencies, 50),
         latencyP95Ms: percentile(bucket.latencies, 95),
@@ -1357,7 +1363,7 @@ export function buildTraceStats(traces: TraceEntry[]): TraceStats {
   };
 }
 
-function createEmptyBucket(at: number): TraceBucketAggregate {
+export function createEmptyBucket(at: number): TraceBucketAggregate {
   return {
     at,
     requests: 0,
@@ -1376,7 +1382,8 @@ function createEmptyBucket(at: number): TraceBucketAggregate {
     costUsdWithoutCache: 0,
     latencyMsTotal: 0,
     latencies: [],
-    inferenceSpeeds: [],
+    inferenceSpeedTotal: 0,
+    inferenceSpeedCount: 0,
     models: new Map(),
     ttftGroups: new Map(),
     accountSelection: createAccountSelectionSummary(),
@@ -1397,7 +1404,7 @@ function addLatencySample(bucket: TraceBucketAggregate, latencyMs: number) {
   bucket.latencies[replaceAt] = latencyMs;
 }
 
-function addTraceToBucket(bucket: TraceBucketAggregate, trace: TraceEntry) {
+export function addTraceToBucket(bucket: TraceBucketAggregate, trace: TraceEntry) {
   if (isClientRequestTrace(trace)) {
     bucket.requests += 1;
     if (trace.isError) bucket.errors += 1;
@@ -1438,7 +1445,8 @@ function addTraceToBucket(bucket: TraceBucketAggregate, trace: TraceEntry) {
   bucket.tokensTotal += traceTokensTotal;
   const inferenceSpeed = traceInferenceTokensPerSecond(trace);
   if (typeof inferenceSpeed === "number") {
-    bucket.inferenceSpeeds.push(inferenceSpeed);
+    bucket.inferenceSpeedTotal += inferenceSpeed;
+    bucket.inferenceSpeedCount += 1;
   }
   bucket.costUsd += traceCost;
   bucket.costUsdWithoutCache += traceCostWithoutCache ?? 0;
@@ -1518,7 +1526,168 @@ export function isHiddenTraceRoute(route: string | undefined): boolean {
   );
 }
 
+export function buildBucketTraceStats(buckets: Iterable<TraceBucketAggregate>, totalStored: number, sinceMs?: number, untilMs?: number): { totalStored: number; matched: number; stats: TraceStats } {
+    const selectedBuckets = Array.from(buckets)
+      .filter((bucket) => {
+        if (
+          typeof sinceMs === "number" &&
+          Number.isFinite(sinceMs) &&
+          bucket.at + HOUR_MS <= sinceMs
+        ) {
+          return false;
+        }
+        if (
+          typeof untilMs === "number" &&
+          Number.isFinite(untilMs) &&
+          bucket.at > untilMs
+        ) {
+          return false;
+        }
+        return true;
+      })
+      .sort((a, b) => a.at - b.at);
+
+    const modelMap = new Map<string, TraceModelStats>();
+    const ttftGroups = new Map<string, MutableTraceTtftStats>();
+    const accountSelection = createAccountSelectionSummary();
+    let requests = 0;
+    let upstreamAttempts = 0;
+    let retriedRequests = 0;
+    let recoveredRequests = 0;
+    let requestsWithUsage = 0;
+    let requestsWithCost = 0;
+    let unpricedRequests = 0;
+    let errors = 0;
+    let tokensInput = 0;
+    let tokensInputCached = 0;
+    let tokensOutput = 0;
+    let tokensTotal = 0;
+    let inferenceSpeedTotal = 0;
+    let inferenceRequests = 0;
+    let costUsd = 0;
+    let costUsdWithoutCache = 0;
+    let latencyWeightedTotal = 0;
+
+    const timeseries = selectedBuckets.map((bucket) => {
+      requests += bucket.requests;
+      upstreamAttempts += bucket.upstreamAttempts;
+      retriedRequests += bucket.retriedRequests;
+      recoveredRequests += bucket.recoveredRequests;
+      requestsWithUsage += bucket.requestsWithUsage;
+      requestsWithCost += bucket.requestsWithCost;
+      unpricedRequests += bucket.unpricedRequests;
+      errors += bucket.errors;
+      tokensInput += bucket.tokensInput;
+      tokensInputCached += bucket.tokensInputCached;
+      tokensOutput += bucket.tokensOutput;
+      tokensTotal += bucket.tokensTotal;
+      inferenceSpeedTotal += bucket.inferenceSpeedTotal;
+      inferenceRequests += bucket.inferenceSpeedCount;
+      costUsd += bucket.costUsd;
+      costUsdWithoutCache += bucket.costUsdWithoutCache;
+      latencyWeightedTotal += bucket.latencyMsTotal;
+      for (const group of bucket.ttftGroups.values()) {
+        mergeTtftGroup(ttftGroups, group);
+      }
+      mergeAccountSelection(accountSelection, bucket.accountSelection);
+
+      for (const model of bucket.models.values()) {
+        const existing = modelMap.get(model.model);
+        if (existing) {
+          existing.count += model.count;
+          existing.okCount += model.okCount;
+          existing.tokensInput += model.tokensInput;
+          existing.tokensInputCached += model.tokensInputCached;
+          existing.tokensOutput += model.tokensOutput;
+          existing.tokensTotal += model.tokensTotal;
+          existing.costUsd += model.costUsd;
+        } else {
+          modelMap.set(model.model, { ...model });
+        }
+      }
+
+      return {
+        at: bucket.at,
+        requests: bucket.requests,
+        upstreamAttempts: bucket.upstreamAttempts,
+        retriedRequests: bucket.retriedRequests,
+        recoveredRequests: bucket.recoveredRequests,
+        errors: bucket.errors,
+        tokensInput: bucket.tokensInput,
+        tokensInputCached: bucket.tokensInputCached,
+        tokensOutput: bucket.tokensOutput,
+        tokensTotal: bucket.tokensTotal,
+        inferenceTokensPerSecond: bucket.inferenceSpeedCount ? bucket.inferenceSpeedTotal / bucket.inferenceSpeedCount : undefined,
+        inferenceRequests: bucket.inferenceSpeedCount,
+        costUsd: bucket.costUsd,
+        latencyP50Ms: percentile(bucket.latencies, 50),
+        latencyP95Ms: percentile(bucket.latencies, 95),
+      };
+    });
+
+    return {
+      totalStored,
+      matched: requests,
+      stats: {
+        totals: {
+          requests,
+          upstreamAttempts,
+          retriedRequests,
+          recoveredRequests,
+          requestsWithUsage,
+          requestsWithCost,
+          unpricedRequests,
+          errors,
+          errorRate: requests ? errors / requests : 0,
+          tokensInput,
+          tokensInputCached,
+          tokensOutput,
+          tokensTotal,
+          inferenceTokensPerSecond: inferenceRequests
+            ? inferenceSpeedTotal / inferenceRequests
+            : 0,
+          inferenceRequests,
+          costUsdWithoutCache,
+          costUsd,
+          latencyAvgMs: requests ? latencyWeightedTotal / requests : 0,
+        },
+        models: Array.from(modelMap.values()).sort((a, b) => b.count - a.count),
+        timeseries,
+        ttftByProviderModel: finalizeTtftGroups(ttftGroups),
+        accountSelection: finalizeAccountSelection(accountSelection),
+      },
+    };
+}
+
+export function toStatsHistoryEntry(entry: TraceEntry): TraceEntry {
+    const {
+      requestBody: _requestBody,
+      requestHeaders: _requestHeaders,
+      codexSessionId: _codexSessionId,
+      codexProjectRoot: _codexProjectRoot,
+      codexProjectHost: _codexProjectHost,
+      usage: _usage,
+      error: _error,
+      upstreamError: _upstreamError,
+      upstreamContentType: _upstreamContentType,
+      upstreamEmptyBody: _upstreamEmptyBody,
+      imageTrace: _imageTrace,
+      assistantEmptyOutput: _assistantEmptyOutput,
+      assistantFinishReason: _assistantFinishReason,
+      responseStreamDiagnostics: _responseStreamDiagnostics,
+      ...rest
+    } = entry;
+    const sessionKey =
+      rest.sessionKey ??
+      (entry.codexSessionId
+        ? sessionKeyFor(entry.application, entry.codexSessionId)
+        : undefined);
+    return sessionKey ? { ...rest, sessionKey } : rest;
+  }
+
+
 export function createTraceManager(config: TraceManagerConfig) {
+  const analytics = config.indexedHistoryPath ? new TraceAnalyticsClient(config) : undefined;
   const observers = new Set<Promise<void>>();
   function notifyCompleted(entry: TraceEntry) {
     if (!config.onCompleted || entry.status < 200 || observers.size >= 256) return;
@@ -1683,7 +1852,7 @@ export function createTraceManager(config: TraceManagerConfig) {
         config.externalWriter
           ? Promise.resolve({ traces: [], physicalLineCount: 0 })
           : readTraceFileFromDisk(),
-        scanStatsHistory(ingestPersistedStatsTrace),
+        analytics ? analytics.initialize() : scanStatsHistory(ingestPersistedStatsTrace),
       ]);
       traceCache.splice(0, traceCache.length, ...traces);
       trimTraceCache();
@@ -1698,7 +1867,7 @@ export function createTraceManager(config: TraceManagerConfig) {
 
   async function syncExternalTraces(): Promise<void> {
     await ensureCacheReady();
-    if (!config.externalWriter) return;
+    if (!config.externalWriter || analytics) return;
     if (externalSync) return externalSync;
     externalSync = queueTraceWrite(async () => {
       let handle;
@@ -1824,31 +1993,6 @@ export function createTraceManager(config: TraceManagerConfig) {
     });
   }
 
-  function toStatsHistoryEntry(entry: TraceEntry): TraceEntry {
-    const {
-      requestBody: _requestBody,
-      requestHeaders: _requestHeaders,
-      codexSessionId: _codexSessionId,
-      codexProjectRoot: _codexProjectRoot,
-      codexProjectHost: _codexProjectHost,
-      usage: _usage,
-      error: _error,
-      upstreamError: _upstreamError,
-      upstreamContentType: _upstreamContentType,
-      upstreamEmptyBody: _upstreamEmptyBody,
-      imageTrace: _imageTrace,
-      assistantEmptyOutput: _assistantEmptyOutput,
-      assistantFinishReason: _assistantFinishReason,
-      responseStreamDiagnostics: _responseStreamDiagnostics,
-      ...rest
-    } = entry;
-    const sessionKey =
-      rest.sessionKey ??
-      (entry.codexSessionId
-        ? sessionKeyFor(entry.application, entry.codexSessionId)
-        : undefined);
-    return sessionKey ? { ...rest, sessionKey } : rest;
-  }
 
   function toNormalizedHistoryEntry(entry: TraceEntry): TraceEntry | null {
     return normalizeTrace(toStatsHistoryEntry(entry));
@@ -1857,6 +2001,7 @@ export function createTraceManager(config: TraceManagerConfig) {
   async function appendStatsHistory(entry: TraceEntry): Promise<void> {
     await ensureCacheReady();
     if (entry.traceKind === "diagnostic") return;
+    if (analytics) { await analytics.call("append", { entries: [toStatsHistoryEntry(entry)] }); return; }
     const normalized = toNormalizedHistoryEntry(entry);
     const line = `${JSON.stringify(toStatsHistoryEntry(entry))}\n`;
     const run = historyWriteQueue.then(async () => {
@@ -1873,11 +2018,13 @@ export function createTraceManager(config: TraceManagerConfig) {
   }
 
   async function readTraceWindow(): Promise<TraceEntry[]> {
+    if (analytics && config.externalWriter) return analytics.call("recent", {});
     await syncExternalTraces();
     return traceCache.slice();
   }
 
   async function readTraceById(id: string): Promise<TraceEntry | null> {
+    if (analytics && config.externalWriter) return analytics.call("trace", { id });
     await syncExternalTraces();
     return traceCache.find((trace) => trace.id === id) ?? null;
   }
@@ -1896,11 +2043,13 @@ export function createTraceManager(config: TraceManagerConfig) {
   }
 
   async function readTraceListWindow(): Promise<TraceListEntry[]> {
+    if (analytics && config.externalWriter) return (await readTraceWindow()).map(toTraceListEntry);
     await syncExternalTraces();
     return traceCache.map(toTraceListEntry);
   }
 
   async function readStatsHistory(): Promise<TraceEntry[]> {
+    if (analytics) return analytics.call("range", {});
     await syncExternalTraces();
     const traces = await scanStatsHistory<true>(() => undefined, () => true);
     return traces ?? [];
@@ -1910,6 +2059,7 @@ export function createTraceManager(config: TraceManagerConfig) {
     sinceMs?: number,
     untilMs?: number,
   ): Promise<TraceEntry[]> {
+    if (analytics) return analytics.call("range", { sinceMs, untilMs });
     await syncExternalTraces();
     const traces = await scanStatsHistory<true>(
       () => undefined,
@@ -1939,6 +2089,7 @@ export function createTraceManager(config: TraceManagerConfig) {
     untilMs: number,
     modelAllowlist: Readonly<Record<string, string>>,
   ): Promise<AnonymousModelOutputTotal[]> {
+    if (analytics) return analytics.call("anonymous", { sinceMs, untilMs, modelAllowlist });
     await syncExternalTraces();
     const totals = new Map<string, number>();
     await scanStatsHistory((trace) => {
@@ -1979,6 +2130,7 @@ export function createTraceManager(config: TraceManagerConfig) {
     untilMs: number,
     limit = 50_000,
   ): Promise<CommunityReportTrace[]> {
+    if (analytics) return analytics.call("community", { sinceMs, untilMs, limit });
     await syncExternalTraces();
     const selected: CommunityReportTrace[] = [];
     await scanStatsHistory((trace) => {
@@ -2006,6 +2158,7 @@ export function createTraceManager(config: TraceManagerConfig) {
   }
 
   async function seedStatsHistoryIfMissing() {
+    if (analytics && config.externalWriter) return;
     await syncExternalTraces();
     for (const entry of traceCache) {
       if (entry.lifecycleState === "started" || statsHistoryIds.has(entry.id)) {
@@ -2032,139 +2185,8 @@ export function createTraceManager(config: TraceManagerConfig) {
     untilMs?: number,
   ): Promise<{ totalStored: number; matched: number; stats: TraceStats }> {
     await syncExternalTraces();
-    const selectedBuckets = Array.from(statsBuckets.values())
-      .filter((bucket) => {
-        if (
-          typeof sinceMs === "number" &&
-          Number.isFinite(sinceMs) &&
-          bucket.at + HOUR_MS <= sinceMs
-        ) {
-          return false;
-        }
-        if (
-          typeof untilMs === "number" &&
-          Number.isFinite(untilMs) &&
-          bucket.at > untilMs
-        ) {
-          return false;
-        }
-        return true;
-      })
-      .sort((a, b) => a.at - b.at);
-
-    const modelMap = new Map<string, TraceModelStats>();
-    const ttftGroups = new Map<string, MutableTraceTtftStats>();
-    const accountSelection = createAccountSelectionSummary();
-    let requests = 0;
-    let upstreamAttempts = 0;
-    let retriedRequests = 0;
-    let recoveredRequests = 0;
-    let requestsWithUsage = 0;
-    let requestsWithCost = 0;
-    let unpricedRequests = 0;
-    let errors = 0;
-    let tokensInput = 0;
-    let tokensInputCached = 0;
-    let tokensOutput = 0;
-    let tokensTotal = 0;
-    let inferenceSpeedTotal = 0;
-    let inferenceRequests = 0;
-    let costUsd = 0;
-    let costUsdWithoutCache = 0;
-    let latencyWeightedTotal = 0;
-
-    const timeseries = selectedBuckets.map((bucket) => {
-      requests += bucket.requests;
-      upstreamAttempts += bucket.upstreamAttempts;
-      retriedRequests += bucket.retriedRequests;
-      recoveredRequests += bucket.recoveredRequests;
-      requestsWithUsage += bucket.requestsWithUsage;
-      requestsWithCost += bucket.requestsWithCost;
-      unpricedRequests += bucket.unpricedRequests;
-      errors += bucket.errors;
-      tokensInput += bucket.tokensInput;
-      tokensInputCached += bucket.tokensInputCached;
-      tokensOutput += bucket.tokensOutput;
-      tokensTotal += bucket.tokensTotal;
-      inferenceSpeedTotal += bucket.inferenceSpeeds.reduce(
-        (sum, speed) => sum + speed,
-        0,
-      );
-      inferenceRequests += bucket.inferenceSpeeds.length;
-      costUsd += bucket.costUsd;
-      costUsdWithoutCache += bucket.costUsdWithoutCache;
-      latencyWeightedTotal += bucket.latencyMsTotal;
-      for (const group of bucket.ttftGroups.values()) {
-        mergeTtftGroup(ttftGroups, group);
-      }
-      mergeAccountSelection(accountSelection, bucket.accountSelection);
-
-      for (const model of bucket.models.values()) {
-        const existing = modelMap.get(model.model);
-        if (existing) {
-          existing.count += model.count;
-          existing.okCount += model.okCount;
-          existing.tokensInput += model.tokensInput;
-          existing.tokensInputCached += model.tokensInputCached;
-          existing.tokensOutput += model.tokensOutput;
-          existing.tokensTotal += model.tokensTotal;
-          existing.costUsd += model.costUsd;
-        } else {
-          modelMap.set(model.model, { ...model });
-        }
-      }
-
-      return {
-        at: bucket.at,
-        requests: bucket.requests,
-        upstreamAttempts: bucket.upstreamAttempts,
-        retriedRequests: bucket.retriedRequests,
-        recoveredRequests: bucket.recoveredRequests,
-        errors: bucket.errors,
-        tokensInput: bucket.tokensInput,
-        tokensInputCached: bucket.tokensInputCached,
-        tokensOutput: bucket.tokensOutput,
-        tokensTotal: bucket.tokensTotal,
-        inferenceTokensPerSecond: average(bucket.inferenceSpeeds),
-        inferenceRequests: bucket.inferenceSpeeds.length,
-        costUsd: bucket.costUsd,
-        latencyP50Ms: percentile(bucket.latencies, 50),
-        latencyP95Ms: percentile(bucket.latencies, 95),
-      };
-    });
-
-    return {
-      totalStored,
-      matched: requests,
-      stats: {
-        totals: {
-          requests,
-          upstreamAttempts,
-          retriedRequests,
-          recoveredRequests,
-          requestsWithUsage,
-          requestsWithCost,
-          unpricedRequests,
-          errors,
-          errorRate: requests ? errors / requests : 0,
-          tokensInput,
-          tokensInputCached,
-          tokensOutput,
-          tokensTotal,
-          inferenceTokensPerSecond: inferenceRequests
-            ? inferenceSpeedTotal / inferenceRequests
-            : 0,
-          inferenceRequests,
-          costUsdWithoutCache,
-          costUsd,
-          latencyAvgMs: requests ? latencyWeightedTotal / requests : 0,
-        },
-        models: Array.from(modelMap.values()).sort((a, b) => b.count - a.count),
-        timeseries,
-        ttftByProviderModel: finalizeTtftGroups(ttftGroups),
-        accountSelection: finalizeAccountSelection(accountSelection),
-      },
-    };
+    if (analytics) return analytics.call("stats", { sinceMs, untilMs });
+    return buildBucketTraceStats(statsBuckets.values(), totalStored, sinceMs, untilMs);
   }
 
   async function appendTrace(
@@ -2353,10 +2375,12 @@ export function createTraceManager(config: TraceManagerConfig) {
   function getPersistenceStatus() {
     return {
       lastError: lastWriteError,
+      analytics: analytics?.status,
     };
   }
 
   async function readTracesLegacy(limit = 200): Promise<TraceEntry[]> {
+    if (analytics && config.externalWriter) return (await readTraceWindow()).slice(-Math.max(1, Math.min(limit, legacyLimitMax)));
     await syncExternalTraces();
     const sliced = traceCache.slice(
       -Math.max(1, Math.min(limit, legacyLimitMax)),
@@ -2366,6 +2390,8 @@ export function createTraceManager(config: TraceManagerConfig) {
 
   return {
     initialize,
+    queryAnalytics: analytics ? (action: string, args: Record<string, unknown>) => analytics.call(action, args) : undefined,
+    close: async () => { await flushPendingWrites(); await analytics?.close(); },
     readTraceWindow,
     readTraceById,
     readTraceListWindow,
