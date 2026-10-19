@@ -1280,7 +1280,8 @@ export function buildTraceStats(traces: TraceEntry[]): TraceStats {
       tokensTotal: 0,
       costUsd: 0,
       latencies: [],
-      inferenceSpeeds: [],
+      inferenceSpeedTotal: 0,
+      inferenceSpeedCount: 0,
     };
     if (isClientRequestTrace(trace)) {
       bucket.requests += 1;
@@ -1327,7 +1328,7 @@ export function buildTraceStats(traces: TraceEntry[]): TraceStats {
         tokensInputCached: bucket.tokensInputCached,
         tokensOutput: bucket.tokensOutput,
         tokensTotal: bucket.tokensTotal,
-        inferenceTokensPerSecond: bucket.inferenceSpeedCount ? bucket.inferenceSpeedTotal / bucket.inferenceSpeedCount : undefined,
+        inferenceTokensPerSecond: bucket.inferenceSpeedCount ? bucket.inferenceSpeedTotal / bucket.inferenceSpeedCount : 0,
         inferenceRequests: bucket.inferenceSpeedCount,
         costUsd: bucket.costUsd,
         latencyP50Ms: percentile(bucket.latencies, 50),
@@ -1617,7 +1618,7 @@ export function buildBucketTraceStats(buckets: Iterable<TraceBucketAggregate>, t
         tokensInputCached: bucket.tokensInputCached,
         tokensOutput: bucket.tokensOutput,
         tokensTotal: bucket.tokensTotal,
-        inferenceTokensPerSecond: bucket.inferenceSpeedCount ? bucket.inferenceSpeedTotal / bucket.inferenceSpeedCount : undefined,
+        inferenceTokensPerSecond: bucket.inferenceSpeedCount ? bucket.inferenceSpeedTotal / bucket.inferenceSpeedCount : 0,
         inferenceRequests: bucket.inferenceSpeedCount,
         costUsd: bucket.costUsd,
         latencyP50Ms: percentile(bucket.latencies, 50),
