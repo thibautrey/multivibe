@@ -665,6 +665,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
       traceStatsInFlightRef.current = false;
       traceStatsPendingRef.current -= 1;
       setTraceStatsLoading(traceStatsPendingRef.current > 0);
+      if (epoch !== traceRequestEpochRef.current) void loadTraceStats(traceRangeRef.current).catch(handleError);
     }
   };
 
@@ -682,6 +683,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
     } finally {
       sessionStatsInFlightRef.current = false;
       if (!background) setSessionStatsLoading(false);
+      if (epoch !== traceRequestEpochRef.current) void loadSessionStats(traceRangeRef.current).catch(handleError);
     }
   };
 
@@ -763,6 +765,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
         traceStatsPendingRef.current -= 1;
         setTraceStatsLoading(traceStatsPendingRef.current > 0);
       }
+      if (epoch !== traceRequestEpochRef.current) void loadTracing(1, traceRangeRef.current).catch(handleError);
     }
   };
 
@@ -892,7 +895,8 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
     const load = async () => {
       try {
         setError("");
-        await loadTracing(1, traceRange);
+        if (activityView === "usage") await loadTraceStats(traceRange);
+        else await loadTracing(1, traceRange);
       } catch (e: any) {
         handleError(e);
       }
@@ -903,7 +907,10 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   useEffect(() => {
     if (tab !== "tracing" || activityView === "sessions") return;
     const timer = window.setInterval(() => {
-      if (!document.hidden) void loadTracing(tracePagination.page, traceRange, true).catch(handleError);
+      if (!document.hidden) {
+        if (activityView === "usage") void loadTraceStats(traceRangeRef.current).catch(handleError);
+        else void loadTracing(tracePagination.page, traceRange, true).catch(handleError);
+      }
     }, 10_000);
     return () => window.clearInterval(timer);
   }, [tab, tracePagination.page, traceRange, activityView]);
