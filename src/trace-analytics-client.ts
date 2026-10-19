@@ -56,7 +56,7 @@ export class TraceAnalyticsClient {
   async call<T = any>(action: string, args: Record<string, unknown>): Promise<T> {
     await this.initialize();
     if (this.stopped) throw new Error("Analytics store is closed");
-    if (this.status.error) throw new Error(this.status.error);
+    if (this.status.error && action !== "close" && action !== "sync") throw new Error(this.status.error);
     const key = JSON.stringify([action, args]);
     const shared = this.inFlight.get(key);
     if (shared) return shared;

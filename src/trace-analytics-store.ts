@@ -95,6 +95,9 @@ export class TraceAnalyticsStore {
     const insertRecent = this.db.prepare("INSERT INTO recent(id,payload) VALUES (?,?)");
     const getBucket = this.db.prepare("SELECT payload FROM buckets WHERE at=?");
     const getRollup = this.db.prepare("SELECT payload FROM usage_buckets WHERE at=? AND key=?");
+    // An acknowledged Rust segment may be deleted: its cursor and entries must
+    // survive power loss together, not merely a process restart.
+    if (journal) this.db.pragma("synchronous = FULL");
     let inserted = 0;
     this.db.transaction(() => {
       for (const raw of entries) {
@@ -105,7 +108,7 @@ export class TraceAnalyticsStore {
           insertRecent.run(normalized.id, JSON.stringify(normalized));
         }
         if (normalized.lifecycleState === "started" || !visible(normalized)) continue;
-        const t = normalizeTrace(toStatsHistoryEntry(normalized))!;
+        const t = toStatsHistoryEntry(normalized);
         if (!insert.run(t.id, t.at, t.completedAt ?? t.at, sessionKeyOf(t) ?? null, t.application ?? null, t.projectId ?? null, t.clientRequestId ?? t.id, t.traceKind ?? null, JSON.stringify(t)).changes) continue;
         inserted++;
         const sessionKey = attempt(t) ? sessionKeyOf(t) : undefined;
