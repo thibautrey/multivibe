@@ -120,3 +120,23 @@ test("analytics database and SQLite sidecars keep private permissions", async t 
     assert.equal(info.mode & 0o777,0o600);
   }
 });
+
+test("large session turn state updates incrementally, including late retries after restart",async t=>{
+  const f=await fixture(t);
+  const records=Array.from({length:10002},(_,i)=>trace(`delta-${i}`,BASE+i));
+  for(let i=0;i<records.length;i+=1000)f.store.append(records.slice(i,i+1000));
+  const until=BASE+20000;
+  assert.equal(f.store.sessions({untilMs:until}).summary.turns,10002);
+  const added={...trace('new-delta',BASE+10003),clientRequestId:'new-delta'};
+  f.store.append([added]);
+  assert.equal(f.store.sessions({untilMs:until+1}).summary.turns,10003);
+  await f.reopen();
+  const late={...trace('late-delta',BASE+1),clientRequestId:'delta-1'};
+  f.store.append([late]);
+  const report=f.store.sessions({untilMs:until+2});
+  const expected=aggregateSessionUsage([...records,added,late].map(t=>normalizeTrace(toStatsHistoryEntry(t))!));
+  assert.equal(report.summary.turns,expected.summary.turns);
+  assert.equal(report.summary.inputTokens,expected.summary.inputTokens);
+  assert.ok(Math.abs(report.summary.costUsd-expected.summary.costUsd)<1e-8);
+  assert.deepEqual(report.summary.initialInputTokenBuckets,expected.summary.initialInputTokenBuckets);
+});

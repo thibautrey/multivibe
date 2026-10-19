@@ -67,6 +67,10 @@ export class TraceAnalyticsStore {
       CREATE TABLE IF NOT EXISTS recent (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS cursors (identity TEXT PRIMARY KEY, offset INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS entry_revisions (id TEXT PRIMARY KEY, revision INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS entry_revisions_number ON entry_revisions(revision);
+      CREATE TABLE IF NOT EXISTS stored_session_turns (scope TEXT, session_key TEXT, id TEXT, payload TEXT, PRIMARY KEY(scope,session_key,id));
+      CREATE TABLE IF NOT EXISTS session_turn_states (scope TEXT, session_key TEXT, revision INTEGER, until_ms INTEGER, meta TEXT, PRIMARY KEY(scope,session_key));
       CREATE TABLE IF NOT EXISTS session_dirty (key TEXT PRIMARY KEY, revision INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS session_dirty_revision ON session_dirty(revision);
       CREATE TABLE IF NOT EXISTS session_scopes (scope TEXT PRIMARY KEY, revision INTEGER, until_ms INTEGER, accessed INTEGER);
@@ -105,6 +109,7 @@ export class TraceAnalyticsStore {
     // An acknowledged Rust segment may be deleted: its cursor and entries must
     // survive power loss together, not merely a process restart.
     if (journal) this.db.pragma("synchronous = FULL");
+    const markRevision = this.db.prepare("INSERT INTO entry_revisions VALUES (?,?)");
     const markSessionDirty = this.db.prepare("INSERT OR REPLACE INTO session_dirty VALUES (?,?)");
     let inserted = 0;
     this.db.transaction(() => {
@@ -119,6 +124,7 @@ export class TraceAnalyticsStore {
         const t = toStatsHistoryEntry(normalized);
         if (!insert.run(t.id, t.at, t.completedAt ?? t.at, sessionKeyOf(t) ?? null, t.application ?? null, t.projectId ?? null, t.clientRequestId ?? t.id, t.traceKind ?? null, JSON.stringify(t)).changes) continue;
         inserted++;
+        markRevision.run(t.id,this.status.indexed+inserted);
         const sessionKey = attempt(t) ? sessionKeyOf(t) : undefined;
         if (sessionKey) markSessionDirty.run(sessionKey, this.status.indexed + inserted);
         const hour = Math.floor(t.at / HOUR) * HOUR;
@@ -285,30 +291,41 @@ export class TraceAnalyticsStore {
   }
 
   /** Oversized sessions spill turn state to SQLite instead of growing a JS map without limit. */
-  private sessionReport(args: Filter, key: string): any {
+  private sessionReport(args: Filter, key: string, scope: string): any {
     const [since,until]=bounds(args);
     const n=(this.db.prepare("SELECT count(*) AS n FROM entries WHERE session_key=? AND at>=? AND at<=?").get(key,since,until) as any).n;
     if(n<=10000) return aggregateSessionUsage(this.range(args,"AND session_key=? ORDER BY at,id",[key])).sessions[0];
-    this.db.exec("CREATE TEMP TABLE IF NOT EXISTS large_session_turns (id TEXT PRIMARY KEY, payload TEXT); DELETE FROM large_session_turns;");
-    const readTurn=this.db.prepare("SELECT payload FROM large_session_turns WHERE id=?");
-    const writeTurn=this.db.prepare("INSERT OR REPLACE INTO large_session_turns VALUES (?,?)");
-    let lastAt=MIN,lastId="";
-    let meta:TraceEntry|undefined;
-    for(;;) {
-      // Keep the scalar lower bound at the cursor too: SQLite otherwise seeks
-      // from the original window start on every page and rechecks old rows.
-      const page=[...this.range({...args,sinceMs:Math.max(since,lastAt)},"AND session_key=? AND (at,id)>(?,?) ORDER BY at,id LIMIT 256",[key,lastAt,lastId])];
-      if(!page.length)break;
-      this.db.transaction(()=>{for(const t of page){
-        lastAt=t.at;lastId=t.id;if(!attempt(t))continue;
-        meta??=t;meta.application??=t.application;meta.projectId??=t.projectId;meta.projectName??=t.projectName;
-        const turnId=t.clientRequestId??t.id;
-        const row=readTurn.get(turnId) as any;
-        const turn=row?JSON.parse(row.payload):createTurn(t,turnId);
-        addTraceToTurn(turn,t);
-        writeTurn.run(turnId,JSON.stringify(turn));
-      }})();
-    }
+    const state=this.db.prepare("SELECT revision,until_ms,meta FROM session_turn_states WHERE scope=? AND session_key=?").get(scope,key) as any;
+    const rebuild=!state || until<state.until_ms;
+    const readTurn=this.db.prepare("SELECT payload FROM stored_session_turns WHERE scope=? AND session_key=? AND id=?");
+    const writeTurn=this.db.prepare("INSERT OR REPLACE INTO stored_session_turns VALUES (?,?,?,?)");
+    let meta:TraceEntry|undefined=rebuild?undefined:JSON.parse(state.meta);
+    this.db.transaction(()=>{
+      if(rebuild)this.db.prepare("DELETE FROM stored_session_turns WHERE scope=? AND session_key=?").run(scope,key);
+      let lastAt=MIN,lastId="";
+      for(;;) {
+        // New revisions include late arrivals; advancing time also admits events
+        // previously indexed beyond this report's upper bound.
+        const delta=rebuild?"":" AND (id IN (SELECT id FROM entry_revisions WHERE revision>?) OR at>?)";
+        const params=rebuild?[key,lastAt,lastId]:[key,state.revision,state.until_ms,lastAt,lastId];
+        const page=[...this.range({...args,sinceMs:Math.max(since,lastAt)},"AND session_key=?"+delta+" AND (at,id)>(?,?) ORDER BY at,id LIMIT 256",params)];
+        if(!page.length)break;
+        for(const t of page){
+          lastAt=t.at;lastId=t.id;if(!attempt(t))continue;
+          meta??=t;meta.application??=t.application;meta.projectId??=t.projectId;meta.projectName??=t.projectName;
+          const turnId=t.clientRequestId??t.id;
+          const row=readTurn.get(scope,key,turnId) as any;
+          const turn=row?JSON.parse(row.payload):createTurn(t,turnId);
+          addTraceToTurn(turn,t);
+          writeTurn.run(scope,key,turnId,JSON.stringify(turn));
+        }
+      }
+      if(meta)this.db.prepare("INSERT OR REPLACE INTO session_turn_states VALUES (?,?,?,?,?)").run(scope,key,this.status.indexed,until,JSON.stringify(meta));
+    })();
+    // A scoped view lets exact medians/counters use SQLite without loading turns.
+    // quote() is SQLite's own literal encoder, never interpolated user SQL.
+    const quote=(value:string)=>(this.db.prepare("SELECT quote(?) AS value").get(value) as any).value;
+    this.db.exec(`DROP VIEW IF EXISTS temp.large_session_turns; CREATE TEMP VIEW large_session_turns AS SELECT id,payload FROM stored_session_turns WHERE scope=${quote(scope)} AND session_key=${quote(key)};`);
     if(!meta)return;
     const field=(name:string)=>`json_extract(payload,'$.${name}')`;
     const count=(condition="1")=>(this.db.prepare(`SELECT count(*) AS n FROM large_session_turns WHERE ${condition}`).get() as any).n as number;
@@ -345,7 +362,7 @@ export class TraceAnalyticsStore {
       if (!keys.length) break;
       for (const {key} of keys) {
         lastKey = key;
-      const session=this.sessionReport(args,key);
+      const session=this.sessionReport(args,key,scope);
       if(session) this.db.prepare("INSERT OR REPLACE INTO session_reports VALUES (?,?,?,?,?,?)").run(scope,session.sessionKey,JSON.stringify(session),session.costUsd,session.turns,session.lastAt);
       else this.db.prepare("DELETE FROM session_reports WHERE scope=? AND key=?").run(scope,key);
     }
@@ -355,6 +372,8 @@ export class TraceAnalyticsStore {
     for(const row of this.db.prepare("SELECT scope FROM session_scopes ORDER BY accessed DESC LIMIT -1 OFFSET 4").all() as any[]) {
       this.db.prepare("DELETE FROM session_reports WHERE scope=?").run(row.scope);
       this.db.prepare("DELETE FROM session_scopes WHERE scope=?").run(row.scope);
+      this.db.prepare("DELETE FROM stored_session_turns WHERE scope=?").run(row.scope);
+      this.db.prepare("DELETE FROM session_turn_states WHERE scope=?").run(row.scope);
     }
     // Coverage uses the same incremental hourly rollups; no COUNT/JSON scan of lifetime history.
     let totalAttempts=0,attempts=0;
