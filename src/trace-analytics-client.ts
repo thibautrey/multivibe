@@ -31,8 +31,8 @@ export class TraceAnalyticsClient {
         retentionMax: this.config.retentionMax ?? 1000 };
       // tsImport is needed only by source-level tests; releases run plain compiled JS.
       this.worker = extension === "ts"
-        ? new Worker(`import('tsx/esm/api').then(({tsImport}) => tsImport(${JSON.stringify(url.href)}, ${JSON.stringify(import.meta.url)}))`, { eval: true, workerData })
-        : new Worker(url, { workerData });
+        ? new Worker(`import('tsx/esm/api').then(({tsImport}) => tsImport(${JSON.stringify(url.href)}, ${JSON.stringify(import.meta.url)}))`, { eval: true, workerData, resourceLimits: { maxOldGenerationSizeMb: 384, maxYoungGenerationSizeMb: 16 } })
+        : new Worker(url, { workerData, resourceLimits: { maxOldGenerationSizeMb: 384, maxYoungGenerationSizeMb: 16 } });
       const fail = (error: Error) => {
         this.status.error = error.message;
         reject(error);

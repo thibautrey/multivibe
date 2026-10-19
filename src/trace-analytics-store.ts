@@ -245,10 +245,16 @@ export class TraceAnalyticsStore {
 
   stats(args: Filter) {
     const { firstFull, fullEnd, edge } = this.edgeAndHours(args);
-    const buckets = new Map<number, TraceBucketAggregate>();
-    for (const row of this.db.prepare("SELECT at,payload FROM buckets WHERE at>=? AND at<? ORDER BY at").iterate(firstFull, fullEnd) as Iterable<any>) buckets.set(row.at, decode(row.payload));
-    for (const t of edge) { const hour = Math.floor(t.at / HOUR) * HOUR; const bucket = buckets.get(hour) ?? createEmptyBucket(hour); addTraceToBucket(bucket, t); buckets.set(hour, bucket); }
-    return buildBucketTraceStats(buckets.values(), this.status.indexed, args.sinceMs, args.untilMs);
+    const edges = new Map<number, TraceBucketAggregate>();
+    for (const t of edge) { const hour=Math.floor(t.at/HOUR)*HOUR; const bucket=edges.get(hour)??createEmptyBucket(hour);addTraceToBucket(bucket,t);edges.set(hour,bucket); }
+    const db=this.db;
+    function* buckets(): Generator<TraceBucketAggregate> {
+      const edgeHours=[...edges.values()].sort((a,b)=>a.at-b.at);
+      for(const bucket of edgeHours) if(bucket.at<firstFull)yield bucket;
+      for(const row of db.prepare("SELECT payload FROM buckets WHERE at>=? AND at<? ORDER BY at").iterate(firstFull,fullEnd) as Iterable<any>) yield decode(row.payload);
+      for(const bucket of edgeHours) if(bucket.at>=firstFull)yield bucket;
+    }
+    return buildBucketTraceStats(buckets(),this.status.indexed,args.sinceMs,args.untilMs);
   }
 
   usage(args: Filter) {
