@@ -43,14 +43,13 @@ export class TraceAnalyticsClient {
       this.worker.on("exit", (code) => { if (!this.stopped) fail(new Error(`Analytics worker exited (${code})`)); });
       this.worker.on("message", (message) => {
         if (message.status) { this.status = message.status; return; }
-        if (message.opened) { resolve(); return; }
+        if (message.opened) { resolve(); this.worker!.unref(); return; }
         const pending = this.pending.get(message.id);
         if (!pending) return;
         this.pending.delete(message.id);
         if (message.error) pending.reject(new Error(message.error));
         else pending.resolve(message.value);
       });
-      this.worker.unref();
     });
   }
 

@@ -144,8 +144,8 @@ export class TraceAnalyticsStore {
       let offset = Number((this.db.prepare("SELECT offset FROM cursors WHERE identity=?").get(identity) as any)?.offset ?? 0);
       if (offset > info.size) offset = 0;
       this.status.pendingBytes = Math.max(0, info.size - offset); this.emit();
+      if (offset === info.size) return true;
       const input = handle.createReadStream({ start: offset, end: Math.max(0, info.size - 1), autoClose: false, highWaterMark: 256 * 1024 });
-      if (offset === info.size) { input.destroy(); return true; }
       let pending = Buffer.alloc(0);
       let batch: TraceEntry[] = [];
       let committed = offset;
@@ -272,10 +272,16 @@ export class TraceAnalyticsStore {
       this.db.prepare("INSERT OR IGNORE INTO changed_sessions SELECT key FROM session_dirty WHERE revision>?").run(previous.revision);
       this.db.prepare("INSERT OR IGNORE INTO changed_sessions SELECT DISTINCT session_key FROM entries WHERE at>? AND at<=? AND session_key IS NOT NULL").run(Math.max(since-1, previous.until_ms), until);
     }
-    for (const {key} of this.db.prepare("SELECT key FROM changed_sessions").iterate() as Iterable<{key:string}>) {
+    let lastKey = "";
+    for (;;) {
+      const keys = this.db.prepare("SELECT key FROM changed_sessions WHERE key>? ORDER BY key LIMIT 256").all(lastKey) as {key:string}[];
+      if (!keys.length) break;
+      for (const {key} of keys) {
+        lastKey = key;
       const session=aggregateSessionUsage(this.range(args,"AND session_key=? ORDER BY at,id",[key])).sessions[0];
       if(session) this.db.prepare("INSERT OR REPLACE INTO session_reports VALUES (?,?,?,?,?,?)").run(scope,session.sessionKey,JSON.stringify(session),session.costUsd,session.turns,session.lastAt);
       else this.db.prepare("DELETE FROM session_reports WHERE scope=? AND key=?").run(scope,key);
+    }
     }
     // Publish the revision only after all reports commit; interrupted refreshes are replayable.
     this.db.prepare("INSERT OR REPLACE INTO session_scopes VALUES (?,?,?,?)").run(scope,this.status.indexed,until,Date.now());
