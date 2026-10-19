@@ -213,6 +213,9 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   const [expandedSessionKey, setExpandedSessionKey] = useState<string | null>(null);
   const [sessionTurns, setSessionTurns] = useState<SessionTurn[]>([]);
   const [sessionTurnsLoading, setSessionTurnsLoading] = useState(false);
+  const [sessionTurnsTotal, setSessionTurnsTotal] = useState(0);
+  const [sessionTurnsOffset, setSessionTurnsOffset] = useState(0);
+  const sessionTurnRequestRef = useRef(0);
   const [tracePagination, setTracePagination] = useState<TracePagination>(EMPTY_TRACE_PAGINATION);
   const [models, setModels] = useState<ExposedModel[]>([]);
   const [aliases, setAliases] = useState<ModelAlias[]>([]);
@@ -682,24 +685,31 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
     }
   };
 
-  const toggleSession = (sessionKey: string) => {
-    if (expandedSessionKey === sessionKey) {
-      setExpandedSessionKey(null);
-      setSessionTurns([]);
-      return;
-    }
-    setExpandedSessionKey(sessionKey);
-    setSessionTurns([]);
+  const loadSessionTurns = (sessionKey: string, offset = 0) => {
+    const request = ++sessionTurnRequestRef.current;
     setSessionTurnsLoading(true);
-    const params = traceRangeParams(traceRangeRef.current).toString();
+    const params = traceRangeParams(traceRangeRef.current);
+    params.set("limit", "200"); params.set("offset", String(offset));
     void api(`stats/sessions/${encodeURIComponent(sessionKey)}/turns?${params}`)
-      .then((res) => setSessionTurns((res?.turns ?? []) as SessionTurn[]))
-      .catch(() => setSessionTurns([]))
-      .finally(() => setSessionTurnsLoading(false));
+      .then(res => {
+        if (request !== sessionTurnRequestRef.current) return;
+        setSessionTurns((res?.turns ?? []) as SessionTurn[]);
+        setSessionTurnsTotal(res.total ?? res.turns?.length ?? 0);
+        setSessionTurnsOffset(offset);
+      })
+      .catch(handleError)
+      .finally(() => { if (request === sessionTurnRequestRef.current) setSessionTurnsLoading(false); });
+  };
+  const toggleSession = (sessionKey: string) => {
+    sessionTurnRequestRef.current += 1;
+    if (expandedSessionKey === sessionKey) { setExpandedSessionKey(null); setSessionTurns([]); return; }
+    setExpandedSessionKey(sessionKey); setSessionTurns([]); setSessionTurnsTotal(0); setSessionTurnsOffset(0);
+    loadSessionTurns(sessionKey);
   };
 
   useEffect(() => {
     traceRequestEpochRef.current += 1;
+    sessionTurnRequestRef.current += 1;
     setExpandedSessionKey(null);
     setSessionTurns([]);
     sessionStatsLoadedRef.current = null;
@@ -709,10 +719,10 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
     if (tab !== "tracing" || activityView !== "sessions") return;
     const params = traceRangeParams(traceRange).toString();
     if (sessionStatsLoadedRef.current !== params) {
-      void loadSessionStats(traceRange).catch(() => undefined);
+      void loadSessionStats(traceRange).catch(handleError);
     }
     const timer = window.setInterval(() => {
-      if (!document.hidden) void loadSessionStats(traceRangeRef.current, true).catch(() => undefined);
+      if (!document.hidden) void loadSessionStats(traceRangeRef.current, true).catch(handleError);
     }, 10_000);
     return () => window.clearInterval(timer);
   }, [activityView, tab, traceRange]);
@@ -1649,6 +1659,9 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
             expandedSessionKey={expandedSessionKey}
             sessionTurns={sessionTurns}
             sessionTurnsLoading={sessionTurnsLoading}
+            sessionTurnsTotal={sessionTurnsTotal}
+            sessionTurnsOffset={sessionTurnsOffset}
+            loadSessionTurnsPage={(offset) => { if (expandedSessionKey) loadSessionTurns(expandedSessionKey, offset); }}
             toggleSession={toggleSession}
             expandedTraceId={expandedTraceId}
             expandedTrace={expandedTrace}
