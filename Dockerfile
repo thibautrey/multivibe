@@ -56,6 +56,7 @@ COPY --from=rust-build /src/target/release/multivibe-v1-edge /opt/multivibe/bin/
 COPY --chmod=0555 scripts/start-multivibe.sh /usr/local/bin/start-multivibe.sh
 COPY modules/security ./modules/security
 COPY --from=build \
+  /app/scripts/export-trace-analytics.mjs \
   /app/scripts/codex-project-hook.mjs \
   /app/scripts/install-codex-project-hook.mjs \
   /app/scripts/install-codex-project-hook.sh \
