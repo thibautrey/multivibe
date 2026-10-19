@@ -4,7 +4,10 @@ import test from "node:test";
 import express from "express";
 import { createAdminRouter, type AdminRoutesOptions } from "./index.js";
 import { sessionKeyFor } from "../../session-identity.js";
-import type { TraceEntry } from "../../traces.js";
+import { createTraceManager, type TraceEntry } from "../../traces.js";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 const BASE = 1_728_000_000_000;
 
@@ -132,5 +135,34 @@ test("admin session stats expose aggregates, coverage and turn details", async (
       `${baseUrl}/admin/stats/sessions/${"0".repeat(24)}/turns`,
     );
     assert.equal(missing.status, 404);
+  });
+});
+
+
+test("indexed admin endpoints expose complete totals, account metadata and paginated session turns", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-admin-index-"));
+  const historyFilePath = path.join(dir, "history.jsonl");
+  const records = Array.from({ length: 203 }, (_, i) => attempt({ id: `indexed-${i}`, at: BASE + i, accountId: "account", clientRequestId: `request-${i}`, tokensInput: 100 + i, tokensOutput: 5 }));
+  await fs.writeFile(historyFilePath, records.map(t => JSON.stringify(t)).join("\n") + "\n");
+  const manager = createTraceManager({ filePath: path.join(dir, "journal.jsonl"), historyFilePath, indexedHistoryPath: path.join(dir, "index.sqlite"), externalWriter: true });
+  t.after(async () => { await manager.close(); await fs.rm(dir, { recursive: true, force: true }); });
+  const opts = options([]);
+  opts.traceManager = manager;
+  opts.store = { listAccounts: async () => [{ id: "account", provider: "openai", email: "fixture@example.test", enabled: true }] } as any;
+  await manager.initialize(); await manager.queryAnalytics!("sync", {});
+  await withServer(opts, async (base) => {
+    const [stats, usage, sessions] = await Promise.all(["traces", "usage", "sessions"].map(async route => {
+      const r = await fetch(`${base}/admin/stats/${route}`); assert.equal(r.status, 200); return r.json();
+    }));
+    assert.equal(stats.stats.totals.upstreamAttempts, 203);
+    assert.equal(stats.analytics.ready, true);
+    assert.equal(usage.totals.requests, 203);
+    assert.equal(usage.byAccount[0].account.email, "fixture@example.test");
+    assert.equal(sessions.summary.turns, 203);
+    const key = sessions.sessions[0].sessionKey;
+    const r = await fetch(`${base}/admin/stats/sessions/${key}/turns?limit=10&offset=200`);
+    const page = await r.json(); assert.equal(page.total, 203); assert.equal(page.turns.length, 3); assert.equal(page.turns[0].clientRequestId, "request-200");
+    const exact = await fetch(`${base}/admin/stats/traces?sinceMs=${BASE + 10}&untilMs=${BASE + 10}`).then(r => r.json());
+    assert.equal(exact.stats.totals.upstreamAttempts, 1);
   });
 });
