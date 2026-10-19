@@ -19333,7 +19333,7 @@ mod provider_error_tests {
     }
     #[tokio::test]
     async fn trace_rotation_waits_for_consumer_acknowledgement() {
-        let path = temporary_path("trace-rotation");
+        let path = std::env::temp_dir().join(format!("multivibe-trace-rotation-{}", Uuid::new_v4()));
         let previous = PathBuf::from(format!("{}.previous", path.display()));
         let sink = TraceSink { path: Some(path.clone()), max_bytes: 8, lock: Mutex::new(()) };
         fs::write(&path, b"first-segment\n").await.unwrap();
