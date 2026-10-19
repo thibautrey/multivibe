@@ -9,6 +9,7 @@ const controlPort = process.env.CONTROL_PLANE_PORT || "1456";
 const edgePort = process.env.V1_EDGE_PORT || process.env.PORT || "1455";
 const env = { ...process.env,
   MULTIVIBE_CONTROL_PLANE: "true", CONTROL_PLANE_PORT: controlPort,
+  TRACE_JOURNAL_MAX_BYTES: process.env.TRACE_JOURNAL_MAX_BYTES ?? "67108864",
   V1_EDGE_PORT: edgePort, V1_EDGE_HOST: process.env.V1_EDGE_HOST || "127.0.0.1",
   NODE_CONTROL_PLANE_URL: `http://127.0.0.1:${controlPort}`,
   V1_EDGE_BASE_URL: `http://127.0.0.1:${edgePort}`,

@@ -660,6 +660,7 @@ func edgeEnvironment(base []string, network coreNetworkConfiguration, internalTo
 		"V1_EDGE_PORT="+network.Port,
 		"V1_EDGE_BASE_URL="+network.PublicBaseURL,
 		"NODE_CONTROL_PLANE_URL=http://127.0.0.1:1456",
+		"TRACE_JOURNAL_MAX_BYTES=67108864",
 		"V1_EDGE_INTERNAL_JOB_TOKEN="+internalToken,
 	)
 	return environment
