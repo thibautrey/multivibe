@@ -111,3 +111,12 @@ test("oversized sessions spill to disk while preserving turn medians, growth and
   const page=f.store.query("turns",{sessionKey:actual.sessionKey,limit:10,offset:500});
   assert.equal(page.total,10002);assert.equal(page.turns.length,10);assert.equal(page.turns[0].clientRequestId,"turn-500");
 });
+
+
+test("analytics database and SQLite sidecars keep private permissions", async t => {
+  const f=await fixture(t);
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const info=await fs.stat(f.config.dbPath+suffix);
+    assert.equal(info.mode & 0o777,0o600);
+  }
+});

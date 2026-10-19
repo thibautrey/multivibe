@@ -79,8 +79,14 @@ export class TraceAnalyticsStore {
 
   static async open(config: ConstructorParameters<typeof TraceAnalyticsStore>[0], publish?: (status: AnalyticsStatus) => void) {
     await mkdir(path.dirname(config.dbPath), { recursive: true });
-    const store = new TraceAnalyticsStore(config, publish);
+    // Set permissions before SQLite creates WAL/SHM; they inherit the database mode.
+    const handle = await open(config.dbPath, "a", 0o600);
+    await handle.close();
     await chmod(config.dbPath, 0o600);
+    const store = new TraceAnalyticsStore(config, publish);
+    for (const suffix of ["-wal", "-shm"]) {
+      await chmod(config.dbPath + suffix, 0o600).catch(error => { if (error.code !== "ENOENT") throw error; });
+    }
     return store;
   }
 
