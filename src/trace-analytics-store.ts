@@ -20,7 +20,7 @@ const BATCH = 1000;
 const encode = (value: unknown) => JSON.stringify(value, (_key, item) => item instanceof Map ? { $map: [...item] } : item);
 const decode = (value: string) => JSON.parse(value, (_key, item) => item && item.$map ? new Map(item.$map) : item);
 type Filter = { sinceMs?: number; untilMs?: number; accountId?: string; route?: string; application?: string; projectId?: string };
-type Rollup = { meta: TraceEntry; usage: UsageAggregate; project: MutableUsage };
+type Rollup = { meta: TraceEntry; usage: UsageAggregate; project: MutableUsage; sessionAttempts: number };
 function bounds(args: Filter) { return [Number.isFinite(args.sinceMs) ? args.sinceMs! : MIN, Number.isFinite(args.untilMs) ? args.untilMs! : MAX]; }
 function visible(t: TraceEntry) { return !isHiddenTraceRoute(t.route) && t.traceKind !== "diagnostic"; }
 function attempt(t: TraceEntry) { return !t.traceKind || t.traceKind === "upstream-attempt"; }
@@ -119,9 +119,10 @@ export class TraceAnalyticsStore {
         let rollup = rollups.get(combined);
         if (!rollup) {
           const row = getRollup.get(hour, key) as any;
-          rollup = { at: hour, key, value: row ? JSON.parse(row.payload) : { meta: { accountId: t.accountId, route: t.route, application: t.application, projectId: t.projectId, projectName: t.projectName, projectRemote: t.projectRemote, model: t.model }, usage: createUsageAggregate(), project: emptyUsage() } };
+          rollup = { at: hour, key, value: row ? JSON.parse(row.payload) : { meta: { accountId: t.accountId, route: t.route, application: t.application, projectId: t.projectId, projectName: t.projectName, projectRemote: t.projectRemote, model: t.model }, usage: createUsageAggregate(), project: emptyUsage(), sessionAttempts: 0 } };
           rollups.set(combined, rollup);
         }
+        if (sessionKeyOf(t)) rollup.value.sessionAttempts++;
         addTraceToAggregate(rollup.value.usage, t);
         addTrace(rollup.value.project, t);
       }
@@ -249,7 +250,7 @@ export class TraceAnalyticsStore {
       projects.set(key, p);
     };
     for (const row of this.db.prepare("SELECT payload FROM usage_buckets WHERE at>=? AND at<? ORDER BY at,key").iterate(firstFull, fullEnd) as Iterable<any>) merge(JSON.parse(row.payload));
-    for (const t of edge) if (attempt(t)) { const usage = createUsageAggregate(); addTraceToAggregate(usage, t); const project = emptyUsage(); addTrace(project, t); merge({ meta: t, usage, project }); }
+    for (const t of edge) if (attempt(t)) { const usage = createUsageAggregate(); addTraceToAggregate(usage, t); const project = emptyUsage(); addTrace(project, t); merge({ meta: t, usage, project, sessionAttempts: sessionKeyOf(t) ? 1 : 0 }); }
     const by = (i: number, label: string) => [...dimensions[i]].map(([key, agg]) => ({ [label]: key, ...finalizeAggregate(agg) })).sort((a, b) => b.requests - a.requests);
     const byProject = [...projects].map(([projectId, p]) => ({ projectId, projectName: p.meta.projectName, projectRemote: p.meta.projectRemote, firstAt: p.firstAt, lastAt: p.lastAt, ...finalizeUsage(p.usage), models: [...p.models].map(([model, value]) => ({ model, ...finalizeUsage(value) })).sort((a,b) => b.costUsd-a.costUsd || b.requests-a.requests) })).sort((a,b) => b.costUsd-a.costUsd || b.requests-a.requests);
     const [since, until] = bounds(args);
@@ -289,12 +290,14 @@ export class TraceAnalyticsStore {
       this.db.prepare("DELETE FROM session_reports WHERE scope=?").run(row.scope);
       this.db.prepare("DELETE FROM session_scopes WHERE scope=?").run(row.scope);
     }
-    // Coverage includes attempts without a session identity, just as the legacy API does.
+    // Coverage uses the same incremental hourly rollups; no COUNT/JSON scan of lifetime history.
     let totalAttempts=0,attempts=0;
-    const coverage = this.db.prepare(`SELECT session_key, count(*) AS n FROM entries WHERE at>=? AND at<=?
-      AND (?='' OR application=?) AND (?='' OR project_id=?)
-      AND (json_extract(payload,'$.traceKind') IS NULL OR json_extract(payload,'$.traceKind')='upstream-attempt') GROUP BY session_key`);
-    for(const row of coverage.iterate(since,until,args.application??"",args.application??"",args.projectId??"",args.projectId??"") as Iterable<any>) {totalAttempts+=row.n;if(row.session_key)attempts+=row.n;}
+    const window=this.edgeAndHours(args);
+    for(const row of this.db.prepare("SELECT payload FROM usage_buckets WHERE at>=? AND at<?").iterate(window.firstFull,window.fullEnd) as Iterable<any>) {
+      const r:Rollup=JSON.parse(row.payload);if(!matches(r.meta,args))continue;
+      totalAttempts+=r.usage.requests;attempts+=r.sessionAttempts;
+    }
+    for(const t of window.edge) {if(!attempt(t))continue;totalAttempts++;if(sessionKeyOf(t))attempts++;}
     const field = (name: string) => `json_extract(payload,'$.${name}')`;
     const sum = (name: string) => (this.db.prepare(`SELECT COALESCE(sum(${field(name)}),0) AS n FROM session_reports WHERE scope=?`).get(scope) as any).n as number;
     const median = (name: string) => {
