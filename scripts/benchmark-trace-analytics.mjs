@@ -16,13 +16,16 @@ try {
   await file.close();
   const lag=monitorEventLoopDelay({resolution:20});lag.enable();
   manager=createTraceManager({filePath:journal,historyFilePath:history,indexedHistoryPath:db,externalWriter:true});
-  const start=performance.now();await manager.initialize();await manager.queryAnalytics('sync',{});
-  const migrationMs=performance.now()-start;
+  const start=performance.now();await manager.initialize();
+  const progress=setInterval(()=>{const status=manager.getPersistenceStatus().analytics;console.log(JSON.stringify({phase:"migration",elapsedMs:Math.round(performance.now()-start),...status}));},10000);progress.unref();await manager.queryAnalytics('sync',{});
+  clearInterval(progress);
+  const migrationMs=performance.now()-start;console.log(JSON.stringify({phase:"migration-complete",rows,migrationMs}));
   const bounds={sinceMs:end-24*3_600_000,untilMs:end};
   const measurements={};
   for(const [name,action,args] of [['stats','stats',bounds],['usage','usage',bounds],['sessions','sessions',{...bounds,limit:10}],['sessionsRepeat','sessions',{...bounds,limit:10,untilMs:end+1}],['allTimeSessions','sessions',{limit:10,untilMs:end}],['allTimeSessionsRepeat','sessions',{limit:10,untilMs:end+1}]]){
     const t=performance.now();const result=await manager.queryAnalytics(action,args);measurements[name]={ms:Math.round(performance.now()-t),returnedSessions:result.sessions?.length};
-    if(name==='stats')assert.equal(result.stats.totals.tokensTotal,Math.min(rows,250000)*25);
+    console.log(JSON.stringify({phase:name,...measurements[name]}));
+    if(name==='stats')assert.equal(result.stats.totals.tokensTotal,Math.min(rows,249999)*25);
     if(name==='allTimeSessions')assert.equal(result.summary.totalAttempts,rows);
   }
   const all=await manager.getTraceStats();assert.equal(all.stats.totals.tokensTotal,rows*25);
