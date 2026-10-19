@@ -105,6 +105,7 @@ export class TraceAnalyticsStore {
     // An acknowledged Rust segment may be deleted: its cursor and entries must
     // survive power loss together, not merely a process restart.
     if (journal) this.db.pragma("synchronous = FULL");
+    const markSessionDirty = this.db.prepare("INSERT OR REPLACE INTO session_dirty VALUES (?,?)");
     let inserted = 0;
     this.db.transaction(() => {
       for (const raw of entries) {
@@ -119,7 +120,7 @@ export class TraceAnalyticsStore {
         if (!insert.run(t.id, t.at, t.completedAt ?? t.at, sessionKeyOf(t) ?? null, t.application ?? null, t.projectId ?? null, t.clientRequestId ?? t.id, t.traceKind ?? null, JSON.stringify(t)).changes) continue;
         inserted++;
         const sessionKey = attempt(t) ? sessionKeyOf(t) : undefined;
-        if (sessionKey) this.db.prepare("INSERT OR REPLACE INTO session_dirty VALUES (?,?)").run(sessionKey, this.status.indexed + inserted);
+        if (sessionKey) markSessionDirty.run(sessionKey, this.status.indexed + inserted);
         const hour = Math.floor(t.at / HOUR) * HOUR;
         let bucket = buckets.get(hour);
         if (!bucket) { const row = getBucket.get(hour) as any; bucket = row ? decode(row.payload) : createEmptyBucket(hour); buckets.set(hour, bucket!); }
@@ -289,6 +290,8 @@ export class TraceAnalyticsStore {
     const n=(this.db.prepare("SELECT count(*) AS n FROM entries WHERE session_key=? AND at>=? AND at<=?").get(key,since,until) as any).n;
     if(n<=10000) return aggregateSessionUsage(this.range(args,"AND session_key=? ORDER BY at,id",[key])).sessions[0];
     this.db.exec("CREATE TEMP TABLE IF NOT EXISTS large_session_turns (id TEXT PRIMARY KEY, payload TEXT); DELETE FROM large_session_turns;");
+    const readTurn=this.db.prepare("SELECT payload FROM large_session_turns WHERE id=?");
+    const writeTurn=this.db.prepare("INSERT OR REPLACE INTO large_session_turns VALUES (?,?)");
     let lastAt=MIN,lastId="";
     let meta:TraceEntry|undefined;
     for(;;) {
@@ -298,10 +301,10 @@ export class TraceAnalyticsStore {
         lastAt=t.at;lastId=t.id;if(!attempt(t))continue;
         meta??=t;meta.application??=t.application;meta.projectId??=t.projectId;meta.projectName??=t.projectName;
         const turnId=t.clientRequestId??t.id;
-        const row=this.db.prepare("SELECT payload FROM large_session_turns WHERE id=?").get(turnId) as any;
+        const row=readTurn.get(turnId) as any;
         const turn=row?JSON.parse(row.payload):createTurn(t,turnId);
         addTraceToTurn(turn,t);
-        this.db.prepare("INSERT OR REPLACE INTO large_session_turns VALUES (?,?)").run(turnId,JSON.stringify(turn));
+        writeTurn.run(turnId,JSON.stringify(turn));
       }})();
     }
     if(!meta)return;
