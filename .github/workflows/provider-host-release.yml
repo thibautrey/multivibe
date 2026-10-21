@@ -179,6 +179,14 @@ jobs:
         with:
           subject-path: release-linux/multivibe-host_${{ needs.validate-tag.outputs.version }}_linux_amd64.tar.gz
           sbom-path: release-linux/multivibe-host_${{ needs.validate-tag.outputs.version }}_linux_amd64.cdx.json
+      - name: Split the Linux archive for reliable artifact transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="release-linux/multivibe-host_${{ needs.validate-tag.outputs.version }}_linux_amd64.tar.gz"
+          split --bytes=1900M --numeric-suffixes=1 --suffix-length=3 "$archive" "$archive.part-"
+          test "$(find release-linux -maxdepth 1 -type f -name "$(basename "$archive").part-*" | wc -l)" -ge 2
+          rm -- "$archive"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: provider-host-linux
@@ -557,6 +565,15 @@ jobs:
           artifact-ids: ${{ steps.select.outputs.artifact_ids }}
           path: release
           merge-multiple: true
+      - name: Reconstruct the Linux archive after artifact transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="release/multivibe-host_${{ needs.validate-tag.outputs.version }}_linux_amd64.tar.gz"
+          parts=("$archive".part-*)
+          test "${#parts[@]}" -ge 2
+          cat "${parts[@]}" > "$archive"
+          rm -- "${parts[@]}"
       - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
       - name: Install the pinned GitHub CLI for attestation verification
         shell: bash
@@ -638,6 +655,15 @@ jobs:
         with:
           name: provider-host-linux
           path: release-linux
+      - name: Reconstruct the Linux archive after artifact transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="release-linux/multivibe-host_${{ needs.validate-tag.outputs.version }}_linux_amd64.tar.gz"
+          parts=("$archive".part-*)
+          test "${#parts[@]}" -ge 2
+          cat "${parts[@]}" > "$archive"
+          rm -- "${parts[@]}"
       - name: Build and exercise the Linux Host image
         id: image
         shell: bash
