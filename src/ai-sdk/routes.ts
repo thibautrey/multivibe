@@ -260,7 +260,7 @@ export function createSdkAdapterRouter(options: {
         } else {
           if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) throw new SdkInputError("Image request requires an object");
           payload = {...req.body};
-          requested = payload.model;
+          requested = req.body.model;
         }
         if (typeof requested !== "string") throw new SdkInputError("model required");
         let model: string;
@@ -292,7 +292,7 @@ export function createSdkAdapterRouter(options: {
           if (value) res.setHeader(name, value);
         }
         // Stream bytes without parsing or logging base64 image results.
-        if (response.body) await pipeline(Readable.fromWeb(response.body), res);
+        if (response.body) await pipeline(Readable.fromWeb(response.body as unknown as import("node:stream/web").ReadableStream<Uint8Array>), res);
         else res.end();
       } catch (error: unknown) {
         if (res.destroyed) return;
