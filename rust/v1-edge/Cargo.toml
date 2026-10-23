@@ -12,7 +12,7 @@ path = "src/main.rs"
 [dependencies]
 aes-gcm = "0.10"
 async-stream = "0.3"
-axum = { version = "0.8", features = ["ws"] }
+axum = { version = "0.8", features = ["ws", "multipart"] }
 base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }

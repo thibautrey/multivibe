@@ -11,6 +11,7 @@ mod codex_prefix;
 mod confidential;
 mod dashboard;
 mod idempotency;
+mod images;
 mod token_refresh;
 
 use async_stream::stream;
@@ -5550,7 +5551,7 @@ fn prepared_payload(
     claude_code: bool,
     config: &EdgeConfig,
 ) -> Value {
-    if path.ends_with("/embeddings") {
+    if path.ends_with("/embeddings") || images::is_image_path(path) {
         let mut payload = body.clone();
         payload["model"] = Value::String(route.model.clone());
         return payload;
@@ -5941,7 +5942,10 @@ async fn send_upstream_with_retry(
     headers: &HeaderMap,
     body: &[u8],
 ) -> Result<UpstreamSendResult, UpstreamSendError> {
-    for retry in 0..=state.config.max_upstream_retries {
+    // A transport failure can follow a billed generation. Never replay an
+    // image request whose outcome is unknown.
+    let max_retries = if url.ends_with("/images/generations") || url.ends_with("/images/edits") { 0 } else { state.config.max_upstream_retries };
+    for retry in 0..=max_retries {
         let request = state
             .client
             .request(Method::POST, url)
@@ -5962,7 +5966,7 @@ async fn send_upstream_with_retry(
                     .to_owned();
                 let body = response.bytes().await.unwrap_or_default();
                 let text = String::from_utf8_lossy(&body);
-                if retry < state.config.max_upstream_retries
+                if retry < max_retries
                     && should_retry_same_account(status, &text)
                 {
                     tokio::time::sleep(upstream_retry_delay(
@@ -5982,7 +5986,7 @@ async fn send_upstream_with_retry(
             }
             Ok(Err(error)) => {
                 let message = error.to_string();
-                if retry < state.config.max_upstream_retries
+                if retry < max_retries
                     && !is_quota_error(StatusCode::BAD_GATEWAY, &message)
                 {
                     tokio::time::sleep(upstream_retry_delay(
@@ -5995,7 +5999,7 @@ async fn send_upstream_with_retry(
                 }
                 return Err(UpstreamSendError::Transport(message));
             }
-            Err(_) if retry < state.config.max_upstream_retries => {
+            Err(_) if retry < max_retries => {
                 tokio::time::sleep(upstream_retry_delay(
                     None,
                     retry,
@@ -6056,6 +6060,7 @@ fn transform_for(
     client_stream: bool,
     content_type: &str,
 ) -> StreamTransform {
+    if images::is_image_path(path) { return StreamTransform::None; }
     let client_chat = path.contains("chat/completions");
     let upstream_sse = content_type
         .to_ascii_lowercase()
@@ -6090,6 +6095,7 @@ async fn proxy_inference(
     body: &Value,
     application: &str,
     activity_kind: Option<ActivityKind>,
+    image_upload: Option<&Bytes>,
 ) -> Result<ProxyResult, Response> {
     let activity_lease = match activity_kind {
         Some(kind) => Some(state.drain.admit(kind).ok_or_else(draining_response)?),
@@ -6123,7 +6129,8 @@ async fn proxy_inference(
         .unwrap_or("unknown");
     let catalog = exposed_models(state, &store, false).await;
     let embeddings_route = path.ends_with("/embeddings");
-    let routing_model = if embeddings_route {
+    let image_route = images::is_image_path(path);
+    let routing_model = if embeddings_route || image_route {
         routing_model
     } else {
         image_aware_routing_model(&store, &catalog, body, &routing_model)
@@ -6171,6 +6178,15 @@ async fn proxy_inference(
                 accounts.retain(|account| {
                     normalize_provider(account) == "openai-compatible"
                         && !account_is_confidential(account)
+                });
+            }
+            if image_route {
+                accounts.retain(|account| {
+                    !account_is_confidential(account) && (
+                        (normalize_provider(account) == "ai-sdk"
+                            && account.sdk_provider.as_deref() == Some("openai"))
+                        || (image_upload.is_none() && normalize_provider(account) == "openai-compatible")
+                    )
                 });
             }
             if accounts.is_empty() {
@@ -6250,7 +6266,7 @@ async fn proxy_inference(
                     attempted,
                     "client-request",
                 );
-                if account_is_confidential(&account) {
+                if account_is_confidential(&account) || image_route {
                     trace_context.request_body = None;
                     client_context.request_body = None;
                 }
@@ -6320,7 +6336,7 @@ async fn proxy_inference(
                         }
                     }
                 }
-                let sends_chat = !embeddings_route
+                let sends_chat = !embeddings_route && !image_route
                     && resolve_upstream_mode(
                         &account,
                         &route.model,
@@ -6360,7 +6376,10 @@ async fn proxy_inference(
                 if provider == "openai" && account.chatgpt_account_id.is_some() {
                     default_chatgpt_reasoning_effort(&mut payload, sends_chat);
                 }
-                let url = if embeddings_route {
+                let url = if image_route {
+                    format!("{}/images/{}", model_discovery_url(&account, &state.config).trim_end_matches("/models"),
+                        if path.ends_with("/edits") { "edits" } else { "generations" })
+                } else if embeddings_route {
                     format!(
                         "{}/embeddings",
                         model_discovery_url(&account, &state.config).trim_end_matches("/models")
@@ -6373,7 +6392,7 @@ async fn proxy_inference(
                         path.ends_with("/responses/compact"),
                     )
                 };
-                let serialized = match serde_json::to_vec(&payload) {
+                let serialized = if let Some(upload) = image_upload { upload.to_vec() } else { match serde_json::to_vec(&payload) {
                     Ok(value) => value,
                     Err(error) => {
                         return Err(error_response(
@@ -6382,7 +6401,7 @@ async fn proxy_inference(
                             "invalid_request_error",
                         ));
                     }
-                };
+                }};
                 if account_is_confidential(&account) {
                     let confidential_started_at = now_ms();
                     let result = match state.confidential.as_ref() {
@@ -6521,13 +6540,20 @@ async fn proxy_inference(
                 let upstream_started_at = now_ms();
                 let mut retried_after_token_refresh = false;
                 let response_result = loop {
-                    let request_headers = upstream_headers(
+                    let mut request_headers = upstream_headers(
                         &account,
                         headers,
                         &url,
                         Some(&route.model),
                         &state.config,
                     );
+                    if image_upload.is_some() {
+                        if let Some(content_type) = header_value(headers, "content-type") {
+                            set_header(&mut request_headers, "content-type", content_type);
+                        }
+                        // Only the authenticated internal adapter may consume this override.
+                        set_header(&mut request_headers, "x-multivibe-image-model", &route.model);
+                    }
                     let result =
                         send_upstream_with_retry(state, &url, &request_headers, &serialized).await;
                     let unauthorized = matches!(
@@ -6580,7 +6606,7 @@ async fn proxy_inference(
                         } else {
                             text.chars().take(500).collect()
                         };
-                        if should_retry_status(status, &text) {
+                        if (!image_route || matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::TOO_MANY_REQUESTS)) && should_retry_status(status, &text) {
                             state
                                 .trace
                                 .record(
@@ -6700,6 +6726,9 @@ async fn proxy_inference(
                                 },
                             )
                             .await;
+                        if image_route {
+                            return Err(error_response(last_status, "Image provider outcome is unknown; request was not retried.", "upstream_outcome_unknown"));
+                        }
                         state
                             .mark_blocked(&account, &route.model, Duration::from_secs(5))
                             .await;
@@ -7026,7 +7055,7 @@ fn render_buffered_success(
     mut upstream_headers: Vec<(String, String)>,
     chat_tools: &chat_tools::ChatTools,
 ) -> BufferedReply {
-    if path.ends_with("/embeddings") {
+    if path.ends_with("/embeddings") || images::is_image_path(path) {
         return BufferedReply {
             status: StatusCode::OK,
             headers: upstream_headers,
@@ -9505,6 +9534,7 @@ async fn run_claimed_job(
         &running.request_body,
         &running.application,
         None,
+        None,
     );
     let result = if let Some(deadline) = running.deadline_at {
         match timeout(
@@ -9746,19 +9776,16 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
         Ok(auth) => auth,
         Err(response) => return response,
     };
-    let (mut headers, body, _) = match read_json_body(
-        req,
-        if path.ends_with("/messages") {
-            state.config.request_body_limit.min(100 * 1024 * 1024)
-        } else {
-            state.config.request_body_limit
-        },
-        path.ends_with("/messages"),
-    )
-    .await
-    {
-        Ok(value) => value,
-        Err(response) => return response,
+    let (mut headers, body, image_upload) = if images::is_image_path(&path) {
+        match images::read_body(req, state.config.request_body_limit).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        }
+    } else {
+        match read_json_body(req, if path.ends_with("/messages") { state.config.request_body_limit.min(100 * 1024 * 1024) } else { state.config.request_body_limit }, path.ends_with("/messages")).await {
+            Ok((headers, body, _)) => (headers, body, None),
+            Err(response) => return response,
+        }
     };
     if path.ends_with("/embeddings") {
         let valid_input = match body.get("input") {
@@ -9791,6 +9818,9 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
     }
     let client_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let raw_execution = header_value(&headers, "x-multivibe-execution");
+    if images::is_image_path(&path) && raw_execution.as_deref() == Some("defer") {
+        return error_response(StatusCode::BAD_REQUEST, "Images cannot be deferred.", "invalid_request_error");
+    }
     if path.ends_with("/embeddings") && raw_execution.as_deref() == Some("defer") {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -9969,6 +9999,7 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
         &body,
         &auth.application,
         Some(ActivityKind::Request),
+        image_upload.as_ref(),
     )
     .await
     {
@@ -12407,6 +12438,7 @@ async fn handle_websocket(
                     &frame,
                     &application,
                     Some(ActivityKind::WebsocketTurn),
+                    None,
                 )
                 .await
                 {
@@ -12685,6 +12717,8 @@ pub fn build_router(state: EdgeState) -> Router {
         .route("/responses", get(websocket_handler).post(inference_handler))
         .route("/responses/compact", post(inference_handler))
         .route("/chat/completions", post(inference_handler))
+        .route("/images/generations", post(inference_handler))
+        .route("/images/edits", post(inference_handler).layer(axum::extract::DefaultBodyLimit::max(state.config.request_body_limit)))
         .route("/embeddings", post(inference_handler))
         .route("/messages", post(inference_handler))
         .route("/realtime/calls", post(realtime_call_handler))
@@ -12705,6 +12739,8 @@ pub fn build_router(state: EdgeState) -> Router {
         )
         .route("/v1/responses/compact", post(inference_handler))
         .route("/v1/chat/completions", post(inference_handler))
+        .route("/v1/images/generations", post(inference_handler))
+        .route("/v1/images/edits", post(inference_handler).layer(axum::extract::DefaultBodyLimit::max(state.config.request_body_limit)))
         .route("/v1/embeddings", post(inference_handler))
         .route("/v1/messages", post(inference_handler))
         .route("/v1/realtime/calls", post(realtime_call_handler))
@@ -12732,6 +12768,72 @@ pub fn build_router(state: EdgeState) -> Router {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn images_route_json_and_multipart_without_text_conversion() {
+        let response = json!({"created":123,"data":[{"b64_json":"aW1hZ2U="}],"usage":{"total_tokens":7}});
+        let expected = response.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let runtime = Router::new()
+            .route("/internal/ai-sdk/images/v1/models", get(|| async { Json(json!({"data":[{"id":"openai/gpt-image-2","metadata":{"output_modalities":["image"]}}]})) }))
+            .route("/internal/ai-sdk/images/v1/images/generations", post(move |headers: HeaderMap, Json(body): Json<Value>| {
+                let response = response.clone(); let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, AtomicOrdering::SeqCst);
+                    assert_eq!(headers["authorization"], "Bearer internal-secret");
+                    assert_eq!(body, json!({"model":"openai/gpt-image-2","prompt":"night sky","size":"1536x1024","n":2}));
+                    Json(response)
+                }
+            }))
+            .route("/internal/ai-sdk/images/v1/images/edits", post(|headers: HeaderMap, body: Bytes| async move {
+                assert_eq!(headers["authorization"], "Bearer internal-secret");
+                assert_eq!(headers["x-multivibe-image-model"], "openai/gpt-image-2");
+                let text = String::from_utf8_lossy(&body);
+                assert!(text.contains("name=\"image[]\"; filename=\"sky.png\""));
+                assert!(text.contains("name=\"model\"\r\n\r\nsky-image"));
+                assert!(text.contains("fake image"));
+                Json(json!({"data":[{"b64_json":"ZWRpdA=="}]}))
+            }));
+        let (runtime_url, runtime_task) = start_server(runtime).await;
+        let mut upstream = account("images");
+        upstream.provider = Some("ai-sdk".to_owned());
+        upstream.sdk_provider = Some("openai".to_owned());
+        upstream.sdk_models = Some(vec!["gpt-image-2".to_owned()]);
+        let mut store = store_with_accounts(vec![upstream]);
+        store.model_aliases.push(ModelAlias {
+            id:"sky-image".to_owned(), enabled:true,
+            rules:vec![RoutingRule {id:"default".to_owned(),candidates:vec![RoutingCandidate {
+                model:"openai/gpt-image-2".to_owned(),provider:Some("ai-sdk".to_owned()),account_ids:vec!["images".to_owned()],
+            }]}], ..Default::default()
+        });
+        let store_path = temporary_path("images-store"); let jobs_path = temporary_path("images-jobs");
+        fs::write(&store_path, serde_json::to_vec(&store).unwrap()).await.unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone(); config.jobs_path = jobs_path.clone();
+        config.node_control_plane_url = runtime_url;
+        config.internal_job_token = Some("internal-secret".to_owned());
+        config.configured_api_keys = vec![("test".to_owned(),"secret".to_owned())];
+        let (url, edge_task) = start_server(build_router(EdgeState::new(config).await.unwrap())).await;
+        let client = reqwest::Client::new();
+        let payload = json!({"model":"sky-image","prompt":"night sky","size":"1536x1024","n":2});
+        let result = client.post(format!("{url}/v1/images/generations")).bearer_auth("secret").json(&payload).send().await.unwrap();
+        assert_eq!(result.status(),StatusCode::OK);
+        assert_eq!(result.json::<Value>().await.unwrap(),expected);
+        for body in [json!({"prompt":"Hi"}),json!({"model":"sky-image","prompt":""}),json!({"model":"sky-image","prompt":"Hi","stream":true})] {
+            assert_eq!(client.post(format!("{url}/v1/images/generations")).bearer_auth("secret").json(&body).send().await.unwrap().status(),StatusCode::BAD_REQUEST);
+        }
+        assert_eq!(client.post(format!("{url}/v1/images/generations")).json(&payload).send().await.unwrap().status(),StatusCode::UNAUTHORIZED);
+        assert_eq!(client.post(format!("{url}/v1/images/generations")).bearer_auth("secret").header("x-multivibe-execution","defer").json(&payload).send().await.unwrap().status(),StatusCode::BAD_REQUEST);
+        let form = reqwest::multipart::Form::new().text("model","sky-image").text("prompt","edit sky")
+            .part("image[]",reqwest::multipart::Part::bytes(b"fake image".to_vec()).file_name("sky.png").mime_str("image/png").unwrap());
+        let result = client.post(format!("{url}/v1/images/edits")).bearer_auth("secret").multipart(form).send().await.unwrap();
+        assert_eq!(result.status(),StatusCode::OK);
+        assert_eq!(result.json::<Value>().await.unwrap(),json!({"data":[{"b64_json":"ZWRpdA=="}]}));
+        assert_eq!(calls.load(AtomicOrdering::SeqCst),1);
+        edge_task.abort(); runtime_task.abort();
+        let _ = fs::remove_file(store_path).await; let _ = fs::remove_file(jobs_path).await;
+    }
+
     #[test]
     fn opencode_big_pickle_routes_chat_and_responses_clients_through_chat() {
         let account: Account = serde_json::from_value(json!({

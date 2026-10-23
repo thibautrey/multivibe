@@ -170,3 +170,15 @@ test("Mammouth exposes documented models, provenance and custom model selection"
   assert.throws(() => sdkModelId(account, "mammouth/gpt-5.5"));
   assert.throws(() => sdkModelId(account, "openrouter/custom-model"));
 });
+
+test("OpenAI image catalog advertises image output instead of chat tools", () => {
+  const account: Account = {id: "images", provider: "ai-sdk", sdkProvider: "openai", sdkModels: ["gpt-image-2", "gpt-image-2.5-flare", "chatgpt-image-latest", "dall-e-3", "gpt-4.1"], accessToken: "secret", enabled: true};
+  const models = sdkAccountModels(account);
+  for (const model of models.slice(0, 4)) {
+    assert.deepEqual(model.output_modalities, ["image"]);
+    assert.equal(model.supports_tools, false);
+    assert.deepEqual(model.supported_tool_types, []);
+  }
+  assert.deepEqual(models[0].input_modalities, ["text", "image"]);
+  assert.deepEqual(models[4].output_modalities, ["text"]);
+});
