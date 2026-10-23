@@ -23,6 +23,7 @@ import {
 } from "../../lib/runtimeCatalog";
 import { tracksSubscriptionQuota } from "../../lib/accountQuota";
 import { providerAccess } from "../../lib/providerAccess";
+import { providerAccountTarget, type OpenAIConnectionMode } from "../../lib/providerConnection";
 
 import { ProviderPicker, ProviderMark, SETUP_PROVIDERS, type SetupProvider, type CloudProvider } from "../ProviderPicker";
 import { ProviderModelPicker, type ProviderModelOption, type ProviderModelsLive } from "../ProviderModelPicker";
@@ -589,6 +590,8 @@ export function AccountsTab(props: Props) {
   >("");
   const [manualOAuthMethod, setManualOAuthMethod] =
     useState<OAuthMethod>("device");
+  const [openAIConnectionMode, setOpenAIConnectionMode] =
+    useState<OpenAIConnectionMode>("subscription");
   const [editOAuthMethod, setEditOAuthMethod] =
     useState<OAuthMethod>("device");
   const [manualPriority, setManualPriority] = useState("0");
@@ -1191,6 +1194,7 @@ export function AccountsTab(props: Props) {
     setManualRefreshToken("");
     setManualBaseUrl("");
     setManualOAuthMethod("device");
+    setOpenAIConnectionMode("subscription");
     setProviderError("");
   }, [provider, sdkProvider]);
   const selectedProviderName = provider === "ai-sdk"
@@ -1241,7 +1245,9 @@ export function AccountsTab(props: Props) {
     }
   }, []);
 
-  const providerConnectionReady = isOAuthProvider(provider)
+  const usesOpenAIAPIKey = provider === "openai" && openAIConnectionMode === "api-key";
+  const usesOAuthConnection = isOAuthProvider(provider) && !usesOpenAIAPIKey;
+  const providerConnectionReady = usesOAuthConnection
     ? provider !== "openai" || Boolean(manualEmail.trim())
     : (provider === "nvidia-pair" || provider === "opencode" || Boolean(manualAccessToken.trim())) &&
       (!(provider === "openai-compatible" || provider === "nvidia-pair") || Boolean(manualBaseUrl.trim())) &&
@@ -1274,6 +1280,7 @@ export function AccountsTab(props: Props) {
     setManualBaseUrl("");
     setManualUpstreamMode("");
     setManualOAuthMethod("device");
+    setOpenAIConnectionMode("subscription");
     setManualPriority("0");
     setManualEnabled(true);
     setManualLocation("");
@@ -1375,7 +1382,7 @@ export function AccountsTab(props: Props) {
   };
 
   const submitManualAccount = async () => {
-    if (isOAuthProvider(provider)) {
+    if (usesOAuthConnection) {
       if (provider === "openai" && !manualEmail.trim()) return;
       setIsSubmitting(true);
       try {
@@ -1397,10 +1404,11 @@ export function AccountsTab(props: Props) {
     if ((provider === "openai-compatible" || provider === "nvidia-pair") && !manualBaseUrl.trim()) return;
     setIsSubmitting(true);
     try {
+      const accountTarget = providerAccountTarget(provider, sdkProvider, openAIConnectionMode);
       await createAccount(providerMutationFields({
-        provider,
-        sdkProvider: provider === "ai-sdk" ? sdkProvider : undefined,
-        sdkModels: provider === "ai-sdk" ? sdkModels.split(/[\n,]+/).map((id) => id.trim()).filter(Boolean) : undefined,
+        provider: accountTarget.provider,
+        sdkProvider: accountTarget.sdkProvider,
+        sdkModels: accountTarget.provider === "ai-sdk" && !usesOpenAIAPIKey ? sdkModels.split(/[\n,]+/).map((id) => id.trim()).filter(Boolean) : undefined,
         email: manualEmail.trim() || undefined,
         accessToken: provider === "nvidia-pair" ? undefined : manualAccessToken.trim(),
         refreshToken: manualRefreshToken.trim() || undefined,
@@ -3007,19 +3015,29 @@ export function AccountsTab(props: Props) {
               <div><h2 id="provider-setup-title">{providerStep === 1 ? `Connect ${selectedProviderName}` : "Ready to connect?"}</h2>
               <p className="muted">{providerStep === 1 ? "Enter your connection details to continue." : "Check your connection and customize routing if needed."}</p></div>
             </div>}
-            {providerStep === 1 && provider === "openai" && manualOAuthMethod === "device" && <ChatGPTDeviceGuide />}
             {providerStep === 0 && <ProviderPicker value={provider} sdkProvider={sdkProvider} cloudProviders={sdkProviders} error={sdkCatalogError} onChange={selectProvider} />}
             {providerStep === 1 && <div className="grid modal-grid provider-connection-fields provider-setup-fields">
 
+              {provider === "openai" && <label>
+                Connection type
+                <select value={openAIConnectionMode} onChange={(event) => {
+                  setOpenAIConnectionMode(event.target.value as OpenAIConnectionMode);
+                  setManualAccessToken("");
+                  setProviderError("");
+                }}>
+                  <option value="subscription">ChatGPT / Codex subscription</option>
+                  <option value="api-key">OpenAI API key</option>
+                </select>
+              </label>}
               <label>
-                {provider === "openai" ? "Email" : "Email (optional)"}
+                {provider === "openai" && openAIConnectionMode === "subscription" ? "Email" : "Email (optional)"}
                 <input
                   value={manualEmail}
                   onChange={(e) => setManualEmail(e.target.value)}
                   placeholder="account@email.com"
                 />
               </label>
-              {isOAuthProvider(provider) && (
+              {usesOAuthConnection && (
                 <label>
                   {`${oauthProviderLabel(provider)} login method`}
                   <select
@@ -3036,6 +3054,7 @@ export function AccountsTab(props: Props) {
                   </select>
                 </label>
               )}
+              {provider === "openai" && openAIConnectionMode === "subscription" && manualOAuthMethod === "device" && <ChatGPTDeviceGuide />}
               {(provider === "openai-compatible" || provider === "nvidia-pair") && (
                 <label>
                   Base URL
@@ -3064,7 +3083,21 @@ export function AccountsTab(props: Props) {
                 <p className="muted">Access and pricing depend on your provider account. Subscription quotas are not supplied by the catalog.</p>
                 {providerAccess(sdkProvider, true) && <p className="muted">{providerAccess(sdkProvider, true)?.note}</p>}
               </>}
-              {provider === "nvidia-pair" ? (
+              {usesOpenAIAPIKey ? (
+                <>
+                  <label>
+                    OpenAI API key
+                    <input
+                      type="password"
+                      autoComplete="off"
+                      value={manualAccessToken}
+                      onChange={(event) => setManualAccessToken(event.target.value)}
+                      placeholder="sk-…"
+                    />
+                  </label>
+                  <p className="provider-setup-note">Requests use <strong>https://api.openai.com/v1</strong>. API usage is billed separately from ChatGPT and Codex subscriptions.</p>
+                </>
+              ) : provider === "nvidia-pair" ? (
                 <div className="muted">PAIR is probed without a token and is isolated as personal-cluster capacity.</div>
               ) : isManualTokenProvider(provider) ? (
                 <>
@@ -3106,10 +3139,10 @@ export function AccountsTab(props: Props) {
               <dl className="provider-setup-summary">
                 <div><dt>Provider</dt><dd>{provider === "ai-sdk" ? sdkProviders.find((item) => item.id === sdkProvider)?.name : SETUP_PROVIDERS.find((item) => item.id === provider)?.name}</dd></div>
                 <div><dt>Account</dt><dd>{manualEmail.trim() || "No email label"}</dd></div>
-                <div><dt>Connection</dt><dd>{isOAuthProvider(provider) ? manualOAuthMethod === "device" ? "Device sign-in" : "Browser sign-in" : provider === "opencode" && !manualAccessToken.trim() ? "OpenCode device sign-in" : provider === "nvidia-pair" ? "Token-free endpoint" : "API key provided"}</dd></div>
-                {(provider === "openai-compatible" || provider === "nvidia-pair" || provider === "ai-sdk" && selectedSdkProvider?.endpointPlaceholder) && <div><dt>Endpoint</dt><dd>{manualBaseUrl || selectedSdkProvider?.endpointPlaceholder}</dd></div>}
+                <div><dt>Connection</dt><dd>{usesOAuthConnection ? manualOAuthMethod === "device" ? "Device sign-in" : "Browser sign-in" : provider === "opencode" && !manualAccessToken.trim() ? "OpenCode device sign-in" : provider === "nvidia-pair" ? "Token-free endpoint" : "API key provided"}</dd></div>
+                {(usesOpenAIAPIKey || provider === "openai-compatible" || provider === "nvidia-pair" || provider === "ai-sdk" && selectedSdkProvider?.endpointPlaceholder) && <div><dt>Endpoint</dt><dd>{usesOpenAIAPIKey ? "https://api.openai.com/v1" : manualBaseUrl || selectedSdkProvider?.endpointPlaceholder}</dd></div>}
               </dl>
-              {isOAuthProvider(provider) && <p className="provider-setup-note">Next, approve the connection with your provider to finish setup.</p>}
+              {usesOAuthConnection && <p className="provider-setup-note">Next, approve the connection with your provider to finish setup.</p>}
               {!onboardingProviderSetup && <details className="provider-setup-advanced"><summary>Advanced settings <span>{capabilities.providerCapacity ? "Routing, priority & capacity" : "Connection status"}</span></summary><div className="grid modal-grid">
               {!onboardingProviderSetup && capabilities.providerUpstreamSettings && <label>
                 Upstream mode (optional)
@@ -3172,10 +3205,10 @@ export function AccountsTab(props: Props) {
                 onClick={() => { setProviderError(""); void submitManualAccount().catch((error) => setProviderError(error instanceof Error ? error.message : String(error))); }}
               >
                 {isSubmitting
-                  ? isOAuthProvider(provider)
+                  ? usesOAuthConnection
                     ? "Starting OAuth..."
                     : "Creating..."
-                  : isOAuthProvider(provider)
+                  : usesOAuthConnection
                     ? provider === "github-copilot" ? "Sign in with GitHub" : provider === "xai"
                       ? "Start Grok device login"
                       : "Start OAuth"
