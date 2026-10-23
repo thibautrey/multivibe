@@ -6794,7 +6794,12 @@ async fn proxy_inference(
                         activity_lease,
                     }));
                 }
-                let bytes = response.bytes().await.unwrap_or_default();
+                let bytes = match response.bytes().await {
+                    Ok(bytes) if !image_route || !bytes.is_empty() => bytes,
+                    _ if image_route => return Err(error_response(StatusCode::BAD_GATEWAY,
+                        "Image provider response was incomplete; request was not retried.", "upstream_outcome_unknown")),
+                    _ => Bytes::new(),
+                };
                 let reply = render_buffered_success(
                     path,
                     &account,
@@ -13948,6 +13953,43 @@ mod tests {
         upstream_task.abort();
         let _ = fs::remove_file(store_path).await;
         let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn image_sender_never_replays_server_errors_or_timeouts() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let error_calls = calls.clone(); let timeout_calls = calls.clone();
+        let upstream = Router::new()
+            .route("/v1/images/generations", post(move || {
+                let calls = error_calls.clone();
+                async move {
+                    calls.fetch_add(1, AtomicOrdering::SeqCst);
+                    json_response(StatusCode::SERVICE_UNAVAILABLE, json!({"error":"unavailable"}))
+                }
+            }))
+            .route("/v1/images/edits", post(move || {
+                let calls = timeout_calls.clone();
+                async move {
+                    calls.fetch_add(1, AtomicOrdering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    Json(json!({"data":[]}))
+                }
+            }));
+        let (url, task) = start_server(upstream).await;
+        let store_path = temporary_path("image-retry-store"); let jobs_path = temporary_path("image-retry-jobs");
+        fs::write(&store_path,b"{}".as_slice()).await.unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone(); config.jobs_path = jobs_path.clone();
+        config.max_upstream_retries = 3; config.upstream_timeout = Duration::from_millis(40);
+        let state = EdgeState::new(config).await.unwrap();
+        let result = send_upstream_with_retry(&state,&format!("{url}/v1/images/generations"),&HeaderMap::new(),b"{}").await.unwrap();
+        assert!(matches!(result,UpstreamSendResult::HttpError(_)));
+        assert_eq!(calls.load(AtomicOrdering::SeqCst),1);
+        let result = send_upstream_with_retry(&state,&format!("{url}/v1/images/edits"),&HeaderMap::new(),b"{}").await;
+        assert!(matches!(result,Err(UpstreamSendError::Timeout)));
+        assert_eq!(calls.load(AtomicOrdering::SeqCst),2);
+        task.abort();
+        let _ = fs::remove_file(store_path).await; let _ = fs::remove_file(jobs_path).await;
     }
 
     #[tokio::test]
