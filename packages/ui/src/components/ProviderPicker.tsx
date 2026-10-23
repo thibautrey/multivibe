@@ -69,7 +69,7 @@ export const ProviderPicker = memo(function ProviderPicker({ value, sdkProvider,
         const cloudId = "sdkProvider" in item ? item.sdkProvider : undefined;
         const access = providerAccess(cloudId ?? item.id, Boolean(cloudId));
         const selected = value === item.id && (item.id !== "ai-sdk" || sdkProvider === cloudId);
-        return <button key={cloudId ?? item.id} type="button" className={`provider-setup-card${selected ? " selected" : ""}`} aria-pressed={selected} onClick={() => onChange(item.id, cloudId)}>
+        return <button key={cloudId ? `sdk:${cloudId}` : `setup:${item.id}`} type="button" className={`provider-setup-card${selected ? " selected" : ""}`} aria-pressed={selected} onClick={() => onChange(item.id, cloudId)}>
           <ProviderMark provider={item.id} sdkProvider={cloudId} name={item.name} />
           <span className="provider-setup-card-copy"><strong>{item.name}</strong><small>{item.method}</small><span className="provider-access-label" title={access?.note}>{access?.reviewPricing ? "Pricing unverified" : access ? access.free ? access.paid ? "Free & paid" : "Free tier" : "Paid" : "Depends on endpoint"}</span></span>
           <span className="provider-setup-check" aria-hidden="true">{selected ? "✓" : ""}</span>
