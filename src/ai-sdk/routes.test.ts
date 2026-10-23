@@ -248,7 +248,7 @@ test("image adapter honors its dedicated deadline and rejects invalid timer valu
     await new Promise<void>(resolve => listener.once("listening", resolve));
     try {
       const result = await fetch(`http://127.0.0.1:${(listener.address() as AddressInfo).port}/internal/ai-sdk/images/v1/images/generations`, {
-        method: "POST", headers: auth, body: JSON.stringify({model: "gpt-image-2", prompt: "Night sky"}),
+        method: "POST", headers: auth, body: JSON.stringify({model: "openai/gpt-image-2", prompt: "Night sky"}),
       });
       assert.equal(result.status, configured === "5" ? 504 : 200, configured);
       await result.text();

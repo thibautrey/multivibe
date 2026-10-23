@@ -12818,7 +12818,7 @@ mod tests {
                         return json_response(StatusCode::GATEWAY_TIMEOUT, json!({"error":"image timeout"}));
                     }
                     assert_eq!(body, json!({"model":"openai/gpt-image-2","prompt":"night sky","size":"1536x1024","n":2}));
-                    Json(response).into_response()
+                    json_response(StatusCode::OK, response)
                 }
             }))
             .route("/internal/ai-sdk/images/v1/images/edits", post(|headers: HeaderMap, body: Bytes| async move {
