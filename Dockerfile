@@ -1,6 +1,7 @@
 FROM node:22-bookworm-slim AS deps
 WORKDIR /app
-RUN apt-get update \
+RUN chmod 1777 /tmp \
+  && apt-get update \
   && apt-get install -y --no-install-recommends python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json* ./
@@ -38,7 +39,8 @@ RUN CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
 
 FROM node:22-bookworm-slim
 WORKDIR /app
-RUN apt-get update \
+RUN chmod 1777 /tmp \
+  && apt-get update \
   && apt-get install -y --no-install-recommends git libstdc++6 \
   && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production
