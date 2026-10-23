@@ -6005,6 +6005,9 @@ async fn send_upstream_with_retry(
                 }));
             }
             Ok(Err(error)) => {
+                if image_request && error.is_timeout() {
+                    return Err(UpstreamSendError::Timeout);
+                }
                 let message = error.to_string();
                 if retry < max_retries
                     && !is_quota_error(StatusCode::BAD_GATEWAY, &message)
