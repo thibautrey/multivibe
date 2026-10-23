@@ -217,3 +217,45 @@ test("image adapter preserves JSON and multipart results and enforces account gr
     await new Promise<void>(resolve => listener.close(() => resolve()));
   }
 });
+
+test("image adapter honors its dedicated deadline and rejects invalid timer values", async () => {
+  const account: Account = {id: "images", provider: "ai-sdk", sdkProvider: "openai", sdkModels: ["gpt-image-2"], accessToken: "image-provider-secret", enabled: true};
+  for (const configured of ["5", "200", "invalid", "0", "2147483648"]) {
+    const previous = process.env.IMAGE_REQUEST_TIMEOUT_MS;
+    process.env.IMAGE_REQUEST_TIMEOUT_MS = configured;
+    const app = express(); app.use(express.json());
+    let calls = 0;
+    try {
+      app.use("/internal/ai-sdk", createSdkAdapterRouter({
+        store: {listAccounts: async () => [account]}, internalToken: "internal-secret",
+        fetch: async (_input, init) => {
+          calls++;
+          await new Promise<void>((resolve, reject) => {
+            const signal = init?.signal;
+            const abort = () => { clearTimeout(timer); reject(new Error("aborted")); };
+            const timer = setTimeout(() => { signal?.removeEventListener("abort", abort); resolve(); }, 30);
+            if (signal?.aborted) abort();
+            else signal?.addEventListener("abort", abort, {once: true});
+          });
+          return new Response('{"data":[{"b64_json":"aW1hZ2U="}]}', {headers: {"content-type": "application/json"}});
+        },
+      }));
+    } finally {
+      if (previous === undefined) delete process.env.IMAGE_REQUEST_TIMEOUT_MS;
+      else process.env.IMAGE_REQUEST_TIMEOUT_MS = previous;
+    }
+    const listener = app.listen(0, "127.0.0.1");
+    await new Promise<void>(resolve => listener.once("listening", resolve));
+    try {
+      const result = await fetch(`http://127.0.0.1:${(listener.address() as AddressInfo).port}/internal/ai-sdk/images/v1/images/generations`, {
+        method: "POST", headers: auth, body: JSON.stringify({model: "gpt-image-2", prompt: "Night sky"}),
+      });
+      assert.equal(result.status, configured === "5" ? 504 : 200, configured);
+      await result.text();
+      assert.equal(calls, 1);
+    } finally {
+      listener.closeAllConnections();
+      await new Promise<void>(resolve => listener.close(() => resolve()));
+    }
+  }
+});

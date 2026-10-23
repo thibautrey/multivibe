@@ -198,6 +198,10 @@ export function createSdkAdapterRouter(options: {
   liveModelCatalog?: LiveModelCatalogSource;
   modelsDevCatalog?: ModelsDevCatalog;
 }) {
+  const configuredImageTimeout = Number(process.env.IMAGE_REQUEST_TIMEOUT_MS);
+  const imageRequestTimeoutMs = Number.isInteger(configuredImageTimeout)
+    && configuredImageTimeout > 0 && configuredImageTimeout <= 2_147_483_647
+    ? configuredImageTimeout : 300_000;
   const router = express.Router();
   router.use((req, res, next) => {
     const token = req.header("authorization")?.replace(/^Bearer\s+/i, "") ?? "";
@@ -242,7 +246,7 @@ export function createSdkAdapterRouter(options: {
       const abort = () => controller.abort();
       res.once("close", abort);
       req.once("aborted", abort);
-      const timeout = setTimeout(abort, 300_000);
+      const timeout = setTimeout(abort, imageRequestTimeoutMs);
       try {
         const account = res.locals.sdkAccount as Account;
         if (account.sdkProvider !== "openai") {
