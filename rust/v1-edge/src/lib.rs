@@ -115,6 +115,7 @@ pub struct EdgeConfig {
     pub session_affinity_ttl: Duration,
     pub session_affinity_max_entries: usize,
     pub upstream_timeout: Duration,
+    pub image_request_timeout: Duration,
     pub max_account_retry_attempts: usize,
     pub max_upstream_retries: usize,
     pub upstream_retry_base_delay: Duration,
@@ -178,6 +179,7 @@ impl Default for EdgeConfig {
             session_affinity_ttl: Duration::from_secs(60 * 60),
             session_affinity_max_entries: 10_000,
             upstream_timeout: Duration::from_secs(10 * 60),
+            image_request_timeout: Duration::from_secs(5 * 60),
             max_account_retry_attempts: 10,
             max_upstream_retries: 5,
             upstream_retry_base_delay: Duration::from_secs(2),
@@ -309,6 +311,12 @@ impl EdgeConfig {
                 .unwrap_or(defaults.session_affinity_max_entries)
                 .max(1),
             upstream_timeout: Duration::from_millis(timeout_ms.max(1)),
+            image_request_timeout: Duration::from_millis(
+                env("IMAGE_REQUEST_TIMEOUT_MS")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .filter(|value| (1..=2_147_483_647).contains(value))
+                    .unwrap_or(defaults.image_request_timeout.as_millis() as u64),
+            ),
             max_account_retry_attempts: env("MAX_ACCOUNT_RETRY_ATTEMPTS")
                 .and_then(|v| v.parse::<usize>().ok())
                 .unwrap_or(defaults.max_account_retry_attempts)
@@ -5944,14 +5952,26 @@ async fn send_upstream_with_retry(
 ) -> Result<UpstreamSendResult, UpstreamSendError> {
     // A transport failure can follow a billed generation. Never replay an
     // image request whose outcome is unknown.
-    let max_retries = if url.ends_with("/images/generations") || url.ends_with("/images/edits") { 0 } else { state.config.max_upstream_retries };
+    let image_request = url.ends_with("/images/generations") || url.ends_with("/images/edits");
+    let max_retries = if image_request { 0 } else { state.config.max_upstream_retries };
+    // The SDK adapter owns the image deadline. Allow it to return its timeout
+    // response before the edge closes the loopback request. Realtime's short
+    // deadline must never truncate a paid image generation.
+    let request_timeout = if image_request {
+        state.config.image_request_timeout + Duration::from_secs(5)
+    } else {
+        state.config.upstream_timeout
+    };
     for retry in 0..=max_retries {
         let request = state
             .client
             .request(Method::POST, url)
             .headers(headers.clone())
             .body(body.to_vec());
-        match timeout(state.config.upstream_timeout, request.send()).await {
+        // Keep the complete image response bounded too, without imposing a
+        // total deadline on existing long-lived text streams.
+        let request = if image_request { request.timeout(request_timeout) } else { request };
+        match timeout(request_timeout, request.send()).await {
             Ok(Ok(response)) if response.status().is_success() => {
                 return Ok(UpstreamSendResult::Success(response));
             }
@@ -9997,7 +10017,7 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
         );
         return response;
     }
-    match proxy_inference(
+    let mut response = match proxy_inference(
         &state,
         &path,
         &headers,
@@ -10062,7 +10082,15 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
             }
             response
         }
+    };
+    // OpenAI SDKs otherwise replay 5xx responses, even when the provider may
+    // already have billed the image. This complements the edge's no-retry rule.
+    if images::is_image_path(&path) && response.status().is_server_error() {
+        response.headers_mut().insert(
+            HeaderName::from_static("x-should-retry"), HeaderValue::from_static("false"),
+        );
     }
+    response
 }
 
 async fn method_not_allowed() -> Response {
@@ -12786,8 +12814,11 @@ mod tests {
                 async move {
                     counter.fetch_add(1, AtomicOrdering::SeqCst);
                     assert_eq!(headers["authorization"], "Bearer internal-secret");
+                    if body["prompt"] == "fail" {
+                        return json_response(StatusCode::GATEWAY_TIMEOUT, json!({"error":"image timeout"}));
+                    }
                     assert_eq!(body, json!({"model":"openai/gpt-image-2","prompt":"night sky","size":"1536x1024","n":2}));
-                    Json(response)
+                    Json(response).into_response()
                 }
             }))
             .route("/internal/ai-sdk/images/v1/images/edits", post(|headers: HeaderMap, body: Bytes| async move {
@@ -12835,6 +12866,11 @@ mod tests {
         assert_eq!(result.status(),StatusCode::OK);
         assert_eq!(result.json::<Value>().await.unwrap(),json!({"data":[{"b64_json":"ZWRpdA=="}]}));
         assert_eq!(calls.load(AtomicOrdering::SeqCst),1);
+        let failed = client.post(format!("{url}/v1/images/generations")).bearer_auth("secret")
+            .json(&json!({"model":"sky-image","prompt":"fail"})).send().await.unwrap();
+        assert_eq!(failed.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(failed.headers()["x-should-retry"], "false");
+        assert_eq!(calls.load(AtomicOrdering::SeqCst),2);
         edge_task.abort(); runtime_task.abort();
         let _ = fs::remove_file(store_path).await; let _ = fs::remove_file(jobs_path).await;
     }
@@ -13956,7 +13992,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn image_sender_never_replays_server_errors_or_timeouts() {
+    async fn image_sender_uses_its_own_deadline_without_replaying_failures() {
         let calls = Arc::new(AtomicUsize::new(0));
         let error_calls = calls.clone(); let timeout_calls = calls.clone();
         let upstream = Router::new()
@@ -13967,11 +14003,13 @@ mod tests {
                     json_response(StatusCode::SERVICE_UNAVAILABLE, json!({"error":"unavailable"}))
                 }
             }))
-            .route("/v1/images/edits", post(move || {
+            .route("/v1/images/edits", post(move |body: Bytes| {
                 let calls = timeout_calls.clone();
                 async move {
                     calls.fetch_add(1, AtomicOrdering::SeqCst);
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    tokio::time::sleep(if body.as_ref() == b"slow" {
+                        Duration::from_secs(6)
+                    } else { Duration::from_millis(100) }).await;
                     Json(json!({"data":[]}))
                 }
             }));
@@ -13981,13 +14019,17 @@ mod tests {
         let mut config = EdgeConfig::default();
         config.store_path = store_path.clone(); config.jobs_path = jobs_path.clone();
         config.max_upstream_retries = 3; config.upstream_timeout = Duration::from_millis(40);
+        config.image_request_timeout = Duration::from_millis(40);
         let state = EdgeState::new(config).await.unwrap();
         let result = send_upstream_with_retry(&state,&format!("{url}/v1/images/generations"),&HeaderMap::new(),b"{}").await.unwrap();
         assert!(matches!(result,UpstreamSendResult::HttpError(_)));
         assert_eq!(calls.load(AtomicOrdering::SeqCst),1);
         let result = send_upstream_with_retry(&state,&format!("{url}/v1/images/edits"),&HeaderMap::new(),b"{}").await;
-        assert!(matches!(result,Err(UpstreamSendError::Timeout)));
+        assert!(matches!(result,Ok(UpstreamSendResult::Success(_))));
         assert_eq!(calls.load(AtomicOrdering::SeqCst),2);
+        let result = send_upstream_with_retry(&state,&format!("{url}/v1/images/edits"),&HeaderMap::new(),b"slow").await;
+        assert!(matches!(result,Err(UpstreamSendError::Timeout)));
+        assert_eq!(calls.load(AtomicOrdering::SeqCst),3);
         task.abort();
         let _ = fs::remove_file(store_path).await; let _ = fs::remove_file(jobs_path).await;
     }
