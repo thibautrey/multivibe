@@ -163,3 +163,57 @@ test("SDK adapter preserves provider error fields and labels its own input error
     assert.equal(body.error.param, null);
   });
 });
+
+test("image adapter preserves JSON and multipart results and enforces account grants", async () => {
+  const account: Account = {id: "images", provider: "ai-sdk", sdkProvider: "openai", sdkModels: ["gpt-image-2"], accessToken: "image-provider-secret", enabled: true};
+  const calls: {url: string; body: unknown}[] = [];
+  let upstreamStatus = 200;
+  const app = express(); app.use(express.json());
+  app.use("/internal/ai-sdk", createSdkAdapterRouter({
+    store: {listAccounts: async () => [account]}, internalToken: "internal-secret",
+    fetch: async (input, init) => {
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer image-provider-secret");
+      calls.push({url: String(input), body: init?.body});
+      return new Response(upstreamStatus === 200 ? '{"created":123,"data":[{"b64_json":"aW1hZ2U="}],"usage":{"total_tokens":7}}' : '{"error":{"message":"Image rate limit","type":"rate_limit_error","code":"rate_limit_exceeded"}}', {status: upstreamStatus, headers: {"content-type": "application/json", "x-request-id": "image-request"}});
+    },
+  }));
+  const listener = app.listen(0, "127.0.0.1");
+  await new Promise<void>(resolve => listener.once("listening", resolve));
+  const url = `http://127.0.0.1:${(listener.address() as AddressInfo).port}/internal/ai-sdk/images/v1`;
+  const generate = (model: string, headers = auth) => fetch(`${url}/images/generations`, {method: "POST", headers, body: JSON.stringify({model, prompt: "A clean night sky", size: "1536x1024", quality: "high", n: 2})});
+  try {
+    assert.equal((await generate("openai/gpt-image-2", {authorization: "Bearer wrong", "content-type": "application/json"})).status, 401);
+    assert.equal((await generate("openai/gpt-image-1")).status, 404);
+    assert.equal(calls.length, 0);
+    const result = await generate("openai/gpt-image-2");
+    assert.equal(result.status, 200);
+    assert.equal(result.headers.get("x-request-id"), "image-request");
+    assert.deepEqual(await result.json(), {created: 123, data: [{b64_json: "aW1hZ2U="}], usage: {total_tokens: 7}});
+    assert.equal(calls[0].url, "https://api.openai.com/v1/images/generations");
+    assert.deepEqual(JSON.parse(String(calls[0].body)), {model: "gpt-image-2", prompt: "A clean night sky", size: "1536x1024", quality: "high", n: 2});
+    const form = new FormData();
+    form.set("model", "an-alias"); form.set("prompt", "Change the sky"); form.set("n", "2");
+    form.append("image[]", new Blob(["first image"], {type: "image/png"}), "first.png");
+    form.append("image[]", new Blob(["second image"], {type: "image/jpeg"}), "second.jpg");
+    form.set("mask", new Blob(["mask"], {type: "image/png"}), "mask.png");
+    const edited = await fetch(`${url}/images/edits`, {method: "POST", headers: {authorization: "Bearer internal-secret", "x-multivibe-image-model": "openai/gpt-image-2"}, body: form});
+    assert.equal(edited.status, 200); await edited.text();
+    assert.equal(calls[1].url, "https://api.openai.com/v1/images/edits");
+    const forwarded = calls[1].body as FormData;
+    assert.equal(forwarded.get("model"), "gpt-image-2");
+    assert.equal(forwarded.get("n"), "2");
+    assert.deepEqual(await Promise.all(forwarded.getAll("image[]").map(part => (part as File).text())), ["first image", "second image"]);
+    assert.equal((forwarded.get("mask") as File).name, "mask.png");
+    upstreamStatus = 429;
+    const error = await generate("openai/gpt-image-2");
+    assert.equal(error.status, 429);
+    assert.equal((await error.json()).error.code, "rate_limit_exceeded");
+    account.sdkProvider = "anthropic";
+    assert.equal((await generate("anthropic/gpt-image-2")).status, 400);
+    account.enabled = false;
+    assert.equal((await generate("openai/gpt-image-2")).status, 404);
+  } finally {
+    listener.closeAllConnections();
+    await new Promise<void>(resolve => listener.close(() => resolve()));
+  }
+});

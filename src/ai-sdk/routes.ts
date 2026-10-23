@@ -3,10 +3,13 @@ import express from "express";
 import { timingSafeEqual } from "node:crypto";
 import type { SdkModel } from "./model.js";
 import type { Account } from "../types.js";
-import { sdkAccountModels, sdkModelId } from "./catalog.js";
+import { sdkAccountModels, sdkModelId, isOpenAIImageModel } from "./catalog.js";
 import { LiveModelCatalog } from "./live-model-catalog.js";
 import type { LiveModelCatalogSource } from "./live-model-catalog.js";
 import type { ModelsDevCatalog } from "./models-dev-catalog.js";
+import { sdkAccountBaseUrl } from "./providers.js";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { createSdkModel } from "./models.js";
 import { SdkInputError, sdkCallOptions, chatResult, chatStream } from "./protocol.js";
 
@@ -191,6 +194,7 @@ export function createSdkAdapterRouter(options: {
   store: { listAccounts(): Promise<Account[]> };
   internalToken: string;
   createModel?: (account: Account, model: string) => SdkModel;
+  fetch?: typeof fetch;
   liveModelCatalog?: LiveModelCatalogSource;
   modelsDevCatalog?: ModelsDevCatalog;
 }) {
@@ -229,6 +233,76 @@ export function createSdkAdapterRouter(options: {
     }
     res.json({object: "list", data: sdkAccountModels(account, live, options.modelsDevCatalog)});
   });
+  // Keep image bodies and responses out of the text-model codec. Multipart
+  // edits retain every file, mask, filename and field, with a server-bound model.
+  router.post(["/:accountId/v1/images/generations", "/:accountId/v1/images/edits"],
+    express.raw({type: "multipart/form-data", limit: process.env.REQUEST_BODY_LIMIT ?? "100mb"}),
+    async (req, res) => {
+      const controller = new AbortController();
+      const abort = () => controller.abort();
+      res.once("close", abort);
+      req.once("aborted", abort);
+      const timeout = setTimeout(abort, 300_000);
+      try {
+        const account = res.locals.sdkAccount as Account;
+        if (account.sdkProvider !== "openai") {
+          res.status(400).json({error: {message: "Image endpoints require an OpenAI API account", type: "invalid_request_error", code: "unsupported_image_provider"}});
+          return;
+        }
+        const edits = req.path.endsWith("/edits");
+        let form: FormData | undefined;
+        let requested: unknown;
+        let payload: Record<string, unknown> | undefined;
+        if (Buffer.isBuffer(req.body)) {
+          if (!edits) throw new SdkInputError("Image generations require JSON");
+          form = await new Response(new Uint8Array(req.body), {headers: {"content-type": req.header("content-type") ?? ""}}).formData();
+          requested = req.header("x-multivibe-image-model") ?? form.get("model");
+        } else {
+          if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) throw new SdkInputError("Image request requires an object");
+          payload = {...req.body};
+          requested = payload.model;
+        }
+        if (typeof requested !== "string") throw new SdkInputError("model required");
+        let model: string;
+        try { model = sdkModelId(account, requested); } catch {
+          res.status(404).json({error: {message: "Model is not enabled for this provider account", type: "invalid_request_error", code: "model_not_found"}});
+          return;
+        }
+        if (!isOpenAIImageModel(model)) throw new SdkInputError("This model does not support the image endpoints");
+        if (form) form.set("model", model);
+        if (payload) payload.model = model;
+        const prompt = form ? form.get("prompt") : payload?.prompt;
+        const stream = form ? form.get("stream") : payload?.stream;
+        if (typeof prompt !== "string" || !prompt.trim() || (stream !== undefined && stream !== null && stream !== false && stream !== "false")) {
+          throw new SdkInputError("Images require a non-empty prompt and no streaming");
+        }
+        const response = await (options.fetch ?? fetch)(`${sdkAccountBaseUrl(account).replace(/\/+$/, "")}/images/${edits ? "edits" : "generations"}`, {
+          method: "POST", signal: controller.signal, redirect: "error",
+          headers: {authorization: `Bearer ${account.accessToken}`, ...(!form ? {"content-type": "application/json"} : {})},
+          body: form ?? JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          const responseBody = await response.text();
+          res.status(response.status).json({error: normalizeProviderError({responseBody}, response.status)});
+          return;
+        }
+        res.status(response.status);
+        for (const name of ["content-type", "x-request-id", "retry-after"]) {
+          const value = response.headers.get(name);
+          if (value) res.setHeader(name, value);
+        }
+        // Stream bytes without parsing or logging base64 image results.
+        if (response.body) await pipeline(Readable.fromWeb(response.body), res);
+        else res.end();
+      } catch (error: unknown) {
+        if (res.destroyed) return;
+        const status = error instanceof SdkInputError ? 400 : controller.signal.aborted ? 504 : 502;
+        if (res.headersSent) res.destroy();
+        else res.status(status).json({error: {message: error instanceof SdkInputError ? error.message : "Image provider request failed", type: status === 400 ? "invalid_request_error" : "server_error", code: status === 400 ? "invalid_request_error" : "upstream_error"}});
+      } finally {
+        clearTimeout(timeout); res.off("close", abort); req.off("aborted", abort);
+      }
+    });
   router.post("/:accountId/v1/chat/completions", async (req, res) => {
     const controller = new AbortController();
     const abort = () => controller.abort();
@@ -242,6 +316,7 @@ export function createSdkAdapterRouter(options: {
       try { modelId = sdkModelId(account, req.body.model); } catch {
         res.status(404).json({error: {message: "Model is not enabled for this provider account", type: "model_not_found"}}); return;
       }
+      if (account.sdkProvider === "openai" && isOpenAIImageModel(modelId)) throw new SdkInputError("Use /v1/images/generations or /v1/images/edits for image models");
       const params = sdkCallOptions(req.body, controller.signal);
       const model = (options.createModel ?? createSdkModel)(account, modelId);
       const validateUsage = account.sdkProvider === "google" ? googleUsageEligible : undefined;

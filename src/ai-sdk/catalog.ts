@@ -53,6 +53,10 @@ export function sdkProviderCatalog(modelsDev?: ModelsDevLookup) {
     }) };
 }
 
+export function isOpenAIImageModel(model: string): boolean {
+  return /^(?:gpt-image-\d|chatgpt-image-|dall-e-[23](?:$|-))/.test(model);
+}
+
 export function sdkAccountModels(account: Account, live?: LiveModelCatalogSnapshot, modelsDev?: ModelsDevLookup) {
   const provider = sdkProvider(account.sdkProvider);
   if (!provider) return [];
@@ -74,8 +78,11 @@ export function sdkAccountModels(account: Account, live?: LiveModelCatalogSnapsh
   return selected.filter(model => !account.multivibeTeam || account.multivibeTeam.models?.includes(model.id)).map((model) => ({
     id: `${provider.id}/${model.id}`, object: "model", owned_by: provider.id, created: 0,
     name: model.name, context_window: model.context, max_output_tokens: model.output,
-    supports_tools: model.tools, supported_tool_types: model.tools === undefined ? undefined : model.tools ? ["function"] : [],
-    supports_reasoning: model.reasoning, input_modalities: model.input, output_modalities: ["text"], pricing: model.cost,
+    supports_tools: provider.id === "openai" && isOpenAIImageModel(model.id) ? false : model.tools,
+    supported_tool_types: provider.id === "openai" && isOpenAIImageModel(model.id) ? [] : model.tools === undefined ? undefined : model.tools ? ["function"] : [],
+    supports_reasoning: model.reasoning,
+    input_modalities: provider.id === "openai" && isOpenAIImageModel(model.id) && !model.id.startsWith("dall-e-") ? ["text", "image"] : model.input,
+    output_modalities: provider.id === "openai" && isOpenAIImageModel(model.id) ? ["image"] : ["text"], pricing: model.cost,
     catalog_source: discovered?.source ?? metadata.source,
     catalog_fetched_at: discovered?.fetchedAt ?? metadata.fetchedAt,
   }));
