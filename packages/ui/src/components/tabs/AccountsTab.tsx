@@ -2977,7 +2977,7 @@ export function AccountsTab(props: Props) {
 
       {showAddAccount && !oauthDialog && (
         <ModalPortal><div className="modal-backdrop" onClick={() => { if (!isSubmitting) closeModal(); }}>
-          <div ref={providerModalRef} className={`modal panel provider-setup-modal${onboardingProviderSetup ? " onboarding-provider-modal" : ""}`} role="dialog" aria-modal="true" aria-label={providerStep === 0 ? "Choose your provider" : undefined} aria-labelledby={providerStep > 0 ? "provider-setup-title" : undefined} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(event) => {
+          <div ref={providerModalRef} className={`modal panel provider-setup-modal${providerStep === 0 ? " provider-setup-modal-picker" : ""}${onboardingProviderSetup ? " onboarding-provider-modal" : ""}`} role="dialog" aria-modal="true" aria-label={providerStep === 0 ? "Choose your provider" : undefined} aria-labelledby={providerStep > 0 ? "provider-setup-title" : undefined} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(event) => {
             if (event.key === "Escape" && !isSubmitting) { event.stopPropagation(); closeModal(); }
             if (event.key === "Tab") {
               const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), summary, [href]')).filter((item) => item.getClientRects().length > 0);
@@ -2986,7 +2986,7 @@ export function AccountsTab(props: Props) {
               else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
             }
           }}>
-            <div className="inline wrap row-between">
+            <div className="provider-setup-topbar">
               <span className="provider-setup-heading">{providerStep === 0 ? "Add a provider" : "Connect your provider"}</span>
               <div className="inline wrap">
                 {onboardingProviderSetup && (
