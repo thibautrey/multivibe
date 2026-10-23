@@ -3,7 +3,7 @@ import test from "node:test";
 import type { SdkStreamPart, SdkUsage } from "./model.js";
 import { sdkCallOptions, chatStream, chatResult } from "./protocol.js";
 import { sdkAccountModels, sdkModelId, sdkProviderCatalog } from "./catalog.js";
-import { SDK_PROVIDERS, validateSdkAccount } from "./providers.js";
+import { SDK_PROVIDERS, sdkAccountBaseUrl, validateSdkAccount } from "./providers.js";
 import type { Account } from "../types.js";
 
 const usage: SdkUsage = {inputTokens: {total: 12, noCache: 8, cacheRead: 4, cacheWrite: 0}, outputTokens: {total: 3, text: 2, reasoning: 1}};
@@ -128,6 +128,10 @@ test("maps buffered results and keeps provider namespaces distinct", () => {
   }
   assert.doesNotThrow(() => validateSdkAccount({...account, id: "sdk-account_123"}));
   assert.throws(() => validateSdkAccount({...account, baseUrl: "https://untrusted.test"}));
+});
+
+test("OpenAI API accounts use the standard API endpoint", () => {
+  assert.equal(sdkAccountBaseUrl({ sdkProvider: "openai" }), "https://api.openai.com/v1");
 });
 
 test("JSON and streaming preserve missing usage and positive cache writes",async()=>{
