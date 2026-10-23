@@ -55,11 +55,13 @@ export const ProviderPicker = memo(function ProviderPicker({ value, sdkProvider,
     matchesAccessFilter("sdkProvider" in item ? item.sdkProvider : item.id, accessFilter, "sdkProvider" in item) &&
     `${item.name} ${item.description} ${item.method}`.toLocaleLowerCase().includes(normalized));
   return <div className="provider-setup-picker">
-    <label className="provider-setup-search">Search providers
-      <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a provider…" />
-    </label>
-    <div className="provider-picker-toolbar"><label className="provider-pricing-select">Pricing<select value={accessFilter ?? "all"} onChange={event => setAccessFilter(event.target.value === "all" ? null : event.target.value as AccessFilter)}><option value="all">All pricing</option><option value="Paid">Paid</option><option value="Free">Free tier available</option><option value="Freemium">Free & paid</option></select></label><span className="muted">Free tiers may have limits.</span></div>
-    <p className="muted provider-setup-results" role="status">{matches.length} provider{matches.length === 1 ? "" : "s"}{normalized || accessFilter ? " found" : " available"}</p>
+    <div className="provider-picker-controls">
+      <label className="provider-setup-search">Search providers
+        <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a provider…" />
+      </label>
+      <div className="provider-picker-toolbar"><label className="provider-pricing-select">Pricing<select value={accessFilter ?? "all"} onChange={event => setAccessFilter(event.target.value === "all" ? null : event.target.value as AccessFilter)}><option value="all">All pricing</option><option value="Paid">Paid</option><option value="Free">Free tier available</option><option value="Freemium">Free & paid</option></select></label><span className="muted">Free tiers may have limits.</span></div>
+      <p className="muted provider-setup-results" role="status">{matches.length} provider{matches.length === 1 ? "" : "s"}{normalized || accessFilter ? " found" : " available"}</p>
+    </div>
     {error && <p className="provider-setup-error" role="alert">{error}</p>}
     {!cloudProviders.length && !error && <p className="muted" role="status">Loading cloud providers…</p>}
     <div className="provider-setup-cards" role="group" aria-label="Choose a provider">
