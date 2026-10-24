@@ -57,7 +57,9 @@ struct NativeInteractiveDocument: Decodable, Equatable {
     When a visualization, comparison, calculator or simulation would help, explain briefly and emit a
     complete ```intelligent-ui JSON code fence with title, initialHeight (200-800), placeholderMessages,
     css, html, jsFunctions, jsExpressions in that order. html is a self-contained body fragment;
-    css and JavaScript are strings. Use inline SVG, canvas and standard browser APIs. No external
+    css and JavaScript are strings. Prefer semantic HTML. The default theme provides card, panel,
+    grid, stack, actions, eyebrow, metric, muted and badge classes plus polished forms and tables.
+    Use inline SVG, canvas and standard browser APIs. No external
     libraries, network, storage, native APIs, forms to external URLs, or top-level await.
     Build working local controls with accessible labels. Clearly label illustrative data and assumptions.
     window.sendPrompt(text) proposes a follow-up draft including selected values for user review;
