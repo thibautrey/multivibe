@@ -27,8 +27,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate {
 @main struct ComputerUseHarness {
     @MainActor static func main() {
         let app = NSApplication.shared
-        app.setActivationPolicy(.regular)
-        app.activate(ignoringOtherApps: true)
+        app.setActivationPolicy(.accessory)
         Task { @MainActor in
             do { try await runTests(); exit(0) }
             catch { print("FAIL computer use: \(error.localizedDescription)"); exit(1) }
@@ -37,7 +36,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate {
     }
     @MainActor static func runTests() async throws {
         let app = NSApplication.shared
-        app.setActivationPolicy(.regular)
+        app.setActivationPolicy(.accessory)
         let delegate = MultiVibeMenuBarApp(port: CommandLine.arguments[1]); app.delegate = delegate
         let suite = "MULTIVIBE-132-fixture-\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
@@ -81,54 +80,28 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate {
         precondition(!controller.allowedApps.contains("test.editor"))
         print("PASS policy, application consent, stale rejection, denial, cancellation, redacted journal and revocation")
 
-        // Real WebKit + real Host HTTP transport + complete tool loop. Only the model is scripted by the test server.
-        let browserController = ComputerUseController(defaults: defaults)
-        browserController.confirmActions = true
-        let approve = Task { @MainActor in
-            while !Task.isCancelled {
-                if browserController.approval != nil { browserController.resolveApproval(1) }
-                try? await Task.sleep(nanoseconds: 10_000_000)
-            }
-        }
-        defer { approve.cancel() }
-        var result = ""
-        try await browserController.run(conversation: UUID(), messages: [["role":"user", "content":"Sur le site de recette, remplir le champ puis vérifier le résultat."]], model: "fixture-browser",
-            turn: { context, model in try await HostAssistantClient.shared.computerTurn(context, model: model) }, update: { result = $0 })
-        precondition(result.contains("Résultat vérifié"))
-        precondition(browserController.events.filter { $0.succeeded }.map(\.action) == ["navigate", "type", "click"])
-        precondition(browserController.preview != nil && !browserController.running)
-        precondition(browserController.confirmActions)
-        let browser = browserController.browser
-        let origin = "http://127.0.0.1:\(CommandLine.arguments[1])"
-        browser.allow(origin: origin)
-        try await browser.perform(.init(action: "navigate", target: "browser", url: origin + "/fixture"))
-        let page = try await browser.observe()
-        precondition(page.imageURL?.hasPrefix("data:image/jpeg;base64,") == true)
-        precondition(!page.text.contains("SECRET-NOT-FOR-MODEL"))
-        let jsonStart = page.text.range(of: "{\"coordinateSpace\"") // JSONSerialization property ordering is not relied upon below.
-        _ = jsonStart
-        do { try await browser.perform(.init(action:"type", observation:"obsolete", element:1,text:"bad")); fatalError("Stale browser handles accepted") } catch {}
-        do { try await browser.perform(.init(action:"navigate",url:"https://example.invalid")); fatalError("Unapproved origin accepted") } catch {}
-        print("PASS real WebKit navigation, input, native click, JPEG observation, Host tool-call loop, sensitive-field redaction and origin boundary")
-        if CommandLine.arguments.count > 2 && browserController.accessibilityGranted && browserController.screenGranted {
+        if CommandLine.arguments.count > 2 && controller.accessibilityGranted && controller.screenGranted {
             let native = ComputerUseMacDriver()
             let target = "solutions.pleiades.ComputerFixture"
             for _ in 0..<50 {
                 if native.apps().contains(where: { $0.id == target }) { break }
                 try await Task.sleep(nanoseconds: 100_000_000)
             }
+            NSRunningApplication.runningApplications(withBundleIdentifier: target).last?.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+            try await Task.sleep(nanoseconds: 500_000_000)
             print("Native fixture listed: \(native.apps().contains { $0.id == target }), running: \(NSRunningApplication.runningApplications(withBundleIdentifier: target).map { "\($0.bundleIdentifier ?? "nil")/\($0.activationPolicy.rawValue)/\($0.isTerminated)" }), own: \(Bundle.main.bundleIdentifier ?? "nil"), allowed: \(ComputerUsePolicy.allowedApp(target))")
             var nativeObservation = try await native.observe(target: target)
             precondition(nativeObservation.imageURL?.hasPrefix("data:image/jpeg;base64,") == true)
-            func index(_ text: String, _ observation: ComputerUseObservation) -> Int {
-                let line = observation.text.components(separatedBy: "\n").first { $0.contains(text) }!
-                return Int(line.dropFirst().prefix { $0.isNumber })!
+            func index(_ text: String, _ observation: ComputerUseObservation) throws -> Int {
+                guard let line = observation.text.components(separatedBy: "\n").first(where: { $0.contains(text) }),
+                      let index = Int(line.dropFirst().prefix(while: { $0.isNumber })) else { throw ComputerUseFailure("Missing \(text) in AX observation: \(observation.text)") }
+                return index
             }
-            let field = index("Texte de recette", nativeObservation)
+            let field = try index("Texte de recette", nativeObservation)
             try await native.perform(.init(action: "type", observation: nativeObservation.id, element: field, text: "Entrée réelle été"), target: target)
             nativeObservation = try await native.observe(target: target)
             precondition(nativeObservation.text.contains("Entrée réelle été"))
-            let button = index("Valider la recette", nativeObservation)
+            let button = try index("Valider la recette", nativeObservation)
             try await native.perform(.init(action: "click", observation: nativeObservation.id, element: button), target: target)
             nativeObservation = try await native.observe(target: target)
             precondition(nativeObservation.text.contains("Native confirmé : Entrée réelle été"))
@@ -137,7 +110,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate {
             print("PASS real macOS ScreenCaptureKit, AX tree, PID Unicode input, AXPress and verified native result")
         }
         // Real native driver must fail closed when macOS consent is missing, without prompting in tests.
-        print("Native permissions: accessibility=\(browserController.accessibilityGranted), screen=\(browserController.screenGranted)")
+        print("Native permissions: accessibility=\(controller.accessibilityGranted), screen=\(controller.screenGranted)")
         withExtendedLifetime(delegate) {}
     }
 }

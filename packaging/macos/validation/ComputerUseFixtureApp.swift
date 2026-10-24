@@ -12,7 +12,7 @@ import AppKit
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 350), styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.title = "Recette native computer use"
+        window.title = "Recette native"
         let content = NSView(frame: NSRect(x: 0, y: 0, width: 640, height: 350))
         let title = NSTextField(labelWithString: "Recette native MultiVibe")
         title.font = .systemFont(ofSize: 25, weight: .semibold); title.frame = NSRect(x: 30, y: 270, width: 580, height: 40)

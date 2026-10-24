@@ -19,7 +19,7 @@ struct ComputerUseModelReply {
     @Published private(set) var allowedApps: Set<String>
     @Published var confirmActions = true
     private let driver: any ComputerUseDriving
-    let browser: ComputerUseBrowser
+    let browser: ChromiumBrowser
     private let defaults: UserDefaults
     private var taskApps: Set<String> = []
     private var approvalContinuation: CheckedContinuation<Int, Never>?
@@ -31,8 +31,8 @@ struct ComputerUseModelReply {
     private var lastObservation: ComputerUseObservation?
     private static weak var owner: ComputerUseController?
     private static let allowedKey = "computerUseAllowedApplications.v1"
-    init(driver: (any ComputerUseDriving)? = nil, browser: ComputerUseBrowser? = nil, defaults: UserDefaults = .standard) {
-        self.driver = driver ?? ComputerUseMacDriver(); self.browser = browser ?? ComputerUseBrowser(); self.defaults = defaults
+    init(driver: (any ComputerUseDriving)? = nil, browser: ChromiumBrowser? = nil, defaults: UserDefaults = .standard) {
+        self.driver = driver ?? ComputerUseMacDriver(); self.browser = browser ?? ChromiumBrowser(); self.defaults = defaults
         allowedApps = Set(defaults.stringArray(forKey: Self.allowedKey) ?? []).filter { ComputerUsePolicy.allowedApp($0) }
         self.browser.onClose = { [weak self] in if self?.running == true { self?.stop() } }
     }
@@ -50,7 +50,7 @@ struct ComputerUseModelReply {
         let continuation = approvalContinuation; approvalContinuation = nil; continuation?.resume(returning: result)
     }
     func stop() {
-        stopped = true; browser.webView.stopLoading(); resolveApproval(0)
+        stopped = true; browser.stopLoading(); resolveApproval(0)
         status = "Arrêt demandé"; onStop?()
     }
     private func check() throws {
@@ -128,7 +128,7 @@ struct ComputerUseModelReply {
     func run(conversation: UUID, messages: [[String: String]], model: String,
              turn: @MainActor ([[String: Any]], String) async throws -> ComputerUseModelReply,
              update: @MainActor (String) -> Void) async throws {
-        guard !running, Self.owner == nil else { throw ComputerUseFailure("Une tâche computer use utilise déjà ce Mac.") }
+        guard !running, Self.owner == nil else { throw ComputerUseFailure("Une action graphique utilise déjà ce Mac.") }
         guard model != AppleFoundationModel.id else { throw ComputerUseFailure("Choisissez un modèle Host qui prend en charge les images et les appels d’outils.") }
         Self.owner = self
         var completed = false
@@ -143,7 +143,7 @@ struct ComputerUseModelReply {
             }
         }
         browserInputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .scrollWheel]) { [weak self] event in
-            if let self, self.activeTarget == "browser", event.window == self.browser.webView.window,
+            if let self, self.activeTarget == "browser", self.browser.contains(event: event),
                event.cgEvent?.getIntegerValueField(.eventSourceUserData) != ComputerUseMacDriver.eventMarker { self.stop() }
             return event
         }
@@ -166,7 +166,6 @@ struct ComputerUseModelReply {
             status = "Le modèle prépare la prochaine étape"
             let reply = try await turn(context, model)
             try check()
-            if reply.calls.isEmpty && toolCount == 0 { throw ComputerUseFailure("Le modèle n’a appelé aucun outil. Aucun computer use exécuté ; choisissez un modèle avec vision et outils.") }
             if !reply.text.isEmpty { accumulated += (accumulated.isEmpty ? "" : "\n\n") + reply.text; update(accumulated) }
             guard !reply.calls.isEmpty else {
                 guard !accumulated.isEmpty else { throw HostAssistantError.emptyReply }

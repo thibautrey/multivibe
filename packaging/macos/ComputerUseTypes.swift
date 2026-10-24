@@ -26,7 +26,7 @@ struct ComputerUseCommand: Codable {
     var changesState: Bool { !["list_apps", "observe"].contains(action) }
     func validate() throws {
         guard Self.actions.contains(action), (text?.utf8.count ?? 0) <= 16_000,
-              (target?.count ?? 0) <= 256, (observation?.count ?? 0) <= 64 else { throw ComputerUseFailure("Commande computer use invalide.") }
+              (target?.count ?? 0) <= 256, (observation?.count ?? 0) <= 64 else { throw ComputerUseFailure("Commande d’interface invalide.") }
         if action == "navigate" { _ = try ComputerUsePolicy.origin(url ?? "") }
         if action == "type", text == nil { throw ComputerUseFailure("Le texte à saisir est manquant.") }
         if action == "key", !ComputerUsePolicy.keys.contains(key ?? "") { throw ComputerUseFailure("Touche non autorisée. Utilisez return, tab, escape, backspace, delete, arrows, home, end, pageup, pagedown, select_all, copy, paste, undo ou redo.") }

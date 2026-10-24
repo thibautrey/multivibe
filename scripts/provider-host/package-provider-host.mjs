@@ -545,6 +545,13 @@ async function signMacApplication(application, identity) {
   ])) {
     await command("codesign", ["--force", "--sign", identity, "--options", "runtime", "--timestamp", binary]);
   }
+  const cefFramework = path.join(contents, "Frameworks", "Chromium Embedded Framework.framework");
+  const cefHelper = path.join(contents, "Frameworks", "MultiVibe Chromium Helper.app");
+  await command("codesign", ["--force", "--sign", identity, "--options", "runtime", "--timestamp", cefFramework]);
+  await command("codesign", [
+    "--force", "--sign", identity, "--options", "runtime", "--timestamp",
+    "--entitlements", path.join(repositoryRoot, "packaging", "macos", "chromium", "ChromiumHelper.entitlements"), cefHelper,
+  ]);
   await command("codesign", [
     "--force", "--sign", identity, "--options", "runtime", "--timestamp",
     "--entitlements", path.join(repositoryRoot, "packaging", "macos", "share", "Share.entitlements"),

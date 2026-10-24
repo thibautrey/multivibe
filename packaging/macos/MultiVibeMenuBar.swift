@@ -68,6 +68,9 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
 
     static func main() {
         let app = NSApplication.shared
+        // Info.plist selects MVCEFApplication. Instantiate that principal class
+        // before CEF initialization so Chromium receives the macOS event hooks.
+        _ = ChromiumRuntime.start()
         let delegate = MultiVibeMenuBarApp()
         app.delegate = delegate
         app.setActivationPolicy(.regular)
@@ -113,6 +116,8 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        assistantWindows.forEach { $0.store.stop(); $0.store.computer.browser.close() }
+        ChromiumRuntime.stop()
         refreshTimer?.invalidate()
         quotaTimer?.invalidate()
         notificationCloseWorkItem?.cancel()
