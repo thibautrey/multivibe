@@ -28,6 +28,7 @@ private enum ChatPalette {
     @State private var selectedImports: Set<UUID> = []
     @State private var search = ""
     @State private var models: [HostAssistantModel] = []
+    @State private var harnesses: [NativeConversationHarness] = [.native]
     @State private var loading = false
     @State private var importing = false
     @State private var deleteID: UUID?
@@ -38,6 +39,15 @@ private enum ChatPalette {
         if cloudMode { cloudDraft = value } else { store.edit { $0.draft = value } }
     }) }
     private var model: Binding<String> { Binding(get: { store.current?.model ?? "" }, set: { value in store.edit { $0.model = value }; HostAssistantClient.shared.defaultModel = value }) }
+    private var harness: Binding<String> { Binding(get: { store.current?.harnessID ?? "native" }, set: { value in
+        store.edit { conversation in
+            conversation.harnessID = value == "native" ? nil : value
+            conversation.harnessSessionID = nil
+        }
+        if value != "native", selectedLocalModel?.local == true, let remote = models.first(where: { $0.local != true }) {
+            model.wrappedValue = remote.id
+        }
+    }) }
     private var visible: [NativeChatConversation] {
         store.conversations.filter { (!$0.messages.isEmpty || !$0.draft.isEmpty) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.messages.contains { $0.content.localizedCaseInsensitiveContains(search) }) }
             .sorted { $0.updatedAt > $1.updatedAt }
@@ -48,12 +58,21 @@ private enum ChatPalette {
     private var selectedCloudModel: NativeAgentCatalogModel? {
         agent.models.first { $0.id == cloudModel }
     }
+    private var selectedHarness: NativeConversationHarness {
+        harnesses.first { $0.id == harness.wrappedValue } ?? .init(
+            id: harness.wrappedValue, name: harness.wrappedValue, available: false, configured: false,
+            description: "Ce harness n’est plus disponible sur ce Mac.",
+            capabilities: .init(sessions: true, streaming: true, tools: false, longTermMemory: false),
+            unavailableReason: "Ce harness n’est plus disponible sur ce Mac."
+        )
+    }
     private var selectedModelName: String {
         if cloudMode { return selectedCloudModel?.name ?? selectedCloudModel?.id ?? "Choisir un modèle" }
         return selectedLocalModel?.displayName ?? (model.wrappedValue.isEmpty ? "Choisir un modèle" : model.wrappedValue)
     }
     private var conversationSubtitle: String {
         if cloudMode { return "Hermes Cloud" }
+        if harness.wrappedValue != "native" { return "Orchestré par \(selectedHarness.name) · sur ce Mac" }
         if selectedLocalModel?.local == true { return "Privée · sur ce Mac" }
         return "Privée · via le Host"
     }
@@ -137,6 +156,7 @@ private enum ChatPalette {
             if store.current == nil { store.newConversation() }
             await agent.restore()
             await loadModels()
+            await loadHarnesses()
         }
         .sheet(isPresented: $cloudConsent) { consentSheet }
         .onChange(of: agent.accountID) { _ in
@@ -413,6 +433,7 @@ private enum ChatPalette {
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     .background(ChatPalette.surface, in: Circle())
                     .help("Joindre un document texte").disabled(cloudMode)
+                    if !cloudMode { harnessSelector }
                     modelSelector
                     Spacer(minLength: 12)
                     if cloudMode {
@@ -425,7 +446,10 @@ private enum ChatPalette {
                     } else {
                         Button { store.send() } label: { Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).frame(width: 25, height: 25) }
                             .buttonStyle(.borderedProminent).clipShape(Circle()).help("Envoyer (⌘↵)").keyboardShortcut(.return, modifiers: .command)
-                            .disabled(draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !models.contains { $0.id == model.wrappedValue })
+                            .disabled(draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                || !models.contains { $0.id == model.wrappedValue }
+                                || !selectedHarness.available
+                                || (harness.wrappedValue != "native" && selectedLocalModel?.local == true))
                     }
                 }.padding(.horizontal, 8).padding(.bottom, 7)
             }
@@ -437,6 +461,41 @@ private enum ChatPalette {
         }
         .frame(maxWidth: 900).frame(maxWidth: .infinity)
         .padding(.horizontal, 22).padding(.top, 9).padding(.bottom, 16)
+    }
+    private var harnessSelector: some View {
+        Menu {
+            ForEach(harnesses) { item in
+                Button {
+                    harness.wrappedValue = item.id
+                } label: {
+                    Label(item.name + (item.available ? "" : " — indisponible"),
+                          systemImage: item.id == harness.wrappedValue ? "checkmark" : harnessIcon(item))
+                }
+                .disabled(!item.available)
+                if item.id == "hermes-agent" && item.available {
+                    Text("Mémoire longue durée")
+                }
+            }
+            Divider()
+            Button("Actualiser les harnesses", systemImage: "arrow.clockwise") { Task { await loadHarnesses() } }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: harnessIcon(selectedHarness))
+                Text(selectedHarness.name).lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
+            }
+            .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+            .padding(.horizontal, 9).frame(height: 28)
+            .background(ChatPalette.surface, in: Capsule())
+        }
+        .menuStyle(.borderlessButton).tint(.secondary)
+        .help(selectedHarness.description)
+        .disabled(store.current?.messages.isEmpty == false || store.generating == store.selection)
+    }
+    private func harnessIcon(_ item: NativeConversationHarness) -> String {
+        if item.id == "hermes-agent" { return "brain.head.profile" }
+        if item.id == "pi" { return "point.3.connected.trianglepath.dotted" }
+        return "bolt.horizontal.circle"
     }
     private var modelSelector: some View {
         Menu {
@@ -465,6 +524,7 @@ private enum ChatPalette {
                     } label: {
                         Label(item.displayName, systemImage: item.id == model.wrappedValue ? "checkmark" : (item.local == true ? "apple.logo" : "network"))
                     }
+                    .disabled(harness.wrappedValue != "native" && item.local == true)
                 }
             }
             Divider()
@@ -490,11 +550,15 @@ private enum ChatPalette {
     }
     private var composerPrivacyText: String {
         if cloudMode { return "Exécuté dans votre espace Hermes Cloud" }
+        if harness.wrappedValue == "hermes-agent" { return "Orchestré par Hermes · mémoire longue durée active" }
+        if harness.wrappedValue == "pi" { return "Orchestré par Pi · session persistante sur ce Mac" }
         if selectedLocalModel?.local == true { return "Traité localement sur ce Mac" }
         return "Transmis au modèle sélectionné via votre Host"
     }
     private var composerPrivacyIcon: String {
         if cloudMode { return "cloud" }
+        if harness.wrappedValue == "hermes-agent" { return "brain.head.profile" }
+        if harness.wrappedValue == "pi" { return "point.3.connected.trianglepath.dotted" }
         return selectedLocalModel?.local == true ? "lock.fill" : "shield.lefthalf.filled"
     }
     private var cloudTranscript: some View {
@@ -567,6 +631,15 @@ private enum ChatPalette {
             }
         }
         catch { store.error = error.localizedDescription }
+    }
+    private func loadHarnesses() async {
+        do {
+            let detected = try await NativeHarnessClient.shared.harnesses()
+            harnesses = detected.isEmpty ? [.native] : detected
+        } catch {
+            harnesses = [.native]
+            if harness.wrappedValue != "native" { store.error = error.localizedDescription }
+        }
     }
     private func openDashboard() { (NSApplication.shared.delegate as? MultiVibeMenuBarApp)?.openDashboard() }
 }

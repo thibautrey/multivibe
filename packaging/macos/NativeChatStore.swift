@@ -15,6 +15,8 @@ struct NativeChatConversation: Codable, Identifiable {
     var messages: [NativeChatMessage] = []
     var updatedAt = Date()
     var draft = ""
+    var harnessID: String?
+    var harnessSessionID: String?
 }
 
 /// Device-owned history; provider credentials are never stored here.
@@ -85,6 +87,8 @@ struct NativeChatConversation: Codable, Identifiable {
             if conversations[i].messages.count == 1 { conversations[i].title = String(prompt.prefix(65)) }
         }
         let id = conversations[i].id, model = conversations[i].model
+        let harnessID = conversations[i].harnessID
+        let harnessSessionID = conversations[i].harnessSessionID
         let messages = conversations[i].messages
         conversations[i].messages.append(NativeChatMessage(role: "assistant", content: "", interrupted: true))
         conversations[i].updatedAt = Date()
@@ -92,8 +96,19 @@ struct NativeChatConversation: Codable, Identifiable {
         task = Task { @MainActor in
             defer { generating = nil; task = nil; save() }
             do {
-                try await HostAssistantClient.shared.stream(messages.map { ["role": $0.role, "content": $0.content] }, model: model) { text in
-                    self.updateStreamedReply(text, conversationID: id)
+                if let harnessID, harnessID != "native" {
+                    let harnessPrompt = retry ? (messages.last(where: { $0.role == "user" })?.content ?? "") : prompt
+                    let sessionID = try await NativeHarnessClient.shared.stream(
+                        harnessID: harnessID, conversationID: id, prompt: harnessPrompt, model: model,
+                        sessionID: harnessSessionID
+                    ) { text in self.updateStreamedReply(text, conversationID: id) }
+                    if let index = conversations.firstIndex(where: { $0.id == id }), let sessionID {
+                        conversations[index].harnessSessionID = sessionID
+                    }
+                } else {
+                    try await HostAssistantClient.shared.stream(messages.map { ["role": $0.role, "content": $0.content] }, model: model) { text in
+                        self.updateStreamedReply(text, conversationID: id)
+                    }
                 }
                 if let index = conversations.firstIndex(where: { $0.id == id }) {
                     conversations[index].messages[conversations[index].messages.count - 1].interrupted = false

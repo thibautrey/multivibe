@@ -948,6 +948,7 @@ export const HOST_HARNESS_DEFINITIONS: readonly HostHarnessDefinition[] = [
 ];
 
 const DEFAULT_EXECUTABLE_DIRECTORIES = [
+  ".pi/agent/bin",
   ".local/bin",
   ".npm-global/bin",
   ".bun/bin",
@@ -1052,6 +1053,24 @@ export class HostHarnessIntegrationManager {
   async get(id: string): Promise<HostHarnessView> {
     const definition = this.definition(id);
     return this.view(definition, await this.readState());
+  }
+
+  /** Resolve only a declared executable inside the same bounded directories used for detection. */
+  async executablePath(id: string): Promise<string | null> {
+    const definition = this.definition(id);
+    for (const executable of definition.executables) {
+      for (const rawDirectory of this.executableDirectories) {
+        const directory = rawDirectory.startsWith("/") ? rawDirectory : path.join(this.homeDirectory, rawDirectory);
+        const candidate = path.join(directory, executable);
+        try {
+          const stat = await fs.stat(candidate);
+          if (stat.isFile() && (stat.mode & 0o111) !== 0) return candidate;
+        } catch (error: any) {
+          if (error?.code !== "ENOENT") throw error;
+        }
+      }
+    }
+    return null;
   }
 
   startCatalogSynchronization(intervalMs = 2_000) {
