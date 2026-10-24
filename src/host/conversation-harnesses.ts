@@ -20,7 +20,7 @@ function harnessEnvironment(): NodeJS.ProcessEnv {
 }
 
 export type ConversationHarnessView = {
-  id: "native" | "hermes-agent" | "pi";
+  id: string;
   name: string;
   available: boolean;
   configured: boolean;
@@ -29,6 +29,10 @@ export type ConversationHarnessView = {
   unavailableReason?: string;
   canInstall: boolean;
   compatible: boolean;
+  detected: boolean;
+  conversationCapable: boolean;
+  category: string;
+  popularityRank: number;
 };
 
 export type ConversationHarnessRun = {
@@ -69,27 +73,37 @@ export class HostConversationHarnessManager {
     const native: ConversationHarnessView = {
       id: "native", name: "MultiVibe natif", available: true, configured: true,
       description: "Conversation directe avec le modèle sélectionné.", canInstall: false, compatible: true,
+      detected: true, conversationCapable: true, category: "native", popularityRank: 0,
       capabilities: { sessions: true, streaming: true, tools: false, longTermMemory: false },
     };
-    const ids = (["hermes-agent", "pi"] as const);
-    const supported = await Promise.all(ids.map(async (id): Promise<ConversationHarnessView> => {
-      const entry = detected.get(id);
-      const executable = entry?.detected ? await this.integrations.executablePath(id) : null;
-      const available = Boolean(entry?.detected && entry.configured && executable);
+    const entries = [...detected.values()];
+    const supported = await Promise.all(entries.map(async (entry, index): Promise<ConversationHarnessView> => {
+      const id = entry.id;
+      const conversationCapable = id === "hermes-agent" || id === "pi";
+      const executable = conversationCapable && entry.detected ? await this.integrations.executablePath(id) : null;
+      const available = Boolean(conversationCapable && entry.detected && entry.configured && executable);
       const memory = id === "hermes-agent";
       return {
         id,
-        name: id === "hermes-agent" ? "Hermes Agent" : "Pi",
+        name: entry.name,
         available,
-        configured: Boolean(entry?.configured),
-        description: memory
+        configured: Boolean(entry.configured),
+        description: conversationCapable ? (memory
           ? "Sessions Hermes avec mémoire longue durée et consolidation configurées sur ce Mac."
-          : "Sessions Pi persistantes avec orchestration et compaction du contexte.",
+          : "Sessions Pi persistantes avec orchestration et compaction du contexte.")
+          : entry.detected
+            ? `${entry.name} est détecté par MultiVibe et disponible dans les intégrations du Host.`
+            : `${entry.name} fait partie du catalogue de harnesses connu de MultiVibe.`,
         capabilities: { sessions: true, streaming: true, tools: memory, longTermMemory: memory },
-        canInstall: process.platform === "darwin" && !entry?.detected,
+        canInstall: process.platform === "darwin" && !entry.detected && id in INSTALLERS,
         compatible: process.platform === "darwin",
-        ...(!available ? { unavailableReason: !entry?.detected
+        detected: entry.detected,
+        conversationCapable,
+        category: entry.category,
+        popularityRank: index + 2,
+        ...(!available ? { unavailableReason: !entry.detected
           ? "Non installé sur ce Mac."
+          : !conversationCapable ? "Intégration Host disponible ; adaptateur de conversation dédié non disponible."
           : !entry.configured ? "Détecté, mais pas connecté à MultiVibe."
           : "Exécutable introuvable dans un emplacement sûr." } : {}),
       };

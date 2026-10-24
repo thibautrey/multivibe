@@ -21,6 +21,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate {
         let client = NativeHarnessClient()
         let harnesses = try await client.harnesses()
         precondition(harnesses.map(\.id) == ["native", "hermes-agent", "pi"])
+        precondition(harnesses.sortedForDisplay(lastUsedAt: ["pi": 2, "hermes-agent": 1]).map(\.id) == ["pi", "hermes-agent", "native"])
         var installationLogs: [String] = []
         try await client.install(harnessID: "pi") { installationLogs.append($0) }
         precondition(installationLogs == ["Downloading Pi…", "Connexion à MultiVibe configurée."])
