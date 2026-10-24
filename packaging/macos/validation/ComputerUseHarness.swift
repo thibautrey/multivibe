@@ -103,8 +103,15 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate {
             precondition(nativeObservation.text.contains("Entrée réelle été"))
             let button = try index("Valider la recette", nativeObservation)
             try await native.perform(.init(action: "click", observation: nativeObservation.id, element: button), target: target)
-            nativeObservation = try await native.observe(target: target)
-            precondition(nativeObservation.text.contains("Native confirmé : Entrée réelle été"))
+            let resultDeadline = Date().addingTimeInterval(2)
+            repeat {
+                nativeObservation = try await native.observe(target: target)
+                if nativeObservation.text.contains("Native confirmé : Entrée réelle été") { break }
+                try await Task.sleep(nanoseconds: 100_000_000)
+            } while Date() < resultDeadline
+            guard nativeObservation.text.contains("Native confirmé : Entrée réelle été") else {
+                throw ComputerUseFailure("AXPress did not expose the fixture result before the validation deadline")
+            }
             do { try await native.perform(.init(action: "click", observation: "stale", element: button), target: target); fatalError("Stale native observation accepted") } catch {}
             do { _ = try await native.observe(target: "com.apple.Terminal"); fatalError("Protected application captured") } catch {}
             print("PASS real macOS ScreenCaptureKit, AX tree, PID Unicode input, AXPress and verified native result")
