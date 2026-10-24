@@ -110,10 +110,16 @@ private struct NativeInteractiveCard: View {
         .background(.tint.opacity(0.045))
     }
 
+    private var sourceText: String {
+        let sections: [String] = [document.html, document.css ?? "",
+                                  document.jsFunctions ?? "", document.jsExpressions ?? ""]
+        return sections.joined(separator: "\n")
+    }
+
     private var sourceDisclosure: some View {
         DisclosureGroup {
             ScrollView {
-                Text(document.html + "\n" + (document.css ?? "") + "\n" + (document.jsFunctions ?? "") + "\n" + (document.jsExpressions ?? ""))
+                Text(sourceText)
                     .font(.system(size: 10.5, design: .monospaced)).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
             }.frame(maxHeight: 180)
