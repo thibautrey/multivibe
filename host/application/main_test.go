@@ -267,13 +267,29 @@ func TestSignalAndWaitForChildAllowsGracefulCleanup(t *testing.T) {
 		t.Skip("POSIX signal behavior")
 	}
 	marker := filepath.Join(t.TempDir(), "stopped")
-	child := exec.Command("/bin/sh", "-c", `trap 'printf stopped > "$1"; exit 0' TERM; while :; do sleep 1; done`, "multivibe-child", marker)
+	ready := marker + ".ready"
+	child := exec.Command("/bin/sh", "-c", `trap 'printf stopped > "$1"; exit 0' TERM; printf ready > "$2"; while :; do sleep 1; done`, "multivibe-child", marker, ready)
 	if err := child.Start(); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
 	go func() { done <- child.Wait() }()
-	time.Sleep(100 * time.Millisecond)
+	t.Cleanup(func() { _ = child.Process.Kill() })
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if value, err := os.ReadFile(ready); err == nil && string(value) == "ready" {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("child exited before installing its signal handler: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("child did not install its signal handler")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	signalAndWaitForChild(child.Process, done, syscall.SIGTERM)
 	if value, err := os.ReadFile(marker); err != nil || string(value) != "stopped" {
 		t.Fatalf("child did not complete graceful cleanup: %q %v", value, err)

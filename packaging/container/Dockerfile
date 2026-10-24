@@ -12,7 +12,8 @@ LABEL org.opencontainers.image.title="MultiVibe Host" \
       org.opencontainers.image.version="$MULTIVIBE_VERSION" \
       org.opencontainers.image.revision="$MULTIVIBE_SOURCE_COMMIT"
 
-RUN apt-get update \
+RUN chmod 1777 /tmp \
+ && apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
       ca-certificates \
       git \
