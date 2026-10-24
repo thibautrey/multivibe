@@ -7,7 +7,7 @@ extension HostAssistantClient {
         guard model != AppleFoundationModel.id, !messages.isEmpty, messages.count <= 220 else { throw HostAssistantError.invalidInput }
         let body = try JSONSerialization.data(withJSONObject: ["model": model, "stream": true, "messages": messages,
             "tools": [ComputerUseController.tool], "tool_choice": "auto", "parallel_tool_calls": false, "max_completion_tokens": 8192])
-        guard body.count <= 12 * 1024 * 1024 else { throw ComputerUseFailure("Le contexte computer use est trop volumineux. Lancez une nouvelle conversation.") }
+        guard body.count <= 12 * 1024 * 1024 else { throw ComputerUseFailure("Le contexte de contrôle visuel est trop volumineux. Lancez une nouvelle conversation.") }
         let (base, key) = try await connection()
         guard base.scheme == "http", base.host == "127.0.0.1" else { throw HostAssistantError.unavailable }
         var request = URLRequest(url: base.appendingPathComponent("v1/chat/completions"))

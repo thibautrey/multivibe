@@ -22,14 +22,6 @@ struct NativeConversationHarness: Codable, Identifiable, Hashable {
     let category: String?
     let popularityRank: Int?
 
-    static let computerUse = NativeConversationHarness(
-        id: "computer-use", name: "Computer use", available: true, configured: true,
-        description: "Piloter le navigateur intégré et les applications macOS autorisées. Modèle avec vision et outils requis.",
-        capabilities: .init(sessions: true, streaming: false, tools: true, longTermMemory: false), unavailableReason: nil,
-        canInstall: false, compatible: true, detected: true, conversationCapable: true,
-        category: "native", popularityRank: 1
-    )
-
     static let native = NativeConversationHarness(
         id: "native", name: "MultiVibe natif", available: true, configured: true,
         description: "Conversation directe avec le modèle sélectionné.",

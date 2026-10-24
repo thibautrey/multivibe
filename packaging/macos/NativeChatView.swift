@@ -32,9 +32,7 @@ private struct HarnessLogo: View {
 
     var body: some View {
         Group {
-            if id == "computer-use" {
-                Image(systemName: "cursorarrow.motionlines").resizable().scaledToFit().foregroundStyle(.secondary)
-            } else if let resource,
+            if let resource,
                       let url = Bundle.main.url(forResource: resource.0, withExtension: resource.1, subdirectory: "harnesses"),
                let image = NSImage(contentsOf: url) {
                 Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
@@ -51,6 +49,8 @@ private struct HarnessLogo: View {
 
 @MainActor struct NativeChatView: View {
     @ObservedObject var store: NativeChatStore
+    @ObservedObject private var desktopAgent: ComputerUseController
+    @ObservedObject private var browser: ChromiumBrowser
     @StateObject private var agent: NativeChatAgentCoordinator
     @State private var cloudConsent = false
     @State private var cloudMode = false
@@ -63,7 +63,7 @@ private struct HarnessLogo: View {
     @State private var search = ""
     @AppStorage("desktopInteractiveAnswers") private var interactiveAnswers = true
     @State private var models: [HostAssistantModel] = []
-    @State private var harnesses: [NativeConversationHarness] = [.native, .computerUse]
+    @State private var harnesses: [NativeConversationHarness] = [.native]
     @State private var choosingHarness = false
     @State private var installingHarness: NativeConversationHarness?
     @State private var installationLogs: [String] = []
@@ -79,6 +79,8 @@ private struct HarnessLogo: View {
 
     init(store: NativeChatStore, agent: NativeChatAgentCoordinator? = nil) {
         self.store = store
+        _desktopAgent = ObservedObject(wrappedValue: store.computer)
+        _browser = ObservedObject(wrappedValue: store.computer.browser)
         _agent = StateObject(wrappedValue: agent ?? NativeChatAgentCoordinator())
     }
 
@@ -128,6 +130,7 @@ private struct HarnessLogo: View {
         return "Privée · via le Host"
     }
     var body: some View {
+        HSplitView {
         NavigationSplitView {
             VStack(spacing: 0) {
                 sidebarHeader
@@ -198,15 +201,18 @@ private struct HarnessLogo: View {
                         Button { store.error = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain).help("Masquer l’erreur")
                     }.font(.callout).foregroundStyle(.red).padding(12)
                 }
-                if !cloudMode, harness.wrappedValue == "computer-use" {
-                    ComputerUsePanel(controller: store.computer, conversation: store.selection,
-                        savedEvents: store.current?.computerUseEvents ?? [], stop: { store.stop() })
-                }
+                if !cloudMode { AgentAccessView(controller: desktopAgent, conversation: store.selection, stop: { store.stop() }) }
                 composer
             }.background(ChatPalette.canvas)
         }
+        .frame(minWidth: 680)
+        if browser.isVisible {
+            ChromiumBrowserPanel(browser: browser)
+                .frame(minWidth: 390, idealWidth: 560)
+        }
+        }
         .tint(ChatPalette.accent)
-        .frame(minWidth: 760, minHeight: 500)
+        .frame(minWidth: browser.isVisible ? 1080 : 760, minHeight: 500)
         .task {
             if store.current == nil { store.newConversation() }
             await agent.restore()
@@ -609,9 +615,6 @@ private struct HarnessLogo: View {
                 if item.available && item.capabilities.longTermMemory {
                     Label("Mémoire longue durée", systemImage: "brain.head.profile")
                         .font(.caption2.weight(.medium)).foregroundStyle(ChatPalette.accent)
-                } else if item.available && item.id == "computer-use" {
-                    Label("Navigateur et applications", systemImage: "cursorarrow.motionlines")
-                        .font(.caption2.weight(.medium)).foregroundStyle(ChatPalette.accent)
                 } else if item.available && item.id == "pi" {
                     Label("Session persistante", systemImage: "clock.arrow.circlepath")
                         .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
@@ -747,7 +750,6 @@ private struct HarnessLogo: View {
     }
     private var composerPrivacyText: String {
         if cloudMode { return "Exécuté dans votre espace Hermes Cloud" }
-        if harness.wrappedValue == "computer-use" { return "Captures transmises au modèle choisi · autorisations par cible · arrêt à tout moment" }
         if harness.wrappedValue == "hermes-agent" { return "Orchestré par Hermes · mémoire longue durée active" }
         if harness.wrappedValue == "pi" { return "Orchestré par Pi · session persistante sur ce Mac" }
         if selectedLocalModel?.local == true { return "Traité localement sur ce Mac" }
@@ -835,9 +837,9 @@ private struct HarnessLogo: View {
     private func loadHarnesses() async {
         do {
             let detected = try await NativeHarnessClient.shared.harnesses()
-            harnesses = (detected.isEmpty ? [.native] : detected.filter { $0.id != "computer-use" }) + [.computerUse]
+            harnesses = detected.isEmpty ? [.native] : detected.filter { $0.id != "computer-use" }
         } catch {
-            harnesses = [.native, .computerUse]
+            harnesses = [.native]
             if harness.wrappedValue != "native" { store.error = error.localizedDescription }
         }
     }

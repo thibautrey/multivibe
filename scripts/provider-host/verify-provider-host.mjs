@@ -854,6 +854,8 @@ async function validateNativeFiles(root, manifest) {
   const prefix = mac ? "MultiVibe Host.app/Contents/" : "";
   const explicit = mac ? [
     `${prefix}Frameworks/node`, `${prefix}Resources/ollama-runtime/ollama`, `${prefix}Resources/ollama-runtime/llama-server`,
+    `${prefix}Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework`,
+    `${prefix}Frameworks/MultiVibe Chromium Helper.app/Contents/MacOS/MultiVibe Chromium Helper`,
     `${prefix}Resources/ollama-runtime/llama-quantize`, `${prefix}Helpers/multivibe-provider-agent`,
     `${prefix}Helpers/multivibe-runtime-benchmark`, `${prefix}Helpers/multivibe-v1-edge`,
     `${prefix}MacOS/multivibe-host`,
@@ -1321,6 +1323,9 @@ async function validateTree(root, options, archiveInspection) {
     `${macPrefix}/MacOS/multivibe-host`, `${macPrefix}/MacOS/MultiVibe Host`,
     `${macPrefix}/Resources/MultiVibeMenuBarIcon.png`, `${macPrefix}/Resources/MultiVibeMenuBarTemplate.png`,
     `${macPrefix}/Resources/MultiVibe.icns`,
+    `${macPrefix}/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework`,
+    `${macPrefix}/Frameworks/MultiVibe Chromium Helper.app/Contents/MacOS/MultiVibe Chromium Helper`,
+    `${macPrefix}/Resources/ChromiumEmbeddedFramework-LICENSE.txt`,
     `${macPrefix}/Resources/app/dist/server.js`,
     `${macPrefix}/Resources/app/dist/instrument.js`, `${macPrefix}/Resources/provider/provider-model-catalog.json`,
     `${macPrefix}/Resources/app/modules/security/multivibe.module.json`,
