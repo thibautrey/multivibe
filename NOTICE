@@ -11,6 +11,11 @@ weights, when obtained separately, likewise retain their own terms. Neither is
 automatically covered by MultiVibe Core's Apache-2.0 license, and this source
 archive makes no broader grant for them.
 
+The macOS Desktop distribution embeds Chromium Embedded Framework under its
+BSD license. The exact CEF/Chromium revision and architecture-specific archive
+digests are pinned by the release build; the upstream license is included in
+the application bundle as `ChromiumEmbeddedFramework-LICENSE.txt`.
+
 Provider marks embedded in the iOS model catalog are vendored from the same
 LobeHub Icons MIT-licensed set documented under `web/public/assets/providers`
 where available. Apple and Meta vector marks are sourced from the CC0-1.0
