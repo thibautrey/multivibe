@@ -35,6 +35,7 @@ import { MultivibeTeamSyncService } from "./team-sync.js";
 import { AccountStoreManagedEnrollmentInstaller, ManagedTeamEnrollmentService } from "./managed-team-enrollment.js";
 import { createAdminRouter } from "./routes/admin/index.js";
 import { HostHarnessIntegrationManager } from "./host/harness-integrations.js";
+import { HostConversationHarnessManager } from "./host/conversation-harnesses.js";
 import { oauthConfig } from "./oauth-config.js";
 import {
   ADMIN_TOKEN,
@@ -252,6 +253,9 @@ const hostHarnessIntegrations = MULTIVIBE_HOST_APPLICATION
         ? V1_EDGE_BASE_URL
         : `http://127.0.0.1:${nodePort}`,
     })
+  : undefined;
+const hostConversationHarnesses = hostHarnessIntegrations
+  ? new HostConversationHarnessManager(hostHarnessIntegrations, path.join(dataDir, "conversation-harness-sessions"))
   : undefined;
 const capacityTracker = new CapacityTracker();
 const jobStore = new JobStore(
@@ -545,6 +549,7 @@ const adminRouter = createAdminRouter({
   localPreparation,
   hostApplication: MULTIVIBE_HOST_APPLICATION,
   hostHarnessIntegrations,
+  hostConversationHarnesses,
   providerWorkerEstimateClient,
   moduleManager,
   hostUpdateController,

@@ -116,6 +116,10 @@ import {
   HostHarnessIntegrationError,
   type HostHarnessIntegrationManager,
 } from "../../host/harness-integrations.js";
+import {
+  ConversationHarnessError,
+  type HostConversationHarnessManager,
+} from "../../host/conversation-harnesses.js";
 import { CODING_ECONOMY_ALIAS_DESCRIPTION, CODING_ECONOMY_PLUGIN } from "../../coding-economy-model.js";
 import { buildTaskLedger, buildTaskLedgerEntry } from "../../task-ledger.js";
 import { resolveVirtualModels, syncVirtualModelAliases } from "../../virtual-model-registry.js";
@@ -160,6 +164,7 @@ export type AdminRoutesOptions = {
   localPreparation?: LocalModelPreparation;
   hostApplication?: boolean;
   hostHarnessIntegrations?: HostHarnessIntegrationManager;
+  hostConversationHarnesses?: HostConversationHarnessManager;
   providerWorkerEstimateClient?: ProviderWorkerEstimateClient;
   moduleManager?: ModuleManager;
   hostUpdateController?: HostUpdateController;
@@ -616,6 +621,48 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     } catch (error: any) {
       const status = error instanceof HostHarnessIntegrationError ? error.status : 500;
       return res.status(status).json({ error: error?.message ?? "Harness detection failed" });
+    }
+  });
+
+  router.get("/host-conversation-harnesses", async (_req, res) => {
+    res.setHeader("cache-control", "no-store");
+    if (!options.hostApplication || !options.hostConversationHarnesses) {
+      return res.json({ harnesses: [] });
+    }
+    try {
+      return res.json({ harnesses: await options.hostConversationHarnesses.list() });
+    } catch (error: any) {
+      const status = error instanceof ConversationHarnessError ? error.status : 500;
+      return res.status(status).json({ error: error?.message ?? "Conversation harness detection failed" });
+    }
+  });
+
+  router.post("/host-conversation-harnesses/:id/run", async (req, res) => {
+    if (!options.hostApplication || !options.hostConversationHarnesses) {
+      return res.status(404).json({ error: "Conversation harnesses are available only in MultiVibe Host" });
+    }
+    const controller = new AbortController();
+    res.on("close", () => { if (!res.writableEnded) controller.abort(); });
+    res.status(200);
+    res.setHeader("content-type", "text/event-stream; charset=utf-8");
+    res.setHeader("cache-control", "no-store");
+    res.setHeader("x-accel-buffering", "no");
+    res.flushHeaders();
+    const emit = (value: unknown) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(value)}\n\n`); };
+    try {
+      const result = await options.hostConversationHarnesses.run({
+        harnessId: String(req.params.id) as "hermes-agent" | "pi",
+        conversationId: String(req.body?.conversationId ?? ""),
+        prompt: String(req.body?.prompt ?? ""),
+        model: String(req.body?.model ?? ""),
+        ...(req.body?.sessionId ? { sessionId: String(req.body.sessionId) } : {}),
+      }, controller.signal, (text) => emit({ type: "text", text }));
+      emit({ type: "result", ...result });
+      res.end();
+    } catch (error: any) {
+      const status = error instanceof ConversationHarnessError ? error.status : 500;
+      emit({ type: "error", status, error: error?.message ?? "Conversation harness failed" });
+      res.end();
     }
   });
 

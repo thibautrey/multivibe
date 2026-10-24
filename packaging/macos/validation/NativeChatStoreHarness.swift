@@ -12,6 +12,18 @@ import Foundation
     }
 }
 
+@MainActor final class NativeHarnessClient {
+    static let shared = NativeHarnessClient()
+    var receivedHarnessID: String?
+    func stream(harnessID: String, conversationID: UUID, prompt: String, model: String, sessionID: String?,
+                update: @MainActor (String) -> Void) async throws -> String? {
+        receivedHarnessID = harnessID
+        precondition(prompt == "Brouillon à conserver")
+        update("Réponse du harness")
+        return "session-fixture"
+    }
+}
+
 @main struct NativeChatStoreHarness {
     @MainActor static func main() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -52,6 +64,12 @@ import Foundation
         while store.generating != nil { try await Task.sleep(nanoseconds: 10_000_000) }
         precondition(store.current?.draft == "Brouillon à conserver")
         precondition(store.current?.messages.isEmpty == true)
+        store.edit { $0.harnessID = "pi" }
+        store.send()
+        while store.generating != nil { try await Task.sleep(nanoseconds: 10_000_000) }
+        precondition(NativeHarnessClient.shared.receivedHarnessID == "pi")
+        precondition(store.current?.harnessSessionID == "session-fixture")
+        precondition(store.current?.messages.last?.content == "Réponse du harness")
         store.delete(first)
         precondition(store.conversations.count == 1)
         try Data("invalid-history".utf8).write(to: file)
@@ -60,6 +78,6 @@ import Foundation
         corrupt.newConversation()
         let original = try String(contentsOf: file, encoding: .utf8)
         precondition(original == "invalid-history")
-        print("PASS history persistence, permissions, empty reuse, multi-turn context, cancellation, retry, selection isolation, deletion, corrupt-file preservation")
+        print("PASS history persistence, permissions, harness routing/session, multi-turn context, cancellation, retry, selection isolation, deletion, corrupt-file preservation")
     }
 }
