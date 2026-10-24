@@ -1,9 +1,13 @@
 import Foundation
 
+enum AppleFoundationModel { static let id = "apple-local" }
+enum HostAssistantError: Error { case emptyReply }
+
 @MainActor final class HostAssistantClient {
     static let shared = HostAssistantClient()
     var defaultModel = "fixture"
     var received: [[String: String]] = []
+    func computerTurn(_ messages: [[String: Any]], model: String) async throws -> ComputerUseModelReply { fatalError("Unexpected computer use") }
     func stream(_ messages: [[String: String]], model: String, update: @MainActor (String) -> Void) async throws {
         received = messages
         update("Partiel")
