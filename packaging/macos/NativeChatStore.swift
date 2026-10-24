@@ -17,6 +17,7 @@ struct NativeChatConversation: Codable, Identifiable {
     var draft = ""
     var harnessID: String?
     var harnessSessionID: String?
+    var computerUseEvents: [ComputerUseEvent]?
 }
 
 /// Device-owned history; provider credentials are never stored here.
@@ -25,6 +26,7 @@ struct NativeChatConversation: Codable, Identifiable {
     @Published var selection: UUID?
     @Published var error: String?
     @Published var generating: UUID?
+    let computer = ComputerUseController()
     private var task: Task<Void, Never>?
     private let file: URL
     private var canSave = true
@@ -43,6 +45,7 @@ struct NativeChatConversation: Codable, Identifiable {
             self.error = "L’historique ne peut pas être lu. Le fichier original est préservé : \(error.localizedDescription)"
         }
         selection = conversations.first?.id
+        computer.onStop = { [weak self] in self?.task?.cancel() }
     }
     var current: NativeChatConversation? { conversations.first { $0.id == selection } }
     func newConversation(text: String = "") {
@@ -72,7 +75,7 @@ struct NativeChatConversation: Codable, Identifiable {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         } catch { self.error = "Enregistrement impossible : \(error.localizedDescription)" }
     }
-    func stop() { task?.cancel() }
+    func stop() { task?.cancel(); if computer.running { computer.stop() } }
     func send(retry: Bool = false) {
         guard generating == nil, let i = conversations.firstIndex(where: { $0.id == selection }) else { return }
         let prompt = conversations[i].draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -94,9 +97,18 @@ struct NativeChatConversation: Codable, Identifiable {
         conversations[i].updatedAt = Date()
         generating = id; error = nil; save()
         task = Task { @MainActor in
-            defer { generating = nil; task = nil; save() }
+            defer {
+                if harnessID == "computer-use", let index = conversations.firstIndex(where: { $0.id == id }) {
+                    conversations[index].computerUseEvents = Array(((conversations[index].computerUseEvents ?? []) + computer.events).suffix(200))
+                }
+                generating = nil; task = nil; save()
+            }
             do {
-                if let harnessID, harnessID != "native" {
+                if harnessID == "computer-use" {
+                    try await computer.run(conversation: id, messages: messages.map { ["role": $0.role, "content": $0.content] }, model: model,
+                        turn: { context, model in try await HostAssistantClient.shared.computerTurn(context, model: model) },
+                        update: { text in self.updateStreamedReply(text, conversationID: id) })
+                } else if let harnessID, harnessID != "native" {
                     let harnessPrompt = retry ? (messages.last(where: { $0.role == "user" })?.content ?? "") : prompt
                     let sessionID = try await NativeHarnessClient.shared.stream(
                         harnessID: harnessID, conversationID: id, prompt: harnessPrompt, model: model,

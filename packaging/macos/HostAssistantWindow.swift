@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @MainActor
-final class HostAssistantWindow: NSWindowController {
+final class HostAssistantWindow: NSWindowController, NSWindowDelegate {
     let store = NativeChatStore()
     init() {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780), styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)
@@ -14,7 +14,9 @@ final class HostAssistantWindow: NSWindowController {
         window.isReleasedWhenClosed = false
         window.center()
         super.init(window: window)
+        window.delegate = self
     }
+    func windowWillClose(_ notification: Notification) { if store.computer.running { store.stop() } }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 }
 

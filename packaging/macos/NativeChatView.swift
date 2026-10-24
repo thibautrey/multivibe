@@ -17,7 +17,7 @@ private enum ChatPalette {
 
 @MainActor struct NativeChatView: View {
     @ObservedObject var store: NativeChatStore
-    @StateObject private var agent = NativeChatAgentCoordinator()
+    @StateObject private var agent: NativeChatAgentCoordinator
     @State private var cloudConsent = false
     @State private var cloudMode = false
     @State private var cloudSelection: UUID?
@@ -28,12 +28,17 @@ private enum ChatPalette {
     @State private var selectedImports: Set<UUID> = []
     @State private var search = ""
     @State private var models: [HostAssistantModel] = []
-    @State private var harnesses: [NativeConversationHarness] = [.native]
+    @State private var harnesses: [NativeConversationHarness] = [.native, .computerUse]
     @State private var loading = false
     @State private var importing = false
     @State private var deleteID: UUID?
     @State private var speech = AVSpeechSynthesizer()
     @FocusState private var composing: Bool
+
+    init(store: NativeChatStore, agent: NativeChatAgentCoordinator? = nil) {
+        self.store = store
+        _agent = StateObject(wrappedValue: agent ?? NativeChatAgentCoordinator())
+    }
 
     private var draft: Binding<String> { Binding(get: { cloudMode ? cloudDraft : (store.current?.draft ?? "") }, set: { value in
         if cloudMode { cloudDraft = value } else { store.edit { $0.draft = value } }
@@ -149,6 +154,10 @@ private enum ChatPalette {
                         Button { store.error = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain).help("Masquer l’erreur")
                     }.font(.callout).foregroundStyle(.red).padding(12)
                 }
+                if !cloudMode, harness.wrappedValue == "computer-use" {
+                    ComputerUsePanel(controller: store.computer, conversation: store.selection,
+                        savedEvents: store.current?.computerUseEvents ?? [], stop: { store.stop() })
+                }
                 composer
             }.background(ChatPalette.canvas)
         }
@@ -167,9 +176,13 @@ private enum ChatPalette {
         }
         .onChange(of: cloudSelection) { _ in cloudDraft = "" }
         .onChange(of: cloudMode) { enabled in
+            if enabled && store.computer.running { store.stop() }
             if enabled { Task { do { try await agent.loadModels(); cloudModel = agent.models.first?.id ?? ""; cloudSelection = agent.cloudConversations.first?.id } catch { agent.error = error.localizedDescription } } }
         }
-        .onChange(of: store.selection) { _ in speech.stopSpeaking(at: .immediate) }
+        .onChange(of: store.selection) { selection in
+            speech.stopSpeaking(at: .immediate)
+            if store.computer.running && store.computer.conversationID != selection { store.stop() }
+        }
         .alert("Supprimer cette conversation ?", isPresented: Binding(get: { deleteID != nil }, set: { if !$0 { deleteID = nil } })) {
             Button("Annuler", role: .cancel) { deleteID = nil }
             Button("Supprimer", role: .destructive) { if let id = deleteID { store.delete(id) }; deleteID = nil; if store.current == nil { store.newConversation() } }
@@ -496,6 +509,7 @@ private enum ChatPalette {
         .disabled(store.current?.messages.isEmpty == false || store.generating == store.selection)
     }
     private func harnessIcon(_ item: NativeConversationHarness) -> String {
+        if item.id == "computer-use" { return "cursorarrow.motionlines" }
         if item.id == "hermes-agent" { return "brain.head.profile" }
         if item.id == "pi" { return "point.3.connected.trianglepath.dotted" }
         return "bolt.horizontal.circle"
@@ -553,6 +567,7 @@ private enum ChatPalette {
     }
     private var composerPrivacyText: String {
         if cloudMode { return "Exécuté dans votre espace Hermes Cloud" }
+        if harness.wrappedValue == "computer-use" { return "Captures transmises au modèle choisi · autorisations par cible · arrêt à tout moment" }
         if harness.wrappedValue == "hermes-agent" { return "Orchestré par Hermes · mémoire longue durée active" }
         if harness.wrappedValue == "pi" { return "Orchestré par Pi · session persistante sur ce Mac" }
         if selectedLocalModel?.local == true { return "Traité localement sur ce Mac" }
@@ -638,9 +653,9 @@ private enum ChatPalette {
     private func loadHarnesses() async {
         do {
             let detected = try await NativeHarnessClient.shared.harnesses()
-            harnesses = detected.isEmpty ? [.native] : detected
+            harnesses = (detected.isEmpty ? [.native] : detected.filter { $0.id != "computer-use" }) + [.computerUse]
         } catch {
-            harnesses = [.native]
+            harnesses = [.native, .computerUse]
             if harness.wrappedValue != "native" { store.error = error.localizedDescription }
         }
     }

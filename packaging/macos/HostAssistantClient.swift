@@ -38,7 +38,7 @@ final class HostAssistantClient {
         set { UserDefaults.standard.set(newValue, forKey: Self.defaultModelKey) }
     }
 
-    private func connection() async throws -> (URL, String) {
+    func connection() async throws -> (URL, String) {
         guard let app = NSApplication.shared.delegate as? MultiVibeMenuBarApp else { throw HostAssistantError.unavailable }
         // Explicit invocation can start the service even when launch-at-login is off.
         if !app.operational {
