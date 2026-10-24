@@ -11,6 +11,7 @@ export type CodexQuotaResetForecast = {
 
 export const CODEX_QUOTA_RESET_FORECAST_CACHE_MS = 5 * 60_000;
 export const CODEX_QUOTA_RESET_FORECAST_RETRY_MS = 60_000;
+export const CODEX_QUOTA_RESET_FORECAST_TIMEOUT_MS = 5_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -18,16 +19,34 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export async function fetchCodexQuotaResetForecast(
   fetchImpl: typeof fetch = fetch,
+  timeoutMs = CODEX_QUOTA_RESET_FORECAST_TIMEOUT_MS,
 ): Promise<CodexQuotaResetForecast> {
-  const response = await fetchImpl(CODEX_QUOTA_RESET_FORECAST_API_URL, {
-    headers: { accept: "application/json" },
-    signal: AbortSignal.timeout(5_000),
+  const controller = new AbortController();
+  let timeout: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new Error("forecast upstream timed out"));
+    }, timeoutMs);
+    timeout.unref?.();
   });
-  if (!response.ok) {
-    throw new Error(`forecast upstream returned HTTP ${response.status}`);
+  const operation = (async () => {
+    const response = await fetchImpl(CODEX_QUOTA_RESET_FORECAST_API_URL, {
+      headers: { accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`forecast upstream returned HTTP ${response.status}`);
+    }
+    const payload: unknown = await response.json();
+    return payload;
+  })();
+  let payload: unknown;
+  try {
+    payload = await Promise.race([operation, deadline]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
-
-  const payload: unknown = await response.json();
   const forecast = isRecord(payload) && isRecord(payload.forecast)
     ? payload.forecast
     : undefined;
@@ -55,6 +74,7 @@ export class CodexQuotaResetForecastCache {
   constructor(
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly now: () => number = Date.now,
+    private readonly timeoutMs = CODEX_QUOTA_RESET_FORECAST_TIMEOUT_MS,
   ) {}
 
   async get(): Promise<CodexQuotaResetForecast> {
@@ -62,7 +82,7 @@ export class CodexQuotaResetForecastCache {
     if (this.value && now < this.expiresAt) return this.value;
     if (this.failure && now < this.expiresAt) throw this.failure;
     if (this.inFlight) return this.inFlight;
-    this.inFlight = fetchCodexQuotaResetForecast(this.fetchImpl)
+    this.inFlight = fetchCodexQuotaResetForecast(this.fetchImpl, this.timeoutMs)
       .then((value) => {
         this.value = value;
         this.failure = undefined;

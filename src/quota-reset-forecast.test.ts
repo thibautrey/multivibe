@@ -41,6 +41,22 @@ test("rejects an unavailable forecast upstream", async () => {
   );
 });
 
+test("bounds a forecast transport that ignores abort and lets the cache recover", async () => {
+  let now = 1_800_000_000_000;
+  let calls = 0;
+  const cache = new CodexQuotaResetForecastCache(async () => {
+    calls += 1;
+    if (calls === 1) return new Promise<Response>(() => undefined);
+    return Response.json({ forecast: { score: 7, state: "quiet" } });
+  }, () => now, 10);
+  await assert.rejects(cache.get(), /timed out/);
+  await assert.rejects(cache.get(), /timed out/);
+  assert.equal(calls, 1);
+  now += 61_000;
+  assert.equal((await cache.get()).score, 7);
+  assert.equal(calls, 2);
+});
+
 test("forecast cache coalesces and throttles menu-bar polling", async () => {
   let now = 1_800_000_000_000;
   let calls = 0;
