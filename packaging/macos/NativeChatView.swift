@@ -10,6 +10,9 @@ private enum ChatPalette {
             : NSColor(srgbRed: 0.03, green: 0.45, blue: 0.26, alpha: 1)
     })
     static let surface = Color(nsColor: .controlBackgroundColor)
+    static let canvas = Color(nsColor: .textBackgroundColor)
+    static let elevated = Color(nsColor: .windowBackgroundColor)
+    static let hairline = Color(nsColor: .separatorColor).opacity(0.55)
 }
 
 @MainActor struct NativeChatView: View {
@@ -39,15 +42,30 @@ private enum ChatPalette {
         store.conversations.filter { (!$0.messages.isEmpty || !$0.draft.isEmpty) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.messages.contains { $0.content.localizedCaseInsensitiveContains(search) }) }
             .sorted { $0.updatedAt > $1.updatedAt }
     }
+    private var selectedLocalModel: HostAssistantModel? {
+        models.first { $0.id == model.wrappedValue }
+    }
+    private var selectedCloudModel: NativeAgentCatalogModel? {
+        agent.models.first { $0.id == cloudModel }
+    }
+    private var selectedModelName: String {
+        if cloudMode { return selectedCloudModel?.name ?? selectedCloudModel?.id ?? "Choisir un modèle" }
+        return selectedLocalModel?.displayName ?? (model.wrappedValue.isEmpty ? "Choisir un modèle" : model.wrappedValue)
+    }
+    private var conversationSubtitle: String {
+        if cloudMode { return "Hermes Cloud" }
+        if selectedLocalModel?.local == true { return "Privée · sur ce Mac" }
+        return "Privée · via le Host"
+    }
     var body: some View {
         NavigationSplitView {
             VStack(spacing: 0) {
                 sidebarHeader
                 sidebarPrimaryActions
                 HStack {
-                    Text("CONVERSATIONS RÉCENTES").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    Text(cloudMode ? "ESPACE CLOUD" : "RÉCENTES").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
                     Spacer()
-                }.padding(.horizontal, 16).padding(.top, 18).padding(.bottom, 8)
+                }.padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 7)
                 ScrollView {
                     LazyVStack(spacing: 4) {
                     if cloudMode {
@@ -58,11 +76,14 @@ private enum ChatPalette {
                         }
                         ForEach(cloudVisible) { conversation in
                             Button { cloudSelection = conversation.id } label: {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(conversation.title).lineLimit(2)
-                                    if conversation.conflicted { Text("Conflit à résoudre").font(.caption).foregroundStyle(.orange) }
-                                }.frame(maxWidth: .infinity, alignment: .leading).padding(10)
-                                    .background(cloudSelection == conversation.id ? ChatPalette.accent.opacity(0.14) : Color.clear, in: RoundedRectangle(cornerRadius: 9))
+                                HStack(alignment: .top, spacing: 8) {
+                                    Image(systemName: "cloud").font(.caption).foregroundStyle(.secondary).padding(.top, 2)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(conversation.title).lineLimit(2)
+                                        if conversation.conflicted { Text("Conflit à résoudre").font(.caption2).foregroundStyle(.orange) }
+                                    }
+                                }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 9).padding(.vertical, 8)
+                                    .background(cloudSelection == conversation.id ? ChatPalette.accent.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
                             }.buttonStyle(.plain)
                         }
                     } else {
@@ -72,11 +93,14 @@ private enum ChatPalette {
                     }
                     ForEach(visible) { conversation in
                         Button { store.selection = conversation.id } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(conversation.title).lineLimit(2).foregroundStyle(.primary)
-                                Text(conversation.updatedAt, style: .date).font(.caption).foregroundStyle(.secondary)
-                            }.frame(maxWidth: .infinity, alignment: .leading).padding(10)
-                            .background(store.selection == conversation.id ? ChatPalette.accent.opacity(0.14) : Color.clear, in: RoundedRectangle(cornerRadius: 9))
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "bubble.left").font(.caption).foregroundStyle(.secondary).padding(.top, 2)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(conversation.title).lineLimit(2).foregroundStyle(.primary)
+                                    Text(conversation.updatedAt, style: .relative).font(.caption2).foregroundStyle(.secondary)
+                                }
+                            }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 9).padding(.vertical, 8)
+                            .background(store.selection == conversation.id ? ChatPalette.accent.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
                         }.buttonStyle(.plain).contextMenu {
                             Button("Supprimer", role: .destructive) { deleteID = conversation.id }.disabled(store.generating == conversation.id)
                         }
@@ -86,7 +110,9 @@ private enum ChatPalette {
                 }
                 Divider()
                 sidebarFooter
-            }.navigationSplitViewColumnWidth(min: 236, ideal: 276, max: 340)
+            }
+            .background(ChatPalette.elevated)
+            .navigationSplitViewColumnWidth(min: 224, ideal: 252, max: 310)
         } detail: {
             VStack(spacing: 0) {
                 header
@@ -103,7 +129,7 @@ private enum ChatPalette {
                     }.font(.callout).foregroundStyle(.red).padding(12)
                 }
                 composer
-            }.background(Color(nsColor: .textBackgroundColor))
+            }.background(ChatPalette.canvas)
         }
         .tint(ChatPalette.accent)
         .frame(minWidth: 760, minHeight: 500)
@@ -142,54 +168,64 @@ private enum ChatPalette {
         }
     }
     private var sidebarHeader: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             HStack(spacing: 10) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 10).fill(ChatPalette.accent.opacity(0.14))
-                    Image(systemName: "waveform.path").font(.system(size: 17, weight: .semibold)).foregroundStyle(ChatPalette.accent)
-                }.frame(width: 34, height: 34)
+                    RoundedRectangle(cornerRadius: 9).fill(ChatPalette.accent.opacity(0.13))
+                    Image(systemName: "waveform.path").font(.system(size: 15, weight: .semibold)).foregroundStyle(ChatPalette.accent)
+                }.frame(width: 32, height: 32)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("MultiVibe").font(.title3.weight(.bold))
-                    Text("Desktop pour Mac").font(.caption2).foregroundStyle(.secondary)
+                    Text("MultiVibe").font(.headline.weight(.semibold))
+                    Text(cloudMode ? "Espace agent" : "Host personnel").font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button { openDashboard() } label: { Image(systemName: "gearshape") }
+                    .buttonStyle(.plain).foregroundStyle(.secondary).help("Réglages du Host")
             }
-            TextField("Rechercher des conversations", text: $search)
-                .textFieldStyle(.roundedBorder)
-        }.padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 8)
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass").font(.caption).foregroundStyle(.tertiary)
+                TextField("Rechercher", text: $search).textFieldStyle(.plain)
+                if !search.isEmpty {
+                    Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.plain).foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.horizontal, 10).frame(height: 30)
+            .background(ChatPalette.surface, in: RoundedRectangle(cornerRadius: 8))
+        }.padding(.horizontal, 12).padding(.top, 13).padding(.bottom, 7)
     }
     private var sidebarPrimaryActions: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 2) {
             sidebarAction("Nouvelle conversation", systemImage: "square.and.pencil") {
                 if cloudMode { Task { do { cloudSelection = try await agent.newCloudConversation() } catch { agent.error = error.localizedDescription } } }
                 else { store.newConversation() }
                 composing = true
             }
             sidebarAction("Modèles et fournisseurs", systemImage: "square.grid.2x2") { openDashboard() }
-            sidebarAction("Dashboard du Host", systemImage: "slider.horizontal.3") { openDashboard() }
         }.padding(.horizontal, 8)
     }
     private func sidebarAction(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10).padding(.vertical, 9)
+                .padding(.horizontal, 9).padding(.vertical, 8)
                 .contentShape(Rectangle())
         }.buttonStyle(.plain)
     }
     private var sidebarFooter: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 9) {
                 ZStack {
-                    Circle().fill(ChatPalette.accent.opacity(0.16))
+                    Circle().fill(ChatPalette.accent.opacity(0.13))
                     Image(systemName: agent.accountID == nil ? "desktopcomputer" : "person.crop.circle.badge.checkmark")
-                        .foregroundStyle(ChatPalette.accent)
-                }.frame(width: 32, height: 32)
+                        .font(.caption).foregroundStyle(ChatPalette.accent)
+                }.frame(width: 28, height: 28)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(agent.accountID == nil ? "Host sur ce Mac" : "Cloud connecté").font(.callout.weight(.medium))
-                    Text(agent.accountID == nil ? "Historique enregistré localement" : "Hermes est disponible").font(.caption2).foregroundStyle(.secondary)
+                    Text(agent.accountID == nil ? "Sur ce Mac" : "Cloud connecté").font(.caption.weight(.semibold))
+                    Text(agent.accountID == nil ? "Historique local" : "Hermes disponible").font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
+                if agent.busy { ProgressView().controlSize(.mini) }
             }
             if agent.accountID == nil {
                 Button("Connecter MultiVibe Cloud") {
@@ -215,9 +251,8 @@ private enum ChatPalette {
                     }.menuStyle(.borderlessButton)
                 }
             }
-            if agent.busy { ProgressView().controlSize(.small) }
             if let error = agent.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
-        }.padding(14).disabled(agent.busy)
+        }.padding(.horizontal, 12).padding(.top, 11).padding(.bottom, 16).disabled(agent.busy)
     }
     private var consentSheet: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -246,17 +281,13 @@ private enum ChatPalette {
         }.padding(24).frame(width: 520)
     }
     private var header: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(cloudMode ? (agent.cloudConversations.first { $0.id == cloudSelection }?.title ?? "Nouvelle conversation Cloud") : (store.current?.title ?? "Nouvelle conversation"))
                     .font(.headline).lineLimit(1)
-                Text(cloudMode ? "Espace Hermes Cloud" : "Conversation privée sur ce Mac")
+                Text(conversationSubtitle)
                     .font(.caption2).foregroundStyle(.secondary)
             }.frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
-            Picker("Exécution", selection: $cloudMode) {
-                Text("Host sur ce Mac").tag(false)
-                Text("Hermes Cloud").tag(true)
-            }.labelsHidden().frame(width: 150).disabled(agent.accountID == nil || cloudSending || store.generating != nil)
             if cloudMode {
                 Picker("Projet Hermes", selection: Binding(get: { agent.selectedWorkspaceProject(cloudSelection) }, set: { value in
                     do { try agent.selectWorkspaceProject(value, conversation: cloudSelection) } catch { agent.error = error.localizedDescription }
@@ -265,36 +296,37 @@ private enum ChatPalette {
                     let selected = agent.selectedWorkspaceProject(cloudSelection)
                     if !selected.isEmpty && !agent.cloudProjects.contains(where: { $0.id == selected }) { Text("Projet indisponible").tag(selected) }
                     ForEach(agent.cloudProjects) { project in Text(project.title).tag(project.id) }
-                }.frame(maxWidth: 180).disabled(cloudSending || agent.busy || cloudSelection == nil)
-                Picker("Modèle Cloud", selection: $cloudModel) {
-                    Text("Choisir un modèle").tag("")
-                    ForEach(agent.models) { item in Text((item.source == "relay" ? "Relay · " : "Cloud · ") + (item.name ?? item.id) + (item.available == false ? " — hors ligne" : "")).tag(item.id) }
-                }.frame(maxWidth: 280).disabled(cloudSending)
-            } else {
-            Picker("Modèle", selection: model) {
-                Text(loading ? "Chargement…" : "Choisir un modèle").tag("")
-                if let selected = store.current?.model, !selected.isEmpty, !models.contains(where: { $0.id == selected }) { Text("\(selected) — indisponible").tag(selected) }
-                ForEach(models) { model in
-                    Label(model.displayName, systemImage: model.local == true ? "apple.logo" : "network").tag(model.id)
                 }
-            }.labelsHidden().frame(width: 280).disabled(store.generating == store.selection)
+                .labelsHidden().frame(maxWidth: 170).controlSize(.small)
+                .disabled(cloudSending || agent.busy || cloudSelection == nil)
             }
-            Button { Task {
-                if cloudMode { do { try await agent.loadModels() } catch { agent.error = error.localizedDescription } }
-                else { await loadModels() }
-            } } label: { Image(systemName: "arrow.clockwise") }.help("Actualiser les modèles").disabled(loading)
-        }.padding(.horizontal, 18).padding(.vertical, 13)
+            if agent.accountID != nil {
+                Picker("Exécution", selection: $cloudMode) {
+                    Label("Mac", systemImage: "desktopcomputer").tag(false)
+                    Label("Cloud", systemImage: "cloud").tag(true)
+                }
+                .labelsHidden().pickerStyle(.segmented).frame(width: 142)
+                .disabled(cloudSending || store.generating != nil)
+            } else {
+                Label("Sur ce Mac", systemImage: "lock.fill")
+                    .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 9).padding(.vertical, 5)
+                    .background(ChatPalette.surface, in: Capsule())
+            }
+        }
+        .padding(.horizontal, 18).padding(.vertical, 10)
+        .background(ChatPalette.elevated)
     }
     private var welcome: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 16) {
             Spacer()
             ZStack {
-                Circle().fill(ChatPalette.accent.opacity(0.12))
-                Image(systemName: "waveform.path").font(.system(size: 30, weight: .medium)).foregroundStyle(ChatPalette.accent)
-            }.frame(width: 64, height: 64)
-            Text("Qu’avez-vous en tête aujourd’hui ?").font(.system(size: 28, weight: .semibold))
-            Text("Choisissez un modèle, puis démarrez une conversation avec votre Host ou Hermes Cloud.")
-                .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 520)
+                RoundedRectangle(cornerRadius: 15).fill(ChatPalette.accent.opacity(0.11))
+                Image(systemName: "waveform.path").font(.system(size: 24, weight: .medium)).foregroundStyle(ChatPalette.accent)
+            }.frame(width: 52, height: 52)
+            Text("Comment puis-je vous aider ?").font(.system(size: 25, weight: .semibold))
+            Text("Posez une question, rédigez ou explorez une idée.")
+                .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
             HStack(spacing: 10) {
                 suggestion("Trouver l’inspiration", icon: "lightbulb", text: "Aide-moi à trouver des idées pour ")
                 suggestion("M’aider à écrire", icon: "pencil.line", text: "Aide-moi à rédiger ")
@@ -304,7 +336,7 @@ private enum ChatPalette {
                 Button("Connecter un fournisseur dans le dashboard") { openDashboard() }.buttonStyle(.link)
             }
             Spacer()
-        }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
+        }.padding(.horizontal, 24).padding(.top, 24).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     private func suggestion(_ title: String, icon: String, text: String) -> some View {
         Button { draft.wrappedValue = text; composing = true } label: {
@@ -316,96 +348,191 @@ private enum ChatPalette {
     private func transcript(_ conversation: NativeChatConversation) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 24) {
+                LazyVStack(alignment: .leading, spacing: 22) {
                     ForEach(conversation.messages) { message in
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text(message.role == "user" ? "Vous" : "MultiVibe").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                                Spacer()
-                                if !message.content.isEmpty {
-                                    Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.content, forType: .string) } label: { Image(systemName: "doc.on.doc") }.help("Copier")
-                                    if message.role == "assistant" {
-                                        Button { if speech.isSpeaking { speech.stopSpeaking(at: .immediate) } else { speech.speak(AVSpeechUtterance(string: message.content)) } } label: { Image(systemName: "speaker.wave.2") }.help("Lire ou arrêter la lecture")
-                                    }
-                                }
-                            }.buttonStyle(.borderless)
-                            if message.content.isEmpty && store.generating == conversation.id && message.role == "assistant" { ProgressView().controlSize(.small) }
-                            else { Text(markdown(message.content)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).font(.system(size: 15)).lineSpacing(5) }
-                            if message.interrupted && store.generating != conversation.id {
-                                HStack { Text("Réponse interrompue").font(.caption).foregroundStyle(.secondary); if message.id == conversation.messages.last?.id { Button("Réessayer") { store.send(retry: true) }.disabled(store.generating != nil) } }
-                            }
-                        }.padding(16).background(message.role == "user" ? ChatPalette.accent.opacity(0.08) : Color.clear, in: RoundedRectangle(cornerRadius: 16)).id(message.id)
+                        messageRow(message, conversation: conversation).id(message.id)
                     }
                     Color.clear.frame(height: 1).id("end")
-                }.padding(20).frame(maxWidth: 850).frame(maxWidth: .infinity)
+                }.padding(.horizontal, 24).padding(.vertical, 22).frame(maxWidth: 900).frame(maxWidth: .infinity)
             }
             .onChange(of: conversation.messages.count) { _ in proxy.scrollTo("end", anchor: .bottom) }
             .onChange(of: conversation.id) { _ in proxy.scrollTo("end", anchor: .bottom) }
         }
     }
+    @ViewBuilder private func messageRow(_ message: NativeChatMessage, conversation: NativeChatConversation) -> some View {
+        let isUser = message.role == "user"
+        HStack(alignment: .top, spacing: 10) {
+            if isUser { Spacer(minLength: 80) }
+            if !isUser {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8).fill(ChatPalette.accent.opacity(0.12))
+                    Image(systemName: "waveform.path").font(.caption.weight(.semibold)).foregroundStyle(ChatPalette.accent)
+                }.frame(width: 30, height: 30)
+            }
+            VStack(alignment: isUser ? .trailing : .leading, spacing: 7) {
+                HStack(spacing: 8) {
+                    if !isUser { Text("MultiVibe").font(.caption.weight(.semibold)).foregroundStyle(.secondary) }
+                    if !message.content.isEmpty {
+                        Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.content, forType: .string) } label: { Image(systemName: "doc.on.doc") }.help("Copier")
+                        if !isUser {
+                            Button { if speech.isSpeaking { speech.stopSpeaking(at: .immediate) } else { speech.speak(AVSpeechUtterance(string: message.content)) } } label: { Image(systemName: "speaker.wave.2") }.help("Lire ou arrêter la lecture")
+                        }
+                    }
+                }.buttonStyle(.borderless).foregroundStyle(.secondary)
+                Group {
+                    if message.content.isEmpty && store.generating == conversation.id && !isUser {
+                        HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Réflexion…").font(.caption).foregroundStyle(.secondary) }
+                    } else {
+                        Text(markdown(message.content)).textSelection(.enabled).font(.system(size: 15)).lineSpacing(5)
+                    }
+                }
+                if message.interrupted && store.generating != conversation.id {
+                    HStack(spacing: 8) {
+                        Label("Réponse interrompue", systemImage: "pause.circle").font(.caption).foregroundStyle(.secondary)
+                        if message.id == conversation.messages.last?.id { Button("Réessayer") { store.send(retry: true) }.disabled(store.generating != nil) }
+                    }
+                }
+            }
+            .padding(isUser ? 13 : 0)
+            .background(isUser ? ChatPalette.accent.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 15))
+            if !isUser { Spacer(minLength: 24) }
+        }.frame(maxWidth: .infinity)
+    }
     private var composer: some View {
-        VStack(spacing: 8) {
-            ZStack(alignment: .topLeading) {
-                if draft.wrappedValue.isEmpty {
-                    Text("Demandez ce que vous voulez").foregroundStyle(.tertiary).padding(.horizontal, 12).padding(.vertical, 11).allowsHitTesting(false)
-                }
-                TextEditor(text: draft).font(.system(size: 15)).scrollContentBackground(.hidden).focused($composing)
-                    .frame(height: 78).padding(.horizontal, 5).padding(.top, 3).accessibilityLabel("Message à MultiVibe")
+        VStack(spacing: 7) {
+            VStack(spacing: 5) {
+                TextField("Message à MultiVibe", text: draft, axis: .vertical)
+                    .textFieldStyle(.plain).font(.system(size: 15)).lineLimit(1...6)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .focused($composing).accessibilityLabel("Message à MultiVibe")
+                    .padding(.horizontal, 12).padding(.top, 11).padding(.bottom, 7)
+                HStack(spacing: 7) {
+                    Button { importing = true } label: {
+                        Image(systemName: "paperclip").frame(width: 26, height: 26)
+                    }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .background(ChatPalette.surface, in: Circle())
+                    .help("Joindre un document texte").disabled(cloudMode)
+                    modelSelector
+                    Spacer(minLength: 12)
+                    if cloudMode {
+                        Button { sendCloud() } label: { Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).frame(width: 25, height: 25) }
+                            .buttonStyle(.borderedProminent).clipShape(Circle()).help("Envoyer à Hermes (⌘↵)").keyboardShortcut(.return, modifiers: .command)
+                            .disabled(cloudSelection == nil || cloudSending || agent.busy || agent.consent?.cloudEnabled != true || cloudDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !agent.models.contains { $0.id == cloudModel && $0.available != false })
+                    } else if store.generating != nil {
+                        Button { store.stop() } label: { Image(systemName: "stop.fill").font(.system(size: 11)).frame(width: 25, height: 25) }
+                            .buttonStyle(.borderedProminent).clipShape(Circle()).tint(.secondary).help("Arrêter")
+                    } else {
+                        Button { store.send() } label: { Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).frame(width: 25, height: 25) }
+                            .buttonStyle(.borderedProminent).clipShape(Circle()).help("Envoyer (⌘↵)").keyboardShortcut(.return, modifiers: .command)
+                            .disabled(draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !models.contains { $0.id == model.wrappedValue })
+                    }
+                }.padding(.horizontal, 8).padding(.bottom, 7)
             }
-            HStack {
-                Button { importing = true } label: { Label("Joindre", systemImage: "paperclip") }.help("Joindre un document texte").disabled(cloudMode)
-                Label(cloudMode ? "Hermes Cloud" : "Host local", systemImage: cloudMode ? "cloud" : "lock.macwindow")
-                    .font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                if cloudMode {
-                    Button { sendCloud() } label: { Image(systemName: "arrow.up").font(.system(size: 14, weight: .bold)).frame(width: 24, height: 24) }
-                        .buttonStyle(.borderedProminent).clipShape(Circle()).help("Envoyer à Hermes (⌘↵)").keyboardShortcut(.return, modifiers: .command)
-                        .disabled(cloudSelection == nil || cloudSending || agent.busy || agent.consent?.cloudEnabled != true || cloudDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !agent.models.contains { $0.id == cloudModel && $0.available != false })
-                } else if store.generating != nil {
-                    Button("Arrêter", systemImage: "stop.fill") { store.stop() }
-                } else {
-                    Button { store.send() } label: { Image(systemName: "arrow.up").font(.system(size: 14, weight: .bold)).frame(width: 24, height: 24) }
-                        .buttonStyle(.borderedProminent).clipShape(Circle()).help("Envoyer (⌘↵)").keyboardShortcut(.return, modifiers: .command)
-                        .disabled(draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !models.contains { $0.id == model.wrappedValue })
+            .background(ChatPalette.elevated, in: RoundedRectangle(cornerRadius: 17))
+            .overlay(RoundedRectangle(cornerRadius: 17).stroke(store.generating == store.selection ? ChatPalette.accent.opacity(0.55) : ChatPalette.hairline, lineWidth: 1))
+            .shadow(color: .black.opacity(0.055), radius: 12, y: 4)
+            Label(composerPrivacyText, systemImage: composerPrivacyIcon)
+                .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+        }
+        .frame(maxWidth: 900).frame(maxWidth: .infinity)
+        .padding(.horizontal, 22).padding(.top, 9).padding(.bottom, 16)
+    }
+    private var modelSelector: some View {
+        Menu {
+            if cloudMode {
+                if agent.models.isEmpty { Text("Aucun modèle disponible") }
+                ForEach(agent.models) { item in
+                    Button {
+                        cloudModel = item.id
+                    } label: {
+                        Label(
+                            (item.source == "relay" ? "Relay · " : "Cloud · ") + (item.name ?? item.id) + (item.available == false ? " — hors ligne" : ""),
+                            systemImage: item.id == cloudModel ? "checkmark" : (item.source == "relay" ? "desktopcomputer" : "cloud")
+                        )
+                    }
+                    .disabled(item.available == false)
                 }
-            }.padding(.horizontal, 8).padding(.bottom, 7)
-        }.padding(7).background(ChatPalette.surface, in: RoundedRectangle(cornerRadius: 20))
-            .overlay(RoundedRectangle(cornerRadius: 20).stroke(ChatPalette.accent.opacity(store.generating == store.selection ? 0.65 : 0.2), lineWidth: 1))
-            .shadow(color: .black.opacity(0.07), radius: 14, y: 5)
-            .padding(.horizontal, 24).padding(.top, 10)
-            .safeAreaInset(edge: .bottom) {
-                Text(cloudMode ? "Hermes exécute ce message dans votre espace Cloud. Les modèles Relay sont exécutés via votre machine connectée."
-                     : model.wrappedValue == AppleFoundationModel.id
-                     ? "Apple Foundation traite cette conversation localement sur ce Mac."
-                     : "Les messages et documents sont transmis au modèle choisi via le Host.")
-                    .font(.caption2).foregroundStyle(.secondary).padding(.vertical, 8)
+            } else {
+                if loading { Text("Chargement…") }
+                else if models.isEmpty { Text("Aucun modèle disponible") }
+                if let selected = store.current?.model, !selected.isEmpty, !models.contains(where: { $0.id == selected }) {
+                    Text("\(selected) — indisponible")
+                }
+                ForEach(models) { item in
+                    Button {
+                        model.wrappedValue = item.id
+                    } label: {
+                        Label(item.displayName, systemImage: item.id == model.wrappedValue ? "checkmark" : (item.local == true ? "apple.logo" : "network"))
+                    }
+                }
             }
+            Divider()
+            Button("Actualiser les modèles", systemImage: "arrow.clockwise") {
+                Task {
+                    if cloudMode { do { try await agent.loadModels() } catch { agent.error = error.localizedDescription } }
+                    else { await loadModels() }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: cloudMode ? (selectedCloudModel?.source == "relay" ? "desktopcomputer" : "cloud") : (selectedLocalModel?.local == true ? "apple.logo" : "cpu"))
+                Text(selectedModelName).lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
+            }
+            .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+            .padding(.horizontal, 9).frame(height: 28)
+            .background(ChatPalette.surface, in: Capsule())
+        }
+        .menuStyle(.borderlessButton).tint(.secondary)
+        .fixedSize(horizontal: false, vertical: true).frame(maxWidth: 260, alignment: .leading)
+        .disabled(cloudMode ? cloudSending : store.generating == store.selection)
+    }
+    private var composerPrivacyText: String {
+        if cloudMode { return "Exécuté dans votre espace Hermes Cloud" }
+        if selectedLocalModel?.local == true { return "Traité localement sur ce Mac" }
+        return "Transmis au modèle sélectionné via votre Host"
+    }
+    private var composerPrivacyIcon: String {
+        if cloudMode { return "cloud" }
+        return selectedLocalModel?.local == true ? "lock.fill" : "shield.lefthalf.filled"
     }
     private var cloudTranscript: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 20) {
                 if agent.consent?.cloudEnabled != true {
-                    Text("Autorisez votre espace Cloud pour démarrer une conversation Hermes.")
-                    Button("Consentement Cloud…") { selectedImports = []; cloudConsent = true }
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("Espace Hermes Cloud", systemImage: "cloud") .font(.headline)
+                        Text("Autorisez votre espace Cloud pour démarrer une conversation Hermes.").foregroundStyle(.secondary)
+                        Button("Configurer le consentement…") { selectedImports = []; cloudConsent = true }
+                    }.padding(16).background(ChatPalette.surface, in: RoundedRectangle(cornerRadius: 14))
                 } else if cloudSelection == nil {
                     Text("Sélectionnez une conversation Cloud ou créez-en une nouvelle.")
                     Button("Nouvelle conversation Cloud") { Task { do { cloudSelection = try await agent.newCloudConversation() } catch { agent.error = error.localizedDescription } } }
                 }
                 ForEach(agent.synchronizedMessages(cloudSelection)) { message in
-                    Text(message.role == "user" ? "Vous" : "MultiVibe").font(.caption).foregroundStyle(.secondary)
-                    Text(markdown(message.content)).textSelection(.enabled)
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(message.role == "user" ? "Vous" : "MultiVibe").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        Text(markdown(message.content)).textSelection(.enabled).lineSpacing(5)
+                    }
+                    .padding(message.role == "user" ? 13 : 0)
+                    .background(message.role == "user" ? ChatPalette.accent.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 15))
+                    .frame(maxWidth: message.role == "user" ? 620 : .infinity, alignment: message.role == "user" ? .trailing : .leading)
                 }
                 ForEach(agent.orderedRuns.filter { $0.sessionId == cloudSelection?.uuidString.lowercased() }, id: \.runId) { run in
-                    Text(agent.runPrompt(run.runId)).font(.headline).textSelection(.enabled)
-                    if let response = agent.responseText(run) { Text(markdown(response)).textSelection(.enabled) }
-                    else { Text(run.state == .awaiting_resolution ? "Une action nécessite votre vérification. Elle ne sera pas rejouée automatiquement." : "État : \(run.state.rawValue)").foregroundStyle(.secondary) }
-                    if run.state != .completed && run.state != .cancelled {
-                        Button("Annuler") { Task { do { try await agent.cancel(runID: run.runId) } catch { agent.error = error.localizedDescription } } }
-                            .disabled(agent.busy)
+                    VStack(alignment: .leading, spacing: 9) {
+                        Text(agent.runPrompt(run.runId)).font(.headline).textSelection(.enabled)
+                        if let response = agent.responseText(run) { Text(markdown(response)).textSelection(.enabled).lineSpacing(5) }
+                        else { Text(run.state == .awaiting_resolution ? "Une action nécessite votre vérification. Elle ne sera pas rejouée automatiquement." : "État : \(run.state.rawValue)").foregroundStyle(.secondary) }
+                        if run.state != .completed && run.state != .cancelled {
+                            Button("Annuler") { Task { do { try await agent.cancel(runID: run.runId) } catch { agent.error = error.localizedDescription } } }
+                                .disabled(agent.busy)
+                        }
                     }
+                    .padding(15).background(ChatPalette.surface, in: RoundedRectangle(cornerRadius: 14))
                 }
                 if cloudSending { ProgressView("Hermes travaille…") }
-            }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+            }.padding(.horizontal, 24).padding(.vertical, 22).frame(maxWidth: 900).frame(maxWidth: .infinity, alignment: .leading)
         }
     }
     private func sendCloud() {
