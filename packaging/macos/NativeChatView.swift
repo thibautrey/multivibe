@@ -21,11 +21,12 @@ private struct HarnessLogo: View {
     let name: String
     var size: CGFloat
 
-    private var resource: (String, String) {
+    private var resource: (String, String)? {
         switch id {
+        case "native": return ("multivibe", "png")
         case "hermes-agent": return (colorScheme == .dark ? "hermes-dark" : "hermes-light", "png")
         case "pi": return ("pi", "svg")
-        default: return ("multivibe", "png")
+        default: return nil
         }
     }
 
@@ -33,7 +34,8 @@ private struct HarnessLogo: View {
         Group {
             if id == "computer-use" {
                 Image(systemName: "cursorarrow.motionlines").resizable().scaledToFit().foregroundStyle(.secondary)
-            } else if let url = Bundle.main.url(forResource: resource.0, withExtension: resource.1, subdirectory: "harnesses"),
+            } else if let resource,
+                      let url = Bundle.main.url(forResource: resource.0, withExtension: resource.1, subdirectory: "harnesses"),
                let image = NSImage(contentsOf: url) {
                 Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
             } else {
@@ -632,7 +634,7 @@ private struct HarnessLogo: View {
                 lineWidth: item.id == harness.wrappedValue ? 1.5 : 1))
         }
         .buttonStyle(.plain).disabled(!item.available && item.canInstall != true)
-        .opacity(item.available || item.canInstall == true ? 1 : 0.55)
+        .opacity(item.available || item.canInstall == true ? 1 : 0.72)
         .accessibilityLabel("\(item.name), \(item.description)\(item.id == harness.wrappedValue ? ", sélectionné" : "")")
     }
     private func beginInstallation(_ item: NativeConversationHarness) {
