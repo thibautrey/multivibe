@@ -18,9 +18,9 @@ test('native harness client discovers engines and binds streamed replies to sess
     if (req.url === '/admin/host-conversation-harnesses') {
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ harnesses: [
-        { id: 'native', name: 'MultiVibe natif', available: true, configured: true, description: 'direct', capabilities: { sessions: true, streaming: true, tools: false, longTermMemory: false } },
-        { id: 'hermes-agent', name: 'Hermes Agent', available: true, configured: true, description: 'memory', capabilities: { sessions: true, streaming: true, tools: true, longTermMemory: true } },
-        { id: 'pi', name: 'Pi', available: true, configured: true, description: 'session', capabilities: { sessions: true, streaming: true, tools: false, longTermMemory: false } },
+        { id: 'native', name: 'MultiVibe natif', available: true, configured: true, description: 'direct', capabilities: { sessions: true, streaming: true, tools: false, longTermMemory: false }, popularityRank: 0 },
+        { id: 'hermes-agent', name: 'Hermes Agent', available: true, configured: true, description: 'memory', capabilities: { sessions: true, streaming: true, tools: true, longTermMemory: true }, popularityRank: 5 },
+        { id: 'pi', name: 'Pi', available: true, configured: true, description: 'session', capabilities: { sessions: true, streaming: true, tools: false, longTermMemory: false }, popularityRank: 6 },
       ] })); return;
     }
     if (req.url === '/admin/host-conversation-harnesses/pi/install') {

@@ -18,6 +18,7 @@ private enum ChatPalette {
 private struct HarnessLogo: View {
     @Environment(\.colorScheme) private var colorScheme
     let id: String
+    let name: String
     var size: CGFloat
 
     private var resource: (String, String) {
@@ -36,7 +37,9 @@ private struct HarnessLogo: View {
                let image = NSImage(contentsOf: url) {
                 Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
             } else {
-                Image(systemName: "questionmark.square.dashed").resizable().scaledToFit().foregroundStyle(.secondary)
+                Text(name.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined().uppercased())
+                    .font(.system(size: size * 0.32, weight: .bold, design: .rounded))
+                    .foregroundStyle(.secondary)
             }
         }
         .frame(width: size, height: size)
@@ -65,6 +68,7 @@ private struct HarnessLogo: View {
     @State private var installationRunning = false
     @State private var installationError: String?
     @State private var showingInstallationLogs = false
+    @State private var harnessLastUsedAt: [String: Double] = UserDefaults.standard.dictionary(forKey: "assistantHarnessLastUsedAt") as? [String: Double] ?? [:]
     @State private var loading = false
     @State private var importing = false
     @State private var deleteID: UUID?
@@ -107,7 +111,8 @@ private struct HarnessLogo: View {
             id: harness.wrappedValue, name: harness.wrappedValue, available: false, configured: false,
             description: "Ce harness n’est plus disponible sur ce Mac.",
             capabilities: .init(sessions: true, streaming: true, tools: false, longTermMemory: false),
-            unavailableReason: "Ce harness n’est plus disponible sur ce Mac.", canInstall: false, compatible: false
+            unavailableReason: "Ce harness n’est plus disponible sur ce Mac.", canInstall: false, compatible: false,
+            detected: false, conversationCapable: false, category: nil, popularityRank: nil
         )
     }
     private var selectedModelName: String {
@@ -527,7 +532,7 @@ private struct HarnessLogo: View {
     private var harnessSelector: some View {
         Button { choosingHarness = true } label: {
             HStack(spacing: 6) {
-                HarnessLogo(id: selectedHarness.id, size: 18)
+                HarnessLogo(id: selectedHarness.id, name: selectedHarness.name, size: 18)
                 Text(selectedHarness.name).lineLimit(1)
                 Image(systemName: "chevron.up.chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
             }
@@ -553,16 +558,27 @@ private struct HarnessLogo: View {
                 Button { Task { await loadHarnesses() } } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.borderless).help("Actualiser les harnesses détectés")
             }
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
-                ForEach(harnesses) { item in harnessCard(item) }
+            ScrollView {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
+                    ForEach(sortedHarnesses) { item in harnessCard(item) }
+                }
             }
+            .frame(maxHeight: 530)
         }
-        .padding(18).frame(width: 590)
+        .padding(18).frame(width: 720)
+    }
+    private var sortedHarnesses: [NativeConversationHarness] {
+        harnesses.sortedForDisplay(lastUsedAt: harnessLastUsedAt)
+    }
+    private func recordHarnessUse(_ id: String) {
+        harnessLastUsedAt[id] = Date().timeIntervalSince1970
+        UserDefaults.standard.set(harnessLastUsedAt, forKey: "assistantHarnessLastUsedAt")
     }
     private func harnessCard(_ item: NativeConversationHarness) -> some View {
         Button {
             if item.available {
                 harness.wrappedValue = item.id
+                recordHarnessUse(item.id)
                 choosingHarness = false
             } else if item.canInstall == true {
                 choosingHarness = false
@@ -573,7 +589,7 @@ private struct HarnessLogo: View {
                 HStack(alignment: .top) {
                     ZStack {
                         RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor))
-                        HarnessLogo(id: item.id, size: 42)
+                        HarnessLogo(id: item.id, name: item.name, size: 42)
                     }.frame(width: 56, height: 56)
                     Spacer()
                     if item.id == harness.wrappedValue {
@@ -584,17 +600,23 @@ private struct HarnessLogo: View {
                 }
                 Text(item.name).font(.callout.weight(.semibold)).foregroundStyle(.primary)
                 Text(item.description).font(.caption2).foregroundStyle(.secondary).lineLimit(3, reservesSpace: true)
-                if item.capabilities.longTermMemory {
+                if item.available && item.capabilities.longTermMemory {
                     Label("Mémoire longue durée", systemImage: "brain.head.profile")
                         .font(.caption2.weight(.medium)).foregroundStyle(ChatPalette.accent)
-                } else if item.id == "computer-use" {
+                } else if item.available && item.id == "computer-use" {
                     Label("Navigateur et applications", systemImage: "cursorarrow.motionlines")
                         .font(.caption2.weight(.medium)).foregroundStyle(ChatPalette.accent)
-                } else if item.id == "pi" {
+                } else if item.available && item.id == "pi" {
                     Label("Session persistante", systemImage: "clock.arrow.circlepath")
                         .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
-                } else {
+                } else if item.available {
                     Label("Conversation directe", systemImage: "bolt.horizontal")
+                        .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+                } else if item.detected == true {
+                    Label(item.configured ? "Détecté et configuré" : "Détecté sur ce Mac", systemImage: "checkmark.circle")
+                        .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+                } else {
+                    Label("Disponible sur macOS", systemImage: "laptopcomputer")
                         .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
                 }
                 if !item.available && item.canInstall == true {
@@ -602,7 +624,7 @@ private struct HarnessLogo: View {
                         .font(.caption.weight(.semibold)).foregroundStyle(ChatPalette.accent)
                 }
             }
-            .padding(13).frame(maxWidth: .infinity, minHeight: 190, alignment: .topLeading)
+            .padding(13).frame(maxWidth: .infinity, minHeight: 205, alignment: .topLeading)
             .background(item.id == harness.wrappedValue ? ChatPalette.accent.opacity(0.10) : ChatPalette.elevated,
                         in: RoundedRectangle(cornerRadius: 15))
             .overlay(RoundedRectangle(cornerRadius: 15).stroke(
@@ -634,7 +656,7 @@ private struct HarnessLogo: View {
     private func harnessInstallationSheet(_ item: NativeConversationHarness) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 14) {
-                HarnessLogo(id: item.id, size: 48)
+                HarnessLogo(id: item.id, name: item.name, size: 48)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Installation de \(item.name)").font(.title3.weight(.semibold))
                     Text(installationRunning ? "Installation en cours…" : installationError == nil ? "Installation terminée" : "L’installation a échoué")

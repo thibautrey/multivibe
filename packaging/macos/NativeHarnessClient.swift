@@ -17,19 +17,42 @@ struct NativeConversationHarness: Codable, Identifiable, Hashable {
     let unavailableReason: String?
     let canInstall: Bool?
     let compatible: Bool?
+    let detected: Bool?
+    let conversationCapable: Bool?
+    let category: String?
+    let popularityRank: Int?
 
     static let computerUse = NativeConversationHarness(
         id: "computer-use", name: "Computer use", available: true, configured: true,
         description: "Piloter le navigateur intégré et les applications macOS autorisées. Modèle avec vision et outils requis.",
-        capabilities: .init(sessions: true, streaming: false, tools: true, longTermMemory: false), unavailableReason: nil, canInstall: false, compatible: true
+        capabilities: .init(sessions: true, streaming: false, tools: true, longTermMemory: false), unavailableReason: nil,
+        canInstall: false, compatible: true, detected: true, conversationCapable: true,
+        category: "native", popularityRank: 1
     )
 
     static let native = NativeConversationHarness(
         id: "native", name: "MultiVibe natif", available: true, configured: true,
         description: "Conversation directe avec le modèle sélectionné.",
         capabilities: .init(sessions: true, streaming: true, tools: false, longTermMemory: false), unavailableReason: nil,
-        canInstall: false, compatible: true
+        canInstall: false, compatible: true, detected: true, conversationCapable: true,
+        category: "native", popularityRank: 0
     )
+}
+
+extension Array where Element == NativeConversationHarness {
+    func sortedForDisplay(lastUsedAt: [String: Double]) -> [NativeConversationHarness] {
+        sorted { left, right in
+            let leftRecent = lastUsedAt[left.id]
+            let rightRecent = lastUsedAt[right.id]
+            if let leftRecent, let rightRecent, leftRecent != rightRecent { return leftRecent > rightRecent }
+            if leftRecent != nil { return true }
+            if rightRecent != nil { return false }
+            let leftRank = left.popularityRank ?? Int.max
+            let rightRank = right.popularityRank ?? Int.max
+            if leftRank != rightRank { return leftRank < rightRank }
+            return left.name.localizedStandardCompare(right.name) == .orderedAscending
+        }
+    }
 }
 
 enum NativeHarnessError: LocalizedError {

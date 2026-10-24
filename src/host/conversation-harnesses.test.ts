@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { HostConversationHarnessManager } from "./conversation-harnesses.js";
-import type { HostHarnessIntegrationManager } from "./harness-integrations.js";
+import { HOST_HARNESS_DEFINITIONS, HostHarnessIntegrationManager } from "./harness-integrations.js";
 
 async function fixture() {
   const root = await mkdtemp(path.join(tmpdir(), "multivibe-conversation-harness-"));
@@ -42,6 +42,25 @@ test("detected structured harnesses expose honest conversation capabilities", { 
   assert.deepEqual(list.map((entry) => [entry.id, entry.available]), [["native", true], ["hermes-agent", true], ["pi", true]]);
   assert.equal(list[1].capabilities.longTermMemory, true);
   assert.equal(list[2].capabilities.longTermMemory, false);
+});
+
+test("the conversation catalog exposes every known harness in editorial popularity order", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "multivibe-full-harness-catalog-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const integrations = new HostHarnessIntegrationManager({
+    homeDirectory: root,
+    statePath: path.join(root, "state.json"),
+    baseUrl: "http://127.0.0.1:1455",
+    executableDirectories: [],
+  });
+  const manager = new HostConversationHarnessManager(integrations, path.join(root, "sessions"));
+  const catalog = await manager.list();
+  assert.equal(catalog.length, HOST_HARNESS_DEFINITIONS.length + 1);
+  assert.deepEqual(catalog.slice(0, 8).map((entry) => entry.name), [
+    "MultiVibe natif", "Claude Code", "OpenAI Codex", "OpenCode", "OpenClaw", "Hermes Agent", "Pi", "Goose",
+  ]);
+  assert.deepEqual(catalog.map((entry) => entry.popularityRank), [0, ...catalog.slice(1).map((_, index) => index + 2)]);
+  assert.equal(catalog.find((entry) => entry.id === "claude-code")?.conversationCapable, false);
 });
 
 test("compatible missing harnesses remain visible and use only the pinned installer", { skip: process.platform !== "darwin" }, async (t) => {
