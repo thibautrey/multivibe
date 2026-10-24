@@ -63,25 +63,25 @@ private struct NativeInteractiveCard: View {
     }
 
     private var header: some View {
-    HStack(spacing: 11) {
-        ZStack {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(.tint.opacity(0.12))
-            Image(systemName: "sparkles.rectangle.stack")
-                .font(.system(size: 13, weight: .semibold)).foregroundStyle(.tint)
-        }.frame(width: 32, height: 32)
-        VStack(alignment: .leading, spacing: 2) {
-            Text(document.title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
-            Text("RÉPONSE INTERACTIVE").font(.system(size: 9, weight: .bold)).tracking(0.7).foregroundStyle(.tertiary)
+        HStack(spacing: 11) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(.tint.opacity(0.12))
+                Image(systemName: "sparkles.rectangle.stack")
+                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(.tint)
+            }.frame(width: 32, height: 32)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(document.title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                Text("RÉPONSE INTERACTIVE").font(.system(size: 9, weight: .bold)).tracking(0.7).foregroundStyle(.tertiary)
+            }
+            Spacer()
+            Button { proposal = nil; error = nil; reload = UUID() } label: {
+                Image(systemName: "arrow.counterclockwise").font(.system(size: 12, weight: .semibold))
+                    .frame(width: 28, height: 28).background(.quaternary.opacity(0.65), in: Circle())
+            }.buttonStyle(.plain).foregroundStyle(.secondary)
+                .help("Réinitialiser les contrôles")
         }
-        Spacer()
-        Button { proposal = nil; error = nil; reload = UUID() } label: {
-            Image(systemName: "arrow.counterclockwise").font(.system(size: 12, weight: .semibold))
-                .frame(width: 28, height: 28).background(.quaternary.opacity(0.65), in: Circle())
-        }.buttonStyle(.plain).foregroundStyle(.secondary)
-            .help("Réinitialiser les contrôles")
-    }
-    .padding(.horizontal, 16).padding(.vertical, 13)
+        .padding(.horizontal, 16).padding(.vertical, 13)
     }
 
     private func proposalView(_ proposal: NativeInteractiveProposal) -> some View {
@@ -91,12 +91,12 @@ private struct NativeInteractiveCard: View {
                 .frame(width: 28, height: 28).background(.tint.opacity(0.10), in: Circle())
             VStack(alignment: .leading, spacing: 5) {
                 Text(proposal.label).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            switch proposal {
-            case .prompt(let text):
+                switch proposal {
+                case .prompt(let text):
                     Text(text).font(.callout).lineLimit(4).textSelection(.enabled)
                     Button("Utiliser comme brouillon") { proposePrompt(text); self.proposal = nil }
                         .buttonStyle(.borderedProminent).controlSize(.small)
-            case .link(let url):
+                case .link(let url):
                     Text(url.absoluteString).font(.caption).foregroundStyle(.secondary).lineLimit(2).textSelection(.enabled)
                     Button("Ouvrir dans le navigateur") { NSWorkspace.shared.open(url); self.proposal = nil }
                         .buttonStyle(.borderedProminent).controlSize(.small)
@@ -111,17 +111,17 @@ private struct NativeInteractiveCard: View {
     }
 
     private var sourceDisclosure: some View {
-    DisclosureGroup {
-        ScrollView {
-            Text(document.html + "\n" + (document.css ?? "") + "\n" + (document.jsFunctions ?? "") + "\n" + (document.jsExpressions ?? ""))
-                .font(.system(size: 10.5, design: .monospaced)).textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
-        }.frame(maxHeight: 180)
-    } label: {
-        Label("Afficher le code", systemImage: "chevron.left.forwardslash.chevron.right")
-    }
-    .font(.caption).foregroundStyle(.secondary)
-    .padding(.horizontal, 16).padding(.vertical, 11)
+        DisclosureGroup {
+            ScrollView {
+                Text(document.html + "\n" + (document.css ?? "") + "\n" + (document.jsFunctions ?? "") + "\n" + (document.jsExpressions ?? ""))
+                    .font(.system(size: 10.5, design: .monospaced)).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
+            }.frame(maxHeight: 180)
+        } label: {
+            Label("Afficher le code", systemImage: "chevron.left.forwardslash.chevron.right")
+        }
+        .font(.caption).foregroundStyle(.secondary)
+        .padding(.horizontal, 16).padding(.vertical, 11)
     }
 }
 
