@@ -21,6 +21,11 @@ struct NativeChatConversation: Codable, Identifiable {
 
 /// Device-owned history; provider credentials are never stored here.
 @MainActor final class NativeChatStore: ObservableObject {
+    static let defaultHarnessKey = "assistantDefaultHarness"
+    static var defaultHarnessID: String {
+        get { UserDefaults.standard.string(forKey: defaultHarnessKey) ?? "native" }
+        set { UserDefaults.standard.set(newValue, forKey: defaultHarnessKey) }
+    }
     @Published var conversations: [NativeChatConversation] = []
     @Published var selection: UUID?
     @Published var error: String?
@@ -46,9 +51,20 @@ struct NativeChatConversation: Codable, Identifiable {
     }
     var current: NativeChatConversation? { conversations.first { $0.id == selection } }
     func newConversation(text: String = "") {
-        if text.isEmpty, let empty = conversations.first(where: { $0.messages.isEmpty && $0.draft.isEmpty }) { selection = empty.id; return }
+        if text.isEmpty, let index = conversations.firstIndex(where: { $0.messages.isEmpty && $0.draft.isEmpty }) {
+            conversations[index].model = HostAssistantClient.shared.defaultModel
+            let harness = Self.defaultHarnessID
+            conversations[index].harnessID = harness == "native" ? nil : harness
+            conversations[index].harnessSessionID = nil
+            conversations[index].updatedAt = Date()
+            selection = conversations[index].id
+            save()
+            return
+        }
         var item = NativeChatConversation()
         item.model = HostAssistantClient.shared.defaultModel
+        let harness = Self.defaultHarnessID
+        item.harnessID = harness == "native" ? nil : harness
         item.draft = text
         conversations.insert(item, at: 0); selection = item.id
         save()

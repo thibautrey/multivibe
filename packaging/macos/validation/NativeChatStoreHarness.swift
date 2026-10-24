@@ -26,14 +26,28 @@ import Foundation
 
 @main struct NativeChatStoreHarness {
     @MainActor static func main() async throws {
+        let previousModel = HostAssistantClient.shared.defaultModel
+        let previousHarness = NativeChatStore.defaultHarnessID
+        defer {
+            HostAssistantClient.shared.defaultModel = previousModel
+            NativeChatStore.defaultHarnessID = previousHarness
+        }
+        HostAssistantClient.shared.defaultModel = "fixture"
+        NativeChatStore.defaultHarnessID = "native"
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let file = directory.appendingPathComponent("history.json")
         let store = NativeChatStore(file: file)
         store.newConversation()
         let first = store.selection!
+        HostAssistantClient.shared.defaultModel = "latest-model"
+        NativeChatStore.defaultHarnessID = "pi"
         store.newConversation()
         precondition(store.selection == first && store.conversations.count == 1)
+        precondition(store.current?.model == "latest-model" && store.current?.harnessID == "pi")
+        HostAssistantClient.shared.defaultModel = "fixture"
+        NativeChatStore.defaultHarnessID = "native"
+        store.edit { $0.model = "fixture"; $0.harnessID = nil }
         store.edit { $0.draft = "Bonjour" }
         store.send()
         while store.generating != nil { try await Task.sleep(nanoseconds: 10_000_000) }
@@ -72,6 +86,11 @@ import Foundation
         precondition(store.current?.messages.last?.content == "Réponse du harness")
         store.delete(first)
         precondition(store.conversations.count == 1)
+        HostAssistantClient.shared.defaultModel = "remembered-model"
+        NativeChatStore.defaultHarnessID = "hermes-agent"
+        store.newConversation(text: "Les préférences doivent suivre")
+        precondition(store.current?.model == "remembered-model")
+        precondition(store.current?.harnessID == "hermes-agent")
         try Data("invalid-history".utf8).write(to: file)
         let corrupt = NativeChatStore(file: file)
         precondition(corrupt.error != nil)

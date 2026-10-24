@@ -15,6 +15,33 @@ private enum ChatPalette {
     static let hairline = Color(nsColor: .separatorColor).opacity(0.55)
 }
 
+private struct HarnessLogo: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let id: String
+    var size: CGFloat
+
+    private var resource: (String, String) {
+        switch id {
+        case "hermes-agent": return (colorScheme == .dark ? "hermes-dark" : "hermes-light", "png")
+        case "pi": return ("pi", "svg")
+        default: return ("multivibe", "png")
+        }
+    }
+
+    var body: some View {
+        Group {
+            if let url = Bundle.main.url(forResource: resource.0, withExtension: resource.1, subdirectory: "harnesses"),
+               let image = NSImage(contentsOf: url) {
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
+            } else {
+                Image(systemName: "questionmark.square.dashed").resizable().scaledToFit().foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
 @MainActor struct NativeChatView: View {
     @ObservedObject var store: NativeChatStore
     @StateObject private var agent = NativeChatAgentCoordinator()
@@ -29,6 +56,7 @@ private enum ChatPalette {
     @State private var search = ""
     @State private var models: [HostAssistantModel] = []
     @State private var harnesses: [NativeConversationHarness] = [.native]
+    @State private var choosingHarness = false
     @State private var loading = false
     @State private var importing = false
     @State private var deleteID: UUID?
@@ -44,6 +72,7 @@ private enum ChatPalette {
             conversation.harnessID = value == "native" ? nil : value
             conversation.harnessSessionID = nil
         }
+        NativeChatStore.defaultHarnessID = value
         if value != "native", selectedLocalModel?.local == true, let remote = models.first(where: { $0.local != true }) {
             model.wrappedValue = remote.id
         } else if value != "native", selectedLocalModel?.local == true {
@@ -465,24 +494,9 @@ private enum ChatPalette {
         .padding(.horizontal, 22).padding(.top, 9).padding(.bottom, 16)
     }
     private var harnessSelector: some View {
-        Menu {
-            ForEach(harnesses) { item in
-                Button {
-                    harness.wrappedValue = item.id
-                } label: {
-                    Label(item.name + (item.available ? "" : " — indisponible"),
-                          systemImage: item.id == harness.wrappedValue ? "checkmark" : harnessIcon(item))
-                }
-                .disabled(!item.available)
-                if item.id == "hermes-agent" && item.available {
-                    Text("Mémoire longue durée")
-                }
-            }
-            Divider()
-            Button("Actualiser les harnesses", systemImage: "arrow.clockwise") { Task { await loadHarnesses() } }
-        } label: {
+        Button { choosingHarness = true } label: {
             HStack(spacing: 6) {
-                Image(systemName: harnessIcon(selectedHarness))
+                HarnessLogo(id: selectedHarness.id, size: 18)
                 Text(selectedHarness.name).lineLimit(1)
                 Image(systemName: "chevron.up.chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
             }
@@ -490,15 +504,71 @@ private enum ChatPalette {
             .padding(.horizontal, 9).frame(height: 28)
             .background(ChatPalette.surface, in: Capsule())
         }
-        .menuStyle(.borderlessButton).tint(.secondary)
+        .buttonStyle(.plain).tint(.secondary)
         .fixedSize(horizontal: false, vertical: true).frame(maxWidth: 190, alignment: .leading)
         .help(selectedHarness.description)
         .disabled(store.current?.messages.isEmpty == false || store.generating == store.selection)
+        .popover(isPresented: $choosingHarness, arrowEdge: .bottom) { harnessGrid }
     }
-    private func harnessIcon(_ item: NativeConversationHarness) -> String {
-        if item.id == "hermes-agent" { return "brain.head.profile" }
-        if item.id == "pi" { return "point.3.connected.trianglepath.dotted" }
-        return "bolt.horizontal.circle"
+    private var harnessGrid: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Moteur de conversation").font(.headline)
+                    Text("MultiVibe garde l’interface. Le moteur sélectionné orchestre les réponses.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { Task { await loadHarnesses() } } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(.borderless).help("Actualiser les harnesses détectés")
+            }
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
+                ForEach(harnesses) { item in harnessCard(item) }
+            }
+        }
+        .padding(18).frame(width: 590)
+    }
+    private func harnessCard(_ item: NativeConversationHarness) -> some View {
+        Button {
+            harness.wrappedValue = item.id
+            choosingHarness = false
+        } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor))
+                        HarnessLogo(id: item.id, size: 42)
+                    }.frame(width: 56, height: 56)
+                    Spacer()
+                    if item.id == harness.wrappedValue {
+                        Image(systemName: "checkmark.circle.fill").font(.title3).foregroundStyle(ChatPalette.accent)
+                    } else {
+                        Circle().fill(item.available ? ChatPalette.accent : Color.secondary.opacity(0.45)).frame(width: 8, height: 8)
+                    }
+                }
+                Text(item.name).font(.callout.weight(.semibold)).foregroundStyle(.primary)
+                Text(item.description).font(.caption2).foregroundStyle(.secondary).lineLimit(3, reservesSpace: true)
+                if item.capabilities.longTermMemory {
+                    Label("Mémoire longue durée", systemImage: "brain.head.profile")
+                        .font(.caption2.weight(.medium)).foregroundStyle(ChatPalette.accent)
+                } else if item.id == "pi" {
+                    Label("Session persistante", systemImage: "clock.arrow.circlepath")
+                        .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+                } else {
+                    Label("Conversation directe", systemImage: "bolt.horizontal")
+                        .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+                }
+            }
+            .padding(13).frame(maxWidth: .infinity, minHeight: 190, alignment: .topLeading)
+            .background(item.id == harness.wrappedValue ? ChatPalette.accent.opacity(0.10) : ChatPalette.elevated,
+                        in: RoundedRectangle(cornerRadius: 15))
+            .overlay(RoundedRectangle(cornerRadius: 15).stroke(
+                item.id == harness.wrappedValue ? ChatPalette.accent.opacity(0.8) : ChatPalette.hairline,
+                lineWidth: item.id == harness.wrappedValue ? 1.5 : 1))
+        }
+        .buttonStyle(.plain).disabled(!item.available)
+        .opacity(item.available ? 1 : 0.55)
+        .accessibilityLabel("\(item.name), \(item.description)\(item.id == harness.wrappedValue ? ", sélectionné" : "")")
     }
     private var modelSelector: some View {
         Menu {
