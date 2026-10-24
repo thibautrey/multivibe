@@ -5,7 +5,7 @@ import SwiftUI
 final class HostAssistantWindow: NSWindowController {
     let store = NativeChatStore()
     init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1060, height: 740), styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780), styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.title = "MultiVibe"
         window.titlebarAppearsTransparent = true
         window.minSize = NSSize(width: 760, height: 540)
