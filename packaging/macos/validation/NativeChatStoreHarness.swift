@@ -7,7 +7,15 @@ enum HostAssistantError: Error { case emptyReply }
     static let shared = HostAssistantClient()
     var defaultModel = "fixture"
     var received: [[String: String]] = []
-    func computerTurn(_ messages: [[String: Any]], model: String) async throws -> ComputerUseModelReply { fatalError("Unexpected computer use") }
+    func computerTurn(_ messages: [[String: Any]], model: String) async throws -> ComputerUseModelReply {
+        received = messages.compactMap { value in
+            guard let role = value["role"] as? String, let content = value["content"] as? String else { return nil }
+            return ["role": role, "content": content]
+        }
+        try await Task.sleep(nanoseconds: 80_000_000)
+        try Task.checkCancellation()
+        return .init(message: ["role": "assistant", "content": response], text: response, calls: [])
+    }
     var response = "Réponse complète"
     func stream(_ messages: [[String: String]], model: String, update: @MainActor (String) -> Void) async throws {
         received = messages

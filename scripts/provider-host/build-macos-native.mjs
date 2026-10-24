@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { buildAndInstallCef } from './cef-runtime.mjs';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const run = (program, args, env = process.env) => execFileSync(program, args, { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -115,6 +116,8 @@ export async function buildMacOSNative({ binary, resources, architecture = 'arm6
     const sdk = selectedRun('xcrun', ['--sdk', 'macosx', '--show-sdk-path']);
     const version = selectedRun('xcodebuild', ['-version']).split(/\s+/u).at(-1);
     const sourceDirectory = path.join(repository, 'packaging/macos');
+    const contents = path.dirname(resources);
+    const cef = await buildAndInstallCef({ architecture, contents, temporary, repository });
     const sources = (await readdir(sourceDirectory)).filter(name => name.endsWith('.swift')).sort().map(name => path.join(sourceDirectory, name));
     const protocols = path.join(temporary, 'protocols.json');
     await writeFile(protocols, JSON.stringify(await readConstValueProtocols(toolchain)));
@@ -123,12 +126,11 @@ export async function buildMacOSNative({ binary, resources, architecture = 'arm6
       selectedRun('xcrun', ['swiftc', '-frontend', '-help-hidden']), protocols);
     const target = `${architecture}-apple-macos${minimum}`;
     selectedRun('xcrun', ['swiftc', '-parse-as-library', '-O', '-whole-module-optimization', '-module-name', 'MultiVibeHost', '-target', target,
-      '-emit-const-values-path', constants, ...extractionArguments, ...sources, '-o', binary]);
+      '-emit-const-values-path', constants, ...extractionArguments, ...sources, cef.bridge, cef.wrapper, '-lc++', '-o', binary]);
     const sourceList = path.join(temporary, 'sources');
     const constantList = path.join(temporary, 'constants');
     await writeFile(sourceList, `${sources.join('\n')}\n`);
     await writeFile(constantList, `${constants}\n`);
-    const contents = path.dirname(resources);
     const appInfo = selectedRun('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(contents, 'Info.plist')]);
     const info = JSON.parse(appInfo);
     const fileArguments = appIntentsFileArguments(commandHelp('xcrun', ['appintentsmetadataprocessor', '--help'], env),

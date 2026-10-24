@@ -17,14 +17,13 @@ struct NativeChatConversation: Codable, Identifiable {
     var draft = ""
     var harnessID: String?
     var harnessSessionID: String?
-    var computerUseEvents: [ComputerUseEvent]?
 }
 
 /// Device-owned history; provider credentials are never stored here.
 @MainActor final class NativeChatStore: ObservableObject {
     static let defaultHarnessKey = "assistantDefaultHarness"
     static var defaultHarnessID: String {
-        get { UserDefaults.standard.string(forKey: defaultHarnessKey) ?? "native" }
+        get { let value = UserDefaults.standard.string(forKey: defaultHarnessKey) ?? "native"; return value == "computer-use" ? "native" : value }
         set { UserDefaults.standard.set(newValue, forKey: defaultHarnessKey) }
     }
     @Published var conversations: [NativeChatConversation] = []
@@ -43,7 +42,7 @@ struct NativeChatConversation: Codable, Identifiable {
             if FileManager.default.fileExists(atPath: self.file.path) {
                 let data = try Data(contentsOf: self.file)
                 conversations = try JSONDecoder().decode([NativeChatConversation].self, from: data)
-
+                for index in conversations.indices where conversations[index].harnessID == "computer-use" { conversations[index].harnessID = nil; conversations[index].harnessSessionID = nil }
             }
         } catch {
             canSave = false
@@ -113,18 +112,9 @@ struct NativeChatConversation: Codable, Identifiable {
         conversations[i].updatedAt = Date()
         generating = id; error = nil; save()
         task = Task { @MainActor in
-            defer {
-                if harnessID == "computer-use", let index = conversations.firstIndex(where: { $0.id == id }) {
-                    conversations[index].computerUseEvents = Array(((conversations[index].computerUseEvents ?? []) + computer.events).suffix(200))
-                }
-                generating = nil; task = nil; save()
-            }
+            defer { generating = nil; task = nil; save() }
             do {
-                if harnessID == "computer-use" {
-                    try await computer.run(conversation: id, messages: messages.map { ["role": $0.role, "content": $0.content] }, model: model,
-                        turn: { context, model in try await HostAssistantClient.shared.computerTurn(context, model: model) },
-                        update: { text in self.updateStreamedReply(text, conversationID: id) })
-                } else if let harnessID, harnessID != "native" {
+                if let harnessID, harnessID != "native", harnessID != "computer-use" {
                     let harnessPrompt = retry ? (messages.last(where: { $0.role == "user" })?.content ?? "") : prompt
                     let sessionID = try await NativeHarnessClient.shared.stream(
                         harnessID: harnessID, conversationID: id, prompt: interactiveAnswers ? NativeInteractiveDocument.prompt(harnessPrompt) : harnessPrompt, model: model,
@@ -135,8 +125,13 @@ struct NativeChatConversation: Codable, Identifiable {
                     }
                 } else {
                     let requestMessages = messages.map { ["role": $0.role, "content": $0.content] }
-                    try await HostAssistantClient.shared.stream(interactiveAnswers ? NativeInteractiveDocument.messages(requestMessages) : requestMessages, model: model) { text in
-                        self.updateStreamedReply(text, conversationID: id)
+                    let prepared = interactiveAnswers ? NativeInteractiveDocument.messages(requestMessages) : requestMessages
+                    if model == AppleFoundationModel.id {
+                        try await HostAssistantClient.shared.stream(prepared, model: model) { text in self.updateStreamedReply(text, conversationID: id) }
+                    } else {
+                        try await computer.run(conversation: id, messages: prepared, model: model,
+                            turn: { context, model in try await HostAssistantClient.shared.computerTurn(context, model: model) },
+                            update: { text in self.updateStreamedReply(text, conversationID: id) })
                     }
                 }
                 if let index = conversations.firstIndex(where: { $0.id == id }) {

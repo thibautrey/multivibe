@@ -72,12 +72,20 @@ import CoreImage
         var lines: [String] = []
         // Read the visible window and menus, never unrelated application windows.
         let candidates = (attribute(root, kAXWindowsAttribute) as? [AXUIElement] ?? [])
-        let selected = candidates.first { element in
-            guard let position = attribute(element, kAXPositionAttribute), CFGetTypeID(position) == AXValueGetTypeID() else { return false }
-            var point = CGPoint.zero
-            AXValueGetValue(unsafeBitCast(position, to: AXValue.self), .cgPoint, &point)
-            return abs(point.x - rect.minX) < 3 && abs(point.y - rect.minY) < 3
+        func elementFrame(_ element: AXUIElement) -> CGRect? {
+            guard let position = attribute(element, kAXPositionAttribute), let size = attribute(element, kAXSizeAttribute),
+                  CFGetTypeID(position) == AXValueGetTypeID(), CFGetTypeID(size) == AXValueGetTypeID() else { return nil }
+            var point = CGPoint.zero, dimensions = CGSize.zero
+            guard AXValueGetValue(unsafeBitCast(position, to: AXValue.self), .cgPoint, &point),
+                  AXValueGetValue(unsafeBitCast(size, to: AXValue.self), .cgSize, &dimensions) else { return nil }
+            return CGRect(origin: point, size: dimensions)
         }
+        let selected = candidates.compactMap { element -> (AXUIElement, CGFloat)? in
+            guard let candidate = elementFrame(element) else { return nil }
+            let intersection = candidate.intersection(rect)
+            guard !intersection.isNull else { return nil }
+            return (element, intersection.width * intersection.height)
+        }.max { $0.1 < $1.1 }?.0
         observedWindow = selected; windowID = number
         let deadline = Date().addingTimeInterval(1.2)
         func visit(_ element: AXUIElement, depth: Int) {

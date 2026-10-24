@@ -18,6 +18,8 @@
   <string>MultiVibe Host</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <key>NSPrincipalClass</key>
+  <string>MVCEFApplication</string>
   <key>CFBundleShortVersionString</key>
   <string>__MULTIVIBE_VERSION__</string>
   <key>CFBundleVersion</key>
