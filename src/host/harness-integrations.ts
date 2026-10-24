@@ -1059,9 +1059,9 @@ export class HostHarnessIntegrationManager {
     const synchronize = () => {
       if (this.catalogSynchronizationRunning) return;
       this.catalogSynchronizationRunning = true;
-      void this.synchronizeCodexModelCatalog()
+      void this.synchronizeModelCatalogs()
         .catch((error) => {
-          console.warn("Codex model catalog synchronization failed", error instanceof Error ? error.message : String(error));
+          console.warn("Harness model catalog synchronization failed", error instanceof Error ? error.message : String(error));
         })
         .finally(() => { this.catalogSynchronizationRunning = false; });
     };
@@ -1073,6 +1073,57 @@ export class HostHarnessIntegrationManager {
   stopCatalogSynchronization() {
     if (this.catalogSynchronizationTimer) clearInterval(this.catalogSynchronizationTimer);
     this.catalogSynchronizationTimer = undefined;
+  }
+
+  async synchronizeModelCatalogs(): Promise<boolean> {
+    let changed = false;
+    const failures: Error[] = [];
+    try {
+      changed = await this.synchronizeCodexModelCatalog();
+    } catch (error) {
+      failures.push(error instanceof Error ? error : new Error(String(error)));
+    }
+    for (const definition of this.definitions) {
+      const configuration = definition.configuration;
+      if (definition.id === "openai-codex" || !configuration?.prepare || configuration.auxiliaryFiles) continue;
+      try {
+        const updated = await this.serial(async () => {
+          const state = await this.readState();
+          const installation = state.installations[definition.id];
+          if (!installation || installation.configurationRevision !== configuration.revision) return false;
+          const configPath = await this.safeConfigPath(configuration.relativePath);
+          if (installation.configPath !== configPath) return false;
+          const current = await readBounded(configPath);
+          if (!current || sha256(current.content) !== installation.installedSha256) return false;
+          const apiKey = this.apiKeyForId(installation.apiKeyId);
+          if (!apiKey || !configuration.isConfigured(current.content, this.baseUrl)) return false;
+          const context: HarnessContext = {
+            baseUrl: this.baseUrl, apiKey, clientId: definition.id, homeDirectory: this.homeDirectory,
+          };
+          const prepared = { ...context, ...(await configuration.prepare!(context)) };
+          const rendered = configuration.render(current.content, prepared);
+          if (rendered === current.content) return false;
+          // Discovery performs network I/O. An editor may have changed the file
+          // while it was in flight; never replace those intervening user edits.
+          const latest = await readBounded(configPath);
+          if (!latest || sha256(latest.content) !== installation.installedSha256) return false;
+          await writeAtomic(configPath, rendered, latest.mode);
+          try {
+            state.installations[definition.id] = { ...installation, installedSha256: sha256(rendered) };
+            await this.writeState(state);
+          } catch (error) {
+            await writeAtomic(configPath, latest.content, latest.mode);
+            throw error;
+          }
+          return true;
+        });
+        changed ||= updated;
+      } catch (error) {
+        failures.push(error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+    if (failures.length) throw new AggregateError(failures, "Some harness model catalogs could not be synchronized");
+    return changed;
   }
 
   async synchronizeCodexModelCatalog(): Promise<boolean> {
