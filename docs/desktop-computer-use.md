@@ -8,8 +8,8 @@ than a claimed execution.
 
 The engine runs in the Desktop process. Host credentials stay in that process;
 models receive tool definitions, approved observations and screenshots. No remote
-HTTP endpoint exposes the desktop controller. A model response may contain several
-tool calls, but Desktop executes them sequentially. A mutation requires the latest
+HTTP endpoint exposes the desktop controller. A model response must contain at most one tool call so that every action can be
+checked against its resulting observation. A mutation requires the latest
 observation; subsequent mutations using the same observation are rejected.
 
 ## Browser
