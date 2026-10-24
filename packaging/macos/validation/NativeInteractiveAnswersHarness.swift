@@ -21,9 +21,15 @@ import WebKit
     static func check(_ condition: Bool, _ message: String) throws { if !condition { throw Failure(message: message) } }
     @MainActor static func verify() async throws {
         let html = """
-        <label>Total <input id="total" type="number" value="120"></label>
-        <label>People <input id="people" type="number" min="1" value="3"></label>
-        <output id="share"></output><button id="follow">Explain my split</button>
+        <main class="card stack">
+          <header><p class="eyebrow">Shared expense</p><h1>Split the bill</h1><p>Adjust the values to calculate an even share.</p></header>
+          <div class="grid">
+            <label>Total <input id="total" type="number" value="120"></label>
+            <label>People <input id="people" type="number" min="1" value="3"></label>
+          </div>
+          <section class="metric"><span class="eyebrow">Per person</span><output id="share"></output></section>
+          <div class="actions"><button id="follow">Explain my split</button><span class="badge">Live calculation</span></div>
+        </main>
         """
         let functions = """
         function calculate(){share.textContent=(Number(total.value)/Math.max(1,Number(people.value))).toFixed(2)}
@@ -63,6 +69,9 @@ import WebKit
         try check(NativeInteractiveProposal.parse(["type":"open-link", "url":"https://example.com"]) != nil, "HTTPS proposal")
         let hostile = try JSONDecoder().decode(NativeInteractiveDocument.self, from: JSONSerialization.data(withJSONObject: ["title":"x", "html":"</script><script>evil()</script>"]))
         try check(!NativeInteractiveSandbox.page(hostile).contains("<script>evil()"), "wrapper script breakout escaped")
+        let styledPage = NativeInteractiveSandbox.page(document)
+        try check(styledPage.contains("prefers-color-scheme:dark") && styledPage.contains("prefers-reduced-motion:reduce"), "adaptive appearance")
+        try check(styledPage.contains("--mv-accent") && styledPage.contains(".metric") && styledPage.contains(":focus-visible"), "default component theme")
         let state = Proposals()
         let parent = NativeInteractiveWebView(document: document,
             proposal: Binding(get: { state.value }, set: { state.value = $0 }),
@@ -70,6 +79,9 @@ import WebKit
         let coordinator = parent.makeCoordinator()
         let webView = parent.makeWebView(coordinator: coordinator)
         webView.frame = NSRect(x: 0, y: 0, width: 720, height: 420)
+        if ProcessInfo.processInfo.environment["MULTIVIBE_INTERACTIVE_QA_APPEARANCE"] == "dark" {
+            webView.appearance = NSAppearance(named: .darkAqua)
+        }
         defer { NativeInteractiveWebView.dismantleNSView(webView, coordinator: coordinator) }
         try check(!webView.configuration.websiteDataStore.isPersistent, "ephemeral storage")
         let deadline = Date().addingTimeInterval(15)
