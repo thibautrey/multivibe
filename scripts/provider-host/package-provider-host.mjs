@@ -749,6 +749,15 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
       path.join(repositoryRoot, "packaging", "macos", "MultiVibeMenuBarTemplate.png"),
       path.join(contents, "Resources", "MultiVibeMenuBarTemplate.png"),
     );
+    await cp(
+      path.join(repositoryRoot, "packaging", "macos", "resources", "harnesses"),
+      path.join(contents, "Resources", "harnesses"),
+      { recursive: true },
+    );
+    await cp(
+      path.join(repositoryRoot, "packaging", "macos", "resources", "OpenIntelligentUI-LICENSE.txt"),
+      path.join(contents, "Resources", "OpenIntelligentUI-LICENSE.txt"),
+    );
     await mkdir(path.join(contents, "Resources", "update"), { recursive: true, mode: 0o755 });
     await cp(
       path.join(repositoryRoot, "packaging", "macos", "install.sh"),
