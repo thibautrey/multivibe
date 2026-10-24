@@ -58,7 +58,7 @@ extension HostAssistantClient {
         try Task.checkCancellation()
         guard finished, let finishReason, ["stop", "tool_calls"].contains(finishReason) else { throw ComputerUseFailure("Le flux du modèle est tronqué ou incomplet. Aucune action exécutée.") }
         let ordered = calls.keys.sorted().compactMap { calls[$0] }
-        guard ordered.allSatisfy({ !$0.id.isEmpty && !$0.name.isEmpty }), Set(ordered.map(\.id)).count == ordered.count,
+        guard ordered.count <= 1, ordered.allSatisfy({ !$0.id.isEmpty && !$0.name.isEmpty }), Set(ordered.map(\.id)).count == ordered.count,
               (ordered.isEmpty && finishReason == "stop") || (!ordered.isEmpty && finishReason == "tool_calls") else { throw ComputerUseFailure("Les appels d’outils sont incomplets.") }
         var message: [String: Any] = ["role": "assistant", "content": text]
         if !ordered.isEmpty {

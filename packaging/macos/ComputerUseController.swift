@@ -172,7 +172,7 @@ struct ComputerUseModelReply {
                 guard !accumulated.isEmpty else { throw HostAssistantError.emptyReply }
                 completed = true; return
             }
-            guard reply.calls.count <= 8 else { throw ComputerUseFailure("Trop d’appels d’outils dans une seule réponse.") }
+            guard reply.calls.count == 1 else { throw ComputerUseFailure("Le modèle a demandé plusieurs actions simultanées. Contrôle rendu sans exécuter ces actions.") }
             context.append(reply.message)
             var observed: ComputerUseObservation?
             for call in reply.calls {
