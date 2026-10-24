@@ -478,7 +478,7 @@ private struct HarnessLogo: View {
                 if message.interrupted && store.generating != conversation.id {
                     HStack(spacing: 8) {
                         Label("Réponse interrompue", systemImage: "pause.circle").font(.caption).foregroundStyle(.secondary)
-                        if message.id == conversation.messages.last?.id { Button("Réessayer") { store.send(retry: true, interactiveAnswers: interactiveAnswers) }.disabled(store.generating != nil) }
+                        if message.id == conversation.messages.last?.id { Button("Réessayer") { sendMessage(retry: true) }.disabled(store.generating != nil) }
                     }
                 }
             }
@@ -513,7 +513,7 @@ private struct HarnessLogo: View {
                         Button { store.stop() } label: { Image(systemName: "stop.fill").font(.system(size: 11)).frame(width: 25, height: 25) }
                             .buttonStyle(.borderedProminent).clipShape(Circle()).tint(.secondary).help("Arrêter")
                     } else {
-                        Button { store.send(interactiveAnswers: interactiveAnswers) } label: { Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).frame(width: 25, height: 25) }
+                        Button { sendMessage() } label: { Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).frame(width: 25, height: 25) }
                             .buttonStyle(.borderedProminent).clipShape(Circle()).help("Envoyer (⌘↵)").keyboardShortcut(.return, modifiers: .command)
                             .disabled(draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                 || !models.contains { $0.id == model.wrappedValue }
@@ -575,6 +575,10 @@ private struct HarnessLogo: View {
     private func recordHarnessUse(_ id: String) {
         harnessLastUsedAt[id] = Date().timeIntervalSince1970
         UserDefaults.standard.set(harnessLastUsedAt, forKey: "assistantHarnessLastUsedAt")
+    }
+    private func sendMessage(retry: Bool = false) {
+        recordHarnessUse(harness.wrappedValue)
+        store.send(retry: retry, interactiveAnswers: interactiveAnswers)
     }
     private func harnessCard(_ item: NativeConversationHarness) -> some View {
         Button {
