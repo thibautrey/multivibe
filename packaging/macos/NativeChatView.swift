@@ -46,6 +46,8 @@ private enum ChatPalette {
         }
         if value != "native", selectedLocalModel?.local == true, let remote = models.first(where: { $0.local != true }) {
             model.wrappedValue = remote.id
+        } else if value != "native", selectedLocalModel?.local == true {
+            store.error = "Ce harness nécessite un modèle fourni par le Host. Connectez un fournisseur ou choisissez MultiVibe natif."
         }
     }) }
     private var visible: [NativeChatConversation] {
@@ -489,6 +491,7 @@ private enum ChatPalette {
             .background(ChatPalette.surface, in: Capsule())
         }
         .menuStyle(.borderlessButton).tint(.secondary)
+        .fixedSize(horizontal: false, vertical: true).frame(maxWidth: 190, alignment: .leading)
         .help(selectedHarness.description)
         .disabled(store.current?.messages.isEmpty == false || store.generating == store.selection)
     }
