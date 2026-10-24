@@ -75,7 +75,10 @@ test("compatible missing harnesses remain visible and use only the pinned instal
   process.env.PATH = `${bin}:${previousPath ?? ""}`;
   t.after(() => { process.env.PATH = previousPath; });
   const integration = {
-    list: async () => [],
+    list: async () => [
+      { id: "hermes-agent", name: "Hermes Agent", category: "agent", detected: false, configured: false },
+      { id: "pi", name: "Pi", category: "cli", detected: await stat(marker).then(() => true, () => false), configured: false },
+    ],
     get: async (id: string) => ({ id, name: "Pi", detected: await stat(marker).then(() => true, () => false), configured: false }),
     executablePath: async () => null,
   } as unknown as HostHarnessIntegrationManager;
