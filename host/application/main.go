@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 var hostApplicationVersion = "dev"
@@ -666,6 +667,23 @@ func edgeEnvironment(base []string, network coreNetworkConfiguration, internalTo
 	return environment
 }
 
+const childShutdownTimeout = 5 * time.Second
+
+func waitForChild(process *os.Process, done <-chan error) {
+	select {
+	case <-done:
+		return
+	case <-time.After(childShutdownTimeout):
+		_ = process.Kill()
+		<-done
+	}
+}
+
+func signalAndWaitForChild(process *os.Process, done <-chan error, childSignal os.Signal) {
+	_ = process.Signal(childSignal)
+	waitForChild(process, done)
+}
+
 func run() error {
 	layout, err := currentLayout()
 	if err != nil {
@@ -748,32 +766,29 @@ func run() error {
 	if err := node.Start(); err != nil {
 		return errors.New("the Node control plane could not be started")
 	}
+	nodeDone := make(chan error, 1)
+	go func() { nodeDone <- node.Wait() }()
 	if err := edge.Start(); err != nil {
-		_ = node.Process.Kill()
-		_ = node.Wait()
+		signalAndWaitForChild(node.Process, nodeDone, syscall.SIGTERM)
 		return errors.New("the Rust v1 edge could not be started")
 	}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(stop)
-	nodeDone := make(chan error, 1)
 	edgeDone := make(chan error, 1)
-	go func() { nodeDone <- node.Wait() }()
 	go func() { edgeDone <- edge.Wait() }()
 	select {
 	case signal := <-stop:
 		_ = node.Process.Signal(signal)
 		_ = edge.Process.Signal(signal)
-		<-nodeDone
-		<-edgeDone
+		waitForChild(node.Process, nodeDone)
+		waitForChild(edge.Process, edgeDone)
 		return nil
 	case err := <-edgeDone:
-		_ = node.Process.Kill()
-		<-nodeDone
+		signalAndWaitForChild(node.Process, nodeDone, syscall.SIGTERM)
 		return fmt.Errorf("Rust v1 edge stopped: %w", err)
 	case err := <-nodeDone:
-		_ = edge.Process.Kill()
-		<-edgeDone
+		signalAndWaitForChild(edge.Process, edgeDone, syscall.SIGTERM)
 		return fmt.Errorf("Node control plane stopped: %w", err)
 	}
 }

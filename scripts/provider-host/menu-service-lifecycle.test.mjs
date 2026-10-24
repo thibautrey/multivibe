@@ -26,3 +26,9 @@ test("macOS preview mode cannot mutate the running Host lifecycle", () => {
   assert.match(source, /func setStartAtLogin\(_ enabled: Bool\) \{\s*guard !isMenuPreview else \{ return \}/u);
   assert.match(source, /@objc func quitApplication\(\) \{\s*if !isMenuPreview \{ stopHostService\(\) \}/u);
 });
+
+test("macOS fallback Host port never collides with the private control plane", () => {
+  assert.match(source, /let fallbackHostPort = 1457/u);
+  assert.match(source, /dashboardURL = URL\(string: "http:\/\/127\.0\.0\.1:\\\(fallbackHostPort\)"\)!/u);
+  assert.doesNotMatch(source, /dashboardURL = URL\(string: "http:\/\/127\.0\.0\.1:1456"\)!/u);
+});
