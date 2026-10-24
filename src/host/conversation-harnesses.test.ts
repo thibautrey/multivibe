@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -42,6 +42,31 @@ test("detected structured harnesses expose honest conversation capabilities", { 
   assert.deepEqual(list.map((entry) => [entry.id, entry.available]), [["native", true], ["hermes-agent", true], ["pi", true]]);
   assert.equal(list[1].capabilities.longTermMemory, true);
   assert.equal(list[2].capabilities.longTermMemory, false);
+});
+
+test("compatible missing harnesses remain visible and use only the pinned installer", { skip: process.platform !== "darwin" }, async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "multivibe-conversation-install-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bin = path.join(root, "bin");
+  const marker = path.join(root, "pi-installed");
+  await import("node:fs/promises").then(({ mkdir }) => mkdir(bin));
+  const npm = path.join(bin, "npm");
+  await writeFile(npm, `#!/bin/sh\necho downloading-pi\ntouch '${marker}'\n`, { mode: 0o755 });
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}:${previousPath ?? ""}`;
+  t.after(() => { process.env.PATH = previousPath; });
+  const integration = {
+    list: async () => [],
+    get: async (id: string) => ({ id, name: "Pi", detected: await stat(marker).then(() => true, () => false), configured: false }),
+    executablePath: async () => null,
+  } as unknown as HostHarnessIntegrationManager;
+  const manager = new HostConversationHarnessManager(integration, path.join(root, "sessions"));
+  const list = await manager.list();
+  assert.deepEqual(list.map((entry) => entry.id), ["native", "hermes-agent", "pi"]);
+  assert.equal(list[2].canInstall, true);
+  const logs: string[] = [];
+  await manager.install("pi", new AbortController().signal, (line) => logs.push(line));
+  assert.deepEqual(logs, ["Installing Pi 0.73.1…", "downloading-pi", "Pi installed successfully."]);
 });
 
 test("Hermes receives the prompt on stdin and returns its durable session", { skip: process.platform === "win32" }, async (t) => {

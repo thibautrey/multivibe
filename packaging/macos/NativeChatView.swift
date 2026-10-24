@@ -57,6 +57,11 @@ private struct HarnessLogo: View {
     @State private var models: [HostAssistantModel] = []
     @State private var harnesses: [NativeConversationHarness] = [.native]
     @State private var choosingHarness = false
+    @State private var installingHarness: NativeConversationHarness?
+    @State private var installationLogs: [String] = []
+    @State private var installationRunning = false
+    @State private var installationError: String?
+    @State private var showingInstallationLogs = false
     @State private var loading = false
     @State private var importing = false
     @State private var deleteID: UUID?
@@ -94,7 +99,7 @@ private struct HarnessLogo: View {
             id: harness.wrappedValue, name: harness.wrappedValue, available: false, configured: false,
             description: "Ce harness n’est plus disponible sur ce Mac.",
             capabilities: .init(sessions: true, streaming: true, tools: false, longTermMemory: false),
-            unavailableReason: "Ce harness n’est plus disponible sur ce Mac."
+            unavailableReason: "Ce harness n’est plus disponible sur ce Mac.", canInstall: false, compatible: false
         )
     }
     private var selectedModelName: String {
@@ -190,6 +195,7 @@ private struct HarnessLogo: View {
             await loadHarnesses()
         }
         .sheet(isPresented: $cloudConsent) { consentSheet }
+        .sheet(item: $installingHarness) { item in harnessInstallationSheet(item) }
         .onChange(of: agent.accountID) { _ in
             cloudTask?.cancel(); cloudSending = false; cloudDraft = ""; cloudModel = ""; cloudSelection = nil
             if agent.accountID == nil { cloudMode = false }
@@ -530,8 +536,13 @@ private struct HarnessLogo: View {
     }
     private func harnessCard(_ item: NativeConversationHarness) -> some View {
         Button {
-            harness.wrappedValue = item.id
-            choosingHarness = false
+            if item.available {
+                harness.wrappedValue = item.id
+                choosingHarness = false
+            } else if item.canInstall == true {
+                choosingHarness = false
+                beginInstallation(item)
+            }
         } label: {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .top) {
@@ -558,6 +569,10 @@ private struct HarnessLogo: View {
                     Label("Conversation directe", systemImage: "bolt.horizontal")
                         .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
                 }
+                if !item.available && item.canInstall == true {
+                    Label("Installer", systemImage: "arrow.down.circle.fill")
+                        .font(.caption.weight(.semibold)).foregroundStyle(ChatPalette.accent)
+                }
             }
             .padding(13).frame(maxWidth: .infinity, minHeight: 190, alignment: .topLeading)
             .background(item.id == harness.wrappedValue ? ChatPalette.accent.opacity(0.10) : ChatPalette.elevated,
@@ -566,9 +581,62 @@ private struct HarnessLogo: View {
                 item.id == harness.wrappedValue ? ChatPalette.accent.opacity(0.8) : ChatPalette.hairline,
                 lineWidth: item.id == harness.wrappedValue ? 1.5 : 1))
         }
-        .buttonStyle(.plain).disabled(!item.available)
-        .opacity(item.available ? 1 : 0.55)
+        .buttonStyle(.plain).disabled(!item.available && item.canInstall != true)
+        .opacity(item.available || item.canInstall == true ? 1 : 0.55)
         .accessibilityLabel("\(item.name), \(item.description)\(item.id == harness.wrappedValue ? ", sélectionné" : "")")
+    }
+    private func beginInstallation(_ item: NativeConversationHarness) {
+        installingHarness = item
+        installationLogs = []
+        installationError = nil
+        showingInstallationLogs = false
+        installationRunning = true
+        Task {
+            do {
+                try await NativeHarnessClient.shared.install(harnessID: item.id) { line in installationLogs.append(line) }
+                await loadHarnesses()
+            } catch is CancellationError {
+                installationError = "Installation annulée."
+            } catch {
+                installationError = error.localizedDescription
+            }
+            installationRunning = false
+        }
+    }
+    private func harnessInstallationSheet(_ item: NativeConversationHarness) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 14) {
+                HarnessLogo(id: item.id, size: 48)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Installation de \(item.name)").font(.title3.weight(.semibold))
+                    Text(installationRunning ? "Installation en cours…" : installationError == nil ? "Installation terminée" : "L’installation a échoué")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if installationRunning { ProgressView().controlSize(.small) }
+                else { Image(systemName: installationError == nil ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(installationError == nil ? ChatPalette.accent : .red) }
+            }
+            if let installationError { Text(installationError).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
+            Button(showingInstallationLogs ? "Hide logs" : "Show logs") { showingInstallationLogs.toggle() }
+                .buttonStyle(.link)
+            if showingInstallationLogs {
+                ScrollView {
+                    Text(installationLogs.isEmpty ? "En attente du programme d’installation…" : installationLogs.joined(separator: "\n"))
+                        .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(10).frame(height: 210)
+                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+            }
+            HStack {
+                Spacer()
+                Button(installationRunning ? "Fermer en arrière-plan" : "Fermer") { installingHarness = nil }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22).frame(width: 520)
+        .interactiveDismissDisabled(installationRunning)
     }
     private var modelSelector: some View {
         Menu {

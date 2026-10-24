@@ -27,6 +27,8 @@ export type ConversationHarnessView = {
   description: string;
   capabilities: { sessions: boolean; streaming: boolean; tools: boolean; longTermMemory: boolean };
   unavailableReason?: string;
+  canInstall: boolean;
+  compatible: boolean;
 };
 
 export type ConversationHarnessRun = {
@@ -48,6 +50,13 @@ export class ConversationHarnessError extends Error {
 
 type SpawnHarness = typeof spawn;
 
+const INSTALLERS = {
+  "hermes-agent": { command: "uv", args: ["tool", "install", "hermes-agent==0.15.2"], label: "Hermes Agent 0.15.2" },
+  pi: { command: "npm", args: ["install", "--global", "@mariozechner/pi-coding-agent@0.73.1"], label: "Pi 0.73.1" },
+} as const;
+const INSTALL_TIMEOUT_MS = 10 * 60_000;
+const MAX_INSTALL_LOG_BYTES = 2 * 1024 * 1024;
+
 export class HostConversationHarnessManager {
   constructor(
     private readonly integrations: HostHarnessIntegrationManager,
@@ -59,10 +68,10 @@ export class HostConversationHarnessManager {
     const detected = new Map((await this.integrations.list()).map((entry) => [entry.id, entry]));
     const native: ConversationHarnessView = {
       id: "native", name: "MultiVibe natif", available: true, configured: true,
-      description: "Conversation directe avec le modèle sélectionné.",
+      description: "Conversation directe avec le modèle sélectionné.", canInstall: false, compatible: true,
       capabilities: { sessions: true, streaming: true, tools: false, longTermMemory: false },
     };
-    const ids = (["hermes-agent", "pi"] as const).filter((id) => detected.get(id)?.detected);
+    const ids = (["hermes-agent", "pi"] as const);
     const supported = await Promise.all(ids.map(async (id): Promise<ConversationHarnessView> => {
       const entry = detected.get(id);
       const executable = entry?.detected ? await this.integrations.executablePath(id) : null;
@@ -77,6 +86,8 @@ export class HostConversationHarnessManager {
           ? "Sessions Hermes avec mémoire longue durée et consolidation configurées sur ce Mac."
           : "Sessions Pi persistantes avec orchestration et compaction du contexte.",
         capabilities: { sessions: true, streaming: true, tools: memory, longTermMemory: memory },
+        canInstall: process.platform === "darwin" && !entry?.detected,
+        compatible: process.platform === "darwin",
         ...(!available ? { unavailableReason: !entry?.detected
           ? "Non installé sur ce Mac."
           : !entry.configured ? "Détecté, mais pas connecté à MultiVibe."
@@ -84,6 +95,46 @@ export class HostConversationHarnessManager {
       };
     }));
     return [native, ...supported];
+  }
+
+  async install(
+    id: "hermes-agent" | "pi",
+    signal: AbortSignal,
+    log: (line: string) => void,
+  ): Promise<void> {
+    const installer = INSTALLERS[id];
+    if (process.platform !== "darwin" || !installer) throw new ConversationHarnessError("Harness installation is unsupported on this OS", 409);
+    const current = await this.integrations.get(id);
+    if (current.detected) { log(`${current.name} is already installed.`); return; }
+    await fs.mkdir(this.sessionDirectory, { recursive: true, mode: 0o700 });
+    log(`Installing ${installer.label}…`);
+    await new Promise<void>((resolve, reject) => {
+      const child = this.spawnHarness(installer.command, [...installer.args], {
+        cwd: this.sessionDirectory, env: harnessEnvironment(), stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+      });
+      let bytes = 0, settled = false;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true; clearTimeout(timeout); signal.removeEventListener("abort", abort);
+        if (error && !child.killed) child.kill("SIGTERM");
+        error ? reject(error) : resolve();
+      };
+      const append = (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes > MAX_INSTALL_LOG_BYTES) return finish(new ConversationHarnessError("Installation log exceeded its limit", 502));
+        for (const line of chunk.toString("utf8").split(/\r?\n/u)) if (line.trim()) log(line.trim());
+      };
+      const abort = () => finish(new DOMException("Cancelled", "AbortError"));
+      signal.addEventListener("abort", abort, { once: true });
+      const timeout = setTimeout(() => finish(new ConversationHarnessError("Harness installation timed out", 504)), INSTALL_TIMEOUT_MS);
+      child.stdout.on("data", append); child.stderr.on("data", append);
+      child.once("error", () => finish(new ConversationHarnessError(`${installer.command} is required to install this harness`, 409)));
+      child.once("close", (code) => code === 0 ? finish() : finish(new ConversationHarnessError(`Installer exited with status ${code ?? "unknown"}`, 502)));
+      if (signal.aborted) abort();
+    });
+    const installed = await this.integrations.get(id);
+    if (!installed.detected) throw new ConversationHarnessError("Installation finished but the harness executable was not detected", 502);
+    log(`${installed.name} installed successfully.`);
   }
 
   async run(input: ConversationHarnessRun, signal: AbortSignal, update: (text: string) => void): Promise<ConversationHarnessResult> {

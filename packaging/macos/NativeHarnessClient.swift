@@ -15,11 +15,14 @@ struct NativeConversationHarness: Codable, Identifiable, Hashable {
     let description: String
     let capabilities: Capabilities
     let unavailableReason: String?
+    let canInstall: Bool?
+    let compatible: Bool?
 
     static let native = NativeConversationHarness(
         id: "native", name: "MultiVibe natif", available: true, configured: true,
         description: "Conversation directe avec le modèle sélectionné.",
-        capabilities: .init(sessions: true, streaming: true, tools: false, longTermMemory: false), unavailableReason: nil
+        capabilities: .init(sessions: true, streaming: true, tools: false, longTermMemory: false), unavailableReason: nil,
+        canInstall: false, compatible: true
     )
 }
 
@@ -56,6 +59,43 @@ enum NativeHarnessError: LocalizedError {
         guard let http = response as? HTTPURLResponse, http.statusCode == 200,
               let decoded = try? JSONDecoder().decode(Response.self, from: data) else { throw NativeHarnessError.invalidResponse }
         return decoded.harnesses
+    }
+
+    func install(harnessID: String, update: @MainActor @escaping (String) -> Void) async throws {
+        var request = try request(path: "/admin/host-conversation-harnesses/\(harnessID)/install", method: "POST")
+        request.setValue("text/event-stream", forHTTPHeaderField: "accept")
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpShouldSetCookies = false
+        configuration.timeoutIntervalForResource = 660
+        let session = URLSession(configuration: configuration, delegate: NativeHarnessNoRedirect(), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        let (bytes, response) = try await session.bytes(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw NativeHarnessError.unavailable }
+        var line = Data(), total = 0, finished = false
+        for try await byte in bytes {
+            try Task.checkCancellation(); total += 1
+            guard total <= 2 * 1024 * 1024, line.count <= 64 * 1024 else { throw NativeHarnessError.invalidResponse }
+            if byte != 10 { line.append(byte); continue }
+            let value = String(decoding: line, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            line.removeAll(keepingCapacity: true)
+            guard value.hasPrefix("data:") else { continue }
+            let payload = String(value.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+            guard let data = payload.data(using: .utf8),
+                  let event = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let type = event["type"] as? String else { throw NativeHarnessError.invalidResponse }
+            if type == "log", let message = event["line"] as? String { update(message) }
+            else if type == "result" { finished = true }
+            else if type == "error" { throw NativeHarnessError.rejected((event["error"] as? String) ?? "Installation impossible.") }
+        }
+        guard finished else { throw NativeHarnessError.invalidResponse }
+
+        var configure = try self.request(path: "/admin/host-harnesses/\(harnessID)/install", method: "POST")
+        configure.setValue("application/json", forHTTPHeaderField: "accept")
+        let (_, configureResponse) = try await session.data(for: configure)
+        guard let configured = configureResponse as? HTTPURLResponse, (200...201).contains(configured.statusCode) else {
+            throw NativeHarnessError.rejected("Le harness est installé, mais sa connexion à MultiVibe a échoué.")
+        }
+        update("Connexion à MultiVibe configurée.")
     }
 
     func stream(harnessID: String, conversationID: UUID, prompt: String, model: String, sessionID: String?,
