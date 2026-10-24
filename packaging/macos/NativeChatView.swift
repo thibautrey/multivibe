@@ -54,6 +54,7 @@ private struct HarnessLogo: View {
     @State private var cloudTask: Task<Void, Never>?
     @State private var selectedImports: Set<UUID> = []
     @State private var search = ""
+    @AppStorage("desktopInteractiveAnswers") private var interactiveAnswers = true
     @State private var models: [HostAssistantModel] = []
     @State private var harnesses: [NativeConversationHarness] = [.native]
     @State private var choosingHarness = false
@@ -345,6 +346,11 @@ private struct HarnessLogo: View {
                 Text(conversationSubtitle)
                     .font(.caption2).foregroundStyle(.secondary)
             }.frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
+            if !cloudMode {
+                Toggle(isOn: $interactiveAnswers) { Image(systemName: "slider.horizontal.below.rectangle") }
+                    .toggleStyle(.button).help("Réponses interactives · OpenIntelligentUI")
+                    .accessibilityLabel("Réponses interactives")
+            }
             if cloudMode {
                 Picker("Projet Hermes", selection: Binding(get: { agent.selectedWorkspaceProject(cloudSelection) }, set: { value in
                     do { try agent.selectWorkspaceProject(value, conversation: cloudSelection) } catch { agent.error = error.localizedDescription }
@@ -387,7 +393,7 @@ private struct HarnessLogo: View {
             HStack(spacing: 10) {
                 suggestion("Trouver l’inspiration", icon: "lightbulb", text: "Aide-moi à trouver des idées pour ")
                 suggestion("M’aider à écrire", icon: "pencil.line", text: "Aide-moi à rédiger ")
-                suggestion("Comprendre un sujet", icon: "text.book.closed", text: "Explique-moi simplement ")
+                suggestion("Créer un outil", icon: "slider.horizontal.3", text: "Crée un calculateur interactif pour partager une addition, avec pourboire et nombre de personnes modifiables.")
             }.frame(maxWidth: 760)
             if !loading && models.isEmpty {
                 Button("Connecter un fournisseur dans le dashboard") { openDashboard() }.buttonStyle(.link)
@@ -440,13 +446,17 @@ private struct HarnessLogo: View {
                     if message.content.isEmpty && store.generating == conversation.id && !isUser {
                         HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Réflexion…").font(.caption).foregroundStyle(.secondary) }
                     } else {
-                        Text(markdown(message.content)).textSelection(.enabled).font(.system(size: 15)).lineSpacing(5)
+                        if isUser { Text(markdown(message.content)).textSelection(.enabled).font(.system(size: 15)).lineSpacing(5) }
+                        else { NativeInteractiveAnswerView(content: message.content, streaming: store.generating == conversation.id && message.id == conversation.messages.last?.id) { text in
+                            guard store.selection == conversation.id, store.generating == nil else { return }
+                            store.edit { $0.draft = text }; composing = true
+                        } }
                     }
                 }
                 if message.interrupted && store.generating != conversation.id {
                     HStack(spacing: 8) {
                         Label("Réponse interrompue", systemImage: "pause.circle").font(.caption).foregroundStyle(.secondary)
-                        if message.id == conversation.messages.last?.id { Button("Réessayer") { store.send(retry: true) }.disabled(store.generating != nil) }
+                        if message.id == conversation.messages.last?.id { Button("Réessayer") { store.send(retry: true, interactiveAnswers: interactiveAnswers) }.disabled(store.generating != nil) }
                     }
                 }
             }
@@ -481,7 +491,7 @@ private struct HarnessLogo: View {
                         Button { store.stop() } label: { Image(systemName: "stop.fill").font(.system(size: 11)).frame(width: 25, height: 25) }
                             .buttonStyle(.borderedProminent).clipShape(Circle()).tint(.secondary).help("Arrêter")
                     } else {
-                        Button { store.send() } label: { Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).frame(width: 25, height: 25) }
+                        Button { store.send(interactiveAnswers: interactiveAnswers) } label: { Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).frame(width: 25, height: 25) }
                             .buttonStyle(.borderedProminent).clipShape(Circle()).help("Envoyer (⌘↵)").keyboardShortcut(.return, modifiers: .command)
                             .disabled(draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                 || !models.contains { $0.id == model.wrappedValue }
@@ -718,7 +728,9 @@ private struct HarnessLogo: View {
                 ForEach(agent.synchronizedMessages(cloudSelection)) { message in
                     VStack(alignment: .leading, spacing: 7) {
                         Text(message.role == "user" ? "Vous" : "MultiVibe").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                        Text(markdown(message.content)).textSelection(.enabled).lineSpacing(5)
+                        if message.role == "assistant" {
+                            NativeInteractiveAnswerView(content: message.content) { cloudDraft = $0; composing = true }
+                        } else { Text(markdown(message.content)).textSelection(.enabled).lineSpacing(5) }
                     }
                     .padding(message.role == "user" ? 13 : 0)
                     .background(message.role == "user" ? ChatPalette.accent.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 15))
@@ -727,7 +739,7 @@ private struct HarnessLogo: View {
                 ForEach(agent.orderedRuns.filter { $0.sessionId == cloudSelection?.uuidString.lowercased() }, id: \.runId) { run in
                     VStack(alignment: .leading, spacing: 9) {
                         Text(agent.runPrompt(run.runId)).font(.headline).textSelection(.enabled)
-                        if let response = agent.responseText(run) { Text(markdown(response)).textSelection(.enabled).lineSpacing(5) }
+                        if let response = agent.responseText(run) { NativeInteractiveAnswerView(content: response) { cloudDraft = $0; composing = true } }
                         else { Text(run.state == .awaiting_resolution ? "Une action nécessite votre vérification. Elle ne sera pas rejouée automatiquement." : "État : \(run.state.rawValue)").foregroundStyle(.secondary) }
                         if run.state != .completed && run.state != .cancelled {
                             Button("Annuler") { Task { do { try await agent.cancel(runID: run.runId) } catch { agent.error = error.localizedDescription } } }

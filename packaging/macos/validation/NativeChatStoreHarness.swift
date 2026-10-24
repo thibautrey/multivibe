@@ -4,11 +4,12 @@ import Foundation
     static let shared = HostAssistantClient()
     var defaultModel = "fixture"
     var received: [[String: String]] = []
+    var response = "Réponse complète"
     func stream(_ messages: [[String: String]], model: String, update: @MainActor (String) -> Void) async throws {
         received = messages
         update("Partiel")
         try await Task.sleep(nanoseconds: 80_000_000)
-        update("Réponse complète")
+        update(response)
     }
 }
 
@@ -18,7 +19,7 @@ import Foundation
     func stream(harnessID: String, conversationID: UUID, prompt: String, model: String, sessionID: String?,
                 update: @MainActor (String) -> Void) async throws -> String? {
         receivedHarnessID = harnessID
-        precondition(prompt == "Brouillon à conserver")
+        precondition(prompt == NativeInteractiveDocument.prompt("Brouillon à conserver"))
         update("Réponse du harness")
         return "session-fixture"
     }
@@ -52,6 +53,8 @@ import Foundation
         store.send()
         while store.generating != nil { try await Task.sleep(nanoseconds: 10_000_000) }
         precondition(store.current?.messages.count == 2)
+        precondition(store.current?.messages.first?.content == "Bonjour")
+        precondition(HostAssistantClient.shared.received.first?["content"] == NativeInteractiveDocument.prompt("Bonjour"))
         precondition(store.current?.messages.last?.content == "Réponse complète")
         precondition(store.current?.messages.last?.interrupted == false)
         store.edit { $0.draft = "Suite" }
@@ -86,6 +89,16 @@ import Foundation
         precondition(store.current?.messages.last?.content == "Réponse du harness")
         store.delete(first)
         precondition(store.conversations.count == 1)
+        let artifact = "```intelligent-ui\n{\"title\":\"Saved calculator\",\"html\":\"<output>42</output>\"}\n```"
+        HostAssistantClient.shared.response = artifact
+        store.newConversation(text: "Un outil")
+        store.edit { $0.harnessID = nil }
+        store.send(interactiveAnswers: false)
+        while store.generating != nil { try await Task.sleep(nanoseconds: 10_000_000) }
+        precondition(HostAssistantClient.shared.received.last?["content"] == "Un outil")
+        let withArtifact = NativeChatStore(file: file)
+        let saved = withArtifact.conversations.first { $0.messages.last?.content == artifact }!
+        precondition(NativeInteractiveDocument.segments(saved.messages.last!.content).contains { if case .document = $0 { return true }; return false })
         HostAssistantClient.shared.defaultModel = "remembered-model"
         NativeChatStore.defaultHarnessID = "hermes-agent"
         store.newConversation(text: "Les préférences doivent suivre")
