@@ -9,6 +9,7 @@ let configuredHostPort: Int = {
 
 let hasExplicitHostPort = ProcessInfo.processInfo.environment["MULTIVIBE_HOST_PORT"] != nil
 let isMenuPreview = ProcessInfo.processInfo.environment["MULTIVIBE_HOST_MENU_PREVIEW"] == "1"
+let fallbackHostPort = 1457
 
 @main
 final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {

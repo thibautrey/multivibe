@@ -2573,6 +2573,23 @@ fn claude_code_routing_model(requested_model: &str, detected: bool) -> String {
     }
 }
 
+fn claude_code_models_response(models: &[Value]) -> Value {
+    let aliases = ["claude-opus-4-1", "claude-sonnet-4-5", "claude-haiku-4-5"];
+    let mut seen = HashSet::new();
+    let mut data = Vec::new();
+    for id in aliases.into_iter().chain(
+        models
+            .iter()
+            .filter_map(|model| model.get("id").and_then(Value::as_str)),
+    ) {
+        if !seen.insert(id) {
+            continue;
+        }
+        data.push(json!({"id": id, "object": "model", "created": 0, "owned_by": "multivibe"}));
+    }
+    json!({"object": "list", "data": data})
+}
+
 fn anthropic_text(value: Option<&Value>) -> Option<String> {
     match value {
         Some(Value::String(text)) => Some(text.clone()),
@@ -11199,17 +11216,10 @@ async fn list_models_handler(
     } else if let Err(response) = authorize(&headers, path, &store, &state.config) {
         return response;
     }
-    if is_claude_code_request(&headers) {
-        return json_response(
-            StatusCode::OK,
-            json!({"object": "list", "data": [
-                {"id": "claude-opus-4-1", "object": "model", "created": 0, "owned_by": "anthropic"},
-                {"id": "claude-sonnet-4-5", "object": "model", "created": 0, "owned_by": "anthropic"},
-                {"id": "claude-haiku-4-5", "object": "model", "created": 0, "owned_by": "anthropic"}
-            ]}),
-        );
-    }
     let models = exposed_models(&state, &store, query.refresh.unwrap_or(false)).await;
+    if is_claude_code_request(&headers) {
+        return json_response(StatusCode::OK, claude_code_models_response(&models));
+    }
     let models = models_for_client(&models, &headers);
     let catalog = model_catalog_metadata(&state).await;
     json_response(StatusCode::OK, models_list_response(&models, catalog))
@@ -15476,6 +15486,25 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         );
         headers.insert("x-app", HeaderValue::from_static("cli"));
         assert!(is_claude_code_request(&headers));
+        let catalog = claude_code_models_response(&[
+            json!({"id": "gpt-6.1-sol"}),
+            json!({"id": "claude-sonnet-4-5"}),
+        ]);
+        let ids = catalog["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|model| model["id"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![
+                "claude-opus-4-1",
+                "claude-sonnet-4-5",
+                "claude-haiku-4-5",
+                "gpt-6.1-sol",
+            ]
+        );
         assert_eq!(
             claude_code_routing_model("claude-sonnet-4-5", true),
             "gpt-5.6-luna"

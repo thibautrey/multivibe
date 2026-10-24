@@ -707,13 +707,6 @@ const gooseConfiguration = modelAwareConfiguration(managedBlockConfiguration(".c
   `OPENAI_API_KEY: ${jsonString(apiKey)}`,
 ].join("\n")));
 
-const openHandsConfiguration = modelAwareConfiguration(managedBlockConfiguration(".openhands/config.toml", ({ baseUrl, apiKey, modelIds }) => [
-  "[llm]",
-  `model = ${jsonString(`openai/${selectDefaultModelId({ baseUrl, apiKey, modelIds })}`)}`,
-  `base_url = ${jsonString(`${baseUrl}/v1`)}`,
-  `api_key = ${jsonString(apiKey)}`,
-].join("\n")));
-
 const aiderConfiguration = modelAwareConfiguration(managedBlockConfiguration(".aider.conf.yml", ({ baseUrl, apiKey, modelIds }) => [
   `model: ${jsonString(`openai/${selectDefaultModelId({ baseUrl, apiKey, modelIds })}`)}`,
   `openai-api-base: ${jsonString(`${baseUrl}/v1`)}`,
@@ -856,7 +849,8 @@ export const HOST_HARNESS_DEFINITIONS: readonly HostHarnessDefinition[] = [
   definition("hermes-agent", "Hermes Agent", "agent", ["hermes"], [".hermes"], hermesConfiguration),
   definition("pi", "Pi", "cli", ["pi"], [".pi/agent"], piConfiguration),
   definition("goose", "Goose", "agent", ["goose"], [".config/goose"], gooseConfiguration),
-  definition("openhands", "OpenHands", "agent", ["openhands"], [".openhands"], openHandsConfiguration),
+  definition("openhands", "OpenHands", "agent", ["openhands"], [".openhands"], undefined,
+    "OpenHands CLI 1.9 stores its complete agent, tools, condenser and credentials in ~/.openhands/agent_settings.json. MultiVibe cannot safely replace that serialized state; configure its OpenAI-compatible model manually."),
   definition("cline", "Cline", "editor", ["cline"], [".vscode/extensions/saoudrizwan.claude-dev-*", "Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev", ".config/Code/User/globalStorage/saoudrizwan.claude-dev"], undefined, manualReason),
   definition("aider", "Aider", "cli", ["aider"], [".aider.conf.yml"], aiderConfiguration),
   definition("qwen-code", "Qwen Code", "cli", ["qwen"], [".qwen"], qwenConfiguration),

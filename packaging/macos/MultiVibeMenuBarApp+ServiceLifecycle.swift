@@ -128,7 +128,10 @@ extension MultiVibeMenuBarApp {
     func launchService(avoidingOccupiedPort: Bool = false) {
         if let process = ownedService, process.isRunning { return }
         if avoidingOccupiedPort && !hasExplicitHostPort && !usesFallbackPort {
-            dashboardURL = URL(string: "http://127.0.0.1:1456")!
+            // 1456 is permanently reserved for the bundled Node control plane.
+            // Reusing it for the public Edge makes every fallback launch fail,
+            // which can leave the provider-agent child orphaned on each retry.
+            dashboardURL = URL(string: "http://127.0.0.1:\(fallbackHostPort)")!
             usesFallbackPort = true
         }
         guard let executable = Bundle.main.executableURL else {

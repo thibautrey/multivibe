@@ -3,10 +3,13 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestExecutableLayoutIsBoundedToReleaseShape(t *testing.T) {
@@ -256,5 +259,23 @@ func TestHostPortIsBoundedAndCanonical(t *testing.T) {
 		if _, err := hostPort(input); err == nil {
 			t.Fatalf("accepted invalid host port %q", input)
 		}
+	}
+}
+
+func TestSignalAndWaitForChildAllowsGracefulCleanup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX signal behavior")
+	}
+	marker := filepath.Join(t.TempDir(), "stopped")
+	child := exec.Command("/bin/sh", "-c", `trap 'printf stopped > "$1"; exit 0' TERM; while :; do sleep 1; done`, "multivibe-child", marker)
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- child.Wait() }()
+	time.Sleep(100 * time.Millisecond)
+	signalAndWaitForChild(child.Process, done, syscall.SIGTERM)
+	if value, err := os.ReadFile(marker); err != nil || string(value) != "stopped" {
+		t.Fatalf("child did not complete graceful cleanup: %q %v", value, err)
 	}
 }

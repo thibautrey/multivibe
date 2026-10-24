@@ -273,7 +273,7 @@ test("all model-aware harnesses synchronize the live MultiVibe catalog", async (
   const modelIds = ["gpt-5.6-luna", "gpt-5.5", "omlx/Qwen3.8-27B-4bit"];
   const catalogHarnesses = new Set(["openclaw", "pi", "crush", "continue"]);
   const harnessIds = [
-    "openclaw", "pi", "crush", "continue", "hermes-agent", "goose", "openhands",
+    "openclaw", "pi", "crush", "continue", "hermes-agent", "goose",
     "aider", "mini-swe-agent", "gptme", "shell-gpt", "open-interpreter", "agent-zero", "autogpt",
   ];
   const originalFetch = globalThis.fetch;
@@ -319,6 +319,31 @@ test("all model-aware harnesses synchronize the live MultiVibe catalog", async (
       for (const model of modelIds) assert.match(configured, new RegExp(model.replace("/", "\\/")));
     }
   }
+});
+
+test("OpenHands is detected without claiming an obsolete config.toml integration", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-openhands-current-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const home = path.join(root, "home");
+  const bin = path.join(home, "bin");
+  await fs.mkdir(bin, { recursive: true });
+  await fs.writeFile(path.join(bin, "openhands"), "binary", { mode: 0o755 });
+  const definition = HOST_HARNESS_DEFINITIONS.find((entry) => entry.id === "openhands")!;
+  const manager = new HostHarnessIntegrationManager({
+    homeDirectory: home,
+    statePath: path.join(home, ".multivibe", "harnesses.json"),
+    baseUrl: "http://127.0.0.1:1455",
+    definitions: [definition],
+    executableDirectories: [bin],
+  });
+  const detected = await manager.get("openhands");
+  assert.equal(detected.detected, true);
+  assert.equal(detected.canInstall, false);
+  assert.equal(detected.managed, false);
+  assert.match(detected.unavailableReason!, /agent_settings\.json/);
+  await assert.rejects(manager.install("openhands", {
+    apiKeyId: "key-openhands", apiKey: "mv_openhands", application: "harness-openhands",
+  }), /cannot safely replace/);
 });
 
 test("mini-SWE-agent uses its platform config and preserves unrelated dotenv settings", async (t) => {
