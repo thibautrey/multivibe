@@ -11,7 +11,7 @@ test("native managed connector reuses Anthropic SDK codec with bounded credentia
  fetchViaEgress:async(url,init)=>{
   calls++;assert.equal(String(url),"https://api.anthropic.com/v1/messages");assert.equal(new Headers(init?.headers).get("x-api-key"),"fixture-key");
   assert.equal(init?.redirect,"error");const native=JSON.parse(String(init?.body));assert.equal(native.max_tokens,25);assert.equal(native.messages[0].content[0].text,"Hello");
-  return Response.json({id:"msg_fixture",type:"message",role:"assistant",model:native.model,content:[{type:"text",text:"Hi"}],stop_reason:"end_turn",stop_sequence:null,usage:{input_tokens:5,output_tokens:2}});
+  return Response.json({id:"msg_fixture",type:"message",role:"assistant",model:native.model,content:[{type:"text",text:"Hi"}],stop_reason:"end_turn",stop_sequence:null,usage:{input_tokens:5,output_tokens:2,cache_read_input_tokens:0,cache_creation_input_tokens:0}});
  }});
  const result=await account.chatCompletions(body,AbortSignal.timeout(1000),authorization);
  const payload=await result.json();assert.equal(payload.choices[0].message.content,"Hi");assert.equal(payload.provider_metadata,undefined);
@@ -35,7 +35,7 @@ test("native response bytes are bounded before SDK buffering",async()=>{
 });
 test("native Anthropic SSE reuses the SDK streaming codec and preserves usage",async()=>{
  const events=[
-  ["message_start",{type:"message_start",message:{id:"msg_stream",type:"message",role:"assistant",model:"claude-sonnet-4-6",content:[],stop_reason:null,stop_sequence:null,usage:{input_tokens:5,output_tokens:0}}}],
+  ["message_start",{type:"message_start",message:{id:"msg_stream",type:"message",role:"assistant",model:"claude-sonnet-4-6",content:[],stop_reason:null,stop_sequence:null,usage:{input_tokens:5,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}}}],
   ["content_block_start",{type:"content_block_start",index:0,content_block:{type:"text",text:""}}],
   ["content_block_delta",{type:"content_block_delta",index:0,delta:{type:"text_delta",text:"Hi"}}],
   ["content_block_stop",{type:"content_block_stop",index:0}],
