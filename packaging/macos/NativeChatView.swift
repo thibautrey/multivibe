@@ -15,6 +15,35 @@ private enum ChatPalette {
     static let hairline = Color(nsColor: .separatorColor).opacity(0.55)
 }
 
+private struct HarnessLogo: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let id: String
+    var size: CGFloat
+
+    private var resource: (String, String) {
+        switch id {
+        case "hermes-agent": return (colorScheme == .dark ? "hermes-dark" : "hermes-light", "png")
+        case "pi": return ("pi", "svg")
+        default: return ("multivibe", "png")
+        }
+    }
+
+    var body: some View {
+        Group {
+            if id == "computer-use" {
+                Image(systemName: "cursorarrow.motionlines").resizable().scaledToFit().foregroundStyle(.secondary)
+            } else if let url = Bundle.main.url(forResource: resource.0, withExtension: resource.1, subdirectory: "harnesses"),
+               let image = NSImage(contentsOf: url) {
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
+            } else {
+                Image(systemName: "questionmark.square.dashed").resizable().scaledToFit().foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
 @MainActor struct NativeChatView: View {
     @ObservedObject var store: NativeChatStore
     @StateObject private var agent: NativeChatAgentCoordinator
@@ -27,8 +56,15 @@ private enum ChatPalette {
     @State private var cloudTask: Task<Void, Never>?
     @State private var selectedImports: Set<UUID> = []
     @State private var search = ""
+    @AppStorage("desktopInteractiveAnswers") private var interactiveAnswers = true
     @State private var models: [HostAssistantModel] = []
     @State private var harnesses: [NativeConversationHarness] = [.native, .computerUse]
+    @State private var choosingHarness = false
+    @State private var installingHarness: NativeConversationHarness?
+    @State private var installationLogs: [String] = []
+    @State private var installationRunning = false
+    @State private var installationError: String?
+    @State private var showingInstallationLogs = false
     @State private var loading = false
     @State private var importing = false
     @State private var deleteID: UUID?
@@ -49,6 +85,7 @@ private enum ChatPalette {
             conversation.harnessID = value == "native" ? nil : value
             conversation.harnessSessionID = nil
         }
+        NativeChatStore.defaultHarnessID = value
         if value != "native", selectedLocalModel?.local == true, let remote = models.first(where: { $0.local != true }) {
             model.wrappedValue = remote.id
         } else if value != "native", selectedLocalModel?.local == true {
@@ -70,7 +107,7 @@ private enum ChatPalette {
             id: harness.wrappedValue, name: harness.wrappedValue, available: false, configured: false,
             description: "Ce harness n’est plus disponible sur ce Mac.",
             capabilities: .init(sessions: true, streaming: true, tools: false, longTermMemory: false),
-            unavailableReason: "Ce harness n’est plus disponible sur ce Mac."
+            unavailableReason: "Ce harness n’est plus disponible sur ce Mac.", canInstall: false, compatible: false
         )
     }
     private var selectedModelName: String {
@@ -170,6 +207,7 @@ private enum ChatPalette {
             await loadHarnesses()
         }
         .sheet(isPresented: $cloudConsent) { consentSheet }
+        .sheet(item: $installingHarness) { item in harnessInstallationSheet(item) }
         .onChange(of: agent.accountID) { _ in
             cloudTask?.cancel(); cloudSending = false; cloudDraft = ""; cloudModel = ""; cloudSelection = nil
             if agent.accountID == nil { cloudMode = false }
@@ -323,6 +361,11 @@ private enum ChatPalette {
                 Text(conversationSubtitle)
                     .font(.caption2).foregroundStyle(.secondary)
             }.frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
+            if !cloudMode {
+                Toggle(isOn: $interactiveAnswers) { Image(systemName: "slider.horizontal.below.rectangle") }
+                    .toggleStyle(.button).help("Réponses interactives · OpenIntelligentUI")
+                    .accessibilityLabel("Réponses interactives")
+            }
             if cloudMode {
                 Picker("Projet Hermes", selection: Binding(get: { agent.selectedWorkspaceProject(cloudSelection) }, set: { value in
                     do { try agent.selectWorkspaceProject(value, conversation: cloudSelection) } catch { agent.error = error.localizedDescription }
@@ -365,7 +408,7 @@ private enum ChatPalette {
             HStack(spacing: 10) {
                 suggestion("Trouver l’inspiration", icon: "lightbulb", text: "Aide-moi à trouver des idées pour ")
                 suggestion("M’aider à écrire", icon: "pencil.line", text: "Aide-moi à rédiger ")
-                suggestion("Comprendre un sujet", icon: "text.book.closed", text: "Explique-moi simplement ")
+                suggestion("Créer un outil", icon: "slider.horizontal.3", text: "Crée un calculateur interactif pour partager une addition, avec pourboire et nombre de personnes modifiables.")
             }.frame(maxWidth: 760)
             if !loading && models.isEmpty {
                 Button("Connecter un fournisseur dans le dashboard") { openDashboard() }.buttonStyle(.link)
@@ -418,13 +461,17 @@ private enum ChatPalette {
                     if message.content.isEmpty && store.generating == conversation.id && !isUser {
                         HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Réflexion…").font(.caption).foregroundStyle(.secondary) }
                     } else {
-                        Text(markdown(message.content)).textSelection(.enabled).font(.system(size: 15)).lineSpacing(5)
+                        if isUser { Text(markdown(message.content)).textSelection(.enabled).font(.system(size: 15)).lineSpacing(5) }
+                        else { NativeInteractiveAnswerView(content: message.content, streaming: store.generating == conversation.id && message.id == conversation.messages.last?.id) { text in
+                            guard store.selection == conversation.id, store.generating == nil else { return }
+                            store.edit { $0.draft = text }; composing = true
+                        } }
                     }
                 }
                 if message.interrupted && store.generating != conversation.id {
                     HStack(spacing: 8) {
                         Label("Réponse interrompue", systemImage: "pause.circle").font(.caption).foregroundStyle(.secondary)
-                        if message.id == conversation.messages.last?.id { Button("Réessayer") { store.send(retry: true) }.disabled(store.generating != nil) }
+                        if message.id == conversation.messages.last?.id { Button("Réessayer") { store.send(retry: true, interactiveAnswers: interactiveAnswers) }.disabled(store.generating != nil) }
                     }
                 }
             }
@@ -459,7 +506,7 @@ private enum ChatPalette {
                         Button { store.stop() } label: { Image(systemName: "stop.fill").font(.system(size: 11)).frame(width: 25, height: 25) }
                             .buttonStyle(.borderedProminent).clipShape(Circle()).tint(.secondary).help("Arrêter")
                     } else {
-                        Button { store.send() } label: { Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).frame(width: 25, height: 25) }
+                        Button { store.send(interactiveAnswers: interactiveAnswers) } label: { Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).frame(width: 25, height: 25) }
                             .buttonStyle(.borderedProminent).clipShape(Circle()).help("Envoyer (⌘↵)").keyboardShortcut(.return, modifiers: .command)
                             .disabled(draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                 || !models.contains { $0.id == model.wrappedValue }
@@ -478,24 +525,9 @@ private enum ChatPalette {
         .padding(.horizontal, 22).padding(.top, 9).padding(.bottom, 16)
     }
     private var harnessSelector: some View {
-        Menu {
-            ForEach(harnesses) { item in
-                Button {
-                    harness.wrappedValue = item.id
-                } label: {
-                    Label(item.name + (item.available ? "" : " — indisponible"),
-                          systemImage: item.id == harness.wrappedValue ? "checkmark" : harnessIcon(item))
-                }
-                .disabled(!item.available)
-                if item.id == "hermes-agent" && item.available {
-                    Text("Mémoire longue durée")
-                }
-            }
-            Divider()
-            Button("Actualiser les harnesses", systemImage: "arrow.clockwise") { Task { await loadHarnesses() } }
-        } label: {
+        Button { choosingHarness = true } label: {
             HStack(spacing: 6) {
-                Image(systemName: harnessIcon(selectedHarness))
+                HarnessLogo(id: selectedHarness.id, size: 18)
                 Text(selectedHarness.name).lineLimit(1)
                 Image(systemName: "chevron.up.chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
             }
@@ -503,16 +535,136 @@ private enum ChatPalette {
             .padding(.horizontal, 9).frame(height: 28)
             .background(ChatPalette.surface, in: Capsule())
         }
-        .menuStyle(.borderlessButton).tint(.secondary)
+        .buttonStyle(.plain).tint(.secondary)
         .fixedSize(horizontal: false, vertical: true).frame(maxWidth: 190, alignment: .leading)
         .help(selectedHarness.description)
         .disabled(store.current?.messages.isEmpty == false || store.generating == store.selection)
+        .popover(isPresented: $choosingHarness, arrowEdge: .bottom) { harnessGrid }
     }
-    private func harnessIcon(_ item: NativeConversationHarness) -> String {
-        if item.id == "computer-use" { return "cursorarrow.motionlines" }
-        if item.id == "hermes-agent" { return "brain.head.profile" }
-        if item.id == "pi" { return "point.3.connected.trianglepath.dotted" }
-        return "bolt.horizontal.circle"
+    private var harnessGrid: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Moteur de conversation").font(.headline)
+                    Text("MultiVibe garde l’interface. Le moteur sélectionné orchestre les réponses.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { Task { await loadHarnesses() } } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(.borderless).help("Actualiser les harnesses détectés")
+            }
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
+                ForEach(harnesses) { item in harnessCard(item) }
+            }
+        }
+        .padding(18).frame(width: 590)
+    }
+    private func harnessCard(_ item: NativeConversationHarness) -> some View {
+        Button {
+            if item.available {
+                harness.wrappedValue = item.id
+                choosingHarness = false
+            } else if item.canInstall == true {
+                choosingHarness = false
+                beginInstallation(item)
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor))
+                        HarnessLogo(id: item.id, size: 42)
+                    }.frame(width: 56, height: 56)
+                    Spacer()
+                    if item.id == harness.wrappedValue {
+                        Image(systemName: "checkmark.circle.fill").font(.title3).foregroundStyle(ChatPalette.accent)
+                    } else {
+                        Circle().fill(item.available ? ChatPalette.accent : Color.secondary.opacity(0.45)).frame(width: 8, height: 8)
+                    }
+                }
+                Text(item.name).font(.callout.weight(.semibold)).foregroundStyle(.primary)
+                Text(item.description).font(.caption2).foregroundStyle(.secondary).lineLimit(3, reservesSpace: true)
+                if item.capabilities.longTermMemory {
+                    Label("Mémoire longue durée", systemImage: "brain.head.profile")
+                        .font(.caption2.weight(.medium)).foregroundStyle(ChatPalette.accent)
+                } else if item.id == "computer-use" {
+                    Label("Navigateur et applications", systemImage: "cursorarrow.motionlines")
+                        .font(.caption2.weight(.medium)).foregroundStyle(ChatPalette.accent)
+                } else if item.id == "pi" {
+                    Label("Session persistante", systemImage: "clock.arrow.circlepath")
+                        .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+                } else {
+                    Label("Conversation directe", systemImage: "bolt.horizontal")
+                        .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+                }
+                if !item.available && item.canInstall == true {
+                    Label("Installer", systemImage: "arrow.down.circle.fill")
+                        .font(.caption.weight(.semibold)).foregroundStyle(ChatPalette.accent)
+                }
+            }
+            .padding(13).frame(maxWidth: .infinity, minHeight: 190, alignment: .topLeading)
+            .background(item.id == harness.wrappedValue ? ChatPalette.accent.opacity(0.10) : ChatPalette.elevated,
+                        in: RoundedRectangle(cornerRadius: 15))
+            .overlay(RoundedRectangle(cornerRadius: 15).stroke(
+                item.id == harness.wrappedValue ? ChatPalette.accent.opacity(0.8) : ChatPalette.hairline,
+                lineWidth: item.id == harness.wrappedValue ? 1.5 : 1))
+        }
+        .buttonStyle(.plain).disabled(!item.available && item.canInstall != true)
+        .opacity(item.available || item.canInstall == true ? 1 : 0.55)
+        .accessibilityLabel("\(item.name), \(item.description)\(item.id == harness.wrappedValue ? ", sélectionné" : "")")
+    }
+    private func beginInstallation(_ item: NativeConversationHarness) {
+        installingHarness = item
+        installationLogs = []
+        installationError = nil
+        showingInstallationLogs = false
+        installationRunning = true
+        Task {
+            do {
+                try await NativeHarnessClient.shared.install(harnessID: item.id) { line in installationLogs.append(line) }
+                await loadHarnesses()
+            } catch is CancellationError {
+                installationError = "Installation annulée."
+            } catch {
+                installationError = error.localizedDescription
+            }
+            installationRunning = false
+        }
+    }
+    private func harnessInstallationSheet(_ item: NativeConversationHarness) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 14) {
+                HarnessLogo(id: item.id, size: 48)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Installation de \(item.name)").font(.title3.weight(.semibold))
+                    Text(installationRunning ? "Installation en cours…" : installationError == nil ? "Installation terminée" : "L’installation a échoué")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if installationRunning { ProgressView().controlSize(.small) }
+                else { Image(systemName: installationError == nil ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(installationError == nil ? ChatPalette.accent : .red) }
+            }
+            if let installationError { Text(installationError).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
+            Button(showingInstallationLogs ? "Hide logs" : "Show logs") { showingInstallationLogs.toggle() }
+                .buttonStyle(.link)
+            if showingInstallationLogs {
+                ScrollView {
+                    Text(installationLogs.isEmpty ? "En attente du programme d’installation…" : installationLogs.joined(separator: "\n"))
+                        .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(10).frame(height: 210)
+                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+            }
+            HStack {
+                Spacer()
+                Button(installationRunning ? "Fermer en arrière-plan" : "Fermer") { installingHarness = nil }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22).frame(width: 520)
+        .interactiveDismissDisabled(installationRunning)
     }
     private var modelSelector: some View {
         Menu {
@@ -595,7 +747,9 @@ private enum ChatPalette {
                 ForEach(agent.synchronizedMessages(cloudSelection)) { message in
                     VStack(alignment: .leading, spacing: 7) {
                         Text(message.role == "user" ? "Vous" : "MultiVibe").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                        Text(markdown(message.content)).textSelection(.enabled).lineSpacing(5)
+                        if message.role == "assistant" {
+                            NativeInteractiveAnswerView(content: message.content) { cloudDraft = $0; composing = true }
+                        } else { Text(markdown(message.content)).textSelection(.enabled).lineSpacing(5) }
                     }
                     .padding(message.role == "user" ? 13 : 0)
                     .background(message.role == "user" ? ChatPalette.accent.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 15))
@@ -604,7 +758,7 @@ private enum ChatPalette {
                 ForEach(agent.orderedRuns.filter { $0.sessionId == cloudSelection?.uuidString.lowercased() }, id: \.runId) { run in
                     VStack(alignment: .leading, spacing: 9) {
                         Text(agent.runPrompt(run.runId)).font(.headline).textSelection(.enabled)
-                        if let response = agent.responseText(run) { Text(markdown(response)).textSelection(.enabled).lineSpacing(5) }
+                        if let response = agent.responseText(run) { NativeInteractiveAnswerView(content: response) { cloudDraft = $0; composing = true } }
                         else { Text(run.state == .awaiting_resolution ? "Une action nécessite votre vérification. Elle ne sera pas rejouée automatiquement." : "État : \(run.state.rawValue)").foregroundStyle(.secondary) }
                         if run.state != .completed && run.state != .cancelled {
                             Button("Annuler") { Task { do { try await agent.cancel(runID: run.runId) } catch { agent.error = error.localizedDescription } } }

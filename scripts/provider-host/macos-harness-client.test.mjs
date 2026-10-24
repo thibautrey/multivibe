@@ -23,6 +23,17 @@ test('native harness client discovers engines and binds streamed replies to sess
         { id: 'pi', name: 'Pi', available: true, configured: true, description: 'session', capabilities: { sessions: true, streaming: true, tools: false, longTermMemory: false } },
       ] })); return;
     }
+    if (req.url === '/admin/host-conversation-harnesses/pi/install') {
+      assert.equal(req.method, 'POST');
+      res.setHeader('content-type', 'text/event-stream');
+      res.write('data: {"type":"log","line":"Downloading Pi…"}\n\n');
+      res.end('data: {"type":"result"}\n\n'); return;
+    }
+    if (req.url === '/admin/host-harnesses/pi/install') {
+      assert.equal(req.method, 'POST');
+      res.setHeader('content-type', 'application/json');
+      res.end('{"harness":{"id":"pi"}}'); return;
+    }
     let raw = ''; for await (const chunk of req) raw += chunk;
     body = JSON.parse(raw);
     res.setHeader('content-type', 'text/event-stream');

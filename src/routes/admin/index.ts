@@ -666,6 +666,29 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
   });
 
+  router.post("/host-conversation-harnesses/:id/install", async (req, res) => {
+    if (!options.hostApplication || !options.hostConversationHarnesses) {
+      return res.status(404).json({ error: "Conversation harnesses are available only in MultiVibe Host" });
+    }
+    const id = String(req.params.id);
+    if (id !== "hermes-agent" && id !== "pi") return res.status(404).json({ error: "Unknown conversation harness" });
+    const controller = new AbortController();
+    res.on("close", () => { if (!res.writableEnded) controller.abort(); });
+    res.status(200);
+    res.setHeader("content-type", "text/event-stream; charset=utf-8");
+    res.setHeader("cache-control", "no-store");
+    res.setHeader("x-accel-buffering", "no");
+    res.flushHeaders();
+    const emit = (value: unknown) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(value)}\n\n`); };
+    try {
+      await options.hostConversationHarnesses.install(id, controller.signal, (line) => emit({ type: "log", line }));
+      emit({ type: "result" });
+    } catch (error: any) {
+      emit({ type: "error", error: error?.message ?? "Harness installation failed" });
+    }
+    res.end();
+  });
+
   router.post("/host-harnesses/:id/project-tracking", async (req, res) => {
     res.setHeader("cache-control", "no-store");
     if (!options.hostApplication || !options.hostHarnessIntegrations) {
