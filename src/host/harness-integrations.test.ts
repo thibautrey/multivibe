@@ -706,6 +706,87 @@ test("Codex synchronizes its managed catalog when MultiVibe models change at run
   assert.equal((await manager.uninstall("openai-codex")).apiKeyId, "key-live");
 });
 
+test("managed OpenCode, Pi and Continue catalogs update without replacing user edits or originals", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-harness-live-catalog-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  let modelIds = ["model-a"];
+  globalThis.fetch = async () => Response.json({ data: modelIds.map((id) => ({ id })) });
+  for (const id of ["opencode", "pi", "continue"]) {
+    modelIds = ["model-a"];
+    const home = path.join(root, id);
+    const definition = HOST_HARNESS_DEFINITIONS.find((entry) => entry.id === id)!;
+    const configPath = path.join(home, definition.configuration!.relativePath);
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    const original = id === "continue" ? "# personal configuration\n" : '{"personal":true}\n';
+    await fs.writeFile(configPath, original, { mode: 0o600 });
+    const manager = new HostHarnessIntegrationManager({
+      homeDirectory: home, statePath: path.join(home, ".multivibe", "harnesses.json"),
+      baseUrl: "http://127.0.0.1:1455", apiKeyForId: () => "mv_live",
+      definitions: [definition], executableDirectories: [],
+    });
+    await manager.install(id, { apiKeyId: "key-live", apiKey: "mv_live", application: `harness-${id}` });
+    const before = await fs.stat(configPath);
+    assert.equal(await manager.synchronizeModelCatalogs(), false);
+    assert.equal((await fs.stat(configPath)).mtimeMs, before.mtimeMs);
+    modelIds = ["model-a", "gpt-6.1-sol"];
+    assert.equal(await manager.synchronizeModelCatalogs(), true);
+    const refreshed = await fs.readFile(configPath, "utf8");
+    assert.match(refreshed, /gpt-6\.1-sol/);
+    assert.equal((await manager.get(id)).drifted, false);
+    assert.equal((await fs.stat(configPath)).mode & 0o777, 0o600);
+    const edited = refreshed + (id === "continue" ? "# user edit\n" : " \n");
+    await fs.writeFile(configPath, edited);
+    modelIds = ["model-a", "gpt-6.1-sol", "new-model"];
+    assert.equal(await manager.synchronizeModelCatalogs(), false);
+    assert.equal(await fs.readFile(configPath, "utf8"), edited);
+    assert.equal((await manager.get(id)).drifted, true);
+    await fs.writeFile(configPath, refreshed);
+    await manager.uninstall(id);
+    assert.equal(await fs.readFile(configPath, "utf8"), original);
+  }
+});
+
+test("catalog synchronization leaves edits made during discovery untouched and the timer refreshes managed catalogs", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-harness-catalog-race-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const home = path.join(root, "home");
+  const configPath = path.join(home, ".config/opencode/opencode.json");
+  await fs.mkdir(path.dirname(configPath), { recursive: true });
+  await fs.writeFile(configPath, "{}\n");
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  let modelIds = ["model-a"];
+  let editDuringFetch = false;
+  globalThis.fetch = async () => {
+    if (editDuringFetch) await fs.writeFile(configPath, '{"user":"changed during discovery"}\n');
+    return Response.json({ data: modelIds.map((id) => ({ id })) });
+  };
+  const manager = new HostHarnessIntegrationManager({
+    homeDirectory: home, statePath: path.join(home, ".multivibe", "harnesses.json"),
+    baseUrl: "http://127.0.0.1:1455", apiKeyForId: () => "mv_live",
+    definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "opencode"), executableDirectories: [],
+  });
+  t.after(() => manager.stopCatalogSynchronization());
+  await manager.install("opencode", { apiKeyId: "key-live", apiKey: "mv_live", application: "harness-opencode" });
+  const installed = await fs.readFile(configPath, "utf8");
+  modelIds = ["model-a", "gpt-6.1-sol"];
+  editDuringFetch = true;
+  assert.equal(await manager.synchronizeModelCatalogs(), false);
+  assert.equal(await fs.readFile(configPath, "utf8"), '{"user":"changed during discovery"}\n');
+  editDuringFetch = false;
+  await fs.writeFile(configPath, installed);
+  manager.startCatalogSynchronization(250);
+  const deadline = Date.now() + 3_000;
+  while (!(await fs.readFile(configPath, "utf8")).includes("gpt-6.1-sol") && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  manager.stopCatalogSynchronization();
+  assert.match(await fs.readFile(configPath, "utf8"), /gpt-6\.1-sol/);
+  assert.equal((await manager.get("opencode")).drifted, false);
+});
+
 test("Codex catalog keeps the context window advertised for a native entry", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-codex-native-context-window-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
