@@ -36,10 +36,11 @@ import SwiftUI
                 window.titleVisibility = .hidden
                 window.titlebarAppearsTransparent = true
                 window.titlebarSeparatorStyle = .none
+                window.toolbarStyle = .unifiedCompact
                 window.isMovableByWindowBackground = true
                 window.backgroundColor = .textBackgroundColor
                 window.minSize = NSSize(width: 760, height: 540)
-                window.contentView = NSHostingView(rootView: NativeChatView(store: store, agent: agent))
+                window.contentView = FullSizeHostingView(rootView: NativeChatView(store: store, agent: agent))
                 window.setContentSize(NSSize(width: 1180, height: 780))
                 window.isReleasedWhenClosed = false
                 window.center(); window.makeKeyAndOrderFront(nil)

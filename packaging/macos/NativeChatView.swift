@@ -152,8 +152,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             VStack(spacing: 0) {
                 sidebarHeader
                 sidebarPrimaryActions
-                sidebarSearchField
-                if !cloudMode { sidebarConversationLayoutPicker }
+                sidebarSearchControls
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 4) {
                         if cloudMode { cloudConversationList }
@@ -260,7 +259,6 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
         }
-        .ignoresSafeArea(.container, edges: .top)
         .tint(ChatPalette.accent)
         .frame(minWidth: browser.isVisible ? 1080 : 760, maxWidth: .infinity, minHeight: 500, maxHeight: .infinity)
         .task {
@@ -365,7 +363,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             Text("MultiVibe").font(.system(size: 16, weight: .semibold))
             Spacer()
             ChatIconButton(title: "Réglages du Host", icon: "gearshape", action: openDashboard)
-        }.padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 18)
+        }.padding(.horizontal, 16).padding(.top, 44).padding(.bottom, 18)
     }
     private var sidebarEmptyState: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -436,6 +434,13 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             }
         }
     }
+    private var sidebarSearchControls: some View {
+        HStack(spacing: 8) {
+            sidebarSearchField
+            if !cloudMode { sidebarConversationLayoutPicker }
+        }
+        .padding(.horizontal, 16).padding(.top, 18).padding(.bottom, 4)
+    }
     private var sidebarSearchField: some View {
         HStack(spacing: 7) {
             Image(systemName: "magnifyingglass").font(.caption).foregroundStyle(.tertiary)
@@ -447,23 +452,19 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
         }
         .padding(.horizontal, 10).frame(height: 30)
         .background(ChatPalette.surface, in: RoundedRectangle(cornerRadius: 8))
-        .padding(.horizontal, 16).padding(.top, 18).padding(.bottom, 4)
+        .frame(maxWidth: .infinity)
     }
     private var sidebarConversationLayoutPicker: some View {
-        HStack {
-            Spacer()
-            Picker("Organisation des conversations", selection: $conversationListLayout) {
-                Image(systemName: "list.bullet").tag(SidebarConversationLayout.flat)
-                    .accessibilityLabel("Liste à plat")
-                Image(systemName: "square.stack.3d.up").tag(SidebarConversationLayout.grouped)
-                    .accessibilityLabel("Grouper par harness")
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 70)
-            .help(conversationListLayout == .flat ? "Liste à plat" : "Conversations groupées par harness")
+        Picker("Organisation des conversations", selection: $conversationListLayout) {
+            Image(systemName: "list.bullet").tag(SidebarConversationLayout.flat)
+                .accessibilityLabel("Liste à plat")
+            Image(systemName: "square.stack.3d.up").tag(SidebarConversationLayout.grouped)
+                .accessibilityLabel("Grouper par harness")
         }
-        .padding(.horizontal, 16).padding(.top, 6)
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 70)
+        .help(conversationListLayout == .flat ? "Liste à plat" : "Conversations groupées par harness")
     }
     private var sidebarPrimaryActions: some View {
         VStack(spacing: 2) {
@@ -594,7 +595,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                     .menuStyle(.borderlessButton).fixedSize().help("Options de la conversation").accessibilityLabel("Options de la conversation")
             }
         }
-        .padding(.horizontal, 24).frame(height: 44).background(ChatPalette.canvas)
+        .padding(.horizontal, 24).frame(height: 70).background(ChatPalette.canvas)
         .animation(ChatPalette.motion(reduceMotion), value: conversationState)
     }
     private var welcome: some View {
