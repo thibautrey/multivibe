@@ -51,7 +51,7 @@ export class OpenWebUIAdapter implements HarnessAdapter {
     chat.history.messages[userId]=user;chat.history.messages[assistantId]=assistant;chat.history.currentId=assistantId;
     // Build context from the active branch only, preserving structured remote output in storage.
     const branch:any[]=[];const seen=new Set<string>();let cursor:string|null=userId;
-    while(cursor){if(seen.has(cursor) || seen.size>20_000)fail("Invalid Open WebUI conversation history",502);seen.add(cursor);const message=chat.history.messages[cursor];if(!message)fail("Incomplete Open WebUI conversation history",502);branch.unshift(message);cursor=message.parentId??null;}
+    while(cursor){if(seen.has(cursor) || seen.size>20_000)fail("Invalid Open WebUI conversation history",502);seen.add(cursor);const message:any=chat.history.messages[cursor];if(!message)fail("Incomplete Open WebUI conversation history",502);branch.unshift(message);cursor=message.parentId??null;}
     chat.messages=[...branch,assistant];
     if(Buffer.byteLength(JSON.stringify(chat))>16*1024*1024)fail("Open WebUI conversation exceeds 16 MiB; start a new conversation",413);
     const saved=await this.call(previous?this.chatPath(previous.chatId):"/v1/chats/new",{chat});

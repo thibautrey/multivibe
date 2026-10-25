@@ -49,7 +49,7 @@ test("Open WebUI validates model discovery before private storage and remains is
   await config.configure({...f.connection,discover:true});assert.equal(config.read(),undefined);
   await assert.rejects(config.configure({...f.connection,agentId:"missing"}),/available/u);
   const result=await config.configure(f.connection);
-  assert.equal(result.endpoint,f.connection.endpoint);assert.equal(JSON.stringify(result).includes(f.connection.apiKey),false);
+  assert.ok("endpoint" in result);assert.equal(result.endpoint,f.connection.endpoint);assert.equal(JSON.stringify(result).includes(f.connection.apiKey),false);
   assert.equal(config.descriptor().id,"openwebui");assert.equal(config.descriptor().protocol,"openwebui");
   assert.equal(fs.statSync(path.join(f.root,"openwebui-connection.json")).mode&0o777,0o600);
   assert.equal(new LibreChatConfiguration(f.root).read(),undefined);
