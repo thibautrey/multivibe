@@ -23,6 +23,7 @@ function rows(subject: typeof SECTIONS[number], value: any): any[] {
     return objects(value.skills).length ? objects(value.skills) : nested;
   }
   if (subject === "modes") return objects(value.availableModes).length ? objects(value.availableModes) : objects(value.data);
+  if (subject === "plugins" && objects(value.marketplaces).length) return objects(value.marketplaces).flatMap(v => objects(v.plugins));
   for (const key of [subject, subject === "mcp" ? "mcpServers" : "", subject === "commands" ? "availableCommands" : "", "data"]) {
     if (key && Array.isArray(value[key])) return value[key];
   }

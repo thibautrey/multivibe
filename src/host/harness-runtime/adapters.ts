@@ -377,7 +377,7 @@ export class CodexAdapter extends Adapter {
     const calls:Record<string,[string,Record<string,unknown>]>={
       models:["model/list",{}],skills:["skills/list",{cwds:[this.ctx.session.workspace]}],hooks:["hooks/list",{cwds:[this.ctx.session.workspace]}],
       mcp:["mcpServerStatus/list",this.threadId?{threadId:this.threadId}:{}],tools:["mcpServerStatus/list",this.threadId?{threadId:this.threadId}:{}],settings:["config/read",{}],
-      plugins:["config/read",{}],agents:["config/read",{}],
+      plugins:["plugin/list",{cwds:[this.ctx.session.workspace],forceRefetch:false}],agents:["config/read",{}],
       modes:["collaborationMode/list",{}],history:["thread/read",{threadId:this.threadId,includeTurns:true}],terminals:["thread/backgroundTerminals/list",{threadId:this.threadId}],
     };
     if(subject==="models") {
