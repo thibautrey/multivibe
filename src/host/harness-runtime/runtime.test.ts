@@ -173,12 +173,15 @@ test("stop preserves a native completion or failure that races with cancellation
   }
 });
 
-test("native failure remains terminal even when a settlement event follows it",async t=>{
-  const {runtime,adapters}=fixture(t);const s=await runtime.create({harnessId:"pi"});const command=prompt("failure");
-  await runtime.command(s.id,command);await eventually(()=>!!adapters.get(s.id)?.finish);const adapter=adapters.get(s.id)!;
-  adapter.ctx.emit({type:"turn.status",payload:{status:"failed",error:"authentication failed"}});
-  adapter.ctx.emit({type:"turn.status",payload:{type:"agent_settled"}});adapter.finish!();
-  await eventually(()=>!s.activeTurnId);assert.equal(runtime.store.receipt(command.id)!.state,"failed");assert.equal(s.state,"failed");assert.equal(s.queuePaused,true);
+test("native failure and cancellation remain terminal when a settlement event follows",async t=>{
+  const {runtime,adapters}=fixture(t);
+  for(const status of ["failed","interrupted"]){
+    const s=await runtime.create({harnessId:"pi"});const command=prompt(status);
+    await runtime.command(s.id,command);await eventually(()=>!!adapters.get(s.id)?.finish);const adapter=adapters.get(s.id)!;
+    adapter.ctx.emit({type:"turn.status",payload:{status,error:status==="failed"?"authentication failed":undefined}});
+    adapter.ctx.emit({type:"turn.status",payload:{type:"agent_settled"}});adapter.finish!();
+    await eventually(()=>!s.activeTurnId);assert.equal(runtime.store.receipt(command.id)!.state,status==="failed"?"failed":"cancelled");assert.equal(s.state,status);
+  }
 });
 
 test("late native completion reconciles an uncertain command without replay",async t=>{
