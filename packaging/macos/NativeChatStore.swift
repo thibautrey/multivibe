@@ -350,6 +350,7 @@ struct NativeChatConversation: Codable, Identifiable {
         guard submissions[id] == nil, let i = conversations.firstIndex(where: { $0.id == id }), let pending = conversations[i].pendingSubmissions?.first else { return }
         conversations[i].draft = [conversations[i].draft, pending.displayText ?? pending.text].filter { !$0.isEmpty }.joined(separator: "\n\n")
         conversations[i].draftAttachments = (conversations[i].draftAttachments ?? []) + pending.attachments
+        if conversations[i].initialRuntimeCommandID == pending.id.uuidString.lowercased() { conversations[i].initialRuntimeCommandID = nil }
         conversations[i].pendingSubmissions?.removeFirst(); save()
     }
     func command(_ id: UUID, type: String, value: HarnessJSON? = nil, parts: [DesktopMessagePart]? = nil) async throws -> DesktopHarnessReceipt {
