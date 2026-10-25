@@ -39,6 +39,7 @@ if(process.argv.includes('serve')){
   notify('session/update',{sessionId:'acp-session',update:{sessionUpdate:'tool_call_update',toolCallId:'tool',status:'failed'}});reply(global.prompt,{stopReason:'end_turn'});
  }else if(m==='get_state')reply(v,{sessionFile:'/tmp/pi-fixture.jsonl',isStreaming:false,isCompacting:compacting,pendingMessageCount:0});
  else if(m==='prompt'){
+  if(p.message==='interrupt'){reply(v,{});send({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:'partial'}});return;}
   if(p.message==='reject'){reply(v,{});send({type:'message_end',message:{role:'assistant',stopReason:'error',errorMessage:'401 authentication required'}});send({type:'agent_settled'});return;}
   reply(v,{});compacting=true;
   send({type:'extension_ui_request',id:'ui-confirm',method:'confirm',title:'Continue?'});
@@ -78,6 +79,12 @@ test("Pi waits for compaction/settlement rather than treating agent_end as compl
 test("Pi reports native provider errors as failure instead of successful empty output",async t=>{
   const f=fixture(t,"pi");const adapter=new PiAdapter(f.ctx);t.after(()=>adapter.close());await adapter.start();
   await assert.rejects(adapter.prompt([{type:"text",text:"reject"}]),(e:any)=>e.status===422 && /401/u.test(e.message));
+});
+test("Pi abort does not wait for unsupported queue commands or a separate settlement event",async t=>{
+  const f=fixture(t,"pi");const adapter=new PiAdapter(f.ctx);t.after(()=>adapter.close());await adapter.start();
+  const turn=adapter.prompt([{type:"text",text:"interrupt"}]);const cancelled=assert.rejects(turn,(e:any)=>e.status===499);
+  const deadline=Date.now()+2000;while(!f.events.some(e=>e.type==="message.delta")){if(Date.now()>deadline)assert.fail("No partial Pi output");await new Promise(r=>setTimeout(r,10));}
+  await adapter.interrupt();await cancelled;assert.equal(adapter.restartAfterInterrupt,true);
 });
 test("Codex steering targets the actual native turn and manual compaction waits for completion",async t=>{
   const f=fixture(t,"openai-codex");const adapter=new CodexAdapter(f.ctx);t.after(()=>adapter.close());await adapter.start();
