@@ -152,7 +152,7 @@ export function getModelPricing(model?: string): ModelPricing | undefined {
   if (!model || typeof model !== "string") return undefined;
   let m = model.trim();
   if (!m) return undefined;
-  if (UNPRICED_MODELS.has(m)) return undefined;
+  if (UNPRICED_MODELS.has(m) || (m.startsWith("openai/") && UNPRICED_MODELS.has(m.slice(7)))) return undefined;
   if (runtimePricing.has(m)) return runtimePricing.get(m);
   // Qualified IDs must never fall through to another provider's price.
   if (m.startsWith("openai/")) { m = m.slice(7); if (UNPRICED_MODELS.has(m)) return undefined; }

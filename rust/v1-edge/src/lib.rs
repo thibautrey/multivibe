@@ -6,13 +6,13 @@
 //! means request bytes, upstream bytes and SSE frames do not cross a JS/native
 //! boundary on the hot path.
 
-mod model_pricing;
 mod chat_tools;
 mod codex_prefix;
 mod confidential;
 mod dashboard;
 mod idempotency;
 mod images;
+mod model_pricing;
 mod token_refresh;
 
 use async_stream::stream;
@@ -4508,13 +4508,26 @@ fn normalized_trace_usage(usage: &Value) -> (Option<u64>, u64, u64, u64, u64, u6
 
 fn trace_pricing(model: Option<&str>, input: u64) -> Option<(f64, f64, f64, f64)> {
     let model = model?.trim();
-    if model.is_empty() || model == "gpt-5.3-codex-spark" || model == "codex-auto-review" {
+    let fallback_model = model.strip_prefix("openai/").unwrap_or(model);
+    if model.is_empty()
+        || fallback_model == "gpt-5.3-codex-spark"
+        || fallback_model == "codex-auto-review"
+    {
         return None;
     }
-    if let Some(pricing) = model_pricing::lookup(model, input) { return Some(pricing); }
-    let model = model.strip_prefix("openai/").unwrap_or(model);
-    let mut pricing = if model == "gpt-6.1-sol" || model.strip_prefix("gpt-6.1-sol-").is_some_and(|date| date.len() == 10 && date.bytes().all(|b| b.is_ascii_digit() || b == b'-')) {
-        if input > 272_000 { (4.0, 0.2, 5.0, 15.0) } else { (2.0, 0.1, 2.5, 10.0) }
+    if let Some(pricing) = model_pricing::lookup(model, input) {
+        return Some(pricing);
+    }
+    let model = fallback_model;
+    let mut pricing = if model == "gpt-6.1-sol"
+        || model.strip_prefix("gpt-6.1-sol-").is_some_and(|date| {
+            date.len() == 10 && date.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+        }) {
+        if input > 272_000 {
+            (4.0, 0.2, 5.0, 15.0)
+        } else {
+            (2.0, 0.1, 2.5, 10.0)
+        }
     } else if model.starts_with("gpt-5.6-sol") || model == "gpt-5.6" {
         (5.0, 0.5, 6.25, 30.0)
     } else if model.starts_with("gpt-5.6-terra") {
@@ -4867,7 +4880,10 @@ impl TraceSink {
             entry["tokensReasoning"] = reasoning.into();
             entry["tokensTotal"] = total.into();
             let cost = trace_cost(
-                context.resolved_model.as_deref().or(context.model.as_deref()),
+                context
+                    .resolved_model
+                    .as_deref()
+                    .or(context.model.as_deref()),
                 input.unwrap_or(0),
                 cached,
                 cache_write,
@@ -4875,8 +4891,14 @@ impl TraceSink {
             );
             if let Some(cost) = cost.and_then(serde_json::Number::from_f64) {
                 entry["costUsd"] = Value::Number(cost);
-                entry["pricingVersion"] = Value::String(context.resolved_model.as_deref().or(context.model.as_deref())
-                    .and_then(model_pricing::version).unwrap_or_else(|| TRACE_PRICING_VERSION.to_owned()));
+                entry["pricingVersion"] = Value::String(
+                    context
+                        .resolved_model
+                        .as_deref()
+                        .or(context.model.as_deref())
+                        .and_then(model_pricing::version)
+                        .unwrap_or_else(|| TRACE_PRICING_VERSION.to_owned()),
+                );
                 entry["costStatus"] = Value::String("estimated".to_owned());
             } else {
                 entry["costStatus"] = Value::String(
@@ -19573,4 +19595,18 @@ mod provider_error_tests {
         fs::remove_file(previous).await.unwrap();
     }
 
+}
+
+#[test]
+fn trace_pricing_sol_standard_and_long_context_fallback() {
+    assert_eq!(
+        trace_pricing(Some("gpt-6.1-sol"), 272000),
+        Some((2.0, 0.1, 2.5, 10.0))
+    );
+    assert_eq!(
+        trace_pricing(Some("openai/gpt-6.1-sol"), 272001),
+        Some((4.0, 0.2, 5.0, 15.0))
+    );
+    assert_eq!(trace_pricing(Some("openai/gpt-5.3-codex-spark"), 1), None);
+    assert_eq!(trace_pricing(Some("gpt-6.1-sol-unpublished"), 1), None);
 }
