@@ -1,6 +1,7 @@
 import { TraceAnalyticsClient } from "./trace-analytics-client.js";
 import {
   estimateCostUsd,
+  estimateTraceCostUsd,
   estimateCostUsdWithoutCache,
   MODEL_PRICING_VERSION,
 } from "./model-pricing.js";
@@ -143,7 +144,7 @@ function estimateTraceCostWithoutCache(trace: TraceEntry): number | undefined {
     typeof trace.tokensInput === "number" ||
     typeof trace.tokensOutput === "number" ||
     typeof trace.tokensTotal === "number";
-  if (!hasMeasuredUsage) return undefined;
+  if (trace.usageStatus === "missing" || !hasMeasuredUsage) return undefined;
   return estimateCostUsdWithoutCache(
     trace.model,
     trace.tokensInput ?? 0,
@@ -1185,13 +1186,7 @@ export function buildTraceStats(traces: TraceEntry[]): TraceStats {
     if (typeof t.costUsd === "number") return sum + t.costUsd;
     return (
       sum +
-      (estimateCostUsd(
-        t.model,
-        t.tokensInput ?? 0,
-        t.tokensOutput ?? 0,
-        t.tokensInputCached ?? 0,
-        t.tokensInputCacheWrite ?? 0,
-      ) ?? 0)
+      (estimateTraceCostUsd(t) ?? 0)
     );
   }, 0);
   const costUsdWithoutCache = attemptTraces.reduce(
@@ -1216,13 +1211,7 @@ export function buildTraceStats(traces: TraceEntry[]): TraceStats {
     const traceCost =
       typeof trace.costUsd === "number"
         ? trace.costUsd
-        : (estimateCostUsd(
-            trace.model,
-            trace.tokensInput ?? 0,
-            trace.tokensOutput ?? 0,
-            trace.tokensInputCached ?? 0,
-            trace.tokensInputCacheWrite ?? 0,
-          ) ?? 0);
+        : (estimateTraceCostUsd(trace) ?? 0);
     if (!existing) {
       modelMap.set(key, {
         model: key,
@@ -1304,13 +1293,7 @@ export function buildTraceStats(traces: TraceEntry[]): TraceStats {
       bucket.costUsd +=
         typeof trace.costUsd === "number"
           ? trace.costUsd
-          : (estimateCostUsd(
-              trace.model,
-              trace.tokensInput ?? 0,
-              trace.tokensOutput ?? 0,
-              trace.tokensInputCached ?? 0,
-              trace.tokensInputCacheWrite ?? 0,
-            ) ?? 0);
+          : (estimateTraceCostUsd(trace) ?? 0);
     }
     bucketMap.set(bucketAt, bucket);
   }
@@ -1423,13 +1406,7 @@ export function addTraceToBucket(bucket: TraceBucketAggregate, trace: TraceEntry
   const traceCost =
     typeof trace.costUsd === "number"
       ? trace.costUsd
-      : (estimateCostUsd(
-          trace.model,
-          trace.tokensInput ?? 0,
-          trace.tokensOutput ?? 0,
-          trace.tokensInputCached ?? 0,
-          trace.tokensInputCacheWrite ?? 0,
-        ) ?? 0);
+      : (estimateTraceCostUsd(trace) ?? 0);
   const traceCostWithoutCache = estimateTraceCostWithoutCache(trace);
   const traceTokensTotal =
     trace.tokensTotal ?? (trace.tokensInput ?? 0) + (trace.tokensOutput ?? 0);
