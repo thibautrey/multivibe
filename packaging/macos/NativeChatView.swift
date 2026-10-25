@@ -771,7 +771,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(ChatActionStyle()).tint(.secondary)
-        .fixedSize(horizontal: false, vertical: true).frame(maxWidth: 160, alignment: .leading)
+        .frame(maxWidth: 160, alignment: .leading).fixedSize(horizontal: true, vertical: true)
         .help(selectedHarness.description)
         .disabled(store.current?.messages.isEmpty == false || store.current?.runtimeSessionID != nil || store.isGenerating(store.selection))
         .popover(isPresented: $choosingHarness, arrowEdge: .bottom) { harnessGrid }
@@ -948,7 +948,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(ChatActionStyle()).tint(.secondary)
-        .fixedSize(horizontal: false, vertical: true).frame(maxWidth: 260, alignment: .leading)
+        .frame(maxWidth: 260, alignment: .leading).fixedSize(horizontal: true, vertical: true)
         .disabled(cloudMode ? cloudSending : store.isGenerating(store.selection))
         .popover(isPresented: $choosingModel, arrowEdge: .bottom) { modelPicker }
     }
