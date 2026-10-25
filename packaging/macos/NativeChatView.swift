@@ -172,7 +172,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                                 }
                                 .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
                                 .padding(.horizontal, 10).padding(.top, 16).padding(.bottom, 4)
-                                ForEach(section.conversations) { conversation in conversationLink(conversation) }
+                                ForEach(section.conversations) { conversation in conversationLink(conversation, showsHarnessLogo: false) }
                             }
                         }
                     }.padding(.horizontal, 10).padding(.bottom, 12)
@@ -370,11 +370,13 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             Text(search.isEmpty ? "Vos conversations apparaîtront ici." : "Essayez un autre mot ou un extrait de message.").font(.system(size: 12)).foregroundStyle(.secondary)
         }.padding(.horizontal, 10).padding(.top, 22)
     }
-    private func conversationLink(_ conversation: NativeChatConversation) -> some View {
+    private func conversationLink(_ conversation: NativeChatConversation, showsHarnessLogo: Bool = true) -> some View {
         Button { store.selection = conversation.id } label: {
             HStack(spacing: 9) {
-                let harnessID = conversation.harnessID ?? "native"
-                HarnessLogo(id: harnessID, name: harnessName(harnessID), size: 18)
+                if showsHarnessLogo {
+                    let harnessID = conversation.harnessID ?? "native"
+                    HarnessLogo(id: harnessID, name: harnessName(harnessID), size: 18)
+                }
                 Text(conversation.title).font(.system(size: 13)).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                 if conversation.pinned == true {
                     Image(systemName: "pin").font(.system(size: 10)).foregroundStyle(.secondary).accessibilityLabel("Conversation épinglée")
