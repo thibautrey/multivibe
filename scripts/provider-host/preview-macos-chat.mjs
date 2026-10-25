@@ -57,6 +57,7 @@ const server = createServer(async (request, response) => {
   if (route.endsWith('/catalog')) return send({ harnesses: catalog });
   if (route.includes('/native-sessions')) return send({ sessions: [] });
   if (route.endsWith('/sessions')) return send({ sessions: Object.values(sessions) });
+  if (route.endsWith('/models')) return send({ models: previewModels.map(model => ({ id: model.id, name: model.name, provider: 'preview' })), currentModelId: 'preview-model', provider: 'preview' });
   const match = route.match(/\/sessions\/([^/]+)(?:\/(events|commands))?$/u);
   if (match) {
     const [, id, action] = match;

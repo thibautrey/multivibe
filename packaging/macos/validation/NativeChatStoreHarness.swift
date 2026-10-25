@@ -175,6 +175,15 @@ enum HostAssistantError: Error { case emptyReply }
         let withArtifact = NativeChatStore(file: file)
         let saved = withArtifact.conversations.first { $0.messages.last?.content == artifact }!
         precondition(NativeInteractiveDocument.segments(saved.messages.last!.content).contains { if case .document = $0 { return true }; return false })
+        store.newConversation(text: "Brouillon à conserver")
+        store.edit { $0.harnessID = "pi"; $0.authMode = "native"; $0.nativeModelID = "native-picked"; $0.nativeModelProvider = "native-provider" }
+        let catalog = try await store.modelCatalog(store.selection!)
+        precondition(catalog.models.first?.id == "native-picked" && catalog.models.first?.provider == "native-provider")
+        let selectedNative = NativeChatStore(file: file).current
+        precondition(selectedNative?.nativeModelID == "native-picked" && selectedNative?.nativeModelProvider == "native-provider")
+        store.send(interactiveAnswers: true)
+        while store.current?.messages.last?.content != "Réponse du harness" { try await Task.sleep(nanoseconds: 10_000_000) }
+        print("PASS harness catalog and native model selection persistence")
         HostAssistantClient.shared.defaultModel = "remembered-model"
         NativeChatStore.defaultHarnessID = "hermes-agent"
         store.newConversation(text: "Les préférences doivent suivre")

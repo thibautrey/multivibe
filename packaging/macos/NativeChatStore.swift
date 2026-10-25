@@ -33,6 +33,8 @@ struct NativeChatConversation: Codable, Identifiable {
     var harnessSessionID: String?
     var executionTargetID: String?
     var authMode: String?
+    var nativeModelID: String?
+    var nativeModelProvider: String?
     var workspace: String?
     var runtimeSessionID: String?
     var runtimeSession: DesktopHarnessSession?
@@ -287,6 +289,10 @@ struct NativeChatConversation: Codable, Identifiable {
         let conversation = conversations[i]
         var body: [String: HarnessJSON] = ["id": .string(id.uuidString.lowercased()), "harnessId": .string(harness), "targetId": .string(conversation.executionTargetID ?? "local"), "authMode": .string(conversation.authMode ?? "native"), "title": .string(conversation.title)]
         if conversation.authMode == "multivibe", !conversation.model.isEmpty { body["model"] = .string(conversation.model) }
+        if conversation.authMode != "multivibe", let model = conversation.nativeModelID, !model.isEmpty {
+            body["model"] = .string(model)
+            if let provider = conversation.nativeModelProvider { body["nativeProvider"] = .string(provider) }
+        }
         if let workspace = conversation.workspace, !workspace.isEmpty { body["workspace"] = .string(workspace) }
         if !conversation.messages.isEmpty {
             body["history"] = .array(conversation.messages.filter { ["user", "assistant"].contains($0.role) }.map { .object(["role": .string($0.role), "content": .string($0.content)]) })
@@ -364,6 +370,13 @@ struct NativeChatConversation: Codable, Identifiable {
         conversations[i].draftAttachments = (conversations[i].draftAttachments ?? []) + pending.attachments
         if conversations[i].initialRuntimeCommandID == pending.id.uuidString.lowercased() { conversations[i].initialRuntimeCommandID = nil }
         conversations[i].pendingSubmissions?.removeFirst(); save()
+    }
+    func modelCatalog(_ id: UUID) async throws -> DesktopHarnessModelCatalog {
+        guard let conversation = conversations.first(where: { $0.id == id }), let harness = conversation.harnessID else { throw DesktopHarnessError.invalidResponse }
+        var body: [String: HarnessJSON] = ["harnessId": .string(harness)]
+        if let workspace = conversation.workspace, !workspace.isEmpty { body["workspace"] = .string(workspace) }
+        if conversation.authMode != "multivibe", let sessionID = conversation.runtimeSessionID { body["sessionId"] = .string(sessionID) }
+        return try await runtime.call("/models", method: "POST", target: conversation.executionTargetID ?? "local", body: .object(body)).decode(DesktopHarnessModelCatalog.self)
     }
     func command(_ id: UUID, type: String, value: HarnessJSON? = nil, parts: [DesktopMessagePart]? = nil) async throws -> DesktopHarnessReceipt {
         let sessionID = try await ensureRuntime(id)

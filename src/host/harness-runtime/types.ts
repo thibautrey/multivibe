@@ -65,6 +65,7 @@ export type HarnessEvent = {
 };
 export type AdapterEvent = { type: string; payload: unknown; itemId?: string };
 export type AdapterContext = {
+  modelDiscovery?: boolean;
   session: HarnessSession; root: string; executable: string; target: HarnessTarget;
   emit: (event: AdapterEvent) => void;
   nativeSession: (id: string) => void;
