@@ -21,3 +21,27 @@ The worker bounds its query cache and the client shares identical in-flight requ
 ## Verification
 
 Run `npm run build`, the trace analytics/trace/session/project tests, and `cargo test -p multivibe-v1-edge`. `node scripts/benchmark-trace-analytics.mjs --rows 3000000` generates a synthetic multi-million-event history, validates token and attempt totals, measures migration and query latency, checks repeated session reports, and measures the HTTP thread's event-loop delay. This benchmark excludes upstream model inference. The temporary synthetic history and index are removed when it finishes.
+
+### Runtime prices and the October 2026 cost backfill
+
+The control plane refreshes `https://models.dev/api.json` using its existing
+24-hour cache. `SDK_MODELS_DEV_CACHE_PATH` selects the shared, atomically written
+catalog cache (version 2 preserves context tiers). The analytics worker and Rust
+edge use this cache for USD-per-million-token prices. The edge checks the local
+file at most once per 30 seconds and keeps its last valid snapshot on errors.
+Qualified model IDs retain the provider's price; reseller prices never override
+bare origin model IDs. Missing prices remain unpriced, while published zero
+prices and recorded zero costs remain valid. The UI reuses the backend estimator;
+its activity totals come from backend analytics. GPT-6.1 Sol also has an offline
+Standard-price fallback, including the context tier above 272,000 input tokens.
+
+After a valid models.dev catalog is available, the indexed analytics store runs
+`models-dev-missing-costs-2026-10-25-v1` once. It fills absent costs for historical
+entries with measured usage, preserves all recorded costs, and repairs affected
+hourly, project and session totals. JSONL journals are not rewritten. Batches,
+progress and affected hours commit durably in SQLite so interruption resumes the
+same migration. Completion is recorded in `metadata`; later price refreshes and
+restarts do not repeat the historical scan. Unpriced models remain unpriced if
+they were unknown during that migration. Newly ingested requests use the current
+available prices as usual. Progress and completion counters are exposed in the
+analytics persistence status under `pricingBackfill`.

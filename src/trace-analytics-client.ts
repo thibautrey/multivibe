@@ -8,6 +8,7 @@ export type AnalyticsStatus = {
   pendingBytes: number;
   invalidLines: number;
   error?: string;
+  pricingBackfill?: { version: string; state: "running" | "complete"; cursor: number; upper: number; updated: number; unpriced: number };
 };
 
 /** One bounded RPC queue and one worker per store, never one full scan per viewer. */
@@ -27,7 +28,7 @@ export class TraceAnalyticsClient {
       const url = new URL(`./trace-analytics-worker.${extension}`, import.meta.url);
       const workerData = { filePath: this.config.filePath,
         historyFilePath: this.config.historyFilePath ?? `${this.config.filePath}.stats-history`,
-        dbPath: this.config.indexedHistoryPath, externalWriter: this.config.externalWriter,
+        dbPath: this.config.indexedHistoryPath, pricingCachePath: this.config.pricingCachePath, externalWriter: this.config.externalWriter,
         retentionMax: this.config.retentionMax ?? 1000 };
       // tsImport is needed only by source-level tests; releases run plain compiled JS.
       this.worker = extension === "ts"

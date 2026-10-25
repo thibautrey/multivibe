@@ -6,6 +6,7 @@
 //! means request bytes, upstream bytes and SSE frames do not cross a JS/native
 //! boundary on the hot path.
 
+mod model_pricing;
 mod chat_tools;
 mod codex_prefix;
 mod confidential;
@@ -3954,7 +3955,7 @@ impl SessionAffinityCache {
     }
 }
 
-const TRACE_PRICING_VERSION: &str = "2026-08-01";
+const TRACE_PRICING_VERSION: &str = "models.dev:2026-10-25";
 
 #[derive(Clone)]
 struct TraceContext {
@@ -4510,7 +4511,11 @@ fn trace_pricing(model: Option<&str>, input: u64) -> Option<(f64, f64, f64, f64)
     if model.is_empty() || model == "gpt-5.3-codex-spark" || model == "codex-auto-review" {
         return None;
     }
-    let mut pricing = if model.starts_with("gpt-5.6-sol") || model == "gpt-5.6" {
+    if let Some(pricing) = model_pricing::lookup(model, input) { return Some(pricing); }
+    let model = model.strip_prefix("openai/").unwrap_or(model);
+    let mut pricing = if model == "gpt-6.1-sol" || model.strip_prefix("gpt-6.1-sol-").is_some_and(|date| date.len() == 10 && date.bytes().all(|b| b.is_ascii_digit() || b == b'-')) {
+        if input > 272_000 { (4.0, 0.2, 5.0, 15.0) } else { (2.0, 0.1, 2.5, 10.0) }
+    } else if model.starts_with("gpt-5.6-sol") || model == "gpt-5.6" {
         (5.0, 0.5, 6.25, 30.0)
     } else if model.starts_with("gpt-5.6-terra") {
         (2.0, 0.2, 2.5, 12.0)
@@ -4862,7 +4867,7 @@ impl TraceSink {
             entry["tokensReasoning"] = reasoning.into();
             entry["tokensTotal"] = total.into();
             let cost = trace_cost(
-                context.model.as_deref(),
+                context.resolved_model.as_deref().or(context.model.as_deref()),
                 input.unwrap_or(0),
                 cached,
                 cache_write,
