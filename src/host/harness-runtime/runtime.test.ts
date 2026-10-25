@@ -267,3 +267,25 @@ test("remote bridges use only private managed Host credentials and a loopback mo
   assert.equal(bridgeModelConnection(root,"https://external.example.test"),undefined);assert.equal(bridgeModelConnection(root,"http://127.0.0.1:1455/?token=private"),undefined);
   if(process.platform!=="win32"){fs.chmodSync(file,0o644);assert.equal(bridgeModelConnection(root,"http://127.0.0.1:1455"),undefined);}
 });
+
+test("LibreChat catalog and sessions require a validated connection, pin its agent and never journal the key",async t=>{
+  const {runtime,root,adapters}=fixture(t);
+  assert.equal((await runtime.catalog()).find(v=>v.id==="librechat")?.available,false);
+  await assert.rejects(runtime.create({harnessId:"librechat"}),/Configure/u);
+  // A previously validated connection in the private Host store.
+  const connection={endpoint:"https://librechat.example/api/agents/v1",apiKey:"fixture-private-librechat",agentId:"agent-original"};
+  fs.writeFileSync(path.join(root,"librechat-connection.json"),JSON.stringify(connection),{mode:0o600});
+  const session=await runtime.create({harnessId:"librechat"});
+  assert.equal(session.model,"agent-original");
+  assert.equal(session.configuration?.endpoint,connection.endpoint);
+  assert.equal(session.capabilities.interrupt.available,false);
+  assert.equal(JSON.stringify(runtime.snapshot(session.id)).includes(connection.apiKey),false);
+  const receipt=await runtime.command(session.id,prompt("Hello"));
+  await eventually(()=>adapters.has(session.id));
+  const adapter=adapters.get(session.id)!;
+  await eventually(()=>Boolean(adapter.finish));adapter.finish!();
+  await eventually(()=>runtime.store.receipt(receipt.id)?.state==="completed");
+  assert.equal(adapter.ctx.libreChatConnection?.apiKey,connection.apiKey);
+  assert.equal(JSON.stringify(runtime.store.events(session.id)).includes(connection.apiKey),false);
+  await assert.rejects(runtime.create({harnessId:"librechat",authMode:"multivibe",model:"other"}),/own API key/u);
+});

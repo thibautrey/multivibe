@@ -14,7 +14,7 @@ export type HarnessCapability = {
   constraints?: Record<string, unknown>;
 };
 export type HarnessDescriptor = {
-  id: string; name: string; protocol: "acp" | "pi-rpc" | "codex" | "claude-sdk" | "opencode";
+  id: string; name: string; protocol: "acp" | "pi-rpc" | "codex" | "claude-sdk" | "opencode" | "librechat";
   version?: string; detected: boolean; configured: boolean; available: boolean; reason?: string;
   authentication: "unknown" | "required" | "ready";
   capabilities: Record<HarnessFeature, HarnessCapability>;
@@ -71,6 +71,7 @@ export type AdapterContext = {
   capabilities: (values: Partial<Record<HarnessFeature, HarnessCapability>>) => void;
   attachment: (id: string) => { info: HarnessAttachment; path: string; data: Buffer };
   ask: (kind: PendingInteraction["kind"], title: string, detail: unknown) => Promise<Record<string, unknown>>;
+  libreChatConnection?: {endpoint:string;apiKey:string;agentId:string};
   modelConnection?: {baseUrl:string;apiKey:string};
 };
 export interface HarnessAdapter {
