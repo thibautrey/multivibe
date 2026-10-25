@@ -40,6 +40,119 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     }
 }
 
+// SwiftUI's contextMenu requires a second choice after the secondary click.
+// This monitor keeps the primary Button behavior intact and opens the editor directly.
+private struct SecondaryClickAction: NSViewRepresentable {
+    let action: () -> Void
+
+    func makeNSView(context: Context) -> MonitorView {
+        let view = MonitorView()
+        view.action = action
+        return view
+    }
+
+    func updateNSView(_ nsView: MonitorView, context: Context) { nsView.action = action }
+
+    final class MonitorView: NSView {
+        var action: (() -> Void)?
+        private var monitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { [weak self] event in
+                guard let self, let window = self.window, event.window === window,
+                      self.convert(self.bounds, to: nil).contains(event.locationInWindow) else { return event }
+                self.action?()
+                return nil
+            }
+        }
+
+        deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+    }
+}
+
+private struct NativeChatSuggestionEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: NativeChatSuggestion
+    let defaultSuggestion: NativeChatSuggestion?
+    let save: (NativeChatSuggestion) -> Void
+    let reset: (NativeChatSuggestion) -> Void
+
+    init(
+        suggestion: NativeChatSuggestion,
+        defaultSuggestion: NativeChatSuggestion?,
+        save: @escaping (NativeChatSuggestion) -> Void,
+        reset: @escaping (NativeChatSuggestion) -> Void
+    ) {
+        _draft = State(initialValue: suggestion)
+        self.defaultSuggestion = defaultSuggestion
+        self.save = save
+        self.reset = reset
+    }
+
+    private var iconIsValid: Bool {
+        NSImage(systemSymbolName: draft.systemImage.trimmingCharacters(in: .whitespacesAndNewlines), accessibilityDescription: nil) != nil
+    }
+    private var isValid: Bool {
+        !draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !draft.subtitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && iconIsValid
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Carte") {
+                    TextField("Titre", text: $draft.title)
+                    TextField("Sous-titre", text: $draft.subtitle)
+                    HStack(spacing: 12) {
+                        Image(systemName: iconIsValid ? draft.systemImage.trimmingCharacters(in: .whitespacesAndNewlines) : "questionmark.square.dashed")
+                            .foregroundStyle(iconIsValid ? ChatPalette.accent : .secondary)
+                            .frame(width: 24)
+                        TextField("Icône SF Symbols", text: $draft.systemImage)
+                    }
+                    if !draft.systemImage.isEmpty && !iconIsValid {
+                        Label("Cette icône SF Symbols n’existe pas sur ce Mac.", systemImage: "exclamationmark.triangle")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                }
+                Section("Texte inséré dans le message") {
+                    TextEditor(text: $draft.text)
+                        .font(.body)
+                        .frame(minHeight: 112)
+                        .accessibilityLabel("Texte inséré dans le message")
+                    Text("Un clic principal sur la carte placera ce texte dans le champ de rédaction sans l’envoyer.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if let defaultSuggestion, draft != defaultSuggestion {
+                    Section {
+                        Button("Rétablir cette carte", systemImage: "arrow.counterclockwise") {
+                            reset(defaultSuggestion)
+                            dismiss()
+                        }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("Modifier la suggestion")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Enregistrer") {
+                        save(draft)
+                        dismiss()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!isValid)
+                }
+            }
+        }
+        .frame(width: 520, height: 455)
+    }
+}
+
 @MainActor struct NativeChatView: View {
     @ObservedObject var store: NativeChatStore
     @ObservedObject private var desktopAgent: ComputerUseController
@@ -94,6 +207,8 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     @State private var selectedUtilityPanel: NativeChatUtilityPanel = .conversation
     @State private var deleteID: UUID?
     @State private var speech = AVSpeechSynthesizer()
+    @State private var suggestionCards = NativeChatSuggestionStore.load()
+    @State private var editingWelcomeSuggestion: NativeChatSuggestion?
     @FocusState private var composing: Bool
 
     init(store: NativeChatStore, agent: NativeChatAgentCoordinator? = nil) {
@@ -308,6 +423,14 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             }
         }
         .sheet(item: $installingHarness) { item in harnessInstallationSheet(item) }
+        .sheet(item: $editingWelcomeSuggestion) { suggestion in
+            NativeChatSuggestionEditor(
+                suggestion: suggestion,
+                defaultSuggestion: NativeChatSuggestion.defaults.first { $0.id == suggestion.id },
+                save: saveWelcomeSuggestion,
+                reset: resetWelcomeSuggestion
+            )
+        }
         .onChange(of: browser.isVisible) { visible in
             if visible { selectedUtilityPanel = .browser }
             else if showingHarnessInspector { selectedUtilityPanel = .conversation }
@@ -672,22 +795,33 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
         }.frame(maxWidth: 660, alignment: .leading).padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     @ViewBuilder private var welcomeSuggestions: some View {
-        suggestion("Explorer une idée", subtitle: "Trouver de nouvelles pistes", icon: "lightbulb", text: "Aide-moi à trouver des idées pour ")
-        suggestion("M’aider à écrire", subtitle: "Donner forme à mes mots", icon: "pencil.line", text: "Aide-moi à rédiger ")
-        suggestion("Créer un outil", subtitle: "Passer de l’idée à l’action", icon: "slider.horizontal.3", text: "Crée un calculateur interactif pour partager une addition, avec pourboire et nombre de personnes modifiables.")
+        ForEach(suggestionCards) { suggestion in suggestionCard(suggestion) }
     }
-    private func suggestion(_ title: String, subtitle: String, icon: String, text: String) -> some View {
-        Button { draft.wrappedValue = text; composing = true } label: {
+    private func suggestionCard(_ suggestion: NativeChatSuggestion) -> some View {
+        Button { draft.wrappedValue = suggestion.text; composing = true } label: {
             VStack(alignment: .leading, spacing: 10) {
-                Image(systemName: icon).font(.system(size: 16)).foregroundStyle(ChatPalette.accent)
+                Image(systemName: suggestion.systemImage).font(.system(size: 16)).foregroundStyle(ChatPalette.accent)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(title).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                    Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                    Text(suggestion.title).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                    Text(suggestion.subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
                 }
             }.frame(minWidth: 152, maxWidth: .infinity, alignment: .leading).padding(14)
                 .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 12))
                 .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(ChatPalette.hairline, lineWidth: 0.5))
-        }.buttonStyle(ChatActionStyle())
+        }
+        .buttonStyle(ChatActionStyle())
+        .background(SecondaryClickAction { editingWelcomeSuggestion = suggestion })
+        .help("Clic droit pour modifier cette suggestion")
+        .accessibilityAction(named: "Modifier cette suggestion") { editingWelcomeSuggestion = suggestion }
+    }
+    private func saveWelcomeSuggestion(_ suggestion: NativeChatSuggestion) {
+        guard let index = suggestionCards.firstIndex(where: { $0.id == suggestion.id }) else { return }
+        suggestionCards[index] = suggestion.normalized
+        NativeChatSuggestionStore.save(suggestionCards)
+        editingWelcomeSuggestion = nil
+    }
+    private func resetWelcomeSuggestion(_ suggestion: NativeChatSuggestion) {
+        saveWelcomeSuggestion(suggestion)
     }
     private func transcript(_ conversation: NativeChatConversation) -> some View {
         ScrollViewReader { proxy in
