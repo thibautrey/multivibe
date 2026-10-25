@@ -1,5 +1,27 @@
 import Foundation
 
+struct ChatPresentedError: Equatable {
+    let summary: String
+    let details: String?
+    init(_ raw: String) {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = value.lowercased()
+        if lower.contains("streaming failed before delivery") || lower.contains("connection error") {
+            summary = "La connexion au modèle a été interrompue. Réessayez si aucune réponse n’apparaît."
+        } else if lower.contains("timed out") {
+            summary = "La demande a pris trop de temps. Vous pouvez réessayer."
+        } else if lower.contains("network connection was lost") {
+            summary = "La connexion a été interrompue. Vos messages en attente sont conservés."
+        } else if lower.contains("could not connect to the server") || lower.contains("connection refused") {
+            summary = "Impossible de joindre le Host. Vérifiez sa connexion, puis réessayez."
+        } else {
+            let first = value.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? "Une erreur est survenue."
+            summary = first.count > 240 ? String(first.prefix(237)) + "…" : first
+        }
+        details = value.isEmpty || value == summary ? nil : String(value.prefix(32_000))
+    }
+}
+
 /// Presentation only: preserve native payloads and never infer successful execution.
 enum HarnessPresentation {
     static func title(_ key: String) -> String {

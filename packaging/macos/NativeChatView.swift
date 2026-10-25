@@ -185,11 +185,20 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 .frame(minHeight: 0, maxHeight: .infinity)
                 .layoutPriority(-1).clipped()
                 if let error = store.error {
+                    let presented = ChatPresentedError(error)
                     HStack(alignment: .top, spacing: 10) {
                         Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
-                        VStack(alignment: .leading, spacing: 3) {
+                        VStack(alignment: .leading, spacing: 6) {
                             Text("Une action nécessite votre attention").font(.system(size: 12, weight: .semibold))
-                            Text(displayError(error)).font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
+                            Text(presented.summary).font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
+                            if let details = presented.details {
+                                DisclosureGroup("Détails techniques") {
+                                    ScrollView {
+                                        Text(details).font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.secondary)
+                                            .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 5)
+                                    }.frame(maxHeight: 120)
+                                }.font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary)
+                            }
                         }
                         Spacer()
                         ChatIconButton(title: "Masquer le message", icon: "xmark") { store.error = nil }
@@ -366,13 +375,6 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 .sorted { $0.updatedAt > $1.updatedAt }
             if let current = store.current, (current.archived == true) != showingArchives { store.selection = candidates.first?.id }
         }
-    }
-    private func displayError(_ value: String) -> String {
-        let lower = value.lowercased()
-        if lower.contains("timed out") { return "La demande a pris trop de temps. Vous pouvez réessayer." }
-        if lower.contains("network connection was lost") { return "La connexion a été interrompue. Vos messages en attente sont conservés." }
-        if lower.contains("could not connect to the server") || lower.contains("connection refused") { return "Impossible de joindre le Host. Vérifiez sa connexion, puis réessayez." }
-        return value
     }
     private var cloudConversationList: some View {
         let items = agent.cloudConversations.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }

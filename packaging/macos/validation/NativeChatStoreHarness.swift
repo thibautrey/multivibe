@@ -118,6 +118,13 @@ enum HostAssistantError: Error { case emptyReply }
         precondition(store.current?.messages.last?.interrupted == false)
         runtimeEvent("turn.cancelled", .object([:]))
         precondition(store.current?.messages.last?.interrupted == true)
+        store.error = nil
+        runtimeEvent("diagnostic", .object(["message": .string("Streaming failed before delivery: Connection error.\nTraceback: internal detail")]))
+        precondition(store.error == nil)
+        precondition(store.current?.runtimeEvents?.last?.type == "diagnostic")
+        runtimeEvent("turn.failed", .object(["error": .string("Model request failed")]))
+        precondition(store.error == "Model request failed")
+        store.error = nil
         let previousMessageCount = store.current!.messages.count
         store.edit { $0.draft = "Keep this draft" }
         store.importRuntimeSession(store.current!.runtimeSession!, target: "local")

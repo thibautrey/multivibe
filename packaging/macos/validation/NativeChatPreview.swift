@@ -65,7 +65,8 @@ import SwiftUI
     @objc private func selectScene(_ sender: NSMenuItem) {
         guard let store = previewStore, let window = chatWindow else { return }
         if sender.tag < 5 {
-            store.selection = store.conversations[sender.tag].id; store.error = sender.tag == 4 ? "La connexion au Host a été interrompue. Vos messages en attente sont conservés ; la reconnexion est en cours." : nil
+            store.selection = store.conversations[sender.tag].id
+            store.error = sender.tag == 4 ? "2026-10-25 15:12:42 [ERROR] Streaming failed before delivery: Connection error.\nTraceback (most recent call last):\n  File \"internal.py\", line 101, in connect\n    raise ConnectionError()" : nil
         } else if sender.tag == 5 { window.setContentSize(NSSize(width: 760, height: 650)) }
         else if sender.tag == 6 { window.setContentSize(NSSize(width: 1180, height: 780)) }
         else { window.appearance = NSAppearance(named: sender.tag == 7 ? .aqua : .darkAqua) }

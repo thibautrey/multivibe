@@ -31,6 +31,15 @@ enum NativeChatPresentationHarness {
         precondition(HarnessPresentation.origin("unknown") == "À confirmer")
         print("PASS activity grouping, native status, artifact retention and measured usage")
 
+        let traceback = "2026-10-25 [ERROR] Streaming failed before delivery: Connection error.\nTraceback (most recent call last):\n  internal.py"
+        let presented = ChatPresentedError(traceback)
+        precondition(presented.summary == "La connexion au modèle a été interrompue. Réessayez si aucune réponse n’apparaît.")
+        precondition(presented.details == traceback)
+        precondition(ChatPresentedError("Harness failed").details == nil)
+        let bounded = ChatPresentedError(String(repeating: "x", count: 300)).summary
+        precondition(bounded.count <= 240 && bounded.hasSuffix("…"))
+        print("PASS concise errors with folded technical diagnostics")
+
         let markdown = ChatMarkdownParser.parse("## Titre\n\n1. Première étape\n- Un point\n\n```swift\nlet value = 1\n```\n> Une note")
         precondition(markdown == [.heading(2, "Titre"), .numbered("1.", "Première étape"), .bullet("Un point"), .code("let value = 1", "swift"), .quote("Une note")])
         precondition(ChatMarkdownParser.parse("Du texte\nsur deux lignes") == [.paragraph("Du texte sur deux lignes")])
