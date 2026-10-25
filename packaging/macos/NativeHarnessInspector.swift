@@ -83,15 +83,15 @@ import SwiftUI
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if let id = conversation?.id { ForEach(store.runtimeInteractions[id] ?? []) { interaction in NativeHarnessInteractionView(store: store, conversationID: id, interaction: interaction) } }
                     if page == "overview" {
+                        if let id = conversation?.id { ForEach(store.runtimeInteractions[id] ?? []) { interaction in NativeHarnessInteractionView(store: store, conversationID: id, interaction: interaction) } }
                         executionSettings
                         if let session = conversation?.runtimeSession { sessionSummary(session) }
                         capabilityList
                         if harnessID != "native" { existingSessions }
                     } else { settingsPanel }
                 }.padding(22)
-            }
+            }.id(page)
         }
         .frame(minWidth: 610, idealWidth: 660, minHeight: 500, idealHeight: 680)
         .background(ChatPalette.elevated).tint(ChatPalette.accent)
