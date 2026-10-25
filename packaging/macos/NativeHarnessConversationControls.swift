@@ -12,6 +12,7 @@ import SwiftUI
     private var queue: [DesktopHarnessReceipt] { guard let id = conversation?.id else { return [] }; return (store.runtimeQueues[id] ?? []).filter { $0.state == "queued" } }
     private var count: Int { queue.count + (conversation?.nativeQueue?.count ?? 0) }
     private var paused: Bool { conversation?.runtimeSession?.queuePaused == true || conversation?.queuePaused == true }
+    private var showsQueue: Bool { count > 0 }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let conversation {
@@ -48,7 +49,7 @@ import SwiftUI
                     NativeHarnessInteractionView(store: store, conversationID: conversation.id, interaction: interaction)
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
-                if count > 0 || paused {
+                if showsQueue {
                     VStack(alignment: .leading, spacing: 0) {
                         HStack(spacing: 8) {
                             Button { withAnimation(ChatPalette.motion(reduceMotion)) { expanded.toggle() } } label: {
@@ -89,7 +90,7 @@ import SwiftUI
                         .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 12))
                 }
             }
-        }.padding(.horizontal, 28).padding(.top, count > 0 || paused ? 8 : 0)
+        }.padding(.horizontal, 28).padding(.top, showsQueue ? 8 : 0)
         .animation(ChatPalette.motion(reduceMotion), value: count)
         .animation(ChatPalette.motion(reduceMotion), value: conversation?.draftAttachments?.count)
         .animation(ChatPalette.motion(reduceMotion), value: conversation.map { store.runtimeInteractions[$0.id]?.count ?? 0 } ?? 0)
