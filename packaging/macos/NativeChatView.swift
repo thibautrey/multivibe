@@ -66,6 +66,8 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     @State private var harnesses: [NativeConversationHarness] = [.native]
     @State private var configuringLibreChat = false
     @State private var choosingHarness = false
+    @State private var choosingModel = false
+    @State private var modelSource = "multivibe"
     @State private var installingHarness: NativeConversationHarness?
     @State private var installationLogs: [String] = []
     @State private var installationRunning = false
@@ -699,12 +701,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 HStack(spacing: 5) {
                     ChatIconButton(title: harness.wrappedValue == "native" ? "Joindre des documents texte" : "Joindre des fichiers", icon: "plus") { importing = true }.disabled(cloudMode)
                     if !cloudMode { harnessSelector }
-                    if !cloudMode && harness.wrappedValue != "native" && store.current?.authMode != "multivibe" {
-                        Button { showingHarnessInspector = true } label: {
-                            HStack(spacing: 5) { Text(selectedModelName).lineLimit(1); Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)) }
-                                .font(.system(size: 12)).foregroundStyle(.secondary).padding(.horizontal, 8).frame(height: 30)
-                        }.buttonStyle(ChatActionStyle()).help("Modèle et réglages du harness").frame(maxWidth: 230, alignment: .leading)
-                    } else { modelSelector }
+                    modelSelector
                     Spacer(minLength: 4)
                     composerActions
                 }.padding(.horizontal, 9).padding(.bottom, 9)
@@ -931,45 +928,16 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
         .interactiveDismissDisabled(installationRunning)
     }
     private var modelSelector: some View {
-        Menu {
-            if cloudMode {
-                if agent.models.isEmpty { Text("Aucun modèle disponible") }
-                ForEach(agent.models) { item in
-                    Button {
-                        cloudModel = item.id
-                    } label: {
-                        Label(
-                            (item.source == "relay" ? "Relay · " : "Cloud · ") + (item.name ?? item.id) + (item.available == false ? " — hors ligne" : ""),
-                            systemImage: item.id == cloudModel ? "checkmark" : (item.source == "relay" ? "desktopcomputer" : "cloud")
-                        )
-                    }
-                    .disabled(item.available == false)
-                }
-            } else {
-                if loading { Text("Chargement…") }
-                else if models.isEmpty { Text("Aucun modèle disponible") }
-                if let selected = store.current?.model, !selected.isEmpty, !models.contains(where: { $0.id == selected }) {
-                    Text("\(selected) — indisponible")
-                }
-                ForEach(models) { item in
-                    Button {
-                        model.wrappedValue = item.id
-                    } label: {
-                        Label(item.displayName, systemImage: item.id == model.wrappedValue ? "checkmark" : (item.local == true ? "apple.logo" : "network"))
-                    }
-                    .disabled(harness.wrappedValue != "native" && item.local == true)
-                }
-            }
-            Divider()
-            Button("Actualiser les modèles", systemImage: "arrow.clockwise") {
-                Task {
-                    if cloudMode { do { try await agent.loadModels() } catch { agent.error = error.localizedDescription } }
-                    else { await loadModels() }
-                }
-            }
+        Button {
+            modelSource = cloudMode ? (selectedCloudModel?.source == "relay" ? "relay" : "cloud") : (harness.wrappedValue != "native" && store.current?.authMode != "multivibe" ? "harness" : "multivibe")
+            choosingModel = true
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: cloudMode ? (selectedCloudModel?.source == "relay" ? "desktopcomputer" : "cloud") : (selectedLocalModel?.local == true ? "apple.logo" : "cpu"))
+                if !cloudMode && harness.wrappedValue != "native" && store.current?.authMode != "multivibe" {
+                    HarnessLogo(id: selectedHarness.id, name: selectedHarness.name, size: 16)
+                } else {
+                    Image(systemName: cloudMode ? (selectedCloudModel?.source == "relay" ? "desktopcomputer" : "cloud") : (selectedLocalModel?.local == true ? "apple.logo" : "cpu"))
+                }
                 Text(selectedModelName).lineLimit(1)
                 Image(systemName: "chevron.up.chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
             }
@@ -977,9 +945,153 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             .padding(.horizontal, 9).frame(height: 28)
             .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 8))
         }
-        .menuStyle(.borderlessButton).tint(.secondary)
+        .buttonStyle(ChatActionStyle()).tint(.secondary)
         .fixedSize(horizontal: false, vertical: true).frame(maxWidth: 260, alignment: .leading)
         .disabled(cloudMode ? cloudSending : store.isGenerating(store.selection))
+        .popover(isPresented: $choosingModel, arrowEdge: .bottom) { modelPicker }
+    }
+    private var modelPicker: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Choisir un modèle").font(.headline)
+                    Text(modelPickerSubtitle).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { Task { await refreshModels() } } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(.borderless).help("Actualiser les modèles")
+            }
+            if showsModelSourceTabs {
+                Picker("Source", selection: $modelSource) {
+                    if cloudMode {
+                        if hasCloudModels { Text("Cloud").tag("cloud") }
+                        if hasRelayModels { Text("Relay").tag("relay") }
+                    } else {
+                        Text("MultiVibe").tag("multivibe")
+                        Text(selectedHarness.name).tag("harness")
+                    }
+                }.labelsHidden().pickerStyle(.segmented).frame(maxWidth: 320)
+            }
+            if !cloudMode && modelSourceLocked && (modelSource == "multivibe") != (store.current?.authMode == "multivibe") {
+                Label("La source du modèle est attachée à cette conversation.", systemImage: "lock")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if !cloudMode && modelSource == "harness" { harnessModelChoice }
+            else { modelCards }
+        }
+        .padding(18).frame(width: 620)
+    }
+    private var modelPickerSubtitle: String {
+        if cloudMode { return "Sélectionnez le modèle utilisé dans votre espace Hermes Cloud." }
+        if harness.wrappedValue != "native" { return "Choisissez un modèle MultiVibe ou laissez \(selectedHarness.name) gérer son propre modèle." }
+        return "Sélectionnez le modèle qui répondra dans cette conversation."
+    }
+    private var hasCloudModels: Bool { agent.models.contains { $0.source != "relay" } }
+    private var hasRelayModels: Bool { agent.models.contains { $0.source == "relay" } }
+    private var showsModelSourceTabs: Bool {
+        cloudMode ? hasCloudModels && hasRelayModels : harness.wrappedValue != "native"
+    }
+    private var modelSourceLocked: Bool {
+        store.current?.messages.isEmpty == false || store.current?.runtimeSessionID != nil
+    }
+    private var visibleHostModels: [HostAssistantModel] {
+        harness.wrappedValue == "native" ? models : models.filter { $0.local != true }
+    }
+    private var visibleCloudModels: [NativeAgentCatalogModel] {
+        agent.models.filter { modelSource == "relay" ? $0.source == "relay" : $0.source != "relay" }
+    }
+    @ViewBuilder private var modelCards: some View {
+        if loading && !cloudMode {
+            HStack { Spacer(); ProgressView().controlSize(.small); Text("Chargement des modèles…").foregroundStyle(.secondary); Spacer() }.padding(.vertical, 30)
+        } else if cloudMode ? visibleCloudModels.isEmpty : visibleHostModels.isEmpty {
+            VStack(spacing: 8) {
+                Image(systemName: "cpu").font(.title2).foregroundStyle(.secondary)
+                Text("Aucun modèle disponible").font(.callout.weight(.semibold))
+                Text("Actualisez le catalogue ou vérifiez la connexion du Host.").font(.caption).foregroundStyle(.secondary)
+            }.frame(maxWidth: .infinity, minHeight: 180)
+        } else {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible())], spacing: 10) {
+                    if cloudMode {
+                        if !cloudModel.isEmpty && !agent.models.contains(where: { $0.id == cloudModel }) {
+                            modelCard(title: cloudModel, detail: "Indisponible", identifier: cloudModel, icon: "exclamationmark.triangle", selected: true, disabled: true) {}
+                        }
+                        ForEach(visibleCloudModels) { cloudModelCard($0) }
+                    } else {
+                        if !model.wrappedValue.isEmpty && !models.contains(where: { $0.id == model.wrappedValue }) {
+                            modelCard(title: model.wrappedValue, detail: "Indisponible", identifier: model.wrappedValue, icon: "exclamationmark.triangle", selected: true, disabled: true) {}
+                        }
+                        ForEach(visibleHostModels) { hostModelCard($0) }
+                    }
+                }
+            }.frame(maxHeight: 450)
+        }
+    }
+    private func hostModelCard(_ item: HostAssistantModel) -> some View {
+        let selected = store.current?.authMode != "native" && item.id == model.wrappedValue || harness.wrappedValue == "native" && item.id == model.wrappedValue
+        let sourceChangeBlocked = harness.wrappedValue != "native" && modelSourceLocked && store.current?.authMode != "multivibe"
+        return modelCard(title: item.displayName, detail: item.local == true ? "Sur ce Mac" : "Via MultiVibe Host", identifier: item.id,
+                         icon: item.local == true ? "apple.logo" : "network", selected: selected, disabled: sourceChangeBlocked) {
+            if harness.wrappedValue != "native" { store.edit { $0.authMode = "multivibe" } }
+            model.wrappedValue = item.id
+            choosingModel = false
+        }
+    }
+    private func cloudModelCard(_ item: NativeAgentCatalogModel) -> some View {
+        modelCard(title: item.name ?? item.id, detail: item.source == "relay" ? (item.machineName ?? "Relay") : "Hermes Cloud", identifier: item.id,
+                  icon: item.source == "relay" ? "desktopcomputer" : "cloud", selected: item.id == cloudModel, disabled: item.available == false) {
+            cloudModel = item.id
+            choosingModel = false
+        }
+    }
+    private var harnessModelChoice: some View {
+        let selected = store.current?.authMode != "multivibe"
+        let blocked = modelSourceLocked && !selected
+        return Button {
+            store.edit { $0.authMode = "native" }
+            choosingModel = false
+        } label: {
+            HStack(spacing: 14) {
+                HarnessLogo(id: selectedHarness.id, name: selectedHarness.name, size: 42)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Modèle géré par \(selectedHarness.name)").font(.callout.weight(.semibold))
+                    Text(store.current?.runtimeSession?.model ?? "Utilise le modèle et l’authentification configurés dans le harness.")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+                Spacer()
+                if selected { Image(systemName: "checkmark.circle.fill").font(.title3).foregroundStyle(ChatPalette.accent) }
+            }
+            .padding(16).frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
+            .background(selected ? ChatPalette.accent.opacity(0.10) : ChatPalette.elevated, in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(selected ? ChatPalette.accent.opacity(0.8) : ChatPalette.hairline, lineWidth: selected ? 1.5 : 1))
+        }
+        .buttonStyle(.plain).disabled(blocked)
+        .overlay(alignment: .bottomLeading) {
+            if blocked { Text("La source du modèle est attachée à cette conversation.").font(.caption2).foregroundStyle(.secondary).padding(16) }
+        }
+    }
+    private func modelCard(title: String, detail: String, identifier: String, icon: String, selected: Bool, disabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: icon).font(.system(size: 16, weight: .medium)).foregroundStyle(ChatPalette.accent)
+                    .frame(width: 36, height: 36).background(ChatPalette.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title).font(.callout.weight(.semibold)).foregroundStyle(.primary).lineLimit(2)
+                    Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    if identifier != title { Text(identifier).font(.caption2.monospaced()).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle) }
+                }
+                Spacer(minLength: 0)
+                if selected { Image(systemName: "checkmark.circle.fill").font(.title3).foregroundStyle(ChatPalette.accent) }
+            }
+            .padding(13).frame(maxWidth: .infinity, minHeight: 94, alignment: .topLeading)
+            .background(selected ? ChatPalette.accent.opacity(0.10) : ChatPalette.elevated, in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(selected ? ChatPalette.accent.opacity(0.8) : ChatPalette.hairline, lineWidth: selected ? 1.5 : 1))
+        }.buttonStyle(.plain).disabled(disabled).opacity(disabled ? 0.55 : 1)
+    }
+    private func refreshModels() async {
+        if cloudMode {
+            do { try await agent.loadModels() } catch { agent.error = error.localizedDescription }
+        } else { await loadModels() }
     }
     private var composerPrivacyText: String {
         if cloudMode { return "Dans votre espace Hermes Cloud" }
