@@ -19,6 +19,13 @@ capabilities.audio = { support: 'unsupported', available: false, reason: 'Ce har
 capabilities.memory = { support: 'unknown', available: false };
 const descriptor = (id, name, protocol) => ({ id, name, protocol, version: 'preview', detected: true, configured: true, available: true, authentication: 'ready', capabilities });
 const catalog = [descriptor('pi', 'Pi', 'pi-rpc'), descriptor('hermes-agent', 'Hermes', 'acp'), descriptor('openai-codex', 'OpenAI Codex', 'codex'), descriptor('claude-code', 'Claude Code', 'claude-sdk'), descriptor('opencode', 'OpenCode', 'opencode'), descriptor('openclaw', 'OpenClaw', 'openclaw'), descriptor('goose', 'Goose', 'acp'), descriptor('openhands', 'OpenHands', 'openhands'), descriptor('gemini-cli', 'Gemini CLI', 'acp')];
+const previewModels = [
+  ['preview-model', 'Claude Sonnet'], ['preview-model-2', 'GPT · Exemple'], ['codex-auto-review', 'Codex Auto Review'],
+  ['glm-4.5', 'GLM 4.5'], ['glm-4.6', 'GLM 4.6'], ['qwen3-coder', 'Qwen3 Coder'], ['deepseek-v3.2', 'DeepSeek V3.2'],
+  ['gpt-5.2-codex', 'GPT-5.2 Codex'], ['gpt-5.3-codex', 'GPT-5.3 Codex'], ['gpt-6-sol', 'GPT-6 Sol'],
+  ['gpt-6.1-sol', 'GPT-6.1 Sol'], ['gpt-6-astra', 'GPT-6 Astra'], ['gpt-6-luna', 'GPT-6 Luna'],
+  ['kimi-k2-thinking', 'Kimi K2 Thinking'], ['mistral-large', 'Mistral Large'], ['llama-4-scout', 'Llama 4 Scout'],
+].map(([id, name]) => ({ id, name, local: false }));
 const session = (id, state) => ({ id, harnessId: 'pi', targetId: 'local', workspace: '/workspace/exemple', title: 'Préparer le lancement', model: 'Claude Sonnet', authMode: 'native', state, queuePaused: false, revision: 1, activeTurnId: `${id}-turn`, archived: false, pinned: false, createdAt: now, updatedAt: now, capabilities });
 const sessions = { 'preview-working': session('preview-working', 'running'), 'preview-question': session('preview-question', 'waiting_user') };
 const queues = Object.fromEntries(Object.keys(sessions).map(id => [id, []]));
@@ -35,7 +42,7 @@ const server = createServer(async (request, response) => {
   const url = new URL(request.url, 'http://127.0.0.1'); const route = url.pathname;
   const send = (value) => { response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify(value)); };
   if (route === '/preview/seed') return send(seed);
-  if (route === '/v1/models') return send({ data: [{ id: 'preview-model', name: 'Claude Sonnet', local: false }, { id: 'preview-model-2', name: 'GPT · Exemple', local: false }] });
+  if (route === '/v1/models') return send({ data: previewModels });
   if (route === '/v1/chat/completions') {
     response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
     response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'Voici une réponse de prévisualisation ' }, finish_reason: null }] })}\n\n`);
