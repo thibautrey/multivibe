@@ -33,7 +33,7 @@ export async function remoteChatModels(connection:RemoteChatConnection,name="Lib
   return result.data.map((v:any)=>{if(typeof v.id!=="string" || !v.id || v.id.length>256)fail(`Invalid ${name} model identifier`,502);return {id:v.id,name:typeof v.name==="string"?v.name.slice(0,256):v.id};});
 }
 export const libreChatAgents=(connection:RemoteChatConnection)=>remoteChatModels(connection);
-export class LibreChatConfiguration {
+export class RemoteChatConfiguration {
   private file:string;
   constructor(root:string,private service:{id:"librechat"|"openwebui";name:string;suffix:string}={id:"librechat",name:"LibreChat",suffix:"/api/agents/v1"}){this.file=path.join(root,`${service.id}-connection.json`);}
   read():RemoteChatConnection|undefined {
@@ -62,10 +62,12 @@ export class LibreChatConfiguration {
     caps.tools=supported("native",{execution:`${this.service.name} server`,visibility:"Only events exposed by the remote API"});
     caps.models=supported();
     if(this.service.id==="openwebui")caps.streaming=supported("multivibe",{transport:"saved response polling"});
-    caps.interrupt=unsupported("The Chat Completions API does not acknowledge remote cancellation");
+    caps.interrupt=unsupported("This adapter does not support acknowledged remote cancellation");
     return {id:this.service.id,name:this.service.name,protocol:this.service.id,detected:true,configured,available:configured,authentication:configured?"unknown":"required",capabilities:caps,...(!configured?{reason:`Configure the ${this.service.name} endpoint, API key and model`}:{})};
   }
 }
+
+export { RemoteChatConfiguration as LibreChatConfiguration };
 
 /** LibreChat owns agent execution; Desktop retains the transcript for subsequent turns. */
 export class LibreChatAdapter implements HarnessAdapter {
