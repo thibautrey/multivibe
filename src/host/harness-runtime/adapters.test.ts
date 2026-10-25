@@ -27,7 +27,7 @@ if(process.argv.includes('serve')){
  });server.listen(0,'127.0.0.1',()=>console.log('opencode server listening on http://127.0.0.1:'+server.address().port));
 }else readline.createInterface({input:process.stdin}).on('line',line=>{
  const v=JSON.parse(line),m=v.method??v.type,p=v.params??v;
- if(m==='initialize')reply(v,codex?{}:{protocolVersion:1,agentInfo:process.env.LLM_PROVIDER?{name:[process.env.LLM_PROVIDER,process.env.LLM_MODEL,process.env.OPENAI_BASE_URL,process.env.OPENAI_API_KEY==='fixture-proxy-key'].join('|')}:undefined,agentCapabilities:{loadSession:true,promptCapabilities:{embeddedContext:!process.argv.includes('no-resources')}}});
+ if(m==='initialize')reply(v,codex?{}:{protocolVersion:1,agentInfo:process.env.LLM_PROVIDER?{name:[process.env.LLM_PROVIDER,process.env.LLM_MODEL,process.env.OPENAI_BASE_URL,process.env.CUSTOM_BASE_URL,process.env.OPENAI_API_KEY==='fixture-proxy-key'].join('|')}:undefined,agentCapabilities:{loadSession:true,promptCapabilities:{embeddedContext:!process.argv.includes('no-resources')}}});
  else if(m==='session/new')reply(v,{sessionId:'acp-session',models:{currentModelId:process.env.LLM_MODEL??'native-default',availableModels:[{modelId:process.env.LLM_MODEL??'native-default',name:'Native'}]}});
  else if(m==='session/set_model')reply(v,{selected:p.modelId});
  else if(m==='model/list')reply(v,p.cursor?{data:[{id:'second',model:'second'}]}:{data:[{id:'first',model:'first'}],nextCursor:'page-two'});
@@ -76,7 +76,9 @@ test("Hermes ACP receives the loopback MultiVibe model connection",async t=>{
   f.ctx.modelConnection={baseUrl:"http://127.0.0.1:1455/",apiKey:"fixture-proxy-key"};
   const adapter=new AcpAdapter(f.ctx,["acp"]);t.after(()=>adapter.close());await adapter.start();
   const metadata=f.events.find(e=>e.type==="harness.metadata")!;
-  assert.equal((metadata.payload as any).name,"openai|gpt-test|http://127.0.0.1:1455/v1|true");
+  assert.equal((metadata.payload as any).name,"openai|gpt-test|http://127.0.0.1:1455/v1|http://127.0.0.1:1455/v1|true");
+  assert.deepEqual(await adapter.configure({model:"gpt-other"}),{selected:"custom:gpt-other"});
+  assert.equal(f.ctx.session.model,"gpt-other");
   assert.ok(!JSON.stringify(f.events).includes("fixture-proxy-key"));
 });
 test("Gemini uses the same negotiated ACP contract without assuming extra capabilities",async t=>{

@@ -28,7 +28,6 @@ export async function fetchCodexQuotaResetForecast(
       controller.abort();
       reject(new Error("forecast upstream timed out"));
     }, timeoutMs);
-    timeout.unref?.();
   });
   const operation = (async () => {
     const response = await fetchImpl(CODEX_QUOTA_RESET_FORECAST_API_URL, {
