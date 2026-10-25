@@ -78,6 +78,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     @State private var importing = false
     @State private var fileDropTargeted = false
     @State private var showingHarnessInspector = false
+    @State private var selectedUtilityPanel: NativeChatUtilityPanel = .conversation
     @State private var deleteID: UUID?
     @State private var speech = AVSpeechSynthesizer()
     @FocusState private var composing: Bool
@@ -252,15 +253,21 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             }
         }
         .frame(minWidth: 680, minHeight: geometry.size.height, maxHeight: geometry.size.height)
-        if browser.isVisible {
-            ChromiumBrowserPanel(browser: browser)
-                .frame(minWidth: 390, idealWidth: 560)
+        if showingUtilityPanel {
+            NativeChatUtilityPanelView(
+                store: store,
+                browser: browser,
+                showsConversation: showingHarnessInspector,
+                selection: $selectedUtilityPanel,
+                closeConversation: closeHarnessInspector,
+                closeBrowser: closeBrowserPanel
+            )
         }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
         }
         .tint(ChatPalette.accent)
-        .frame(minWidth: browser.isVisible ? 1080 : 760, maxWidth: .infinity, minHeight: 500, maxHeight: .infinity)
+        .frame(minWidth: showingUtilityPanel ? 1080 : 760, maxWidth: .infinity, minHeight: 500, maxHeight: .infinity)
         .task {
             if store.current == nil { store.newConversation() }
             await loadNativeChatDependencies(
@@ -280,7 +287,10 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             }
         }
         .sheet(item: $installingHarness) { item in harnessInstallationSheet(item) }
-        .sheet(isPresented: $showingHarnessInspector, onDismiss: { Task { await loadHarnesses() } }) { NativeHarnessInspector(store: store) }
+        .onChange(of: browser.isVisible) { visible in
+            if visible { selectedUtilityPanel = .browser }
+            else if showingHarnessInspector { selectedUtilityPanel = .conversation }
+        }
         .onChange(of: agent.accountID) { _ in
             cloudTask?.cancel(); cloudSending = false; cloudDraft = ""; cloudModel = ""; cloudSelection = nil
             if agent.accountID == nil { cloudMode = false }
@@ -288,6 +298,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
         .onChange(of: cloudSelection) { _ in cloudDraft = "" }
         .onChange(of: cloudMode) { enabled in
             if enabled && store.computer.running { store.stop() }
+            if enabled && showingHarnessInspector { closeHarnessInspector() }
             if enabled { Task { do { try await agent.loadModels(); cloudModel = agent.models.first?.id ?? ""; cloudSelection = agent.cloudConversations.first?.id } catch { agent.error = error.localizedDescription } } }
         }
         .onChange(of: store.selection) { selection in
@@ -585,11 +596,19 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 }.labelsHidden().pickerStyle(.segmented).frame(width: 134).disabled(cloudSending || store.isGenerating(store.selection))
             }
             if !cloudMode {
-                ChatIconButton(title: "Détails de la conversation", icon: "sidebar.right") { showingHarnessInspector = true }
+                Button(action: openHarnessInspector) {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(width: 30, height: 30)
+                }
+                .buttonStyle(ChatActionStyle(selected: showingHarnessInspector && selectedUtilityPanel == .conversation))
+                .foregroundStyle(.secondary)
+                .help("Réglages de la conversation")
+                .accessibilityLabel("Réglages de la conversation")
                 Menu {
                     Toggle("Réponses interactives", isOn: $interactiveAnswers)
                     Divider()
-                    Button("Détails de la conversation") { showingHarnessInspector = true }
+                    Button("Réglages de la conversation") { openHarnessInspector() }
                     Button("Réglages du Host") { openDashboard() }
                 } label: { Image(systemName: "ellipsis").frame(width: 24, height: 30) }
                     .menuStyle(.borderlessButton).fixedSize().help("Options de la conversation").accessibilityLabel("Options de la conversation")
@@ -597,6 +616,20 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
         }
         .padding(.horizontal, 24).frame(height: 70).background(ChatPalette.canvas)
         .animation(ChatPalette.motion(reduceMotion), value: conversationState)
+    }
+    private var showingUtilityPanel: Bool { showingHarnessInspector || browser.isVisible }
+    private func openHarnessInspector() {
+        showingHarnessInspector = true
+        selectedUtilityPanel = .conversation
+    }
+    private func closeHarnessInspector() {
+        showingHarnessInspector = false
+        if browser.isVisible { selectedUtilityPanel = .browser }
+        Task { await loadHarnesses() }
+    }
+    private func closeBrowserPanel() {
+        browser.hide()
+        if showingHarnessInspector { selectedUtilityPanel = .conversation }
     }
     private var welcome: some View {
         VStack(alignment: .leading, spacing: 0) {

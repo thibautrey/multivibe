@@ -4,6 +4,8 @@ import SwiftUI
 @MainActor struct NativeHarnessInspector: View {
     @ObservedObject var store: NativeChatStore
     @Environment(\.dismiss) private var dismiss
+    var onClose: (() -> Void)?
+    var isEmbedded = false
     @State private var page = "overview"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var targets: [DesktopHarnessTarget] = [.local]
@@ -66,7 +68,9 @@ import SwiftUI
                 }
                 Spacer()
                 if busy { ProgressView().controlSize(.small) }
-                ChatIconButton(title: "Fermer les détails", icon: "xmark") { dismiss() }.keyboardShortcut(.cancelAction)
+                if !isEmbedded {
+                    ChatIconButton(title: "Fermer les détails", icon: "xmark") { close() }.keyboardShortcut(.cancelAction)
+                }
             }.padding(22)
             Picker("Section", selection: $page) {
                 Label("Aperçu", systemImage: "rectangle.grid.1x2").tag("overview")
@@ -93,7 +97,7 @@ import SwiftUI
                 }.padding(22)
             }.id(page)
         }
-        .frame(minWidth: 610, idealWidth: 660, minHeight: 500, idealHeight: 680)
+        .frame(minWidth: isEmbedded ? 390 : 610, idealWidth: isEmbedded ? 560 : 660, minHeight: 500, idealHeight: 680)
         .background(ChatPalette.elevated).tint(ChatPalette.accent)
         .animation(ChatPalette.motion(reduceMotion), value: page)
         .task(id: target) { await load() }
@@ -247,7 +251,7 @@ import SwiftUI
                 HStack {
                     VStack(alignment: .leading, spacing: 3) { Text(session.title).font(.callout); Text(HarnessPresentation.state(session.state)).font(.caption).foregroundStyle(.secondary) }
                     Spacer()
-                    Button("Ouvrir") { store.importRuntimeSession(session, target: target); dismiss() }
+                    Button("Ouvrir") { store.importRuntimeSession(session, target: target); close() }
                 }
             }
             ForEach(nativeSessions) { session in
@@ -279,11 +283,20 @@ import SwiftUI
         VStack(alignment: .leading, spacing: 16) {
             if harnessID != "native" { inspectionPanel }
             ChatSection(title: "Machines et intégrations", icon: "network") {
-                HStack(spacing: 10) {
-                    Button("Ajouter une machine…") { addingTarget = true }
-                    Button("Ajouter un harness…") { addingACP = true }
-                    Spacer()
-                    Button("Actualiser", systemImage: "arrow.clockwise") { Task { await load() } }.disabled(busy)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        addTargetButton
+                        addHarnessButton
+                        Spacer()
+                        refreshButton
+                    }
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 10) {
+                            addTargetButton
+                            addHarnessButton
+                        }
+                        refreshButton
+                    }
                 }
             }
             if harnessID != "native" {
@@ -307,6 +320,15 @@ import SwiftUI
                 }
             }
         }
+    }
+    private var addTargetButton: some View {
+        Button("Ajouter une machine…") { addingTarget = true }.fixedSize()
+    }
+    private var addHarnessButton: some View {
+        Button("Ajouter un harness…") { addingACP = true }.fixedSize()
+    }
+    private var refreshButton: some View {
+        Button("Actualiser", systemImage: "arrow.clockwise") { Task { await load() } }.disabled(busy).fixedSize()
     }
     private func previewNative(_ source: DesktopNativeSessionSource, append: Bool = false) async {
         do {
@@ -361,7 +383,7 @@ import SwiftUI
         busy = true; defer { busy = false }
         do {
             let result = try await DesktopHarnessClient.shared.call("/sessions/import", method: "POST", target: target, body: .object(["harnessId": .string(source.harnessId), "sourceId": .string(source.sourceId)]))
-            store.importRuntimeSession(try result["session"].decode(DesktopHarnessSession.self), target: target); dismiss()
+            store.importRuntimeSession(try result["session"].decode(DesktopHarnessSession.self), target: target); close()
         } catch { message = error.localizedDescription }
     }
     private func inspect() async {
@@ -417,7 +439,7 @@ import SwiftUI
             ForEach(Array(commandChoices.enumerated()), id: \.offset) { _, name in
                 Button(name) {
                     let prefix = subject == "skills" ? (harnessID == "openai-codex" ? "$" : harnessID == "pi" ? "/skill:" : "/") : "/"
-                    store.edit { $0.draft += ($0.draft.isEmpty ? "" : " ") + prefix + name + " " }; dismiss()
+                    store.edit { $0.draft += ($0.draft.isEmpty ? "" : " ") + prefix + name + " " }; close()
                 }.buttonStyle(.borderless)
             }
         }
@@ -431,6 +453,10 @@ import SwiftUI
                 Button(mode["name"].string ?? mode["mode"].string ?? mode["id"].string ?? "Mode") { Task { await configure(.object(["mode": mode["mode"] != .null ? mode["mode"] : mode["id"]])) } }.disabled(store.isGenerating(conversation?.id))
             }
         }
+    }
+    private func close() {
+        if let onClose { onClose() }
+        else { dismiss() }
     }
     private var commandChoices: [String] {
         var rows = inspected.array
