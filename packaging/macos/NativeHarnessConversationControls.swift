@@ -74,7 +74,7 @@ import SwiftUI
                                 VStack(spacing: 0) {
                                     ForEach(Array(queue.enumerated()), id: \.element.id) { index, receipt in
                                         queueRow(text: receipt.text, position: index, last: index == queue.count - 1,
-                                            up: { reorder(index, -1) }, down: { reorder(index, 1) },
+                                            up: { reorder(receipt.id, -1) }, down: { reorder(receipt.id, 1) },
                                             edit: { editing = receipt; editText = receipt.text },
                                             remove: { store.runtimeCommand(conversation.id, type: "queue_remove", value: .object(["commandId": .string(receipt.id)])) })
                                     }
@@ -117,8 +117,8 @@ import SwiftUI
             ChatIconButton(title: "Retirer de la file", icon: "xmark", action: remove)
         }.frame(height: 43)
     }
-    private func reorder(_ index: Int, _ delta: Int) {
-        guard let id = conversation?.id, queue.indices.contains(index + delta) else { return }; var ids = queue.map(\.id); ids.swapAt(index, index + delta)
+    private func reorder(_ receiptID: String, _ delta: Int) {
+        guard let id = conversation?.id, let ids = store.reorderedRuntimeQueue(id, receiptID: receiptID, by: delta) else { return }
         store.runtimeCommand(id, type: "queue_reorder", value: .object(["ids": .array(ids.map { .string($0) })]))
     }
     private func saveEdit() {

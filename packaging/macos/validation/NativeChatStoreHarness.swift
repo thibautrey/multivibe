@@ -60,10 +60,14 @@ enum HostAssistantError: Error { case emptyReply }
         precondition(store.selection == first && store.conversations.count == 1)
         precondition(store.current?.model == "latest-model" && store.current?.harnessID == "pi")
         let initialReceipt = DesktopHarnessReceipt(id: "initial", sessionId: "session", command: .object(["displayText": .string("Premier message")]), state: "queued", createdAt: 1, ordinal: 1, result: nil, error: nil)
-        let followUpReceipt = DesktopHarnessReceipt(id: "follow-up", sessionId: "session", command: .object(["displayText": .string("Message suivant")]), state: "queued", createdAt: 2, ordinal: 2, result: nil, error: nil)
-        let projectedQueue = NativeChatStore.followUpQueue([initialReceipt, followUpReceipt], initialCommandID: initialReceipt.id)
-        precondition(projectedQueue.map(\.id) == [followUpReceipt.id])
-        precondition(NativeChatStore.followUpQueue([initialReceipt, followUpReceipt], initialCommandID: nil).map(\.id) == [initialReceipt.id, followUpReceipt.id])
+        let secondReceipt = DesktopHarnessReceipt(id: "second", sessionId: "session", command: .object(["displayText": .string("Deuxième message")]), state: "queued", createdAt: 2, ordinal: 2, result: nil, error: nil)
+        let thirdReceipt = DesktopHarnessReceipt(id: "third", sessionId: "session", command: .object(["displayText": .string("Troisième message")]), state: "queued", createdAt: 3, ordinal: 3, result: nil, error: nil)
+        let threeMessages = [initialReceipt, secondReceipt, thirdReceipt]
+        let projectedQueue = NativeChatStore.followUpQueue(threeMessages, initialCommandID: initialReceipt.id)
+        precondition(projectedQueue.map(\.id) == [secondReceipt.id, thirdReceipt.id])
+        precondition(NativeChatStore.reorderedQueueIDs(threeMessages, initialCommandID: initialReceipt.id, receiptID: secondReceipt.id, by: 1) == [initialReceipt.id, thirdReceipt.id, secondReceipt.id])
+        precondition(NativeChatStore.reorderedQueueIDs(threeMessages, initialCommandID: initialReceipt.id, receiptID: secondReceipt.id, by: -1) == nil)
+        precondition(NativeChatStore.followUpQueue(threeMessages, initialCommandID: nil).map(\.id) == [initialReceipt.id, secondReceipt.id, thirdReceipt.id])
         let pendingID = UUID()
         store.edit {
             $0.initialRuntimeCommandID = pendingID.uuidString.lowercased()
