@@ -1558,29 +1558,52 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     @State private var password = ""
     @State private var userToken = ""
     @State private var showingSessionToken = false
+    @State private var twoFactorToken = ""
+    @State private var twoFactorCode = ""
+    @State private var connectionAttemptID = ""
+    @State private var usingBackupCode = false
+    @FocusState private var focusedField: Field?
     @State private var busy = false
     @State private var error: String?
+    private enum Field { case twoFactorCode }
     private struct RemoteHarnessChoice: Decodable, Identifiable { let id: String; let name: String }
+    private var awaitingTwoFactor: Bool { !twoFactorToken.isEmpty }
+    private var validTwoFactorResponse: Bool {
+        if usingBackupCode { return !twoFactorCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return twoFactorCode.utf8.count == 6 && twoFactorCode.utf8.allSatisfy { (48...57).contains($0) }
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Connexion \(serviceName)").font(.title2.weight(.semibold))
             Text(isOpenWebUI ? "Connectez votre serveur puis choisissez le modèle qui répondra dans MultiVibe." : "Connectez votre serveur puis choisissez l’agent qui répondra dans MultiVibe.")
                 .font(.callout).foregroundStyle(.secondary)
             TextField("Endpoint (https://chat.example.com)", text: $endpoint)
-                .textFieldStyle(.roundedBorder).onChange(of: endpoint) { _ in agents = [] }.disabled(busy)
+                .textFieldStyle(.roundedBorder).onChange(of: endpoint) { _ in agents = []; resetTwoFactor() }.disabled(busy || awaitingTwoFactor)
             if isOpenWebUI {
             SecureField(hasApiKey ? "Clé API (laisser vide pour la conserver)" : "Clé API \(serviceName)", text: $apiKey)
                 .textFieldStyle(.roundedBorder).onChange(of: apiKey) { _ in agents = [] }.disabled(busy)
+            } else if awaitingTwoFactor {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("Vérification en deux étapes", systemImage: "lock.shield")
+                        .font(.headline)
+                    Text(usingBackupCode ? "Saisissez un code de secours LibreChat." : "Saisissez le code à 6 chiffres de votre application d’authentification.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    TextField(usingBackupCode ? "Code de secours" : "Code à 6 chiffres", text: $twoFactorCode)
+                        .textFieldStyle(.roundedBorder).focused($focusedField, equals: .twoFactorCode).disabled(busy)
+                    Button(usingBackupCode ? "Utiliser l’application d’authentification" : "Utiliser un code de secours") {
+                        usingBackupCode.toggle(); twoFactorCode = ""; focusedField = .twoFactorCode
+                    }.buttonStyle(.link).disabled(busy)
+                }
             } else {
                 TextField("Email LibreChat", text: $email).textFieldStyle(.roundedBorder).disabled(busy)
                 SecureField(hasUserSession ? "Mot de passe (laisser vide pour conserver la session)" : "Mot de passe LibreChat", text: $password)
                     .textFieldStyle(.roundedBorder).disabled(busy)
                 DisclosureGroup("Connexion avec une session existante", isExpanded: $showingSessionToken) {
                     SecureField("Jeton de session utilisateur LibreChat", text: $userToken).textFieldStyle(.roundedBorder).disabled(busy)
-                    Text("Pour un compte SSO ou avec double authentification. La reconnexion sera nécessaire à l’expiration du jeton.").font(.caption).foregroundStyle(.secondary)
+                    Text("Pour un compte SSO ou pour reprendre une session déjà ouverte. La reconnexion sera nécessaire à l’expiration du jeton.").font(.caption).foregroundStyle(.secondary)
                 }.font(.caption)
             }
-            Text(isOpenWebUI ? "Autorisez la clé API à accéder aux modèles et aux conversations. Vos chats seront synchronisés avec le serveur." : "Connectez votre compte pour retrouver ses agents et ses conversations. Le mot de passe n’est pas enregistré.")
+            Text(isOpenWebUI ? "Autorisez la clé API à accéder aux modèles et aux conversations. Vos chats seront synchronisés avec le serveur." : awaitingTwoFactor ? "Le code et le jeton temporaire ne sont pas enregistrés." : connectionAttemptID.isEmpty ? "Connectez votre compte pour retrouver ses agents et ses conversations. Le mot de passe n’est pas enregistré." : "Authentification validée. Choisissez l’agent puis enregistrez la connexion.")
                 .font(.caption).foregroundStyle(.secondary)
             if !agents.isEmpty {
                 Picker(isOpenWebUI ? "Modèle" : "Agent", selection: $agentID) {
@@ -1590,17 +1613,18 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             if let error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
             HStack {
                 Button("Annuler") { dismiss() }.keyboardShortcut(.cancelAction)
+                if awaitingTwoFactor { Button("Recommencer") { resetTwoFactor(); password = "" } }
                 Spacer()
                 if busy { ProgressView().controlSize(.small) }
-                Button(isOpenWebUI ? "Charger les modèles" : "Charger les agents") { Task { await connect(discover: true) } }
-                    .disabled(busy || endpoint.isEmpty || (isOpenWebUI ? apiKey.isEmpty && !hasApiKey : !hasUserSession && userToken.isEmpty && (email.isEmpty || password.isEmpty)))
+                Button(isOpenWebUI ? "Charger les modèles" : awaitingTwoFactor ? "Vérifier et charger les agents" : "Charger les agents") { Task { await connect(discover: true) } }
+                    .disabled(busy || endpoint.isEmpty || (isOpenWebUI ? apiKey.isEmpty && !hasApiKey : awaitingTwoFactor ? !validTwoFactorResponse : connectionAttemptID.isEmpty && !hasUserSession && userToken.isEmpty && (email.isEmpty || password.isEmpty)))
                 Button("Enregistrer") { Task { await connect(discover: false) } }
                     .keyboardShortcut(.defaultAction).disabled(busy || agents.isEmpty || agentID.isEmpty)
             }
         }.padding(24).frame(width: 520)
-        .onChange(of: email) { _ in agents = [] }
-        .onChange(of: password) { _ in agents = [] }
-        .onChange(of: userToken) { _ in agents = [] }
+        .onChange(of: email) { _ in agents = []; connectionAttemptID = "" }
+        .onChange(of: password) { _ in agents = []; connectionAttemptID = "" }
+        .onChange(of: userToken) { _ in agents = []; connectionAttemptID = "" }
         .task {
             busy = true
             do {
@@ -1617,12 +1641,24 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
         busy = true; error = nil
         defer { busy = false }
         do {
+            var fields: [String: HarnessJSON] = ["endpoint": .string(endpoint), "apiKey": .string(apiKey), "agentId": .string(agentID), "discover": .bool(discover), "email": .string(email), "password": .string(password), "userToken": .string(userToken), "twoFactorToken": .string(twoFactorToken), "connectionAttemptId": .string(connectionAttemptID)]
+            fields[usingBackupCode ? "twoFactorBackupCode" : "twoFactorCode"] = .string(twoFactorCode.trimmingCharacters(in: .whitespacesAndNewlines))
             let result = try await DesktopHarnessClient.shared.call("/" + harnessID, method: "POST", target: target,
-                body: .object(["endpoint": .string(endpoint), "apiKey": .string(apiKey), "agentId": .string(agentID), "discover": .bool(discover), "email": .string(email), "password": .string(password), "userToken": .string(userToken)]))
+                body: .object(fields))
+            if result["twoFactorRequired"] == .bool(true), let token = result["twoFactorToken"].string, !token.isEmpty {
+                twoFactorToken = token; twoFactorCode = ""; password = ""; userToken = ""; usingBackupCode = false
+                focusedField = .twoFactorCode
+                return
+            }
             agents = try result["agents"].decode([RemoteHarnessChoice].self)
+            connectionAttemptID = result["connectionAttemptId"].string ?? connectionAttemptID
+            twoFactorToken = ""; twoFactorCode = ""
             if !agents.contains(where: { $0.id == agentID }) { agentID = agents.first?.id ?? "" }
             if agents.isEmpty { error = isOpenWebUI ? "Aucun modèle accessible avec cette clé API." : "Aucun agent accessible avec cette clé API." }
-            if !discover { apiKey = ""; password = ""; userToken = ""; await saved(); dismiss() }
+            if !discover { apiKey = ""; password = ""; userToken = ""; connectionAttemptID = ""; await saved(); dismiss() }
         } catch { self.error = error.localizedDescription }
+    }
+    private func resetTwoFactor() {
+        twoFactorToken = ""; twoFactorCode = ""; connectionAttemptID = ""; usingBackupCode = false; error = nil
     }
 }
