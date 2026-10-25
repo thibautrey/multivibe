@@ -27,12 +27,13 @@ if(process.argv.includes('serve')){
  });server.listen(0,'127.0.0.1',()=>console.log('opencode server listening on http://127.0.0.1:'+server.address().port));
 }else readline.createInterface({input:process.stdin}).on('line',line=>{
  const v=JSON.parse(line),m=v.method??v.type,p=v.params??v;
- if(m==='initialize')reply(v,codex?{}:{protocolVersion:1,agentInfo:process.env.LLM_PROVIDER?{name:[process.env.LLM_PROVIDER,process.env.LLM_MODEL,process.env.OPENAI_BASE_URL,process.env.OPENAI_API_KEY==='fixture-proxy-key'].join('|')}:undefined,agentCapabilities:{loadSession:true,promptCapabilities:{embeddedContext:true}}});
+ if(m==='initialize')reply(v,codex?{}:{protocolVersion:1,agentInfo:process.env.LLM_PROVIDER?{name:[process.env.LLM_PROVIDER,process.env.LLM_MODEL,process.env.OPENAI_BASE_URL,process.env.OPENAI_API_KEY==='fixture-proxy-key'].join('|')}:undefined,agentCapabilities:{loadSession:true,promptCapabilities:{embeddedContext:!process.argv.includes('no-resources')}}});
  else if(m==='session/new')reply(v,{sessionId:'acp-session',models:{currentModelId:process.env.LLM_MODEL??'native-default',availableModels:[{modelId:process.env.LLM_MODEL??'native-default',name:'Native'}]}});
  else if(m==='session/set_model')reply(v,{selected:p.modelId});
  else if(m==='model/list')reply(v,p.cursor?{data:[{id:'second',model:'second'}]}:{data:[{id:'first',model:'first'}],nextCursor:'page-two'});
  else if(m==='thread/start')reply(v,{thread:{id:'codex-thread'}});
  else if(m==='session/prompt'){
+  if(process.argv.includes('echo-prompt')){notify('session/update',{sessionId:'acp-session',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:JSON.stringify(p.prompt)}}});reply(v,{stopReason:'end_turn'});return;}
   notify('session/update',{sessionId:'acp-session',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'ACP text'}}});
   send({jsonrpc:'2.0',id:'approval',method:'session/request_permission',params:{sessionId:'acp-session',toolCall:{title:'write'},options:[{optionId:'deny',kind:'reject_once'}]}});
   global.prompt=v;
@@ -80,6 +81,29 @@ test("Hermes ACP receives the loopback MultiVibe model connection",async t=>{
 });
 test("Gemini uses the same negotiated ACP contract without assuming extra capabilities",async t=>{
   const f=fixture(t,"gemini-cli");const adapter=new AcpAdapter(f.ctx,["--acp"]);t.after(()=>adapter.close());await adapter.start();await adapter.prompt([{type:"text",text:"hello"}]);assert.equal(f.ctx.session.nativeSessionId,"acp-session");
+});
+test("ACP text attachments remain usable without embedded resources while binary input stays gated",async t=>{
+  const f=fixture(t,"hermes-agent");
+  let mimeType="text/plain";
+  f.ctx.attachment=()=>({info:{id:"file",name:"notes.txt",mimeType,size:5,sha256:"fixture"},path:"unused",data:Buffer.from("été")});
+  const adapter=new AcpAdapter(f.ctx,["no-resources","echo-prompt"]);t.after(()=>adapter.close());await adapter.start();
+  for(const mime of ["text/plain","application/json","application/xml","application/javascript"]){
+    mimeType=mime;await adapter.prompt([{type:"text",text:"Read the attachment"},{type:"attachment",attachmentId:"file"}]);
+    const event=f.events.filter(e=>e.type==="message.delta").at(-1)!;
+    assert.deepEqual(JSON.parse((event.payload as any).text),[{type:"text",text:"Read the attachment"},{type:"text",text:"[notes.txt]\nété"}]);
+  }
+  mimeType="application/pdf";
+  await assert.rejects(adapter.prompt([{type:"attachment",attachmentId:"file"}]),/embedded resources/u);
+  mimeType="image/png";
+  await assert.rejects(adapter.prompt([{type:"attachment",attachmentId:"file"}]),/image input/u);
+});
+test("ACP preserves embedded text resources when negotiated",async t=>{
+  const f=fixture(t,"hermes-agent");
+  f.ctx.attachment=()=>({info:{id:"file",name:"notes.txt",mimeType:"text/plain",size:5,sha256:"fixture"},path:"unused",data:Buffer.from("été")});
+  const adapter=new AcpAdapter(f.ctx,["echo-prompt"]);t.after(()=>adapter.close());await adapter.start();
+  await adapter.prompt([{type:"attachment",attachmentId:"file"}]);
+  const event=f.events.find(e=>e.type==="message.delta")!;
+  assert.deepEqual(JSON.parse((event.payload as any).text),[{type:"resource",resource:{uri:"attachment:file",mimeType:"text/plain",text:"été"}}]);
 });
 test("Pi waits for compaction/settlement rather than treating agent_end as completion",async t=>{
   const f=fixture(t,"pi");const adapter=new PiAdapter(f.ctx);t.after(()=>adapter.close());await adapter.start();await adapter.prompt([{type:"text",text:"hello"}]);

@@ -124,7 +124,13 @@ export class AcpAdapter extends Adapter {
         const a=this.ctx.attachment(p.attachmentId);const mime=a.info.mimeType;
         if(mime.startsWith("image/")){if(!this.agentCapabilities.promptCapabilities?.image)fail("The harness did not advertise image input",422);return {type:"image",mimeType:mime,data:a.data.toString("base64")};}
         if(mime.startsWith("audio/")){if(!this.agentCapabilities.promptCapabilities?.audio)fail("The harness did not advertise audio input",422);return {type:"audio",mimeType:mime,data:a.data.toString("base64")};}
-        if(!this.agentCapabilities.promptCapabilities?.embeddedContext)fail("The harness did not advertise embedded resources",422);
+        if(!this.agentCapabilities.promptCapabilities?.embeddedContext){
+          // Text is a core ACP input even when embedded resources are not supported.
+          // Hermes advertises images but no embeddedContext, so retain text attachments
+          // as labelled prompt content instead of rejecting an otherwise valid turn.
+          if(mime.startsWith("text/") || ["application/json","application/xml","application/javascript"].includes(mime))return {type:"text",text:`[${a.info.name}]\n${a.data.toString("utf8")}`};
+          fail("The harness did not advertise embedded resources",422);
+        }
         return {type:"resource",resource:{uri:`attachment:${a.info.id}`,mimeType:mime,...(mime.startsWith("text/") || mime==="application/json"?{text:a.data.toString("utf8")}:{blob:a.data.toString("base64")})}};
       }
       fail("Unsupported ACP content",422);

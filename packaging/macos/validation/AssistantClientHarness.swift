@@ -68,6 +68,17 @@ struct FixtureLocalModel: AppleFoundationServing {
         do { _ = try await localPending.value; fatalError("Local cancellation ignored") } catch is CancellationError {}
         let bounded = try AppleFoundationModel.boundedTranscript((0..<20).map { ["role": $0.isMultiple(of: 2) ? "user" : "assistant", "content": String(repeating: "x", count: 2_000)] })
         precondition(bounded.count <= 9_600 && bounded.components(separatedBy: "\n\n").count == 8)
+        let presentationRequest = String(repeating: "Presentation instructions. ", count: 70) + "\nUser request:\nReply exactly APPLE_LOCAL_OK."
+        let preserved = try AppleFoundationModel.boundedTranscript([["role": "user", "content": presentationRequest]])
+        precondition(preserved.hasSuffix("Reply exactly APPLE_LOCAL_OK."))
+        let longRequest = String(repeating: "é", count: 8_000) + "END_OF_USER_REQUEST"
+        let retained = try AppleFoundationModel.boundedTranscript([["role": "user", "content": "old question"], ["role": "assistant", "content": String(repeating: "old answer", count: 800)], ["role": "user", "content": longRequest]])
+        precondition(retained.count <= 9_600 && retained.hasSuffix(longRequest))
+        do {
+            _ = try AppleFoundationModel.boundedTranscript([["role": "user", "content": String(repeating: "x", count: 9_600)]])
+            fatalError("Oversized current request was silently truncated")
+        } catch AppleFoundationModelError.contextTooLarge {}
+        print("PASS complete current Apple request and bounded history")
         delegate.operational = true
         delegate.proxyAPIKey = "fixture-local-fallback-token"
         let fallbackCatalog = try await local.models()
