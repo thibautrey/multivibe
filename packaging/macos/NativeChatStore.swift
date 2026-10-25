@@ -94,7 +94,7 @@ struct NativeChatConversation: Codable, Identifiable {
     }
     var current: NativeChatConversation? { conversations.first { $0.id == selection } }
     func newConversation(text: String = "") {
-        if text.isEmpty, let index = conversations.firstIndex(where: { $0.messages.isEmpty && $0.draft.isEmpty }) {
+        if text.isEmpty, let index = conversations.firstIndex(where: { $0.messages.isEmpty && $0.draft.isEmpty && $0.runtimeSessionID == nil && $0.pendingSubmissions?.isEmpty != false && $0.draftAttachments?.isEmpty != false && $0.nativeQueue?.isEmpty != false && $0.archived != true }) {
             conversations[index].model = HostAssistantClient.shared.defaultModel
             let harness = Self.defaultHarnessID
             conversations[index].harnessID = harness == "native" ? nil : harness
@@ -295,6 +295,13 @@ struct NativeChatConversation: Codable, Identifiable {
                 let sessionID = try await ensureRuntime(id)
                 while let i = conversations.firstIndex(where: { $0.id == id }), let submission = conversations[i].pendingSubmissions?.first {
                     let target = conversations[i].executionTargetID ?? "local"
+                    if let status = try? await runtime.call("/sessions/\(sessionID)/commands/\(submission.id.uuidString.lowercased())", method: "GET", target: target, body: nil),
+                       let known = try? status["receipt"].decode(DesktopHarnessReceipt.self) {
+                        if known.state == "failed" { throw DesktopHarnessError.rejected(known.error ?? "Envoi refusé ; conservez-le en brouillon pour le modifier.") }
+                        conversations[i].pendingSubmissions?.removeAll { $0.id == submission.id }; save()
+                        for attachment in submission.attachments { try? FileManager.default.removeItem(atPath: attachment.localPath) }
+                        continue
+                    }
                     var parts = submission.text.isEmpty ? [] : [DesktopMessagePart.text(submission.text)]
                     for a in submission.attachments {
                         let data = try Data(contentsOf: URL(fileURLWithPath: a.localPath))
@@ -321,6 +328,12 @@ struct NativeChatConversation: Codable, Identifiable {
             do { _ = try await command(id, type: type, value: value, parts: parts); try await refreshRuntime(id) }
             catch { self.error = error.localizedDescription }
         }
+    }
+    func restorePending(_ id: UUID) {
+        guard submissions[id] == nil, let i = conversations.firstIndex(where: { $0.id == id }), let pending = conversations[i].pendingSubmissions?.first else { return }
+        conversations[i].draft = [conversations[i].draft, pending.displayText ?? pending.text].filter { !$0.isEmpty }.joined(separator: "\n\n")
+        conversations[i].draftAttachments = (conversations[i].draftAttachments ?? []) + pending.attachments
+        conversations[i].pendingSubmissions?.removeFirst(); save()
     }
     func command(_ id: UUID, type: String, value: HarnessJSON? = nil, parts: [DesktopMessagePart]? = nil) async throws -> DesktopHarnessReceipt {
         let sessionID = try await ensureRuntime(id)
@@ -361,7 +374,7 @@ struct NativeChatConversation: Codable, Identifiable {
         }
     }
     func applyRuntime(_ event: DesktopHarnessEvent, conversationID: UUID) {
-        guard let i = conversations.firstIndex(where: { $0.id == conversationID }), event.seq > (conversations[i].runtimeCursor ?? 0) else { return }
+        guard let i = conversations.firstIndex(where: { $0.id == conversationID }), event.sessionId == conversations[i].runtimeSessionID, event.seq > (conversations[i].runtimeCursor ?? 0) else { return }
         conversations[i].runtimeCursor = event.seq
         let turnID = event.turnId ?? event.itemId ?? "history-\(event.seq)"
         switch event.type {
@@ -397,8 +410,13 @@ struct NativeChatConversation: Codable, Identifiable {
             } else { conversations[i].messages.append(.init(role: role, content: text, runtimeTurnID: key)) }
         case "turn.completed":
             for index in conversations[i].messages.indices where conversations[i].messages[index].runtimeTurnID == turnID { conversations[i].messages[index].interrupted = false }
+        case "turn.cancelled":
+            for index in conversations[i].messages.indices where conversations[i].messages[index].runtimeTurnID == turnID && conversations[i].messages[index].role == "assistant" { conversations[i].messages[index].interrupted = true }
         case "interaction.requested":
-            if let interaction = try? event.payload.decode(DesktopHarnessInteraction.self) { runtimeInteractions[conversationID] = (runtimeInteractions[conversationID] ?? []).filter { $0.id != interaction.id } + [interaction] }
+            if let interaction = try? event.payload.decode(DesktopHarnessInteraction.self) {
+                runtimeInteractions[conversationID] = (runtimeInteractions[conversationID] ?? []).filter { $0.id != interaction.id } + [interaction]
+                if interaction.kind == "authentication" { Task { @MainActor in try? await refreshRuntime(conversationID) } }
+            }
         case "interaction.updated": runtimeInteractions[conversationID]?.removeAll { $0.id == event.payload["id"].string }
         case "command.updated":
             if let receipt = try? event.payload.decode(DesktopHarnessReceipt.self), receipt.command["type"].string == "prompt" {

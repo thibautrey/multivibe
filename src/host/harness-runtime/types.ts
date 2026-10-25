@@ -56,6 +56,7 @@ export type HarnessCommandReceipt = {
   id: string; sessionId: string; command: HarnessCommand;
   state: "queued" | "dispatching" | "accepted" | "completed" | "failed" | "cancelled" | "uncertain";
   createdAt: number; ordinal: number; result?: unknown; error?: string;
+  cancelRequested?: boolean; cancelAcknowledged?: boolean;
 };
 export type HarnessEvent = {
   seq: number; sessionId: string; type: string; turnId?: string; itemId?: string;
@@ -72,6 +73,7 @@ export type AdapterContext = {
   modelConnection?: {baseUrl:string;apiKey:string};
 };
 export interface HarnessAdapter {
+  restartAfterInterrupt?: boolean;
   start(): Promise<void>;
   prompt(parts: MessagePart[], steer?: boolean): Promise<void>;
   interrupt(): Promise<void>;
@@ -122,7 +124,7 @@ export function redact(value: unknown, depth = 0): any {
   if (depth > 16) return "[depth limit]";
   if (typeof value === "string") {const redacted=value.replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/giu, "$1 [private]").replace(/\bsk-[a-zA-Z0-9_-]{16,}/gu,"[private]");return redacted.length>128_000?redacted.slice(0,128_000)+" [truncated]":redacted;}
   if (Array.isArray(value)) return [...value.slice(0,256).map(v => redact(v, depth + 1)),...(value.length>256?[{truncated:true,total:value.length}]:[])];
-  if (value && typeof value === "object") {const entries=Object.entries(value);return Object.fromEntries([...entries.slice(0,256).map(([k,v]) => [k, /^(authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|token|password|secret|credentials?|cookies?|set-cookie|env|headers)$/iu.test(k) ? "[private]" : redact(v, depth + 1)]),...(entries.length>256?[["_multivibeTruncatedKeys",entries.length-256]]:[])]);}
+  if (value && typeof value === "object") {const entries=Object.entries(value);return Object.fromEntries([...entries.slice(0,256).map(([k,v]) => {const schema=v && typeof v==="object" && ["string","number","integer","boolean","object","array"].includes(String((v as any).type));return [k, !schema && /^(authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|token|password|secret|credentials?|cookies?|set-cookie|env|headers|authUrl|authorizationUrl|loginUrl|verification_uri_complete)$/iu.test(k) ? "[private]" : redact(v, depth + 1)];}),...(entries.length>256?[["_multivibeTruncatedKeys",entries.length-256]]:[])]);}
   return value;
 }
 export function fingerprint(value: unknown): string {

@@ -101,6 +101,27 @@ enum HostAssistantError: Error { case emptyReply }
         precondition(store.current?.messages.last?.content == "Réponse du harness")
         store.delete(first)
         precondition(store.conversations.count == 1)
+        let runtimeSessionID = store.current!.runtimeSessionID!
+        var sequence = (store.current?.runtimeCursor ?? 0) + 1
+        func runtimeEvent(_ type: String, _ payload: HarnessJSON, item: String = "parent") {
+            store.applyRuntime(.init(seq: sequence, sessionId: runtimeSessionID, type: type, turnId: "projection-turn", itemId: item, payload: payload, createdAt: 1), conversationID: second)
+            sequence += 1
+        }
+        runtimeEvent("message.delta", .object(["text": .string("Par")]))
+        runtimeEvent("message.part", .object(["text": .string("Parent complet")]))
+        runtimeEvent("message.part", .object(["text": .string("Deuxième bloc")]), item: "second")
+        precondition(store.current?.messages.last?.content == "Parent complet\n\nDeuxième bloc")
+        store.applyRuntime(.init(seq: sequence + 100, sessionId: "other-session", type: "message.delta", turnId: "projection-turn", itemId: "parent", payload: .object(["text": .string("MUST NOT LEAK")]), createdAt: 1), conversationID: second)
+        precondition(store.current?.runtimeCursor == sequence - 1)
+        runtimeEvent("turn.completed", .object([:]))
+        precondition(store.current?.messages.last?.interrupted == false)
+        runtimeEvent("turn.cancelled", .object([:]))
+        precondition(store.current?.messages.last?.interrupted == true)
+        let reuseStore = NativeChatStore(file: directory.appendingPathComponent("reuse.json"))
+        reuseStore.newConversation(); let supervised = reuseStore.selection!
+        reuseStore.edit { $0.runtimeSessionID = "supervised-without-messages" }
+        reuseStore.newConversation()
+        precondition(reuseStore.selection != supervised && reuseStore.conversations.count == 2)
         let artifact = "```intelligent-ui\n{\"title\":\"Saved calculator\",\"html\":\"<output>42</output>\"}\n```"
         HostAssistantClient.shared.response = artifact
         store.newConversation(text: "Un outil")
