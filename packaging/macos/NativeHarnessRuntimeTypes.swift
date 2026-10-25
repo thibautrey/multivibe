@@ -77,6 +77,42 @@ struct DesktopHarnessInteraction: Codable, Identifiable, Sendable {
     let id: String; let sessionId: String; let kind: String; let title: String; let detail: HarnessJSON
     let status: String; let createdAt: Double; let expiresAt: Double
 }
+enum DesktopHarnessForm {
+    static func content(schema: HarnessJSON, values: [String: String]) throws -> HarnessJSON {
+        let required = Set(schema["required"].array.compactMap(\.string))
+        var content: [String: HarnessJSON] = [:]
+        for (key, field) in schema["properties"].object {
+            let raw = values[key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if raw.isEmpty {
+                if let value = field.object["default"] { content[key] = value; continue }
+                if field["type"].string == "boolean" { content[key] = .bool(false); continue }
+                if required.contains(key) { throw DesktopHarnessError.rejected("Le champ \(field["title"].string ?? key) est requis.") }
+                continue
+            }
+            let value: HarnessJSON
+            switch field["type"].string {
+            case "boolean":
+                guard ["true", "false"].contains(raw) else { throw DesktopHarnessError.rejected("\(key) attend true ou false.") }
+                value = .bool(raw == "true")
+            case "number", "integer":
+                guard let number = Double(raw), number.isFinite, field["type"].string != "integer" || number.rounded() == number else { throw DesktopHarnessError.rejected("\(key) attend un nombre valide.") }
+                if case .number(let minimum) = field["minimum"], number < minimum { throw DesktopHarnessError.rejected("\(key) doit être supérieur ou égal à \(minimum).") }
+                if case .number(let maximum) = field["maximum"], number > maximum { throw DesktopHarnessError.rejected("\(key) doit être inférieur ou égal à \(maximum).") }
+                value = .number(number)
+            case "object", "array":
+                guard let parsed = try? JSONDecoder().decode(HarnessJSON.self, from: Data(raw.utf8)) else { throw DesktopHarnessError.rejected("\(key) attend du JSON valide.") }
+                let matches: Bool
+                switch parsed { case .array: matches = field["type"].string == "array"; case .object: matches = field["type"].string == "object"; default: matches = false }
+                guard matches else { throw DesktopHarnessError.rejected("\(key) attend du JSON de type \(field["type"].string ?? "object").") }
+                value = parsed
+            default: value = .string(values[key] ?? raw)
+            }
+            if !field["enum"].array.isEmpty, !field["enum"].array.contains(value) { throw DesktopHarnessError.rejected("Sélectionnez une valeur proposée pour \(key).") }
+            content[key] = value
+        }
+        return .object(content)
+    }
+}
 struct DesktopHarnessEvent: Codable, Identifiable, Equatable, Sendable {
     let seq: Int; let sessionId: String; let type: String; let turnId: String?; let itemId: String?; let payload: HarnessJSON; let createdAt: Double
     var id: Int { seq }
