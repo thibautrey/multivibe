@@ -324,3 +324,17 @@ test("model endpoint returns native choices without creating sessions and reject
   const unavailable=await fetch(origin+"/models",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({harnessId:"missing"})});
   assert.equal(unavailable.status,409);
 });
+
+test("effort discovery uses the chosen model and preserves session/target ownership",async t=>{
+  const {runtime,adapters}=fixture(t);
+  assert.deepEqual(await runtime.effort({harnessId:"pi",model:"chosen",provider:"native-provider"}),{effort:{subject:"effort"}});
+  const probe=[...adapters.values()][0];assert.equal(probe.ctx.session.model,"chosen");assert.equal(probe.ctx.session.configuration?.nativeProvider,"native-provider");
+  assert.equal(runtime.store.sessions().length,0);
+  const session=await runtime.create({harnessId:"pi",model:"chosen",effort:"high"});
+  await runtime.command(session.id,operation("inspect",{subject:"settings"}));
+  assert.equal(session.configuration?.pendingEffort,undefined);assert.equal(session.configuration?.effort,"high");
+  await runtime.command(session.id,operation("configure",{effort:"low"}));
+  assert.equal(runtime.store.sessions().find(s=>s.id===session.id)?.configuration?.effort,"low");
+  await runtime.command(session.id,operation("configure",{model:"other"}));assert.equal(session.configuration?.effort,undefined);
+  await assert.rejects(runtime.effort({harnessId:"hermes-agent",sessionId:session.id}),/does not match/);
+});

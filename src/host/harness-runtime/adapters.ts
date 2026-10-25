@@ -1,3 +1,4 @@
+import { acpEffort, effortOptions, validateEffort, type HarnessEffort } from "./effort.js";
 import { LibreChatNativeAdapter } from "./librechat-native.js";
 import { OpenWebUIAdapter } from "./openwebui.js";
 import { LibreChatAdapter } from "./librechat.js";
@@ -42,7 +43,7 @@ abstract class Adapter implements HarnessAdapter {
   abstract prompt(parts:MessagePart[],steer?:boolean):Promise<void>;
   abstract interrupt():Promise<void>;
   async compact(_instructions?:string):Promise<unknown>{return fail("Native compaction is not exposed by this harness/version",422);}
-  async inspect(_subject:string):Promise<unknown>{return fail("This inspection is not exposed by the harness",422);}
+  async inspect(_subject:string):Promise<unknown>{if(_subject==="effort")return null;return fail("This inspection is not exposed by the harness",422);}
   async configure(_values:Record<string,unknown>):Promise<unknown>{return fail("Runtime configuration is not exposed by the harness",422);}
   async native(_method:string,_params:Record<string,unknown>):Promise<unknown>{return fail("This native operation is not exposed by the adapter",422);}
   close(){this.services.close();this.peer?.close();}
@@ -105,10 +106,16 @@ export class AcpAdapter extends Adapter {
     if(requestedModel) {
       const options=this.sessionInfo.configOptions??[];
       const modelOption=options.find((o:any)=>o.category==="model" || o.id==="model");
-      if(modelOption)await peer.request("session/set_config_option",{sessionId:this.id,configId:modelOption.id,value:this.modelChoice(requestedModel)});
+      if(modelOption)await this.setOption(modelOption.id,this.modelChoice(requestedModel));
       else if(this.sessionInfo.models)await peer.request("session/set_model",{sessionId:this.id,modelId:this.modelChoice(requestedModel)});
       else fail("The ACP harness does not expose model selection; use its native model configuration",422);
     }
+  }
+  private async setOption(configId:string,value:string){
+    const result=await this.peer!.request("session/set_config_option",{sessionId:this.id,configId,value});
+    if(result.configOptions)this.sessionInfo={...this.sessionInfo,configOptions:result.configOptions};
+    this.ctx.emit({type:"configuration",payload:{configOptions:this.sessionInfo.configOptions}});
+    return result;
   }
   private get id(){return this.ctx.session.nativeSessionId!;}
   private modelChoice(model:string){return this.ctx.session.harnessId==="hermes-agent" && this.ctx.modelConnection?`custom:${model}`:model;}
@@ -168,17 +175,22 @@ export class AcpAdapter extends Adapter {
     this.ctx.emit({type:"compaction",payload:{state:"completed"}});return {};
   }
   async inspect(subject:string) {
+    if(subject==="effort")return acpEffort(this.sessionInfo)?.effort??null;
     if(subject==="commands")return this.commands;
     if(subject==="settings" || subject==="models" || subject==="modes")return this.sessionInfo;
     if(subject==="history" && this.agentCapabilities.sessionCapabilities?.list)return this.peer!.request("session/list",{cwd:this.ctx.session.workspace});
     return super.inspect(subject);
   }
   async configure(v:Record<string,unknown>) {
+    if(v.effort!==undefined){
+      const setting=acpEffort(this.sessionInfo);const value=validateEffort(setting?.effort??null,v.effort);
+      return this.setOption(setting!.id,value);
+    }
     if(typeof v.mode==="string")return this.peer!.request("session/set_mode",{sessionId:this.id,modeId:v.mode});
-    if(typeof v.configId==="string" && typeof v.value==="string")return this.peer!.request("session/set_config_option",{sessionId:this.id,configId:v.configId,value:v.value});
+    if(typeof v.configId==="string" && typeof v.value==="string")return this.setOption(v.configId,v.value);
     if(typeof v.model==="string") {
       const option=this.sessionInfo.configOptions?.find((o:any)=>o.category==="model" || o.id==="model");
-      const result=option?await this.peer!.request("session/set_config_option",{sessionId:this.id,configId:option.id,value:this.modelChoice(v.model)}):this.sessionInfo.models?await this.peer!.request("session/set_model",{sessionId:this.id,modelId:this.modelChoice(v.model)}):fail("Model selection is not exposed by this harness",422);
+      const result=option?await this.setOption(option.id,this.modelChoice(v.model)):this.sessionInfo.models?await this.peer!.request("session/set_model",{sessionId:this.id,modelId:this.modelChoice(v.model)}):fail("Model selection is not exposed by this harness",422);
       this.ctx.session.model=v.model;return result;
     }
     return super.configure(v);
@@ -250,12 +262,28 @@ export class PiAdapter extends Adapter {
   }
   async compact(instructions?:string){return this.peer!.request("compact",instructions?{customInstructions:instructions}:{},0);}
   async inspect(subject:string) {
+    if(subject==="effort"){
+      const state=await this.peer!.request("get_state");
+      if(Array.isArray(state?.availableThinkingLevels))return effortOptions(state.availableThinkingLevels,state.thinkingLevel);
+      // Older Pi RPC versions answer unknown commands without a request id.
+      // Bound the optional probe so those versions do not stall discovery.
+      try {
+        const levels=await this.peer!.request("get_available_thinking_levels",{},2000);
+        return effortOptions(levels?.levels,state?.thinkingLevel);
+      } catch(error) {
+        if(error instanceof HarnessRuntimeError && error.status===422 || error instanceof Error && /get_available_thinking_levels timed out/iu.test(error.message))return null;
+        throw error;
+      }
+    }
     const methods:Record<string,string>={settings:"get_state",history:"get_messages",models:"get_available_models",commands:"get_commands",usage:"get_session_stats",checkpoints:"get_fork_messages"};
     return methods[subject]?this.peer!.request(methods[subject]):super.inspect(subject);
   }
   async configure(v:Record<string,unknown>) {
     if(typeof v.model==="string" && typeof v.provider==="string"){const result=await this.peer!.request("set_model",{provider:v.provider,modelId:v.model});this.ctx.session.model=v.model;this.ctx.session.configuration={...this.ctx.session.configuration,nativeProvider:v.provider};return result;}
-    if(typeof v.thinkingLevel==="string")return this.peer!.request("set_thinking_level",{level:v.thinkingLevel});
+    if(v.effort!==undefined || v.thinkingLevel!==undefined){
+      const level=validateEffort(await this.inspect("effort") as HarnessEffort|null,v.effort??v.thinkingLevel);
+      return this.peer!.request("set_thinking_level",{level});
+    }
     if(typeof v.autoCompaction==="boolean")return this.peer!.request("set_auto_compaction",{enabled:v.autoCompaction});
     return super.configure(v);
   }
@@ -266,7 +294,7 @@ export class PiAdapter extends Adapter {
 }
 
 export class CodexAdapter extends Adapter {
-  private threadId="";private turnId="";private currentModel="";
+  private threadId="";private turnId="";private currentModel="";private defaultEffort?:string;
   private compactionDone?:{resolve:(v:unknown)=>void;reject:(e:Error)=>void};
   async start() {
     const args=["app-server"];
@@ -280,7 +308,7 @@ export class CodexAdapter extends Adapter {
     const result=await this.peer.request(s.nativeSessionId?"thread/resume":"thread/start",{
       ...(s.nativeSessionId?{threadId:s.nativeSessionId}:{}),cwd:s.workspace,...(s.model?{model:s.model}:{}),...(s.authMode==="multivibe"?{modelProvider:"multivibe"}:{}),
     });
-    this.threadId=result.thread.id;this.currentModel=result.model??s.model??"";if(this.currentModel)s.model=this.currentModel;this.ctx.nativeSession(this.threadId);
+    this.threadId=result.thread.id;this.defaultEffort=result.reasoningEffort;this.currentModel=result.model??s.model??"";if(this.currentModel)s.model=this.currentModel;this.ctx.nativeSession(this.threadId);
     if(s.configuration?.sourceId && !s.configuration?.historyImported){const history=await this.peer.request("thread/read",{threadId:this.threadId,includeTurns:true});for(const turn of history.thread?.turns??[])for(const item of turn.items??[]){if(item.type==="userMessage" || item.type==="agentMessage"){const text=item.type==="agentMessage"?item.text:(item.content??[]).filter((p:any)=>p.type==="text").map((p:any)=>p.text).join("\n");this.ctx.emit({type:"history.message",itemId:item.id,payload:{role:item.type==="userMessage"?"user":"assistant",text}});}}s.configuration.historyImported=true;}
     this.ctx.capabilities(Object.fromEntries(["sessions","history","fork","steer","interrupt","streaming","compaction","tools","skills","mcp","hooks","models","modes","plans","settings","usage","agents","images","interactions","workspace","git","terminals"].map(k=>[k,supported()])));
   }
@@ -337,6 +365,11 @@ export class CodexAdapter extends Adapter {
     finally{this.compactionDone=undefined;}
   }
   async inspect(subject:string) {
+    if(subject==="effort"){
+      const {data}=await this.inspect("models") as any;
+      const model=data.find((m:any)=>(m.model??m.id)===(this.ctx.session.model??this.currentModel))??(!this.ctx.session.model?data.find((m:any)=>m.isDefault):undefined);
+      return effortOptions(model?.supportedReasoningEfforts,this.ctx.session.configuration?.effort??this.defaultEffort??model?.defaultReasoningEffort);
+    }
     const calls:Record<string,[string,Record<string,unknown>]>={
       models:["model/list",{}],skills:["skills/list",{cwds:[this.ctx.session.workspace]}],hooks:["hooks/list",{cwds:[this.ctx.session.workspace]}],
       mcp:["mcpServerStatus/list",{threadId:this.threadId}],tools:["mcpServerStatus/list",{threadId:this.threadId}],settings:["config/read",{}],
@@ -352,6 +385,8 @@ export class CodexAdapter extends Adapter {
   async configure(v:Record<string,unknown>) {
     // turn/start accepts these settings; no global config is rewritten.
     if(Object.keys(v).some(k=>!["model","effort","mode"].includes(k)))return super.configure(v);
+    if(v.effort!==undefined)validateEffort(await this.inspect("effort") as HarnessEffort|null,v.effort);
+    if(typeof v.model==="string" && v.model!==this.ctx.session.model && this.ctx.session.configuration)delete this.ctx.session.configuration.effort;
     if(v.mode!==undefined && !["plan","default"].includes(String(v.mode)))fail("Unsupported Codex collaboration mode",422);
     this.ctx.session.configuration={...this.ctx.session.configuration,...v};if(typeof v.model==="string")this.ctx.session.model=v.model;
     return {effectiveFrom:"next_turn",...v};
@@ -372,7 +407,7 @@ class InputQueue {
 }
 export class ClaudeAdapter extends Adapter {
   private query:any;private queue=new InputQueue();private abort=new AbortController();
-  private stderrBytes=0;
+  private stderrBytes=0;private currentEffort?:string;
   private settingsFile?:string;
   private currentMessageId="claude-assistant";private sawText=false;
   constructor(ctx:AdapterContext,private sdkLoader?:()=>Promise<any>){super(ctx);}
@@ -406,7 +441,10 @@ export class ClaudeAdapter extends Adapter {
   private async consume() {for await(const event of this.query)this.event(event);if(!this.abort.signal.aborted){this.failure=new Error("Claude SDK stream ended before the session closed");this.rejectTurn(this.failure);}}
   protected event(v:any) {
     if(v.parent_tool_use_id && ["assistant","stream_event","user"].includes(v.type)){this.ctx.emit({type:"agent",itemId:v.parent_tool_use_id,payload:v});return;}
-    if(v.type==="system" && v.subtype==="init" && typeof v.model==="string")this.ctx.session.model=v.model;
+    if(v.type==="system" && v.subtype==="init"){
+      if(typeof v.model==="string")this.ctx.session.model=v.model;
+      if(typeof v.effort==="string")this.currentEffort=v.effort;
+    }
     if(v.session_id && v.session_id!==this.ctx.session.nativeSessionId)this.ctx.nativeSession(v.session_id);
     if(v.type==="stream_event") {
       const e=v.event;if(e?.type==="message_start")this.currentMessageId=e.message?.id??this.currentMessageId;
@@ -442,6 +480,12 @@ export class ClaudeAdapter extends Adapter {
   }
   async interrupt(){const done=this.settled;await this.query.interrupt();await done;}
   async inspect(subject:string) {
+    if(subject==="effort"){
+      if(typeof this.query.applyFlagSettings!=="function")return null;
+      const models=await this.query.supportedModels();
+      const model=models.find((m:any)=>m.value===this.ctx.session.model || m.resolvedModel===this.ctx.session.model);
+      return effortOptions(model?.supportedEffortLevels,this.ctx.session.configuration?.effort??this.currentEffort);
+    }
     if(subject==="commands")return this.query.supportedCommands();
     if(subject==="models")return this.query.supportedModels();
     if(subject==="mcp" || subject==="tools")return this.query.mcpServerStatus();
@@ -450,7 +494,12 @@ export class ClaudeAdapter extends Adapter {
     return super.inspect(subject);
   }
   async configure(v:Record<string,unknown>) {
-    if(typeof v.model==="string"){await this.query.setModel(v.model);this.ctx.session.model=v.model;return {model:v.model};}
+    if(v.effort!==undefined){
+      const effort=validateEffort(await this.inspect("effort") as HarnessEffort|null,v.effort);
+      await this.query.applyFlagSettings({effortLevel:effort});this.currentEffort=effort;return {effort};
+    }
+    if(typeof v.model==="string"){await this.query.setModel(v.model);
+      if(this.ctx.session.configuration?.effort && typeof this.query.applyFlagSettings==="function")await this.query.applyFlagSettings({effortLevel:null});this.ctx.session.model=v.model;return {model:v.model};}
     if(typeof v.permissionMode==="string" && ["default","plan","acceptEdits"].includes(v.permissionMode)){await this.query.setPermissionMode(v.permissionMode);return {permissionMode:v.permissionMode};}
     return super.configure(v);
   }
@@ -535,15 +584,23 @@ export class OpenCodeAdapter extends Adapter {
     });
     const model=this.ctx.session.model;const slash=model?.indexOf("/")??-1;
     const selected=model?(this.ctx.session.authMode==="multivibe"?{providerID:"multivibe",modelID:model}:slash>0?{providerID:model.slice(0,slash),modelID:model.slice(slash+1)}:undefined):undefined;
-    await this.untilEnd(()=>this.call("POST",`/session/${this.nativeId}/prompt_async`,{parts:converted,...(selected?{model:selected}:{}),...(this.ctx.session.configuration?.mode?{agent:this.ctx.session.configuration.mode}:{})}));
+    await this.untilEnd(()=>this.call("POST",`/session/${this.nativeId}/prompt_async`,{parts:converted,...(selected?{model:selected}:{}),...(typeof this.ctx.session.configuration?.effort==="string"?{variant:this.ctx.session.configuration.effort}:{}),...(this.ctx.session.configuration?.mode?{agent:this.ctx.session.configuration.mode}:{})}));
   }
   async interrupt(){const done=this.settled;await this.call("POST",`/session/${this.nativeId}/abort`);await done;}
   async compact(){const model=this.ctx.session.model??"";const slash=model.indexOf("/");if(!model || this.ctx.session.authMode!=="multivibe" && slash<0)fail("Select a provider/model before manual OpenCode compaction",422);return this.call("POST",`/session/${this.nativeId}/summarize`,this.ctx.session.authMode==="multivibe"?{providerID:"multivibe",modelID:model}:{providerID:model.slice(0,slash),modelID:model.slice(slash+1)});}
   async inspect(subject:string) {
+    if(subject==="effort"){
+      const catalog=await this.call("GET","/provider");const selected=this.ctx.session.model??"";const slash=selected.indexOf("/");
+      const managed=this.ctx.session.authMode==="multivibe";
+      const provider=catalog.all?.find((p:any)=>p.id===(managed?"multivibe":selected.slice(0,slash)));
+      if(!catalog.connected?.includes(provider?.id))return null;
+      const model=provider?.models?.[managed?selected:selected.slice(slash+1)];
+      return effortOptions(Object.keys(model?.variants??{}),this.ctx.session.configuration?.effort);
+    }
     const routes:Record<string,string>={history:`/session/${this.nativeId}/message`,models:"/provider",commands:"/command",mcp:"/mcp",tools:"/tool/ids",agents:`/session/${this.nativeId}/children`,plans:`/session/${this.nativeId}/todo`,settings:"/config",modes:"/agent",skills:"/skill"};
     return routes[subject]?this.call("GET",routes[subject]):super.inspect(subject);
   }
-  async configure(v:Record<string,unknown>){if(Object.keys(v).some(k=>!["model","mode"].includes(k)))return super.configure(v);this.ctx.session.configuration={...this.ctx.session.configuration,...v};if(typeof v.model==="string")this.ctx.session.model=v.model;return {effectiveFrom:"next_turn",...v};}
+  async configure(v:Record<string,unknown>){if(v.effort!==undefined)validateEffort(await this.inspect("effort") as HarnessEffort|null,v.effort);if(typeof v.model==="string" && v.model!==this.ctx.session.model && this.ctx.session.configuration)delete this.ctx.session.configuration.effort;if(Object.keys(v).some(k=>!["model","mode","effort"].includes(k)))return super.configure(v);this.ctx.session.configuration={...this.ctx.session.configuration,...v};if(typeof v.model==="string")this.ctx.session.model=v.model;return {effectiveFrom:"next_turn",...v};}
   async native(method:string,params:Record<string,unknown>){
     if(method==="fork")return this.call("POST",`/session/${this.nativeId}/fork`,params);
     if(method==="revert" && typeof params.messageID==="string")return this.call("POST",`/session/${this.nativeId}/revert`,params);

@@ -92,6 +92,10 @@ const server = createServer(async (request, response) => {
   if (route.endsWith('/projects')) return send({ projects: previewProjects.map(project => ({ ...project, harnessId: url.searchParams.get('harnessId') ?? project.harnessId })) });
   if (route.includes('/native-sessions')) return send({ sessions: [] });
   if (route.endsWith('/sessions')) return send({ sessions: Object.values(sessions) });
+  if (route.endsWith('/effort')) {
+    let text = ''; for await (const chunk of request) text += chunk; const body = JSON.parse(text);
+    return send({ effort: ['librechat', 'openwebui'].includes(body.harnessId) ? null : { options: [{ value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }], currentValue: sessions[body.sessionId]?.configuration?.effort ?? 'medium' } });
+  }
   if (route.endsWith('/models')) return send({ models: previewModels.map(model => ({ id: model.id, name: model.name, provider: 'preview' })), currentModelId: 'preview-model', provider: 'preview' });
   const match = route.match(/\/sessions\/([^/]+)(?:\/(events|commands))?$/u);
   if (match) {
@@ -107,6 +111,7 @@ const server = createServer(async (request, response) => {
     if (command.type === 'queue_remove') queues[id] = queues[id].filter(row => row.id !== command.value.commandId);
     if (command.type === 'queue_edit') queues[id] = queues[id].map(row => row.id === command.value.commandId ? { ...row, command: { ...row.command, parts: command.value.parts } } : row);
     if (command.type === 'queue_reorder') queues[id] = command.value.ids.map((key, ordinal) => ({ ...queues[id].find(row => row.id === key), ordinal }));
+    if (command.type === 'configure') sessions[id].configuration = { ...sessions[id].configuration, ...command.value };
     publish(id, 'session.updated', sessions[id]);
     return send({ receipt: { id: command.id, sessionId: id, command, state: 'completed', createdAt: Date.now(), ordinal: 0, result: command.type === 'inspect' ? { commands: [{ name: 'compact', description: 'Compacter le contexte' }] } : {} } });
   }

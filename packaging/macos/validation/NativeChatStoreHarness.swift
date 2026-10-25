@@ -201,7 +201,17 @@ enum HostAssistantError: Error { case emptyReply }
         store.edit { $0.harnessID = "pi"; $0.authMode = "native"; $0.nativeModelID = "native-picked"; $0.nativeModelProvider = "native-provider" }
         let catalog = try await store.modelCatalog(store.selection!)
         precondition(catalog.models.first?.id == "native-picked" && catalog.models.first?.provider == "native-provider")
+        let effort = try await store.effortCatalog(store.selection!)!
+        try await store.selectEffort("high", catalog: effort, conversationID: store.selection!)
+        do { try await store.selectEffort("invented", catalog: effort, conversationID: store.selection!); preconditionFailure("Unadvertised effort was accepted") }
+        catch { }
+        let effortSelection = store.current!
+        store.edit { $0.nativeModelID = "different-model" }
+        precondition(store.current?.selectedEffort == nil)
+        store.edit { $0.nativeModelID = effortSelection.nativeModelID }
         let selectedNative = NativeChatStore(file: file, defaults: defaults).current
+        precondition(selectedNative?.selectedEffort == "high")
+        print("PASS harness effort discovery, validation, model scoping and persistence")
         precondition(selectedNative?.nativeModelID == "native-picked" && selectedNative?.nativeModelProvider == "native-provider")
         store.send(interactiveAnswers: true)
         while store.current?.messages.last?.content != "Réponse du harness" { try await Task.sleep(nanoseconds: 10_000_000) }

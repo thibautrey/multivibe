@@ -111,12 +111,23 @@ export class HostHarnessRuntime {
     return {projects:target.kind==="local"?discoverHarnessProjects(harnessId,home):[]};
   }
   async models(input:any) {
+    return this.discover(input, async (adapter, session) => {
+      const models=harnessModels(await adapter.inspect("models"));
+      return {models,currentModelId:session.model??models.find(v=>v.isDefault)?.id,provider:session.configuration?.nativeProvider};
+    });
+  }
+  async effort(input:any) {
+    return this.discover(input, async adapter => {
+      try { return {effort:await adapter.inspect("effort")}; }
+      catch(error) { if(error instanceof HarnessRuntimeError && error.status===422)return {effort:null}; throw error; }
+    }, true);
+  }
+  private async discover<T>(input:any, read:(adapter:HarnessAdapter,session:HarnessSession)=>Promise<T>, effortOnly=false):Promise<T> {
     const harnessId=identifier(input.harnessId),targetId=identifier(input.targetId??"local");
     if(input.sessionId){
       const session=this.session(identifier(input.sessionId));
-      if(session.harnessId!==harnessId || session.targetId!==targetId || session.authMode!=="native")fail("Model catalog does not match the native session",409);
-      const models=harnessModels(await (await this.ensure(session.id)).inspect("models"));
-      return {models,currentModelId:session.model,provider:session.configuration?.nativeProvider};
+      if(session.harnessId!==harnessId || session.targetId!==targetId || !effortOnly && session.authMode!=="native")fail("Model catalog does not match the native session",409);
+      return read(await this.ensure(session.id),session);
     }
     const target=this.store.target(targetId),descriptor=(await this.catalog(targetId)).find(v=>v.id===harnessId);
     if(!descriptor?.available)fail(descriptor?.reason??"Harness is unavailable",409);
@@ -134,14 +145,20 @@ export class HostHarnessRuntime {
       else if(!input.workspace)fail("Specify a workspace inside the container");
       const now=Date.now(),session:HarnessSession={id:randomUUID(),harnessId,targetId,workspace,title:"Model catalog",authMode:"native",state:"idle",queuePaused:false,revision:0,archived:false,pinned:false,createdAt:now,updatedAt:now,capabilities:descriptor.capabilities,
         ...(connection?{model:connection.agentId}:{}),...(registration?{configuration:{acpArgs:registration.args}}:{})};
+      if(effortOnly){
+        if(input.authMode!==undefined && !["native","multivibe"].includes(input.authMode))fail("Invalid model authentication mode");
+        session.authMode=input.authMode??"native";
+        if(input.model)session.model=requiredText(input.model,256);
+        if(input.provider)session.configuration={...session.configuration,nativeProvider:requiredText(input.provider,256)};
+      }
       adapter=this.factory({session,root,executable,target,modelDiscovery:true,
+        ...(session.authMode==="multivibe" && target.kind==="local" && this.options.modelConnection?{modelConnection:this.options.modelConnection()}:{}),
         ...(connection?(harnessId==="openwebui"?{openWebUIConnection:connection,remoteChats:this.remoteChats(harnessId)}:{libreChatConnection:connection,remoteChats:this.remoteChats(harnessId)}):{}),
         emit:()=>{},nativeSession:id=>{session.nativeSessionId=id;},capabilities:values=>Object.assign(session.capabilities,values),
         attachment:()=>fail("Model discovery cannot access attachments",422),ask:async()=>fail("Authenticate in the harness before loading its models",401)});
       const instance=adapter;
-      const result=(async()=>{await instance.start();if(cancelled){instance.close();fail("Model discovery timed out",504);}return harnessModels(await instance.inspect("models"));})();
-      const models=await Promise.race([result,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new HarnessRuntimeError("Model discovery timed out",504)),25_000);})]);
-      return {models,currentModelId:session.model??models.find(v=>v.isDefault)?.id,provider:session.configuration?.nativeProvider};
+      const result=(async()=>{await instance.start();if(cancelled){instance.close();fail("Model discovery timed out",504);}return read(instance,session);})();
+      return await Promise.race([result,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new HarnessRuntimeError("Model discovery timed out",504)),25_000);})]);
     } finally {cancelled=true;clearTimeout(timer);adapter?.close();fs.rmSync(root,{recursive:true,force:true});}
   }
   private async containerExecutable(container:string,command:string) {
@@ -171,6 +188,7 @@ export class HostHarnessRuntime {
     if(harnessId==="librechat" || harnessId==="openwebui"){const connection=this[harnessId].read()!;s.model=s.model??connection.agentId;s.configuration={endpoint:connection.endpoint,connectionId:this.remoteChats(harnessId).identity().connectionId};}
     const registration=this.store.registrations().find(v=>v.id===harnessId);if(registration)s.configuration={acpArgs:registration.args};
     if(authMode==="native" && harnessId==="pi" && input.nativeProvider)s.configuration={...s.configuration,nativeProvider:requiredText(input.nativeProvider,256)};
+    if(input.effort!==undefined)s.configuration={...s.configuration,pendingEffort:requiredText(input.effort,256)};
     this.states.set(id,s);this.store.save(s);
     if(history){try{const attachment=this.store.attach(id,"prior-conversation.json","text/plain",Buffer.from(history).toString("base64"));s.configuration={...s.configuration,migrationContext:attachment.id};this.store.save(s);this.emit(id,{type:"notice",payload:{message:"The previous conversation is preserved as an attached transcript for the first turn. Native operations from the old session are not replayed.",attachment}});}catch(e){this.states.delete(id);this.store.delete(id);throw e;}}
     this.emit(id,{type:"session.created",payload:s});return s;
@@ -226,6 +244,11 @@ export class HostHarnessRuntime {
       });
       try{
         await instance.start();
+        const effort=s.configuration?.pendingEffort??s.configuration?.effort;
+        if(typeof effort==="string"){
+          await instance.configure({effort});s.configuration={...s.configuration,effort};
+          delete s.configuration.pendingEffort;
+        }
         if(this.factory===adapterFor && target.kind==="local" && ["pi","openai-codex","claude-code","opencode"].includes(s.harnessId)){
           try{const result=await promisify(execFile)(executable,["--version"],{cwd:s.workspace,env:harnessEnvironment(s.authMode==="native"),timeout:5000,maxBuffer:8192});const version=result.stdout.match(/\b\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.]+)?\b/u)?.[0];if(version)s.harnessVersion=version;}catch{/* Version remains unknown when the installed CLI does not report it. */}
         }
@@ -293,7 +316,10 @@ export class HostHarnessRuntime {
           if(v.schedule){receipt.result=this.configureSchedule(id,v.schedule);break;}
           if(s.activeTurnId)fail("Change session settings between turns",409);
           if(v.resource){if(this.store.target(s.targetId).kind!=="local")fail("Edit memory through the Host that owns this environment",422);receipt.result=writeHarnessResource(s,v.resource);break;}
-          receipt.result=await (await this.ensure(id)).configure(v);if(typeof v.model==="string")s.model=v.model;break;
+          receipt.result=await (await this.ensure(id)).configure(v);
+          if(typeof v.model==="string"){s.model=v.model;if(s.configuration)delete s.configuration.effort;}
+          if(typeof v.effort==="string")s.configuration={...s.configuration,effort:v.effort};
+          break;
         }
         case "compact": {
           if(s.activeTurnId)fail("Wait for the active turn before manually compacting",409);

@@ -183,6 +183,11 @@ private struct NativeChatSuggestionEditor: View {
     @State private var modelSource = "multivibe"
     @State private var modelQuery = ""
     @State private var harnessModels: [DesktopHarnessModel] = []
+    @State private var harnessEffort: DesktopHarnessEffort?
+    @State private var loadedEffortKey = ""
+    @State private var loadingEffort = false
+    @State private var effortError: String?
+    @State private var changingEffort = false
     @State private var harnessDefaultModel: String?
     @State private var harnessDefaultProvider: String?
     @State private var loadingHarnessModels = false
@@ -410,6 +415,7 @@ private struct NativeChatSuggestionEditor: View {
             )
         }
         .task(id: harnessModelsKey) { await loadHarnessModels() }
+        .task(id: effortKey) { await loadHarnessEffort() }
         .task(id: store.current?.executionTargetID ?? "local") { await store.runRemoteSynchronization() }
         .task(id: projectCatalogKey) { await loadProjects() }
         .sheet(isPresented: $cloudConsent) { consentSheet }
@@ -901,6 +907,7 @@ private struct NativeChatSuggestionEditor: View {
                     ChatIconButton(title: harness.wrappedValue == "native" ? "Joindre des documents texte" : "Joindre des fichiers", icon: "plus") { importing = true }.disabled(cloudMode)
                     if !cloudMode { harnessSelector }
                     modelSelector
+                    effortSelector
                     if supportsProjects { projectSelector }
                     Spacer(minLength: 4)
                     composerActions
@@ -1294,6 +1301,72 @@ private struct NativeChatSuggestionEditor: View {
         .frame(maxWidth: 260, alignment: .leading).fixedSize(horizontal: true, vertical: true)
         .disabled(cloudMode ? cloudSending : store.isGenerating(store.selection))
         .popover(isPresented: $choosingModel, arrowEdge: .bottom) { modelPicker }
+    }
+    private var effortKey: String {
+        let update = store.current?.runtimeEvents?.last(where: { $0.type == "configuration" })?.seq ?? 0
+        return harnessModelsKey + "|" + (store.current?.effortContext ?? "") + "|" + String(update)
+    }
+    private var effectiveEffort: String? {
+        // Live harness state is authoritative after a session has started.
+        if store.current?.runtimeSessionID != nil { return harnessEffort?.currentValue }
+        return store.current?.selectedEffort ?? harnessEffort?.currentValue
+    }
+    @ViewBuilder private var effortSelector: some View {
+        if !cloudMode, harness.wrappedValue != "native", loadedEffortKey == effortKey {
+            if let effort = harnessEffort, !effort.options.isEmpty {
+                Menu {
+                    Text("Effort du modèle").font(.headline)
+                    ForEach(effort.options) { option in
+                        Button {
+                            guard let id = store.selection, !changingEffort else { return }
+                            changingEffort = true
+                            Task { @MainActor in
+                                defer { changingEffort = false }
+                                do {
+                                    try await store.selectEffort(option.value, catalog: effort, conversationID: id)
+                                    if store.selection == id { await loadHarnessEffort() }
+                                } catch { if store.selection == id { store.error = error.localizedDescription } }
+                            }
+                        } label: {
+                            if effectiveEffort == option.value { Label(option.label, systemImage: "checkmark") }
+                            else { Text(option.label) }
+                        }.help(option.description ?? option.label)
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "gauge.with.dots.needle.50percent")
+                        Text(effort.options.first(where: { $0.value == effectiveEffort })?.label ?? "Effort")
+                            .lineLimit(1)
+                    }.font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                }
+                .menuStyle(.borderlessButton).fixedSize().frame(maxWidth: 130)
+                .padding(.horizontal, 7).frame(height: 28)
+                .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 8))
+                .disabled(working || changingEffort || loadingEffort)
+                .help("Niveau d’effort proposé par le harness pour ce modèle")
+                .accessibilityLabel("Effort du modèle")
+                .accessibilityValue(effectiveEffort ?? "Par défaut")
+            } else if effortError != nil {
+                Button { Task { await loadHarnessEffort() } } label: { Image(systemName: "gauge.with.dots.needle.50percent") }
+                    .buttonStyle(ChatActionStyle()).help("Effort indisponible. Réessayer : " + (effortError ?? ""))
+                    .accessibilityLabel("Recharger les niveaux d’effort")
+            }
+        }
+    }
+    private func loadHarnessEffort() async {
+        let key = effortKey
+        harnessEffort = nil; effortError = nil; loadedEffortKey = key
+        guard !cloudMode, harness.wrappedValue != "native", let id = store.selection else { loadingEffort = false; return }
+        loadingEffort = true
+        defer { if key == effortKey { loadingEffort = false } }
+        do {
+            let effort = try await store.effortCatalog(id)
+            guard !Task.isCancelled, key == effortKey else { return }
+            harnessEffort = effort
+        } catch {
+            guard !Task.isCancelled, key == effortKey else { return }
+            effortError = error.localizedDescription
+        }
     }
     private var modelPicker: some View {
         VStack(alignment: .leading, spacing: 16) {
