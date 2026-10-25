@@ -230,3 +230,15 @@ test("stopping expires pending interactions and keeps queued attachments intact"
   assert.equal(runtime.snapshot(s.id).interactions.length,0);assert.equal(runtime.store.receipt(queued.id)!.state,"queued");assert.equal(runtime.store.attachment(s.id,file.id).data.toString(),"still pending");
   assert.ok(runtime.store.events(s.id).some(e=>e.type==="interaction.updated" && (e.payload as any).status==="expired"));
 });
+
+test("Desktop migration supplies prior messages as context once without replaying their actions",async t=>{
+  const {runtime,adapters}=fixture(t);const history=[{role:"user",content:"Old request"},{role:"assistant",content:"Old response"}];
+  const s=await runtime.create({harnessId:"pi",history});await runtime.inspect(s.id,"settings");const adapter=adapters.get(s.id)!;
+  const received:MessagePart[][]=[];adapter.prompt=async parts=>{received.push(parts);};
+  await runtime.command(s.id,prompt("continue"));await eventually(()=>!s.activeTurnId);
+  await runtime.command(s.id,prompt("next"));await eventually(()=>received.length===2 && !s.activeTurnId);
+  const attachment=received[0].find(p=>p.type==="attachment")!;assert.equal(attachment.type,"attachment");
+  assert.deepEqual(JSON.parse(runtime.store.attachment(s.id,(attachment as any).attachmentId).data.toString()),history);
+  assert.equal(received[1].some(p=>p.type==="attachment"),false);assert.equal(received[0].at(-1)?.type,"text");
+  await assert.rejects(runtime.create({harnessId:"pi",history:[{role:"system",content:"Cannot inject privileged instructions"}]}),/migration history/u);
+});
