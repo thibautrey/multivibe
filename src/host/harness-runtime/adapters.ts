@@ -607,7 +607,7 @@ export class OpenCodeAdapter extends Adapter {
       const model=provider?.models?.[managed?selected:selected.slice(slash+1)];
       return effortOptions(Object.keys(model?.variants??{}),this.ctx.session.configuration?.effort);
     }
-    const routes:Record<string,string>={history:`/session/${this.nativeId}/message`,models:"/provider",commands:"/command",mcp:"/mcp",tools:"/tool/ids",agents:`/session/${this.nativeId}/children`,plans:`/session/${this.nativeId}/todo`,settings:"/config",modes:"/agent",skills:"/skill"};
+    const routes:Record<string,string>={history:`/session/${this.nativeId}/message`,models:"/provider",commands:"/command",mcp:"/mcp",tools:"/tool/ids",agents:this.ctx.modelDiscovery?"/agent":`/session/${this.nativeId}/children`,plans:`/session/${this.nativeId}/todo`,settings:"/config",modes:"/agent",skills:"/skill"};
     return routes[subject]?this.call("GET",routes[subject]):super.inspect(subject);
   }
   async configure(v:Record<string,unknown>){if(v.effort!==undefined)validateEffort(await this.inspect("effort") as HarnessEffort|null,v.effort);if(typeof v.model==="string" && v.model!==this.ctx.session.model && this.ctx.session.configuration)delete this.ctx.session.configuration.effort;if(Object.keys(v).some(k=>!["model","mode","effort"].includes(k)))return super.configure(v);this.ctx.session.configuration={...this.ctx.session.configuration,...v};if(typeof v.model==="string")this.ctx.session.model=v.model;return {effectiveFrom:"next_turn",...v};}

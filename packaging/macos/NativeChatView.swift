@@ -208,8 +208,18 @@ private struct NativeChatSuggestionEditor: View {
     @State private var harnessLastUsedAt: [String: Double] = UserDefaults.standard.dictionary(forKey: "assistantHarnessLastUsedAt") as? [String: Double] ?? [:]
     @State private var loading = false
     @State private var importing = false
+    @State private var showingAddMenu = false
+    @State private var featureCatalog: DesktopHarnessFeatureCatalog?
+    @State private var featureQuery = ""
+    @State private var featureCatalogKey = ""
+    @State private var loadingFeatures = false
+    @State private var featureError: String?
+    @State private var showingGoal = false
+    @State private var goalText = ""
+    @State private var goalBusy = false
     @State private var fileDropTargeted = false
     @State private var showingHarnessInspector = false
+    @State private var inspectorSubject = "capabilities"
     @State private var selectedUtilityPanel: NativeChatUtilityPanel = .conversation
     @State private var deleteID: UUID?
     @State private var speech = AVSpeechSynthesizer()
@@ -397,6 +407,7 @@ private struct NativeChatSuggestionEditor: View {
                 store: store,
                 browser: browser,
                 showsConversation: showingHarnessInspector,
+                inspectorSubject: inspectorSubject,
                 selection: $selectedUtilityPanel,
                 closeConversation: closeHarnessInspector,
                 closeBrowser: closeBrowserPanel
@@ -438,6 +449,7 @@ private struct NativeChatSuggestionEditor: View {
                 reset: resetWelcomeSuggestion
             )
         }
+        .sheet(isPresented: $showingGoal) { goalSheet }
         .onChange(of: browser.isVisible) { visible in
             if visible { selectedUtilityPanel = .browser }
             else if showingHarnessInspector { selectedUtilityPanel = .conversation }
@@ -481,7 +493,24 @@ private struct NativeChatSuggestionEditor: View {
               let conversation = store.conversations.first(where: { $0.id == conversationID }) else { return }
         do {
             if conversation.harnessID != nil && conversation.harnessID != "native" {
-                try store.stageAttachments(urls, conversationID: conversationID)
+                var files: [URL] = [], folders: [URL] = []
+                for url in urls {
+                    let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
+                    let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
+                    if values.isRegularFile == true { files.append(url) }
+                    else if values.isDirectory == true { folders.append(url) }
+                    else { throw DesktopHarnessError.rejected("\(url.lastPathComponent) cannot be attached.") }
+                }
+                if !folders.isEmpty {
+                    guard conversation.executionTargetID == nil || conversation.executionTargetID == "local" else {
+                        throw DesktopHarnessError.rejected("A local folder path cannot be attached to a remote harness.")
+                    }
+                    guard let index = store.conversations.firstIndex(where: { $0.id == conversationID }) else { return }
+                    let references = folders.map { "Folder available to the harness: \($0.path)" }.joined(separator: "\n")
+                    store.conversations[index].draft += (store.conversations[index].draft.isEmpty ? "" : "\n\n") + references
+                    store.save()
+                }
+                if !files.isEmpty { try store.stageAttachments(files, conversationID: conversationID) }
                 if store.selection == conversationID { composing = true }
                 return
             }
@@ -770,6 +799,10 @@ private struct NativeChatSuggestionEditor: View {
     }
     private var showingUtilityPanel: Bool { showingHarnessInspector || browser.isVisible }
     private func openHarnessInspector() {
+        openHarnessInspector(subject: "capabilities")
+    }
+    private func openHarnessInspector(subject: String) {
+        inspectorSubject = subject
         showingHarnessInspector = true
         selectedUtilityPanel = .conversation
     }
@@ -895,6 +928,111 @@ private struct NativeChatSuggestionEditor: View {
             if !isUser { Spacer(minLength: 0) }
         }.frame(maxWidth: .infinity).transition(.opacity)
     }
+    private var desiredFeatureCatalogKey: String {
+        [store.selection?.uuidString ?? "", harness.wrappedValue, store.current?.executionTargetID ?? "local",
+         store.current?.workspace ?? "", store.current?.runtimeSessionID ?? "", store.current?.authMode ?? "native",
+         store.current?.nativeModelID ?? store.current?.model ?? ""].joined(separator: "|")
+    }
+    private var addMenu: some View {
+        NativeHarnessAddMenu(
+            harnessName: selectedHarness.name,
+            catalog: featureCatalog,
+            loading: loadingFeatures,
+            error: featureError,
+            query: $featureQuery,
+            addFiles: {
+                showingAddMenu = false
+                DispatchQueue.main.async { importing = true }
+            },
+            retry: { Task { await loadFeatureCatalog(force: true) } },
+            select: handleFeature
+        )
+        .task(id: desiredFeatureCatalogKey) { await loadFeatureCatalog() }
+    }
+    private func loadFeatureCatalog(force: Bool = false) async {
+        let key = desiredFeatureCatalogKey
+        if !force, featureCatalogKey == key, featureCatalog != nil { return }
+        featureCatalogKey = key; featureCatalog = nil; featureError = nil
+        guard !cloudMode, harness.wrappedValue != "native", let id = store.selection else { return }
+        loadingFeatures = true
+        defer { if featureCatalogKey == key { loadingFeatures = false } }
+        do {
+            let catalog = try await store.featureCatalog(id)
+            guard !Task.isCancelled, featureCatalogKey == key else { return }
+            featureCatalog = catalog
+        } catch {
+            guard !Task.isCancelled, featureCatalogKey == key else { return }
+            featureError = error.localizedDescription
+        }
+    }
+    private func handleFeature(_ item: DesktopHarnessFeatureItem) {
+        guard let id = store.selection else { return }
+        switch item.action {
+        case "insert":
+            guard let value = item.value else { return }
+            store.edit { $0.draft += ($0.draft.isEmpty || $0.draft.last?.isWhitespace == true ? "" : " ") + value }
+            showingAddMenu = false; composing = true
+        case "configure":
+            guard let value = item.value else { return }
+            showingAddMenu = false
+            Task { @MainActor in
+                do { _ = try await store.command(id, type: "configure", value: .object(["mode": .string(value)])); try await store.refreshRuntime(id) }
+                catch { if store.selection == id { store.error = error.localizedDescription } }
+            }
+        case "compact":
+            showingAddMenu = false; store.runtimeCommand(id, type: "compact")
+        case "goal":
+            showingAddMenu = false; showingGoal = true; goalText = ""
+            Task { await loadGoal(id) }
+        case "inspect":
+            showingAddMenu = false
+            let subject = item.subject ?? item.section
+            DispatchQueue.main.async { openHarnessInspector(subject: subject) }
+        default: break
+        }
+    }
+    private var goalSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Goal").font(.title3.weight(.semibold))
+                    Text("The harness keeps pursuing this objective across turns.").font(.callout).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if goalBusy { ProgressView().controlSize(.small) }
+            }
+            TextEditor(text: $goalText).font(.body).scrollContentBackground(.hidden)
+                .padding(10).frame(minHeight: 130)
+                .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(ChatPalette.hairline))
+            HStack {
+                Button("Clear goal", role: .destructive) { Task { await saveGoal(clear: true) } }.disabled(goalBusy)
+                Spacer()
+                Button("Cancel") { showingGoal = false }.keyboardShortcut(.cancelAction)
+                Button("Set goal") { Task { await saveGoal(clear: false) } }
+                    .keyboardShortcut(.defaultAction).disabled(goalBusy || goalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }.padding(20).frame(width: 500)
+    }
+    private func loadGoal(_ id: UUID) async {
+        goalBusy = true; defer { goalBusy = false }
+        do {
+            let receipt = try await store.command(id, type: "native", value: .object(["method": .string("thread/goal/get"), "params": .object([:])]))
+            guard store.selection == id else { return }
+            let result = receipt.result ?? .null
+            goalText = result["goal"]["objective"].string ?? result["objective"].string ?? result["goal"].string ?? ""
+        } catch { if store.selection == id { store.error = error.localizedDescription } }
+    }
+    private func saveGoal(clear: Bool) async {
+        guard let id = store.selection else { return }
+        goalBusy = true; defer { goalBusy = false }
+        do {
+            let method = clear ? "thread/goal/clear" : "thread/goal/set"
+            let parameters: HarnessJSON = clear ? .object([:]) : .object(["objective": .string(goalText.trimmingCharacters(in: .whitespacesAndNewlines))])
+            _ = try await store.command(id, type: "native", value: .object(["method": .string(method), "params": parameters]))
+            showingGoal = false
+        } catch { if store.selection == id { store.error = error.localizedDescription } }
+    }
     private var composer: some View {
         VStack(spacing: 9) {
             VStack(alignment: .leading, spacing: 10) {
@@ -905,7 +1043,11 @@ private struct NativeChatSuggestionEditor: View {
                     .background(ComposerNewlineShortcut())
                     .padding(.horizontal, 16).padding(.top, 16)
                 HStack(spacing: 5) {
-                    ChatIconButton(title: harness.wrappedValue == "native" ? "Joindre des documents texte" : "Joindre des fichiers", icon: "plus") { importing = true }.disabled(cloudMode)
+                    ChatIconButton(title: "Ajouter des fichiers ou des fonctions du harness", icon: "plus") {
+                        featureQuery = ""; showingAddMenu = true
+                    }
+                    .disabled(cloudMode)
+                    .popover(isPresented: $showingAddMenu, arrowEdge: .top) { addMenu }
                     if !cloudMode { harnessSelector }
                     modelSelector
                     if supportsProjects { projectSelector }

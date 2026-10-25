@@ -201,6 +201,8 @@ enum HostAssistantError: Error { case emptyReply }
         store.edit { $0.harnessID = "pi"; $0.authMode = "native"; $0.nativeModelID = "native-picked"; $0.nativeModelProvider = "native-provider" }
         let catalog = try await store.modelCatalog(store.selection!)
         precondition(catalog.models.first?.id == "native-picked" && catalog.models.first?.provider == "native-provider")
+        let features = try await store.featureCatalog(store.selection!)
+        precondition(features.harnessId == "pi" && features.items.first?.name == "Documents" && features.items.first?.value == "/skill:Documents ")
         let effort = try await store.effortCatalog(store.selection!)!
         try await store.selectEffort("high", catalog: effort, conversationID: store.selection!)
         try await store.resetEffort(catalog: effort, conversationID: store.selection!)

@@ -9,6 +9,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { HostHarnessIntegrationManager } from "../harness-integrations.js";
 import { harnessModels } from "./models.js";
+import { FEATURE_SUBJECTS, harnessFeatures } from "./features.js";
 import { discoverHarnessProjects, PROJECT_HARNESS_IDS } from "./discovery.js";
 import { adapterFor } from "./adapters.js";
 import { harnessEnvironment } from "./process.js";
@@ -120,6 +121,19 @@ export class HostHarnessRuntime {
     return this.discover(input, async adapter => {
       try { return {effort:await adapter.inspect("effort")}; }
       catch(error) { if(error instanceof HarnessRuntimeError && error.status===422)return {effort:null}; throw error; }
+    }, true);
+  }
+  async features(input:any) {
+    return this.discover(input, async (adapter,session) => {
+      const inspected:Record<string,unknown>={},errors:Record<string,string>={};
+      for(const subject of FEATURE_SUBJECTS) {
+        try { inspected[subject]=await adapter.inspect(subject); }
+        catch(error:any) {
+          if(subject==="skills")try{inspected.skills=this.skills(session);continue;}catch{}
+          errors[subject]=String(redact(error?.message??"Feature discovery failed")).slice(0,500);
+        }
+      }
+      return {harnessId:session.harnessId,capabilities:session.capabilities,items:harnessFeatures(session.harnessId,session.capabilities,inspected),errors};
     }, true);
   }
   private async discover<T>(input:any, read:(adapter:HarnessAdapter,session:HarnessSession)=>Promise<T>, effortOnly=false):Promise<T> {

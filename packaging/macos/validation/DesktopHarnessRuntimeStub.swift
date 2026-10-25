@@ -8,6 +8,10 @@ import Foundation
     var lastCreatedWorkspace: String?
     func call(_ route: String, method: String, target: String, body: HarnessJSON?) async throws -> HarnessJSON {
         let body = body ?? .null
+        if route == "/features" {
+            precondition(body["harnessId"].string == "pi")
+            return .object(["harnessId": .string("pi"), "capabilities": .object(["skills": .object(["support": .string("native"), "available": .bool(true)])]), "items": .array([.object(["id": .string("skills:documents:0"), "section": .string("skills"), "name": .string("Documents"), "description": .string("Create documents"), "action": .string("insert"), "value": .string("/skill:Documents "), "subject": .string("skills")])]), "errors": .object([:])])
+        }
         if route == "/effort" {
             precondition(body["harnessId"].string == "pi")
             return .object(["effort": .object(["options": .array([.object(["value": .string("low"), "label": .string("Low")]), .object(["value": .string("high"), "label": .string("High")])]), "currentValue": .string("low"), "defaultValue": .string("low")])])
