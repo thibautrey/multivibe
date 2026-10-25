@@ -82,15 +82,25 @@ struct HarnessLogo: View {
     private var resource: (String, String)? {
         switch id {
         case "native": return ("multivibe", "png")
+        case "claude-code": return ("claude-code", "svg")
+        case "openai-codex": return ("openai-codex", "svg")
+        case "opencode": return ("opencode", "svg")
+        case "openclaw": return ("openclaw", "png")
         case "hermes-agent": return (colorScheme == .dark ? "hermes-dark" : "hermes-light", "png")
         case "pi": return ("pi", "svg")
+        case "goose": return ("goose", "svg")
+        case "openhands": return ("openhands", "svg")
         default: return nil
         }
+    }
+    private var usesTemplateRendering: Bool {
+        ["claude-code", "openai-codex", "opencode"].contains(id)
     }
     var body: some View {
         Group {
             if let resource, let url = Bundle.main.url(forResource: resource.0, withExtension: resource.1, subdirectory: "harnesses"), let image = NSImage(contentsOf: url) {
-                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
+                Image(nsImage: image).renderingMode(usesTemplateRendering ? .template : .original)
+                    .resizable().aspectRatio(contentMode: .fit).foregroundStyle(.primary)
             } else if id == "native" {
                 Image(systemName: "waveform.path").resizable().scaledToFit().padding(size * 0.17).foregroundStyle(ChatPalette.accent)
             } else {
