@@ -18,7 +18,7 @@ capabilities.queue = { support: 'multivibe', available: true };
 capabilities.audio = { support: 'unsupported', available: false, reason: 'Ce harness ne prend pas en charge les fichiers audio.' };
 capabilities.memory = { support: 'unknown', available: false };
 const descriptor = (id, name, protocol) => ({ id, name, protocol, version: 'preview', detected: true, configured: true, available: true, authentication: 'ready', capabilities });
-const catalog = [descriptor('pi', 'Pi', 'pi-rpc'), descriptor('hermes-agent', 'Hermes', 'acp'), descriptor('openai-codex', 'Codex', 'codex'), descriptor('claude-code', 'Claude Code', 'claude-sdk'), descriptor('opencode', 'OpenCode', 'opencode'), descriptor('gemini-cli', 'Gemini CLI', 'acp')];
+const catalog = [descriptor('pi', 'Pi', 'pi-rpc'), descriptor('hermes-agent', 'Hermes', 'acp'), descriptor('openai-codex', 'OpenAI Codex', 'codex'), descriptor('claude-code', 'Claude Code', 'claude-sdk'), descriptor('opencode', 'OpenCode', 'opencode'), descriptor('openclaw', 'OpenClaw', 'openclaw'), descriptor('goose', 'Goose', 'acp'), descriptor('openhands', 'OpenHands', 'openhands'), descriptor('gemini-cli', 'Gemini CLI', 'acp')];
 const session = (id, state) => ({ id, harnessId: 'pi', targetId: 'local', workspace: '/workspace/exemple', title: 'Préparer le lancement', model: 'Claude Sonnet', authMode: 'native', state, queuePaused: false, revision: 1, activeTurnId: `${id}-turn`, archived: false, pinned: false, createdAt: now, updatedAt: now, capabilities });
 const sessions = { 'preview-working': session('preview-working', 'running'), 'preview-question': session('preview-question', 'waiting_user') };
 const queues = Object.fromEntries(Object.keys(sessions).map(id => [id, []]));
