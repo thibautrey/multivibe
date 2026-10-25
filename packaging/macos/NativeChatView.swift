@@ -589,9 +589,6 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 }.buttonStyle(.borderedProminent).disabled(agent.busy || agent.consent == nil)
             }
         }.padding(24).frame(width: 520)
-        .onChange(of: email) { _ in agents = [] }
-        .onChange(of: password) { _ in agents = [] }
-        .onChange(of: userToken) { _ in agents = [] }
     }
     private var header: some View {
         HStack(spacing: 12) {
@@ -860,7 +857,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     private var sortedHarnesses: [NativeConversationHarness] {
         var items = harnesses
         for (id, name) in [("librechat", "LibreChat"), ("openwebui", "Open WebUI")] where !items.contains(where: { $0.id == id }) {
-            items.append(.init(id: id, name: name, available: false, configured: false, description: harnessDescription(id), capabilities: .init(sessions: true, streaming: true, tools: true, longTermMemory: false), popularityRank: 10))
+            items.append(.init(id: id, name: name, available: false, configured: false, description: harnessDescription(id), capabilities: .init(sessions: true, streaming: true, tools: true, longTermMemory: false), unavailableReason: "Connexion requise", canInstall: false, compatible: true, detected: false, conversationCapable: true, category: "agent", popularityRank: 10))
         }
         return items.sortedForDisplay(lastUsedAt: harnessLastUsedAt)
     }
