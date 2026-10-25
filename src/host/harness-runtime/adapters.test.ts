@@ -28,7 +28,7 @@ if(process.argv.includes('serve')){
 }else readline.createInterface({input:process.stdin}).on('line',line=>{
  const v=JSON.parse(line),m=v.method??v.type,p=v.params??v;
  if(m==='initialize')reply(v,codex?{}:{protocolVersion:1,agentInfo:process.env.LLM_PROVIDER?{name:[process.env.LLM_PROVIDER,process.env.LLM_MODEL,process.env.OPENAI_BASE_URL,process.env.OPENAI_API_KEY==='fixture-proxy-key'].join('|')}:undefined,agentCapabilities:{loadSession:true,promptCapabilities:{embeddedContext:true}}});
- else if(m==='session/new')reply(v,{sessionId:'acp-session'});
+ else if(m==='session/new')reply(v,{sessionId:'acp-session',...(process.env.LLM_PROVIDER?{models:{currentModelId:process.env.LLM_MODEL,availableModels:[{modelId:process.env.LLM_MODEL,name:process.env.LLM_MODEL}]}}:{})});
  else if(m==='thread/start')reply(v,{thread:{id:'codex-thread'}});
  else if(m==='session/prompt'){
   notify('session/update',{sessionId:'acp-session',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'ACP text'}}});
