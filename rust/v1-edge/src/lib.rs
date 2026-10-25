@@ -7473,6 +7473,7 @@ struct AnthropicStreamState {
     message_id: String,
     next_index: usize,
     blocks: HashMap<String, usize>,
+    emitted: HashSet<String>,
     stopped: bool,
     has_tools: bool,
     output_tokens: u64,
@@ -7780,6 +7781,7 @@ impl SseStreamTransformer {
                 let key = value_string(item.get("id"))
                     .or_else(|| value_string(value.get("item_id")))
                     .unwrap_or_else(|| format!("block-{}", self.anthropic.next_index));
+                if !self.anthropic.emitted.insert(key.clone()) { return output; }
                 let index = self.anthropic.next_index;
                 self.anthropic.next_index += 1;
                 self.anthropic.blocks.insert(key, index);
@@ -7822,6 +7824,24 @@ impl SseStreamTransformer {
                 }
             }
             "response.completed" | "response.incomplete" => {
+                if let Some(items) = value.pointer("/response/output").and_then(Value::as_array) {
+                    for (index,item) in items.iter().enumerate() {
+                        let kind = item.get("type").and_then(Value::as_str).unwrap_or_default();
+                        if !matches!(kind,"message"|"function_call") { continue; }
+                        let key = value_string(item.get("id")).unwrap_or_else(||format!("final-{index}"));
+                        if self.anthropic.emitted.contains(&key) { continue; }
+                        let mut item = item.clone();item["id"] = Value::String(key.clone());
+                        output.push_str(&self.transform_anthropic_event(&json!({"type":"response.output_item.added","item":item})));
+                        if kind=="function_call" {
+                            output.push_str(&self.transform_anthropic_event(&json!({"type":"response.function_call_arguments.delta","item_id":key,"delta":item.get("arguments").and_then(Value::as_str).unwrap_or("{}")})));
+                        } else if let Some(parts) = item.get("content").and_then(Value::as_array) {
+                            for part in parts { if matches!(part.get("type").and_then(Value::as_str),Some("text"|"output_text")) {
+                                output.push_str(&self.transform_anthropic_event(&json!({"type":"response.output_text.delta","item_id":key,"delta":part.get("text").and_then(Value::as_str).unwrap_or_default()})));
+                            }}
+                        }
+                        output.push_str(&self.transform_anthropic_event(&json!({"type":"response.output_item.done","item_id":key})));
+                    }
+                }
                 self.anthropic.output_tokens = value.pointer("/response/usage/output_tokens").and_then(Value::as_u64).unwrap_or(0);
                 self.anthropic.max_tokens = value.pointer("/response/incomplete_details/reason").and_then(Value::as_str) == Some("max_output_tokens");
                 output.push_str(&self.anthropic.stop())
