@@ -1,3 +1,4 @@
+import { LibreChatConfiguration } from "./librechat.js";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -25,6 +26,7 @@ type Integration=Pick<HostHarnessIntegrationManager,"list"|"executablePath">;
 
 export class HostHarnessRuntime {
   readonly store:HarnessRuntimeStore;
+  readonly librechat:LibreChatConfiguration;
   private events=new EventEmitter();
   private adapters=new Map<string,Promise<HarnessAdapter>>();
   private states=new Map<string,HarnessSession>();
@@ -37,7 +39,7 @@ export class HostHarnessRuntime {
   private containerExecutables=new Map<string,{expires:number;value:string|null}>();
   private scheduler:ReturnType<typeof setInterval>;
   constructor(readonly root:string,private integrations:Integration,private factory:(ctx:AdapterContext)=>HarnessAdapter=adapterFor,private options:{modelConnection?:()=>{baseUrl:string;apiKey:string}}={}) {
-    this.store=new HarnessRuntimeStore(root);this.events.setMaxListeners(100);
+    this.store=new HarnessRuntimeStore(root);this.librechat=new LibreChatConfiguration(root);this.events.setMaxListeners(100);
     this.scheduler=setInterval(()=>void this.tickSchedules().catch(()=>{}),15_000);this.scheduler.unref();
     for(const s of this.store.sessions()) {
       this.states.set(s.id,s);
@@ -87,7 +89,7 @@ export class HostHarnessRuntime {
     const target=this.store.target(targetId);if(target.kind==="ssh")fail("Query the remote Host catalog through its SSH bridge",409);
     const detected=new Map((await this.integrations.list()).map(v=>[v.id,v]));
     const definitions:Array<[string,{name:string;protocol:HarnessDescriptor["protocol"];command:string;custom?:boolean}]>=[...Object.entries(ADAPTERS),...this.store.registrations().map(v=>[v.id,{name:v.name,protocol:"acp" as const,command:v.executable,custom:true}] as [string,{name:string;protocol:"acp";command:string;custom:boolean}])];
-    return Promise.all(definitions.map(async([id,definition])=>{
+    const result=await Promise.all(definitions.map(async([id,definition])=>{
       const found=detected.get(id);const executable=target.kind==="container"?await this.containerExecutable(target.container!,definition.command):definition.custom?definition.command:await this.integrations.executablePath(id);
       const caps=capabilities();for(const key of ["queue","attachments","remote","diagnostics","automations"] as const)caps[key]=supported("multivibe");
       caps.sessions=supported();caps.streaming=supported();
@@ -95,6 +97,8 @@ export class HostHarnessRuntime {
       return {id,name:definition.name,protocol:definition.protocol,detected:target.kind==="container"?Boolean(executable):definition.custom || Boolean(found?.detected),configured:target.kind!=="container" && (Boolean(found?.configured) || (["claude-code","hermes-agent"].includes(id) && Boolean(this.options.modelConnection?.().apiKey))),available:Boolean(executable)&&caps.sessions.available,
         authentication:"unknown",capabilities:caps,...(!executable?{reason:"Harness executable is not installed on this Host"}:!caps.sessions.available?{reason:caps.sessions.reason}:{})} as HarnessDescriptor;
     }));
+    if(target.kind==="local")result.push(this.librechat.descriptor());
+    return result;
   }
   private async containerExecutable(container:string,command:string) {
     const key=`${container}:${command}`,cached=this.containerExecutables.get(key);if(cached && cached.expires>Date.now())return cached.value;
@@ -107,6 +111,7 @@ export class HostHarnessRuntime {
     if(existing){if(existing.harnessId!==input.harnessId || existing.targetId!==(input.targetId??"local") || input.authMode && input.authMode!==existing.authMode)fail("A conversation's harness, authentication mode and execution target are fixed",409);return existing;}
     const harnessId=identifier(input.harnessId);const targetId=identifier(input.targetId??"local");const target=this.store.target(targetId);
     const descriptor=(await this.catalog(targetId)).find(v=>v.id===harnessId);if(!descriptor?.available)fail(descriptor?.reason??"Harness is unavailable",409);
+    if(harnessId==="librechat" && input.authMode && input.authMode!=="native")fail("LibreChat uses its own API key and agent configuration",422);
     const authMode=input.authMode??"native";if(!["native","multivibe"].includes(authMode))fail("Invalid model authentication mode");
     if(authMode==="multivibe" && (!descriptor.configured || !input.model))fail("Connect this harness to MultiVibe and select a model first",409);
     let history:string|undefined;
@@ -119,6 +124,7 @@ export class HostHarnessRuntime {
     else {if(target.kind==="container")fail("Specify a workspace inside the container");workspace=path.join(this.root,"workspaces",id);fs.mkdirSync(workspace,{recursive:true,mode:0o700});}
     if(input.nativeSessionId)fail("Use native-session discovery and its ownership check to resume an external session",409);
     const now=Date.now();const s:HarnessSession={id,harnessId,targetId,workspace,title:typeof input.title==="string"?input.title.slice(0,200):"Nouvelle conversation",...(input.model?{model:requiredText(input.model,256)}:{}),authMode,state:"idle",queuePaused:false,revision:0,archived:false,pinned:false,createdAt:now,updatedAt:now,capabilities:descriptor.capabilities};
+    if(harnessId==="librechat"){const connection=this.librechat.read()!;s.model=connection.agentId;s.configuration={endpoint:connection.endpoint};}
     const registration=this.store.registrations().find(v=>v.id===harnessId);if(registration)s.configuration={acpArgs:registration.args};
     this.states.set(id,s);this.store.save(s);
     if(history){try{const attachment=this.store.attach(id,"prior-conversation.json","text/plain",Buffer.from(history).toString("base64"));s.configuration={...s.configuration,migrationContext:attachment.id};this.store.save(s);this.emit(id,{type:"notice",payload:{message:"The previous conversation is preserved as an attached transcript for the first turn. Native operations from the old session are not replayed.",attachment}});}catch(e){this.states.delete(id);this.store.delete(id);throw e;}}
@@ -136,10 +142,12 @@ export class HostHarnessRuntime {
     adapter=(async()=>{
       const s=this.session(id),target=this.store.target(s.targetId);
       const registration=this.store.registrations().find(v=>v.id===s.harnessId);
-      const executable=registration?.executable??(target.kind==="container"?ADAPTERS[s.harnessId as keyof typeof ADAPTERS]?.command:await this.integrations.executablePath(s.harnessId));
+      const executable=s.harnessId==="librechat"?"librechat-http":registration?.executable??(target.kind==="container"?ADAPTERS[s.harnessId as keyof typeof ADAPTERS]?.command:await this.integrations.executablePath(s.harnessId));
       if(!executable)fail("Harness executable is unavailable",409);
       const root=path.join(this.root,"sessions",s.id);fs.mkdirSync(root,{recursive:true,mode:0o700});
-      const instance=this.factory({session:s,root,executable,target,emit:event=>{if(!this.stopped && this.states.has(id))this.emit(id,event);},
+      const connection=s.harnessId==="librechat"?this.librechat.read():undefined;
+      if(s.harnessId==="librechat" && (!connection || connection.endpoint!==s.configuration?.endpoint))fail("Reconnect the original LibreChat endpoint to resume this conversation",409);
+      const instance=this.factory({session:s,root,executable,target,...(connection?{libreChatConnection:connection}:{}),emit:event=>{if(!this.stopped && this.states.has(id))this.emit(id,event);},
         ...(s.authMode==="multivibe" && target.kind==="local" && this.options.modelConnection?{modelConnection:this.options.modelConnection()}:{}),
         nativeSession:nativeId=>{if(this.stopped || !this.states.has(id))return;requiredText(nativeId,4096);s.nativeSessionId=nativeId;this.store.save(s);this.emit(id,{type:"session.updated",payload:s});},
         capabilities:values=>{if(this.stopped || !this.states.has(id) || Object.entries(values).every(([key,value])=>JSON.stringify(s.capabilities[key as keyof typeof s.capabilities])===JSON.stringify(value)))return;Object.assign(s.capabilities,values);this.store.save(s);this.emit(id,{type:"capabilities.updated",payload:s.capabilities});},
