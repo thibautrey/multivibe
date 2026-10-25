@@ -1,0 +1,447 @@
+import fs from "node:fs";
+import path from "node:path";
+import { randomBytes } from "node:crypto";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { ClientServices } from "./client-services.js";
+import { JsonPeer, startProcess, harnessEnvironment } from "./process.js";
+import { fail, redact, supported, unsupported, type AdapterContext, type HarnessAdapter, type MessagePart } from "./types.js";
+
+abstract class Adapter implements HarnessAdapter {
+  protected peer?: JsonPeer;
+  protected ended?: {resolve:()=>void;reject:(error:Error)=>void};
+  protected services: ClientServices;
+  constructor(protected ctx:AdapterContext) {this.services=new ClientServices(ctx);}
+  protected connect(args:string[],rpc=true) {
+    this.peer=new JsonPeer(startProcess(this.ctx,args),v=>this.event(v),(m,p)=>this.services.request(m,p),e=>this.ended?.reject(e),text=>this.ctx.emit({type:"diagnostic",payload:{message:text}}),rpc);
+    return this.peer;
+  }
+  protected finish(payload:unknown={}) {this.ctx.emit({type:"turn.status",payload});const end=this.ended;this.ended=undefined;end?.resolve();}
+  protected wait() {if(this.ended)fail("A turn is already active",409);return new Promise<void>((resolve,reject)=>{this.ended={resolve,reject};});}
+  protected async untilEnd(send:()=>Promise<unknown>) {
+    const done=this.wait();
+    // Register both rejection handlers before submitting: a harness may fail synchronously.
+    const accepted=send(); await Promise.all([accepted,done]);
+  }
+  protected text(parts:MessagePart[]) {
+    return parts.map(p=>{
+      if(p.type==="text")return p.text;
+      if(p.type==="resource")return p.text?`[${p.uri}]\n${p.text}`:p.uri;
+      if(p.type==="attachment") {const a=this.ctx.attachment(p.attachmentId);if(!/^(text\/|application\/(json|xml|javascript))/u.test(a.info.mimeType))fail(`This harness cannot accept ${a.info.mimeType}`,422);return `[${a.info.name}]\n${a.data.toString("utf8")}`;}
+      return JSON.stringify(p.value);
+    }).join("\n\n");
+  }
+  abstract start():Promise<void>;
+  protected abstract event(v:any):void;
+  abstract prompt(parts:MessagePart[],steer?:boolean):Promise<void>;
+  abstract interrupt():Promise<void>;
+  async compact(_instructions?:string):Promise<unknown>{return fail("Native compaction is not exposed by this harness/version",422);}
+  async inspect(_subject:string):Promise<unknown>{return fail("This inspection is not exposed by the harness",422);}
+  async configure(_values:Record<string,unknown>):Promise<unknown>{return fail("Runtime configuration is not exposed by the harness",422);}
+  async native(_method:string,_params:Record<string,unknown>):Promise<unknown>{return fail("This native operation is not exposed by the adapter",422);}
+  close(){this.services.close();this.peer?.close();}
+}
+
+/** Shared ACP v1 client; omitted capabilities remain unavailable. */
+export class AcpAdapter extends Adapter {
+  private sessionInfo:any; private commands:any[]=[]; private agentCapabilities:any={};
+  constructor(ctx:AdapterContext,private args:string[]) {super(ctx);}
+  async start() {
+    const peer=this.connect(this.args);
+    const hello=await peer.request("initialize",{protocolVersion:1,clientInfo:{name:"multivibe",version:"1"},clientCapabilities:{
+      ...(this.ctx.target.kind!=="container"?{fs:{readTextFile:true,writeTextFile:true},terminal:true}:{}),
+      session:{compaction:{},notices:{}},
+    }});
+    if(hello.protocolVersion!==1)fail("The harness negotiated an unsupported ACP version",409);
+    const caps=this.agentCapabilities=hello.agentCapabilities??{};
+    this.ctx.capabilities({sessions:supported(),streaming:supported(),interrupt:supported(),tools:supported(),interactions:supported(),
+      images:caps.promptCapabilities?.image?supported():unsupported("Image input is not advertised"),
+      audio:caps.promptCapabilities?.audio?supported():unsupported("Audio input is not advertised"),
+      context:caps.promptCapabilities?.embeddedContext?supported():unsupported("Embedded context is not advertised"),
+      mcp:caps.mcpCapabilities?supported():unsupported("MCP transport is not advertised"),
+      history:caps.loadSession?supported():unsupported("Loading existing sessions is not advertised"),
+      fork:caps.sessionCapabilities?.fork?supported():unsupported("Fork is not advertised"),
+    });
+    let old=this.ctx.session.nativeSessionId;
+    if(old && this.ctx.session.configuration?.forkNativeSession){
+      if(!caps.sessionCapabilities?.fork)fail("The ACP harness does not advertise an isolated fork",422);
+      const fork=await peer.request("session/fork",{sessionId:old,cwd:this.ctx.session.workspace});old=fork.sessionId;
+      this.ctx.nativeSession(old!);delete this.ctx.session.configuration.forkNativeSession;
+    }
+    if(old && !caps.loadSession)fail("This harness cannot resume its existing session",409);
+    this.sessionInfo=await peer.request(old?"session/load":"session/new",{...(old?{sessionId:old}:{}),cwd:this.ctx.session.workspace,mcpServers:[]});
+    this.ctx.nativeSession(old??this.sessionInfo.sessionId);
+    if(this.sessionInfo.modes)this.ctx.capabilities({modes:supported()});
+    if(this.sessionInfo.models)this.ctx.capabilities({models:supported()});
+    if(this.sessionInfo.configOptions)this.ctx.capabilities({settings:supported()});
+    if(this.ctx.session.model && this.ctx.session.authMode==="multivibe") {
+      const options=this.sessionInfo.configOptions??[];
+      const modelOption=options.find((o:any)=>o.category==="model" || o.id==="model");
+      if(modelOption)await peer.request("session/set_config_option",{sessionId:this.id,configId:modelOption.id,value:this.ctx.session.model});
+      else if(this.sessionInfo.models)await peer.request("session/set_model",{sessionId:this.id,modelId:this.ctx.session.model});
+      else fail("The ACP harness does not expose model selection; use its native model configuration",422);
+    }
+  }
+  private get id(){return this.ctx.session.nativeSessionId!;}
+  protected event(v:any) {
+    const p=v.params??{};if(p.sessionId && this.id && p.sessionId!==this.id)return;
+    const u=p.update??p;const kind=u.sessionUpdate;
+    if(kind==="agent_message_chunk") {
+      if(u.content?.type==="text")this.ctx.emit({type:"message.delta",itemId:u.messageId,payload:{text:u.content.text,role:"assistant"}});
+      else this.ctx.emit({type:"artifact",payload:u.content});
+    } else if(kind==="agent_thought_chunk")this.ctx.emit({type:"reasoning",payload:u.content});
+    else if(kind==="user_message_chunk")this.ctx.emit({type:"history.message",itemId:u.messageId,payload:{role:"user",content:u.content}});
+    else if(kind==="tool_call" || kind==="tool_call_update")this.ctx.emit({type:"tool",itemId:u.toolCallId,payload:u});
+    else if(kind==="plan"){this.ctx.capabilities({plans:supported()});this.ctx.emit({type:"plan",payload:u});}
+    else if(kind?.startsWith("compaction")){this.ctx.capabilities({compaction:supported()});this.ctx.emit({type:"compaction",payload:u});}
+    else if(kind==="usage_update"){this.ctx.capabilities({usage:supported()});this.ctx.emit({type:"usage",payload:u});}
+    else if(kind==="available_commands_update") {
+      this.commands=u.availableCommands??[];this.ctx.capabilities({commands:supported(),...(this.commands.some(c=>c.name==="compact")?{compaction:supported()}:{} )});
+      this.ctx.emit({type:"commands",payload:this.commands});
+    } else if(kind==="config_option_update") {this.sessionInfo={...this.sessionInfo,configOptions:u.configOptions};this.ctx.capabilities({settings:supported()});this.ctx.emit({type:"configuration",payload:u});}
+    else this.ctx.emit({type:"native.event",payload:v});
+  }
+  private blocks(parts:MessagePart[]):any[] {
+    return parts.map(p=>{
+      if(p.type==="text")return {type:"text",text:p.text};
+      if(p.type==="resource")return p.text!==undefined?{type:"resource",resource:{uri:p.uri,mimeType:p.mimeType??"text/plain",text:p.text}}:{type:"resource_link",uri:p.uri,name:p.uri};
+      if(p.type==="attachment") {
+        const a=this.ctx.attachment(p.attachmentId);const mime=a.info.mimeType;
+        if(mime.startsWith("image/")){if(!this.agentCapabilities.promptCapabilities?.image)fail("The harness did not advertise image input",422);return {type:"image",mimeType:mime,data:a.data.toString("base64")};}
+        if(mime.startsWith("audio/")){if(!this.agentCapabilities.promptCapabilities?.audio)fail("The harness did not advertise audio input",422);return {type:"audio",mimeType:mime,data:a.data.toString("base64")};}
+        if(!this.agentCapabilities.promptCapabilities?.embeddedContext)fail("The harness did not advertise embedded resources",422);
+        return {type:"resource",resource:{uri:`attachment:${a.info.id}`,mimeType:mime,...(mime.startsWith("text/") || mime==="application/json"?{text:a.data.toString("utf8")}:{blob:a.data.toString("base64")})}};
+      }
+      fail("Unsupported ACP content",422);
+    });
+  }
+  async prompt(parts:MessagePart[],steer=false) {
+    if(steer)fail("ACP v1 does not advertise in-flight steering",422);
+    const result=await this.peer!.request("session/prompt",{sessionId:this.id,prompt:this.blocks(parts)},0);
+    this.ctx.emit({type:"turn.status",payload:{stopReason:result.stopReason}});
+    if(result.stopReason==="refusal")fail("The harness refused the request",422);
+  }
+  async interrupt(){this.peer!.notify("session/cancel",{sessionId:this.id});}
+  async compact(instructions?:string) {
+    if(!this.commands.some(c=>c.name==="compact"))return super.compact(instructions);
+    this.ctx.emit({type:"compaction",payload:{state:"started",reason:"manual"}});
+    await this.prompt([{type:"text",text:`/compact${instructions?" "+instructions:""}`}]);
+    this.ctx.emit({type:"compaction",payload:{state:"completed"}});return {};
+  }
+  async inspect(subject:string) {
+    if(subject==="commands")return this.commands;
+    if(subject==="settings" || subject==="models" || subject==="modes")return this.sessionInfo;
+    if(subject==="history" && this.agentCapabilities.sessionCapabilities?.list)return this.peer!.request("session/list",{cwd:this.ctx.session.workspace});
+    return super.inspect(subject);
+  }
+  async configure(v:Record<string,unknown>) {
+    if(typeof v.mode==="string")return this.peer!.request("session/set_mode",{sessionId:this.id,modeId:v.mode});
+    if(typeof v.configId==="string" && typeof v.value==="string")return this.peer!.request("session/set_config_option",{sessionId:this.id,configId:v.configId,value:v.value});
+    if(typeof v.model==="string" && this.sessionInfo.models)return this.peer!.request("session/set_model",{sessionId:this.id,modelId:v.model});
+    return super.configure(v);
+  }
+  async native(method:string,params:Record<string,unknown>) {
+    if(method==="session/fork" && this.agentCapabilities.sessionCapabilities?.fork)return this.peer!.request(method,{...params,sessionId:this.id});
+    if(method==="authenticate" && typeof params.methodId==="string")return this.peer!.request(method,{methodId:params.methodId});
+    return super.native(method,params);
+  }
+}
+
+export class PiAdapter extends Adapter {
+  private images(parts:MessagePart[]) {return parts.filter(p=>p.type==="attachment" && this.ctx.attachment(p.attachmentId).info.mimeType.startsWith("image/")).map(p=>{const a=this.ctx.attachment((p as any).attachmentId);return {type:"image",data:a.data.toString("base64"),mimeType:a.info.mimeType};});}
+  async start() {
+    const sessionFile=this.ctx.target.kind==="container"?path.posix.join(this.ctx.session.workspace,`.multivibe-${this.ctx.session.id}.jsonl`):path.join(this.ctx.root,`pi-${this.ctx.session.id}.jsonl`);
+    let nativeSession=this.ctx.session.nativeSessionId;
+    if(nativeSession && this.ctx.session.configuration?.forkNativeSession){
+      if(this.ctx.target.kind!=="local")fail("Fork a Pi session through the Host that owns its file",422);
+      if(fs.statSync(nativeSession).size>64*1024*1024)fail("Native session exceeds its fork limit",413);
+      fs.copyFileSync(nativeSession,sessionFile,fs.constants.COPYFILE_EXCL);fs.chmodSync(sessionFile,0o600);nativeSession=sessionFile;
+      this.ctx.nativeSession(sessionFile);delete this.ctx.session.configuration.forkNativeSession;
+    }
+    const args=["--mode","rpc","--session",nativeSession??sessionFile];
+    if(this.ctx.session.authMode==="multivibe")args.push("--provider","multivibe");
+    if(this.ctx.session.model)args.push("--model",this.ctx.session.model);
+    const peer=this.connect(args,false);const state=await peer.request("get_state");
+    this.ctx.nativeSession(state?.sessionFile??this.ctx.session.nativeSessionId??sessionFile);
+    this.ctx.capabilities(Object.fromEntries(["sessions","history","steer","interrupt","streaming","compaction","tools","skills","commands","models","settings","usage","images","fork"].map(k=>[k,supported()])));
+    this.ctx.emit({type:"configuration",payload:state});
+  }
+  protected event(v:any) {
+    if(v.type==="message_update") {
+      const e=v.assistantMessageEvent;
+      if(e?.type==="text_delta")this.ctx.emit({type:"message.delta",payload:{text:e.delta,role:"assistant"}});
+      else if(e?.type==="thinking_delta")this.ctx.emit({type:"reasoning",payload:{text:e.delta}});
+      else this.ctx.emit({type:"native.event",payload:v});
+    } else if(v.type==="agent_settled")this.finish(v);
+    else if(v.type==="agent_end") {
+      // Older Pi versions have no agent_settled. Query its actual queue/compaction state.
+      void this.peer!.request("get_state").then(s=>{if(!s?.isStreaming && !s?.isCompacting && !(s?.pendingMessageCount>0))this.finish(v);}).catch(e=>this.ended?.reject(e));
+    } else if(v.type==="tool_execution_start" || v.type==="tool_execution_update" || v.type==="tool_execution_end")this.ctx.emit({type:"tool",itemId:v.toolCallId,payload:v});
+    else if(/compaction|retry/u.test(v.type??""))this.ctx.emit({type:v.type.includes("compaction")?"compaction":"retry",payload:v});
+    else if(v.type==="extension_ui_request") {
+      const dialog=["select","confirm","input","editor"].includes(v.method);
+      if(dialog)void this.ctx.ask("question",v.title??v.message??"Pi",v).then(a=>this.peer!.notify("extension_ui_response",{id:v.id,...a})).catch(()=>{});
+      else this.ctx.emit({type:"notice",payload:v});
+    } else this.ctx.emit({type:"native.event",payload:v});
+  }
+  async prompt(parts:MessagePart[],steer=false) {
+    const textParts=parts.filter(p=>p.type!=="attachment" || !this.ctx.attachment(p.attachmentId).info.mimeType.startsWith("image/"));
+    const params={message:textParts.length?this.text(textParts):"Analyse les pièces jointes.",images:this.images(parts)};
+    if(steer){await this.peer!.request("steer",params);return;}
+    await this.untilEnd(()=>this.peer!.request("prompt",params,0));
+  }
+  async interrupt(){await this.peer!.request("clear_queue");await this.peer!.request("abort",{},0);}
+  async compact(instructions?:string){return this.peer!.request("compact",instructions?{customInstructions:instructions}:{},0);}
+  async inspect(subject:string) {
+    const methods:Record<string,string>={settings:"get_state",history:"get_messages",models:"get_available_models",commands:"get_commands",usage:"get_session_stats",checkpoints:"get_fork_messages"};
+    return methods[subject]?this.peer!.request(methods[subject]):super.inspect(subject);
+  }
+  async configure(v:Record<string,unknown>) {
+    if(typeof v.model==="string" && typeof v.provider==="string")return this.peer!.request("set_model",{provider:v.provider,modelId:v.model});
+    if(typeof v.thinkingLevel==="string")return this.peer!.request("set_thinking_level",{level:v.thinkingLevel});
+    if(typeof v.autoCompaction==="boolean")return this.peer!.request("set_auto_compaction",{enabled:v.autoCompaction});
+    return super.configure(v);
+  }
+  async native(method:string,params:Record<string,unknown>) {
+    if(["get_available_thinking_levels","get_fork_messages","set_session_name","get_tree"].includes(method))return this.peer!.request(method,params);
+    return super.native(method,params);
+  }
+}
+
+export class CodexAdapter extends Adapter {
+  private threadId="";private turnId="";
+  async start() {
+    const args=["app-server"];
+    const child=startProcess(this.ctx,args);
+    this.peer=new JsonPeer(child,v=>this.event(v),(m,p)=>this.request(m,p),e=>this.ended?.reject(e),text=>this.ctx.emit({type:"diagnostic",payload:{message:text}}));
+    await this.peer.request("initialize",{clientInfo:{name:"multivibe",version:"1"},capabilities:{experimentalApi:true}});
+    this.peer.notify("initialized");
+    const s=this.ctx.session;
+    if(s.nativeSessionId && s.configuration?.forkNativeSession){const fork=await this.peer.request("thread/fork",{threadId:s.nativeSessionId,cwd:s.workspace});this.ctx.nativeSession(fork.thread.id);delete s.configuration.forkNativeSession;}
+    const result=await this.peer.request(s.nativeSessionId?"thread/resume":"thread/start",{
+      ...(s.nativeSessionId?{threadId:s.nativeSessionId}:{}),cwd:s.workspace,...(s.model?{model:s.model}:{}),...(s.authMode==="multivibe"?{modelProvider:"multivibe"}:{}),
+    });
+    this.threadId=result.thread.id;this.ctx.nativeSession(this.threadId);
+    this.ctx.capabilities(Object.fromEntries(["sessions","history","fork","steer","interrupt","streaming","compaction","tools","skills","mcp","hooks","models","modes","plans","settings","usage","agents","images","interactions","workspace","git","terminals"].map(k=>[k,supported()])));
+  }
+  private async request(method:string,p:any):Promise<unknown> {
+    if(p.threadId && p.threadId!==this.threadId)fail("Approval targets another thread",403);
+    if(method==="item/commandExecution/requestApproval" || method==="item/fileChange/requestApproval") {
+      const a=await this.ctx.ask("permission",p.reason??p.command??"Autoriser cette action Codex ?",{...p,options:[{optionId:"accept",name:"Autoriser une fois",kind:"allow_once"},{optionId:"decline",name:"Refuser",kind:"reject_once"}]});
+      return {decision:a.optionId==="accept"?"accept":"decline"};
+    }
+    if(method==="item/tool/requestUserInput") {const a=await this.ctx.ask("question","Codex attend une réponse",p);return {answers:a.answers??{}};}
+    if(method==="mcpServer/elicitation/request") {const a=await this.ctx.ask("question",p.message??"Un connecteur attend une réponse",p);return {action:a.action??"cancel",...(a.content?{content:a.content}:{})};}
+    if(method==="item/permissions/requestApproval") {
+      const a=await this.ctx.ask("permission","Autoriser les permissions demandées",{...p,options:[{optionId:"accept",name:"Autoriser une fois",kind:"allow_once"},{optionId:"decline",name:"Refuser",kind:"reject_once"}]});
+      return {permissions:a.optionId==="accept"?p.permissions:{},scope:"turn"};
+    }
+    fail(`Unsupported Codex client request: ${method}`,422);
+  }
+  protected event(v:any) {
+    const p=v.params??{};if(p.threadId && this.threadId && p.threadId!==this.threadId)return;
+    if(v.method==="item/agentMessage/delta")this.ctx.emit({type:"message.delta",itemId:p.itemId,payload:{text:p.delta,role:"assistant"}});
+    else if(v.method==="turn/started")this.turnId=p.turn.id;
+    else if(v.method==="turn/completed") {
+      if(p.turn.status==="failed")this.ended?.reject(new Error(p.turn.error?.message??"Codex turn failed"));
+      else this.finish({status:p.turn.status});
+    } else if(v.method==="item/started" || v.method==="item/completed") {
+      const item=p.item??{};
+      if(["commandExecution","fileChange","mcpToolCall","dynamicToolCall","webSearch","imageView","collabAgentToolCall"].includes(item.type))this.ctx.emit({type:item.type==="collabAgentToolCall"?"agent":"tool",itemId:item.id,payload:{phase:v.method,item}});
+      else if(item.type==="contextCompaction")this.ctx.emit({type:"compaction",payload:{phase:v.method,item}});
+      else if(item.type==="plan")this.ctx.emit({type:"plan",payload:item});
+      else this.ctx.emit({type:"native.event",payload:v});
+    } else if(v.method?.includes("tokenUsage"))this.ctx.emit({type:"usage",payload:p});
+    else if(v.method?.includes("reasoning"))this.ctx.emit({type:"reasoning",payload:p});
+    else if(v.method?.includes("outputDelta"))this.ctx.emit({type:"terminal.output",itemId:p.itemId,payload:p});
+    else this.ctx.emit({type:"native.event",payload:v});
+  }
+  private input(parts:MessagePart[]) {
+    return parts.map(p=>{
+      if(p.type==="attachment") {const a=this.ctx.attachment(p.attachmentId);if(a.info.mimeType.startsWith("image/"))return {type:"image",url:`data:${a.info.mimeType};base64,${a.data.toString("base64")}`};}
+      return {type:"text",text:this.text([p]),text_elements:[]};
+    });
+  }
+  async prompt(parts:MessagePart[],steer=false) {
+    if(steer){await this.peer!.request("turn/steer",{threadId:this.threadId,expectedTurnId:this.turnId,input:this.input(parts)});return;}
+    const config=this.ctx.session.configuration??{};
+    await this.untilEnd(async()=>{const r=await this.peer!.request("turn/start",{threadId:this.threadId,input:this.input(parts),...(typeof config.model==="string"?{model:config.model}:{}),...(typeof config.effort==="string"?{effort:config.effort}:{})});this.turnId=r.turn.id;});
+  }
+  async interrupt(){if(this.turnId)await this.peer!.request("turn/interrupt",{threadId:this.threadId,turnId:this.turnId});}
+  async compact(_instructions?:string){return this.peer!.request("thread/compact/start",{threadId:this.threadId});}
+  async inspect(subject:string) {
+    const calls:Record<string,[string,Record<string,unknown>]>={
+      models:["model/list",{}],skills:["skills/list",{cwds:[this.ctx.session.workspace]}],hooks:["hooks/list",{cwds:[this.ctx.session.workspace]}],
+      mcp:["mcpServerStatus/list",{threadId:this.threadId}],tools:["mcpServerStatus/list",{threadId:this.threadId}],settings:["config/read",{}],
+      modes:["collaborationMode/list",{}],history:["thread/read",{threadId:this.threadId,includeTurns:true}],terminals:["thread/backgroundTerminals/list",{threadId:this.threadId}],
+    };
+    const call=calls[subject];return call?this.peer!.request(call[0],call[1]):super.inspect(subject);
+  }
+  async configure(v:Record<string,unknown>) {
+    // turn/start accepts these settings; no global config is rewritten.
+    if(Object.keys(v).some(k=>!["model","effort","mode"].includes(k)))return super.configure(v);
+    this.ctx.session.configuration={...this.ctx.session.configuration,...v};if(typeof v.model==="string")this.ctx.session.model=v.model;
+    return {effectiveFrom:"next_turn",...v};
+  }
+  async native(method:string,params:Record<string,unknown>) {
+    if(["thread/fork","thread/goal/get","thread/goal/set","thread/goal/clear","skills/config/write","config/mcpServer/reload","mcpServer/oauth/login","thread/backgroundTerminals/terminate"].includes(method))return this.peer!.request(method,{...params,threadId:this.threadId});
+    return super.native(method,params);
+  }
+}
+
+class InputQueue {
+  private values:any[]=[];private resolver?:()=>void;private stopped=false;
+  push(v:any){this.values.push(v);this.resolver?.();this.resolver=undefined;}
+  close(){this.stopped=true;this.resolver?.();}
+  async *stream(){while(!this.stopped){if(!this.values.length)await new Promise<void>(r=>{this.resolver=r;});while(this.values.length)yield this.values.shift();}}
+}
+export class ClaudeAdapter extends Adapter {
+  private query:any;private queue=new InputQueue();private abort=new AbortController();
+  async start() {
+    if(this.ctx.target.kind==="container")fail("Claude SDK requires a Host inside the container",422);
+    const moduleName="@anthropic-ai/claude-agent-sdk";const sdk:any=await import(moduleName);
+    const s=this.ctx.session;
+    this.query=sdk.query({prompt:this.queue.stream(),options:{
+      cwd:s.workspace,pathToClaudeCodeExecutable:this.ctx.executable,settingSources:["user","project","local"],
+      systemPrompt:{type:"preset",preset:"claude_code"},includePartialMessages:true,permissionMode:"default",abortController:this.abort,
+      env:harnessEnvironment(),...(s.nativeSessionId?{resume:s.nativeSessionId}:{}),...(s.configuration?.forkNativeSession?{forkSession:true}:{}),...(s.model?{model:s.model}:{}),enableFileCheckpointing:true,
+      canUseTool:async(name:string,input:any,options:any)=>{
+        const question=name==="AskUserQuestion";
+        const answer=await this.ctx.ask(question?"question":"permission",question?"Claude attend une réponse":`Autoriser ${name} ?`,{name,input,toolUseId:options?.toolUseID,...(!question?{options:[{optionId:"allow",name:"Autoriser une fois",kind:"allow_once"},{optionId:"deny",name:"Refuser",kind:"reject_once"}]}:{})});
+        return question?{behavior:"allow",updatedInput:{...input,answers:answer.answers??{}}}:answer.optionId==="allow"?{behavior:"allow",updatedInput:input}:{behavior:"deny",message:"Action refusée par l’utilisateur"};
+      },
+    }});
+    void this.consume().catch(e=>this.ended?.reject(e));
+    this.ctx.capabilities(Object.fromEntries(["sessions","history","fork","interrupt","streaming","tools","skills","commands","mcp","plugins","hooks","images","models","settings","plans","usage","agents","interactions","checkpoints"].map(k=>[k,supported()])));
+  }
+  private async consume() {for await(const event of this.query)this.event(event);}
+  protected event(v:any) {
+    if(v.session_id)this.ctx.nativeSession(v.session_id);
+    if(v.type==="stream_event") {
+      const e=v.event;if(e?.type==="content_block_delta" && e.delta?.type==="text_delta")this.ctx.emit({type:"message.delta",itemId:v.parent_tool_use_id??undefined,payload:{text:e.delta.text,role:"assistant"}});
+      else if(e?.delta?.type==="thinking_delta")this.ctx.emit({type:"reasoning",payload:{text:e.delta.thinking}});
+      else if(e?.content_block?.type==="tool_use")this.ctx.emit({type:"tool",itemId:e.content_block.id,payload:e.content_block});
+    } else if(v.type==="assistant") {
+      for(const p of v.message?.content??[])if(p.type==="tool_use")this.ctx.emit({type:"tool",itemId:p.id,payload:p});
+    } else if(v.type==="user") {
+      for(const p of v.message?.content??[])if(p.type==="tool_result")this.ctx.emit({type:"tool",itemId:p.tool_use_id,payload:{status:p.is_error?"failed":"completed",...p}});
+    } else if(v.type==="result") {
+      this.ctx.emit({type:"usage",payload:{usage:v.usage,modelUsage:v.modelUsage,totalCostUsd:v.total_cost_usd,durationMs:v.duration_ms}});
+      if(v.is_error)this.ended?.reject(new Error(v.errors?.join("; ")??"Claude could not complete this turn"));else this.finish(v);
+    } else if(v.type==="system" && v.subtype==="compact_boundary"){this.ctx.capabilities({compaction:supported()});this.ctx.emit({type:"compaction",payload:v});}
+    else this.ctx.emit({type:"native.event",payload:v});
+  }
+  async prompt(parts:MessagePart[],steer=false) {
+    if(steer)fail("The SDK does not advertise true in-flight steer",422);
+    const content=parts.map(p=>{
+      if(p.type==="attachment"){const a=this.ctx.attachment(p.attachmentId);if(a.info.mimeType.startsWith("image/"))return {type:"image",source:{type:"base64",media_type:a.info.mimeType,data:a.data.toString("base64")}};}
+      return {type:"text",text:this.text([p])};
+    });
+    await this.untilEnd(async()=>{this.queue.push({type:"user",session_id:this.ctx.session.nativeSessionId??"",parent_tool_use_id:null,message:{role:"user",content}});});
+  }
+  async interrupt(){await this.query.interrupt();}
+  async inspect(subject:string) {
+    if(subject==="commands")return this.query.supportedCommands();
+    if(subject==="models")return this.query.supportedModels();
+    if(subject==="mcp" || subject==="tools")return this.query.mcpServerStatus();
+    return super.inspect(subject);
+  }
+  async configure(v:Record<string,unknown>) {
+    if(typeof v.model==="string"){await this.query.setModel(v.model);return {model:v.model};}
+    if(typeof v.permissionMode==="string" && ["default","plan","acceptEdits"].includes(v.permissionMode)){await this.query.setPermissionMode(v.permissionMode);return {permissionMode:v.permissionMode};}
+    return super.configure(v);
+  }
+  async compact(instructions?:string) {
+    const commands=await this.query.supportedCommands();if(!commands.some((c:any)=>c.name==="compact"))return super.compact(instructions);
+    await this.prompt([{type:"text",text:`/compact${instructions?" "+instructions:""}`}]);return {};
+  }
+  async native(method:string,params:Record<string,unknown>) {
+    if(method==="rewindFiles" && typeof params.userMessageId==="string")return this.query.rewindFiles(params.userMessageId,{dryRun:params.dryRun!==false});
+    return super.native(method,params);
+  }
+  close(){this.queue.close();this.abort.abort();this.query?.close();super.close();}
+}
+
+export class OpenCodeAdapter extends Adapter {
+  private child?:ChildProcessWithoutNullStreams;private origin="";private password=randomBytes(24).toString("base64url");private abort=new AbortController();private nativeId="";
+  private headers(){return {authorization:`Basic ${Buffer.from(`opencode:${this.password}`).toString("base64")}`,"content-type":"application/json"};}
+  private async call(method:string,route:string,body?:unknown) {
+    const response=await fetch(`${this.origin}${route}${route.includes("?")?"&":"?"}directory=${encodeURIComponent(this.ctx.session.workspace)}`,{method,headers:this.headers(),...(body!==undefined?{body:JSON.stringify(body)}:{}),signal:AbortSignal.any([this.abort.signal,AbortSignal.timeout(30_000)])});
+    if(!response.ok)fail(`OpenCode ${method} ${route}: HTTP ${response.status}`,502);
+    return response.status===204?{}:response.json();
+  }
+  async start() {
+    if(this.ctx.target.kind==="container")fail("OpenCode HTTP requires a Host inside the container",422);
+    const child=this.child=startProcess(this.ctx,["serve","--hostname","127.0.0.1","--port","0"],{OPENCODE_SERVER_PASSWORD:this.password,OPENCODE_SERVER_USERNAME:"opencode"});
+    this.origin=await new Promise<string>((resolve,reject)=>{
+      let output="";const timer=setTimeout(()=>reject(new Error("OpenCode server startup timed out")),20_000);
+      const consume=(c:Buffer)=>{output=(output+c.toString()).slice(-8000);const match=output.match(/http:\/\/127\.0\.0\.1:(\d+)/u);if(match){clearTimeout(timer);resolve(match[0]);}};
+      child.stdout.on("data",consume);child.stderr.on("data",consume);child.once("error",e=>{clearTimeout(timer);reject(e);});child.once("close",()=>{clearTimeout(timer);reject(new Error("OpenCode server exited"));this.ended?.reject(new Error("OpenCode connection closed"));});
+    });
+    const source=this.ctx.session.nativeSessionId;
+    const session=source?(this.ctx.session.configuration?.forkNativeSession?await this.call("POST",`/session/${encodeURIComponent(source)}/fork`,{}):await this.call("GET",`/session/${encodeURIComponent(source)}`)):await this.call("POST","/session",{title:this.ctx.session.title});
+    if(this.ctx.session.configuration)delete this.ctx.session.configuration.forkNativeSession;
+    this.nativeId=session.id;this.ctx.nativeSession(session.id);
+    await this.subscribe();
+    this.ctx.capabilities(Object.fromEntries(["sessions","history","fork","interrupt","streaming","tools","skills","commands","mcp","models","modes","plans","usage","agents","interactions","images","compaction","checkpoints"].map(k=>[k,supported()])));
+  }
+  private async subscribe() {
+    const response=await fetch(`${this.origin}/event?directory=${encodeURIComponent(this.ctx.session.workspace)}`,{headers:this.headers(),signal:this.abort.signal});if(!response.ok || !response.body)fail("OpenCode events unavailable",502);
+    const reader=response.body.getReader();const decoder=new TextDecoder();let buffer="";
+    void(async()=>{for(;;){const {done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});if(buffer.length>4*1024*1024)throw new Error("OpenCode event exceeds limit");for(;;){const n=buffer.indexOf("\n");if(n<0)break;const line=buffer.slice(0,n).trim();buffer=buffer.slice(n+1);if(line.startsWith("data:")){try{this.event(JSON.parse(line.slice(5)));}catch(e){this.ctx.emit({type:"diagnostic",payload:{message:String(redact((e as Error).message))}});}}}}throw new Error("OpenCode event connection closed");})().catch(e=>{if(!this.abort.signal.aborted)this.ended?.reject(e);});
+  }
+  protected event(v:any) {
+    const p=v.properties??{};const sid=p.sessionID??p.part?.sessionID??p.info?.sessionID;if(sid && sid!==this.nativeId)return;
+    if(v.type==="message.part.updated") {
+      const part=p.part??{};
+      if(part.type==="text")this.ctx.emit({type:"message.part",itemId:part.id,payload:{text:part.text??"",role:"assistant"}});
+      else if(part.type==="tool")this.ctx.emit({type:"tool",itemId:part.callID??part.id,payload:part});
+      else if(part.type==="reasoning")this.ctx.emit({type:"reasoning",payload:part});
+      else this.ctx.emit({type:"artifact",payload:part});
+    } else if(v.type==="message.part.delta")this.ctx.emit({type:"message.delta",itemId:p.partID,payload:{text:p.delta??"",role:"assistant"}});
+    else if(v.type==="session.idle" || (v.type==="session.status" && p.status?.type==="idle")){if(sid===this.nativeId)this.finish(p);}
+    else if(v.type==="session.error"){if(sid===this.nativeId)this.ended?.reject(new Error(p.error?.data?.message??"OpenCode session failed"));}
+    else if(v.type==="permission.asked" || v.type==="permission.updated")void this.ctx.ask("permission",p.permission??"Autoriser cet outil OpenCode ?",{...p,options:[{optionId:"once",name:"Autoriser une fois",kind:"allow_once"},{optionId:"reject",name:"Refuser",kind:"reject_once"}]}).then(a=>this.call("POST",`/permission/${encodeURIComponent(p.id)}/reply`,{reply:a.optionId==="once"?"once":"reject"})).catch(e=>this.ended?.reject(e));
+    else if(v.type==="question.asked")void this.ctx.ask("question","OpenCode attend une réponse",p).then(a=>this.call("POST",`/question/${encodeURIComponent(p.id)}/reply`,{answers:a.answers??[]})).catch(e=>this.ended?.reject(e));
+    else this.ctx.emit({type:"native.event",payload:v});
+  }
+  async prompt(parts:MessagePart[],steer=false) {
+    if(steer)fail("OpenCode does not advertise steer with a turn identity",422);
+    const converted=parts.map(p=>{
+      if(p.type==="attachment"){const a=this.ctx.attachment(p.attachmentId);return {type:"file",mime:a.info.mimeType,filename:a.info.name,url:`data:${a.info.mimeType};base64,${a.data.toString("base64")}`};}
+      return {type:"text",text:this.text([p])};
+    });
+    const model=this.ctx.session.model;const slash=model?.indexOf("/")??-1;
+    const selected=model?(slash>0?{providerID:model.slice(0,slash),modelID:model.slice(slash+1)}:this.ctx.session.authMode==="multivibe"?{providerID:"multivibe",modelID:model}:undefined):undefined;
+    await this.untilEnd(()=>this.call("POST",`/session/${this.nativeId}/prompt_async`,{parts:converted,...(selected?{model:selected}:{}),...(this.ctx.session.configuration?.mode?{agent:this.ctx.session.configuration.mode}:{})}));
+  }
+  async interrupt(){await this.call("POST",`/session/${this.nativeId}/abort`);}
+  async compact(){const model=this.ctx.session.model??"";const slash=model.indexOf("/");if(slash<0)fail("Select a provider/model before manual OpenCode compaction",422);return this.call("POST",`/session/${this.nativeId}/summarize`,{providerID:model.slice(0,slash),modelID:model.slice(slash+1)});}
+  async inspect(subject:string) {
+    const routes:Record<string,string>={history:`/session/${this.nativeId}/message`,models:"/provider",commands:"/command",mcp:"/mcp",tools:"/tool/ids",agents:`/session/${this.nativeId}/children`,plans:`/session/${this.nativeId}/todo`,settings:"/config",modes:"/agent",skills:"/skill"};
+    return routes[subject]?this.call("GET",routes[subject]):super.inspect(subject);
+  }
+  async configure(v:Record<string,unknown>){if(Object.keys(v).some(k=>!["model","mode"].includes(k)))return super.configure(v);this.ctx.session.configuration={...this.ctx.session.configuration,...v};if(typeof v.model==="string")this.ctx.session.model=v.model;return {effectiveFrom:"next_turn",...v};}
+  async native(method:string,params:Record<string,unknown>){
+    if(method==="fork")return this.call("POST",`/session/${this.nativeId}/fork`,params);
+    if(method==="revert" && typeof params.messageID==="string")return this.call("POST",`/session/${this.nativeId}/revert`,params);
+    if(method==="unrevert")return this.call("POST",`/session/${this.nativeId}/unrevert`);
+    return super.native(method,params);
+  }
+  close(){this.abort.abort();this.child?.kill("SIGTERM");super.close();}
+}
+
+export function adapterFor(ctx:AdapterContext):HarnessAdapter {
+  switch(ctx.session.harnessId){
+    case "hermes-agent":return new AcpAdapter(ctx,["acp"]);
+    case "gemini-cli":return new AcpAdapter(ctx,["--acp"]);
+    case "pi":return new PiAdapter(ctx);
+    case "openai-codex":return new CodexAdapter(ctx);
+    case "claude-code":return new ClaudeAdapter(ctx);
+    case "opencode":return new OpenCodeAdapter(ctx);
+    default: {
+      const args=ctx.session.configuration?.acpArgs;
+      if(Array.isArray(args) && args.every(v=>typeof v==="string"))return new AcpAdapter(ctx,args);
+      return fail("No conversation adapter is registered for this harness",422);
+    }
+  }
+}
