@@ -749,10 +749,6 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
       .replaceAll("__MULTIVIBE_MACOS_MINIMUM_VERSION__", macOSMinimumVersion);
     await writeFile(path.join(contents, "Info.plist"), info);
     await cp(
-      path.join(repositoryRoot, "assets", "brand", "favicon", "favicon-32x32.png"),
-      path.join(contents, "Resources", "MultiVibeMenuBarIcon.png"),
-    );
-    await cp(
       path.join(repositoryRoot, "packaging", "macos", "MultiVibeMenuBarTemplate.png"),
       path.join(contents, "Resources", "MultiVibeMenuBarTemplate.png"),
     );

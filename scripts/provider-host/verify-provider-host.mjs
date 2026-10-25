@@ -1321,7 +1321,7 @@ async function validateTree(root, options, archiveInspection) {
     `${macPrefix}/Resources/ollama-runtime/.multivibe-bundle.json`, `${macPrefix}/Helpers/multivibe-provider-agent`,
     `${macPrefix}/Helpers/multivibe-runtime-benchmark`,
     `${macPrefix}/MacOS/multivibe-host`, `${macPrefix}/MacOS/MultiVibe Host`,
-    `${macPrefix}/Resources/MultiVibeMenuBarIcon.png`, `${macPrefix}/Resources/MultiVibeMenuBarTemplate.png`,
+    `${macPrefix}/Resources/MultiVibeMenuBarTemplate.png`,
     `${macPrefix}/Resources/MultiVibe.icns`,
     `${macPrefix}/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework`,
     `${macPrefix}/Frameworks/MultiVibe Chromium Helper.app/Contents/MacOS/MultiVibe Chromium Helper`,

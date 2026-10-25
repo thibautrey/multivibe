@@ -20,6 +20,18 @@ test("the macOS status item uses a transparent high-resolution template image", 
   assert.ok(hasAlphaChannel || hasTransparentPaletteEntry);
 });
 
+test("the macOS popover header uses the official application icon", async () => {
+  const [layout, packager, verifier] = await Promise.all([
+    read("packaging/macos/HostPopoverController+Layout.swift"),
+    read("scripts/provider-host/package-provider-host.mjs"),
+    read("scripts/provider-host/verify-provider-host.mjs"),
+  ]);
+  assert.match(layout, /icon\.image = NSApplication\.shared\.applicationIconImage/u);
+  assert.doesNotMatch(layout, /waveform\.path|MultiVibeMenuBarIcon\.png/u);
+  assert.doesNotMatch(packager, /MultiVibeMenuBarIcon\.png/u);
+  assert.doesNotMatch(verifier, /MultiVibeMenuBarIcon\.png/u);
+});
+
 test("the macOS disk image uses a non-interactive drag-to-install layout", async () => {
   const [image, packager, verifier] = await Promise.all([
     readFile(path.join(root, "packaging", "macos", "dmg-background.png")),
@@ -51,7 +63,7 @@ test("native packages include the updater and platform schedulers", async () => 
   assert.match(packager, /path\.join\(contents, "Helpers", "multivibe-v1-edge"\)/u);
   assert.match(packager, /buildGo\(\s*path\.join\(repositoryRoot, "host", "menu"\)/u);
   assert.match(packager, /CGO_ENABLED: selectedTarget\.goos === "linux" \? "1" : "0"/u);
-  assert.match(packager, /favicon-32x32\.png/u);
+  assert.match(packager, /favicon-1024\.png/u);
   assert.match(packager, /MultiVibeMenuBarTemplate\.png/u);
   assert.match(verifier, /MultiVibeMenuBarTemplate\.png/u);
   assert.match(packager, /path\.join\(contents, "Resources", "update", "install\.sh"\)/u);
