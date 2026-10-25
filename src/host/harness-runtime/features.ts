@@ -61,7 +61,7 @@ function item(subject: typeof SECTIONS[number], row: any, index: number, harness
 export function harnessFeatures(harnessId: string, capabilities: Record<string, HarnessCapability>, inspected: Record<string, unknown>): HarnessFeatureItem[] {
   const result: HarnessFeatureItem[] = [];
   if (harnessId === "openai-codex") result.push({id:"action:goal",section:"actions",name:"Goal",description:"Set a goal for this conversation to keep pursuing",action:"goal"});
-  if (capabilities.compaction?.available || rows("commands", inspected.commands).some(row => String(row?.name ?? row).replace(/^\//u, "") === "compact")) {
+  if (["openai-codex","opencode"].includes(harnessId) || capabilities.compaction?.available || rows("commands", inspected.commands).some(row => String(row?.name ?? row).replace(/^\//u, "") === "compact")) {
     result.push({id:"action:compact",section:"actions",name:"Compact context",description:"Ask the harness to reduce the active context",action:"compact"});
   }
   for (const subject of SECTIONS) {
@@ -70,7 +70,7 @@ export function harnessFeatures(harnessId: string, capabilities: Record<string, 
   const represented = new Set(result.map(v => v.subject).filter(Boolean));
   for (const [name, capability] of Object.entries(capabilities).sort(([a],[b]) => a.localeCompare(b))) {
     if (!capability.available || ["sessions","streaming","attachments"].includes(name) || represented.has(name)) continue;
-    result.push({id:`capability:${name}`,section:"capabilities",name,description:capability.reason??capability.support,action:"inspect",subject:name});
+    result.push({id:`capability:${name}`,section:"capabilities",name,description:capability.reason??capability.support,action:"inspect",subject:"capabilities"});
   }
   return [...new Map(result.map(value => [value.id, value])).values()];
 }
