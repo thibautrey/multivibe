@@ -519,15 +519,20 @@ struct NativeChatConversation: Codable, Identifiable {
         let destination = index + (up ? -1 : 1); guard queue.indices.contains(destination) else { return }; queue.swapAt(index, destination); conversations[i].nativeQueue = queue; save()
     }
     func importRuntimeSession(_ session: DesktopHarnessSession, target: String) {
-        if let existing = conversations.first(where: { $0.runtimeSessionID == session.id && ($0.executionTargetID ?? "local") == target }) {
-            selection = existing.id; save(); attachRuntime(existing.id); return
+        if let index = conversations.firstIndex(where: {
+            ($0.executionTargetID ?? "local") == target && ($0.runtimeSessionID == session.id ||
+            (["librechat", "openwebui"].contains(session.harnessId) && $0.harnessID == session.harnessId && $0.remoteChatID == session.nativeSessionId && $0.remoteConnectionID != nil && $0.remoteConnectionID == session.configuration?["connectionId"].string))
+        }) {
+            conversations[index].runtimeSessionID = session.id; conversations[index].runtimeSession = session
+            bindRemoteSession(session, at: index)
+            let id = conversations[index].id; selection = id; save(); attachRuntime(id); return
         }
         var id = UUID(uuidString: session.id) ?? UUID()
         if conversations.contains(where: { $0.id == id }) { id = UUID() }
         var conversation = NativeChatConversation(); conversation.id = id; conversation.title = session.title
         conversation.model = session.model ?? ""; conversation.harnessID = session.harnessId; conversation.runtimeSessionID = session.id
         conversation.runtimeSession = session; conversation.executionTargetID = target; conversation.authMode = session.authMode; conversation.workspace = session.workspace
-        conversations.insert(conversation, at: 0); selection = id; save(); attachRuntime(id)
+        conversations.insert(conversation, at: 0); bindRemoteSession(session, at: 0); selection = id; save(); attachRuntime(id)
     }
     private func bindRemoteSession(_ session: DesktopHarnessSession, at index: Int) {
         guard ["librechat", "openwebui"].contains(session.harnessId), let nativeID = session.nativeSessionId,
@@ -602,8 +607,11 @@ struct NativeChatConversation: Codable, Identifiable {
         let snapshot = try result["conversation"].decode(DesktopRemoteChatSnapshot.self)
         guard let index = conversations.firstIndex(where: { $0.id == id }), !isGenerating(id), conversations[index].remoteConnectionID == conversation.remoteConnectionID else { return }
         guard snapshot.id == remoteID else { throw DesktopHarnessError.invalidResponse }
-        if conversations[index].remoteRevision == snapshot.revision { return }
         let existing = conversations[index].messages
+        let matches = existing.count == snapshot.messages.count && zip(existing, snapshot.messages).allSatisfy { local, remote in
+            local.remoteMessageID == remote.id && local.content == remote.content && local.role == remote.role && local.interrupted == !remote.done
+        }
+        if conversations[index].remoteRevision == snapshot.revision && matches { return }
         conversations[index].messages = snapshot.messages.map { remote in
             var message = existing.first { $0.remoteMessageID == remote.id } ?? NativeChatMessage(role: remote.role, content: remote.content)
             message.remoteMessageID = remote.id; message.content = remote.content; message.interrupted = !remote.done
