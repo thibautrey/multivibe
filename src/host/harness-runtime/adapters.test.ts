@@ -1,0 +1,93 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { AcpAdapter, PiAdapter, CodexAdapter, ClaudeAdapter, OpenCodeAdapter } from "./adapters.js";
+import { capabilities, type AdapterContext, type AdapterEvent, type HarnessSession } from "./types.js";
+
+const fixtureProgram=String.raw`#!/usr/bin/env node
+const fs=require('node:fs');const readline=require('node:readline');
+const send=v=>process.stdout.write(JSON.stringify(v)+'\n');
+const codex=process.argv.includes('app-server');let compacting=false;
+const reply=(v,result)=>send(v.type?{type:'response',id:v.id,command:v.type,success:true,data:result}:{jsonrpc:'2.0',id:v.id,result});
+const notify=(method,params)=>send({jsonrpc:'2.0',method,params});
+if(process.argv.includes('serve')){
+ const http=require('node:http');let stream;const expected='Basic '+Buffer.from('opencode:'+process.env.OPENCODE_SERVER_PASSWORD).toString('base64');
+ const server=http.createServer((req,res)=>{
+  if(req.headers.authorization!==expected){res.writeHead(401).end();return;}
+  if(req.url.startsWith('/event')){stream=res;res.writeHead(200,{'content-type':'text/event-stream'});res.flushHeaders();return;}
+  if(req.url.startsWith('/session') && req.method==='POST' && !req.url.includes('/prompt_async')){res.setHeader('content-type','application/json');res.end(JSON.stringify({id:'open-session'}));return;}
+  if(req.url.includes('/prompt_async')){
+   res.writeHead(204).end();setTimeout(()=>{
+    for(const v of [{type:'message.part.updated',properties:{part:{id:'p',sessionID:'another-session',type:'text',text:'MUST NOT LEAK'}}},{type:'message.part.updated',properties:{part:{id:'p',sessionID:'open-session',type:'text',text:'hello'}}},{type:'session.status',properties:{sessionID:'open-session',status:{type:'idle'}}}])stream.write('data: '+JSON.stringify(v)+'\n\n');
+   },15);return;
+  }
+  res.setHeader('content-type','application/json');res.end('{}');
+ });server.listen(0,'127.0.0.1',()=>console.log('opencode server listening on http://127.0.0.1:'+server.address().port));
+}else readline.createInterface({input:process.stdin}).on('line',line=>{
+ const v=JSON.parse(line),m=v.method??v.type,p=v.params??v;
+ if(m==='initialize')reply(v,codex?{}:{protocolVersion:1,agentCapabilities:{loadSession:true,promptCapabilities:{embeddedContext:true}}});
+ else if(m==='session/new')reply(v,{sessionId:'acp-session'});
+ else if(m==='thread/start')reply(v,{thread:{id:'codex-thread'}});
+ else if(m==='session/prompt'){
+  notify('session/update',{sessionId:'acp-session',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'ACP text'}}});
+  send({jsonrpc:'2.0',id:'approval',method:'session/request_permission',params:{sessionId:'acp-session',toolCall:{title:'write'},options:[{optionId:'deny',kind:'reject_once'}]}});
+  global.prompt=v;
+ }else if(v.id==='approval'){
+  if(v.result.outcome.optionId!=='deny')process.exit(9);
+  notify('session/update',{sessionId:'acp-session',update:{sessionUpdate:'tool_call_update',toolCallId:'tool',status:'failed'}});reply(global.prompt,{stopReason:'end_turn'});
+ }else if(m==='get_state')reply(v,{sessionFile:'/tmp/pi-fixture.jsonl',isStreaming:false,isCompacting:compacting,pendingMessageCount:0});
+ else if(m==='prompt'){
+  reply(v,{});compacting=true;
+  send({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:'Pi text'}});send({type:'agent_end'});
+  setTimeout(()=>{compacting=false;send({type:'compaction_end',result:{summary:'retained'}});send({type:'agent_settled'});},25);
+ }else if(m==='turn/start'){
+  reply(v,{turn:{id:'native-turn'}});notify('turn/started',{threadId:'codex-thread',turn:{id:'native-turn'}});notify('item/agentMessage/delta',{threadId:'codex-thread',itemId:'a',delta:'Codex text'});
+ }else if(m==='turn/steer'){
+  if(p.expectedTurnId!=='native-turn')process.exit(8);reply(v,{turnId:'native-turn'});notify('turn/completed',{threadId:'codex-thread',turn:{id:'native-turn',status:'completed'}});
+ }else if(m==='thread/compact/start'){reply(v,{});setTimeout(()=>notify('thread/compacted',{threadId:'codex-thread'}),25);}
+ else if(v.id && m!=='initialized')reply(v,{});
+});
+`;
+function fixture(t:any,harnessId:string) {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),"multivibe-adapter-test-"));const executable=path.join(root,"harness.cjs");fs.writeFileSync(executable,fixtureProgram,{mode:0o700});t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const events:AdapterEvent[]=[];const session={id:"test-session",harnessId,targetId:"local",workspace:root,title:"fixture",authMode:"native",state:"idle",queuePaused:false,revision:0,archived:false,pinned:false,createdAt:1,updatedAt:1,capabilities:capabilities()} as HarnessSession;
+  const questions:any[]=[];
+  const ctx:AdapterContext={session,root,executable,target:{id:"local",name:"test",kind:"local"},emit:e=>events.push(e),nativeSession:id=>{session.nativeSessionId=id;},capabilities:c=>Object.assign(session.capabilities,c),attachment:()=>{throw new Error("not requested");},ask:async(kind,title,detail)=>{questions.push({kind,title,detail});return {optionId:"deny"};}};
+  return {ctx,events,questions};
+}
+test("ACP negotiates capabilities, normalizes events and roundtrips a denied permission",async t=>{
+  const f=fixture(t,"hermes-agent");const adapter=new AcpAdapter(f.ctx,["acp"]);t.after(()=>adapter.close());await adapter.start();
+  assert.equal(f.ctx.session.capabilities.images.support,"unsupported");assert.equal(f.ctx.session.capabilities.steer.support,"unknown");
+  await adapter.prompt([{type:"text",text:"read only"}]);
+  assert.equal(f.questions.length,1);assert.ok(f.events.some(e=>e.type==="message.delta" && (e.payload as any).text==="ACP text"));assert.ok(f.events.some(e=>e.type==="tool" && (e.payload as any).status==="failed"));
+  await assert.rejects(adapter.prompt([{type:"text",text:"steer"}],true),/steering/u);
+});
+test("Gemini uses the same negotiated ACP contract without assuming extra capabilities",async t=>{
+  const f=fixture(t,"gemini-cli");const adapter=new AcpAdapter(f.ctx,["--acp"]);t.after(()=>adapter.close());await adapter.start();await adapter.prompt([{type:"text",text:"hello"}]);assert.equal(f.ctx.session.nativeSessionId,"acp-session");
+});
+test("Pi waits for compaction/settlement rather than treating agent_end as completion",async t=>{
+  const f=fixture(t,"pi");const adapter=new PiAdapter(f.ctx);t.after(()=>adapter.close());await adapter.start();await adapter.prompt([{type:"text",text:"hello"}]);
+  const compact=f.events.findIndex(e=>e.type==="compaction");const settled=f.events.findIndex(e=>e.type==="turn.status");assert.ok(compact>=0 && settled>compact);
+});
+test("Codex steering targets the actual native turn and manual compaction waits for completion",async t=>{
+  const f=fixture(t,"openai-codex");const adapter=new CodexAdapter(f.ctx);t.after(()=>adapter.close());await adapter.start();
+  const turn=adapter.prompt([{type:"text",text:"hello"}]);
+  const deadline=Date.now()+2000;while(!f.events.some(e=>e.type==="message.delta")){if(Date.now()>deadline)assert.fail("No Codex delta");await new Promise(r=>setTimeout(r,10));}
+  await adapter.prompt([{type:"text",text:"direction"}],true);await turn;
+  await adapter.compact();assert.ok(f.events.some(e=>e.type==="compaction"));
+});
+test("Claude SDK preserves continuous input and surfaces native usage/tool events",async t=>{
+  const f=fixture(t,"claude-code");let settings:any;
+  const sdk={query:(options:any)=>{settings=options.options;return {
+    async *[Symbol.asyncIterator](){for await(const input of options.prompt){assert.equal(input.message.content[0].text,"hello");yield {type:"system",session_id:"claude-native"};yield {type:"stream_event",event:{type:"content_block_delta",delta:{type:"text_delta",text:"Claude text"}}};yield {type:"result",is_error:false,usage:{input_tokens:2},total_cost_usd:0};}},
+    close(){},interrupt:async()=>{},supportedModels:async()=>[],
+  };}};
+  const adapter=new ClaudeAdapter(f.ctx,async()=>sdk);t.after(()=>adapter.close());await adapter.start();await adapter.prompt([{type:"text",text:"hello"}]);
+  assert.equal(settings.permissionMode,"default");assert.deepEqual(settings.settingSources,["user","project","local"]);assert.equal(f.ctx.session.nativeSessionId,"claude-native");assert.ok(f.events.some(e=>e.type==="usage"));
+});
+test("OpenCode authenticates its loopback API and filters events from other sessions",async t=>{
+  const f=fixture(t,"opencode");const adapter=new OpenCodeAdapter(f.ctx);t.after(()=>adapter.close());await adapter.start();await adapter.prompt([{type:"text",text:"hello"}]);
+  assert.ok(f.events.some(e=>e.type==="message.part" && (e.payload as any).text==="hello"));assert.ok(!JSON.stringify(f.events).includes("MUST NOT LEAK"));
+});

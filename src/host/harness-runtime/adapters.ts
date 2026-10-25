@@ -12,10 +12,11 @@ abstract class Adapter implements HarnessAdapter {
   protected services: ClientServices;
   constructor(protected ctx:AdapterContext) {this.services=new ClientServices(ctx);}
   protected connect(args:string[],rpc=true) {
-    this.peer=new JsonPeer(startProcess(this.ctx,args),v=>this.event(v),(m,p)=>this.services.request(m,p),e=>this.ended?.reject(e),text=>this.ctx.emit({type:"diagnostic",payload:{message:text}}),rpc);
+    this.peer=new JsonPeer(startProcess(this.ctx,args),v=>this.event(v),(m,p)=>this.services.request(m,p),e=>this.rejectTurn(e),text=>this.ctx.emit({type:"diagnostic",payload:{message:text}}),rpc);
     return this.peer;
   }
   protected finish(payload:unknown={}) {this.ctx.emit({type:"turn.status",payload});const end=this.ended;this.ended=undefined;end?.resolve();}
+  protected rejectTurn(error:Error){const end=this.ended;this.ended=undefined;end?.reject(error);}
   protected wait() {if(this.ended)fail("A turn is already active",409);return new Promise<void>((resolve,reject)=>{this.ended={resolve,reject};});}
   protected async untilEnd(send:()=>Promise<unknown>) {
     const done=this.wait();
@@ -174,7 +175,7 @@ export class PiAdapter extends Adapter {
     } else if(v.type==="agent_settled")this.finish(v);
     else if(v.type==="agent_end") {
       // Older Pi versions have no agent_settled. Query its actual queue/compaction state.
-      void this.peer!.request("get_state").then(s=>{if(!s?.isStreaming && !s?.isCompacting && !(s?.pendingMessageCount>0))this.finish(v);}).catch(e=>this.ended?.reject(e));
+      void this.peer!.request("get_state").then(s=>{if(!s?.isStreaming && !s?.isCompacting && !(s?.pendingMessageCount>0))this.finish(v);}).catch(e=>this.rejectTurn(e));
     } else if(v.type==="tool_execution_start" || v.type==="tool_execution_update" || v.type==="tool_execution_end")this.ctx.emit({type:"tool",itemId:v.toolCallId,payload:v});
     else if(/compaction|retry/u.test(v.type??""))this.ctx.emit({type:v.type.includes("compaction")?"compaction":"retry",payload:v});
     else if(v.type==="extension_ui_request") {
@@ -209,10 +210,11 @@ export class PiAdapter extends Adapter {
 
 export class CodexAdapter extends Adapter {
   private threadId="";private turnId="";
+  private compactionDone?:{resolve:(v:unknown)=>void;reject:(e:Error)=>void};
   async start() {
     const args=["app-server"];
     const child=startProcess(this.ctx,args);
-    this.peer=new JsonPeer(child,v=>this.event(v),(m,p)=>this.request(m,p),e=>this.ended?.reject(e),text=>this.ctx.emit({type:"diagnostic",payload:{message:text}}));
+    this.peer=new JsonPeer(child,v=>this.event(v),(m,p)=>this.request(m,p),e=>this.rejectTurn(e),text=>this.ctx.emit({type:"diagnostic",payload:{message:text}}));
     await this.peer.request("initialize",{clientInfo:{name:"multivibe",version:"1"},capabilities:{experimentalApi:true}});
     this.peer.notify("initialized");
     const s=this.ctx.session;
@@ -242,15 +244,16 @@ export class CodexAdapter extends Adapter {
     if(v.method==="item/agentMessage/delta")this.ctx.emit({type:"message.delta",itemId:p.itemId,payload:{text:p.delta,role:"assistant"}});
     else if(v.method==="turn/started")this.turnId=p.turn.id;
     else if(v.method==="turn/completed") {
-      if(p.turn.status==="failed")this.ended?.reject(new Error(p.turn.error?.message??"Codex turn failed"));
+      if(p.turn.status==="failed")this.rejectTurn(new Error(p.turn.error?.message??"Codex turn failed"));
       else this.finish({status:p.turn.status});
     } else if(v.method==="item/started" || v.method==="item/completed") {
       const item=p.item??{};
       if(["commandExecution","fileChange","mcpToolCall","dynamicToolCall","webSearch","imageView","collabAgentToolCall"].includes(item.type))this.ctx.emit({type:item.type==="collabAgentToolCall"?"agent":"tool",itemId:item.id,payload:{phase:v.method,item}});
-      else if(item.type==="contextCompaction")this.ctx.emit({type:"compaction",payload:{phase:v.method,item}});
+      else if(item.type==="contextCompaction"){this.ctx.emit({type:"compaction",payload:{phase:v.method,item}});if(v.method==="item/completed"){this.compactionDone?.resolve(item);this.compactionDone=undefined;}}
       else if(item.type==="plan")this.ctx.emit({type:"plan",payload:item});
       else this.ctx.emit({type:"native.event",payload:v});
-    } else if(v.method?.includes("tokenUsage"))this.ctx.emit({type:"usage",payload:p});
+    } else if(v.method==="thread/compacted"){this.ctx.emit({type:"compaction",payload:p});this.compactionDone?.resolve(p);this.compactionDone=undefined;}
+    else if(v.method?.includes("tokenUsage"))this.ctx.emit({type:"usage",payload:p});
     else if(v.method?.includes("reasoning"))this.ctx.emit({type:"reasoning",payload:p});
     else if(v.method?.includes("outputDelta"))this.ctx.emit({type:"terminal.output",itemId:p.itemId,payload:p});
     else this.ctx.emit({type:"native.event",payload:v});
@@ -267,7 +270,12 @@ export class CodexAdapter extends Adapter {
     await this.untilEnd(async()=>{const r=await this.peer!.request("turn/start",{threadId:this.threadId,input:this.input(parts),...(typeof config.model==="string"?{model:config.model}:{}),...(typeof config.effort==="string"?{effort:config.effort}:{})});this.turnId=r.turn.id;});
   }
   async interrupt(){if(this.turnId)await this.peer!.request("turn/interrupt",{threadId:this.threadId,turnId:this.turnId});}
-  async compact(_instructions?:string){return this.peer!.request("thread/compact/start",{threadId:this.threadId});}
+  async compact(instructions?:string){
+    if(instructions)fail("This Codex protocol does not expose custom compaction instructions",422);
+    const completion=new Promise<unknown>((resolve,reject)=>{this.compactionDone={resolve,reject};});
+    try{const [,result]=await Promise.all([this.peer!.request("thread/compact/start",{threadId:this.threadId}),completion]);return result;}
+    finally{this.compactionDone=undefined;}
+  }
   async inspect(subject:string) {
     const calls:Record<string,[string,Record<string,unknown>]>={
       models:["model/list",{}],skills:["skills/list",{cwds:[this.ctx.session.workspace]}],hooks:["hooks/list",{cwds:[this.ctx.session.workspace]}],
@@ -296,9 +304,10 @@ class InputQueue {
 }
 export class ClaudeAdapter extends Adapter {
   private query:any;private queue=new InputQueue();private abort=new AbortController();
+  constructor(ctx:AdapterContext,private sdkLoader?:()=>Promise<any>){super(ctx);}
   async start() {
     if(this.ctx.target.kind==="container")fail("Claude SDK requires a Host inside the container",422);
-    const moduleName="@anthropic-ai/claude-agent-sdk";const sdk:any=await import(moduleName);
+    const moduleName="@anthropic-ai/claude-agent-sdk";const sdk:any=this.sdkLoader?await this.sdkLoader():await import(moduleName);
     const s=this.ctx.session;
     this.query=sdk.query({prompt:this.queue.stream(),options:{
       cwd:s.workspace,pathToClaudeCodeExecutable:this.ctx.executable,settingSources:["user","project","local"],
@@ -310,7 +319,7 @@ export class ClaudeAdapter extends Adapter {
         return question?{behavior:"allow",updatedInput:{...input,answers:answer.answers??{}}}:answer.optionId==="allow"?{behavior:"allow",updatedInput:input}:{behavior:"deny",message:"Action refusée par l’utilisateur"};
       },
     }});
-    void this.consume().catch(e=>this.ended?.reject(e));
+    void this.consume().catch(e=>this.rejectTurn(e));
     this.ctx.capabilities(Object.fromEntries(["sessions","history","fork","interrupt","streaming","tools","skills","commands","mcp","plugins","hooks","images","models","settings","plans","usage","agents","interactions","checkpoints"].map(k=>[k,supported()])));
   }
   private async consume() {for await(const event of this.query)this.event(event);}
@@ -326,7 +335,7 @@ export class ClaudeAdapter extends Adapter {
       for(const p of v.message?.content??[])if(p.type==="tool_result")this.ctx.emit({type:"tool",itemId:p.tool_use_id,payload:{status:p.is_error?"failed":"completed",...p}});
     } else if(v.type==="result") {
       this.ctx.emit({type:"usage",payload:{usage:v.usage,modelUsage:v.modelUsage,totalCostUsd:v.total_cost_usd,durationMs:v.duration_ms}});
-      if(v.is_error)this.ended?.reject(new Error(v.errors?.join("; ")??"Claude could not complete this turn"));else this.finish(v);
+      if(v.is_error)this.rejectTurn(new Error(v.errors?.join("; ")??"Claude could not complete this turn"));else this.finish(v);
     } else if(v.type==="system" && v.subtype==="compact_boundary"){this.ctx.capabilities({compaction:supported()});this.ctx.emit({type:"compaction",payload:v});}
     else this.ctx.emit({type:"native.event",payload:v});
   }
@@ -375,7 +384,7 @@ export class OpenCodeAdapter extends Adapter {
     this.origin=await new Promise<string>((resolve,reject)=>{
       let output="";const timer=setTimeout(()=>reject(new Error("OpenCode server startup timed out")),20_000);
       const consume=(c:Buffer)=>{output=(output+c.toString()).slice(-8000);const match=output.match(/http:\/\/127\.0\.0\.1:(\d+)/u);if(match){clearTimeout(timer);resolve(match[0]);}};
-      child.stdout.on("data",consume);child.stderr.on("data",consume);child.once("error",e=>{clearTimeout(timer);reject(e);});child.once("close",()=>{clearTimeout(timer);reject(new Error("OpenCode server exited"));this.ended?.reject(new Error("OpenCode connection closed"));});
+      child.stdout.on("data",consume);child.stderr.on("data",consume);child.once("error",e=>{clearTimeout(timer);reject(e);});child.once("close",()=>{clearTimeout(timer);reject(new Error("OpenCode server exited"));this.rejectTurn(new Error("OpenCode connection closed"));});
     });
     const source=this.ctx.session.nativeSessionId;
     const session=source?(this.ctx.session.configuration?.forkNativeSession?await this.call("POST",`/session/${encodeURIComponent(source)}/fork`,{}):await this.call("GET",`/session/${encodeURIComponent(source)}`)):await this.call("POST","/session",{title:this.ctx.session.title});
@@ -387,7 +396,7 @@ export class OpenCodeAdapter extends Adapter {
   private async subscribe() {
     const response=await fetch(`${this.origin}/event?directory=${encodeURIComponent(this.ctx.session.workspace)}`,{headers:this.headers(),signal:this.abort.signal});if(!response.ok || !response.body)fail("OpenCode events unavailable",502);
     const reader=response.body.getReader();const decoder=new TextDecoder();let buffer="";
-    void(async()=>{for(;;){const {done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});if(buffer.length>4*1024*1024)throw new Error("OpenCode event exceeds limit");for(;;){const n=buffer.indexOf("\n");if(n<0)break;const line=buffer.slice(0,n).trim();buffer=buffer.slice(n+1);if(line.startsWith("data:")){try{this.event(JSON.parse(line.slice(5)));}catch(e){this.ctx.emit({type:"diagnostic",payload:{message:String(redact((e as Error).message))}});}}}}throw new Error("OpenCode event connection closed");})().catch(e=>{if(!this.abort.signal.aborted)this.ended?.reject(e);});
+    void(async()=>{for(;;){const {done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});if(buffer.length>4*1024*1024)throw new Error("OpenCode event exceeds limit");for(;;){const n=buffer.indexOf("\n");if(n<0)break;const line=buffer.slice(0,n).trim();buffer=buffer.slice(n+1);if(line.startsWith("data:")){try{this.event(JSON.parse(line.slice(5)));}catch(e){this.ctx.emit({type:"diagnostic",payload:{message:String(redact((e as Error).message))}});}}}}throw new Error("OpenCode event connection closed");})().catch(e=>{if(!this.abort.signal.aborted)this.rejectTurn(e);});
   }
   protected event(v:any) {
     const p=v.properties??{};const sid=p.sessionID??p.part?.sessionID??p.info?.sessionID;if(sid && sid!==this.nativeId)return;
@@ -399,9 +408,9 @@ export class OpenCodeAdapter extends Adapter {
       else this.ctx.emit({type:"artifact",payload:part});
     } else if(v.type==="message.part.delta")this.ctx.emit({type:"message.delta",itemId:p.partID,payload:{text:p.delta??"",role:"assistant"}});
     else if(v.type==="session.idle" || (v.type==="session.status" && p.status?.type==="idle")){if(sid===this.nativeId)this.finish(p);}
-    else if(v.type==="session.error"){if(sid===this.nativeId)this.ended?.reject(new Error(p.error?.data?.message??"OpenCode session failed"));}
-    else if(v.type==="permission.asked" || v.type==="permission.updated")void this.ctx.ask("permission",p.permission??"Autoriser cet outil OpenCode ?",{...p,options:[{optionId:"once",name:"Autoriser une fois",kind:"allow_once"},{optionId:"reject",name:"Refuser",kind:"reject_once"}]}).then(a=>this.call("POST",`/permission/${encodeURIComponent(p.id)}/reply`,{reply:a.optionId==="once"?"once":"reject"})).catch(e=>this.ended?.reject(e));
-    else if(v.type==="question.asked")void this.ctx.ask("question","OpenCode attend une réponse",p).then(a=>this.call("POST",`/question/${encodeURIComponent(p.id)}/reply`,{answers:a.answers??[]})).catch(e=>this.ended?.reject(e));
+    else if(v.type==="session.error"){if(sid===this.nativeId)this.rejectTurn(new Error(p.error?.data?.message??"OpenCode session failed"));}
+    else if(v.type==="permission.asked" || v.type==="permission.updated")void this.ctx.ask("permission",p.permission??"Autoriser cet outil OpenCode ?",{...p,options:[{optionId:"once",name:"Autoriser une fois",kind:"allow_once"},{optionId:"reject",name:"Refuser",kind:"reject_once"}]}).then(a=>this.call("POST",`/permission/${encodeURIComponent(p.id)}/reply`,{reply:a.optionId==="once"?"once":"reject"})).catch(e=>this.rejectTurn(e));
+    else if(v.type==="question.asked")void this.ctx.ask("question","OpenCode attend une réponse",p).then(a=>this.call("POST",`/question/${encodeURIComponent(p.id)}/reply`,{answers:a.answers??[]})).catch(e=>this.rejectTurn(e));
     else this.ctx.emit({type:"native.event",payload:v});
   }
   async prompt(parts:MessagePart[],steer=false) {

@@ -94,11 +94,20 @@ test("attachments verify checksum, ownership, size and preserve private permissi
   const {runtime}=fixture(t);const a=await runtime.create({harnessId:"pi"}),b=await runtime.create({harnessId:"pi"});
   const attachment=runtime.store.attach(a.id,"../notes.txt","text/plain",Buffer.from("hello").toString("base64"));
   assert.equal(attachment.name,"notes.txt");const file=runtime.store.attachment(a.id,attachment.id);assert.equal(file.data.toString(),"hello");
+  assert.equal(runtime.store.attach(a.id,"notes.txt","text/plain",Buffer.from("hello").toString("base64")).id,attachment.id);
   assert.equal(fs.statSync(file.path).mode&0o777,0o600);
   assert.throws(()=>runtime.store.attachment(b.id,attachment.id),/belong/u);
   assert.throws(()=>runtime.store.attach(a.id,"x","text/plain","aGVsbG8=","wrong"),/checksum/u);
   await assert.rejects(runtime.command(b.id,{...prompt(""),parts:[{type:"attachment",attachmentId:attachment.id}]}),/belong/u);
   fs.writeFileSync(file.path,"tampered");assert.throws(()=>runtime.store.attachment(a.id,attachment.id),/integrity/u);
+});
+test("large native catalog events become downloadable artifacts instead of terminating the runtime",async t=>{
+  const {runtime}=fixture(t);const session=await runtime.create({harnessId:"pi"});
+  const payload={models:Array.from({length:256},(_,i)=>({name:`model-${i}`,description:"data".repeat(1200)}))};
+  const event=runtime.store.event(session.id,"catalog",payload);
+  assert.equal((event.payload as any).truncated,true);
+  const artifact=runtime.store.attachment(session.id,(event.payload as any).attachment.id);
+  assert.equal(JSON.parse(artifact.data.toString()).models.length,256);
 });
 test("capabilities remain unknown until advertised and a harness cannot change",async t=>{
   const {runtime}=fixture(t);const s=await runtime.create({harnessId:"pi"});

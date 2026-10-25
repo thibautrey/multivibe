@@ -1,5 +1,10 @@
 import Foundation
 
+enum DesktopHarnessError: LocalizedError {
+    case rejected(String), invalidResponse
+    var errorDescription: String? { switch self { case .rejected(let message): return message; case .invalidResponse: return "Réponse invalide du runtime de harness." } }
+}
+
 indirect enum HarnessJSON: Codable, Equatable, Sendable {
     case object([String: HarnessJSON]), array([HarnessJSON]), string(String), number(Double), bool(Bool), null
     init(from decoder: Decoder) throws {
@@ -66,7 +71,7 @@ struct DesktopDraftAttachment: Codable, Identifiable, Equatable {
 }
 struct DesktopHarnessReceipt: Codable, Identifiable, Sendable {
     let id: String; let sessionId: String; let command: HarnessJSON; let state: String; let createdAt: Double; let ordinal: Double; let result: HarnessJSON?; let error: String?
-    var text: String { command["parts"].array.compactMap { $0["text"].string }.joined(separator: "\n") }
+    var text: String { command["displayText"].string ?? command["parts"].array.compactMap { $0["text"].string }.joined(separator: "\n") }
 }
 struct DesktopHarnessInteraction: Codable, Identifiable, Sendable {
     let id: String; let sessionId: String; let kind: String; let title: String; let detail: HarnessJSON
@@ -79,6 +84,7 @@ struct DesktopHarnessEvent: Codable, Identifiable, Equatable, Sendable {
 struct DesktopPendingSubmission: Codable, Identifiable {
     let id: UUID; let text: String; let attachments: [DesktopDraftAttachment]
     var intent: String?; var turnID: String?
+    var displayText: String?
 }
 struct DesktopNativeSessionSource: Codable, Identifiable, Sendable {
     let sourceId: String; let harnessId: String; let nativeSessionId: String; let title: String; let workspace: String?

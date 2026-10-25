@@ -13,7 +13,7 @@ test('native chat preserves local history and isolates generation from navigatio
   const temporary = await mkdtemp(path.join(tmpdir(), 'multivibe-native-chat-test-'));
   try {
     const binary = path.join(temporary, 'test');
-    await execute('xcrun', ['swiftc', '-parse-as-library', path.join(root, 'packaging/macos/NativeChatStore.swift'), path.join(root, 'packaging/macos/NativeInteractiveDocument.swift'), path.join(root, 'packaging/macos/validation/DesktopAgentStub.swift'), path.join(root, 'packaging/macos/validation/NativeChatStoreHarness.swift'), '-o', binary]);
+    await execute('xcrun', ['swiftc', '-parse-as-library', path.join(root, 'packaging/macos/NativeHarnessRuntimeTypes.swift'), path.join(root, 'packaging/macos/NativeChatStore.swift'), path.join(root, 'packaging/macos/NativeInteractiveDocument.swift'), path.join(root, 'packaging/macos/validation/DesktopAgentStub.swift'), path.join(root, 'packaging/macos/validation/DesktopHarnessRuntimeStub.swift'), path.join(root, 'packaging/macos/validation/NativeChatStoreHarness.swift'), '-o', binary]);
     const { stdout } = await execute(binary);
     assert.match(stdout, /PASS history persistence/);
     console.log(stdout.trim());
