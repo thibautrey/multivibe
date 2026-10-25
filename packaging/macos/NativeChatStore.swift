@@ -282,6 +282,7 @@ struct NativeChatConversation: Codable, Identifiable {
         let text = conversations[i].draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = conversations[i].draftAttachments ?? []
         guard (!text.isEmpty || !attachments.isEmpty), text.count <= 32_000 else { error = "Saisissez un message ou joignez un fichier."; return }
+        error = nil
         let submission = DesktopPendingSubmission(id: UUID(), text: interactiveAnswers && !text.isEmpty ? NativeInteractiveDocument.prompt(text) : text, attachments: attachments, intent: steer ? "steer" : "prompt", turnID: steer ? conversations[i].runtimeSession?.activeTurnId : nil, displayText: text)
         var userText = conversations[i].runtimeUserText ?? [:]; userText[submission.id.uuidString.lowercased()] = text; conversations[i].runtimeUserText = userText
         conversations[i].pendingSubmissions = (conversations[i].pendingSubmissions ?? []) + [submission]
@@ -427,7 +428,8 @@ struct NativeChatConversation: Codable, Identifiable {
                 if ["queued", "dispatching", "accepted", "uncertain"].contains(receipt.state) { queue.append(receipt) }
                 runtimeQueues[conversationID] = queue.sorted { $0.ordinal < $1.ordinal }
             }
-        case "turn.failed", "turn.uncertain", "diagnostic": if let message = event.payload["message"].string ?? event.payload["error"].string { error = message }
+        case "turn.failed", "turn.uncertain": if let message = event.payload["message"].string ?? event.payload["error"].string { error = message }
+        case "diagnostic": break
         default: break
         }
         if !["message.delta", "message.part", "session.updated", "command.updated"].contains(event.type) {

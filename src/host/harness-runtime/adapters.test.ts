@@ -27,7 +27,7 @@ if(process.argv.includes('serve')){
  });server.listen(0,'127.0.0.1',()=>console.log('opencode server listening on http://127.0.0.1:'+server.address().port));
 }else readline.createInterface({input:process.stdin}).on('line',line=>{
  const v=JSON.parse(line),m=v.method??v.type,p=v.params??v;
- if(m==='initialize')reply(v,codex?{}:{protocolVersion:1,agentCapabilities:{loadSession:true,promptCapabilities:{embeddedContext:true}}});
+ if(m==='initialize')reply(v,codex?{}:{protocolVersion:1,agentInfo:process.env.LLM_PROVIDER?{name:[process.env.LLM_PROVIDER,process.env.LLM_MODEL,process.env.OPENAI_BASE_URL,process.env.OPENAI_API_KEY==='fixture-proxy-key'].join('|')}:undefined,agentCapabilities:{loadSession:true,promptCapabilities:{embeddedContext:true}}});
  else if(m==='session/new')reply(v,{sessionId:'acp-session'});
  else if(m==='thread/start')reply(v,{thread:{id:'codex-thread'}});
  else if(m==='session/prompt'){
@@ -67,6 +67,14 @@ test("ACP negotiates capabilities, normalizes events and roundtrips a denied per
   await adapter.prompt([{type:"text",text:"read only"}]);
   assert.equal(f.questions.length,1);assert.ok(f.events.some(e=>e.type==="message.delta" && (e.payload as any).text==="ACP text"));assert.ok(f.events.some(e=>e.type==="tool" && (e.payload as any).status==="failed"));
   await assert.rejects(adapter.prompt([{type:"text",text:"steer"}],true),/steering/u);
+});
+test("Hermes ACP receives the loopback MultiVibe model connection",async t=>{
+  const f=fixture(t,"hermes-agent");f.ctx.session.authMode="multivibe";f.ctx.session.model="gpt-test";
+  f.ctx.modelConnection={baseUrl:"http://127.0.0.1:1455/",apiKey:"fixture-proxy-key"};
+  const adapter=new AcpAdapter(f.ctx,["acp"]);t.after(()=>adapter.close());await adapter.start();
+  const metadata=f.events.find(e=>e.type==="harness.metadata")!;
+  assert.equal((metadata.payload as any).name,"openai|gpt-test|http://127.0.0.1:1455/v1|true");
+  assert.ok(!JSON.stringify(f.events).includes("fixture-proxy-key"));
 });
 test("Gemini uses the same negotiated ACP contract without assuming extra capabilities",async t=>{
   const f=fixture(t,"gemini-cli");const adapter=new AcpAdapter(f.ctx,["--acp"]);t.after(()=>adapter.close());await adapter.start();await adapter.prompt([{type:"text",text:"hello"}]);assert.equal(f.ctx.session.nativeSessionId,"acp-session");
