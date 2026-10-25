@@ -49,7 +49,7 @@ export function harnessRuntimeRoutes(runtime?:HostHarnessRuntime,remotes=new Rem
     // Reading/subscribing never starts work and disconnecting never aborts a turn.
     if(!target)runtime!.session(id);
     res.status(200).set({"content-type":"text/event-stream","x-accel-buffering":"no"});res.flushHeaders();let cursor=after;let closed=false;
-    const emit=(event:any)=>{if(closed || event.seq<=cursor)return;cursor=event.seq;res.write(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`);};
+    const emit=(event:any)=>{if(closed || event.seq<=cursor)return;if(res.writableLength>2*1024*1024){closed=true;res.end();off();clearInterval(heartbeat);return;}cursor=event.seq;res.write(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`);};
     const heartbeat=setInterval(()=>{if(!closed)res.write(": keepalive\n\n");},15_000);heartbeat.unref();
     let off:()=>void=()=>{};res.once("close",()=>{closed=true;off();clearInterval(heartbeat);});
     if(target) {

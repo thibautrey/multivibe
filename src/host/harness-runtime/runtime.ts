@@ -96,8 +96,8 @@ export class HostHarnessRuntime {
       if(!executable)fail("Harness executable is unavailable",409);
       const root=path.join(this.root,"sessions",s.id);fs.mkdirSync(root,{recursive:true,mode:0o700});
       const instance=this.factory({session:s,root,executable,target,emit:event=>{if(!this.stopped && this.states.has(id))this.emit(id,event);},
-        nativeSession:nativeId=>{requiredText(nativeId,4096);s.nativeSessionId=nativeId;this.store.save(s);this.emit(id,{type:"session.updated",payload:s});},
-        capabilities:values=>{Object.assign(s.capabilities,values);this.store.save(s);this.emit(id,{type:"capabilities.updated",payload:s.capabilities});},
+        nativeSession:nativeId=>{if(this.stopped || !this.states.has(id))return;requiredText(nativeId,4096);s.nativeSessionId=nativeId;this.store.save(s);this.emit(id,{type:"session.updated",payload:s});},
+        capabilities:values=>{if(this.stopped || !this.states.has(id))return;Object.assign(s.capabilities,values);this.store.save(s);this.emit(id,{type:"capabilities.updated",payload:s.capabilities});},
         attachment:attachmentId=>this.store.attachment(id,attachmentId),ask:(kind,title,detail)=>this.ask(id,kind,title,detail),
       });
       try{await instance.start();return instance;}catch(e){instance.close();this.adapters.delete(id);throw e;}
@@ -209,6 +209,7 @@ export class HostHarnessRuntime {
     }finally{this.working.delete(id);}
   }
   private ask(sessionId:string,kind:PendingInteraction["kind"],title:string,detail:unknown):Promise<Record<string,unknown>> {
+    if(this.stopped)fail("Host runtime is shutting down",503);
     const s=this.session(sessionId);const interaction:PendingInteraction={id:randomUUID(),sessionId,kind,title:String(redact(title)).slice(0,256),detail:redact(detail),status:"pending",createdAt:Date.now(),expiresAt:Date.now()+30*60_000};
     this.store.interaction(interaction);s.state="waiting_user";this.save(s);this.emit(sessionId,{type:"interaction.requested",payload:interaction});
     return new Promise((resolve,reject)=>{
