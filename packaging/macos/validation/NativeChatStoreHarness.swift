@@ -64,6 +64,14 @@ enum HostAssistantError: Error { case emptyReply }
         let projectedQueue = NativeChatStore.followUpQueue([initialReceipt, followUpReceipt], initialCommandID: initialReceipt.id)
         precondition(projectedQueue.map(\.id) == [followUpReceipt.id])
         precondition(NativeChatStore.followUpQueue([initialReceipt, followUpReceipt], initialCommandID: nil).map(\.id) == [initialReceipt.id, followUpReceipt.id])
+        let pendingID = UUID()
+        store.edit {
+            $0.initialRuntimeCommandID = pendingID.uuidString.lowercased()
+            $0.pendingSubmissions = [.init(id: pendingID, text: "Premier message", attachments: [], displayText: "Premier message")]
+        }
+        store.restorePending(first)
+        precondition(store.current?.initialRuntimeCommandID == nil && store.current?.draft == "Premier message")
+        store.edit { $0.draft = "" }
         store.edit { $0.queuePaused = true }
         store.newConversation()
         precondition(store.selection == first && store.current?.queuePaused == false)
