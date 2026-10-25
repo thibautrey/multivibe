@@ -162,3 +162,19 @@ struct ChatConversationSection: Identifiable {
         }
     }
 }
+
+struct ChatHarnessConversationSection: Identifiable {
+    let id: String
+    let conversations: [NativeChatConversation]
+
+    static func sections(_ conversations: [NativeChatConversation]) -> [Self] {
+        var order: [String] = []
+        var grouped: [String: [NativeChatConversation]] = [:]
+        for conversation in conversations {
+            let harnessID = conversation.harnessID.flatMap { $0.isEmpty ? nil : $0 } ?? "native"
+            if grouped[harnessID] == nil { order.append(harnessID) }
+            grouped[harnessID, default: []].append(conversation)
+        }
+        return order.map { .init(id: $0, conversations: grouped[$0] ?? []) }
+    }
+}
