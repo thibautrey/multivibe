@@ -213,3 +213,20 @@ test("binary tool results become intact session-owned downloadable artifacts",as
   assert.equal(event.itemId,"image-tool");assert.deepEqual(runtime.store.attachment(s.id,file.id).data,bytes);
   assert.ok(!JSON.stringify(event).includes(bytes.toString("base64")));
 });
+
+test("event replay bounds page bytes without losing records between cursors",async t=>{
+  const {runtime}=fixture(t);const s=await runtime.create({harnessId:"pi"});
+  for(let index=0;index<10;index++)runtime.store.event(s.id,"tool",{index,values:Array.from({length:7},()=>"x".repeat(120_000))});
+  const first=runtime.store.events(s.id,0,500);assert.ok(first.length<10);
+  const all=[];let cursor=0;for(;;){const page=runtime.store.events(s.id,cursor,500);if(!page.length)break;all.push(...page);cursor=page.at(-1)!.seq;}
+  assert.equal(all.filter(e=>e.type==="tool").length,10);assert.equal(new Set(all.map(e=>e.seq)).size,all.length);
+});
+
+test("stopping expires pending interactions and keeps queued attachments intact",async t=>{
+  const {runtime,adapters}=fixture(t);const s=await runtime.create({harnessId:"pi"});await runtime.command(s.id,prompt("active"));await eventually(()=>!!adapters.get(s.id)?.finish);
+  const pending=adapters.get(s.id)!.ctx.ask("question","pending",{});const rejected=assert.rejects(pending,(e:any)=>e.status===499);
+  const file=runtime.store.attach(s.id,"pending.txt","text/plain",Buffer.from("still pending").toString("base64"));const queued={...prompt("next"),parts:[{type:"text",text:"next"},{type:"attachment",attachmentId:file.id}]};await runtime.command(s.id,queued);
+  assert.equal((await runtime.command(s.id,operation("interrupt"))).state,"completed");await rejected;await eventually(()=>!s.activeTurnId);
+  assert.equal(runtime.snapshot(s.id).interactions.length,0);assert.equal(runtime.store.receipt(queued.id)!.state,"queued");assert.equal(runtime.store.attachment(s.id,file.id).data.toString(),"still pending");
+  assert.ok(runtime.store.events(s.id).some(e=>e.type==="interaction.updated" && (e.payload as any).status==="expired"));
+});

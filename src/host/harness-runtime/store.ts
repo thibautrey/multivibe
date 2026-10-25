@@ -46,7 +46,12 @@ export class HarnessRuntimeStore {
   }
   events(sessionId: string, after = 0, limit = 250): HarnessEvent[] {
     this.session(sessionId);
-    return this.db.prepare("SELECT seq,value FROM events WHERE session_id=? AND seq>? ORDER BY seq LIMIT ?").all(sessionId, after, Math.min(500,Math.max(1,limit))).map((r: any)=>({...JSON.parse(r.value),seq:r.seq}));
+    const events:HarnessEvent[]=[];let bytes=0;
+    for(const row of this.db.prepare("SELECT seq,value FROM events WHERE session_id=? AND seq>? ORDER BY seq LIMIT ?").iterate(sessionId,after,Math.min(500,Math.max(1,limit)))){
+      const size=Buffer.byteLength(row.value);if(events.length && bytes+size>4*1024*1024)break;
+      bytes+=size;events.push({...JSON.parse(row.value),seq:row.seq});
+    }
+    return events;
   }
   commands(sessionId: string): HarnessCommandReceipt[] {
     return this.db.prepare("SELECT value FROM commands WHERE session_id=?").all(sessionId).map((r: any)=>JSON.parse(r.value)).sort((a: HarnessCommandReceipt,b: HarnessCommandReceipt)=>a.ordinal-b.ordinal);

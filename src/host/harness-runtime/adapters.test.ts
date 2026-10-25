@@ -45,6 +45,7 @@ if(process.argv.includes('serve')){
   send({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:'Pi text'}});send({type:'agent_end'});
   setTimeout(()=>{compacting=false;send({type:'compaction_end',result:{summary:'retained'}});send({type:'agent_settled'});},25);
  }else if(m==='turn/start'){
+  if(p.input[0]?.text==='final-only'){reply(v,{turn:{id:'final-turn'}});notify('item/completed',{threadId:'codex-thread',item:{type:'agentMessage',id:'final-message',text:'Authoritative final text',phase:'final_answer'}});notify('turn/completed',{threadId:'codex-thread',turn:{id:'final-turn',status:'completed'}});return;}
   reply(v,{turn:{id:'native-turn'}});notify('turn/started',{threadId:'codex-thread',turn:{id:'native-turn'}});notify('item/agentMessage/delta',{threadId:'codex-thread',itemId:'a',delta:'Codex text'});
  }else if(m==='turn/steer'){
   if(p.expectedTurnId!=='native-turn')process.exit(8);reply(v,{turnId:'native-turn'});notify('turn/completed',{threadId:'codex-thread',turn:{id:'native-turn',status:'completed'}});
@@ -84,6 +85,10 @@ test("Codex steering targets the actual native turn and manual compaction waits 
   const deadline=Date.now()+2000;while(!f.events.some(e=>e.type==="message.delta")){if(Date.now()>deadline)assert.fail("No Codex delta");await new Promise(r=>setTimeout(r,10));}
   await adapter.prompt([{type:"text",text:"direction"}],true);await turn;
   await adapter.compact();assert.ok(f.events.some(e=>e.type==="compaction"));
+});
+test("Codex renders the authoritative completed message when no deltas are emitted",async t=>{
+  const f=fixture(t,"openai-codex");const adapter=new CodexAdapter(f.ctx);t.after(()=>adapter.close());await adapter.start();await adapter.prompt([{type:"text",text:"final-only"}]);
+  assert.ok(f.events.some(e=>e.type==="message.part" && e.itemId==="final-message" && (e.payload as any).text==="Authoritative final text"));
 });
 test("Claude SDK preserves continuous input and surfaces native usage/tool events",async t=>{
   const f=fixture(t,"claude-code");let settings:any;

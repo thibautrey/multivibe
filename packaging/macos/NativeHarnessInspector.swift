@@ -33,6 +33,7 @@ import SwiftUI
     @State private var acpArguments = "[]"
     @State private var nativeMethod = ""
     @State private var nativeParameters = "{}"
+    @State private var configurationParameters = "{}"
     private var conversation: NativeChatConversation? { store.current }
     private var target: String { conversation?.executionTargetID ?? "local" }
     private var locked: Bool { conversation?.messages.isEmpty == false || conversation?.runtimeSessionID != nil || conversation?.pendingSubmissions?.isEmpty == false }
@@ -117,6 +118,17 @@ import SwiftUI
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack { Picker("Fonction", selection: $subject) { ForEach(subjects, id: \.self) { Text($0).tag($0) } }; Button("Lire") { Task { await inspect() } } }
                                 inspectionControls
+                                if subject == "settings" {
+                                    DisclosureGroup("Modifier les réglages de la session") {
+                                        TextEditor(text: $configurationParameters).font(.caption.monospaced()).frame(height: 85)
+                                        Button("Appliquer") {
+                                            Task {
+                                                do { let value = try JSONDecoder().decode(HarnessJSON.self, from: Data(configurationParameters.utf8)); guard case .object = value else { throw DesktopHarnessError.invalidResponse }; await configure(value) }
+                                                catch { message = error.localizedDescription }
+                                            }
+                                        }.disabled(store.isGenerating(conversation?.id))
+                                    }
+                                }
                                 if !output.isEmpty { Text(output).font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
                                 DisclosureGroup("Opération native avancée") {
                                     TextField("Nom de l’opération exposée par l’adaptateur", text: $nativeMethod)
@@ -232,7 +244,7 @@ import SwiftUI
                 }
             }
         }
-        if subject == "commands" || subject == "skills" {
+        if subject == "commands" || subject == "skills" && ["openai-codex", "pi", "claude-code"].contains(harnessID) {
             ForEach(Array(commandChoices.enumerated()), id: \.offset) { _, name in
                 Button(name) {
                     let prefix = subject == "skills" ? (harnessID == "openai-codex" ? "$" : harnessID == "pi" ? "/skill:" : "/") : "/"
