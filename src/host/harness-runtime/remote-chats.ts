@@ -23,7 +23,7 @@ function branch(rows:RemoteMessage[],current?:string):RemoteMessage[]{
   const result:RemoteMessage[]=[],seen=new Set<string>();let id:string|undefined=current;
   while(id && map.has(id)){
     if(seen.has(id))fail("Invalid remote conversation branch",502);seen.add(id);
-    const row=map.get(id)!;result.unshift(row);id=row.parentId;
+    const row:RemoteMessage=map.get(id)!;result.unshift(row);id=row.parentId;
   }
   return result;
 }

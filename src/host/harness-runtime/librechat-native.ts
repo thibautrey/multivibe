@@ -61,7 +61,7 @@ export class LibreChatNativeAdapter implements HarnessAdapter {
   }
   async interrupt():Promise<void>{fail("Acknowledged LibreChat cancellation is unavailable through this adapter",422);}
   async compact():Promise<unknown>{return fail("Manual compaction is unavailable",422);}
-  async inspect(subject:string):Promise<unknown>{if(subject==="history" && this.ctx.session.nativeSessionId){const {native,...snapshot}=await this.remote.snapshot(this.ctx.session.nativeSessionId);return snapshot;}return fail("Inspection is unavailable",422);}
+  async inspect(subject:string):Promise<unknown>{if(subject==="models")return {models:await this.remote.config.models()};if(subject==="history" && this.ctx.session.nativeSessionId){const {native,...snapshot}=await this.remote.snapshot(this.ctx.session.nativeSessionId);return snapshot;}return fail("Inspection is unavailable",422);}
   async configure():Promise<unknown>{return fail("Configure the connection from the harness picker",422);}
   async native():Promise<unknown>{return fail("Native operation is unavailable",422);}
   close(){this.abort.abort();}
