@@ -7474,6 +7474,7 @@ struct AnthropicStreamState {
     next_index: usize,
     blocks: HashMap<String, usize>,
     emitted: HashSet<String>,
+    argument_deltas: HashSet<String>,
     stopped: bool,
     has_tools: bool,
     output_tokens: u64,
@@ -7803,9 +7804,16 @@ impl SseStreamTransformer {
             "response.function_call_arguments.delta" => {
                 let key =
                     value_string(value.get("item_id")).unwrap_or_else(|| "block-0".to_owned());
+                self.anthropic.argument_deltas.insert(key.clone());
                 let index = *self.anthropic.blocks.entry(key).or_insert(0);
                 if let Some(delta) = raw_string(value.get("delta")) {
                     output.push_str(&sse_frame("content_block_delta", &json!({"type": "content_block_delta", "index": index, "delta": {"type": "input_json_delta", "partial_json": delta}})));
+                }
+            }
+            "response.function_call_arguments.done" => {
+                let key = value_string(value.get("item_id")).unwrap_or_else(||"block-0".to_owned());
+                if !self.anthropic.argument_deltas.contains(&key) {
+                    output.push_str(&self.transform_anthropic_event(&json!({"type":"response.function_call_arguments.delta","item_id":key,"delta":value.get("arguments").and_then(Value::as_str).unwrap_or("{}")})));
                 }
             }
             "response.output_item.done" => {
@@ -15802,7 +15810,10 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         let mut output = converter.transform_anthropic_event(&json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":"Read","arguments":"{}"}}]}}]}));
         output.push_str(&converter.transform_anthropic_event(&json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"completion_tokens":9}})));
         output.push_str(&converter.finish());
-        assert!(output.contains("\"stop_reason\":\"tool_use\""));assert!(output.contains("\"name\":\"Read\""));
+        let frames = output.lines().filter_map(|line| line.strip_prefix("data: ")).map(|data| serde_json::from_str::<Value>(data).unwrap()).collect::<Vec<_>>();
+        let end = frames.iter().find(|v| v["type"]=="message_delta").expect(&output);
+        assert_eq!(end["delta"]["stop_reason"], "tool_use");
+        assert!(frames.iter().any(|v|v["content_block"]["name"]=="Read"));
         assert!(!output.contains("event: response."));assert_eq!(output.matches("event: message_stop").count(),1);
     }
 
