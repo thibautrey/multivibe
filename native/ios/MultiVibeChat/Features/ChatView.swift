@@ -1281,7 +1281,7 @@ private struct OfflineOpenUIWebView: UIViewRepresentable {
         func render(_ view: WKWebView) {
             // Arguments cross as data, never interpolated executable JavaScript.
             Task { @MainActor in
-                try? await view.callAsyncJavaScript("window.renderOpenUI(text, streaming)",
+                _ = try? await view.callAsyncJavaScript("window.renderOpenUI(text, streaming)",
                     arguments: ["text": parent.content, "streaming": parent.streaming],
                     in: nil, contentWorld: .page)
             }
