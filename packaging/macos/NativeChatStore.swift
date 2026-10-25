@@ -101,6 +101,18 @@ struct NativeChatConversation: Codable, Identifiable {
     static func followUpQueue(_ receipts: [DesktopHarnessReceipt], initialCommandID: String?) -> [DesktopHarnessReceipt] {
         receipts.filter { $0.state == "queued" && $0.id != initialCommandID }
     }
+    func reorderedRuntimeQueue(_ id: UUID, receiptID: String, by delta: Int) -> [String]? {
+        guard let conversation = conversations.first(where: { $0.id == id }) else { return nil }
+        return Self.reorderedQueueIDs(runtimeQueues[id] ?? [], initialCommandID: conversation.initialRuntimeCommandID, receiptID: receiptID, by: delta)
+    }
+    static func reorderedQueueIDs(_ receipts: [DesktopHarnessReceipt], initialCommandID: String?, receiptID: String, by delta: Int) -> [String]? {
+        let pending = receipts.filter { $0.state == "queued" }
+        let visible = followUpQueue(pending, initialCommandID: initialCommandID)
+        guard let visibleIndex = visible.firstIndex(where: { $0.id == receiptID }), visible.indices.contains(visibleIndex + delta),
+              let source = pending.firstIndex(where: { $0.id == receiptID }),
+              let destination = pending.firstIndex(where: { $0.id == visible[visibleIndex + delta].id }) else { return nil }
+        var ids = pending.map(\.id); ids.swapAt(source, destination); return ids
+    }
     func newConversation(text: String = "") {
         if text.isEmpty, let index = conversations.firstIndex(where: { $0.messages.isEmpty && $0.draft.isEmpty && $0.runtimeSessionID == nil && $0.pendingSubmissions?.isEmpty != false && $0.draftAttachments?.isEmpty != false && $0.nativeQueue?.isEmpty != false && $0.archived != true }) {
             conversations[index].model = HostAssistantClient.shared.defaultModel
