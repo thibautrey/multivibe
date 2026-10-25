@@ -245,6 +245,9 @@ enum HostAssistantError: Error { case emptyReply }
     await store.synchronizeRemoteChats(force: true)
     precondition(store.current?.messages.map(\.content) == ["Hello", "Answer from web"])
     let messageID = store.current!.messages[1].id
+    store.edit { $0.messages.append(NativeChatMessage(role: "assistant", content: "Late replay of a local event")) }
+    await store.synchronizeRemoteChats(force: true)
+    precondition(store.current?.messages.count == 2 && store.current?.messages[1].id == messageID)
     store.edit { $0.draft = "Preserve this draft" }
     remote.text = "Edited in the web client"; remote.title = "Renamed on server"; remote.revision = "two"
     await store.synchronizeRemoteChats(force: true)

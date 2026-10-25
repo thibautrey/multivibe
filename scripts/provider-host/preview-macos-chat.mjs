@@ -19,7 +19,7 @@ capabilities.audio = { support: 'unsupported', available: false, reason: 'Ce har
 capabilities.memory = { support: 'unknown', available: false };
 const projectHarnesses = new Set(['pi', 'hermes-agent', 'openai-codex', 'claude-code', 'opencode', 'gemini-cli']);
 const descriptor = (id, name, protocol) => ({ id, name, protocol, version: 'preview', detected: true, configured: true, available: true, authentication: 'ready', capabilities: { ...capabilities, ...(projectHarnesses.has(id) ? { projects: { support: 'multivibe', available: true } } : {}) } });
-const catalog = [descriptor('pi', 'Pi', 'pi-rpc'), descriptor('hermes-agent', 'Hermes', 'acp'), descriptor('openai-codex', 'OpenAI Codex', 'codex'), descriptor('claude-code', 'Claude Code', 'claude-sdk'), descriptor('opencode', 'OpenCode', 'opencode'), descriptor('openclaw', 'OpenClaw', 'openclaw'), descriptor('goose', 'Goose', 'acp'), descriptor('openhands', 'OpenHands', 'openhands'), descriptor('gemini-cli', 'Gemini CLI', 'acp')];
+const catalog = [descriptor('pi', 'Pi', 'pi-rpc'), descriptor('hermes-agent', 'Hermes', 'acp'), descriptor('openai-codex', 'OpenAI Codex', 'codex'), descriptor('claude-code', 'Claude Code', 'claude-sdk'), descriptor('opencode', 'OpenCode', 'opencode'), descriptor('openclaw', 'OpenClaw', 'openclaw'), descriptor('goose', 'Goose', 'acp'), descriptor('openhands', 'OpenHands', 'openhands'), descriptor('gemini-cli', 'Gemini CLI', 'acp'), ...['librechat', 'openwebui'].map(id => ({ ...descriptor(id, id === 'librechat' ? 'LibreChat' : 'Open WebUI', id), available: false, configured: false }))];
 const previewModels = [
   ['preview-model', 'Claude Sonnet'], ['preview-model-2', 'GPT · Exemple'], ['codex-auto-review', 'Codex Auto Review'],
   ['glm-4.5', 'GLM 4.5'], ['glm-4.6', 'GLM 4.6'], ['qwen3-coder', 'Qwen3 Coder'], ['deepseek-v3.2', 'DeepSeek V3.2'],
@@ -42,11 +42,39 @@ const activity = [event(1, 'tool', { type: 'tool_execution_start', toolName: 'Li
 const message = (role, content) => ({ id: randomUUID(), role, content, interrupted: false });
 const conversation = (title, messages = [], extra = {}) => ({ id: randomUUID(), title, model: 'preview-model', messages, updatedAt: new Date(now).toISOString(), draft: '', ...extra });
 const seed = [conversation('Nouvelle conversation'), conversation('Une présentation qui va à l’essentiel', [message('user', 'Aide-moi à préparer une présentation claire pour le lancement de notre projet.'), message('assistant', 'Voici une structure simple pour présenter le projet en cinq minutes.\n\n## Une idée, trois temps\n\n**1. Le point de départ**\nPrésentez le besoin et ce qui vous a donné envie d’y répondre. Un exemple concret aidera votre public à se projeter.\n\n**2. Ce que nous proposons**\nMontrez la solution avec une démonstration courte. Gardez les détails techniques pour les questions.\n\n**3. La prochaine étape**\nTerminez par une action précise : tester le prototype, partager un retour ou rejoindre le projet.\n\nJe peux maintenant vous aider à rédiger chaque partie.')], { pinned: true }), conversation('Préparer le lancement', [message('user', 'Transforme les notes du projet en présentation.'), message('assistant', 'J’ai rassemblé les objectifs et les contraintes. Je prépare maintenant le fil conducteur de la présentation.')], { harnessID: 'pi', authMode: 'native', runtimeSessionID: 'preview-working', runtimeSession: sessions['preview-working'], runtimeCursor: 4, runtimeEvents: activity }), conversation('Choisir la direction', [message('user', 'Peux-tu adapter la présentation à notre public ?')], { harnessID: 'pi', authMode: 'native', runtimeSessionID: 'preview-question', runtimeSession: sessions['preview-question'] }), conversation('Notes de recherche', [message('user', 'Résume ces notes.')]), conversation('Explorer les usages possibles', [message('user', 'Explorons les possibilités.')], { updatedAt: new Date(now - 2 * 86_400_000).toISOString() }), conversation('Ancien projet', [message('user', 'Prépare un plan.')], { archived: true })];
+const remoteFixture = Object.fromEntries(['librechat', 'openwebui'].map(id => [id, { connected: false, title: `Conversation ${id} créée sur le serveur`, archived: false, pinned: false, endpoint: 'https://preview.example', revision: 0 }]));
 const streams = new Map(); let seq = 100;
 const publish = (id, type, payload) => { const value = { seq: ++seq, sessionId: id, type, payload, turnId: `${id}-turn`, createdAt: Date.now() }; for (const stream of streams.get(id) ?? []) stream.write(`data: ${JSON.stringify(value)}\n\n`); };
 const server = createServer(async (request, response) => {
   const url = new URL(request.url, 'http://127.0.0.1'); const route = url.pathname;
   const send = (value) => { response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify(value)); };
+  const remoteMatch = route.match(/\/(librechat|openwebui)$/u);
+  if (remoteMatch) {
+    const id = remoteMatch[1], fixture = remoteFixture[id];
+    const agents = [{ id: 'native-model', name: 'Assistant du serveur' }];
+    if (request.method === 'POST') {
+      let text = ''; for await (const chunk of request) text += chunk;
+      const body = JSON.parse(text);
+      if (body.discover) return send({ agents });
+      fixture.connected = true; fixture.endpoint = body.endpoint;
+      const descriptor = catalog.find(v => v.id === id); descriptor.configured = true; descriptor.available = true;
+    }
+    return send({ configured: fixture.connected, hasApiKey: fixture.connected, hasUserSession: fixture.connected, agentId: 'native-model', endpoint: fixture.connected ? fixture.endpoint : '', agents });
+  }
+  if (route.endsWith('/remote-chats')) {
+    const id = url.searchParams.get('harnessId'), fixture = remoteFixture[id];
+    return send({ connectionId: 'preview-' + id, endpoint: fixture.endpoint, complete: true, conversations: fixture.connected && !fixture.deleted ? [{ id: 'server-' + id, title: fixture.title, updatedAt: now + fixture.revision * 1000, archived: fixture.archived, pinned: fixture.pinned, model: 'native-model' }] : [] });
+  }
+  if (route.includes('/remote-chats/server-')) {
+    const id = route.split('/remote-chats/server-')[1], fixture = remoteFixture[id];
+    if (request.method === 'DELETE') { fixture.deleted = true; return send({ deleted: true }); }
+    if (request.method === 'PATCH') {
+      let text = ''; for await (const chunk of request) text += chunk; const body = JSON.parse(text);
+      for (const key of ['title', 'archived', 'pinned']) if (body[key] !== undefined) fixture[key] = body[key];
+    }
+    fixture.revision += 1;
+    return send({ connectionId: 'preview-' + id, conversation: { id: 'server-' + id, title: fixture.title, updatedAt: now, archived: fixture.archived, pinned: fixture.pinned, model: 'native-model', revision: String(fixture.revision), messages: [{ id: 'remote-user', role: 'user', content: 'Message créé dans le client web.', done: true }, { id: 'remote-assistant', role: 'assistant', content: `Réponse synchronisée depuis le serveur · ${fixture.revision}`, done: true }] } });
+  }
   if (route === '/preview/seed') return send(seed);
   if (route === '/v1/models') return send({ data: previewModels });
   if (route === '/v1/chat/completions') {

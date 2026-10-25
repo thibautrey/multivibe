@@ -27,7 +27,7 @@ export function harnessRuntimeRoutes(runtime?:HostHarnessRuntime,remotes=new Rem
     const forwarded=await proxy(req,"GET",`/remote-chats/${encodeURIComponent(String(req.params.chatId))}`+query);
     if(forwarded)return res.json(forwarded);
     const remote=runtime!.remoteChats(req.query.harnessId);const {native,...conversation}=await remote.snapshot(String(req.params.chatId));
-    return res.json({...remote.identity(),conversation});
+    return res.json({...remote.identity(),conversation:{...conversation,messages:conversation.messages.map(({native,...message})=>message)}});
   }));
   router.patch("/remote-chats/:chatId",route(async(req,res)=>{
     const forwarded=await proxy(req,"PATCH",`/remote-chats/${encodeURIComponent(String(req.params.chatId))}`,req.body);
@@ -35,7 +35,7 @@ export function harnessRuntimeRoutes(runtime?:HostHarnessRuntime,remotes=new Rem
     const remote=runtime!.remoteChats(req.body.harnessId);
     if(req.body.connectionId!==remote.identity().connectionId)fail("Remote connection changed",409);
     const {native,...conversation}=await remote.update(String(req.params.chatId),req.body);
-    return res.json({...remote.identity(),conversation});
+    return res.json({...remote.identity(),conversation:{...conversation,messages:conversation.messages.map(({native,...message})=>message)}});
   }));
   router.delete("/remote-chats/:chatId",route(async(req,res)=>{
     const forwarded=await proxy(req,"DELETE",`/remote-chats/${encodeURIComponent(String(req.params.chatId))}`,req.body);

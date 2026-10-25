@@ -77,8 +77,25 @@ export class RemoteChats {
       const source=await this.config.json(`/messages/${encodeURIComponent(id)}`);
       if(!Array.isArray(source))fail("Invalid LibreChat message history",502);
       const ordered=source.map((message:any,index:number)=>({message,index})).sort((a:any,b:any)=>{const left=time(a.message.createdAt),right=time(b.message.createdAt);return left && right?left-right:a.index-b.index;}).map((v:any)=>v.message);
-      messages=branch(ordered.map((m:any)=>({id:m.messageId,role:m.isCreatedByUser?"user":"assistant",content:remoteText(m.content)||m.text||"",parentId:m.parentMessageId,done:!m.unfinished,native:m})),native.lastMessageId??ordered.at(-1)?.messageId);
+      messages=branch(ordered.map((m:any)=>({id:m.messageId,role:m.isCreatedByUser?"user":"assistant",content:remoteText(m.content)||m.text||"",parentId:m.parentMessageId,done:!m.unfinished,native:m})),native.lastMessageId??native.lastResponseMessageId??ordered.at(-1)?.messageId);
+      if(endpoint==="agents"){
+        let status:any;
+        try{status=await this.config.json(`/agents/chat/status/${encodeURIComponent(id)}`);}catch(error:any){if(error.status!==404)throw error;}
+        if(status?.active===true){
+          summary.active=true;
+          const state=status.resumeState,user=state?.userMessage;
+          if(typeof user?.messageId==="string"){
+            // Reconstruct the live branch from the same parent the server admitted.
+            const parent=branch(messages,user.parentMessageId);
+            messages=[...parent.filter(v=>v.id!==user.messageId),{id:user.messageId,role:"user",content:remoteText(user.content)||user.text||"",parentId:user.parentMessageId,done:true}];
+          }
+          const assistantId=state?.responseMessageId;
+          if(typeof assistantId==="string")messages=[...messages.filter(v=>v.id!==assistantId),{id:assistantId,role:"assistant",content:remoteText(status.aggregatedContent??state.aggregatedContent),parentId:user?.messageId,done:false,native:{pendingAction:status.pendingAction}}];
+        }
+      }
+
     }
+    summary.active=summary.active || messages.at(-1)?.done===false;
     if(messages.length>20_000 || messages.some(m=>typeof m.id!=="string" || !m.id || !["user","assistant","system","tool"].includes(m.role)))fail("Invalid remote message history",502);
     if(this.identity().connectionId!==identity.connectionId)fail("Remote connection changed during synchronization",409);
     const value={...summary,messages,endpoint};
