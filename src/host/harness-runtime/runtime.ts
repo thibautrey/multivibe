@@ -184,7 +184,7 @@ export class HostHarnessRuntime {
           const adapter=await this.ensure(id);if(this.stopped)break;
           s.state="running";c.state="accepted";this.store.saveReceipt(c);this.save(s);this.emit(id,{type:"command.updated",payload:c});
           await adapter.prompt(c.command.parts!);
-          c.state=s.queuePaused && s.state==="interrupted"?"cancelled":"completed";
+          c.state=s.queuePaused && this.session(id).state==="interrupted"?"cancelled":"completed";
           s.state=c.state==="cancelled"?"interrupted":"idle";
         }catch(e:any) {
           c.error=String(redact(e.message??"Harness turn failed"));
