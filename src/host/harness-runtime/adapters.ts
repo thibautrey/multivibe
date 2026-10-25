@@ -1,3 +1,4 @@
+import { LibreChatAdapter } from "./librechat.js";
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
@@ -521,6 +522,7 @@ export function adapterFor(ctx:AdapterContext):HarnessAdapter {
     case "pi":return new PiAdapter(ctx);
     case "openai-codex":return new CodexAdapter(ctx);
     case "claude-code":return new ClaudeAdapter(ctx);
+    case "librechat":return new LibreChatAdapter(ctx);
     case "opencode":return new OpenCodeAdapter(ctx);
     default: {
       const args=ctx.session.configuration?.acpArgs;
