@@ -39,6 +39,7 @@ struct NativeChatConversation: Codable, Identifiable {
     var runtimeCursor: Int?
     var runtimeEvents: [DesktopHarnessEvent]?
     var runtimeUserText: [String: String]?
+    var initialRuntimeCommandID: String?
     var draftAttachments: [DesktopDraftAttachment]?
     var pendingSubmissions: [DesktopPendingSubmission]?
     var nativeQueue: [NativeQueuedMessage]?
@@ -93,6 +94,13 @@ struct NativeChatConversation: Codable, Identifiable {
         for conversation in conversations where conversation.runtimeSessionID != nil { attachRuntime(conversation.id) }
     }
     var current: NativeChatConversation? { conversations.first { $0.id == selection } }
+    func runtimeFollowUps(_ id: UUID) -> [DesktopHarnessReceipt] {
+        guard let conversation = conversations.first(where: { $0.id == id }) else { return [] }
+        return Self.followUpQueue(runtimeQueues[id] ?? [], initialCommandID: conversation.initialRuntimeCommandID)
+    }
+    static func followUpQueue(_ receipts: [DesktopHarnessReceipt], initialCommandID: String?) -> [DesktopHarnessReceipt] {
+        receipts.filter { $0.state == "queued" && $0.id != initialCommandID }
+    }
     func newConversation(text: String = "") {
         if text.isEmpty, let index = conversations.firstIndex(where: { $0.messages.isEmpty && $0.draft.isEmpty && $0.runtimeSessionID == nil && $0.pendingSubmissions?.isEmpty != false && $0.draftAttachments?.isEmpty != false && $0.nativeQueue?.isEmpty != false && $0.archived != true }) {
             conversations[index].model = HostAssistantClient.shared.defaultModel
@@ -285,6 +293,10 @@ struct NativeChatConversation: Codable, Identifiable {
         guard (!text.isEmpty || !attachments.isEmpty), text.count <= 32_000 else { error = "Saisissez un message ou joignez un fichier."; return }
         error = nil
         let submission = DesktopPendingSubmission(id: UUID(), text: interactiveAnswers && !text.isEmpty ? NativeInteractiveDocument.prompt(text) : text, attachments: attachments, intent: steer ? "steer" : "prompt", turnID: steer ? conversations[i].runtimeSession?.activeTurnId : nil, displayText: text)
+        if !steer, conversations[i].initialRuntimeCommandID == nil,
+           !conversations[i].messages.contains(where: { $0.role == "user" }) {
+            conversations[i].initialRuntimeCommandID = submission.id.uuidString.lowercased()
+        }
         var userText = conversations[i].runtimeUserText ?? [:]; userText[submission.id.uuidString.lowercased()] = text; conversations[i].runtimeUserText = userText
         conversations[i].pendingSubmissions = (conversations[i].pendingSubmissions ?? []) + [submission]
         conversations[i].draft = ""; conversations[i].draftAttachments = []
