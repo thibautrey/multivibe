@@ -5,6 +5,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "preview:macos-chat": "node scripts/provider-host/preview-macos-chat.mjs",
     "test:dsh-plugin": "npm --prefix plugins/dsh-multivibe test",
     "build:dsh-plugin": "npm --prefix plugins/dsh-multivibe run build",
     "test:distribution": "node --test scripts/distribution/*.test.mjs",

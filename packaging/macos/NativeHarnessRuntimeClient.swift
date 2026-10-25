@@ -31,7 +31,8 @@ import Foundation
         var request = try await request("/sessions/\(sessionID)/events", method: "GET", target: target)
         var components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!
         components.queryItems = (components.queryItems ?? []) + [URLQueryItem(name: "after", value: String(after))]
-        request.url = components.url; request.setValue("text/event-stream", forHTTPHeaderField: "accept")
+        request.url = components.url; request.timeoutInterval = 86_400
+        request.setValue("text/event-stream", forHTTPHeaderField: "accept")
         let session = session(); defer { session.invalidateAndCancel() }
         let (bytes, response) = try await session.bytes(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw DesktopHarnessError.rejected("La session est inaccessible. Vérifiez le Host et la connexion à la machine.") }
