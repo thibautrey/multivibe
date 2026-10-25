@@ -18,7 +18,7 @@ async function fixture(t:any,id:"librechat"|"openwebui"){
   const owMessages:any={u1:{id:"u1",role:"user",content:"From web",parentId:null},a1:{id:"a1",role:"assistant",content:"Saved answer",parentId:"u1",done:true}};
   let convo:any={conversationId:"remote-1",title:"Server title",updatedAt:"2026-10-24T10:00:01Z",agent_id:"agent-1",endpoint:"agents",pinned:false,isArchived:false};
   let ow:any={id:"remote-1",title:"Server title",updated_at:1792836001,pinned:false,archived:false,chat:{title:"Server title",models:["agent-1"],history:{messages:owMessages,currentId:"a1"}}};
-  let refreshes=0,deny=false,refreshNeeded=false,ackMode=false;
+  let refreshes=0,deny=false,refreshNeeded=false,ackMode=false,live=false;
   const calls:any[]=[];
   const server=http.createServer(async(req,res)=>{
     let text="";for await(const c of req)text+=c;const body=text?JSON.parse(text):undefined;
@@ -43,6 +43,7 @@ async function fixture(t:any,id:"librechat"|"openwebui"){
       send({conversations:convo && String(convo.isArchived)===u.searchParams.get("isArchived")?[convo]:[],nextCursor:null});return;
     }
     if(route==="/prefix/api/convos/remote-1"){send(convo);return;}
+    if(route==="/prefix/api/agents/chat/status/remote-1"){send(live?{active:true,aggregatedContent:[{type:"text",text:"Live remote answer"}],resumeState:{userMessage:{messageId:"live-u",text:"A web question",parentMessageId:"a1"},responseMessageId:"live-a"}}:{active:false});return;}
     if(route==="/prefix/api/messages/remote-1"){send(messages);return;}
     if(route==="/prefix/api/convos/update"){convo.title=body.title;send(convo);return;}
     if(route==="/prefix/api/convos/archive"){convo.isArchived=body.arg.isArchived;send(convo);return;}
@@ -82,7 +83,7 @@ async function fixture(t:any,id:"librechat"|"openwebui"){
   const input=id==="librechat"?{endpoint,email:"fixture@example.com",password:"private-password",agentId:"agent-1"}:{endpoint,apiKey:"private-ow-key",agentId:"agent-1"};
   await config.configure(input);
   t.after(async()=>{await runtime.close();server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));fs.rmSync(root,{recursive:true,force:true});});
-  return {root,runtime,config,input,remote:new RemoteChats(id,config),messages,ow:()=>ow,calls,deny:()=>{deny=true;},expire:()=>{refreshNeeded=true;},refreshes:()=>refreshes,ack:()=>{ackMode=true;}};
+  return {root,runtime,config,input,remote:new RemoteChats(id,config),messages,ow:()=>ow,calls,deny:()=>{deny=true;},expire:()=>{refreshNeeded=true;},refreshes:()=>refreshes,ack:()=>{ackMode=true;},live:()=>{live=true;}};
 }
 for(const id of ["librechat","openwebui"] as const){
   test(`${id} lists server conversations, imports once, resumes native history and synchronizes remote edits`,async t=>{
@@ -132,4 +133,38 @@ test("remote chat API checks connection identity and omits raw server records",a
   const list=await (await fetch(base+"/remote-chats?harnessId=openwebui")).json();assert.equal(list.conversations[0].id,"remote-1");
   const snapshot=await (await fetch(base+"/remote-chats/remote-1?harnessId=openwebui")).json();assert.equal("native" in snapshot.conversation,false);
   const rejected=await fetch(base+"/sessions/remote",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({harnessId:"openwebui",remoteChatId:"remote-1",connectionId:"wrong"})});assert.equal(rejected.status,409);
+});
+
+test("LibreChat exposes an in-progress answer from another client and prevents a concurrent prompt",async t=>{
+  const f=await fixture(t,"librechat");f.live();
+  const snapshot=await f.remote.snapshot("remote-1");
+  assert.equal(snapshot.active,true);assert.equal(snapshot.messages.at(-1)?.content,"Live remote answer");assert.equal(snapshot.messages.at(-1)?.done,false);
+  const session=await f.runtime.connectRemoteChat({harnessId:"librechat",connectionId:f.remote.identity().connectionId,remoteChatId:"remote-1"});
+  const receipt=await f.runtime.command(session.id,{id:"busy-prompt",type:"prompt",parts:[{type:"text",text:"No concurrent write"}]});
+  const deadline=Date.now()+3000;while(!["failed","completed"].includes(f.runtime.store.receipt(receipt.id)!.state)){assert.ok(Date.now()<deadline);await new Promise(r=>setTimeout(r,20));}
+  assert.equal(f.runtime.store.receipt(receipt.id)?.state,"failed");assert.equal(f.calls.some(v=>v.route==="/prefix/api/agents/chat"),false);
+});
+
+for(const id of ["librechat","openwebui"] as const)test(`${id} traverses every native catalog page including archives`,async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),"multivibe-chat-pagination-"));
+  const requested:string[]=[];
+  const server=http.createServer((req,res)=>{
+    const u=new URL(req.url!,"http://localhost");requested.push(req.url!);
+    let data:any;
+    if(id==="librechat"){
+      const archived=u.searchParams.get("isArchived")==="true",last=u.searchParams.get("cursor")==="page-two";
+      data={conversations:[{conversationId:archived?"archive":last?"second":"first",title:"Native chat",isArchived:archived,pinned:!archived}],nextCursor:archived || last?null:"page-two"};
+    }else{
+      const archived=u.pathname.endsWith("archived"),page=u.searchParams.get("page");
+      data=Array.from({length:archived || page==="2"?1:60},(_,i)=>({id:archived?"archive":`${page}-${i}`,title:"Native chat",archived,pinned:i===0}));
+    }
+    res.writeHead(200,{"content-type":"application/json"});res.end(JSON.stringify(data));
+  });
+  await new Promise<void>(r=>server.listen(0,"127.0.0.1",r));
+  const connection={endpoint:`http://127.0.0.1:${(server.address() as any).port}${id==="librechat"?"/api/agents/v1":"/api"}`,apiKey:"fixture",userToken:"fixture-token",userId:"fixture-account",agentId:"model"};
+  fs.writeFileSync(path.join(root,`${id}-connection.json`),JSON.stringify(connection),{mode:0o600});
+  t.after(()=>{server.closeAllConnections();server.close();fs.rmSync(root,{recursive:true,force:true});});
+  const config=new RemoteChatConfiguration(root,{id,name:id,suffix:id==="librechat"?"/api/agents/v1":"/api"});
+  const result=await new RemoteChats(id,config).list();
+  assert.equal(result.conversations.length,id==="librechat"?3:62);assert.equal(result.conversations.filter(v=>v.archived).length,1);assert.ok(result.conversations.some(v=>v.pinned));assert.equal(requested.length,3);
 });

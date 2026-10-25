@@ -426,7 +426,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 }
                 if conversation.runtimeSession?.state == "waiting_user" {
                     Image(systemName: "questionmark.bubble.fill").font(.system(size: 11)).foregroundStyle(.orange).accessibilityLabel("Votre réponse est attendue")
-                } else if store.isGenerating(conversation.id) {
+                } else if store.isGenerating(conversation.id) || conversation.remoteActive == true {
                     ProgressView().controlSize(.mini).tint(ChatPalette.accent).accessibilityLabel("Travail en cours")
                 }
             }.padding(.horizontal, 10).padding(.vertical, 10)
