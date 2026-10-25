@@ -12,8 +12,8 @@ abstract class Adapter implements HarnessAdapter {
   protected services: ClientServices;
   protected failure?: Error;
   constructor(protected ctx:AdapterContext) {this.services=new ClientServices(ctx);}
-  protected connect(args:string[],rpc=true) {
-    this.peer=new JsonPeer(startProcess(this.ctx,args),v=>this.event(v),(m,p)=>this.services.request(m,p),e=>this.rejectTurn(e),text=>this.ctx.emit({type:"diagnostic",payload:{message:text}}),rpc);
+  protected connect(args:string[],rpc=true,env:NodeJS.ProcessEnv={}) {
+    this.peer=new JsonPeer(startProcess(this.ctx,args,env),v=>this.event(v),(m,p)=>this.services.request(m,p),e=>this.rejectTurn(e),text=>this.ctx.emit({type:"diagnostic",payload:{message:text}}),rpc);
     return this.peer;
   }
   protected finish(payload:unknown={}) {this.ctx.emit({type:"turn.status",payload});const end=this.ended;this.ended=undefined;end?.resolve();}
@@ -49,7 +49,8 @@ export class AcpAdapter extends Adapter {
   private loading=false;private historyRole="";private historyIndex=0;
   constructor(ctx:AdapterContext,private args:string[]) {super(ctx);}
   async start() {
-    const peer=this.connect(this.args);
+    const connection=this.ctx.modelConnection;
+    const peer=this.connect(this.args,true,this.ctx.session.harnessId==="hermes-agent" && connection?{LLM_PROVIDER:"openai",LLM_MODEL:this.ctx.session.model,OPENAI_BASE_URL:connection.baseUrl.replace(/\/$/u,"")+"/v1",OPENAI_API_KEY:connection.apiKey}:{});
     const hello=await peer.request("initialize",{protocolVersion:1,clientInfo:{name:"multivibe",version:"1"},clientCapabilities:{
       ...(this.ctx.target.kind!=="container"?{fs:{readTextFile:true,writeTextFile:true},terminal:true}:{}),
       session:{compaction:{},notices:{}},
@@ -317,16 +318,23 @@ class InputQueue {
 export class ClaudeAdapter extends Adapter {
   private query:any;private queue=new InputQueue();private abort=new AbortController();
   private stderrBytes=0;
+  private settingsFile?:string;
   constructor(ctx:AdapterContext,private sdkLoader?:()=>Promise<any>){super(ctx);}
   async start() {
     if(this.ctx.target.kind==="container")fail("Claude SDK requires a Host inside the container",422);
     const moduleName="@anthropic-ai/claude-agent-sdk";const sdk:any=this.sdkLoader?await this.sdkLoader():await import(moduleName);
     const s=this.ctx.session;
+    if(this.ctx.modelConnection){
+      this.settingsFile=path.join(this.ctx.root,`claude-session-settings-${randomBytes(12).toString("hex")}.json`);
+      const connection=this.ctx.modelConnection;
+      fs.writeFileSync(this.settingsFile,JSON.stringify({...(s.model?{model:s.model}:{}),env:{ANTHROPIC_BASE_URL:connection.baseUrl,ANTHROPIC_AUTH_TOKEN:connection.apiKey,ANTHROPIC_API_KEY:connection.apiKey,CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:"1",...(s.model?{ANTHROPIC_SMALL_FAST_MODEL:s.model,ANTHROPIC_DEFAULT_HAIKU_MODEL:s.model,ANTHROPIC_DEFAULT_SONNET_MODEL:s.model,ANTHROPIC_DEFAULT_OPUS_MODEL:s.model}:{})}}),{mode:0o600,flag:"wx"});
+    }
     if(s.configuration?.sourceId && !s.configuration?.historyImported && typeof sdk.getSessionMessages==="function"){const history=await sdk.getSessionMessages(s.nativeSessionId,{dir:s.workspace});for(const [index,message] of history.entries()){if(["user","assistant"].includes(message.type)){const text=(message.message?.content??[]).filter((p:any)=>p.type==="text").map((p:any)=>p.text).join("\n");this.ctx.emit({type:"history.message",itemId:message.uuid??`claude-history-${index}`,payload:{role:message.type,text}});}}s.configuration.historyImported=true;}
     this.query=sdk.query({prompt:this.queue.stream(),options:{
       cwd:s.workspace,pathToClaudeCodeExecutable:this.ctx.executable,settingSources:["user","project","local"],
       systemPrompt:{type:"preset",preset:"claude_code"},includePartialMessages:true,permissionMode:"default",abortController:this.abort,
       env:harnessEnvironment(),...(s.nativeSessionId?{resume:s.nativeSessionId}:{}),...(s.configuration?.forkNativeSession?{forkSession:true}:{}),...(s.model?{model:s.model}:{}),enableFileCheckpointing:true,
+      ...(this.settingsFile?{settings:this.settingsFile}:{}),
       stderr:(message:string)=>{if(this.stderrBytes<16_384){this.stderrBytes+=message.length;this.ctx.emit({type:"diagnostic",payload:{message:String(redact(message)).slice(0,2048)}});}},
       canUseTool:async(name:string,input:any,options:any)=>{
         const question=name==="AskUserQuestion";
@@ -353,6 +361,7 @@ export class ClaudeAdapter extends Adapter {
       this.ctx.emit({type:"usage",payload:{usage:v.usage,modelUsage:v.modelUsage,totalCostUsd:v.total_cost_usd,durationMs:v.duration_ms}});
       if(v.is_error)this.rejectTurn(new HarnessRuntimeError(v.errors?.join("; ")??"Claude could not complete this turn",422));else this.finish(v);
     } else if(v.type==="system" && v.subtype==="compact_boundary"){this.ctx.capabilities({compaction:supported()});this.ctx.emit({type:"compaction",payload:v});}
+    else if(v.type==="system" && v.subtype==="api_retry")this.ctx.emit({type:"retry",payload:v});
     else this.ctx.emit({type:"native.event",payload:v});
   }
   async prompt(parts:MessagePart[],steer=false) {
@@ -383,7 +392,7 @@ export class ClaudeAdapter extends Adapter {
     if(method==="rewindFiles" && typeof params.userMessageId==="string")return this.query.rewindFiles(params.userMessageId,{dryRun:params.dryRun!==false});
     return super.native(method,params);
   }
-  close(){this.queue.close();this.abort.abort();this.query?.close();super.close();}
+  close(){this.queue.close();this.abort.abort();this.query?.close();if(this.settingsFile)try{fs.unlinkSync(this.settingsFile);}catch{}super.close();}
 }
 
 export class OpenCodeAdapter extends Adapter {

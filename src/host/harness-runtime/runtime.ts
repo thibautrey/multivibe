@@ -29,7 +29,7 @@ export class HostHarnessRuntime {
   private answers=new Map<string,{sessionId:string;resolve:(v:Record<string,unknown>)=>void;reject:(e:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
   private stopped=false;
   private scheduler:ReturnType<typeof setInterval>;
-  constructor(readonly root:string,private integrations:Integration,private factory:(ctx:AdapterContext)=>HarnessAdapter=adapterFor) {
+  constructor(readonly root:string,private integrations:Integration,private factory:(ctx:AdapterContext)=>HarnessAdapter=adapterFor,private options:{modelConnection?:()=>{baseUrl:string;apiKey:string}}={}) {
     this.store=new HarnessRuntimeStore(root);this.events.setMaxListeners(100);
     this.scheduler=setInterval(()=>void this.tickSchedules().catch(()=>{}),15_000);this.scheduler.unref();
     for(const s of this.store.sessions()) {
@@ -60,7 +60,7 @@ export class HostHarnessRuntime {
       const caps=capabilities();for(const key of ["queue","attachments","remote","diagnostics","automations"] as const)caps[key]=supported("multivibe");
       caps.sessions=supported();caps.streaming=supported();
       if(target.kind==="container" && ["claude-code","opencode"].includes(id)){caps.sessions=unsupported("Install a MultiVibe Host inside this container for SDK/HTTP supervision");}
-      return {id,name:definition.name,protocol:definition.protocol,detected:definition.custom || (target.kind!=="container" && Boolean(found?.detected)),configured:Boolean(found?.configured),available:Boolean(executable)&&caps.sessions.available,
+      return {id,name:definition.name,protocol:definition.protocol,detected:definition.custom || (target.kind!=="container" && Boolean(found?.detected)),configured:Boolean(found?.configured) || (target.kind==="local" && ["claude-code","hermes-agent"].includes(id) && Boolean(this.options.modelConnection?.().apiKey)),available:Boolean(executable)&&caps.sessions.available,
         authentication:"unknown",capabilities:caps,...(!executable?{reason:"Harness executable is not installed on this Host"}:!caps.sessions.available?{reason:caps.sessions.reason}:{})} as HarnessDescriptor;
     }));
   }
@@ -96,6 +96,7 @@ export class HostHarnessRuntime {
       if(!executable)fail("Harness executable is unavailable",409);
       const root=path.join(this.root,"sessions",s.id);fs.mkdirSync(root,{recursive:true,mode:0o700});
       const instance=this.factory({session:s,root,executable,target,emit:event=>{if(!this.stopped && this.states.has(id))this.emit(id,event);},
+        ...(s.authMode==="multivibe" && target.kind==="local" && this.options.modelConnection?{modelConnection:this.options.modelConnection()}:{}),
         nativeSession:nativeId=>{if(this.stopped || !this.states.has(id))return;requiredText(nativeId,4096);s.nativeSessionId=nativeId;this.store.save(s);this.emit(id,{type:"session.updated",payload:s});},
         capabilities:values=>{if(this.stopped || !this.states.has(id) || Object.entries(values).every(([key,value])=>JSON.stringify(s.capabilities[key as keyof typeof s.capabilities])===JSON.stringify(value)))return;Object.assign(s.capabilities,values);this.store.save(s);this.emit(id,{type:"capabilities.updated",payload:s.capabilities});},
         attachment:attachmentId=>this.store.attachment(id,attachmentId),ask:(kind,title,detail)=>this.ask(id,kind,title,detail),
