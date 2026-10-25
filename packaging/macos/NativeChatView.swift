@@ -68,6 +68,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     @State private var choosingHarness = false
     @State private var choosingModel = false
     @State private var modelSource = "multivibe"
+    @State private var modelQuery = ""
     @State private var installingHarness: NativeConversationHarness?
     @State private var installationLogs: [String] = []
     @State private var installationRunning = false
@@ -965,6 +966,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     private var modelSelector: some View {
         Button {
             modelSource = cloudMode ? (selectedCloudModel?.source == "relay" ? "relay" : "cloud") : (harness.wrappedValue != "native" && store.current?.authMode != "multivibe" ? "harness" : "multivibe")
+            modelQuery = ""
             choosingModel = true
         } label: {
             HStack(spacing: 6) {
@@ -1012,7 +1014,10 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                     .font(.caption).foregroundStyle(.secondary)
             }
             if !cloudMode && modelSource == "harness" { harnessModelChoice }
-            else { modelCards }
+            else {
+                if showsModelSearch { modelSearch }
+                modelCards
+            }
         }
         .padding(18).frame(width: 620)
     }
@@ -1029,24 +1034,72 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     private var modelSourceLocked: Bool {
         store.current?.messages.isEmpty == false || store.current?.runtimeSessionID != nil
     }
-    private var visibleHostModels: [HostAssistantModel] {
+    private var availableHostModels: [HostAssistantModel] {
         harness.wrappedValue == "native" ? models : models.filter { $0.local != true }
     }
-    private var visibleCloudModels: [NativeAgentCatalogModel] {
+    private var availableCloudModels: [NativeAgentCatalogModel] {
         agent.models.filter { modelSource == "relay" ? $0.source == "relay" : $0.source != "relay" }
+    }
+    private var modelSearchTerms: [String] {
+        modelQuery.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+    }
+    private func matchesModelQuery(_ values: String...) -> Bool {
+        modelSearchTerms.allSatisfy { term in values.contains { $0.localizedCaseInsensitiveContains(term) } }
+    }
+    private var visibleHostModels: [HostAssistantModel] {
+        availableHostModels.filter {
+            matchesModelQuery($0.displayName, $0.id, $0.local == true ? "Sur ce Mac Apple local" : "MultiVibe Host réseau")
+        }
+    }
+    private var visibleCloudModels: [NativeAgentCatalogModel] {
+        availableCloudModels.filter {
+            matchesModelQuery($0.name ?? "", $0.id, $0.source ?? "", $0.machineName ?? "", $0.source == "relay" ? "Relay" : "Hermes Cloud")
+        }
+    }
+    private var availableModelCount: Int { cloudMode ? availableCloudModels.count : availableHostModels.count }
+    private var visibleModelCount: Int { cloudMode ? visibleCloudModels.count : visibleHostModels.count }
+    private var showsModelSearch: Bool { availableModelCount > 6 || !modelQuery.isEmpty }
+    private var modelSearch: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Rechercher par nom, identifiant ou source", text: $modelQuery)
+                    .textFieldStyle(.plain)
+                    .accessibilityLabel("Rechercher un modèle")
+                if !modelQuery.isEmpty {
+                    Button { modelQuery = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }
+                        .buttonStyle(.plain).help("Effacer la recherche").accessibilityLabel("Effacer la recherche")
+                }
+            }
+            .padding(.horizontal, 11).frame(height: 34)
+            .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 9))
+            HStack {
+                Text(modelQuery.isEmpty ? "\(availableModelCount) modèles" : "\(visibleModelCount) sur \(availableModelCount) modèles")
+                    .font(.caption2).foregroundStyle(.secondary)
+                Spacer()
+                if !modelQuery.isEmpty { Text("Recherche instantanée").font(.caption2).foregroundStyle(.tertiary) }
+            }
+        }
     }
     @ViewBuilder private var modelCards: some View {
         if loading && !cloudMode {
             HStack { Spacer(); ProgressView().controlSize(.small); Text("Chargement des modèles…").foregroundStyle(.secondary); Spacer() }.padding(.vertical, 30)
-        } else if cloudMode ? visibleCloudModels.isEmpty : visibleHostModels.isEmpty {
+        } else if availableModelCount == 0 {
             VStack(spacing: 8) {
                 Image(systemName: "cpu").font(.title2).foregroundStyle(.secondary)
                 Text("Aucun modèle disponible").font(.callout.weight(.semibold))
                 Text("Actualisez le catalogue ou vérifiez la connexion du Host.").font(.caption).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, minHeight: 180)
+        } else if visibleModelCount == 0 {
+            VStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").font(.title2).foregroundStyle(.secondary)
+                Text("Aucun modèle ne correspond").font(.callout.weight(.semibold))
+                Text("Essayez un nom, un identifiant ou une autre source.").font(.caption).foregroundStyle(.secondary)
+                Button("Effacer la recherche") { modelQuery = "" }.buttonStyle(.link)
+            }.frame(maxWidth: .infinity, minHeight: 180)
         } else {
             ScrollView {
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible())], spacing: 10) {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible())], spacing: 8) {
                     if cloudMode {
                         if !cloudModel.isEmpty && !agent.models.contains(where: { $0.id == cloudModel }) {
                             modelCard(title: cloudModel, detail: "Indisponible", identifier: cloudModel, icon: "exclamationmark.triangle", selected: true, disabled: true) {}
@@ -1059,7 +1112,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                         ForEach(visibleHostModels) { hostModelCard($0) }
                     }
                 }
-            }.frame(maxHeight: 450)
+            }.frame(maxHeight: 420)
         }
     }
     private func hostModelCard(_ item: HostAssistantModel) -> some View {
@@ -1118,10 +1171,12 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 Spacer(minLength: 0)
                 if selected { Image(systemName: "checkmark.circle.fill").font(.title3).foregroundStyle(ChatPalette.accent) }
             }
-            .padding(13).frame(maxWidth: .infinity, minHeight: 94, alignment: .topLeading)
+            .padding(11).frame(maxWidth: .infinity, minHeight: 76, alignment: .topLeading)
             .background(selected ? ChatPalette.accent.opacity(0.10) : ChatPalette.elevated, in: RoundedRectangle(cornerRadius: 14))
             .overlay(RoundedRectangle(cornerRadius: 14).stroke(selected ? ChatPalette.accent.opacity(0.8) : ChatPalette.hairline, lineWidth: selected ? 1.5 : 1))
         }.buttonStyle(.plain).disabled(disabled).opacity(disabled ? 0.55 : 1)
+            .accessibilityLabel("\(title), \(detail)")
+            .accessibilityValue(selected ? "Sélectionné" : "")
     }
     private func refreshModels() async {
         if cloudMode {
