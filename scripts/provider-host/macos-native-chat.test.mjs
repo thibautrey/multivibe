@@ -34,3 +34,14 @@ test('native file imports preserve ordered drafts and reject unsupported or over
     console.log(stdout.trim());
   } finally { await rm(temporary, { recursive: true, force: true }); }
 });
+
+test('native welcome suggestions preserve edits and recover safe defaults', { skip: process.platform !== 'darwin', timeout: 60000 }, async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(), 'multivibe-suggestion-test-'));
+  try {
+    const binary = path.join(temporary, 'test');
+    await execute('xcrun', ['swiftc', '-parse-as-library', path.join(root, 'packaging/macos/NativeChatSuggestion.swift'), path.join(root, 'packaging/macos/validation/NativeChatSuggestionHarness.swift'), '-o', binary]);
+    const { stdout } = await execute(binary);
+    assert.match(stdout, /PASS editable welcome suggestion defaults, persistence and corrupt-data fallback/);
+    console.log(stdout.trim());
+  } finally { await rm(temporary, { recursive: true, force: true }); }
+});
