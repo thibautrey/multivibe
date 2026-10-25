@@ -215,9 +215,11 @@ private struct HarnessLogo: View {
         .frame(minWidth: browser.isVisible ? 1080 : 760, minHeight: 500)
         .task {
             if store.current == nil { store.newConversation() }
-            await agent.restore()
-            await loadModels()
-            await loadHarnesses()
+            await loadNativeChatDependencies(
+                restoreCloud: { await agent.restore() },
+                loadModels: { await loadModels() },
+                loadHarnesses: { await loadHarnesses() }
+            )
         }
         .sheet(isPresented: $cloudConsent) { consentSheet }
         .sheet(item: $installingHarness) { item in harnessInstallationSheet(item) }
