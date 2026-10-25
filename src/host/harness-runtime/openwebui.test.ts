@@ -82,3 +82,11 @@ test("Open WebUI errors, denied access, bad acknowledgements and redirects never
     const f=await fixture(t);f.setMode(mode);const adapter=new OpenWebUIAdapter(f.ctx);await adapter.start();await assert.rejects(adapter.prompt([{type:"text",text:"Hello"}]),e=>!String(e).includes(f.connection.apiKey));adapter.close();assert.equal(f.events.some(e=>e.type==="turn.status"),false);
   });}
 });
+
+test("Open WebUI refuses to overwrite external conversation edits",async t=>{
+  const f=await fixture(t);const adapter=new OpenWebUIAdapter(f.ctx);await adapter.start();await adapter.prompt([{type:"text",text:"First"}]);adapter.close();
+  f.chat().history.currentId="external-message";
+  const next=new OpenWebUIAdapter(f.ctx);await next.start();await assert.rejects(next.prompt([{type:"text",text:"Second"}]),/changed outside Desktop/u);next.close();
+  assert.equal(f.requests.filter(v=>v.method==="POST" && v.path.endsWith("/chats/remote-chat")).length,0);
+  assert.equal(f.requests.filter(v=>v.path.endsWith("/chat/completions")).length,1);
+});

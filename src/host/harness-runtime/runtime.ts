@@ -1,4 +1,4 @@
-import { LibreChatConfiguration } from "./librechat.js";
+import { LibreChatConfiguration, RemoteChatConfiguration } from "./librechat.js";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -27,7 +27,7 @@ type Integration=Pick<HostHarnessIntegrationManager,"list"|"executablePath">;
 export class HostHarnessRuntime {
   readonly store:HarnessRuntimeStore;
   readonly librechat:LibreChatConfiguration;
-  readonly openwebui:LibreChatConfiguration;
+  readonly openwebui:RemoteChatConfiguration;
   private events=new EventEmitter();
   private adapters=new Map<string,Promise<HarnessAdapter>>();
   private states=new Map<string,HarnessSession>();
@@ -40,7 +40,7 @@ export class HostHarnessRuntime {
   private containerExecutables=new Map<string,{expires:number;value:string|null}>();
   private scheduler:ReturnType<typeof setInterval>;
   constructor(readonly root:string,private integrations:Integration,private factory:(ctx:AdapterContext)=>HarnessAdapter=adapterFor,private options:{modelConnection?:()=>{baseUrl:string;apiKey:string}}={}) {
-    this.store=new HarnessRuntimeStore(root);this.librechat=new LibreChatConfiguration(root);this.openwebui=new LibreChatConfiguration(root,{id:"openwebui",name:"Open WebUI",suffix:"/api"});this.events.setMaxListeners(100);
+    this.store=new HarnessRuntimeStore(root);this.librechat=new LibreChatConfiguration(root);this.openwebui=new RemoteChatConfiguration(root,{id:"openwebui",name:"Open WebUI",suffix:"/api"});this.events.setMaxListeners(100);
     this.scheduler=setInterval(()=>void this.tickSchedules().catch(()=>{}),15_000);this.scheduler.unref();
     for(const s of this.store.sessions()) {
       this.states.set(s.id,s);
