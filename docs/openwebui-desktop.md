@@ -1,0 +1,11 @@
+# Open WebUI in Desktop
+
+Select **Open WebUI** in the Desktop harness picker. Enter the server endpoint and an Open WebUI API key, load the available models and save the chosen model. The root URL, a reverse-proxy prefix and the `/api` or `/api/v1` base are accepted. API keys must be enabled by the administrator and permitted for the user. The key needs access to `/api/models`, saved chats, chat completions and chat task status.
+
+This adapter follows Open WebUI's [server-side tool calling API](https://docs.openwebui.com/reference/server-side-tool-calling). It creates a saved remote chat with a user message and an assistant placeholder, submits `/api/chat/completions` with native function calling, a chat ID, message ID and session ID, then polls the saved response and task status. Open WebUI owns the agent loop and enforces model capabilities, user permissions and server settings. No client-supplied tool definitions override its resolution. Optional web-search, image-generation and code-interpreter feature flags, tool-server selection and terminal selection are not configured by this adapter.
+
+Desktop displays response snapshots as they change, with usage and structured native output when the server supplies them. These are polled updates rather than a direct SSE subscription. Successful conversations resume the same saved remote chat after a Host restart. If a remote execution is incomplete or uncertain, it is not automatically resubmitted. Concurrent changes to the remote conversation are rejected before appending a new turn.
+
+The connection is saved separately from LibreChat in `openwebui-connection.json` in the Host harness-runtime directory with owner-only permissions. Read APIs and session metadata omit the key. An empty key field preserves the key only for the same normalized endpoint. Redirects are rejected. Use HTTPS for endpoints outside a trusted local network.
+
+Text and text documents are accepted. Binary uploads, importing existing Open WebUI chats, manual compaction and acknowledged remote cancellation are unavailable in this adapter. Deleting a Desktop session does not delete its saved Open WebUI chat. Compatible saved-chat/task APIs are required; a server returning raw completions instead of acknowledging the native execution is rejected.
