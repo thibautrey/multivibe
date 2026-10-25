@@ -138,6 +138,7 @@ function traceCostUsd(trace: TraceEntry): number {
 }
 
 function traceCostUsdWithoutCache(trace: TraceEntry): number {
+  if (trace.costStatus === "unpriced" && typeof trace.costUsd !== "number") return 0;
   const cachedInput = Math.max(0, trace.tokensInputCached ?? 0);
   if (cachedInput === 0) return traceCostUsd(trace);
   if (trace.usageStatus === "missing" || !traceHasUsage(trace)) return 0;
