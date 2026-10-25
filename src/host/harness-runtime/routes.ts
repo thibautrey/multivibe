@@ -17,6 +17,7 @@ export function harnessRuntimeRoutes(runtime?:HostHarnessRuntime,remotes=new Rem
   router.post("/librechat",route(async(req,res)=>res.json(await proxy(req,"POST","/librechat",req.body)??await runtime!.librechat.configure(req.body))));
   router.get("/openwebui",route(async(req,res)=>res.json(await proxy(req,"GET","/openwebui")??runtime!.openwebui.publicConfiguration())));
   router.post("/openwebui",route(async(req,res)=>res.json(await proxy(req,"POST","/openwebui",req.body)??await runtime!.openwebui.configure(req.body))));
+  router.post("/effort",route(async(req,res)=>res.json(await proxy(req,"POST","/effort",{...req.body,targetId:"local"})??await runtime!.effort({...req.body,targetId:String(req.query.targetId??"local")}))));
   router.post("/models",route(async(req,res)=>res.json(await proxy(req,"POST","/models",{...req.body,targetId:"local"})??await runtime!.models({...req.body,targetId:String(req.query.targetId??"local")}))));
   router.get("/remote-chats",route(async(req,res)=>{
     const query=`?harnessId=${encodeURIComponent(String(req.query.harnessId??""))}`;

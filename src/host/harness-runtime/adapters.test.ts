@@ -9,16 +9,19 @@ import { capabilities, type AdapterContext, type AdapterEvent, type HarnessSessi
 const fixtureProgram=String.raw`#!/usr/bin/env node
 const fs=require('node:fs');const readline=require('node:readline');
 const send=v=>process.stdout.write(JSON.stringify(v)+'\n');
-const codex=process.argv.includes('app-server');let compacting=false;
+const codex=process.argv.includes('app-server');let compacting=false,thinkingLevel='low';
+const effortConfig=value=>[{id:'thought',category:'thought_level',type:'select',currentValue:value,options:[{value:'low',name:'Light'},{value:'ultra',name:'Thorough'}]}];
 const reply=(v,result)=>send(v.type?{type:'response',id:v.id,command:v.type,success:true,data:result}:{jsonrpc:'2.0',id:v.id,result});
 const notify=(method,params)=>send({jsonrpc:'2.0',method,params});
 if(process.argv.includes('serve')){
  const http=require('node:http');let stream;const expected='Basic '+Buffer.from('opencode:'+process.env.OPENCODE_SERVER_PASSWORD).toString('base64');
- const server=http.createServer((req,res)=>{
+ const server=http.createServer(async(req,res)=>{
   if(req.headers.authorization!==expected){res.writeHead(401).end();return;}
   if(req.url.startsWith('/event')){stream=res;res.writeHead(200,{'content-type':'text/event-stream'});res.flushHeaders();return;}
   if(req.url.startsWith('/session') && req.method==='POST' && !req.url.includes('/prompt_async')){res.setHeader('content-type','application/json');res.end(JSON.stringify({id:'open-session'}));return;}
+  if(req.url==='/provider'){res.setHeader('content-type','application/json');res.end(JSON.stringify({connected:['native'],all:[{id:'native',models:{reasoner:{variants:{low:{},deep:{}}}}}]}));return;}
   if(req.url.includes('/prompt_async')){
+   let raw='';for await(const part of req)raw+=part;fs.writeFileSync('prompt.json',raw);
    res.writeHead(204).end();setTimeout(()=>{
     for(const v of [{type:'message.updated',properties:{info:{id:'u',sessionID:'open-session',role:'user'}}},{type:'message.part.updated',properties:{part:{id:'up',messageID:'u',sessionID:'open-session',type:'text',text:'MUST NOT ECHO USER'}}},{type:'message.part.updated',properties:{part:{id:'p',sessionID:'another-session',type:'text',text:'MUST NOT LEAK'}}},{type:'message.updated',properties:{info:{id:'a',sessionID:'open-session',role:'assistant'}}},{type:'message.part.updated',properties:{part:{id:'p',messageID:'a',sessionID:'open-session',type:'text',text:'hello'}}},{type:'session.status',properties:{sessionID:'open-session',status:{type:'idle'}}}])stream.write('data: '+JSON.stringify(v)+'\n\n');
    },15);return;
@@ -27,10 +30,12 @@ if(process.argv.includes('serve')){
  });server.listen(0,'127.0.0.1',()=>console.log('opencode server listening on http://127.0.0.1:'+server.address().port));
 }else readline.createInterface({input:process.stdin}).on('line',line=>{
  const v=JSON.parse(line),m=v.method??v.type,p=v.params??v;
+ fs.appendFileSync('requests.jsonl',JSON.stringify({method:m,params:p})+'\n');
  if(m==='initialize')reply(v,codex?{}:{protocolVersion:1,agentInfo:process.env.LLM_PROVIDER?{name:[process.env.LLM_PROVIDER,process.env.LLM_MODEL,process.env.OPENAI_BASE_URL,process.env.CUSTOM_BASE_URL,process.env.OPENAI_API_KEY==='fixture-proxy-key'].join('|')}:undefined,agentCapabilities:{loadSession:true,promptCapabilities:{embeddedContext:!process.argv.includes('no-resources')}}});
- else if(m==='session/new')reply(v,{sessionId:'acp-session',models:{currentModelId:process.env.LLM_MODEL??'native-default',availableModels:[{modelId:process.env.LLM_MODEL??'native-default',name:'Native'}]}});
+ else if(m==='session/new')reply(v,{sessionId:'acp-session',models:{currentModelId:process.env.LLM_MODEL??'native-default',availableModels:[{modelId:process.env.LLM_MODEL??'native-default',name:'Native'}]},...(process.argv.includes('effort')?{configOptions:effortConfig('low')}:{})});
+ else if(m==='session/set_config_option')reply(v,{configOptions:effortConfig(p.value)});
  else if(m==='session/set_model')reply(v,{selected:p.modelId});
- else if(m==='model/list')reply(v,p.cursor?{data:[{id:'second',model:'second'}]}:{data:[{id:'first',model:'first'}],nextCursor:'page-two'});
+ else if(m==='model/list')reply(v,p.cursor?{data:[{id:'second',model:'second'}]}:{data:[{id:'first',model:'first',supportedReasoningEfforts:[{reasoningEffort:'low',description:'Fast'},{reasoningEffort:'ultra',description:'Thorough'}],defaultReasoningEffort:'low'}],nextCursor:'page-two'});
  else if(m==='thread/start')reply(v,{thread:{id:'codex-thread'}});
  else if(m==='session/prompt'){
   if(process.argv.includes('echo-prompt')){notify('session/update',{sessionId:'acp-session',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:JSON.stringify(p.prompt)}}});reply(v,{stopReason:'end_turn'});return;}
@@ -181,5 +186,46 @@ test("Codex discovery reads every model page without creating a thread",async t=
   const f=fixture(t,"openai-codex");f.ctx.modelDiscovery=true;
   const adapter=new CodexAdapter(f.ctx);t.after(()=>adapter.close());await adapter.start();
   assert.equal(f.ctx.session.nativeSessionId,undefined);
-  assert.deepEqual(await adapter.inspect("models"),{data:[{id:"first",model:"first"},{id:"second",model:"second"}]});
+  assert.deepEqual(((await adapter.inspect("models")) as any).data.map((v:any)=>v.model),["first","second"]);
+});
+
+function requests(root:string){return fs.readFileSync(path.join(root,"requests.jsonl"),"utf8").trim().split("\n").map(line=>JSON.parse(line));}
+test("ACP exposes native effort choices and consumes configuration responses without notifications",async t=>{
+  const f=fixture(t,"hermes-agent"),adapter=new AcpAdapter(f.ctx,["effort"]);t.after(()=>adapter.close());await adapter.start();
+  assert.deepEqual(await adapter.inspect("effort"),{options:[{value:"low",label:"Light"},{value:"ultra",label:"Thorough"}],currentValue:"low"});
+  await adapter.configure({effort:"ultra"});
+  assert.equal((await adapter.inspect("effort") as any).currentValue,"ultra");
+  await assert.rejects(adapter.configure({effort:"invented"}),/not advertised/);
+  assert.deepEqual(requests(f.ctx.root).filter(r=>r.method==="session/set_config_option").map(r=>r.params),[{sessionId:"acp-session",configId:"thought",value:"ultra"}]);
+});
+test("Pi applies only the thinking levels reported by its RPC",async t=>{
+  const f=fixture(t,"pi"),adapter=new PiAdapter(f.ctx);t.after(()=>adapter.close());await adapter.start();
+  assert.deepEqual((await adapter.inspect("effort") as any).options.map((o:any)=>o.value),["off","low","high"]);
+  await adapter.configure({effort:"high"});assert.equal((await adapter.inspect("effort") as any).currentValue,"high");
+  await assert.rejects(adapter.configure({effort:"ultra"}),/not advertised/);
+});
+test("Codex validates model-specific levels and forwards effort on the next turn",async t=>{
+  const f=fixture(t,"openai-codex");f.ctx.session.model="first";const adapter=new CodexAdapter(f.ctx);t.after(()=>adapter.close());await adapter.start();
+  assert.equal((await adapter.inspect("effort") as any).currentValue,"low");
+  await adapter.configure({effort:"ultra"});await assert.rejects(adapter.configure({effort:"high"}),/not advertised/);
+  await adapter.prompt([{type:"text",text:"final-only"}]);
+  assert.equal(requests(f.ctx.root).find(r=>r.method==="turn/start").params.effort,"ultra");
+  await adapter.configure({model:"second"});assert.equal(await adapter.inspect("effort"),null);
+  await adapter.prompt([{type:"text",text:"final-only"}]);
+  assert.equal(requests(f.ctx.root).filter(r=>r.method==="turn/start").at(-1).params.effort,undefined);
+});
+test("Claude uses session flag settings only when the SDK and model advertise effort",async t=>{
+  const f=fixture(t,"claude-code");f.ctx.session.model="claude-exact";const applied:any[]=[];
+  const query:any={async *[Symbol.asyncIterator](){await new Promise(()=>{});},supportedCommands:async()=>[],supportedModels:async()=>[{value:"alias",resolvedModel:"claude-exact",supportedEffortLevels:["low","max"]}],applyFlagSettings:async(value:any)=>{applied.push(value);}};
+  const adapter=new ClaudeAdapter(f.ctx,async()=>({query:()=>query}));t.after(()=>adapter.close());await adapter.start();
+  await adapter.configure({effort:"max"});await assert.rejects(adapter.configure({effort:"high"}),/not advertised/);
+  assert.deepEqual(applied,[{effortLevel:"max"}]);
+  delete query.applyFlagSettings;assert.equal(await adapter.inspect("effort"),null);
+});
+
+test("OpenCode publishes exact model variants and sends the chosen variant with prompts",async t=>{
+  const f=fixture(t,"opencode");f.ctx.session.model="native/reasoner";const adapter=new OpenCodeAdapter(f.ctx);t.after(()=>adapter.close());await adapter.start();
+  assert.deepEqual((await adapter.inspect("effort") as any).options.map((o:any)=>o.value),["low","deep"]);
+  await adapter.configure({effort:"deep"});await assert.rejects(adapter.configure({effort:"max"}),/not advertised/);
+  await adapter.prompt([{type:"text",text:"hello"}]);assert.equal(JSON.parse(fs.readFileSync(path.join(f.ctx.root,"prompt.json"),"utf8")).variant,"deep");
 });

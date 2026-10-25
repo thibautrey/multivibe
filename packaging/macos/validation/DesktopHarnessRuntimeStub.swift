@@ -8,6 +8,10 @@ import Foundation
     var lastCreatedWorkspace: String?
     func call(_ route: String, method: String, target: String, body: HarnessJSON?) async throws -> HarnessJSON {
         let body = body ?? .null
+        if route == "/effort" {
+            precondition(body["harnessId"].string == "pi")
+            return .object(["effort": .object(["options": .array([.object(["value": .string("high"), "label": .string("High")])]), "currentValue": .string("high")])])
+        }
         if route == "/models" {
             precondition(body["harnessId"].string == "pi")
             return .object(["models": .array([.object(["id": .string("native-picked"), "name": .string("Native model"), "provider": .string("native-provider")])]), "currentModelId": .string("native-default")])
@@ -16,7 +20,7 @@ import Foundation
             let id = body["id"].string!
             let workspace = body["workspace"].string ?? "/tmp"; lastCreatedWorkspace = workspace
             let session: HarnessJSON = .object(["id": .string(id), "harnessId": body["harnessId"], "targetId": .string(target), "workspace": .string(workspace), "nativeSessionId": .string("session-fixture"), "title": body["title"], "authMode": body["authMode"], "state": .string("idle"), "queuePaused": .bool(false), "revision": .number(1), "archived": .bool(false), "pinned": .bool(false), "createdAt": .number(1), "updatedAt": .number(1), "capabilities": .object([:])])
-            if body["model"].string == "native-picked" { precondition(body["nativeProvider"].string == "native-provider"); precondition(body["authMode"].string == "native") }
+            if body["model"].string == "native-picked" { precondition(body["effort"].string == "high"); precondition(body["nativeProvider"].string == "native-provider"); precondition(body["authMode"].string == "native") }
             sessions[id] = session; return .object(["session": session])
         }
         let components = route.split(separator: "/"); let id = String(components[1])

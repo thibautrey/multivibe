@@ -38,6 +38,13 @@ struct NativeChatConversation: Codable, Identifiable {
     var nativeModelID: String?
     var nativeModelProvider: String?
     var workspace: String?
+    var effortLevel: String?
+    var effortModelKey: String?
+    var effortContext: String {
+        let selectedModel = authMode == "multivibe" ? model : (nativeModelID ?? runtimeSession?.model ?? "")
+        return [harnessID ?? "native", executionTargetID ?? "local", authMode ?? "native", selectedModel, nativeModelProvider ?? ""].joined(separator: "\u{0}")
+    }
+    var selectedEffort: String? { effortModelKey == effortContext ? effortLevel : nil }
     var runtimeSessionID: String?
     var runtimeSession: DesktopHarnessSession?
     var runtimeCursor: Int?
@@ -373,6 +380,7 @@ private struct NativeChatModelPreference: Codable {
             body["model"] = .string(model)
             if let provider = conversation.nativeModelProvider { body["nativeProvider"] = .string(provider) }
         }
+        if let effort = conversation.selectedEffort { body["effort"] = .string(effort) }
         if let workspace = conversation.workspace, !workspace.isEmpty { body["workspace"] = .string(workspace) }
         if !conversation.messages.isEmpty {
             body["history"] = .array(conversation.messages.filter { ["user", "assistant"].contains($0.role) }.map { .object(["role": .string($0.role), "content": .string($0.content)]) })
@@ -455,6 +463,30 @@ private struct NativeChatModelPreference: Codable {
         conversations[i].draftAttachments = (conversations[i].draftAttachments ?? []) + pending.attachments
         if conversations[i].initialRuntimeCommandID == pending.id.uuidString.lowercased() { conversations[i].initialRuntimeCommandID = nil }
         conversations[i].pendingSubmissions?.removeFirst(); save()
+    }
+    func effortCatalog(_ id: UUID) async throws -> DesktopHarnessEffort? {
+        guard let conversation = conversations.first(where: { $0.id == id }), let harness = conversation.harnessID else { return nil }
+        var body: [String: HarnessJSON] = ["harnessId": .string(harness), "authMode": .string(conversation.authMode ?? "native")]
+        if let sessionID = conversation.runtimeSessionID { body["sessionId"] = .string(sessionID) }
+        else {
+            let model = conversation.authMode == "multivibe" ? conversation.model : conversation.nativeModelID
+            if let model, !model.isEmpty { body["model"] = .string(model) }
+            if let provider = conversation.nativeModelProvider { body["provider"] = .string(provider) }
+            if let workspace = conversation.workspace { body["workspace"] = .string(workspace) }
+        }
+        let result = try await runtime.call("/effort", method: "POST", target: conversation.executionTargetID ?? "local", body: .object(body))
+        return result["effort"] == .null ? nil : try result["effort"].decode(DesktopHarnessEffort.self)
+    }
+    func selectEffort(_ value: String, catalog: DesktopHarnessEffort, conversationID id: UUID) async throws {
+        guard catalog.options.contains(where: { $0.value == value }),
+              let conversation = conversations.first(where: { $0.id == id }), !isGenerating(id) else { throw DesktopHarnessError.rejected("Ce niveau d’effort n’est pas disponible actuellement.") }
+        let key = conversation.effortContext
+        if conversation.runtimeSessionID != nil {
+            _ = try await command(id, type: "configure", value: .object(["effort": .string(value)]))
+            try await refreshRuntime(id)
+        }
+        guard let i = conversations.firstIndex(where: { $0.id == id }), conversations[i].effortContext == key else { return }
+        conversations[i].effortLevel = value; conversations[i].effortModelKey = key; save()
     }
     func modelCatalog(_ id: UUID) async throws -> DesktopHarnessModelCatalog {
         guard let conversation = conversations.first(where: { $0.id == id }), let harness = conversation.harnessID else { throw DesktopHarnessError.invalidResponse }
