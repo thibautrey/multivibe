@@ -94,6 +94,11 @@ test("Claude SDK preserves continuous input and surfaces native usage/tool event
   const adapter=new ClaudeAdapter(f.ctx,async()=>sdk);t.after(()=>adapter.close());await adapter.start();await adapter.prompt([{type:"text",text:"hello"}]);
   assert.equal(settings.permissionMode,"default");assert.deepEqual(settings.settingSources,["user","project","local"]);assert.equal(f.ctx.session.nativeSessionId,"claude-native");assert.ok(f.events.some(e=>e.type==="usage"));
 });
+test("Claude MultiVibe credentials stay in a private transient settings file, never command/event metadata",async t=>{
+  const f=fixture(t,"claude-code");f.ctx.modelConnection={baseUrl:"http://127.0.0.1:1455",apiKey:"test-session-proxy-key"};let settingsFile="";
+  const sdk={query:(options:any)=>{settingsFile=options.options.settings;assert.equal(fs.statSync(settingsFile).mode&0o777,0o600);assert.equal(JSON.parse(fs.readFileSync(settingsFile,"utf8")).env.ANTHROPIC_AUTH_TOKEN,"test-session-proxy-key");return {async *[Symbol.asyncIterator](){for await(const _ of options.prompt)yield {type:"result",is_error:false};},close(){}};}};
+  const adapter=new ClaudeAdapter(f.ctx,async()=>sdk);await adapter.start();await adapter.prompt([{type:"text",text:"test"}]);adapter.close();assert.equal(fs.existsSync(settingsFile),false);assert.ok(!JSON.stringify(f.events).includes("test-session-proxy-key"));
+});
 test("OpenCode authenticates its loopback API and filters events from other sessions",async t=>{
   const f=fixture(t,"opencode");const adapter=new OpenCodeAdapter(f.ctx);t.after(()=>adapter.close());await adapter.start();await adapter.prompt([{type:"text",text:"hello"}]);
   assert.ok(f.events.some(e=>e.type==="message.part" && (e.payload as any).text==="hello"));assert.ok(!JSON.stringify(f.events).includes("MUST NOT LEAK"));assert.ok(!JSON.stringify(f.events).includes("MUST NOT ECHO USER"));

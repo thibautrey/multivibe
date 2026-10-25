@@ -260,7 +260,7 @@ const hostConversationHarnesses = hostHarnessIntegrations
   ? new HostConversationHarnessManager(hostHarnessIntegrations, path.join(dataDir, "conversation-harness-sessions"))
   : undefined;
 const hostHarnessRuntime = hostHarnessIntegrations
-  ? new HostHarnessRuntime(path.join(dataDir, "harness-runtime-v1"), hostHarnessIntegrations)
+  ? new HostHarnessRuntime(path.join(dataDir, "harness-runtime-v1"), hostHarnessIntegrations, undefined, PROXY_API_KEY ? {modelConnection:()=>({baseUrl:MULTIVIBE_CONTROL_PLANE?V1_EDGE_BASE_URL:`http://127.0.0.1:${nodePort}`,apiKey:PROXY_API_KEY})} : {})
   : undefined;
 const capacityTracker = new CapacityTracker();
 const jobStore = new JobStore(
