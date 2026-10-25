@@ -160,7 +160,9 @@ export class HostHarnessRuntime {
         }
         this.save(s);return instance;
       }catch(e){instance.close();this.adapters.delete(id);throw e;}
-    })();this.adapters.set(id,adapter);return adapter;
+    })();this.adapters.set(id,adapter);
+    void adapter.catch(()=>{if(this.adapters.get(id)===adapter)this.adapters.delete(id);});
+    return adapter;
   }
   async command(id:string,input:any):Promise<HarnessCommandReceipt> {
     if(this.stopped)fail("Host runtime is shutting down",503);

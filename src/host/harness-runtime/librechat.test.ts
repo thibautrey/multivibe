@@ -16,6 +16,7 @@ async function fixture(t:any) {
     let body="";for await(const chunk of req)body+=chunk;requests.push(JSON.parse(body));
     if(stream==="unauthorized"){res.writeHead(401).end("private-fixture-key");return;}
     if(stream==="redirect"){res.writeHead(302,{location:"http://127.0.0.1:1/steal"}).end();return;}
+    if(stream==="json"){res.setHeader("content-type","application/json");res.end(JSON.stringify({choices:[{message:{content:"Non-streaming reply"},finish_reason:"stop"}]}));return;}
     res.setHeader("content-type","text/event-stream");
     const chunk=(v:any)=>res.write("data: "+JSON.stringify(v)+"\r\n\r\n");
     chunk({choices:[{delta:{reasoning:"thinking"}}]});
@@ -63,4 +64,12 @@ test("LibreChat rejects truncated streams, redirects and auth errors without sto
   for(const mode of ["truncated","redirect","unauthorized"]){f.setStream(mode);const adapter=new LibreChatAdapter(ctx);await adapter.start();await assert.rejects(adapter.prompt([{type:"text",text:"Test"}]),e=>!String(e).includes(f.connection.apiKey));adapter.close();}
   assert.equal(fs.existsSync(path.join(f.root,"librechat-history.json")),false);
   assert.equal(events.some(e=>e.type==="turn.status"),false);
+});
+
+ test("LibreChat accepts JSON fallback when streaming is disabled by the agent",async t=>{
+  const f=await fixture(t);f.setStream("json");const events:any[]=[];
+  const ctx={root:f.root,session:{model:"agent-1"},target:{kind:"local"},libreChatConnection:f.connection,emit:(e:any)=>events.push(e)} as unknown as AdapterContext;
+  const adapter=new LibreChatAdapter(ctx);await adapter.start();await adapter.prompt([{type:"text",text:"Test"}]);adapter.close();
+  assert.ok(events.some(e=>e.type==="message.delta" && e.payload.text==="Non-streaming reply"));
+  assert.ok(events.some(e=>e.type==="turn.status"));
 });
