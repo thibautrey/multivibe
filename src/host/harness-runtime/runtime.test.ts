@@ -289,3 +289,31 @@ for(const harnessId of ["librechat","openwebui"] as const)test(`${harnessId} cat
   assert.equal(JSON.stringify(runtime.store.events(session.id)).includes(connection.apiKey),false);
   await assert.rejects(runtime.create({harnessId,authMode:"multivibe",model:"other"}),/own API key/u);
 });
+
+test("model discovery closes its probe and never persists a conversation or submits a prompt",async t=>{
+  const {runtime,adapters}=fixture(t);
+  const result=await runtime.models({harnessId:"pi"});
+  assert.deepEqual(result.models,[]);
+  assert.deepEqual(runtime.store.sessions(),[]);
+  const probe=[...adapters.values()][0];assert.equal(probe.ctx.modelDiscovery,true);
+  assert.equal(fs.existsSync(probe.ctx.root),false);assert.deepEqual(probe.calls,[]);
+});
+test("native model and provider survive session creation; model discovery enforces session ownership",async t=>{
+  const {runtime}=fixture(t);
+  const session=await runtime.create({harnessId:"pi",model:"chosen-model",nativeProvider:"chosen-provider"});
+  assert.equal(session.model,"chosen-model");assert.equal(session.configuration?.nativeProvider,"chosen-provider");
+  const result=await runtime.models({harnessId:"pi",sessionId:session.id});
+  assert.equal(result.currentModelId,"chosen-model");assert.equal(result.provider,"chosen-provider");
+  await assert.rejects(runtime.models({harnessId:"other",sessionId:session.id}),/does not match/u);
+  await assert.rejects(runtime.models({harnessId:"pi",targetId:"other",sessionId:session.id}),/does not match/u);
+});
+
+test("model endpoint returns native choices without creating sessions and rejects unavailable harnesses",async t=>{
+  const {runtime}=fixture(t);const app=express();app.use(harnessRuntimeRoutes(runtime));const server=createServer(app);
+  await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));t.after(()=>{server.closeAllConnections();server.close();});
+  const origin=`http://127.0.0.1:${(server.address() as any).port}`;
+  const response=await fetch(origin+"/models?targetId=local",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({harnessId:"pi"})});
+  assert.equal(response.status,200);assert.deepEqual((await response.json()).models,[]);assert.equal(runtime.store.sessions().length,0);
+  const unavailable=await fetch(origin+"/models",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({harnessId:"missing"})});
+  assert.equal(unavailable.status,409);
+});

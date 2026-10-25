@@ -7,6 +7,7 @@ import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { HostHarnessIntegrationManager } from "../harness-integrations.js";
+import { harnessModels } from "./models.js";
 import { adapterFor } from "./adapters.js";
 import { harnessEnvironment } from "./process.js";
 import { harnessResources, writeHarnessResource } from "./resources.js";
@@ -101,6 +102,40 @@ export class HostHarnessRuntime {
     if(target.kind==="local")result.push(this.librechat.descriptor(),this.openwebui.descriptor());
     return result;
   }
+  async models(input:any) {
+    const harnessId=identifier(input.harnessId),targetId=identifier(input.targetId??"local");
+    if(input.sessionId){
+      const session=this.session(identifier(input.sessionId));
+      if(session.harnessId!==harnessId || session.targetId!==targetId || session.authMode!=="native")fail("Model catalog does not match the native session",409);
+      const models=harnessModels(await (await this.ensure(session.id)).inspect("models"));
+      return {models,currentModelId:session.model,provider:session.configuration?.nativeProvider};
+    }
+    const target=this.store.target(targetId),descriptor=(await this.catalog(targetId)).find(v=>v.id===harnessId);
+    if(!descriptor?.available)fail(descriptor?.reason??"Harness is unavailable",409);
+    const registration=this.store.registrations().find(v=>v.id===harnessId);
+    const remoteChat=harnessId==="librechat" || harnessId==="openwebui";
+    const connection=remoteChat?this[harnessId as "librechat"|"openwebui"].read():undefined;
+    const executable=remoteChat?"remote-chat-http":registration?.executable??(target.kind==="container"?ADAPTERS[harnessId as keyof typeof ADAPTERS]?.command:await this.integrations.executablePath(harnessId));
+    if(!executable)fail("Harness executable is unavailable",409);
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),"multivibe-model-catalog-"));
+    let adapter:HarnessAdapter|undefined,timer:ReturnType<typeof setTimeout>|undefined,cancelled=false;
+    try {
+      let workspace=input.workspace?requiredText(input.workspace,4096):root;
+      if(!path.isAbsolute(workspace))fail("Workspace must be an absolute path");
+      if(target.kind==="local"){workspace=fs.realpathSync(workspace);if(!fs.statSync(workspace).isDirectory())fail("Workspace is not a directory");}
+      else if(!input.workspace)fail("Specify a workspace inside the container");
+      const now=Date.now(),session:HarnessSession={id:randomUUID(),harnessId,targetId,workspace,title:"Model catalog",authMode:"native",state:"idle",queuePaused:false,revision:0,archived:false,pinned:false,createdAt:now,updatedAt:now,capabilities:descriptor.capabilities,
+        ...(connection?{model:connection.agentId}:{}),...(registration?{configuration:{acpArgs:registration.args}}:{})};
+      adapter=this.factory({session,root,executable,target,modelDiscovery:true,
+        ...(connection?(harnessId==="openwebui"?{openWebUIConnection:connection}:{libreChatConnection:connection}):{}),
+        emit:()=>{},nativeSession:id=>{session.nativeSessionId=id;},capabilities:values=>Object.assign(session.capabilities,values),
+        attachment:()=>fail("Model discovery cannot access attachments",422),ask:async()=>fail("Authenticate in the harness before loading its models",401)});
+      const instance=adapter;
+      const result=(async()=>{await instance.start();if(cancelled){instance.close();fail("Model discovery timed out",504);}return harnessModels(await instance.inspect("models"));})();
+      const models=await Promise.race([result,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new HarnessRuntimeError("Model discovery timed out",504)),25_000);})]);
+      return {models,currentModelId:session.model??models.find(v=>v.isDefault)?.id,provider:session.configuration?.nativeProvider};
+    } finally {cancelled=true;clearTimeout(timer);adapter?.close();fs.rmSync(root,{recursive:true,force:true});}
+  }
   private async containerExecutable(container:string,command:string) {
     const key=`${container}:${command}`,cached=this.containerExecutables.get(key);if(cached && cached.expires>Date.now())return cached.value;
     let value:string|null=null;try{const result=await promisify(execFile)("docker",["exec",container,"sh","-c",'command -v "$1"',"_",command],{timeout:5000,maxBuffer:4096});value=result.stdout.trim()||null;}catch{}
@@ -125,8 +160,9 @@ export class HostHarnessRuntime {
     else {if(target.kind==="container")fail("Specify a workspace inside the container");workspace=path.join(this.root,"workspaces",id);fs.mkdirSync(workspace,{recursive:true,mode:0o700});}
     if(input.nativeSessionId)fail("Use native-session discovery and its ownership check to resume an external session",409);
     const now=Date.now();const s:HarnessSession={id,harnessId,targetId,workspace,title:typeof input.title==="string"?input.title.slice(0,200):"Nouvelle conversation",...(input.model?{model:requiredText(input.model,256)}:{}),authMode,state:"idle",queuePaused:false,revision:0,archived:false,pinned:false,createdAt:now,updatedAt:now,capabilities:descriptor.capabilities};
-    if(harnessId==="librechat" || harnessId==="openwebui"){const connection=this[harnessId].read()!;s.model=connection.agentId;s.configuration={endpoint:connection.endpoint};}
+    if(harnessId==="librechat" || harnessId==="openwebui"){const connection=this[harnessId].read()!;s.model=s.model??connection.agentId;s.configuration={endpoint:connection.endpoint};}
     const registration=this.store.registrations().find(v=>v.id===harnessId);if(registration)s.configuration={acpArgs:registration.args};
+    if(authMode==="native" && harnessId==="pi" && input.nativeProvider)s.configuration={...s.configuration,nativeProvider:requiredText(input.nativeProvider,256)};
     this.states.set(id,s);this.store.save(s);
     if(history){try{const attachment=this.store.attach(id,"prior-conversation.json","text/plain",Buffer.from(history).toString("base64"));s.configuration={...s.configuration,migrationContext:attachment.id};this.store.save(s);this.emit(id,{type:"notice",payload:{message:"The previous conversation is preserved as an attached transcript for the first turn. Native operations from the old session are not replayed.",attachment}});}catch(e){this.states.delete(id);this.store.delete(id);throw e;}}
     this.emit(id,{type:"session.created",payload:s});return s;

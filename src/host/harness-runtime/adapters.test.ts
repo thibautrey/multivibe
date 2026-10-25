@@ -28,7 +28,9 @@ if(process.argv.includes('serve')){
 }else readline.createInterface({input:process.stdin}).on('line',line=>{
  const v=JSON.parse(line),m=v.method??v.type,p=v.params??v;
  if(m==='initialize')reply(v,codex?{}:{protocolVersion:1,agentInfo:process.env.LLM_PROVIDER?{name:[process.env.LLM_PROVIDER,process.env.LLM_MODEL,process.env.OPENAI_BASE_URL,process.env.OPENAI_API_KEY==='fixture-proxy-key'].join('|')}:undefined,agentCapabilities:{loadSession:true,promptCapabilities:{embeddedContext:true}}});
- else if(m==='session/new')reply(v,{sessionId:'acp-session',...(process.env.LLM_PROVIDER?{models:{currentModelId:process.env.LLM_MODEL,availableModels:[{modelId:process.env.LLM_MODEL,name:process.env.LLM_MODEL}]}}:{})});
+ else if(m==='session/new')reply(v,{sessionId:'acp-session',models:{currentModelId:process.env.LLM_MODEL??'native-default',availableModels:[{modelId:process.env.LLM_MODEL??'native-default',name:'Native'}]}});
+ else if(m==='session/set_model')reply(v,{selected:p.modelId});
+ else if(m==='model/list')reply(v,p.cursor?{data:[{id:'second',model:'second'}]}:{data:[{id:'first',model:'first'}],nextCursor:'page-two'});
  else if(m==='thread/start')reply(v,{thread:{id:'codex-thread'}});
  else if(m==='session/prompt'){
   notify('session/update',{sessionId:'acp-session',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'ACP text'}}});
@@ -133,4 +135,18 @@ test("Claude preserves result-only output and keeps child-agent text out of the 
   const adapter=new ClaudeAdapter(f.ctx,async()=>sdk);t.after(()=>adapter.close());await adapter.start();await adapter.prompt([{type:"text",text:"read only"}]);
   assert.deepEqual(f.events.filter(e=>e.type==="message.part").map(e=>(e.payload as any).text),["Final parent response"]);
   assert.ok(f.events.some(e=>e.type==="agent" && e.itemId==="child-tool"));
+});
+
+test("ACP applies a chosen native model before the first prompt and updates it between turns",async t=>{
+  const f=fixture(t,"hermes-agent");f.ctx.session.model="native-chosen";
+  const adapter=new AcpAdapter(f.ctx,["acp"]);t.after(()=>adapter.close());await adapter.start();
+  assert.equal(f.ctx.session.model,"native-chosen");
+  assert.deepEqual(await adapter.configure({model:"next-model"}),{selected:"next-model"});
+  assert.equal(f.ctx.session.model,"next-model");
+});
+test("Codex discovery reads every model page without creating a thread",async t=>{
+  const f=fixture(t,"openai-codex");f.ctx.modelDiscovery=true;
+  const adapter=new CodexAdapter(f.ctx);t.after(()=>adapter.close());await adapter.start();
+  assert.equal(f.ctx.session.nativeSessionId,undefined);
+  assert.deepEqual(await adapter.inspect("models"),{data:[{id:"first",model:"first"},{id:"second",model:"second"}]});
 });

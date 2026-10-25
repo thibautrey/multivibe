@@ -127,7 +127,7 @@ import SwiftUI
                     Picker("Machine", selection: binding({ $0?.executionTargetID ?? "local" }, { $0.executionTargetID = $1 })) {
                         ForEach(targets) { Text($0.name).tag($0.id) }
                     }
-                    Picker("Harness", selection: binding({ $0?.harnessID ?? "native" }, { $0.harnessID = $1 == "native" ? nil : $1 })) {
+                    Picker("Harness", selection: binding({ $0?.harnessID ?? "native" }, { $0.harnessID = $1 == "native" ? nil : $1; $0.nativeModelID = nil; $0.nativeModelProvider = nil })) {
                         if target == "local" { Text("MultiVibe").tag("native") }
                         ForEach(harnesses) { Text($0.name + ($0.available ? "" : " · indisponible")).tag($0.id) }
                     }
