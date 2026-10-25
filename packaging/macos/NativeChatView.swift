@@ -257,6 +257,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
         }
+        .ignoresSafeArea(.container, edges: .top)
         .tint(ChatPalette.accent)
         .frame(minWidth: browser.isVisible ? 1080 : 760, maxWidth: .infinity, minHeight: 500, maxHeight: .infinity)
         .task {
@@ -352,7 +353,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             Text("MultiVibe").font(.system(size: 16, weight: .semibold))
             Spacer()
             ChatIconButton(title: "Réglages du Host", icon: "gearshape", action: openDashboard)
-        }.padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 18)
+        }.padding(.horizontal, 16).padding(.top, 44).padding(.bottom, 18)
     }
     private var sidebarEmptyState: some View {
         VStack(alignment: .leading, spacing: 6) {
