@@ -64,7 +64,7 @@ export class AcpAdapter extends Adapter {
       // Hermes loads its .env with override=True. Shell variables alone cannot
       // override the user's native endpoint. Keep native policies/resources, but
       // give this supervised session its own credentials and session database.
-      for(const name of ["config.yaml","skills","memories","SOUL.md","AGENTS.md","hooks","plugins"]){
+      for(const name of ["config.yaml","skills","memories","SOUL.md","AGENTS.md","hooks","plugins","tools","installs"]){
         const source=path.join(nativeHome,name),destination=path.join(home,name);
         if(fs.existsSync(source) && !fs.existsSync(destination))fs.symlinkSync(source,destination);
       }
