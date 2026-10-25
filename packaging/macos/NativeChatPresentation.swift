@@ -43,7 +43,7 @@ enum HarnessPresentation {
         ["native": "Fourni par le harness", "multivibe": "Fourni par MultiVibe", "unsupported": "Non pris en charge", "unknown": "À confirmer"][value] ?? value
     }
     static func activities(_ events: [DesktopHarnessEvent]) -> [HarnessActivity] {
-        let kinds: Set<String> = ["tool", "plan", "compaction", "usage", "agent", "terminal.output", "notice", "retry", "reasoning", "artifact"]
+        let kinds: Set<String> = ["tool", "plan", "compaction", "agent", "terminal.output", "notice", "retry", "reasoning", "artifact"]
         var rows: [HarnessActivity] = []
         var indices: [String: Int] = [:]
         for event in events where kinds.contains(event.type) || !event.payload["artifacts"].array.isEmpty {
