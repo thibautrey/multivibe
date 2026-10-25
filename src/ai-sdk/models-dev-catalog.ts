@@ -37,6 +37,9 @@ const SDK_MODELS_DEV_CACHE_VERSION = 2;
 const SDK_MODELS_DEV_CACHE_MAX_BYTES = 16 * 1024 * 1024;
 const MODEL_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}$/;
 /** Only reviewed providers are cached; models.dev lists hundreds more. */
+const PRICING_PROVIDER_ALIASES = Object.fromEntries(SDK_PROVIDERS
+  .filter(provider => provider.modelsDevId && provider.modelsDevId !== provider.id)
+  .map(provider => [provider.id, provider.modelsDevId!]));
 const REVIEWED_MODELS_DEV_IDS = new Set(SDK_PROVIDERS.map((provider) => provider.modelsDevId ?? provider.id));
 
 export type ModelsDevModel = {
@@ -70,7 +73,7 @@ type ModelsDevCatalogOptions = {
   ttlMs?: number;
   timeoutMs?: number;
   now?: () => number;
-  onUpdate?: (providers: Record<string, ModelsDevModel[]>, fetchedAt: number) => void;
+  onUpdate?: (providers: Record<string, ModelsDevModel[]>, fetchedAt: number, providerAliases: Record<string, string>) => void;
 };
 
 type ModelsDevCache = {
@@ -78,6 +81,7 @@ type ModelsDevCache = {
   source: string;
   fetchedAt: number;
   providers: Record<string, ModelsDevModel[]>;
+  providerAliases?: Record<string, string>;
 };
 
 function normalizeModel(value: unknown): ModelsDevModel | undefined {
@@ -192,7 +196,7 @@ export class ModelsDevCatalog {
         this.fetchedAt = cache.fetchedAt;
         this.nextRefreshAt = this.fetchedAt + this.ttlMs;
         this.lastError = undefined;
-        this.options.onUpdate?.(cache.providers, cache.fetchedAt);
+        this.options.onUpdate?.(cache.providers, cache.fetchedAt, PRICING_PROVIDER_ALIASES);
         await this.persist();
         return true;
       })
@@ -274,7 +278,7 @@ export class ModelsDevCatalog {
     this.providers = providers;
     this.fetchedAt = typeof parsed.fetchedAt === "number" && Number.isFinite(parsed.fetchedAt) ? parsed.fetchedAt : 0;
     this.nextRefreshAt = 0;
-    this.options.onUpdate?.(Object.fromEntries(this.providers), this.fetchedAt);
+    this.options.onUpdate?.(Object.fromEntries(this.providers), this.fetchedAt, PRICING_PROVIDER_ALIASES);
   }
 
   private async persist(): Promise<void> {
@@ -284,6 +288,7 @@ export class ModelsDevCatalog {
       source: MODELS_DEV_SOURCE_URL,
       fetchedAt: this.fetchedAt,
       providers: Object.fromEntries(this.providers),
+      providerAliases: PRICING_PROVIDER_ALIASES,
     };
     try {
       await mkdir(path.dirname(this.cachePath), { recursive: true, mode: 0o700 });

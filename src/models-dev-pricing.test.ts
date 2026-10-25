@@ -14,8 +14,9 @@ test("models.dev prices support providers, context tiers, free models and missin
   assert.deepEqual(cost.tiers?.map(t => t.tier.size), [272000, 500000]);
   assert.equal(normalizeModelsDevCost({ input: 2 }), undefined);
   installModelsDevPricing({ openai: [{ id: "gpt-6.1-sol", cost }],
+    "fireworks-ai": [{ id: "accounts/fireworks/models/llama", cost: { input: 1, output: 2 } }],
     anthropic: [{ id: "claude-future", cost: { input: 3, output: 15 } }],
-    openrouter: [{ id: "gpt-6.1-sol", cost: { input: 99, output: 99 } }, { id: "free", cost: { input: 0, output: 0 } }] }, 1792900000000);
+    openrouter: [{ id: "gpt-6.1-sol", cost: { input: 99, output: 99 } }, { id: "free", cost: { input: 0, output: 0 } }] }, 1792900000000, { fireworks: "fireworks-ai" });
   try {
     assert.equal(getModelPricing("gpt-6.1-sol")?.inputPer1M, 2);
     assert.equal(estimateCostUsd("gpt-6.1-sol", 100000, 10000, 20000, 30000), 0.277);
@@ -25,6 +26,7 @@ test("models.dev prices support providers, context tiers, free models and missin
     assert.equal(estimateCostUsd("anthropic/claude-future", 1000000, 1000000), 18);
     assert.equal(getModelPricing("openrouter/gpt-6.1-sol")?.inputPer1M, 99);
     assert.equal(getModelPricing("unreviewed/gpt-6.1-sol"), undefined);
+    assert.equal(estimateCostUsd("fireworks/accounts/fireworks/models/llama", 1000000, 1000000), 3);
     assert.equal(getModelPricing("gpt-6.1-sol-invented"), undefined);
     assert.equal(getModelPricing("gpt-5.3-codex-spark"), undefined);
     assert.equal(estimateCostUsd("unknown-model", 100, 10), undefined);
