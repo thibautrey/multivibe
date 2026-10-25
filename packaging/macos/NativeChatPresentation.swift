@@ -43,11 +43,11 @@ enum HarnessPresentation {
         ["native": "Fourni par le harness", "multivibe": "Fourni par MultiVibe", "unsupported": "Non pris en charge", "unknown": "À confirmer"][value] ?? value
     }
     static func activities(_ events: [DesktopHarnessEvent]) -> [HarnessActivity] {
-        let kinds: Set<String> = ["tool", "plan", "compaction", "agent", "terminal.output", "notice", "retry", "reasoning", "artifact"]
+        let kinds: Set<String> = ["tool", "plan", "compaction", "agent", "terminal.output", "notice", "retry", "artifact"]
         var rows: [HarnessActivity] = []
         var indices: [String: Int] = [:]
         for event in events where kinds.contains(event.type) || !event.payload["artifacts"].array.isEmpty {
-            let shared = ["plan", "compaction", "usage", "reasoning"].contains(event.type)
+            let shared = ["plan", "compaction", "usage"].contains(event.type)
             let key = "\(event.sessionId):\(event.turnId ?? "session"):\(event.type):\(event.itemId ?? (shared ? "summary" : String(event.seq)))"
             if let index = indices[key] { rows[index].updates.append(event) }
             else { indices[key] = rows.count; rows.append(.init(id: key, updates: [event])) }

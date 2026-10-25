@@ -22,7 +22,7 @@ enum NativeChatPresentationHarness {
         let withFile = event(7, "tool", .object(["artifacts": try .encode([file])]), item: "call")
         precondition(HarnessPresentation.activities([start, withFile, end])[0].attachments == [file])
         let reasoning = [event(8, "reasoning", .object(["text": .string("Première ")])), event(9, "reasoning", .object(["text": .string("étape")]))]
-        precondition(HarnessPresentation.activities(reasoning)[0].readable == "Première étape")
+        precondition(HarnessPresentation.activities(reasoning).isEmpty)
         let usage = event(10, "usage", .object(["usage": .object(["input_tokens": .number(200), "cache_read_input_tokens": .number(100), "output_tokens": .number(20)])]))
         precondition(HarnessPresentation.activities([usage]).isEmpty)
         let terminal = [event(11, "terminal.output", .object(["output": .string("hello")] ), item: "terminal"), event(12, "terminal.output", .object(["output": .string("hello world")]), item: "terminal")]
