@@ -117,6 +117,10 @@ enum HostAssistantError: Error { case emptyReply }
         precondition(store.current?.messages.last?.interrupted == false)
         runtimeEvent("turn.cancelled", .object([:]))
         precondition(store.current?.messages.last?.interrupted == true)
+        let previousMessageCount = store.current!.messages.count
+        store.edit { $0.draft = "Keep this draft" }
+        store.importRuntimeSession(store.current!.runtimeSession!, target: "local")
+        precondition(store.current?.messages.count == previousMessageCount && store.current?.draft == "Keep this draft")
         let reuseStore = NativeChatStore(file: directory.appendingPathComponent("reuse.json"))
         reuseStore.newConversation(); let supervised = reuseStore.selection!
         reuseStore.edit { $0.runtimeSessionID = "supervised-without-messages" }
