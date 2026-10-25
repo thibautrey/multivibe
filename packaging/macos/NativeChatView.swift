@@ -35,50 +35,6 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     }
 }
 
-private enum ChatPalette {
-    static let accent = Color(nsColor: NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(srgbRed: 0.45, green: 0.97, blue: 0.73, alpha: 1)
-            : NSColor(srgbRed: 0.03, green: 0.45, blue: 0.26, alpha: 1)
-    })
-    static let surface = Color(nsColor: .controlBackgroundColor)
-    static let canvas = Color(nsColor: .textBackgroundColor)
-    static let elevated = Color(nsColor: .windowBackgroundColor)
-    static let hairline = Color(nsColor: .separatorColor).opacity(0.55)
-}
-
-private struct HarnessLogo: View {
-    @Environment(\.colorScheme) private var colorScheme
-    let id: String
-    let name: String
-    var size: CGFloat
-
-    private var resource: (String, String)? {
-        switch id {
-        case "native": return ("multivibe", "png")
-        case "hermes-agent": return (colorScheme == .dark ? "hermes-dark" : "hermes-light", "png")
-        case "pi": return ("pi", "svg")
-        default: return nil
-        }
-    }
-
-    var body: some View {
-        Group {
-            if let resource,
-                      let url = Bundle.main.url(forResource: resource.0, withExtension: resource.1, subdirectory: "harnesses"),
-               let image = NSImage(contentsOf: url) {
-                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
-            } else {
-                Text(name.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined().uppercased())
-                    .font(.system(size: size * 0.32, weight: .bold, design: .rounded))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(width: size, height: size)
-        .accessibilityHidden(true)
-    }
-}
-
 @MainActor struct NativeChatView: View {
     @ObservedObject var store: NativeChatStore
     @ObservedObject private var desktopAgent: ComputerUseController
@@ -93,6 +49,12 @@ private struct HarnessLogo: View {
     @State private var cloudTask: Task<Void, Never>?
     @State private var selectedImports: Set<UUID> = []
     @State private var search = ""
+    @State private var showingArchives = false
+    @State private var renameID: UUID?
+    @State private var renameTitle = ""
+    @State private var targets: [DesktopHarnessTarget] = [.local]
+    @State private var followsTranscript = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("desktopInteractiveAnswers") private var interactiveAnswers = true
     @State private var models: [HostAssistantModel] = []
     @State private var harnesses: [NativeConversationHarness] = [.native]
@@ -138,7 +100,7 @@ private struct HarnessLogo: View {
         NativeChatStore.defaultHarnessID = value
     }) }
     private var visible: [NativeChatConversation] {
-        store.conversations.filter { $0.archived != true && (!$0.messages.isEmpty || !$0.draft.isEmpty || $0.runtimeSessionID != nil) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.messages.contains { $0.content.localizedCaseInsensitiveContains(search) }) }
+        store.conversations.filter { ($0.archived == true) == showingArchives && (!$0.messages.isEmpty || !$0.draft.isEmpty || $0.runtimeSessionID != nil) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.messages.contains { $0.content.localizedCaseInsensitiveContains(search) }) }
             .sorted { if ($0.pinned == true) != ($1.pinned == true) { return $0.pinned == true }; return $0.updatedAt > $1.updatedAt }
     }
     private var selectedLocalModel: HostAssistantModel? {
@@ -158,94 +120,92 @@ private struct HarnessLogo: View {
     }
     private var selectedModelName: String {
         if cloudMode { return selectedCloudModel?.name ?? selectedCloudModel?.id ?? "Choisir un modèle" }
-        if harness.wrappedValue != "native", store.current?.authMode != "multivibe" { return "Modèle du harness" }
+        if harness.wrappedValue != "native", store.current?.authMode != "multivibe" { return store.current?.runtimeSession?.model ?? "Modèle du harness" }
         return selectedLocalModel?.displayName ?? (model.wrappedValue.isEmpty ? "Choisir un modèle" : model.wrappedValue)
     }
+    private var targetName: String {
+        let id = store.current?.executionTargetID ?? "local"
+        return targets.first { $0.id == id }?.name ?? (id == "local" ? "Ce Mac" : "Machine distante")
+    }
     private var conversationSubtitle: String {
-        if cloudMode { return "Hermes Cloud" }
-        if harness.wrappedValue != "native" { return "\(selectedHarness.name) · \(store.current?.executionTargetID == nil || store.current?.executionTargetID == "local" ? "sur ce Mac" : store.current!.executionTargetID!)" }
-        if selectedLocalModel?.local == true { return "Privée · sur ce Mac" }
-        return "Privée · via le Host"
+        cloudMode ? "Hermes · Cloud" : "\(selectedHarness.name) · \(targetName)"
+    }
+    private var working: Bool { cloudMode ? cloudSending : store.isGenerating(store.selection) }
+    private var conversationState: String? {
+        guard !cloudMode else { return cloudSending ? "Hermes travaille…" : nil }
+        if let state = store.current?.runtimeSession?.state, state != "idle" { return HarnessPresentation.state(state) }
+        return working ? "Réponse en cours…" : nil
     }
     var body: some View {
-        HSplitView {
-        NavigationSplitView {
+        GeometryReader { geometry in
+            HSplitView {
+            NavigationSplitView {
             VStack(spacing: 0) {
                 sidebarHeader
                 sidebarPrimaryActions
-                HStack {
-                    Text(cloudMode ? "ESPACE CLOUD" : "RÉCENTES").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
-                    Spacer()
-                }.padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 7)
                 sidebarSearchField
                 ScrollView {
-                    LazyVStack(spacing: 4) {
-                    if cloudMode {
-                        let cloudVisible = agent.cloudConversations.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }
-                        if cloudVisible.isEmpty {
-                            Text(search.isEmpty ? "Aucune conversation Cloud" : "Aucun résultat")
-                                .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(10)
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        if cloudMode { cloudConversationList }
+                        else if visible.isEmpty { sidebarEmptyState }
+                        else {
+                            ForEach(ChatConversationSection.sections(visible)) { section in
+                                Text(section.title).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                                    .padding(.horizontal, 10).padding(.top, 16).padding(.bottom, 4)
+                                ForEach(section.conversations) { conversation in conversationLink(conversation) }
+                            }
                         }
-                        ForEach(cloudVisible) { conversation in
-                            Button { cloudSelection = conversation.id } label: {
-                                HStack(alignment: .top, spacing: 8) {
-                                    Image(systemName: "cloud").font(.caption).foregroundStyle(.secondary).padding(.top, 2)
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(conversation.title).lineLimit(2)
-                                        if conversation.conflicted { Text("Conflit à résoudre").font(.caption2).foregroundStyle(.orange) }
-                                    }
-                                }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 9).padding(.vertical, 8)
-                                    .background(cloudSelection == conversation.id ? ChatPalette.accent.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
-                            }.buttonStyle(.plain)
-                        }
-                    } else {
-                    if visible.isEmpty {
-                        Text(search.isEmpty ? "Aucune conversation pour le moment" : "Aucun résultat")
-                            .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(10)
-                    }
-                    ForEach(visible) { conversation in
-                        Button { store.selection = conversation.id } label: {
-                            HStack(alignment: .top, spacing: 8) {
-                                Image(systemName: "bubble.left").font(.caption).foregroundStyle(.secondary).padding(.top, 2)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(conversation.title).lineLimit(2).foregroundStyle(.primary)
-                                    Text(conversation.updatedAt, style: .relative).font(.caption2).foregroundStyle(.secondary)
-                                }
-                            }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 9).padding(.vertical, 8)
-                            .background(store.selection == conversation.id ? ChatPalette.accent.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
-                        }.buttonStyle(.plain).contextMenu {
-                            Button(conversation.pinned == true ? "Désépingler" : "Épingler") { if let i = store.conversations.firstIndex(where: { $0.id == conversation.id }) { store.conversations[i].pinned = conversation.pinned != true; store.save() } }
-                            Button("Archiver") { if let i = store.conversations.firstIndex(where: { $0.id == conversation.id }) { store.conversations[i].archived = true; store.save() } }
-                            Button("Supprimer", role: .destructive) { deleteID = conversation.id }.disabled(store.generating == conversation.id)
-                        }
-                    }
-                    }
-                    }.padding(.horizontal, 8)
+                    }.padding(.horizontal, 10).padding(.bottom, 12)
+                }.frame(minHeight: 0, maxHeight: .infinity).layoutPriority(-1)
+                if !cloudMode && (showingArchives || store.conversations.contains { $0.archived == true }) {
+                    Button { toggleArchives() } label: {
+                        HStack(spacing: 9) {
+                            Image(systemName: showingArchives ? "arrow.left" : "archivebox")
+                            Text(showingArchives ? "Toutes les conversations" : "Archives")
+                            Spacer()
+                            if !showingArchives { Text("\(store.conversations.filter { $0.archived == true }.count)").foregroundStyle(.secondary) }
+                        }.font(.system(size: 12)).padding(10)
+                    }.buttonStyle(ChatActionStyle(selected: showingArchives)).padding(.horizontal, 10).padding(.bottom, 8)
                 }
                 Divider()
                 sidebarFooter
             }
             .background(ChatPalette.elevated)
+            .frame(height: geometry.size.height, alignment: .top).clipped()
             .navigationSplitViewColumnWidth(min: 224, ideal: 252, max: 310)
         } detail: {
             VStack(spacing: 0) {
                 header
                 Divider()
-                if cloudMode { cloudTranscript }
-                else if let conversation = store.current, !conversation.messages.isEmpty { transcript(conversation) }
-                else { welcome }
+                Group {
+                    if cloudMode { cloudTranscript }
+                    else if let conversation = store.current, !conversation.messages.isEmpty { transcript(conversation) }
+                    else { welcome }
+                }
+                .frame(minHeight: 0, maxHeight: .infinity)
+                .layoutPriority(-1).clipped()
                 if let error = store.error {
-                    HStack(alignment: .top) {
-                        Image(systemName: "exclamationmark.circle")
-                        Text(error).textSelection(.enabled)
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Une action nécessite votre attention").font(.system(size: 12, weight: .semibold))
+                            Text(displayError(error)).font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
+                        }
                         Spacer()
-                        Button { store.error = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain).help("Masquer l’erreur")
-                    }.font(.callout).foregroundStyle(.red).padding(12)
+                        ChatIconButton(title: "Masquer le message", icon: "xmark") { store.error = nil }
+                    }
+                    .padding(12).frame(maxWidth: 820)
+                    .background(Color.red.opacity(0.055), in: RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.red.opacity(0.18), lineWidth: 0.5))
+                    .padding(.horizontal, 28).padding(.top, 8)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
                 if !cloudMode { AgentAccessView(controller: desktopAgent, conversation: store.selection, stop: { store.stop() }) }
-                if !cloudMode { NativeHarnessConversationControls(store: store) }
-                composer
+                if !cloudMode { NativeHarnessConversationControls(store: store).frame(maxWidth: 820).frame(maxWidth: .infinity) }
+                composer.fixedSize(horizontal: false, vertical: true).layoutPriority(2)
             }.background(ChatPalette.canvas)
+            .frame(maxWidth: .infinity, minHeight: geometry.size.height, maxHeight: geometry.size.height, alignment: .top).clipped()
+            .animation(ChatPalette.motion(reduceMotion), value: store.error != nil)
             .onDrop(of: [UTType.fileURL], isTargeted: $fileDropTargeted, perform: importDroppedFiles)
             .overlay {
                 if fileDropTargeted && !cloudMode {
@@ -253,7 +213,7 @@ private struct HarnessLogo: View {
                         .fill(ChatPalette.accent.opacity(0.08))
                         .overlay(RoundedRectangle(cornerRadius: 17).strokeBorder(ChatPalette.accent, style: StrokeStyle(lineWidth: 2, dash: [8])))
                         .overlay {
-                            Label("Déposez vos documents texte ici", systemImage: "doc.badge.plus")
+                            Label(harness.wrappedValue == "native" ? "Joindre des documents texte" : "Joindre ces fichiers", systemImage: "doc.badge.plus")
                                 .font(.headline).padding(18)
                                 .background(ChatPalette.elevated, in: RoundedRectangle(cornerRadius: 12))
                         }
@@ -261,14 +221,16 @@ private struct HarnessLogo: View {
                 }
             }
         }
-        .frame(minWidth: 680)
+        .frame(minWidth: 680, minHeight: geometry.size.height, maxHeight: geometry.size.height)
         if browser.isVisible {
             ChromiumBrowserPanel(browser: browser)
                 .frame(minWidth: 390, idealWidth: 560)
         }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
         .tint(ChatPalette.accent)
-        .frame(minWidth: browser.isVisible ? 1080 : 760, minHeight: 500)
+        .frame(minWidth: browser.isVisible ? 1080 : 760, maxWidth: .infinity, minHeight: 500, maxHeight: .infinity)
         .task {
             if store.current == nil { store.newConversation() }
             await loadNativeChatDependencies(
@@ -291,6 +253,17 @@ private struct HarnessLogo: View {
         }
         .onChange(of: store.selection) { selection in
             speech.stopSpeaking(at: .immediate)
+            followsTranscript = true
+        }
+        .alert("Renommer la conversation", isPresented: Binding(get: { renameID != nil }, set: { if !$0 { renameID = nil } })) {
+            TextField("Titre", text: $renameTitle)
+            Button("Annuler", role: .cancel) { renameID = nil }
+            Button("Enregistrer") {
+                if let index = store.conversations.firstIndex(where: { $0.id == renameID }), !renameTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    store.conversations[index].title = renameTitle.trimmingCharacters(in: .whitespacesAndNewlines); store.save()
+                }
+                renameID = nil
+            }
         }
         .alert("Supprimer cette conversation ?", isPresented: Binding(get: { deleteID != nil }, set: { if !$0 { deleteID = nil } })) {
             Button("Annuler", role: .cancel) { deleteID = nil }
@@ -347,18 +320,78 @@ private struct HarnessLogo: View {
 
     private var sidebarHeader: some View {
         HStack(spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 9).fill(ChatPalette.accent.opacity(0.13))
-                Image(systemName: "waveform.path").font(.system(size: 15, weight: .semibold)).foregroundStyle(ChatPalette.accent)
-            }.frame(width: 32, height: 32)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("MultiVibe").font(.headline.weight(.semibold))
-                Text(cloudMode ? "Espace agent" : "Host personnel").font(.caption2).foregroundStyle(.secondary)
-            }
+            HarnessLogo(id: "native", name: "MultiVibe", size: 30)
+            Text("MultiVibe").font(.system(size: 16, weight: .semibold))
             Spacer()
-            Button { openDashboard() } label: { Image(systemName: "gearshape") }
-                .buttonStyle(.plain).foregroundStyle(.secondary).help("Réglages du Host")
-        }.padding(.horizontal, 12).padding(.top, 13).padding(.bottom, 7)
+            ChatIconButton(title: "Réglages du Host", icon: "gearshape", action: openDashboard)
+        }.padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 18)
+    }
+    private var sidebarEmptyState: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(search.isEmpty ? (showingArchives ? "Aucune archive" : "Votre espace de travail") : "Aucun résultat").font(.system(size: 12, weight: .medium))
+            Text(search.isEmpty ? "Vos conversations apparaîtront ici." : "Essayez un autre mot ou un extrait de message.").font(.system(size: 12)).foregroundStyle(.secondary)
+        }.padding(.horizontal, 10).padding(.top, 22)
+    }
+    private func conversationLink(_ conversation: NativeChatConversation) -> some View {
+        Button { store.selection = conversation.id } label: {
+            HStack(spacing: 9) {
+                Image(systemName: conversation.pinned == true ? "pin" : "bubble.left")
+                    .font(.system(size: 12)).foregroundStyle(store.selection == conversation.id ? ChatPalette.accent : .secondary)
+                Text(conversation.title).font(.system(size: 13)).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                if conversation.runtimeSession?.state == "waiting_user" {
+                    Image(systemName: "questionmark.bubble.fill").font(.system(size: 11)).foregroundStyle(.orange).accessibilityLabel("Votre réponse est attendue")
+                } else if store.isGenerating(conversation.id) {
+                    ProgressView().controlSize(.mini).tint(ChatPalette.accent).accessibilityLabel("Travail en cours")
+                }
+            }.padding(.horizontal, 10).padding(.vertical, 10)
+        }.buttonStyle(ChatActionStyle(selected: store.selection == conversation.id))
+            .help(conversation.title).accessibilityAddTraits(store.selection == conversation.id ? .isSelected : [])
+            .contextMenu {
+                Button("Renommer") { renameID = conversation.id; renameTitle = conversation.title }
+                Button(conversation.pinned == true ? "Désépingler" : "Épingler") { updateConversation(conversation.id) { $0.pinned = conversation.pinned != true } }
+                Button(conversation.archived == true ? "Désarchiver" : "Archiver") { updateConversation(conversation.id) { $0.archived = conversation.archived != true } }
+                Divider()
+                Button("Supprimer", role: .destructive) { deleteID = conversation.id }.disabled(store.isGenerating(conversation.id))
+            }
+    }
+    private func updateConversation(_ id: UUID, change: (inout NativeChatConversation) -> Void) {
+        guard let index = store.conversations.firstIndex(where: { $0.id == id }) else { return }
+        withAnimation(ChatPalette.motion(reduceMotion)) { change(&store.conversations[index]) }
+        store.save()
+    }
+    private func toggleArchives() {
+        withAnimation(ChatPalette.motion(reduceMotion)) {
+            showingArchives.toggle()
+            let candidates = store.conversations.filter { ($0.archived == true) == showingArchives }
+                .sorted { $0.updatedAt > $1.updatedAt }
+            if let current = store.current, (current.archived == true) != showingArchives { store.selection = candidates.first?.id }
+        }
+    }
+    private func displayError(_ value: String) -> String {
+        let lower = value.lowercased()
+        if lower.contains("timed out") { return "La demande a pris trop de temps. Vous pouvez réessayer." }
+        if lower.contains("network connection was lost") { return "La connexion a été interrompue. Vos messages en attente sont conservés." }
+        if lower.contains("could not connect to the server") || lower.contains("connection refused") { return "Impossible de joindre le Host. Vérifiez sa connexion, puis réessayez." }
+        return value
+    }
+    private var cloudConversationList: some View {
+        let items = agent.cloudConversations.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }
+        return Group {
+            Text("Espace Cloud").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).padding(.horizontal, 10).padding(.top, 16)
+            if items.isEmpty { Text(search.isEmpty ? "Aucune conversation Cloud" : "Aucun résultat").font(.caption).foregroundStyle(.secondary).padding(10) }
+            ForEach(items) { conversation in
+                Button { cloudSelection = conversation.id } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: "cloud").font(.caption).foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(conversation.title).lineLimit(1)
+                            if conversation.conflicted { Text("Conflit à résoudre").font(.caption2).foregroundStyle(.orange) }
+                        }
+                        Spacer(minLength: 0)
+                    }.font(.system(size: 13)).padding(10)
+                }.buttonStyle(ChatActionStyle(selected: cloudSelection == conversation.id))
+            }
+        }
     }
     private var sidebarSearchField: some View {
         HStack(spacing: 7) {
@@ -371,13 +404,16 @@ private struct HarnessLogo: View {
         }
         .padding(.horizontal, 10).frame(height: 30)
         .background(ChatPalette.surface, in: RoundedRectangle(cornerRadius: 8))
-        .padding(.horizontal, 12).padding(.bottom, 7)
+        .padding(.horizontal, 16).padding(.top, 18).padding(.bottom, 4)
     }
     private var sidebarPrimaryActions: some View {
         VStack(spacing: 2) {
             sidebarAction("Nouvelle conversation", systemImage: "square.and.pencil") {
                 if cloudMode { Task { do { cloudSelection = try await agent.newCloudConversation() } catch { agent.error = error.localizedDescription } } }
-                else { store.newConversation() }
+                else {
+                    showingArchives = false; store.newConversation()
+                    if store.current?.model.isEmpty == true, let first = models.first { model.wrappedValue = first.id }
+                }
                 composing = true
             }
             sidebarAction("Modèles et fournisseurs", systemImage: "square.grid.2x2") { openDashboard() }
@@ -387,9 +423,9 @@ private struct HarnessLogo: View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 9).padding(.vertical, 8)
-                .contentShape(Rectangle())
-        }.buttonStyle(.plain)
+                .font(.system(size: 13, weight: title == "Nouvelle conversation" ? .medium : .regular))
+                .padding(.horizontal, 9).padding(.vertical, 10).contentShape(Rectangle())
+        }.buttonStyle(ChatActionStyle())
     }
     private var sidebarFooter: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -460,18 +496,18 @@ private struct HarnessLogo: View {
         }.padding(24).frame(width: 520)
     }
     private var header: some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 5) {
                 Text(cloudMode ? (agent.cloudConversations.first { $0.id == cloudSelection }?.title ?? "Nouvelle conversation Cloud") : (store.current?.title ?? "Nouvelle conversation"))
-                    .font(.headline).lineLimit(1)
-                Text(conversationSubtitle)
-                    .font(.caption2).foregroundStyle(.secondary)
-            }.frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
-            if !cloudMode {
-                Toggle(isOn: $interactiveAnswers) { Image(systemName: "slider.horizontal.below.rectangle") }
-                    .toggleStyle(.button).help("Réponses interactives · OpenIntelligentUI")
-                    .accessibilityLabel("Réponses interactives")
-            }
+                    .font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(conversationSubtitle).lineLimit(1)
+                    if let state = conversationState {
+                        Circle().fill(ChatPalette.accent).frame(width: 4, height: 4)
+                        Text(state).lineLimit(1).foregroundStyle(ChatPalette.accent)
+                    }
+                }.font(.system(size: 11)).foregroundStyle(.secondary)
+            }.frame(maxWidth: .infinity, alignment: .leading)
             if cloudMode {
                 Picker("Projet Hermes", selection: Binding(get: { agent.selectedWorkspaceProject(cloudSelection) }, set: { value in
                     do { try agent.selectWorkspaceProject(value, conversation: cloudSelection) } catch { agent.error = error.localizedDescription }
@@ -480,163 +516,185 @@ private struct HarnessLogo: View {
                     let selected = agent.selectedWorkspaceProject(cloudSelection)
                     if !selected.isEmpty && !agent.cloudProjects.contains(where: { $0.id == selected }) { Text("Projet indisponible").tag(selected) }
                     ForEach(agent.cloudProjects) { project in Text(project.title).tag(project.id) }
-                }
-                .labelsHidden().frame(maxWidth: 170).controlSize(.small)
-                .disabled(cloudSending || agent.busy || cloudSelection == nil)
+                }.labelsHidden().frame(maxWidth: 160).controlSize(.small).disabled(cloudSending || agent.busy || cloudSelection == nil)
             }
             if agent.accountID != nil {
                 Picker("Exécution", selection: $cloudMode) {
                     Label("Mac", systemImage: "desktopcomputer").tag(false)
                     Label("Cloud", systemImage: "cloud").tag(true)
-                }
-                .labelsHidden().pickerStyle(.segmented).frame(width: 142)
-                .disabled(cloudSending || store.generating != nil)
-            } else {
-                Label("Sur ce Mac", systemImage: "lock.fill")
-                    .font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                    .padding(.horizontal, 9).padding(.vertical, 5)
-                    .background(ChatPalette.surface, in: Capsule())
+                }.labelsHidden().pickerStyle(.segmented).frame(width: 134).disabled(cloudSending || store.isGenerating(store.selection))
+            }
+            if !cloudMode {
+                ChatIconButton(title: "Détails de la conversation", icon: "sidebar.right") { showingHarnessInspector = true }
+                Menu {
+                    Toggle("Réponses interactives", isOn: $interactiveAnswers)
+                    Divider()
+                    Button("Détails de la conversation") { showingHarnessInspector = true }
+                    Button("Réglages du Host") { openDashboard() }
+                } label: { Image(systemName: "ellipsis").frame(width: 24, height: 30) }
+                    .menuStyle(.borderlessButton).fixedSize().help("Options de la conversation").accessibilityLabel("Options de la conversation")
             }
         }
-        .padding(.horizontal, 18).padding(.vertical, 10)
-        .background(ChatPalette.elevated)
+        .padding(.horizontal, 24).frame(height: 70).background(ChatPalette.canvas)
+        .animation(ChatPalette.motion(reduceMotion), value: conversationState)
     }
     private var welcome: some View {
-        VStack(spacing: 16) {
-            Spacer()
-            ZStack {
-                RoundedRectangle(cornerRadius: 15).fill(ChatPalette.accent.opacity(0.11))
-                Image(systemName: "waveform.path").font(.system(size: 24, weight: .medium)).foregroundStyle(ChatPalette.accent)
-            }.frame(width: 52, height: 52)
-            Text("Comment puis-je vous aider ?").font(.system(size: 25, weight: .semibold))
-            Text("Posez une question, rédigez ou explorez une idée.")
-                .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            HStack(spacing: 10) {
-                suggestion("Trouver l’inspiration", icon: "lightbulb", text: "Aide-moi à trouver des idées pour ")
-                suggestion("M’aider à écrire", icon: "pencil.line", text: "Aide-moi à rédiger ")
-                suggestion("Créer un outil", icon: "slider.horizontal.3", text: "Crée un calculateur interactif pour partager une addition, avec pourboire et nombre de personnes modifiables.")
-            }.frame(maxWidth: 760)
-            if !loading && models.isEmpty {
-                Button("Connecter un fournisseur dans le dashboard") { openDashboard() }.buttonStyle(.link)
+        VStack(alignment: .leading, spacing: 0) {
+            Spacer(minLength: 28)
+            HarnessLogo(id: "native", name: "MultiVibe", size: 52).padding(.bottom, 22)
+            Text("Un espace pour vos idées.")
+                .font(.system(size: 29, weight: .semibold, design: .rounded)).tracking(-0.6).fixedSize(horizontal: false, vertical: true)
+            Text("Explorez, écrivez et avancez avec votre assistant.")
+                .font(.system(size: 14)).foregroundStyle(.secondary).padding(.top, 10).padding(.bottom, 28)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) { welcomeSuggestions }
+                VStack(spacing: 8) { welcomeSuggestions }
             }
-            Spacer()
-        }.padding(.horizontal, 24).padding(.top, 24).frame(maxWidth: .infinity, maxHeight: .infinity)
+            if !loading && models.isEmpty && harness.wrappedValue == "native" {
+                Button { openDashboard() } label: { Label("Connecter un modèle pour commencer", systemImage: "plus.circle") }
+                    .buttonStyle(.borderless).font(.callout).padding(.top, 20)
+            }
+            Spacer(minLength: 28)
+        }.frame(maxWidth: 660, alignment: .leading).padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-    private func suggestion(_ title: String, icon: String, text: String) -> some View {
+    @ViewBuilder private var welcomeSuggestions: some View {
+        suggestion("Explorer une idée", subtitle: "Trouver de nouvelles pistes", icon: "lightbulb", text: "Aide-moi à trouver des idées pour ")
+        suggestion("M’aider à écrire", subtitle: "Donner forme à mes mots", icon: "pencil.line", text: "Aide-moi à rédiger ")
+        suggestion("Créer un outil", subtitle: "Passer de l’idée à l’action", icon: "slider.horizontal.3", text: "Crée un calculateur interactif pour partager une addition, avec pourboire et nombre de personnes modifiables.")
+    }
+    private func suggestion(_ title: String, subtitle: String, icon: String, text: String) -> some View {
         Button { draft.wrappedValue = text; composing = true } label: {
-            HStack(spacing: 8) { Image(systemName: icon).foregroundStyle(ChatPalette.accent); Text(title).lineLimit(1) }.padding(.horizontal, 13).padding(.vertical, 10)
-                .background(ChatPalette.surface, in: Capsule())
-                .overlay(Capsule().stroke(.quaternary, lineWidth: 1))
-        }.buttonStyle(.plain)
+            VStack(alignment: .leading, spacing: 10) {
+                Image(systemName: icon).font(.system(size: 16)).foregroundStyle(ChatPalette.accent)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(title).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                    Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }.frame(minWidth: 152, maxWidth: .infinity, alignment: .leading).padding(14)
+                .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(ChatPalette.hairline, lineWidth: 0.5))
+        }.buttonStyle(ChatActionStyle())
     }
     private func transcript(_ conversation: NativeChatConversation) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 22) {
-                    ForEach(conversation.messages) { message in
-                        messageRow(message, conversation: conversation).id(message.id)
-                    }
-                    NativeHarnessTimeline(events: conversation.runtimeEvents ?? [], sessionID: conversation.runtimeSessionID, target: conversation.executionTargetID ?? "local")
+                LazyVStack(alignment: .leading, spacing: 30) {
+                    ForEach(conversation.messages) { message in messageRow(message, conversation: conversation).id(message.id) }
+                    NativeHarnessTimeline(events: conversation.runtimeEvents ?? [], sessionID: conversation.runtimeSessionID, target: conversation.executionTargetID ?? "local", running: store.isGenerating(conversation.id))
                     Color.clear.frame(height: 1).id("end")
-                }.padding(.horizontal, 24).padding(.vertical, 22).frame(maxWidth: 900).frame(maxWidth: .infinity)
+                }.padding(.horizontal, 28).padding(.vertical, 28).frame(maxWidth: 820).frame(maxWidth: .infinity)
+                    .background(ChatScrollPositionReader { followsTranscript = $0 })
             }
-            .onChange(of: conversation.messages.count) { _ in proxy.scrollTo("end", anchor: .bottom) }
-            .onChange(of: conversation.id) { _ in proxy.scrollTo("end", anchor: .bottom) }
+            .overlay(alignment: .bottom) {
+                if !followsTranscript {
+                    Button { followsTranscript = true; withAnimation(ChatPalette.motion(reduceMotion)) { proxy.scrollTo("end", anchor: .bottom) } } label: {
+                        Label("Derniers messages", systemImage: "arrow.down").font(.caption.weight(.medium)).padding(.horizontal, 13).padding(.vertical, 9)
+                            .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 8)).overlay(Capsule().strokeBorder(ChatPalette.hairline, lineWidth: 1)).shadow(color: .black.opacity(0.08), radius: 8, y: 3)
+                    }.buttonStyle(.plain).padding(.bottom, 12).transition(.opacity)
+                }
+            }
+            .onAppear { proxy.scrollTo("end", anchor: .bottom) }
+            .onChange(of: conversation.messages.last?.content) { _ in if followsTranscript { proxy.scrollTo("end", anchor: .bottom) } }
+            .onChange(of: conversation.messages.count) { _ in if followsTranscript { proxy.scrollTo("end", anchor: .bottom) } }
+            .onChange(of: conversation.runtimeEvents?.count) { _ in if followsTranscript { proxy.scrollTo("end", anchor: .bottom) } }
+            .onChange(of: conversation.id) { _ in followsTranscript = true; proxy.scrollTo("end", anchor: .bottom) }
         }
     }
     @ViewBuilder private func messageRow(_ message: NativeChatMessage, conversation: NativeChatConversation) -> some View {
         let isUser = message.role == "user"
-        HStack(alignment: .top, spacing: 10) {
-            if isUser { Spacer(minLength: 80) }
-            if !isUser {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8).fill(ChatPalette.accent.opacity(0.12))
-                    Image(systemName: "waveform.path").font(.caption.weight(.semibold)).foregroundStyle(ChatPalette.accent)
-                }.frame(width: 30, height: 30)
-            }
-            VStack(alignment: isUser ? .trailing : .leading, spacing: 7) {
-                HStack(spacing: 8) {
-                    if !isUser { Text("MultiVibe").font(.caption.weight(.semibold)).foregroundStyle(.secondary) }
-                    if !message.content.isEmpty {
-                        Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.content, forType: .string) } label: { Image(systemName: "doc.on.doc") }.help("Copier")
-                        if !isUser {
-                            Button { if speech.isSpeaking { speech.stopSpeaking(at: .immediate) } else { speech.speak(AVSpeechUtterance(string: message.content)) } } label: { Image(systemName: "speaker.wave.2") }.help("Lire ou arrêter la lecture")
-                        }
-                    }
-                }.buttonStyle(.borderless).foregroundStyle(.secondary)
-                Group {
-                    if message.content.isEmpty && store.generating == conversation.id && !isUser {
-                        HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Réflexion…").font(.caption).foregroundStyle(.secondary) }
-                    } else {
-                        if isUser { Text(markdown(message.content)).textSelection(.enabled).font(.system(size: 15)).lineSpacing(5) }
-                        else { NativeInteractiveAnswerView(content: message.content, streaming: store.generating == conversation.id && message.id == conversation.messages.last?.id) { text in
-                            guard store.selection == conversation.id, store.generating == nil else { return }
-                            store.edit { $0.draft = text }; composing = true
-                        } }
-                    }
-                }
-                if message.interrupted && store.generating != conversation.id {
-                    HStack(spacing: 8) {
-                        Label("Réponse interrompue", systemImage: "pause.circle").font(.caption).foregroundStyle(.secondary)
-                        if message.id == conversation.messages.last?.id { Button("Réessayer") { sendMessage(retry: true) }.disabled(store.generating != nil) }
+        let streaming = store.isGenerating(conversation.id) && message.id == conversation.messages.last?.id
+        HStack(alignment: .top, spacing: 12) {
+            if isUser { Spacer(minLength: 48) }
+            if !isUser { HarnessLogo(id: conversation.harnessID ?? "native", name: selectedHarness.name, size: 26).padding(.top, 1) }
+            VStack(alignment: isUser ? .trailing : .leading, spacing: 10) {
+                if !isUser { Text(selectedHarness.name).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary) }
+                if message.content.isEmpty && streaming && !isUser {
+                    HStack(spacing: 9) { ProgressView().controlSize(.small); Text("Préparation de la réponse…").font(.callout).foregroundStyle(.secondary) }.padding(.vertical, 4)
+                } else if isUser {
+                    Text(markdown(message.content)).textSelection(.enabled).font(.system(size: 15)).lineSpacing(5)
+                        .padding(.horizontal, 16).padding(.vertical, 13).background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 16))
+                } else {
+                    NativeInteractiveAnswerView(content: message.content, streaming: streaming) { text in
+                        guard store.selection == conversation.id, !store.isGenerating(conversation.id) else { return }
+                        store.edit { $0.draft = text }; composing = true
                     }
                 }
                 if let sessionID = conversation.runtimeSessionID, let files = message.attachedFiles { NativeHarnessAttachments(files: files, sessionID: sessionID, target: conversation.executionTargetID ?? "local") }
+                if message.interrupted && !store.isGenerating(conversation.id) {
+                    HStack(spacing: 8) {
+                        Label("Réponse interrompue", systemImage: "pause.circle").font(.caption).foregroundStyle(.secondary)
+                        if message.id == conversation.messages.last?.id { Button("Réessayer") { sendMessage(retry: true) }.disabled(store.isGenerating(conversation.id)) }
+                    }
+                }
+                if !message.content.isEmpty && !streaming { ChatMessageActions(content: message.content, isUser: isUser, speech: speech) }
             }
-            .padding(isUser ? 13 : 0)
-            .background(isUser ? ChatPalette.accent.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 15))
-            if !isUser { Spacer(minLength: 24) }
-        }.frame(maxWidth: .infinity)
+            if !isUser { Spacer(minLength: 0) }
+        }.frame(maxWidth: .infinity).transition(.opacity)
     }
     private var composer: some View {
-        VStack(spacing: 7) {
-            VStack(spacing: 5) {
-                TextField("Message à MultiVibe", text: draft, axis: .vertical)
-                    .textFieldStyle(.plain).font(.system(size: 15)).lineLimit(1...6)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .focused($composing).accessibilityLabel("Message à MultiVibe")
+        VStack(spacing: 9) {
+            VStack(alignment: .leading, spacing: 10) {
+                TextField(working ? "Ajouter un message à la file…" : "Écrivez votre message…", text: draft, axis: .vertical)
+                    .textFieldStyle(.plain).font(.system(size: 15)).lineLimit(2...8)
+                    .fixedSize(horizontal: false, vertical: true).focused($composing).accessibilityLabel("Message à MultiVibe")
+                    .onSubmit(submitComposer)
                     .background(ComposerNewlineShortcut())
-                    .padding(.horizontal, 12).padding(.top, 11).padding(.bottom, 7)
-                HStack(spacing: 7) {
-                    Button { importing = true } label: {
-                        Image(systemName: "paperclip").frame(width: 26, height: 26)
-                    }
-                    .buttonStyle(.plain).foregroundStyle(.secondary)
-                    .background(ChatPalette.surface, in: Circle())
-                    .help("Joindre des documents texte ou les glisser dans la conversation").disabled(cloudMode)
+                    .padding(.horizontal, 16).padding(.top, 16)
+                HStack(spacing: 5) {
+                    ChatIconButton(title: harness.wrappedValue == "native" ? "Joindre des documents texte" : "Joindre des fichiers", icon: "plus") { importing = true }.disabled(cloudMode)
                     if !cloudMode { harnessSelector }
                     if !cloudMode && harness.wrappedValue != "native" && store.current?.authMode != "multivibe" {
-                        Button("Modèle du harness") { showingHarnessInspector = true }.font(.caption).buttonStyle(.borderless)
+                        Button { showingHarnessInspector = true } label: {
+                            HStack(spacing: 5) { Text(selectedModelName).lineLimit(1); Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)) }
+                                .font(.system(size: 12)).foregroundStyle(.secondary).padding(.horizontal, 8).frame(height: 30)
+                        }.buttonStyle(ChatActionStyle()).help("Modèle et réglages du harness").frame(maxWidth: 230, alignment: .leading)
                     } else { modelSelector }
-                    if !cloudMode {
-                        Button { showingHarnessInspector = true } label: { Image(systemName: "slider.horizontal.3") }.buttonStyle(.plain).help("Machine, workspace et capacités du harness")
-                    }
-                    Spacer(minLength: 12)
-                    if cloudMode {
-                        Button { sendCloud() } label: { Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).frame(width: 25, height: 25) }
-                            .buttonStyle(.borderedProminent).clipShape(Circle()).help("Envoyer à Hermes")
-                            .disabled(cloudSelection == nil || cloudSending || agent.busy || agent.consent?.cloudEnabled != true || cloudDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !agent.models.contains { $0.id == cloudModel && $0.available != false })
-                    } else {
-                        if store.isGenerating(store.selection) {
-                            if store.current?.runtimeSession?.capabilities["steer"]?.available == true {
-                                Button { store.steer() } label: { Image(systemName: "arrow.triangle.branch") }.buttonStyle(.borderless).help("Intervenir dans le tour actif").disabled(!canSend)
-                            }
-                            Button { store.stop() } label: { Image(systemName: "stop.fill").font(.system(size: 11)).frame(width: 25, height: 25) }
-                                .buttonStyle(.borderedProminent).clipShape(Circle()).tint(.secondary).help("Arrêter le tour et suspendre la file")
-                        }
-                        Button { sendMessage() } label: { Image(systemName: store.isGenerating(store.selection) ? "text.badge.plus" : "arrow.up").font(.system(size: 13, weight: .bold)).frame(width: 25, height: 25) }
-                            .buttonStyle(.borderedProminent).clipShape(Circle()).help(store.isGenerating(store.selection) ? "Ajouter à la file" : "Envoyer").disabled(!canSend)
-                    }
-                }.padding(.horizontal, 8).padding(.bottom, 7)
+                    Spacer(minLength: 4)
+                    composerActions
+                }.padding(.horizontal, 9).padding(.bottom, 9)
             }
-            .background(ChatPalette.elevated, in: RoundedRectangle(cornerRadius: 17))
-            .overlay(RoundedRectangle(cornerRadius: 17).stroke(store.generating == store.selection ? ChatPalette.accent.opacity(0.55) : ChatPalette.hairline, lineWidth: 1))
-            .shadow(color: .black.opacity(0.055), radius: 12, y: 4)
-            Label(composerPrivacyText, systemImage: composerPrivacyIcon)
-                .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+            .background(ChatPalette.elevated, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(composing ? ChatPalette.accent.opacity(0.6) : ChatPalette.hairline, lineWidth: 1))
+            .shadow(color: .black.opacity(composing ? 0.07 : 0.035), radius: 12, y: 4)
+            .animation(ChatPalette.motion(reduceMotion), value: composing)
+            .animation(ChatPalette.motion(reduceMotion), value: working)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 14) {
+                    Label(composerPrivacyText, systemImage: composerPrivacyIcon)
+                    Spacer(minLength: 0)
+                    Text("⌘ ↵ Nouvelle ligne").help("Commande + Entrée insère un retour à la ligne")
+                }
+                Label(composerPrivacyText, systemImage: composerPrivacyIcon)
+            }.font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).padding(.horizontal, 3)
         }
-        .frame(maxWidth: 900).frame(maxWidth: .infinity)
-        .padding(.horizontal, 22).padding(.top, 9).padding(.bottom, 16)
+        .frame(maxWidth: 764).frame(maxWidth: .infinity)
+        .padding(.horizontal, 28).padding(.top, 12).padding(.bottom, 20)
+    }
+    @ViewBuilder private var composerActions: some View {
+        if cloudMode {
+            sendButton(icon: "arrow.up", title: "Envoyer à Hermes", action: sendCloud)
+                .disabled(!canSendCloud)
+        } else {
+            if working {
+                if store.current?.runtimeSession?.capabilities["steer"]?.available == true {
+                    ChatIconButton(title: "Intervenir dans le travail en cours", icon: "arrow.triangle.branch") { store.steer() }.disabled(!canSend)
+                }
+                ChatIconButton(title: "Arrêter le tour et suspendre la file", icon: "stop.fill") { store.stop() }
+            }
+            sendButton(icon: working ? "text.badge.plus" : "arrow.up", title: working ? "Ajouter à la file d’attente" : "Envoyer", action: { sendMessage() }).disabled(!canSend)
+        }
+    }
+    private func sendButton(icon: String, title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) { Image(systemName: icon).font(.system(size: 14, weight: .semibold)).frame(width: 34, height: 34) }
+            .buttonStyle(ChatActionStyle(prominent: true)).help(title).accessibilityLabel(title)
+    }
+    private var canSendCloud: Bool {
+        cloudSelection != nil && !cloudSending && !agent.busy && agent.consent?.cloudEnabled == true &&
+        !cloudDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && agent.models.contains { $0.id == cloudModel && $0.available != false }
+    }
+    private func submitComposer() {
+        if cloudMode { if canSendCloud { sendCloud() } }
+        else if canSend { sendMessage() }
     }
     private var canSend: Bool {
         let hasInput = !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.current?.draftAttachments?.isEmpty == false
@@ -654,10 +712,10 @@ private struct HarnessLogo: View {
             }
             .font(.caption.weight(.medium)).foregroundStyle(.secondary)
             .padding(.horizontal, 9).frame(height: 28)
-            .background(ChatPalette.surface, in: Capsule())
+            .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 8))
         }
-        .buttonStyle(.plain).tint(.secondary)
-        .fixedSize(horizontal: false, vertical: true).frame(maxWidth: 190, alignment: .leading)
+        .buttonStyle(ChatActionStyle()).tint(.secondary)
+        .fixedSize(horizontal: false, vertical: true).frame(maxWidth: 160, alignment: .leading)
         .help(selectedHarness.description)
         .disabled(store.current?.messages.isEmpty == false || store.current?.runtimeSessionID != nil || store.isGenerating(store.selection))
         .popover(isPresented: $choosingHarness, arrowEdge: .bottom) { harnessGrid }
@@ -719,15 +777,18 @@ private struct HarnessLogo: View {
                     }
                 }
                 Text(item.name).font(.callout.weight(.semibold)).foregroundStyle(.primary)
-                Text(item.description).font(.caption2).foregroundStyle(.secondary).lineLimit(3, reservesSpace: true)
+                Text(item.description).font(.caption2).foregroundStyle(.secondary).lineLimit(2, reservesSpace: true)
                 if item.available && item.capabilities.longTermMemory {
                     Label("Mémoire longue durée", systemImage: "brain.head.profile")
                         .font(.caption2.weight(.medium)).foregroundStyle(ChatPalette.accent)
                 } else if item.available && item.id == "pi" {
                     Label("Session persistante", systemImage: "clock.arrow.circlepath")
                         .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+                } else if item.available && item.capabilities.tools {
+                    Label("Outils et sessions", systemImage: "wrench.and.screwdriver")
+                        .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
                 } else if item.available {
-                    Label("Conversation directe", systemImage: "bolt.horizontal")
+                    Label("Session persistante", systemImage: "clock.arrow.circlepath")
                         .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
                 } else if item.detected == true {
                     Label(item.configured ? "Détecté et configuré" : "Détecté sur ce Mac", systemImage: "checkmark.circle")
@@ -741,7 +802,7 @@ private struct HarnessLogo: View {
                         .font(.caption.weight(.semibold)).foregroundStyle(ChatPalette.accent)
                 }
             }
-            .padding(13).frame(maxWidth: .infinity, minHeight: 205, alignment: .topLeading)
+            .padding(13).frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)
             .background(item.id == harness.wrappedValue ? ChatPalette.accent.opacity(0.10) : ChatPalette.elevated,
                         in: RoundedRectangle(cornerRadius: 15))
             .overlay(RoundedRectangle(cornerRadius: 15).stroke(
@@ -785,7 +846,7 @@ private struct HarnessLogo: View {
                     .foregroundStyle(installationError == nil ? ChatPalette.accent : .red) }
             }
             if let installationError { Text(installationError).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
-            Button(showingInstallationLogs ? "Hide logs" : "Show logs") { showingInstallationLogs.toggle() }
+            Button(showingInstallationLogs ? "Masquer les journaux" : "Afficher les journaux") { showingInstallationLogs.toggle() }
                 .buttonStyle(.link)
             if showingInstallationLogs {
                 ScrollView {
@@ -850,25 +911,19 @@ private struct HarnessLogo: View {
             }
             .font(.caption.weight(.medium)).foregroundStyle(.secondary)
             .padding(.horizontal, 9).frame(height: 28)
-            .background(ChatPalette.surface, in: Capsule())
+            .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 8))
         }
         .menuStyle(.borderlessButton).tint(.secondary)
         .fixedSize(horizontal: false, vertical: true).frame(maxWidth: 260, alignment: .leading)
-        .disabled(cloudMode ? cloudSending : store.generating == store.selection)
+        .disabled(cloudMode ? cloudSending : store.isGenerating(store.selection))
     }
     private var composerPrivacyText: String {
-        if cloudMode { return "Exécuté dans votre espace Hermes Cloud" }
-        if harness.wrappedValue == "hermes-agent" { return "Orchestré par Hermes · mémoire longue durée active" }
-        if harness.wrappedValue == "pi" { return "Orchestré par Pi · session persistante sur ce Mac" }
+        if cloudMode { return "Dans votre espace Hermes Cloud" }
+        if harness.wrappedValue != "native" { return "\(targetName) · \(store.current?.authMode == "multivibe" ? "Modèles MultiVibe" : "Accès du harness")" }
         if selectedLocalModel?.local == true { return "Traité localement sur ce Mac" }
-        return "Transmis au modèle sélectionné via votre Host"
+        return "Via votre Host · modèle sélectionné"
     }
-    private var composerPrivacyIcon: String {
-        if cloudMode { return "cloud" }
-        if harness.wrappedValue == "hermes-agent" { return "brain.head.profile" }
-        if harness.wrappedValue == "pi" { return "point.3.connected.trianglepath.dotted" }
-        return selectedLocalModel?.local == true ? "lock.fill" : "shield.lefthalf.filled"
-    }
+    private var composerPrivacyIcon: String { cloudMode ? "cloud" : "lock" }
     private var cloudTranscript: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -883,31 +938,44 @@ private struct HarnessLogo: View {
                     Button("Nouvelle conversation Cloud") { Task { do { cloudSelection = try await agent.newCloudConversation() } catch { agent.error = error.localizedDescription } } }
                 }
                 ForEach(agent.synchronizedMessages(cloudSelection)) { message in
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text(message.role == "user" ? "Vous" : "MultiVibe").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                        if message.role == "assistant" {
-                            NativeInteractiveAnswerView(content: message.content) { cloudDraft = $0; composing = true }
-                        } else { Text(markdown(message.content)).textSelection(.enabled).lineSpacing(5) }
+                    let isUser = message.role == "user"
+                    HStack(alignment: .top, spacing: 12) {
+                        if isUser { Spacer(minLength: 48) }
+                        if !isUser { HarnessLogo(id: "hermes-agent", name: "Hermes", size: 26).padding(.top, 1) }
+                        VStack(alignment: isUser ? .trailing : .leading, spacing: 10) {
+                            if !isUser { Text("Hermes").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary) }
+                            if isUser {
+                                Text(markdown(message.content)).textSelection(.enabled).font(.system(size: 15)).lineSpacing(5)
+                                    .padding(.horizontal, 16).padding(.vertical, 13).background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 16))
+                            } else {
+                                NativeInteractiveAnswerView(content: message.content) { cloudDraft = $0; composing = true }
+                            }
+                            if !message.content.isEmpty { ChatMessageActions(content: message.content, isUser: isUser, speech: speech) }
+                        }
+                        if !isUser { Spacer(minLength: 0) }
                     }
-                    .padding(message.role == "user" ? 13 : 0)
-                    .background(message.role == "user" ? ChatPalette.accent.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 15))
-                    .frame(maxWidth: message.role == "user" ? 620 : .infinity, alignment: message.role == "user" ? .trailing : .leading)
+                    .frame(maxWidth: .infinity)
                 }
                 ForEach(agent.orderedRuns.filter { $0.sessionId == cloudSelection?.uuidString.lowercased() }, id: \.runId) { run in
                     VStack(alignment: .leading, spacing: 9) {
+                        Label("Exécution Cloud", systemImage: "cloud").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                         Text(agent.runPrompt(run.runId)).font(.headline).textSelection(.enabled)
                         if let response = agent.responseText(run) { NativeInteractiveAnswerView(content: response) { cloudDraft = $0; composing = true } }
-                        else { Text(run.state == .awaiting_resolution ? "Une action nécessite votre vérification. Elle ne sera pas rejouée automatiquement." : "État : \(run.state.rawValue)").foregroundStyle(.secondary) }
+                        else { Text(run.state == .awaiting_resolution ? "Une action nécessite votre vérification. Elle ne sera pas rejouée automatiquement." : cloudRunState(run.state.rawValue)).foregroundStyle(.secondary) }
                         if run.state != .completed && run.state != .cancelled {
                             Button("Annuler") { Task { do { try await agent.cancel(runID: run.runId) } catch { agent.error = error.localizedDescription } } }
                                 .disabled(agent.busy)
                         }
                     }
-                    .padding(15).background(ChatPalette.surface, in: RoundedRectangle(cornerRadius: 14))
+                    .padding(15).background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 14))
+                    .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(ChatPalette.hairline, lineWidth: 0.5))
                 }
-                if cloudSending { ProgressView("Hermes travaille…") }
-            }.padding(.horizontal, 24).padding(.vertical, 22).frame(maxWidth: 900).frame(maxWidth: .infinity, alignment: .leading)
+                if cloudSending { HStack(spacing: 9) { ProgressView().controlSize(.small); Text("Hermes travaille…") }.font(.caption).foregroundStyle(.secondary) }
+            }.padding(.horizontal, 28).padding(.vertical, 28).frame(maxWidth: 820).frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+    private func cloudRunState(_ value: String) -> String {
+        ["queued": "En attente", "running": "Travail en cours", "completed": "Terminé", "cancelled": "Annulé", "failed": "Échec"][value] ?? "État à confirmer"
     }
     private func sendCloud() {
         guard let conversationID = cloudSelection, !cloudSending, agent.models.contains(where: { $0.id == cloudModel }) else { return }
@@ -943,6 +1011,7 @@ private struct HarnessLogo: View {
         catch { store.error = error.localizedDescription }
     }
     private func loadHarnesses() async {
+        if let response = try? await DesktopHarnessClient.shared.call("/targets"), let values = try? response["targets"].decode([DesktopHarnessTarget].self) { targets = values }
         do {
             let detected = try await NativeHarnessClient.shared.harnesses()
             harnesses = detected.isEmpty ? [.native] : detected.filter { $0.id != "computer-use" }
@@ -950,8 +1019,9 @@ private struct HarnessLogo: View {
             let runtimes = try catalog["harnesses"].decode([DesktopHarnessDescriptor].self)
             for item in runtimes {
                 let old = harnesses.first { $0.id == item.id }
+                let priorDescription = old?.description.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 let view = NativeConversationHarness(id: item.id, name: item.name, available: item.available, configured: item.configured,
-                    description: "\(item.name) · \(item.protocolName) · accès natif ou MultiVibe", capabilities: .init(sessions: true, streaming: true, tools: item.capabilities["tools"]?.available == true, longTermMemory: item.capabilities["memory"]?.available == true),
+                    description: priorDescription.isEmpty ? harnessDescription(item.id) : priorDescription, capabilities: .init(sessions: true, streaming: true, tools: item.capabilities["tools"]?.available == true, longTermMemory: item.capabilities["memory"]?.available == true),
                     unavailableReason: item.reason, canInstall: old?.canInstall, compatible: true, detected: item.detected, conversationCapable: true, category: old?.category ?? "agent", popularityRank: old?.popularityRank ?? 100)
                 if let index = harnesses.firstIndex(where: { $0.id == item.id }) { harnesses[index] = view } else { harnesses.append(view) }
             }
@@ -960,5 +1030,45 @@ private struct HarnessLogo: View {
             if harness.wrappedValue != "native" { store.error = error.localizedDescription }
         }
     }
+    private func harnessDescription(_ id: String) -> String {
+        switch id {
+        case "hermes-agent": return "Agent autonome avec mémoire et outils."
+        case "pi": return "Agent de codage léger et extensible."
+        case "openai-codex": return "Agent de développement OpenAI."
+        case "claude-code": return "Agent de développement Anthropic."
+        case "opencode": return "Agent de développement open source."
+        case "gemini-cli": return "Agent de développement Google."
+        default: return "Utilisez ce moteur dans l’interface MultiVibe."
+        }
+    }
     private func openDashboard() { (NSApplication.shared.delegate as? MultiVibeMenuBarApp)?.openDashboard() }
+}
+
+@MainActor private struct ChatMessageActions: View {
+    let content: String
+    let isUser: Bool
+    let speech: AVSpeechSynthesizer
+    @State private var copied = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        HStack(spacing: 1) {
+            ChatIconButton(title: copied ? "Copié" : "Copier le message", icon: copied ? "checkmark" : "doc.on.doc") {
+                NSPasteboard.general.clearContents(); NSPasteboard.general.setString(content, forType: .string)
+                withAnimation(ChatPalette.motion(reduceMotion)) { copied = true }
+            }
+            if !isUser {
+                ChatIconButton(title: "Lire ou arrêter la lecture", icon: "speaker.wave.2") {
+                    if speech.isSpeaking { speech.stopSpeaking(at: .immediate) }
+                    else { speech.speak(AVSpeechUtterance(string: content)) }
+                }
+            }
+            if copied { Text("Copié").font(.system(size: 11)).foregroundStyle(ChatPalette.accent).padding(.horizontal, 4).transition(.opacity) }
+        }.foregroundStyle(.secondary)
+        .task(id: copied) {
+            guard copied else { return }
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(ChatPalette.motion(reduceMotion)) { copied = false }
+        }
+    }
 }

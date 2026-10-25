@@ -4,6 +4,8 @@ import SwiftUI
 @MainActor struct NativeHarnessInspector: View {
     @ObservedObject var store: NativeChatStore
     @Environment(\.dismiss) private var dismiss
+    @State private var page = "session"
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var targets: [DesktopHarnessTarget] = [.local]
     @State private var harnesses: [DesktopHarnessDescriptor] = []
     @State private var nativeSessions: [DesktopNativeSessionSource] = []
@@ -46,106 +48,49 @@ import SwiftUI
     private func binding(_ get: @escaping (NativeChatConversation?) -> String, _ set: @escaping (inout NativeChatConversation, String) -> Void) -> Binding<String> {
         Binding(get: { get(store.current) }, set: { value in store.edit { set(&$0, value) } })
     }
+    private var descriptor: DesktopHarnessDescriptor? { harnesses.first { $0.id == harnessID } }
+    private var capabilities: [String: DesktopHarnessCapability] { conversation?.runtimeSession?.capabilities ?? descriptor?.capabilities ?? [:] }
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack { Text("Session et capacités").font(.title2.weight(.semibold)); Spacer(); if busy { ProgressView().controlSize(.small) }; Button("Fermer") { dismiss() } }
-            if let message { Text(message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
-            if let id = conversation?.id { ForEach(store.runtimeInteractions[id] ?? []) { interaction in NativeHarnessInteractionView(store: store, conversationID: id, interaction: interaction) } }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    GroupBox("Exécution") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Picker("Machine", selection: binding({ $0?.executionTargetID ?? "local" }, { $0.executionTargetID = $1 })) {
-                                ForEach(targets) { Text($0.name).tag($0.id) }
-                            }.disabled(locked)
-                            HStack { Button("Ajouter une machine ou un conteneur") { addingTarget = true }; Button("Actualiser") { Task { await load() } } }
-                            Picker("Harness", selection: binding({ $0?.harnessID ?? "native" }, { $0.harnessID = $1 == "native" ? nil : $1 })) {
-                                if target == "local" { Text("MultiVibe natif").tag("native") }
-                                ForEach(harnesses) { Text($0.name + ($0.available ? "" : " · indisponible")).tag($0.id) }
-                            }.disabled(locked)
-                            TextField("Dossier de travail (chemin absolu sur cette machine)", text: binding({ $0?.workspace ?? "" }, { $0.workspace = $1 })).disabled(locked)
-                            if locked { Text("Le harness et la machine sont attachés à cette conversation.").font(.caption).foregroundStyle(.secondary) }
-                            if harnessID != "native" {
-                                Picker("Accès aux modèles", selection: binding({ $0?.authMode ?? "native" }, { $0.authMode = $1 })) {
-                                    Text("Accès habituel du harness").tag("native"); Text("MultiVibe").tag("multivibe")
-                                }.disabled(locked)
-                                if conversation?.authMode == "multivibe" { Text("Le modèle se choisit dans le compositeur.").font(.caption).foregroundStyle(.secondary) }
-                                else { Text("Le harness conserve son authentification et son modèle habituels. Ses identifiants restent sur sa machine.").font(.caption).foregroundStyle(.secondary) }
-                            }
-                            Button("Ajouter un harness ACP…") { addingACP = true }
-                        }.padding(7)
-                    }
-                    if let session = conversation?.runtimeSession {
-                        GroupBox("État de la session") {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("\(session.state) · \(targets.first(where: { $0.id == target })?.name ?? target)")
-                                Text(session.workspace).font(.caption.monospaced()).textSelection(.enabled)
-                                if let native = session.nativeSessionId { Text(native).font(.caption.monospaced()).textSelection(.enabled) }
-                                HStack {
-                                    Button(session.queuePaused ? "Reprendre la file" : "Suspendre la file") { if let id = conversation?.id { store.runtimeCommand(id, type: session.queuePaused ? "resume_queue" : "pause_queue") } }
-                                    Button("Compacter") { if let id = conversation?.id { store.runtimeCommand(id, type: "compact") } }.disabled(session.running || session.capabilities["compaction"]?.available != true)
-                                    Button("Exporter") { Task { await exportSession() } }
-                                }
-                                if session.state == "uncertain" { Text("L’acceptation d’un travail est incertaine. Consultez l’historique natif ; aucune action ne sera rejouée automatiquement. Vous pouvez continuer dans une copie depuis les sessions existantes.").font(.caption).foregroundStyle(.orange) }
-                            }.frame(maxWidth: .infinity, alignment: .leading).padding(7)
-                        }
-                        GroupBox("Capacités effectives") {
-                            VStack(alignment: .leading, spacing: 5) {
-                                ForEach(session.capabilities.keys.sorted(), id: \.self) { key in
-                                    let capability = session.capabilities[key]!
-                                    HStack(alignment: .top) {
-                                        Image(systemName: capability.available ? "checkmark.circle" : "minus.circle").foregroundStyle(capability.available ? Color.green : Color.secondary)
-                                        Text(key).frame(width: 110, alignment: .leading)
-                                        Text(capability.available ? capability.support : (capability.reason ?? capability.support)).font(.caption).foregroundStyle(.secondary)
-                                    }
-                                }
-                            }.padding(7)
-                        }
-                    }
-                    if harnessID != "native" {
-                        GroupBox("Sessions existantes") {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Button("Retrouver les sessions de cette machine") { Task { await loadSessions() } }
-                                ForEach(hostSessions, id: \.id) { session in
-                                    HStack { VStack(alignment: .leading) { Text(session.title); Text(session.state).font(.caption).foregroundStyle(.secondary) }; Spacer(); Button("Ouvrir") { store.importRuntimeSession(session, target: target); dismiss() } }
-                                }
-                                ForEach(nativeSessions) { session in
-                                    HStack {
-                                        VStack(alignment: .leading) { Text(session.title).lineLimit(1); Text(session.reason ?? "Continuité de l’historique dans une copie isolée").font(.caption).foregroundStyle(.secondary) }
-                                        Spacer()
-                                        Button("Lire") { Task { await previewNative(session) } }
-                                        Button("Continuer dans une copie") { Task { await importNative(session) } }.disabled(!session.canContinue)
-                                    }
-                                }
-                            }.padding(7)
-                        }
-                        GroupBox("Inspecter le harness") {
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack { Picker("Fonction", selection: $subject) { ForEach(subjects, id: \.self) { Text($0).tag($0) } }; Button("Lire") { Task { await inspect() } } }
-                                inspectionControls
-                                if subject == "settings" {
-                                    DisclosureGroup("Modifier les réglages de la session") {
-                                        TextEditor(text: $configurationParameters).font(.caption.monospaced()).frame(height: 85)
-                                        Button("Appliquer") {
-                                            Task {
-                                                do { let value = try JSONDecoder().decode(HarnessJSON.self, from: Data(configurationParameters.utf8)); guard case .object = value else { throw DesktopHarnessError.invalidResponse }; await configure(value) }
-                                                catch { message = error.localizedDescription }
-                                            }
-                                        }.disabled(store.isGenerating(conversation?.id))
-                                    }
-                                }
-                                if !output.isEmpty { Text(output).font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-                                DisclosureGroup("Opération native avancée") {
-                                    TextField("Nom de l’opération exposée par l’adaptateur", text: $nativeMethod)
-                                    TextEditor(text: $nativeParameters).font(.caption.monospaced()).frame(height: 80)
-                                    Button("Exécuter l’opération") { Task { await nativeOperation() } }.disabled(nativeMethod.isEmpty || store.isGenerating(conversation?.id))
-                                }
-                            }.padding(7)
-                        }
-                    }
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                HarnessLogo(id: harnessID, name: descriptor?.name ?? "MultiVibe", size: 34)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Détails de la conversation").font(.system(size: 18, weight: .semibold))
+                    Text("\(descriptor?.name ?? "MultiVibe") · \(targets.first { $0.id == target }?.name ?? "Machine distante")").font(.caption).foregroundStyle(.secondary)
                 }
+                Spacer()
+                if busy { ProgressView().controlSize(.small) }
+                ChatIconButton(title: "Fermer les détails", icon: "xmark") { dismiss() }.keyboardShortcut(.cancelAction)
+            }.padding(22)
+            Picker("Section", selection: $page) {
+                Text("Session").tag("session"); Text("Fonctions").tag("features"); Text("Avancé").tag("advanced")
+            }.labelsHidden().pickerStyle(.segmented).padding(.horizontal, 22).padding(.bottom, 18)
+            Divider()
+            if let message {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.circle")
+                    Text(message).textSelection(.enabled)
+                    Spacer()
+                    ChatIconButton(title: "Masquer le message", icon: "xmark") { self.message = nil }
+                }.font(.callout).foregroundStyle(.red).padding(.horizontal, 22).padding(.top, 14)
             }
-        }.padding(20).frame(minWidth: 640, idealWidth: 700, minHeight: 540, idealHeight: 720)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if let id = conversation?.id { ForEach(store.runtimeInteractions[id] ?? []) { interaction in NativeHarnessInteractionView(store: store, conversationID: id, interaction: interaction) } }
+                    if page == "session" {
+                        executionSettings
+                        if let session = conversation?.runtimeSession { sessionSummary(session) }
+                        if harnessID != "native" { existingSessions }
+                    } else if page == "features" {
+                        capabilityList
+                        if harnessID != "native" { inspectionPanel }
+                    } else { advancedPanel }
+                }.padding(22)
+            }
+        }
+        .frame(minWidth: 610, idealWidth: 660, minHeight: 500, idealHeight: 690)
+        .background(ChatPalette.elevated).tint(ChatPalette.accent)
+        .animation(ChatPalette.motion(reduceMotion), value: page)
         .task(id: target) { await load() }
         .sheet(isPresented: $addingTarget) { targetForm }
         .sheet(isPresented: $addingACP) { acpForm }
@@ -157,6 +102,147 @@ import SwiftUI
                 ScrollView { Text(nativePreview ?? "").font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
                 HStack { if !nativePreviewComplete, let source = nativePreviewSource { Button("Lire la suite") { Task { await previewNative(source, append: true) } } }; Spacer(); Button("Fermer") { nativePreview = nil } }
             }.padding(20).frame(width: 760, height: 580)
+        }
+    }
+    private var executionSettings: some View {
+        ChatSection(title: "Environnement de travail", icon: "desktopcomputer") {
+            VStack(alignment: .leading, spacing: 14) {
+                if locked {
+                    inspectorValue("Machine", targets.first { $0.id == target }?.name ?? target)
+                    inspectorValue("Harness", descriptor?.name ?? harnessID)
+                    inspectorValue("Dossier de travail", conversation?.workspace ?? conversation?.runtimeSession?.workspace ?? "Non défini", monospaced: true)
+                } else {
+                    Picker("Machine", selection: binding({ $0?.executionTargetID ?? "local" }, { $0.executionTargetID = $1 })) {
+                        ForEach(targets) { Text($0.name).tag($0.id) }
+                    }
+                    Picker("Harness", selection: binding({ $0?.harnessID ?? "native" }, { $0.harnessID = $1 == "native" ? nil : $1 })) {
+                        if target == "local" { Text("MultiVibe").tag("native") }
+                        ForEach(harnesses) { Text($0.name + ($0.available ? "" : " · indisponible")).tag($0.id) }
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Dossier de travail").font(.caption).foregroundStyle(.secondary)
+                        TextField("Chemin absolu sur cette machine", text: binding({ $0?.workspace ?? "" }, { $0.workspace = $1 })).textFieldStyle(.roundedBorder)
+                    }
+                }
+                if locked { Label("Cet environnement est attaché à la conversation.", systemImage: "lock").font(.caption).foregroundStyle(.secondary) }
+                if harnessID != "native" {
+                    Divider()
+                    if locked { inspectorValue("Accès aux modèles", conversation?.authMode == "multivibe" ? "MultiVibe" : "Accès habituel du harness") }
+                    else {
+                        Picker("Accès aux modèles", selection: binding({ $0?.authMode ?? "native" }, { $0.authMode = $1 })) {
+                            Text("Accès habituel du harness").tag("native"); Text("MultiVibe").tag("multivibe")
+                        }
+                    }
+                    Text(conversation?.authMode == "multivibe" ? "Choisissez le modèle dans le compositeur." : "Le harness utilise son modèle et son authentification habituels.").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+    private func inspectorValue(_ label: String, _ value: String, monospaced: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 16) {
+            Text(label).foregroundStyle(.secondary)
+            Spacer(minLength: 12)
+            Text(value).font(monospaced ? .system(size: 12, design: .monospaced) : .body).lineLimit(2).truncationMode(.middle).textSelection(.enabled)
+        }.font(.callout)
+    }
+    private func sessionSummary(_ session: DesktopHarnessSession) -> some View {
+        ChatSection(title: HarnessPresentation.state(session.state), icon: session.running ? "circle.dotted" : "checkmark.circle") {
+            HStack(spacing: 12) {
+                Button(session.queuePaused ? "Reprendre la file" : "Suspendre la file") { if let id = conversation?.id { store.runtimeCommand(id, type: session.queuePaused ? "resume_queue" : "pause_queue") } }
+                Button("Compacter le contexte") { if let id = conversation?.id { store.runtimeCommand(id, type: "compact") } }.disabled(session.running || session.capabilities["compaction"]?.available != true)
+                Spacer()
+                Button("Exporter") { Task { await exportSession() } }
+            }.controlSize(.small)
+            if session.state == "uncertain" { Text("L’acceptation d’un travail est incertaine. Consultez l’historique natif ; aucune action ne sera rejouée automatiquement. Vous pouvez continuer dans une copie depuis les sessions existantes.").font(.caption).foregroundStyle(.orange) }
+            DisclosureGroup("Identifiants et versions") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Harness : \(session.harnessId) \(session.harnessVersion ?? "")")
+                    Text("Session : \(session.nativeSessionId ?? session.id)")
+                    Text("Dossier : \(session.workspace)")
+                }.font(.caption.monospaced()).textSelection(.enabled).padding(.top, 6)
+            }.font(.caption).foregroundStyle(.secondary)
+        }
+    }
+    private var capabilityList: some View {
+        ChatSection(title: "Fonctions disponibles", icon: "square.grid.2x2") {
+            if capabilities.isEmpty { Text("Les fonctions du harness apparaîtront ici lorsqu’elles seront connues.").font(.callout).foregroundStyle(.secondary) }
+            ForEach(capabilities.keys.sorted(by: { HarnessPresentation.title($0).localizedStandardCompare(HarnessPresentation.title($1)) == .orderedAscending }), id: \.self) { key in
+                let capability = capabilities[key]!
+                HStack(alignment: .top, spacing: 11) {
+                    Image(systemName: capability.available ? "checkmark.circle.fill" : capability.support == "unknown" ? "questionmark.circle" : "minus.circle")
+                        .foregroundStyle(capability.available ? ChatPalette.accent : Color.secondary).frame(width: 16)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(HarnessPresentation.title(key)).font(.system(size: 12, weight: .medium))
+                        Text(capability.available ? HarnessPresentation.origin(capability.support) : (capability.reason ?? HarnessPresentation.origin(capability.support))).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                }.padding(.vertical, 3)
+            }
+        }
+    }
+    private var existingSessions: some View {
+        ChatSection(title: "Reprendre une conversation", icon: "clock.arrow.circlepath") {
+            Text("Retrouvez les sessions de ce Host et celles créées dans le terminal.").font(.callout).foregroundStyle(.secondary)
+            Button("Rechercher les sessions") { Task { await loadSessions() } }.disabled(busy)
+            ForEach(hostSessions, id: \.id) { session in
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) { Text(session.title).font(.callout); Text(HarnessPresentation.state(session.state)).font(.caption).foregroundStyle(.secondary) }
+                    Spacer()
+                    Button("Ouvrir") { store.importRuntimeSession(session, target: target); dismiss() }
+                }
+            }
+            ForEach(nativeSessions) { session in
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) { Text(session.title).lineLimit(1); Text(session.reason ?? "Continuer dans une copie isolée").font(.caption).foregroundStyle(.secondary) }
+                    Spacer()
+                    Button("Lire") { Task { await previewNative(session) } }
+                    Button("Continuer") { Task { await importNative(session) } }.disabled(!session.canContinue)
+                }.font(.callout)
+            }
+        }
+    }
+    private var inspectionPanel: some View {
+        ChatSection(title: "Explorer les fonctions", icon: "magnifyingglass") {
+            HStack {
+                Picker("Fonction", selection: $subject) { ForEach(subjects, id: \.self) { Text(HarnessPresentation.title($0)).tag($0) } }
+                Button("Consulter") { Task { await inspect() } }.disabled(busy || conversation?.runtimeSessionID == nil)
+            }
+            if conversation?.runtimeSessionID == nil { Text("Démarrez une conversation pour consulter ses fonctions effectives.").font(.caption).foregroundStyle(.secondary) }
+            inspectionControls
+            if !output.isEmpty {
+                DisclosureGroup("Résultat et données du harness") {
+                    ScrollView { Text(output).font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 260)
+                }.font(.caption)
+            }
+        }
+    }
+    private var advancedPanel: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            ChatSection(title: "Machines et intégrations", icon: "network") {
+                Button("Ajouter une machine ou un conteneur…") { addingTarget = true }
+                Button("Ajouter un harness ACP…") { addingACP = true }
+                Button("Actualiser le catalogue") { Task { await load() } }.disabled(busy)
+            }
+            if harnessID != "native" {
+                ChatSection(title: "Réglages natifs", icon: "slider.horizontal.3") {
+                    Text("Ces réglages et opérations suivent le format propre au harness.").font(.callout).foregroundStyle(.secondary)
+                    DisclosureGroup("Modifier les réglages de la session") {
+                        TextEditor(text: $configurationParameters).font(.caption.monospaced()).frame(height: 100)
+                        Button("Appliquer les réglages") {
+                            Task {
+                                do { let value = try JSONDecoder().decode(HarnessJSON.self, from: Data(configurationParameters.utf8)); guard case .object = value else { throw DesktopHarnessError.invalidResponse }; await configure(value) }
+                                catch { message = error.localizedDescription }
+                            }
+                        }.disabled(store.isGenerating(conversation?.id) || conversation?.runtimeSessionID == nil)
+                    }
+                    DisclosureGroup("Exécuter une opération native") {
+                        TextField("Nom de l’opération", text: $nativeMethod).textFieldStyle(.roundedBorder)
+                        TextEditor(text: $nativeParameters).font(.caption.monospaced()).frame(height: 100)
+                        Button("Exécuter") { Task { await nativeOperation() } }.disabled(nativeMethod.isEmpty || store.isGenerating(conversation?.id) || conversation?.runtimeSessionID == nil)
+                    }
+                    if !output.isEmpty { DisclosureGroup("Résultat") { Text(output).font(.caption.monospaced()).textSelection(.enabled) } }
+                }
+            }
         }
     }
     private func previewNative(_ source: DesktopNativeSessionSource, append: Bool = false) async {
@@ -339,6 +425,7 @@ import SwiftUI
     @State private var values: [String: String] = [:]
     @State private var error: String?
     @State private var showingAuthentication = false
+    @State private var sending = false
     @StateObject private var authenticationBrowser = ChromiumBrowser()
     private var elicitation: Bool { interaction.detail["_kind"].string == "mcp_elicitation" }
     private var schema: HarnessJSON { interaction.detail["requestedSchema"] }
@@ -349,10 +436,27 @@ import SwiftUI
         return nil
     }
     private var questions: [HarnessJSON] { let direct = interaction.detail["questions"].array; return direct.isEmpty ? interaction.detail["input"]["questions"].array : direct }
-    private func answer(_ value: HarnessJSON) { store.runtimeCommand(conversationID, type: "respond", value: .object(["interactionId": .string(interaction.id), "answer": value])) }
+    private func answer(_ value: HarnessJSON) {
+        guard !sending else { return }
+        sending = true; error = nil
+        Task {
+            do { _ = try await store.command(conversationID, type: "respond", value: .object(["interactionId": .string(interaction.id), "answer": value])); try await store.refreshRuntime(conversationID) }
+            catch { self.error = error.localizedDescription; sending = false }
+        }
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            Label(interaction.title, systemImage: interaction.kind == "permission" ? "lock.shield" : "questionmark.bubble").font(.callout.weight(.semibold))
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: interaction.kind == "permission" ? "lock.shield" : interaction.kind == "authentication" ? "key" : "questionmark.bubble")
+                    .font(.system(size: 15)).foregroundStyle(ChatPalette.accent).padding(.top, 1)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(interaction.kind == "permission" ? "Autorisation demandée" : interaction.kind == "authentication" ? "Connexion nécessaire" : "Votre réponse est attendue")
+                        .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+                    Text(interaction.title).font(.system(size: 13, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                if sending { ProgressView().controlSize(.small) }
+            }.padding(.bottom, 4)
             if interaction.kind == "authentication" {
                 Text(interaction.detail["message"].string ?? "Ouvrez le parcours de connexion, puis revenez ici.").font(.caption)
                 HStack {
@@ -397,21 +501,33 @@ import SwiftUI
                         Text(question["question"].string ?? question["header"].string ?? "Réponse")
                         ForEach(Array(question["options"].array.enumerated()), id: \.offset) { _, option in
                             let label = option["label"].string ?? option.string ?? option.display
-                            Button(label) { values[key] = label }.buttonStyle(.bordered)
+                            Button { values[key] = label } label: {
+                                HStack(alignment: .top, spacing: 9) {
+                                    Image(systemName: values[key] == label ? "checkmark.circle.fill" : "circle").foregroundStyle(values[key] == label ? ChatPalette.accent : Color.secondary)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(label).font(.system(size: 12, weight: .medium))
+                                        if let description = option["description"].string { Text(description).font(.system(size: 11)).foregroundStyle(.secondary) }
+                                    }
+                                    Spacer(minLength: 0)
+                                }.padding(9)
+                            }.buttonStyle(ChatActionStyle(selected: values[key] == label))
                         }
-                        TextField("Votre réponse", text: Binding(get: { values[key] ?? "" }, set: { values[key] = $0 }))
+                        TextField(question["options"].array.isEmpty ? "Votre réponse" : "Ou précisez votre réponse", text: Binding(get: { values[key] ?? "" }, set: { values[key] = $0 }))
                     }
                 } else {
                     TextField("Votre réponse", text: Binding(get: { values["value"] ?? "" }, set: { values["value"] = $0 }))
                     DisclosureGroup("Détails") { Text(interaction.detail.display).font(.caption.monospaced()).textSelection(.enabled) }
                 }
                 HStack {
-                    Button("Répondre") { submitQuestions() }.disabled(values.values.allSatisfy { $0.isEmpty })
+                    Button("Répondre") { submitQuestions() }.buttonStyle(.borderedProminent).disabled(values.values.allSatisfy { $0.isEmpty })
                     Button("Annuler le tour") { store.runtimeCommand(conversationID, type: "interrupt") }
                 }
             }
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
-        }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+        }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+        .background(ChatPalette.surface, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(ChatPalette.accent.opacity(0.32), lineWidth: 1))
+        .disabled(sending).tint(ChatPalette.accent)
         .sheet(isPresented: $showingAuthentication, onDismiss: { authenticationBrowser.close() }) {
             VStack { ChromiumBrowserPanel(browser: authenticationBrowser); Button("Revenir à la demande") { showingAuthentication = false } }.padding(12).frame(width: 800, height: 600)
         }

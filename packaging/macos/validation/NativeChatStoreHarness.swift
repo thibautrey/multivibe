@@ -39,6 +39,7 @@ enum HostAssistantError: Error { case emptyReply }
 
 @main struct NativeChatStoreHarness {
     @MainActor static func main() async throws {
+        try NativeChatPresentationHarness.validate()
         let previousModel = HostAssistantClient.shared.defaultModel
         let previousHarness = NativeChatStore.defaultHarnessID
         defer {

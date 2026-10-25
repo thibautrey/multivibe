@@ -11,8 +11,7 @@ struct NativeInteractiveAnswerView: View {
             ForEach(Array(NativeInteractiveDocument.segments(content).enumerated()), id: \.offset) { _, segment in
                 switch segment {
                 case .text(let text):
-                    Text((try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text))
-                        .textSelection(.enabled).font(.system(size: 15)).lineSpacing(5)
+                    ChatMarkdownView(content: text)
                 case .document(let document):
                     NativeInteractiveCard(document: document, proposePrompt: proposePrompt)
                 case .pending:

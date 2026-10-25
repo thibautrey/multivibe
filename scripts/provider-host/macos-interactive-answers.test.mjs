@@ -14,7 +14,7 @@ test('native interactive answers parse persisted messages and run isolated worki
   try {
     const binary = path.join(temporary, 'test');
     await execute('xcrun', ['swiftc', '-parse-as-library',
-      ...['NativeInteractiveDocument.swift', 'NativeInteractiveAnswerView.swift', 'validation/NativeInteractiveAnswersHarness.swift'].map(file => path.join(root, 'packaging/macos', file)),
+      ...['NativeChatStyle.swift', 'NativeChatMarkdown.swift', 'NativeInteractiveDocument.swift', 'NativeInteractiveAnswerView.swift', 'validation/NativeInteractiveAnswersHarness.swift'].map(file => path.join(root, 'packaging/macos', file)),
       '-o', binary]);
     const { stdout } = await execute(binary, [], { timeout: 45000 });
     assert.match(stdout, /PASS parser, persistence, working calculator, opaque origin, network isolation, native bridge/);
