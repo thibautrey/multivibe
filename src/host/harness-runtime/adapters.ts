@@ -207,7 +207,15 @@ export class PiAdapter extends Adapter {
     if(steer){await this.peer!.request("steer",params);return;}
     await this.untilEnd(()=>this.peer!.request("prompt",params,0));
   }
-  async interrupt(){const done=this.settled;try{await this.peer!.request("clear_queue");}catch{this.restartAfterInterrupt=true;}await this.peer!.request("abort",{},0);try{await done;}catch(e:any){if(e.status!==499)throw e;}}
+  async interrupt(){
+    const done=this.settled;this.restartAfterInterrupt=true;
+    // Older RPC versions do not reply with an ID to unknown queue commands.
+    // Abort first; rebuilding this connection discards pending native steering.
+    await this.peer!.request("abort",{},10_000);
+    this.ctx.emit({type:"turn.status",payload:{status:"interrupted"}});
+    this.rejectTurn(new HarnessRuntimeError("Pi turn interrupted",499));
+    try{await done;}catch(e:any){if(e.status!==499)throw e;}
+  }
   async compact(instructions?:string){return this.peer!.request("compact",instructions?{customInstructions:instructions}:{},0);}
   async inspect(subject:string) {
     const methods:Record<string,string>={settings:"get_state",history:"get_messages",models:"get_available_models",commands:"get_commands",usage:"get_session_stats",checkpoints:"get_fork_messages"};
