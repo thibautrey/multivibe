@@ -39,6 +39,15 @@ import Foundation
         let callback = URL(string: "multivibe://oauth/callback/macos?state=" + authorization.state + "&code=valid-code")!
         let code = try NativeCloudSession.authorizationCode(callback, expectedState: authorization.state)
         precondition(code == "valid-code")
+        for (error, expected) in [("access_denied", "accessDenied"), ("invalid_request", "invalidRequest")] {
+            let rejected = URL(string: "multivibe://oauth/callback/macos?error=" + error + "&state=" + authorization.state)!
+            do {
+                _ = try NativeCloudSession.authorizationCode(rejected, expectedState: authorization.state)
+                fatalError("OAuth error accepted as an authorization code")
+            } catch NativeCloudSessionError.accessDenied where expected == "accessDenied" {
+            } catch NativeCloudSessionError.invalidRequest where expected == "invalidRequest" {
+            }
+        }
         for invalid in ["multivibe://worker-handoff#token", "multivibe://oauth/callback/ios?state=x&code=c", "multivibe://oauth/callback/macos?state=x&code=c&state=x", "https://oauth/callback/macos?state=x&code=c"] {
             do { _ = try NativeCloudSession.authorizationCode(URL(string: invalid)!, expectedState: "x"); fatalError("Invalid callback accepted") } catch {}
         }
