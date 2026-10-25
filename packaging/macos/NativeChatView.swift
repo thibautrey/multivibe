@@ -1640,7 +1640,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 if awaitingTwoFactor { Button("Recommencer") { resetTwoFactor(); password = "" } }
                 Spacer()
                 if busy { ProgressView().controlSize(.small) }
-                Button(isOpenWebUI ? "Charger les modèles" : awaitingTwoFactor ? "Vérifier et charger les agents" : "Charger les agents") { Task { await connect(discover: true) } }
+                Button(isOpenWebUI ? "Charger les modèles" : awaitingTwoFactor ? "Vérifier le code" : "Charger les agents") { Task { await connect(discover: true) } }
                     .disabled(busy || endpoint.isEmpty || (isOpenWebUI ? apiKey.isEmpty && !hasApiKey : awaitingTwoFactor ? !validTwoFactorResponse : connectionAttemptID.isEmpty && !hasUserSession && userToken.isEmpty && (email.isEmpty || password.isEmpty)))
                 Button("Enregistrer") { Task { await connect(discover: false) } }
                     .keyboardShortcut(.defaultAction).disabled(busy || agents.isEmpty || agentID.isEmpty)
