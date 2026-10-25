@@ -119,7 +119,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
         NativeChatStore.defaultHarnessID = value
     }) }
     private var visible: [NativeChatConversation] {
-        store.conversations.filter { ($0.archived == true) == showingArchives && (!$0.messages.isEmpty || !$0.draft.isEmpty || $0.runtimeSessionID != nil) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.messages.contains { $0.content.localizedCaseInsensitiveContains(search) }) }
+        store.conversations.filter { ($0.archived == true) == showingArchives && (!$0.messages.isEmpty || !$0.draft.isEmpty || $0.runtimeSessionID != nil || $0.remoteChatID != nil) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.messages.contains { $0.content.localizedCaseInsensitiveContains(search) }) }
             .sorted { if ($0.pinned == true) != ($1.pinned == true) { return $0.pinned == true }; return $0.updatedAt > $1.updatedAt }
     }
     private var selectedLocalModel: HostAssistantModel? {
@@ -191,6 +191,12 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                         }
                     }.padding(.horizontal, 10).padding(.bottom, 12)
                 }.frame(minHeight: 0, maxHeight: .infinity).layoutPriority(-1)
+                if !cloudMode && !store.remoteSyncErrors.isEmpty {
+                    Label("Synchronisation à rétablir", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.caption).foregroundStyle(.orange)
+                        .help(store.remoteSyncErrors.values.sorted().joined(separator: "\n"))
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                }
                 if !cloudMode && (showingArchives || store.conversations.contains { $0.archived == true }) {
                     Button { toggleArchives() } label: {
                         HStack(spacing: 9) {
@@ -289,6 +295,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             )
         }
         .task(id: harnessModelsKey) { await loadHarnessModels() }
+        .task(id: store.current?.executionTargetID ?? "local") { await store.runRemoteSynchronization() }
         .sheet(isPresented: $cloudConsent) { consentSheet }
         .sheet(isPresented: Binding(get: { configuringRemoteHarness != nil }, set: { if !$0 { configuringRemoteHarness = nil } })) {
             let remoteID = configuringRemoteHarness ?? "librechat"
@@ -296,7 +303,11 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 await loadHarnesses()
                 harness.wrappedValue = remoteID
                 store.edit { $0.authMode = "native" }
+                if let config = try? await DesktopHarnessClient.shared.call("/" + remoteID, target: store.current?.executionTargetID ?? "local") {
+                    store.edit { $0.model = config["agentId"].string ?? "" }
+                }
                 recordHarnessUse(remoteID)
+                await store.synchronizeRemoteChats(force: true)
             }
         }
         .sheet(item: $installingHarness) { item in harnessInstallationSheet(item) }
@@ -323,7 +334,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             Button("Annuler", role: .cancel) { renameID = nil }
             Button("Enregistrer") {
                 if let index = store.conversations.firstIndex(where: { $0.id == renameID }), !renameTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    store.conversations[index].title = renameTitle.trimmingCharacters(in: .whitespacesAndNewlines); store.save()
+                    store.updateMetadata(store.conversations[index].id, title: renameTitle.trimmingCharacters(in: .whitespacesAndNewlines))
                 }
                 renameID = nil
             }
@@ -331,7 +342,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
         .alert("Supprimer cette conversation ?", isPresented: Binding(get: { deleteID != nil }, set: { if !$0 { deleteID = nil } })) {
             Button("Annuler", role: .cancel) { deleteID = nil }
             Button("Supprimer", role: .destructive) { if let id = deleteID { store.delete(id) }; deleteID = nil; if store.current == nil { store.newConversation() } }
-        } message: { Text("Elle sera supprimée de l’historique de ce Mac.") }
+        } message: { Text(store.conversations.first(where: { $0.id == deleteID })?.remoteChatID != nil ? "Elle sera également supprimée du serveur et de ses autres clients." : "Elle sera supprimée de l’historique de ce Mac.") }
         .fileImporter(isPresented: $importing, allowedContentTypes: harness.wrappedValue == "native" ? [.plainText, .sourceCode, .json] : [.item], allowsMultipleSelection: true) { result in
             do { importFiles(try result.get(), conversationID: store.selection) }
             catch { store.error = "Import impossible : \(error.localizedDescription)" }
@@ -428,8 +439,8 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     }
     private func updateConversation(_ id: UUID, change: (inout NativeChatConversation) -> Void) {
         guard let index = store.conversations.firstIndex(where: { $0.id == id }) else { return }
-        withAnimation(ChatPalette.motion(reduceMotion)) { change(&store.conversations[index]) }
-        store.save()
+        var next = store.conversations[index]; change(&next)
+        store.updateMetadata(id, pinned: next.pinned, archived: next.archived)
     }
     private func toggleArchives() {
         withAnimation(ChatPalette.motion(reduceMotion)) {
@@ -578,6 +589,9 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 }.buttonStyle(.borderedProminent).disabled(agent.busy || agent.consent == nil)
             }
         }.padding(24).frame(width: 520)
+        .onChange(of: email) { _ in agents = [] }
+        .onChange(of: password) { _ in agents = [] }
+        .onChange(of: userToken) { _ in agents = [] }
     }
     private var header: some View {
         HStack(spacing: 12) {
@@ -844,7 +858,11 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
         .padding(18).frame(width: 720)
     }
     private var sortedHarnesses: [NativeConversationHarness] {
-        harnesses.sortedForDisplay(lastUsedAt: harnessLastUsedAt)
+        var items = harnesses
+        for (id, name) in [("librechat", "LibreChat"), ("openwebui", "Open WebUI")] where !items.contains(where: { $0.id == id }) {
+            items.append(.init(id: id, name: name, available: false, configured: false, description: harnessDescription(id), capabilities: .init(sessions: true, streaming: true, tools: true, longTermMemory: false), popularityRank: 10))
+        }
+        return items.sortedForDisplay(lastUsedAt: harnessLastUsedAt)
     }
     private func recordHarnessUse(_ id: String) {
         harnessLastUsedAt[id] = Date().timeIntervalSince1970
@@ -858,7 +876,15 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
         Button {
             if ["librechat", "openwebui"].contains(item.id) {
                 choosingHarness = false
-                configuringRemoteHarness = item.id
+                if item.configured {
+                    harness.wrappedValue = item.id
+                    recordHarnessUse(item.id)
+                    Task {
+                        if let config = try? await DesktopHarnessClient.shared.call("/" + item.id, target: store.current?.executionTargetID ?? "local") {
+                            store.edit { $0.model = config["agentId"].string ?? "" }
+                        }
+                    }
+                } else { configuringRemoteHarness = item.id }
             } else if item.available {
                 harness.wrappedValue = item.id
                 recordHarnessUse(item.id)
@@ -903,7 +929,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                         .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
                 }
                 if ["librechat", "openwebui"].contains(item.id) {
-                    Label("Configurer la connexion", systemImage: "network")
+                    Label(item.configured ? "Connecté · conversations synchronisées" : "Connecter une instance", systemImage: "network")
                         .font(.caption.weight(.semibold)).foregroundStyle(ChatPalette.accent)
                 }
                 if !item.available && item.canInstall == true {
@@ -920,6 +946,11 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
         }
         .buttonStyle(.plain).disabled(!item.available && item.canInstall != true && !["librechat", "openwebui"].contains(item.id))
         .opacity(item.available || item.canInstall == true || ["librechat", "openwebui"].contains(item.id) ? 1 : 0.72)
+        .contextMenu {
+            if ["librechat", "openwebui"].contains(item.id) {
+                Button("Configurer la connexion…") { choosingHarness = false; configuringRemoteHarness = item.id }
+            }
+        }
         .accessibilityLabel("\(item.name), \(item.description)\(item.id == harness.wrappedValue ? ", sélectionné" : "")")
     }
     private func beginInstallation(_ item: NativeConversationHarness) {
@@ -1409,6 +1440,11 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     @State private var agentID = ""
     @State private var agents: [RemoteHarnessChoice] = []
     @State private var hasApiKey = false
+    @State private var hasUserSession = false
+    @State private var email = ""
+    @State private var password = ""
+    @State private var userToken = ""
+    @State private var showingSessionToken = false
     @State private var busy = false
     @State private var error: String?
     private struct RemoteHarnessChoice: Decodable, Identifiable { let id: String; let name: String }
@@ -1419,9 +1455,19 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 .font(.callout).foregroundStyle(.secondary)
             TextField("Endpoint (https://chat.example.com)", text: $endpoint)
                 .textFieldStyle(.roundedBorder).onChange(of: endpoint) { _ in agents = [] }.disabled(busy)
+            if isOpenWebUI {
             SecureField(hasApiKey ? "Clé API (laisser vide pour la conserver)" : "Clé API \(serviceName)", text: $apiKey)
                 .textFieldStyle(.roundedBorder).onChange(of: apiKey) { _ in agents = [] }.disabled(busy)
-            Text(isOpenWebUI ? "La clé reste dans un fichier privé du Host. Activez les clés API dans Open WebUI et autorisez l’accès aux modèles et aux conversations." : "La clé reste dans un fichier privé du Host. Utilisez une clé API LibreChat autorisée à exécuter les agents distants.")
+            } else {
+                TextField("Email LibreChat", text: $email).textFieldStyle(.roundedBorder).disabled(busy)
+                SecureField(hasUserSession ? "Mot de passe (laisser vide pour conserver la session)" : "Mot de passe LibreChat", text: $password)
+                    .textFieldStyle(.roundedBorder).disabled(busy)
+                DisclosureGroup("Connexion avec une session existante", isExpanded: $showingSessionToken) {
+                    SecureField("Jeton de session utilisateur LibreChat", text: $userToken).textFieldStyle(.roundedBorder).disabled(busy)
+                    Text("Pour un compte SSO ou avec double authentification. La reconnexion sera nécessaire à l’expiration du jeton.").font(.caption).foregroundStyle(.secondary)
+                }.font(.caption)
+            }
+            Text(isOpenWebUI ? "Autorisez la clé API à accéder aux modèles et aux conversations. Vos chats seront synchronisés avec le serveur." : "Connectez votre compte pour retrouver ses agents et ses conversations. Le mot de passe n’est pas enregistré.")
                 .font(.caption).foregroundStyle(.secondary)
             if !agents.isEmpty {
                 Picker(isOpenWebUI ? "Modèle" : "Agent", selection: $agentID) {
@@ -1434,11 +1480,14 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 Spacer()
                 if busy { ProgressView().controlSize(.small) }
                 Button(isOpenWebUI ? "Charger les modèles" : "Charger les agents") { Task { await connect(discover: true) } }
-                    .disabled(busy || endpoint.isEmpty || (apiKey.isEmpty && !hasApiKey))
+                    .disabled(busy || endpoint.isEmpty || (isOpenWebUI ? apiKey.isEmpty && !hasApiKey : !hasUserSession && userToken.isEmpty && (email.isEmpty || password.isEmpty)))
                 Button("Enregistrer") { Task { await connect(discover: false) } }
                     .keyboardShortcut(.defaultAction).disabled(busy || agents.isEmpty || agentID.isEmpty)
             }
         }.padding(24).frame(width: 520)
+        .onChange(of: email) { _ in agents = [] }
+        .onChange(of: password) { _ in agents = [] }
+        .onChange(of: userToken) { _ in agents = [] }
         .task {
             busy = true
             do {
@@ -1446,6 +1495,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 endpoint = value["endpoint"].string ?? ""
                 agentID = value["agentId"].string ?? ""
                 hasApiKey = value["hasApiKey"] == .bool(true)
+                hasUserSession = value["hasUserSession"] == .bool(true)
             } catch { self.error = error.localizedDescription }
             busy = false
         }
@@ -1455,11 +1505,11 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
         defer { busy = false }
         do {
             let result = try await DesktopHarnessClient.shared.call("/" + harnessID, method: "POST", target: target,
-                body: .object(["endpoint": .string(endpoint), "apiKey": .string(apiKey), "agentId": .string(agentID), "discover": .bool(discover)]))
+                body: .object(["endpoint": .string(endpoint), "apiKey": .string(apiKey), "agentId": .string(agentID), "discover": .bool(discover), "email": .string(email), "password": .string(password), "userToken": .string(userToken)]))
             agents = try result["agents"].decode([RemoteHarnessChoice].self)
             if !agents.contains(where: { $0.id == agentID }) { agentID = agents.first?.id ?? "" }
             if agents.isEmpty { error = isOpenWebUI ? "Aucun modèle accessible avec cette clé API." : "Aucun agent accessible avec cette clé API." }
-            if !discover { apiKey = ""; await saved(); dismiss() }
+            if !discover { apiKey = ""; password = ""; userToken = ""; await saved(); dismiss() }
         } catch { self.error = error.localizedDescription }
     }
 }

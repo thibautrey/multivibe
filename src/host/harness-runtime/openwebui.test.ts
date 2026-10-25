@@ -16,6 +16,8 @@ async function fixture(t:any){
     res.setHeader("content-type","application/json");const send=(v:any)=>res.end(JSON.stringify(v));
     if(mode==="unauthorized"){res.writeHead(403);send({detail:"fixture-openwebui-key"});return;}
     if(mode==="redirect"){res.writeHead(302,{location:"http://127.0.0.1:1/leak"}).end();return;}
+    if(req.url==="/prefix/api/v1/auths/"){send({id:"user-1"});return;}
+    if(req.url?.startsWith("/prefix/api/v1/chats/?")){send([]);return;}
     if(req.url==="/prefix/api/models"){send({data:[{id:"model-1",name:"Workspace model"}]});return;}
     if(req.url==="/prefix/api/v1/chats/new"){chat=body.chat;send({id:"remote-chat",chat});return;}
     if(req.url==="/prefix/api/v1/chats/remote-chat"){
@@ -86,7 +88,7 @@ test("Open WebUI errors, denied access, bad acknowledgements and redirects never
 test("Open WebUI refuses to overwrite external conversation edits",async t=>{
   const f=await fixture(t);const adapter=new OpenWebUIAdapter(f.ctx);await adapter.start();await adapter.prompt([{type:"text",text:"First"}]);adapter.close();
   f.chat().history.currentId="external-message";
-  const next=new OpenWebUIAdapter(f.ctx);await next.start();await assert.rejects(next.prompt([{type:"text",text:"Second"}]),/changed outside Desktop/u);next.close();
+  const next=new OpenWebUIAdapter(f.ctx);await next.start();await assert.rejects(next.prompt([{type:"text",text:"Second"}]),/Previous Open WebUI execution/u);next.close();
   assert.equal(f.requests.filter(v=>v.method==="POST" && v.path.endsWith("/chats/remote-chat")).length,0);
   assert.equal(f.requests.filter(v=>v.path.endsWith("/chat/completions")).length,1);
 });

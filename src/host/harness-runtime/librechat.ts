@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { capabilities, fail, supported, unsupported, type AdapterContext, type HarnessAdapter, type HarnessDescriptor, type MessagePart } from "./types.js";
 
-export type RemoteChatConnection = {endpoint:string;apiKey:string;agentId:string};
+export type RemoteChatConnection = {endpoint:string;apiKey:string;agentId:string;userId?:string;userToken?:string;cookies?:string};
+export const remoteConnectionId=(v:RemoteChatConnection)=>createHash("sha256").update(v.endpoint+"\0"+(v.userId??v.apiKey)).digest("hex");
 type Agent = {id:string;name:string};
 export function remoteChatEndpoint(value:unknown,suffix:string,name:string):string {
   if(typeof value!=="string" || value.length>4096)fail(`Enter a ${name} endpoint`);
@@ -39,31 +40,100 @@ export class RemoteChatConfiguration {
   read():RemoteChatConnection|undefined {
     try{const stat=fs.lstatSync(this.file);if(!stat.isFile() || (stat.mode&0o077)!==0)fail(`${this.service.name} credentials must be a private file`,409);return JSON.parse(fs.readFileSync(this.file,"utf8"));}catch(e:any){if(e.code==="ENOENT")return;throw e;}
   }
-  publicConfiguration(){const v=this.read();return {endpoint:v?.endpoint??"",agentId:v?.agentId??"",configured:Boolean(v),hasApiKey:Boolean(v?.apiKey)};}
-  async configure(input:any){
-    const endpoint=remoteChatEndpoint(input.endpoint,this.service.suffix,this.service.name),old=this.read();
-    const apiKey=input.apiKey || (old?.endpoint===endpoint?old.apiKey:undefined);
-    if(typeof apiKey!=="string" || !apiKey || apiKey.length>4096 || /[\r\n\0]/u.test(apiKey))fail(`Enter the ${this.service.name} API key`);
-    const connection={endpoint,apiKey,agentId:typeof input.agentId==="string"?input.agentId:""};
-    const agents=await remoteChatModels(connection,this.service.name);
-    // Discovery is read-only until the user selects an agent and saves.
-    if(input.discover===true)return {agents};
-    if(!agents.some(v=>v.id===connection.agentId))fail(`Select an available ${this.service.name} model or agent`,422);
+  publicConfiguration(){const v=this.read();return {endpoint:v?.endpoint??"",agentId:v?.agentId??"",configured:Boolean(v),hasApiKey:Boolean(v?.apiKey),hasUserSession:Boolean(v?.userToken),connectionId:v?remoteConnectionId(v):undefined};}
+  private persist(connection:RemoteChatConnection){
     fs.mkdirSync(path.dirname(this.file),{recursive:true,mode:0o700});
     const temporary=this.file+"."+randomUUID();
     try{fs.writeFileSync(temporary,JSON.stringify(connection),{mode:0o600,flag:"wx"});fs.renameSync(temporary,this.file);}finally{fs.rmSync(temporary,{force:true});}
+  }
+  private refreshing?:Promise<void>;
+  async userRequest(route:string,body?:unknown,method=body?"POST":"GET",signal?:AbortSignal):Promise<Response>{
+    const connection=this.read()??fail(`Configure ${this.service.name} first`,409);
+    return this.requestWith(connection,route,body,method,signal,true);
+  }
+  private async requestWith(connection:RemoteChatConnection,route:string,body:unknown,method:string,signal?:AbortSignal,retry=false):Promise<Response>{
+    const isLibre=this.service.id==="librechat";
+    if(isLibre && !connection.userToken)fail("Reconnect LibreChat with your account to synchronize conversations",409);
+    const endpoint=isLibre?connection.endpoint.replace(/\/api\/agents\/v1$/u,"/api"):connection.endpoint;
+    let response:Response;
+    try{response=await fetch(endpoint+route,{method,headers:{authorization:`Bearer ${isLibre?connection.userToken:connection.apiKey}`,accept:"application/json, text/event-stream",origin:new URL(endpoint).origin,...(connection.cookies?{cookie:connection.cookies}:{}),...(body!==undefined?{"content-type":"application/json"}:{})},...(body!==undefined?{body:JSON.stringify(body)}:{}),redirect:"error",signal:signal?AbortSignal.any([signal,AbortSignal.timeout(600_000)]):AbortSignal.timeout(15_000)});}catch{return fail(`${this.service.name} connection failed or timed out`,502);}
+    if(response.status===401 && retry && isLibre && connection.cookies){
+      await response.body?.cancel();
+      if(!this.refreshing)this.refreshing=this.refresh(connection).finally(()=>{this.refreshing=undefined;});
+      await this.refreshing;return this.requestWith(this.read()!,route,body,method,signal);
+    }
+    if(!response.ok){await response.body?.cancel();fail(`${this.service.name} returned HTTP ${response.status}. Reconnect or check account permissions.`,response.status===404?404:response.status===401 || response.status===403?422:502);}
+    return response;
+  }
+  private cookies(response:Response,previous=""){
+    const jar=new Map(previous.split("; ").filter(Boolean).map(v=>[v.slice(0,v.indexOf("=")),v]));
+    for(const header of response.headers.getSetCookie()){const pair=header.split(";")[0];jar.set(pair.slice(0,pair.indexOf("=")),pair);}
+    return [...jar.values()].join("; ");
+  }
+  private async refresh(connection:RemoteChatConnection){
+    // Never replay a submitted prompt: only refresh after a rejected authentication check.
+    const endpoint=connection.endpoint.replace(/\/api\/agents\/v1$/u,"/api");
+    let response:Response;try{response=await fetch(endpoint+"/auth/refresh",{method:"POST",headers:{cookie:connection.cookies!,origin:new URL(endpoint).origin},redirect:"error",signal:AbortSignal.timeout(15_000)});}catch{return fail("LibreChat session refresh failed. Reconnect your account.",422);}
+    if(!response.ok){await response.body?.cancel();fail("LibreChat session expired. Reconnect your account.",422);}
+    const result=await boundedJson(response);
+    if(typeof result.token!=="string" || !result.token)fail("LibreChat session expired. Reconnect your account.",422);
+    if(remoteConnectionId(this.read()!)!==remoteConnectionId(connection))fail("Remote connection changed",409);
+    this.persist({...this.read()!,userToken:result.token,cookies:this.cookies(response,connection.cookies)});
+  }
+  async json(route:string,body?:unknown,method?:string){return boundedJson(await this.userRequest(route,body,method),this.service.name);}
+
+  async configure(input:any){
+    const endpoint=remoteChatEndpoint(input.endpoint,this.service.suffix,this.service.name),old=this.read();
+    const apiKey=input.apiKey || (old?.endpoint===endpoint?old.apiKey:undefined);
+    if(apiKey && (typeof apiKey!=="string" || apiKey.length>4096 || /[\r\n\0]/u.test(apiKey)))fail(`Enter the ${this.service.name} API key`);
+    let connection:RemoteChatConnection={endpoint,apiKey:apiKey??"",agentId:typeof input.agentId==="string"?input.agentId:"",...(old?.endpoint===endpoint?{userToken:old.userToken,userId:old.userId,cookies:old.cookies}:{})};
+    if(this.service.id==="librechat" && input.email && input.password){
+      const base=endpoint.replace(/\/api\/agents\/v1$/u,"/api");
+      let response:Response;try{response=await fetch(base+"/auth/login",{method:"POST",headers:{"content-type":"application/json",origin:new URL(base).origin},body:JSON.stringify({email:input.email,password:input.password}),redirect:"error",signal:AbortSignal.timeout(15_000)});}catch{return fail("LibreChat sign-in failed",422);}
+      if(!response.ok){await response.body?.cancel();fail("LibreChat sign-in refused. Check your account credentials.",422);}
+      const result=await boundedJson(response);
+      if(typeof result.token!=="string" || !result.user?.id)fail("LibreChat requires an interactive sign-in. Use a user session token instead.",422);
+      connection={...connection,userToken:result.token,userId:result.user.id,cookies:this.cookies(response)};
+    }
+    if(this.service.id==="librechat" && input.userToken){
+      connection={...connection,userToken:input.userToken,cookies:undefined};
+      const user=await boundedJson(await this.requestWith(connection,"/user",undefined,"GET"));
+      if(typeof user.id!=="string")fail("Invalid LibreChat user session",422);connection.userId=user.id;
+    }
+    let agents:Agent[];
+    if(this.service.id==="librechat" && connection.userToken){
+      const catalog=await boundedJson(await this.requestWith(connection,"/agents?limit=100",undefined,"GET"));
+      const rows=Array.isArray(catalog)?catalog:catalog.data;
+      if(!Array.isArray(rows))fail("Invalid LibreChat agent catalog",502);
+      agents=rows.map((v:any)=>({id:v.id,name:v.name??v.id}));
+      await boundedJson(await this.requestWith(connection,"/convos?limit=1",undefined,"GET"));
+    }else {
+      if(!connection.apiKey)fail(`Enter the ${this.service.name} API key`);
+      agents=await remoteChatModels(connection,this.service.name);
+      if(this.service.id==="openwebui"){
+        // Identity is account-scoped so API-key rotation preserves the conversation mapping.
+        const user=await boundedJson(await this.requestWith(connection,"/v1/auths/",undefined,"GET"),this.service.name);
+        if(typeof user.id!=="string")fail("Invalid Open WebUI user identity",502);connection.userId=user.id;
+        await boundedJson(await this.requestWith(connection,"/v1/chats/?page=1&include_pinned=true&include_folders=true",undefined,"GET"),this.service.name);
+      }
+    }
+    // Discovery is read-only until the user selects an agent and saves.
+    if(input.discover===true)return {agents};
+    if(!agents.some(v=>v.id===connection.agentId))fail(`Select an available ${this.service.name} model or agent`,422);
+    this.persist(connection);
     return {...this.publicConfiguration(),agents};
   }
   descriptor():HarnessDescriptor {
     const configured=Boolean(this.read()),caps=capabilities();
     for(const key of ["sessions","streaming"] as const)caps[key]=supported();
+    caps.history=supported("native");
     for(const key of ["queue","history","attachments","diagnostics","automations"] as const)caps[key]=supported("multivibe");
     caps.attachments=supported("multivibe",{mimeTypes:["text/*","application/json"],transport:"inline text"});
     caps.tools=supported("native",{execution:`${this.service.name} server`,visibility:"Only events exposed by the remote API"});
     caps.models=supported();
     if(this.service.id==="openwebui")caps.streaming=supported("multivibe",{transport:"saved response polling"});
     caps.interrupt=unsupported("This adapter does not support acknowledged remote cancellation");
-    return {id:this.service.id,name:this.service.name,protocol:this.service.id,detected:true,configured,available:configured,authentication:configured?"unknown":"required",capabilities:caps,...(!configured?{reason:`Configure the ${this.service.name} endpoint, API key and model`}:{})};
+    return {id:this.service.id,name:this.service.name,protocol:this.service.id,detected:true,configured:configured && (this.service.id!=="librechat" || Boolean(this.read()?.userToken)),available:configured,authentication:configured?"unknown":"required",capabilities:caps,...(!configured?{reason:`Configure the ${this.service.name} endpoint, API key and model`}:{})};
   }
 }
 
