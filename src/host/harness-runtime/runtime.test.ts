@@ -268,14 +268,14 @@ test("remote bridges use only private managed Host credentials and a loopback mo
   if(process.platform!=="win32"){fs.chmodSync(file,0o644);assert.equal(bridgeModelConnection(root,"http://127.0.0.1:1455"),undefined);}
 });
 
-test("LibreChat catalog and sessions require a validated connection, pin its agent and never journal the key",async t=>{
+for(const harnessId of ["librechat","openwebui"] as const)test(`${harnessId} catalog and sessions require a validated connection, pin its model and never journal the key`,async t=>{
   const {runtime,root,adapters}=fixture(t);
-  assert.equal((await runtime.catalog()).find(v=>v.id==="librechat")?.available,false);
-  await assert.rejects(runtime.create({harnessId:"librechat"}),/Configure/u);
+  assert.equal((await runtime.catalog()).find(v=>v.id===harnessId)?.available,false);
+  await assert.rejects(runtime.create({harnessId}),/Configure/u);
   // A previously validated connection in the private Host store.
   const connection={endpoint:"https://librechat.example/api/agents/v1",apiKey:"fixture-private-librechat",agentId:"agent-original"};
-  fs.writeFileSync(path.join(root,"librechat-connection.json"),JSON.stringify(connection),{mode:0o600});
-  const session=await runtime.create({harnessId:"librechat"});
+  fs.writeFileSync(path.join(root,`${harnessId}-connection.json`),JSON.stringify(connection),{mode:0o600});
+  const session=await runtime.create({harnessId});
   assert.equal(session.model,"agent-original");
   assert.equal(session.configuration?.endpoint,connection.endpoint);
   assert.equal(session.capabilities.interrupt.available,false);
@@ -285,7 +285,7 @@ test("LibreChat catalog and sessions require a validated connection, pin its age
   const adapter=adapters.get(session.id)!;
   await eventually(()=>Boolean(adapter.finish));adapter.finish!();
   await eventually(()=>runtime.store.receipt(receipt.id)?.state==="completed");
-  assert.equal(adapter.ctx.libreChatConnection?.apiKey,connection.apiKey);
+  assert.equal((harnessId==="openwebui"?adapter.ctx.openWebUIConnection:adapter.ctx.libreChatConnection)?.apiKey,connection.apiKey);
   assert.equal(JSON.stringify(runtime.store.events(session.id)).includes(connection.apiKey),false);
-  await assert.rejects(runtime.create({harnessId:"librechat",authMode:"multivibe",model:"other"}),/own API key/u);
+  await assert.rejects(runtime.create({harnessId,authMode:"multivibe",model:"other"}),/own API key/u);
 });
