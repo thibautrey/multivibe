@@ -132,6 +132,8 @@ import type { MultivibeCloudService } from "../../multivibe-cloud.js";
 import { fetchCodexQuotaResetForecast } from "../../quota-reset-forecast.js";
 import type { MultivibeTeamSyncService, TeamSyncManifest } from "../../team-sync.js";
 import type { ManagedTeamEnrollmentService } from "../../managed-team-enrollment.js";
+import type { HostHarnessRuntime } from "../../host/harness-runtime/runtime.js";
+import { harnessRuntimeRoutes } from "../../host/harness-runtime/routes.js";
 
 const MULTIVIBE_CLOUD_FLOW_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -165,6 +167,7 @@ export type AdminRoutesOptions = {
   hostApplication?: boolean;
   hostHarnessIntegrations?: HostHarnessIntegrationManager;
   hostConversationHarnesses?: HostConversationHarnessManager;
+  hostHarnessRuntime?: HostHarnessRuntime;
   providerWorkerEstimateClient?: ProviderWorkerEstimateClient;
   moduleManager?: ModuleManager;
   hostUpdateController?: HostUpdateController;
@@ -496,6 +499,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
   } = traceManager;
 
   const router = express.Router();
+  router.use("/host-harness-runtime/v1", harnessRuntimeRoutes(options.hostHarnessRuntime));
   router.use("/local-model-preparation", localPreparationRoutes(options.localPreparation));
   const benchmarkClient = createCachedModelBenchmarkClient(
     createModelBenchmarkClient({ artificialAnalysisApiKey: ARTIFICIAL_ANALYSIS_API_KEY }),
