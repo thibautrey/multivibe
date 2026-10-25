@@ -176,7 +176,13 @@ export class TraceAnalyticsStore {
               update.run(JSON.stringify(priced), row.id);
               this.db.prepare("INSERT OR IGNORE INTO pricing_backfill_hours VALUES (?)").run(Math.floor(row.at / HOUR) * HOUR);
               next.updated++;
-            } else next.unpriced++;
+            } else {
+              // Freeze this migration's unknown-price result too: future report
+              // rebuilds must not silently start repricing the old request.
+              if (normalized?.usageStatus === "measured") update.run(JSON.stringify({ ...normalized,
+                costUsd: undefined, costStatus: "unpriced", pricingVersion: MODEL_PRICING_VERSION }), row.id);
+              next.unpriced++;
+            }
             next.cursor = row.cursor;
           }
           this.saveMeta(MODELS_DEV_COST_BACKFILL, JSON.stringify(next));
@@ -200,8 +206,11 @@ export class TraceAnalyticsStore {
         for (const row of this.db.prepare("SELECT id,payload FROM recent").all() as Array<{ id: string; payload: string }>) {
           const raw = JSON.parse(row.payload);
           const normalized = normalizeTrace(raw);
-          const priced = normalized ? this.priceMissing({ ...normalized, costUsd: raw.costUsd }) : raw;
-          if (priced.costUsd !== raw.costUsd) this.db.prepare("UPDATE recent SET payload=? WHERE id=?").run(JSON.stringify(priced), row.id);
+          const indexed = this.db.prepare("SELECT payload FROM entries WHERE id=?").get(row.id) as { payload: string } | undefined;
+          const saved = indexed ? JSON.parse(indexed.payload) : undefined;
+          const priced = saved ? { ...raw, costUsd: saved.costUsd, costStatus: saved.costStatus, pricingVersion: saved.pricingVersion }
+            : normalized ? this.priceMissing({ ...normalized, costUsd: raw.costUsd }) : raw;
+          this.db.prepare("UPDATE recent SET payload=? WHERE id=?").run(JSON.stringify(priced), row.id);
         }
         // Session reports/turns contain monetary totals; rebuild them lazily from
         // the corrected entries instead of retaining stale materialized costs.
@@ -236,7 +245,8 @@ export class TraceAnalyticsStore {
         if (raw.costUsd == null) {
           const existing = this.db.prepare("SELECT payload FROM entries WHERE id=?").get(normalized.id) as { payload: string } | undefined;
           const recorded = existing ? JSON.parse(existing.payload) : undefined;
-          if (typeof recorded?.costUsd === "number") normalized = { ...normalized, costUsd: recorded.costUsd, pricingVersion: recorded.pricingVersion, costStatus: recorded.costStatus };
+          if (typeof recorded?.costUsd === "number" || (recorded?.costStatus === "unpriced" && recorded.pricingVersion?.startsWith("models.dev:")))
+            normalized = { ...normalized, costUsd: recorded.costUsd, pricingVersion: recorded.pricingVersion, costStatus: recorded.costStatus };
         }
         if (journal) {
           deleteRecent.run(normalized.id);

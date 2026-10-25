@@ -60,6 +60,10 @@ test("models.dev backfills absent costs once, preserves recorded/free costs and 
   assert.equal(after.find(r => r.id === "unknown")!.costUsd, undefined, "a later catalog does not trigger a second backfill");
   assert.equal(f.store.status.pricingBackfill?.updated, 1);
   assert.equal(f.store.status.pricingBackfill?.state, "complete");
+  assert.ok(Math.abs(f.store.sessions({}).sessions[0].costUsd - total) < 1e-12, "report rebuilds preserve the migration result after a price change");
+  f.store.append([missing, { ...missing, id: "unknown", model: "unpublished" }], undefined, true);
+  assert.equal(f.store.query("trace", { id: "missing" }).costUsd, priced.costUsd, "journal replay preserves recorded costs");
+  assert.equal(f.store.query("trace", { id: "unknown" }).costUsd, undefined, "journal replay preserves the one-time unknown result");
 });
 
 test("interrupted cost backfill resumes committed batches and rebuilds affected hours", async t => {

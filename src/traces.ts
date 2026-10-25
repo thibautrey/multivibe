@@ -134,6 +134,7 @@ export type TraceEntry = {
 };
 
 function estimateTraceCostWithoutCache(trace: TraceEntry): number | undefined {
+  if (trace.costStatus === "unpriced" && typeof trace.costUsd !== "number") return undefined;
   const cachedInput = Math.max(0, trace.tokensInputCached ?? 0);
   if (cachedInput === 0 && typeof trace.costUsd === "number") {
     return trace.costUsd;
