@@ -6,7 +6,7 @@ extension HostPopoverController {
         container.translatesAutoresizingMaskIntoConstraints = false
 
         let icon = NSImageView()
-        icon.image = appIcon()
+        icon.image = NSApplication.shared.applicationIconImage
         icon.imageScaling = .scaleProportionallyUpOrDown
         icon.translatesAutoresizingMaskIntoConstraints = false
 
@@ -600,11 +600,6 @@ extension HostPopoverController {
         field.font = .systemFont(ofSize: size, weight: weight)
         field.textColor = color
         return field
-    }
-
-    func appIcon() -> NSImage? {
-        let url = Bundle.main.resourceURL?.appendingPathComponent("MultiVibeMenuBarIcon.png")
-        return url.flatMap(NSImage.init(contentsOf:)) ?? NSImage(systemSymbolName: "waveform.path", accessibilityDescription: "MultiVibe")
     }
 
     func percent(_ value: Double?) -> String {
