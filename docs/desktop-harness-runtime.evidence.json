@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "verifiedOn": "2026-10-25",
+  "implementationCommit": "d228f6098d48391b70a6789686186327e5918401",
+  "localChecks": {
+    "typescriptTests": 91,
+    "rustEdgeLibraryTests": 140,
+    "swiftAndBuildTests": 10,
+    "hostPackagingTests": 39,
+    "apiBuild": "passed",
+    "swiftTypecheck": "passed with existing deprecation warnings"
+  },
+  "liveToolTasks": [
+    {
+      "harnessId": "hermes-agent",
+      "version": "0.21.5",
+      "environment": "macOS",
+      "turnState": "completed",
+      "fileReadProven": true,
+      "versionSource": "ACP initialize agentInfo.version",
+      "protocolVersion": 1,
+      "model": "native configured model"
+    },
+    {
+      "harnessId": "pi",
+      "version": "0.55.3",
+      "environment": "macOS",
+      "turnState": "completed",
+      "fileReadProven": true,
+      "model": "gpt-6-luna"
+    },
+    {
+      "harnessId": "openai-codex",
+      "version": "0.154.0",
+      "environment": "macOS",
+      "turnState": "completed",
+      "fileReadProven": true,
+      "model": "gpt-6-sol"
+    },
+    {
+      "harnessId": "claude-code",
+      "version": "2.1.241",
+      "environment": "macOS",
+      "turnState": "completed",
+      "fileReadProven": true,
+      "model": "gpt-6-luna",
+      "sdkVersion": "0.3.310",
+      "gateway": "isolated current-source Rust edge forwarding through installed Responses gateway"
+    },
+    {
+      "harnessId": "opencode",
+      "version": "1.18.30",
+      "environment": "macOS",
+      "turnState": "completed",
+      "fileReadProven": true,
+      "model": "gpt-6-luna"
+    }
+  ],
+  "piStopAndResume": {
+    "harnessId": "pi",
+    "version": "0.55.3",
+    "stopReceipt": "completed",
+    "turnState": "cancelled",
+    "sessionState": "interrupted",
+    "queuePaused": true,
+    "queuedState": "queued",
+    "partialTextCharacters": 1,
+    "resumedState": "completed",
+    "resumeAcknowledged": true,
+    "nativeSessionPreserved": true
+  },
+  "sshControlProof": {
+    "environment": "isolated Linux VM",
+    "checks": [
+      "catalog",
+      "Codex session metadata",
+      "suspended queue retained across reconnect"
+    ],
+    "allHarnessInferenceVerified": false
+  },
+  "gemini": {
+    "protocolFixture": "passed",
+    "cachedCliVersion": "0.65.0",
+    "authenticatedInference": "pending",
+    "reason": "Google authentication unavailable; user explicitly left this validation pending"
+  },
+  "additionalCheck": {
+    "command": "node scripts/managed/verify-distribution.mjs",
+    "state": "failed",
+    "reason": "Existing injector fixture receives usage=null and expects usage.total_tokens=7; relevant managed/codec sources are unchanged by this task"
+  },
+  "deployment": {
+    "installedApplicationUpdated": false,
+    "pushed": false
+  }
+}
