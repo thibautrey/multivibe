@@ -3,6 +3,7 @@ import { OpenWebUIAdapter } from "./openwebui.js";
 import { LibreChatAdapter } from "./librechat.js";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { randomBytes } from "node:crypto";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { ClientServices } from "./client-services.js";
@@ -56,7 +57,21 @@ export class AcpAdapter extends Adapter {
   async start() {
     const requestedModel=this.ctx.session.model;
     const connection=this.ctx.modelConnection;
-    const peer=this.connect(this.args,true,this.ctx.session.harnessId==="hermes-agent" && connection?{LLM_PROVIDER:"openai",LLM_MODEL:this.ctx.session.model,CUSTOM_BASE_URL:connection.baseUrl.replace(/\/$/u,"")+"/v1",OPENAI_BASE_URL:connection.baseUrl.replace(/\/$/u,"")+"/v1",OPENAI_API_KEY:connection.apiKey}:{});
+    let environment:NodeJS.ProcessEnv={};
+    if(this.ctx.session.harnessId==="hermes-agent" && connection){
+      const home=path.join(this.ctx.root,"hermes-home");fs.mkdirSync(home,{recursive:true,mode:0o700});
+      const nativeHome=process.env.HERMES_HOME??path.join(os.homedir(),".hermes");
+      // Hermes loads its .env with override=True. Shell variables alone cannot
+      // override the user's native endpoint. Keep native policies/resources, but
+      // give this supervised session its own credentials and session database.
+      for(const name of ["config.yaml","skills","memories","SOUL.md","AGENTS.md","hooks","plugins"]){
+        const source=path.join(nativeHome,name),destination=path.join(home,name);
+        if(fs.existsSync(source) && !fs.existsSync(destination))fs.symlinkSync(source,destination);
+      }
+      environment={HERMES_HOME:home,LLM_PROVIDER:"openai",LLM_MODEL:this.ctx.session.model,CUSTOM_BASE_URL:connection.baseUrl.replace(/\/$/u,"")+"/v1",OPENAI_BASE_URL:connection.baseUrl.replace(/\/$/u,"")+"/v1",OPENAI_API_KEY:connection.apiKey};
+      fs.writeFileSync(path.join(home,".env"),Object.entries(environment).filter(([key,value])=>key!=="HERMES_HOME" && value!==undefined).map(([key,value])=>`${key}=${JSON.stringify(value)}`).join("\n")+"\n",{mode:0o600});
+    }
+    const peer=this.connect(this.args,true,environment);
     const hello=await peer.request("initialize",{protocolVersion:1,clientInfo:{name:"multivibe",version:"1"},clientCapabilities:{
       ...(this.ctx.target.kind!=="container" && !this.ctx.modelDiscovery?{fs:{readTextFile:true,writeTextFile:true},terminal:true}:{}),
       session:{compaction:{},notices:{}},
