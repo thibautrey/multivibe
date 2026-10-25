@@ -3,49 +3,52 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { capabilities, fail, supported, unsupported, type AdapterContext, type HarnessAdapter, type HarnessDescriptor, type MessagePart } from "./types.js";
 
-type Connection = {endpoint:string;apiKey:string;agentId:string};
+export type RemoteChatConnection = {endpoint:string;apiKey:string;agentId:string};
 type Agent = {id:string;name:string};
-export function libreChatEndpoint(value:unknown):string {
-  if(typeof value!=="string" || value.length>4096)fail("Enter a LibreChat endpoint");
-  let url:URL;try{url=new URL(value);}catch{return fail("Invalid LibreChat endpoint");}
+export function remoteChatEndpoint(value:unknown,suffix:string,name:string):string {
+  if(typeof value!=="string" || value.length>4096)fail(`Enter a ${name} endpoint`);
+  let url:URL;try{url=new URL(value);}catch{return fail(`Invalid ${name} endpoint`);}
   if(!["http:","https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash)fail("Use an HTTP(S) endpoint without credentials, query or fragment");
   let base=url.pathname.replace(/\/+$/u,"");
-  if(!base.endsWith("/api/agents/v1"))base+="/api/agents/v1";
+  if(suffix==="/api" && base.endsWith("/api/v1"))base=base.slice(0,-3);
+  if(!base.endsWith(suffix))base+=suffix;
   url.pathname=base;return url.href.replace(/\/$/u,"");
 }
-async function request(connection:Connection,route:string,body?:unknown,signal?:AbortSignal):Promise<Response> {
+export function libreChatEndpoint(value:unknown){return remoteChatEndpoint(value,"/api/agents/v1","LibreChat");}
+export async function remoteChatRequest(connection:RemoteChatConnection,route:string,body?:unknown,signal?:AbortSignal,name="LibreChat"):Promise<Response> {
   let response:Response;
   try{response=await fetch(connection.endpoint+route,{method:body?"POST":"GET",headers:{authorization:`Bearer ${connection.apiKey}`,accept:body?"text/event-stream":"application/json",...(body?{"content-type":"application/json"}:{})},...(body?{body:JSON.stringify(body)}:{}),redirect:"error",signal:signal?AbortSignal.any([signal,AbortSignal.timeout(600_000)]):AbortSignal.timeout(15_000)});}
-  catch{ return fail("LibreChat connection failed or timed out. Check the endpoint and server.",502); }
-  if(!response.ok){await response.body?.cancel();fail(`LibreChat returned HTTP ${response.status}. Check the API key, remote-agent access and permissions.`,response.status===401 || response.status===403?422:502);}
+  catch{ return fail(`${name} connection failed or timed out. Check the endpoint and server.`,502); }
+  if(!response.ok){await response.body?.cancel();fail(`${name} returned HTTP ${response.status}. Check the API key and permissions.`,response.status===401 || response.status===403?422:502);}
   return response;
 }
-async function boundedJson(response:Response):Promise<any>{
+export async function boundedJson(response:Response,name="LibreChat"):Promise<any>{
   let bytes=0;const chunks:Uint8Array[]=[];
-  for await(const chunk of response.body??[]){bytes+=chunk.length;if(bytes>4*1024*1024)fail("LibreChat response exceeds its limit",502);chunks.push(chunk);}
-  try{return JSON.parse(Buffer.concat(chunks).toString("utf8"));}catch{return fail("Invalid LibreChat JSON response",502);}
+  for await(const chunk of response.body??[]){bytes+=chunk.length;if(bytes>4*1024*1024)fail(`${name} response exceeds its limit`,502);chunks.push(chunk);}
+  try{return JSON.parse(Buffer.concat(chunks).toString("utf8"));}catch{return fail(`Invalid ${name} JSON response`,502);}
 }
-export async function libreChatAgents(connection:Connection):Promise<Agent[]> {
-  const result=await boundedJson(await request(connection,"/models"));
-  if(!Array.isArray(result.data) || result.data.length>2000)fail("Invalid LibreChat agent catalog",502);
-  return result.data.map((v:any)=>{if(typeof v.id!=="string" || !v.id || v.id.length>256)fail("Invalid LibreChat agent identifier",502);return {id:v.id,name:typeof v.name==="string"?v.name.slice(0,256):v.id};});
+export async function remoteChatModels(connection:RemoteChatConnection,name="LibreChat"):Promise<Agent[]> {
+  const result=await boundedJson(await remoteChatRequest(connection,"/models",undefined,undefined,name),name);
+  if(!Array.isArray(result.data) || result.data.length>2000)fail(`Invalid ${name} model catalog`,502);
+  return result.data.map((v:any)=>{if(typeof v.id!=="string" || !v.id || v.id.length>256)fail(`Invalid ${name} model identifier`,502);return {id:v.id,name:typeof v.name==="string"?v.name.slice(0,256):v.id};});
 }
+export const libreChatAgents=(connection:RemoteChatConnection)=>remoteChatModels(connection);
 export class LibreChatConfiguration {
   private file:string;
-  constructor(root:string){this.file=path.join(root,"librechat-connection.json");}
-  read():Connection|undefined {
-    try{const stat=fs.lstatSync(this.file);if(!stat.isFile() || (stat.mode&0o077)!==0)fail("LibreChat credentials must be a private file",409);return JSON.parse(fs.readFileSync(this.file,"utf8"));}catch(e:any){if(e.code==="ENOENT")return;throw e;}
+  constructor(root:string,private service:{id:"librechat"|"openwebui";name:string;suffix:string}={id:"librechat",name:"LibreChat",suffix:"/api/agents/v1"}){this.file=path.join(root,`${service.id}-connection.json`);}
+  read():RemoteChatConnection|undefined {
+    try{const stat=fs.lstatSync(this.file);if(!stat.isFile() || (stat.mode&0o077)!==0)fail(`${this.service.name} credentials must be a private file`,409);return JSON.parse(fs.readFileSync(this.file,"utf8"));}catch(e:any){if(e.code==="ENOENT")return;throw e;}
   }
   publicConfiguration(){const v=this.read();return {endpoint:v?.endpoint??"",agentId:v?.agentId??"",configured:Boolean(v),hasApiKey:Boolean(v?.apiKey)};}
   async configure(input:any){
-    const endpoint=libreChatEndpoint(input.endpoint),old=this.read();
+    const endpoint=remoteChatEndpoint(input.endpoint,this.service.suffix,this.service.name),old=this.read();
     const apiKey=input.apiKey || (old?.endpoint===endpoint?old.apiKey:undefined);
-    if(typeof apiKey!=="string" || !apiKey || apiKey.length>4096 || /[\r\n\0]/u.test(apiKey))fail("Enter the LibreChat API key");
+    if(typeof apiKey!=="string" || !apiKey || apiKey.length>4096 || /[\r\n\0]/u.test(apiKey))fail(`Enter the ${this.service.name} API key`);
     const connection={endpoint,apiKey,agentId:typeof input.agentId==="string"?input.agentId:""};
-    const agents=await libreChatAgents(connection);
+    const agents=await remoteChatModels(connection,this.service.name);
     // Discovery is read-only until the user selects an agent and saves.
     if(input.discover===true)return {agents};
-    if(!agents.some(v=>v.id===connection.agentId))fail("Select an available LibreChat agent",422);
+    if(!agents.some(v=>v.id===connection.agentId))fail(`Select an available ${this.service.name} model or agent`,422);
     fs.mkdirSync(path.dirname(this.file),{recursive:true,mode:0o700});
     const temporary=this.file+"."+randomUUID();
     try{fs.writeFileSync(temporary,JSON.stringify(connection),{mode:0o600,flag:"wx"});fs.renameSync(temporary,this.file);}finally{fs.rmSync(temporary,{force:true});}
@@ -56,9 +59,11 @@ export class LibreChatConfiguration {
     for(const key of ["sessions","streaming"] as const)caps[key]=supported();
     for(const key of ["queue","history","attachments","diagnostics","automations"] as const)caps[key]=supported("multivibe");
     caps.attachments=supported("multivibe",{mimeTypes:["text/*","application/json"],transport:"inline text"});
-    caps.tools=supported("native",{execution:"LibreChat agent server",visibility:"Only events exposed by the remote API"});
+    caps.tools=supported("native",{execution:`${this.service.name} server`,visibility:"Only events exposed by the remote API"});
+    caps.models=supported();
+    if(this.service.id==="openwebui")caps.streaming=supported("multivibe",{transport:"saved response polling"});
     caps.interrupt=unsupported("The Chat Completions API does not acknowledge remote cancellation");
-    return {id:"librechat",name:"LibreChat",protocol:"librechat",detected:true,configured,available:configured,authentication:configured?"unknown":"required",capabilities:caps,...(!configured?{reason:"Configure the LibreChat endpoint, API key and agent"}:{})};
+    return {id:this.service.id,name:this.service.name,protocol:this.service.id,detected:true,configured,available:configured,authentication:configured?"unknown":"required",capabilities:caps,...(!configured?{reason:`Configure the ${this.service.name} endpoint, API key and model`}:{})};
   }
 }
 
@@ -67,7 +72,7 @@ export class LibreChatAdapter implements HarnessAdapter {
   private abort=new AbortController();
   private history:Array<{role:string;content:string}>=[];
   private file:string;
-  private connection:Connection;
+  private connection:RemoteChatConnection;
   constructor(private ctx:AdapterContext){this.file=path.join(ctx.root,"librechat-history.json");this.connection=ctx.libreChatConnection??fail("Configure LibreChat first",409);}
   async start(){
     if(this.ctx.target.kind!=="local")fail("Use the LibreChat connection on the executing Host",422);
@@ -85,7 +90,7 @@ export class LibreChatAdapter implements HarnessAdapter {
     }).join("\n\n");
     const messages=[...this.history,{role:"user",content:text}];
     if(Buffer.byteLength(JSON.stringify(messages))>16*1024*1024)fail("LibreChat conversation exceeds 16 MiB; start a new conversation",413);
-    const response=await request({...this.connection,agentId:this.ctx.session.model??this.connection.agentId},"/chat/completions",{model:this.ctx.session.model??this.connection.agentId,messages,stream:true},this.abort.signal);
+    const response=await remoteChatRequest({...this.connection,agentId:this.ctx.session.model??this.connection.agentId},"/chat/completions",{model:this.ctx.session.model??this.connection.agentId,messages,stream:true},this.abort.signal);
     let answer="",terminal=false,bytes=0;
     const event=(value:any)=>{
       if(value.error)fail("LibreChat reported an execution error",502);
