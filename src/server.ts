@@ -1,3 +1,4 @@
+import { installModelsDevPricing } from "./model-pricing.js";
 import { COMMUNITY_BENCHMARKS_API_BASE_URL, COMMUNITY_BENCHMARKS_ENABLED, COMMUNITY_BENCHMARKS_STATE_PATH, COMMUNITY_BENCHMARK_STORE_PATH } from "./config.js";
 import { createCommunityReportSharingWorker } from "./community-report-sharing.js";
 import { communityHostFromCapability, detectCommunityHost } from "./community-host-profile.js";
@@ -272,7 +273,12 @@ const moduleManager = new ModuleManager(
 );
 moduleManager.registerBuiltin(automaticRouterManifest, createAutomaticRouter());
 moduleManager.registerBuiltin(codingEconomyManifest, createCodingEconomy());
+const modelsDevCatalog = new ModelsDevCatalog({ cachePath: SDK_MODELS_DEV_CACHE_PATH, onUpdate: installModelsDevPricing });
+await modelsDevCatalog.ensure();
+const pricingRefreshTimer = setInterval(() => { void modelsDevCatalog.ensure(); }, 60_000);
+pricingRefreshTimer.unref();
 const traceManager = createTraceManager({
+  pricingCachePath: SDK_MODELS_DEV_CACHE_PATH,
   onCompleted: async (trace) => {
     recordHostMenuTraceUsage(trace, store.getCachedAccounts());
     const principal = trace.application
@@ -528,7 +534,7 @@ app.use(
 );
 
 const liveModelCatalog = new LiveModelCatalog({ cachePath: SDK_LIVE_MODEL_CACHE_PATH });
-const modelsDevCatalog = new ModelsDevCatalog({ cachePath: SDK_MODELS_DEV_CACHE_PATH });
+
 
 const adminRouter = createAdminRouter({
   store,
@@ -921,6 +927,7 @@ async function shutdown(signal: NodeJS.Signals) {
         codexProjectRegistry.flushPendingWrites(),
         traceManager.flushPendingWrites(),
       ]);
+      clearInterval(pricingRefreshTimer);
       await traceManager.close();
       moduleManager.close();
       jobStore.close();

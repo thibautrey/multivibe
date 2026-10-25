@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ModelsDevCatalog } from "./models-dev-catalog.js";
+import { installModelsDevPricing, getModelPricing } from "../model-pricing.js";
 
 const payload = {
   deepseek: {
@@ -65,6 +66,26 @@ test("filters deprecated and non-text models and maps provider ids", async () =>
   assert.equal(catalog.state().providerCount, 2);
 });
 
+test("publishes pricing and retains context tiers through disk cache and network failure", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "multivibe-pricing-cache-"));
+  t.after(async () => { installModelsDevPricing({}, 1792900000000); await rm(root, { recursive: true, force: true }); });
+  const cachePath = path.join(root, "catalog.json");
+  const cost = { input: 2, output: 10, cache_read: 0.1, cache_write: 2.5,
+    tiers: [{ input: 4, output: 15, cache_read: 0.2, cache_write: 5, tier: { type: "context", size: 272000 } }] };
+  const first = new ModelsDevCatalog({ cachePath, onUpdate: installModelsDevPricing,
+    fetch: (async () => Response.json({ openai: { models: { "gpt-6.1-sol": { id: "gpt-6.1-sol", modalities: { output: ["text"] }, cost } } } })) as typeof fetch });
+  assert.equal(await first.refresh(), true);
+  assert.deepEqual(first.catalogFor("openai")?.models[0].cost, cost);
+  assert.equal(getModelPricing("gpt-6.1-sol")?.contextTiers?.[0].thresholdTokens, 272000);
+  installModelsDevPricing({}, 1792900000000);
+  const second = new ModelsDevCatalog({ cachePath, onUpdate: installModelsDevPricing,
+    fetch: (async () => new Response("unavailable", { status: 503 })) as typeof fetch });
+  await second.ensure();
+  assert.deepEqual(second.catalogFor("openai")?.models[0].cost, cost);
+  assert.equal(await second.refresh(), false);
+  assert.equal(getModelPricing("gpt-6.1-sol")?.cachedInputPer1M, 0.1);
+});
+
 test("persists the snapshot on disk and reloads it without fetching", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "multivibe-models-dev-"));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }));
@@ -72,7 +93,7 @@ test("persists the snapshot on disk and reloads it without fetching", async (t) 
   const first = runtimeCatalog((async () => Response.json(payload)) as typeof fetch, cachePath);
   assert.equal(await first.refresh(), true);
   const stored = JSON.parse(await readFile(cachePath, "utf8"));
-  assert.equal(stored.version, 1);
+  assert.equal(stored.version, 2);
   assert.ok(stored.providers.deepseek);
 
   let calls = 0;

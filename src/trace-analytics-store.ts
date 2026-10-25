@@ -13,6 +13,11 @@ import { emptyUsage, addTrace, finalizeUsage, type MutableUsage } from "./projec
 import { aggregateSessionUsage, sessionTurnsFor, createTurn, addTraceToTurn } from "./session-usage.js";
 import { sessionKeyOf } from "./session-identity.js";
 import type { AnalyticsStatus } from "./trace-analytics-client.js";
+import { MODEL_PRICING_VERSION, estimateCostUsd } from "./model-pricing.js";
+
+// Fixed release migration, deliberately independent of future catalog versions.
+export const MODELS_DEV_COST_BACKFILL = "models-dev-missing-costs-2026-10-25-v1";
+type PricingBackfill = { state: "running" | "complete"; cursor: number; upper: number; updated: number; unpriced: number };
 
 const HOUR = 3_600_000;
 const MIN = -Number.MAX_SAFE_INTEGER;
@@ -43,7 +48,10 @@ function mergeProject(target: MutableUsage, source: MutableUsage) {
 export class TraceAnalyticsStore {
   private db: Database.Database;
   private stopped = false;
+  private closed = false;
   private scanning?: Promise<void>;
+  private pricingBackfillEnabled = false;
+  private repricing = false;
   private generation = 0;
   private cache = new Map<string, { generation: number; expires: number; value: any }>();
   status: AnalyticsStatus = { ready: false, indexed: 0, pendingBytes: 0, invalidLines: 0 };
@@ -67,6 +75,7 @@ export class TraceAnalyticsStore {
       CREATE TABLE IF NOT EXISTS recent (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS cursors (identity TEXT PRIMARY KEY, offset INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS pricing_backfill_hours (at INTEGER PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS entry_revisions (id TEXT PRIMARY KEY, revision INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS entry_revisions_number ON entry_revisions(revision);
       CREATE TABLE IF NOT EXISTS stored_session_turns (scope TEXT, session_key TEXT, id TEXT, payload TEXT, at INTEGER, last_at INTEGER, input_tokens REAL, cached_input REAL, cache_write REAL, output_tokens REAL, total_tokens REAL, cost REAL, cost_without REAL, is_error INTEGER, model TEXT, provider TEXT, PRIMARY KEY(scope,session_key,id));
@@ -101,6 +110,110 @@ export class TraceAnalyticsStore {
   private saveMeta(key: string, value: string) { this.db.prepare("INSERT OR REPLACE INTO metadata VALUES (?,?)").run(key, value); }
   private emit() { this.publish({ ...this.status }); }
 
+  enablePricingBackfill() { this.pricingBackfillEnabled = true; }
+
+  private priceMissing(t: TraceEntry): TraceEntry {
+    // An explicit zero is a recorded cost, including local/free executions.
+    if (typeof t.costUsd === "number" && Number.isFinite(t.costUsd)) return t;
+    if (t.usageStatus !== "measured" || t.lifecycleState === "started") return t;
+    const cost = estimateCostUsd(t.resolvedModel ?? t.model, t.tokensInput ?? 0, t.tokensOutput ?? 0,
+      t.tokensInputCached ?? 0, t.tokensInputCacheWrite ?? 0);
+    return cost === undefined ? t : { ...t, costUsd: cost, costStatus: "estimated", pricingVersion: MODEL_PRICING_VERSION };
+  }
+
+  private rebuildHour(at: number) {
+    const bucket = createEmptyBucket(at);
+    const rollups = new Map<string, Rollup>();
+    for (const t of this.range({ sinceMs: at, untilMs: at + HOUR - 1 })) {
+      addTraceToBucket(bucket, t);
+      if (!attempt(t)) continue;
+      const key = JSON.stringify([t.accountId, t.route, t.application, t.projectId, t.model]);
+      let rollup = rollups.get(key);
+      if (!rollup) {
+        rollup = { meta: { accountId: t.accountId, route: t.route, application: t.application, projectId: t.projectId,
+          projectName: t.projectName, projectRemote: t.projectRemote, model: t.model } as TraceEntry,
+          usage: createUsageAggregate(), project: emptyUsage(), sessionAttempts: 0 };
+        rollups.set(key, rollup);
+      }
+      if (sessionKeyOf(t)) rollup.sessionAttempts++;
+      addTraceToAggregate(rollup.usage, t);
+      addTrace(rollup.project, t);
+    }
+    this.db.prepare("INSERT OR REPLACE INTO buckets VALUES (?,?)").run(at, encode(bucket));
+    this.db.prepare("DELETE FROM usage_buckets WHERE at=?").run(at);
+    const insert = this.db.prepare("INSERT INTO usage_buckets VALUES (?,?,?)");
+    for (const [key, rollup] of rollups) insert.run(at, key, JSON.stringify(rollup));
+  }
+
+  private async backfillMissingCosts() {
+    if (!this.pricingBackfillEnabled) return;
+    const row = this.db.prepare("SELECT value FROM metadata WHERE key=?").get(MODELS_DEV_COST_BACKFILL) as { value: string } | undefined;
+    let progress: PricingBackfill = row ? JSON.parse(row.value) : {
+      state: "running", cursor: 0, upper: Number((this.db.prepare("SELECT MAX(rowid) AS id FROM entries").get() as any).id ?? 0), updated: 0, unpriced: 0,
+    };
+    this.status.pricingBackfill = { version: MODELS_DEV_COST_BACKFILL, ...progress };
+    if (progress.state === "complete") return;
+    this.repricing = true;
+    this.status.ready = false; this.emit();
+    try {
+      this.saveMeta(MODELS_DEV_COST_BACKFILL, JSON.stringify(progress));
+      // Keyset batches and committed progress allow a crash/restart to resume,
+      // without rescanning or rewriting already priced rows or the Rust journal.
+      const select = this.db.prepare("SELECT rowid AS cursor, id, at, payload FROM entries WHERE rowid>? AND rowid<=? AND (json_type(payload,'$.costUsd') IS NULL OR json_type(payload,'$.costUsd')='null') ORDER BY rowid LIMIT ?");
+      const update = this.db.prepare("UPDATE entries SET payload=? WHERE id=?");
+      while (!this.stopped) {
+        const rows = select.all(progress.cursor, progress.upper, BATCH) as Array<{ cursor: number; id: string; at: number; payload: string }>;
+        if (!rows.length) break;
+        const next = { ...progress };
+        this.db.transaction(() => {
+          for (const row of rows) {
+            const raw = JSON.parse(row.payload) as TraceEntry;
+            const normalized = normalizeTrace(raw);
+            // normalizeTrace may recover legacy token fields; retain the raw cost
+            // absence so pricingVersion and costStatus are corrected together.
+            const priced = normalized ? this.priceMissing({ ...normalized, costUsd: raw.costUsd }) : raw;
+            if (typeof priced.costUsd === "number" && Number.isFinite(priced.costUsd)) {
+              update.run(JSON.stringify(priced), row.id);
+              this.db.prepare("INSERT OR IGNORE INTO pricing_backfill_hours VALUES (?)").run(Math.floor(row.at / HOUR) * HOUR);
+              next.updated++;
+            } else next.unpriced++;
+            next.cursor = row.cursor;
+          }
+          this.saveMeta(MODELS_DEV_COST_BACKFILL, JSON.stringify(next));
+        })();
+        progress = next;
+        this.status.pricingBackfill = { version: MODELS_DEV_COST_BACKFILL, ...progress }; this.emit();
+        await yieldToQueries();
+      }
+      if (this.stopped) return;
+      while (!this.stopped) {
+        const hour = this.db.prepare("SELECT at FROM pricing_backfill_hours ORDER BY at LIMIT 1").get() as { at: number } | undefined;
+        if (!hour) break;
+        this.db.transaction(() => {
+          this.rebuildHour(hour.at);
+          this.db.prepare("DELETE FROM pricing_backfill_hours WHERE at=?").run(hour.at);
+        })();
+        await yieldToQueries();
+      }
+      if (this.stopped) return;
+      this.db.transaction(() => {
+        for (const row of this.db.prepare("SELECT id,payload FROM recent").all() as Array<{ id: string; payload: string }>) {
+          const raw = JSON.parse(row.payload);
+          const normalized = normalizeTrace(raw);
+          const priced = normalized ? this.priceMissing({ ...normalized, costUsd: raw.costUsd }) : raw;
+          if (priced.costUsd !== raw.costUsd) this.db.prepare("UPDATE recent SET payload=? WHERE id=?").run(JSON.stringify(priced), row.id);
+        }
+        // Session reports/turns contain monetary totals; rebuild them lazily from
+        // the corrected entries instead of retaining stale materialized costs.
+        this.db.exec("DELETE FROM stored_session_turns; DELETE FROM session_turn_states; DELETE FROM session_scopes; DELETE FROM session_reports;");
+        progress.state = "complete";
+        this.saveMeta(MODELS_DEV_COST_BACKFILL, JSON.stringify(progress));
+      })();
+      this.status.pricingBackfill = { version: MODELS_DEV_COST_BACKFILL, ...progress };
+      this.generation++; this.cache.clear();
+    } finally { this.repricing = false; }
+  }
+
   /** Entries, deduplication, aggregates and input cursor commit in one transaction. */
   append(entries: TraceEntry[], cursor?: { identity: string; offset: number }, journal = false) {
     const buckets = new Map<number, TraceBucketAggregate>();
@@ -118,8 +231,13 @@ export class TraceAnalyticsStore {
     let inserted = 0;
     this.db.transaction(() => {
       for (const raw of entries) {
-        const normalized = normalizeTrace(raw);
+        let normalized = normalizeTrace(raw);
         if (!normalized) continue;
+        if (raw.costUsd == null) {
+          const existing = this.db.prepare("SELECT payload FROM entries WHERE id=?").get(normalized.id) as { payload: string } | undefined;
+          const recorded = existing ? JSON.parse(existing.payload) : undefined;
+          if (typeof recorded?.costUsd === "number") normalized = { ...normalized, costUsd: recorded.costUsd, pricingVersion: recorded.pricingVersion, costStatus: recorded.costStatus };
+        }
         if (journal) {
           deleteRecent.run(normalized.id);
           insertRecent.run(normalized.id, JSON.stringify(normalized));
@@ -223,6 +341,8 @@ export class TraceAnalyticsStore {
         if (await this.consume(previous, true) === true) await unlink(previous).catch((e) => { if (e.code !== "ENOENT") throw e; });
         await this.consume(this.config.filePath, true);
       }
+      await this.backfillMissingCosts();
+      if (this.stopped) return;
       this.status.ready = true;
       this.status.error = undefined; this.emit();
     } catch (e) { this.status.error = (e as Error).message; this.emit(); throw e; }
@@ -421,6 +541,7 @@ export class TraceAnalyticsStore {
   query(action: string, args: any): any {
     if (action === "append") { this.append(args.entries); return; }
     if (action === "status") return this.status;
+    if (this.repricing) throw new Error("Analytics cost backfill is in progress");
     if (action === "recent") return (this.db.prepare("SELECT payload FROM recent ORDER BY seq").all() as any[]).map(r=>JSON.parse(r.payload));
     if (action === "trace") { const row=this.db.prepare("SELECT payload FROM recent WHERE id=?").get(args.id) as any; return row ? JSON.parse(row.payload) : null; }
     if (action === "range") return [...this.range(args)];
@@ -442,5 +563,5 @@ export class TraceAnalyticsStore {
     this.cache.set(key,{generation:this.generation,expires:Date.now()+5000,value});return value;
   }
 
-  async close() { this.stopped=true; await this.scanning; this.db.pragma("wal_checkpoint(TRUNCATE)"); this.db.close(); }
+  async close() { if (this.closed) return; this.stopped=true; await this.scanning; if (this.closed) return; this.closed=true; this.db.pragma("wal_checkpoint(TRUNCATE)"); this.db.close(); }
 }

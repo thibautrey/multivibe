@@ -7,6 +7,7 @@ import { TraceAnalyticsStore } from "./trace-analytics-store.js";
 import { createTraceManager, normalizeTrace, toStatsHistoryEntry, buildTraceStats, createUsageAggregate, addTraceToAggregate, finalizeAggregate, type TraceEntry } from "./traces.js";
 import { aggregateSessionUsage, sessionTurnsFor } from "./session-usage.js";
 import { aggregateProjectUsage } from "./project-usage.js";
+import { installModelsDevPricing } from "./model-pricing.js";
 
 const BASE = 1_790_000_000_000;
 function trace(id: string, at=BASE): TraceEntry {
@@ -22,6 +23,63 @@ async function fixture(t: test.TestContext) {
   return {config,get store(){return store;},async reopen(){await store.close();store=await TraceAnalyticsStore.open(config);return store;}};
 }
 const lines=(records:TraceEntry[])=>records.map(t=>JSON.stringify(t)).join("\n")+"\n";
+
+test("models.dev backfills absent costs once, preserves recorded/free costs and rebuilds reports", async t => {
+  const f = await fixture(t);
+  const missing = { ...trace("missing"), model: "future-sol", costUsd: undefined, costStatus: "unpriced" as const,
+    tokensInput: 100000, tokensInputCached: 20000, tokensOutput: 10000 };
+  f.store.append([missing, { ...missing, id: "recorded", costUsd: 0.7 }, { ...missing, id: "free", costUsd: 0 },
+    { ...missing, id: "unknown", model: "unpublished" }, { ...missing, id: "no-usage", usageStatus: "missing" }], undefined, true);
+  f.store.sessions({}); // Materialize the old report before correcting the history.
+  installModelsDevPricing({ openai: [{ id: "future-sol", cost: { input: 2, output: 10, cache_read: 0.1 } }] }, BASE);
+  t.after(() => installModelsDevPricing({}, BASE));
+  f.store.enablePricingBackfill();
+  await f.store.sync();
+  const records = f.store.query("range", {}) as TraceEntry[];
+  const priced = records.find(r => r.id === "missing")!;
+  assert.ok(Math.abs(priced.costUsd! - 0.262) < 1e-12);
+  assert.equal(priced.costStatus, "estimated");
+  assert.match(priced.pricingVersion!, /^models.dev:/);
+  assert.equal(records.find(r => r.id === "recorded")!.costUsd, 0.7);
+  assert.equal(records.find(r => r.id === "free")!.costUsd, 0);
+  assert.equal(records.find(r => r.id === "unknown")!.costUsd, undefined);
+  assert.equal(records.find(r => r.id === "no-usage")!.costUsd, undefined);
+  assert.equal(f.store.status.pricingBackfill?.updated, 1);
+  const total = f.store.stats({}).stats.totals.costUsd;
+  assert.ok(Math.abs(total - 0.962) < 1e-12);
+  assert.ok(Math.abs(f.store.sessions({}).sessions[0].costUsd - total) < 1e-12);
+  assert.ok(Math.abs(f.store.query("trace", { id: "missing" }).costUsd - 0.262) < 1e-12);
+  await f.reopen();
+  installModelsDevPricing({ openai: [{ id: "future-sol", cost: { input: 100, output: 100 } },
+    { id: "unpublished", cost: { input: 1, output: 1 } }] }, BASE + 1);
+  f.store.enablePricingBackfill();
+  await f.store.sync();
+  const after = f.store.query("range", {}) as TraceEntry[];
+  assert.equal(after.find(r => r.id === "missing")!.costUsd, priced.costUsd);
+  assert.equal(after.find(r => r.id === "unknown")!.costUsd, undefined, "a later catalog does not trigger a second backfill");
+  assert.equal(f.store.status.pricingBackfill?.updated, 1);
+  assert.equal(f.store.status.pricingBackfill?.state, "complete");
+});
+
+test("interrupted cost backfill resumes committed batches and rebuilds affected hours", async t => {
+  const f = await fixture(t);
+  f.store.append(Array.from({ length: 1005 }, (_, i) => ({ ...trace(`backfill-${i}`), model: "future-resume", costUsd: undefined })));
+  installModelsDevPricing({ openai: [{ id: "future-resume", cost: { input: 2, output: 10 } }] }, BASE);
+  t.after(() => installModelsDevPricing({}, BASE));
+  f.store.enablePricingBackfill();
+  const syncing = f.store.sync();
+  const closing = new Promise<void>((resolve, reject) => setImmediate(() => { f.store.close().then(resolve, reject); }));
+  await Promise.all([syncing, closing]);
+  assert.equal(f.store.status.pricingBackfill?.state, "running");
+  assert.equal(f.store.status.pricingBackfill?.updated, 1000);
+  await f.reopen();
+  f.store.enablePricingBackfill();
+  await f.store.sync();
+  assert.equal(f.store.status.pricingBackfill?.updated, 1005);
+  assert.equal(f.store.status.pricingBackfill?.state, "complete");
+  assert.equal(f.store.stats({}).stats.totals.requests, 1005);
+  assert.ok(Math.abs(f.store.stats({}).stats.totals.costUsd - 1005 * 0.00009) < 1e-12);
+});
 
 test("indexed migration/restart and journal rotation preserve exact counts and bounded recent traces",async t=>{
   const f=await fixture(t);

@@ -324,6 +324,8 @@ export type TraceManagerConfig = {
   externalWriter?: boolean;
   /** Durable analytics index; queries and ingestion run off the HTTP event loop. */
   indexedHistoryPath?: string;
+  /** Shared models.dev cache; enables runtime pricing and the one-time cost backfill. */
+  pricingCachePath?: string;
   retentionMax?: number;
   pageSizeMax?: number;
   legacyLimitMax?: number;
@@ -574,7 +576,7 @@ export function normalizeTrace(raw: any): TraceEntry | null {
   const estimatedCostUsd =
     usageStatus === "measured"
       ? estimateCostUsd(
-          model,
+          typeof raw.resolvedModel === "string" && raw.resolvedModel.trim() ? raw.resolvedModel.trim() : model,
           normalizedTokens.tokensInput ?? 0,
           normalizedTokens.tokensOutput ?? 0,
           normalizedTokens.tokensInputCached ?? 0,
@@ -720,12 +722,10 @@ export function normalizeTrace(raw: any): TraceEntry | null {
             : undefined,
     usageStatus,
     costStatus:
-      raw.costStatus === "estimated" ||
-      raw.costStatus === "unpriced" ||
-      raw.costStatus === "unknown"
-        ? raw.costStatus
-        : costUsd !== undefined
-          ? "estimated"
+      costUsd !== undefined
+        ? "estimated"
+        : raw.costStatus === "unpriced" || raw.costStatus === "unknown"
+          ? raw.costStatus
           : usageStatus === "measured" && model
             ? "unpriced"
             : "unknown",

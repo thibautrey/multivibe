@@ -15,7 +15,7 @@ import { CLOUD_PLATFORM_CATALOGS } from "./cloud-platforms.js";
 import type { LiveModelCatalogSnapshot } from "./live-model-catalog.js";
 import type { ModelsDevCatalog } from "./models-dev-catalog.js";
 
-export type SdkCatalogModel = { id: string; name: string; context?: number; output?: number; tools?: boolean; reasoning?: boolean; input: string[]; cost?: Record<string, number> };
+export type SdkCatalogModel = { id: string; name: string; context?: number; output?: number; tools?: boolean; reasoning?: boolean; input: string[]; cost?: import("../models-dev-pricing.js").ModelsDevCost };
 export type SdkCatalog = { source: string; fetchedAt: string; models: Record<string, SdkCatalogModel[]> };
 
 /** Runtime models.dev lookups only; the full catalog holds disk/network state. */

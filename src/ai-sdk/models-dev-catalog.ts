@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { normalizeModelsDevCost, type ModelsDevCost } from "../models-dev-pricing.js";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { SDK_PROVIDERS, sdkProvider } from "./providers.js";
@@ -31,7 +33,7 @@ export const SDK_MODELS_DEV_TIMEOUT_MS = envMilliseconds(
 );
 const SDK_MODELS_DEV_MAX_BYTES = 20_000_000;
 const SDK_MODELS_DEV_MAX_MODELS_PER_PROVIDER = 5_000;
-const SDK_MODELS_DEV_CACHE_VERSION = 1;
+const SDK_MODELS_DEV_CACHE_VERSION = 2;
 const SDK_MODELS_DEV_CACHE_MAX_BYTES = 16 * 1024 * 1024;
 const MODEL_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}$/;
 /** Only reviewed providers are cached; models.dev lists hundreds more. */
@@ -45,7 +47,7 @@ export type ModelsDevModel = {
   tools?: boolean;
   reasoning?: boolean;
   input: string[];
-  cost?: Record<string, number>;
+  cost?: ModelsDevCost;
 };
 
 export type ModelsDevProviderModels = {
@@ -68,6 +70,7 @@ type ModelsDevCatalogOptions = {
   ttlMs?: number;
   timeoutMs?: number;
   now?: () => number;
+  onUpdate?: (providers: Record<string, ModelsDevModel[]>, fetchedAt: number) => void;
 };
 
 type ModelsDevCache = {
@@ -98,9 +101,7 @@ function normalizeModel(value: unknown): ModelsDevModel | undefined {
     : ["text"];
   const context = Number(model.limit?.context);
   const maximumOutput = Number(model.limit?.output);
-  const cost = model.cost && typeof model.cost === "object" && !Array.isArray(model.cost)
-    ? Object.fromEntries(Object.entries(model.cost).filter(([, value]) => typeof value === "number" && Number.isFinite(value) && value >= 0))
-    : undefined;
+  const cost = normalizeModelsDevCost(model.cost);
   return {
     id: model.id,
     name: String(model.name ?? model.id).slice(0, 200),
@@ -118,9 +119,7 @@ function normalizeStoredModel(value: unknown): ModelsDevModel | undefined {
   const model = value as Partial<ModelsDevModel>;
   if (typeof model.id !== "string" || !MODEL_ID_PATTERN.test(model.id)) return undefined;
   if (typeof model.name !== "string" || !Array.isArray(model.input) || !model.input.every((item) => typeof item === "string")) return undefined;
-  const cost = model.cost && typeof model.cost === "object" && !Array.isArray(model.cost)
-    ? Object.fromEntries(Object.entries(model.cost).filter(([, value]) => typeof value === "number" && Number.isFinite(value) && value >= 0))
-    : undefined;
+  const cost = normalizeModelsDevCost(model.cost);
   return {
     id: model.id,
     name: model.name.slice(0, 200),
@@ -147,7 +146,7 @@ export class ModelsDevCatalog {
   private loaded = false;
   private loadPromise?: Promise<void>;
 
-  constructor(options: ModelsDevCatalogOptions = {}) {
+  constructor(private options: ModelsDevCatalogOptions = {}) {
     this.fetchImpl = options.fetch ?? fetch;
     this.cachePath = options.cachePath;
     this.ttlMs = options.ttlMs ?? SDK_MODELS_DEV_TTL_MS;
@@ -193,6 +192,7 @@ export class ModelsDevCatalog {
         this.fetchedAt = cache.fetchedAt;
         this.nextRefreshAt = this.fetchedAt + this.ttlMs;
         this.lastError = undefined;
+        this.options.onUpdate?.(cache.providers, cache.fetchedAt);
         await this.persist();
         return true;
       })
@@ -274,6 +274,7 @@ export class ModelsDevCatalog {
     this.providers = providers;
     this.fetchedAt = typeof parsed.fetchedAt === "number" && Number.isFinite(parsed.fetchedAt) ? parsed.fetchedAt : 0;
     this.nextRefreshAt = 0;
+    this.options.onUpdate?.(Object.fromEntries(this.providers), this.fetchedAt);
   }
 
   private async persist(): Promise<void> {
@@ -286,7 +287,7 @@ export class ModelsDevCatalog {
     };
     try {
       await mkdir(path.dirname(this.cachePath), { recursive: true, mode: 0o700 });
-      const temporary = `${this.cachePath}.${process.pid}.tmp`;
+      const temporary = `${this.cachePath}.${process.pid}.${randomUUID()}.tmp`;
       await writeFile(temporary, `${JSON.stringify(payload)}\n`, { mode: 0o600 });
       await rename(temporary, this.cachePath);
     } catch {
