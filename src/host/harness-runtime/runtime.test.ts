@@ -10,7 +10,7 @@ import { HostHarnessRuntime } from "./runtime.js";
 import { harnessRuntimeRoutes } from "./routes.js";
 import { legacyHarnessRun } from "./legacy.js";
 import { bridgeModelConnection } from "./bridge.js";
-import { discoverNativeSessions, readNativeSession } from "./discovery.js";
+import { discoverHarnessProjects, discoverNativeSessions, readNativeSession } from "./discovery.js";
 import { supported, type AdapterContext, type HarnessAdapter, type MessagePart } from "./types.js";
 
 const prompt=(text:string,id=randomUUID())=>({id,type:"prompt",parts:[{type:"text",text}]});
@@ -114,6 +114,7 @@ test("large native catalog events become downloadable artifacts instead of termi
 test("capabilities remain unknown until advertised and a harness cannot change",async t=>{
   const {runtime}=fixture(t);const s=await runtime.create({harnessId:"pi"});
   assert.equal(s.capabilities.steer.support,"unknown");assert.equal(s.capabilities.queue.support,"multivibe");
+  assert.equal(s.capabilities.projects.available,true);
   await assert.rejects(runtime.create({id:s.id,harnessId:"claude-code"}),/fixed/u);
   assert.equal((await runtime.command(s.id,operation("compact"))).state,"completed");assert.equal(s.capabilities.compaction.support,"native");
   assert.equal((await runtime.catalog()).find(v=>v.id==="gemini-cli")!.available,false);
@@ -128,11 +129,17 @@ test("Host schedules coalesce missed deadlines and never duplicate a pending exe
 });
 test("native discovery only returns metadata and isolated-fork sources",t=>{
   const home=fs.mkdtempSync(path.join(os.tmpdir(),"multivibe-native-source-"));t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
+  const workspace=path.join(home,"workspaces","project");fs.mkdirSync(workspace,{recursive:true});
   const directory=path.join(home,".pi/agent/sessions/project");fs.mkdirSync(directory,{recursive:true});
-  fs.writeFileSync(path.join(directory,"old.jsonl"),JSON.stringify({type:"session",id:"native-id",cwd:"/tmp"})+"\n"+JSON.stringify({type:"message",secret:"never return transcript"}));
+  fs.writeFileSync(path.join(directory,"old.jsonl"),JSON.stringify({type:"session",id:"native-id",cwd:workspace})+"\n"+JSON.stringify({type:"message",secret:"never return transcript"}));
+  fs.writeFileSync(path.join(directory,"new.jsonl"),JSON.stringify({type:"session",id:"native-id-2",cwd:workspace})+"\n"+JSON.stringify({type:"message",content:"never return project content"}));
+  fs.writeFileSync(path.join(directory,"stale.jsonl"),JSON.stringify({type:"session",id:"native-id-3",cwd:path.join(home,"missing")}));
   fs.symlinkSync(path.join(directory,"old.jsonl"),path.join(directory,"alias.jsonl"));
-  const sources=discoverNativeSessions("pi",home);assert.equal(sources.length,1);assert.equal(sources[0].strategy,"isolated_fork");assert.ok(!JSON.stringify(sources).includes("never return"));
-  const preview=readNativeSession("pi",sources[0].sourceId,home);assert.equal(preview.readOnly,true);assert.equal(preview.records.length,2);assert.ok(!JSON.stringify(preview).includes("never return"));assert.equal((preview.records[1] as any).secret,"[private]");
+  const sources=discoverNativeSessions("pi",home);assert.equal(sources.length,3);assert.equal(sources[0].strategy,"isolated_fork");assert.ok(!JSON.stringify(sources).includes("never return"));
+  const projects=discoverHarnessProjects("pi",home);assert.deepEqual(projects.map(({name,path:harnessPath})=>({name,path:harnessPath})),[{name:"project",path:fs.realpathSync(workspace)}]);assert.ok(!JSON.stringify(projects).includes("never return"));
+  assert.deepEqual(discoverHarnessProjects("librechat",home),[]);
+  const oldSource=sources.find(source=>source.nativeSessionId.endsWith("old.jsonl"))!;
+  const preview=readNativeSession("pi",oldSource.sourceId,home);assert.equal(preview.readOnly,true);assert.equal(preview.records.length,2);assert.ok(!JSON.stringify(preview).includes("never return"));assert.equal((preview.records[1] as any).secret,"[private]");
   assert.throws(()=>readNativeSession("pi","missing",home),/not found/u);
 });
 test("runtime HTTP replay is bounded, read-only and disconnect leaves generation running",async t=>{

@@ -75,6 +75,11 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     @State private var loadingHarnessModels = false
     @State private var harnessModelsError: String?
     @State private var loadedHarnessModelsKey = ""
+    @State private var projects: [DesktopHarnessProject] = []
+    @State private var loadingProjects = false
+    @State private var projectsError: String?
+    @State private var choosingProject = false
+    @State private var loadedProjectsKey = ""
     @State private var installingHarness: NativeConversationHarness?
     @State private var installationLogs: [String] = []
     @State private var installationRunning = false
@@ -115,6 +120,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             conversation.authMode = "native"
             conversation.nativeModelID = nil
             conversation.nativeModelProvider = nil
+            conversation.workspace = nil
         }
         NativeChatStore.defaultHarnessID = value
     }) }
@@ -132,7 +138,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
         harnesses.first { $0.id == harness.wrappedValue } ?? .init(
             id: harness.wrappedValue, name: harness.wrappedValue, available: false, configured: false,
             description: "Ce harness n’est plus disponible sur ce Mac.",
-            capabilities: .init(sessions: true, streaming: true, tools: false, longTermMemory: false),
+            capabilities: .init(sessions: true, streaming: true, tools: false, longTermMemory: false, projects: false),
             unavailableReason: "Ce harness n’est plus disponible sur ce Mac.", canInstall: false, compatible: false,
             detected: false, conversationCapable: false, category: nil, popularityRank: nil
         )
@@ -296,6 +302,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
         }
         .task(id: harnessModelsKey) { await loadHarnessModels() }
         .task(id: store.current?.executionTargetID ?? "local") { await store.runRemoteSynchronization() }
+        .task(id: projectCatalogKey) { await loadProjects() }
         .sheet(isPresented: $cloudConsent) { consentSheet }
         .sheet(isPresented: Binding(get: { configuringRemoteHarness != nil }, set: { if !$0 { configuringRemoteHarness = nil } })) {
             let remoteID = configuringRemoteHarness ?? "librechat"
@@ -761,6 +768,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                     ChatIconButton(title: harness.wrappedValue == "native" ? "Joindre des documents texte" : "Joindre des fichiers", icon: "plus") { importing = true }.disabled(cloudMode)
                     if !cloudMode { harnessSelector }
                     modelSelector
+                    if supportsProjects { projectSelector }
                     Spacer(minLength: 4)
                     composerActions
                 }.padding(.horizontal, 9).padding(.bottom, 9)
@@ -857,7 +865,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     private var sortedHarnesses: [NativeConversationHarness] {
         var items = harnesses
         for (id, name) in [("librechat", "LibreChat"), ("openwebui", "Open WebUI")] where !items.contains(where: { $0.id == id }) {
-            items.append(.init(id: id, name: name, available: false, configured: false, description: harnessDescription(id), capabilities: .init(sessions: true, streaming: true, tools: true, longTermMemory: false), unavailableReason: "Connexion requise", canInstall: false, compatible: true, detected: false, conversationCapable: true, category: "agent", popularityRank: 10))
+            items.append(.init(id: id, name: name, available: false, configured: false, description: harnessDescription(id), capabilities: .init(sessions: true, streaming: true, tools: true, longTermMemory: false, projects: false), unavailableReason: "Connexion requise", canInstall: false, compatible: true, detected: false, conversationCapable: true, category: "agent", popularityRank: 10))
         }
         return items.sortedForDisplay(lastUsedAt: harnessLastUsedAt)
     }
@@ -1002,6 +1010,114 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
         }
         .padding(22).frame(width: 520)
         .interactiveDismissDisabled(installationRunning)
+    }
+    private var supportsProjects: Bool {
+        !cloudMode && harness.wrappedValue != "native" && selectedHarness.capabilities.projects == true
+    }
+    private var projectCatalogKey: String {
+        [store.selection?.uuidString ?? "", harness.wrappedValue, store.current?.executionTargetID ?? "local", String(supportsProjects)].joined(separator: "|")
+    }
+    private var availableProjects: [DesktopHarnessProject] {
+        loadedProjectsKey == projectCatalogKey ? projects : []
+    }
+    private var selectedProject: DesktopHarnessProject? {
+        guard let workspace = store.current?.workspace else { return nil }
+        return availableProjects.first { $0.path == workspace }
+    }
+    private var selectedProjectName: String {
+        if let selectedProject { return selectedProject.name }
+        guard let workspace = store.current?.workspace, !workspace.isEmpty else { return "Aucun projet" }
+        return (workspace as NSString).lastPathComponent.isEmpty ? workspace : (workspace as NSString).lastPathComponent
+    }
+    private var projectSelectionLocked: Bool {
+        store.current?.messages.isEmpty == false || store.current?.runtimeSessionID != nil || store.isGenerating(store.selection)
+    }
+    private var projectSelector: some View {
+        Button { choosingProject = true } label: {
+            HStack(spacing: 6) {
+                if loadingProjects { ProgressView().controlSize(.mini) }
+                else { Image(systemName: store.current?.workspace == nil ? "folder" : "folder.fill") }
+                Text(selectedProjectName).lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
+            }
+            .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+            .padding(.horizontal, 9).frame(height: 28)
+            .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(ChatActionStyle()).tint(.secondary)
+        .frame(maxWidth: 180, alignment: .leading).fixedSize(horizontal: true, vertical: true)
+        .help(projectSelectionLocked ? "Le projet est attaché à cette conversation." : availableProjects.isEmpty ? "Aucun projet détecté pour ce harness." : "Choisir le dossier de projet de cette conversation")
+        .disabled(projectSelectionLocked || loadingProjects)
+        .popover(isPresented: $choosingProject, arrowEdge: .bottom) { projectPicker }
+    }
+    private var projectPicker: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 14) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Choisir un projet").font(.headline)
+                    Text("Le harness démarrera dans le dossier sélectionné.").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { Task { await loadProjects() } } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(.borderless).help("Actualiser les projets")
+            }
+            if let projectsError {
+                Label(projectsError, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.red)
+            }
+            ScrollView {
+                VStack(spacing: 7) {
+                    projectRow(title: "Aucun projet", path: "Nouvelle conversation sans dossier associé", icon: "folder.badge.minus", selected: store.current?.workspace == nil) {
+                        store.edit { $0.workspace = nil }; choosingProject = false
+                    }
+                    if let workspace = store.current?.workspace, selectedProject == nil {
+                        projectRow(title: selectedProjectName, path: workspace, icon: "folder.badge.questionmark", selected: true) {}
+                            .disabled(true).opacity(0.65)
+                    }
+                    ForEach(availableProjects) { project in
+                        projectRow(title: project.name, path: project.path, icon: "folder", selected: project.path == store.current?.workspace) {
+                            store.edit { $0.workspace = project.path }; choosingProject = false
+                        }
+                    }
+                    if availableProjects.isEmpty {
+                        Text("Aucun projet existant n’a été détecté pour \(selectedHarness.name).")
+                            .font(.caption).foregroundStyle(.secondary).padding(.vertical, 14)
+                    }
+                }.padding(1)
+            }.frame(maxHeight: 360)
+        }
+        .padding(18).frame(width: 520)
+    }
+    private func projectRow(title: String, path: String, icon: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: icon).foregroundStyle(ChatPalette.accent).frame(width: 28, height: 28)
+                    .background(ChatPalette.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.callout.weight(.medium)).foregroundStyle(.primary).lineLimit(1)
+                    Text(path).font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                }
+                Spacer(minLength: 0)
+                if selected { Image(systemName: "checkmark.circle.fill").foregroundStyle(ChatPalette.accent) }
+            }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                .background(selected ? ChatPalette.accent.opacity(0.08) : ChatPalette.elevated, in: RoundedRectangle(cornerRadius: 11))
+        }.buttonStyle(.plain).accessibilityLabel("\(title), \(path)").accessibilityValue(selected ? "Sélectionné" : "")
+    }
+    private func loadProjects() async {
+        let key = projectCatalogKey
+        projects = []; projectsError = nil; loadedProjectsKey = key
+        guard supportsProjects else { loadingProjects = false; return }
+        loadingProjects = true
+        do {
+            let encoded = harness.wrappedValue.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? harness.wrappedValue
+            let response = try await DesktopHarnessClient.shared.call("/projects?harnessId=\(encoded)", target: store.current?.executionTargetID ?? "local")
+            let values = try response["projects"].decode([DesktopHarnessProject].self)
+            guard !Task.isCancelled, key == projectCatalogKey else { return }
+            projects = values
+        } catch {
+            guard !Task.isCancelled, key == projectCatalogKey else { return }
+            projectsError = error.localizedDescription
+        }
+        if key == projectCatalogKey { loadingProjects = false }
     }
     private var modelSelector: some View {
         Button {
@@ -1370,7 +1486,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 let old = harnesses.first { $0.id == item.id }
                 let priorDescription = old?.description.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 let view = NativeConversationHarness(id: item.id, name: item.name, available: item.available, configured: item.configured,
-                    description: priorDescription.isEmpty ? harnessDescription(item.id) : priorDescription, capabilities: .init(sessions: true, streaming: true, tools: item.capabilities["tools"]?.available == true, longTermMemory: item.capabilities["memory"]?.available == true),
+                    description: priorDescription.isEmpty ? harnessDescription(item.id) : priorDescription, capabilities: .init(sessions: true, streaming: true, tools: item.capabilities["tools"]?.available == true, longTermMemory: item.capabilities["memory"]?.available == true, projects: item.capabilities["projects"]?.available == true),
                     unavailableReason: item.reason, canInstall: old?.canInstall, compatible: true, detected: item.detected, conversationCapable: true, category: old?.category ?? "agent", popularityRank: old?.popularityRank ?? 100)
                 if let index = harnesses.firstIndex(where: { $0.id == item.id }) { harnesses[index] = view } else { harnesses.append(view) }
             }

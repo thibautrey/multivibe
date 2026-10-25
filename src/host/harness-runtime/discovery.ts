@@ -6,6 +6,8 @@ import Database from "better-sqlite3";
 import { fail, redact } from "./types.js";
 
 export type NativeSessionSource={sourceId:string;harnessId:string;nativeSessionId:string;title:string;workspace?:string;updatedAt:number;canContinue:boolean;strategy:"isolated_fork"|"read_only";reason?:string;file?:string};
+export type HarnessProject={id:string;harnessId:string;name:string;path:string;updatedAt:number};
+export const PROJECT_HARNESS_IDS=new Set(["hermes-agent","pi","openai-codex","claude-code","opencode","gemini-cli"]);
 /** Read native metadata only. Authentication/configuration files are never scanned. */
 export function discoverNativeSessions(harnessId:string,home=os.homedir()):NativeSessionSource[] {
   const result:NativeSessionSource[]=[];
@@ -44,6 +46,21 @@ export function discoverNativeSessions(harnessId:string,home=os.homedir()):Nativ
     }
   };
   visit(path.join(home,relative),0);return result.sort((a,b)=>b.updatedAt-a.updatedAt);
+}
+
+/** Aggregate project directories from native session metadata without reading transcript content. */
+export function discoverHarnessProjects(harnessId:string,home=os.homedir()):HarnessProject[] {
+  if(!PROJECT_HARNESS_IDS.has(harnessId))return [];
+  const projects=new Map<string,HarnessProject>();
+  for(const source of discoverNativeSessions(harnessId,home)){
+    if(!source.workspace || !path.isAbsolute(source.workspace))continue;
+    let workspace:string;
+    try{workspace=fs.realpathSync(source.workspace);if(!fs.statSync(workspace).isDirectory())continue;}catch{continue;}
+    const prior=projects.get(workspace),updatedAt=Math.max(0,source.updatedAt||0);
+    if(prior){if(updatedAt>prior.updatedAt)prior.updatedAt=updatedAt;continue;}
+    projects.set(workspace,{id:createHash("sha256").update(`${harnessId}:${workspace}`).digest("hex"),harnessId,name:path.basename(workspace)||workspace,path:workspace,updatedAt});
+  }
+  return [...projects.values()].sort((a,b)=>b.updatedAt-a.updatedAt||a.name.localeCompare(b.name)).slice(0,200);
 }
 
 /** Explicit read-only preview. Native processes and their session ownership are never acquired. */

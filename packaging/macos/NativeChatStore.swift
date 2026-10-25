@@ -130,6 +130,7 @@ struct NativeChatConversation: Codable, Identifiable {
             let harness = Self.defaultHarnessID
             conversations[index].harnessID = harness == "native" ? nil : harness
             conversations[index].harnessSessionID = nil
+            conversations[index].workspace = nil
             conversations[index].queuePaused = false
             conversations[index].updatedAt = Date()
             selection = conversations[index].id
