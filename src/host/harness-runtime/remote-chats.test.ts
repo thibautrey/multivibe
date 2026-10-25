@@ -144,3 +144,27 @@ test("LibreChat exposes an in-progress answer from another client and prevents a
   const deadline=Date.now()+3000;while(!["failed","completed"].includes(f.runtime.store.receipt(receipt.id)!.state)){assert.ok(Date.now()<deadline);await new Promise(r=>setTimeout(r,20));}
   assert.equal(f.runtime.store.receipt(receipt.id)?.state,"failed");assert.equal(f.calls.some(v=>v.route==="/prefix/api/agents/chat"),false);
 });
+
+for(const id of ["librechat","openwebui"] as const)test(`${id} traverses every native catalog page including archives`,async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),"multivibe-chat-pagination-"));
+  const requested:string[]=[];
+  const server=http.createServer((req,res)=>{
+    const u=new URL(req.url!,"http://localhost");requested.push(req.url!);
+    let data:any;
+    if(id==="librechat"){
+      const archived=u.searchParams.get("isArchived")==="true",last=u.searchParams.get("cursor")==="page-two";
+      data={conversations:[{conversationId:archived?"archive":last?"second":"first",title:"Native chat",isArchived:archived,pinned:!archived}],nextCursor:archived || last?null:"page-two"};
+    }else{
+      const archived=u.pathname.endsWith("archived"),page=u.searchParams.get("page");
+      data=Array.from({length:archived || page==="2"?1:60},(_,i)=>({id:archived?"archive":`${page}-${i}`,title:"Native chat",archived,pinned:i===0}));
+    }
+    res.writeHead(200,{"content-type":"application/json"});res.end(JSON.stringify(data));
+  });
+  await new Promise<void>(r=>server.listen(0,"127.0.0.1",r));
+  const connection={endpoint:`http://127.0.0.1:${(server.address() as any).port}${id==="librechat"?"/api/agents/v1":"/api"}`,apiKey:"fixture",userToken:"fixture-token",userId:"fixture-account",agentId:"model"};
+  fs.writeFileSync(path.join(root,`${id}-connection.json`),JSON.stringify(connection),{mode:0o600});
+  t.after(()=>{server.closeAllConnections();server.close();fs.rmSync(root,{recursive:true,force:true});});
+  const config=new RemoteChatConfiguration(root,{id,name:id,suffix:id==="librechat"?"/api/agents/v1":"/api"});
+  const result=await new RemoteChats(id,config).list();
+  assert.equal(result.conversations.length,id==="librechat"?3:62);assert.equal(result.conversations.filter(v=>v.archived).length,1);assert.ok(result.conversations.some(v=>v.pinned));assert.equal(requested.length,3);
+});

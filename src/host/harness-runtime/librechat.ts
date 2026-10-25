@@ -91,6 +91,8 @@ export class RemoteChatConfiguration {
     return remoteChatModels(this.read()??fail("Configure the remote harness first",409),this.service.name);
   }
   async configure(input:any){
+    if(input.userToken && (typeof input.userToken!=="string" || input.userToken.length>16_384 || /[\r\n\0]/u.test(input.userToken)))fail("Enter a valid LibreChat user session token",422);
+    if(input.password && (typeof input.password!=="string" || input.password.length>4096 || typeof input.email!=="string" || input.email.length>320))fail("Enter valid LibreChat account credentials",422);
     const endpoint=remoteChatEndpoint(input.endpoint,this.service.suffix,this.service.name),old=this.read();
     const apiKey=input.apiKey || (old?.endpoint===endpoint?old.apiKey:undefined);
     if(apiKey && (typeof apiKey!=="string" || apiKey.length>4096 || /[\r\n\0]/u.test(apiKey)))fail(`Enter the ${this.service.name} API key`);
@@ -134,11 +136,11 @@ export class RemoteChatConfiguration {
   descriptor():HarnessDescriptor {
     const configured=Boolean(this.read()),caps=capabilities();
     for(const key of ["sessions","streaming"] as const)caps[key]=supported();
-    caps.history=supported("native");
-    for(const key of ["queue","history","attachments","diagnostics","automations"] as const)caps[key]=supported("multivibe");
+    for(const key of ["queue","attachments","diagnostics","automations"] as const)caps[key]=supported("multivibe");
     caps.attachments=supported("multivibe",{mimeTypes:["text/*","application/json"],transport:"inline text"});
     caps.tools=supported("native",{execution:`${this.service.name} server`,visibility:"Only events exposed by the remote API"});
     caps.models=supported();
+    caps.history=supported(this.service.id==="openwebui" || this.read()?.userToken?"native":"multivibe");
     if(this.service.id==="openwebui")caps.streaming=supported("multivibe",{transport:"saved response polling"});
     caps.interrupt=unsupported("This adapter does not support acknowledged remote cancellation");
     return {id:this.service.id,name:this.service.name,protocol:this.service.id,detected:true,configured:configured && (this.service.id!=="librechat" || Boolean(this.read()?.userToken)),available:configured,authentication:configured?"unknown":"required",capabilities:caps,...(!configured?{reason:`Configure the ${this.service.name} endpoint, API key and model`}:{})};
