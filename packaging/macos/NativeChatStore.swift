@@ -58,6 +58,12 @@ struct NativeChatConversation: Codable, Identifiable {
     var remoteActive: Bool?
 }
 
+private struct NativeChatModelPreference: Codable {
+    let model: String
+    let authMode: String
+    let provider: String?
+}
+
 /// Device-owned history; provider credentials are never stored here.
 @MainActor final class NativeChatStore: ObservableObject {
     static let defaultHarnessKey = "assistantDefaultHarness"
@@ -82,12 +88,15 @@ struct NativeChatConversation: Codable, Identifiable {
     private var saveTask: Task<Void, Never>?
     private let runtime: any DesktopHarnessServing
     private let file: URL
+    private let defaults: UserDefaults
+    static let modelPreferencesKey = "assistantModelsByHarness"
     private var canSave = true
     @Published private(set) var remoteSyncErrors: [String: String] = [:]
     private var remoteCatalogUpdatedAt: [String: Date] = [:]
     private var synchronizingRemote = false
 
-    init(file: URL? = nil, runtime: (any DesktopHarnessServing)? = nil) {
+    init(file: URL? = nil, runtime: (any DesktopHarnessServing)? = nil, defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         self.runtime = runtime ?? DesktopHarnessClient.shared
         self.file = file ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("MultiVibe/NativeChat/conversations.json")
@@ -131,10 +140,12 @@ struct NativeChatConversation: Codable, Identifiable {
     func newConversation(text: String = "") {
         if canSave { error = nil }
         if text.isEmpty, let index = conversations.firstIndex(where: { $0.messages.isEmpty && $0.draft.isEmpty && $0.runtimeSessionID == nil && $0.pendingSubmissions?.isEmpty != false && $0.draftAttachments?.isEmpty != false && $0.nativeQueue?.isEmpty != false && $0.remoteChatID == nil && $0.archived != true }) {
-            conversations[index].model = HostAssistantClient.shared.defaultModel
             let harness = Self.defaultHarnessID
             conversations[index].harnessID = harness == "native" ? nil : harness
             conversations[index].harnessSessionID = nil
+            var item = conversations[index]
+            applyPreferredModel(to: &item)
+            conversations[index] = item
             conversations[index].workspace = nil
             conversations[index].queuePaused = false
             conversations[index].updatedAt = Date()
@@ -143,12 +154,56 @@ struct NativeChatConversation: Codable, Identifiable {
             return
         }
         var item = NativeChatConversation()
-        item.model = HostAssistantClient.shared.defaultModel
         let harness = Self.defaultHarnessID
         item.harnessID = harness == "native" ? nil : harness
+        applyPreferredModel(to: &item)
         item.draft = text
         conversations.insert(item, at: 0); selection = item.id
         save()
+    }
+    private func modelPreferenceKey(for conversation: NativeChatConversation) -> String {
+        // Encode both components so harness and target identifiers cannot collide.
+        let parts = [conversation.executionTargetID ?? "local", conversation.harnessID ?? "native"]
+        return parts.map { "\($0.utf8.count):\($0)" }.joined()
+    }
+    private func applyPreferredModel(to conversation: inout NativeChatConversation) {
+        conversation.model = HostAssistantClient.shared.defaultModel
+        conversation.authMode = "native"
+        conversation.nativeModelID = nil
+        conversation.nativeModelProvider = nil
+        guard let data = defaults.dictionary(forKey: Self.modelPreferencesKey)?[modelPreferenceKey(for: conversation)] as? Data,
+              let preference = try? JSONDecoder().decode(NativeChatModelPreference.self, from: data) else { return }
+        if preference.authMode == "multivibe" || conversation.harnessID == nil {
+            conversation.model = preference.model
+            conversation.authMode = conversation.harnessID == nil ? "native" : "multivibe"
+        } else {
+            conversation.nativeModelID = preference.model
+            conversation.nativeModelProvider = preference.provider
+        }
+    }
+    func selectHarness(_ harnessID: String) {
+        guard let index = conversations.firstIndex(where: { $0.id == selection }),
+              conversations[index].messages.isEmpty, conversations[index].runtimeSessionID == nil,
+              conversations[index].pendingSubmissions?.isEmpty != false, !isGenerating(selection) else { return }
+        conversations[index].harnessID = harnessID == "native" ? nil : harnessID
+        conversations[index].harnessSessionID = nil
+        conversations[index].workspace = nil
+        var item = conversations[index]
+        applyPreferredModel(to: &item)
+        conversations[index] = item
+        Self.defaultHarnessID = harnessID
+        save()
+    }
+    func rememberCurrentModel() {
+        guard let conversation = current else { return }
+        let native = conversation.harnessID != nil && conversation.authMode != "multivibe"
+        guard let model = native ? (conversation.nativeModelID ?? conversation.runtimeSession?.model) : conversation.model,
+              !model.isEmpty else { return }
+        let preference = NativeChatModelPreference(model: model, authMode: native ? "native" : "multivibe", provider: native ? conversation.nativeModelProvider : nil)
+        guard let data = try? JSONEncoder().encode(preference) else { return }
+        var values = defaults.dictionary(forKey: Self.modelPreferencesKey) ?? [:]
+        values[modelPreferenceKey(for: conversation)] = data
+        defaults.set(values, forKey: Self.modelPreferencesKey)
     }
     func edit(_ change: (inout NativeChatConversation) -> Void) {
         guard let i = conversations.firstIndex(where: { $0.id == selection }) else { return }
@@ -217,6 +272,7 @@ struct NativeChatConversation: Codable, Identifiable {
         save()
     }
     func send(retry: Bool = false, interactiveAnswers: Bool = true) {
+        rememberCurrentModel()
         guard let i = conversations.firstIndex(where: { $0.id == selection }) else { return }
         if let harnessID = conversations[i].harnessID, harnessID != "native", harnessID != "computer-use" {
             submitHarness(conversations[i].id, interactiveAnswers: interactiveAnswers)

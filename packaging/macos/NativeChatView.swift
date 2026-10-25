@@ -78,6 +78,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     @State private var projects: [DesktopHarnessProject] = []
     @State private var loadingProjects = false
     @State private var projectsError: String?
+    @State private var projectQuery = ""
     @State private var choosingProject = false
     @State private var loadedProjectsKey = ""
     @State private var installingHarness: NativeConversationHarness?
@@ -107,6 +108,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     }) }
     private var model: Binding<String> { Binding(get: { store.current?.model ?? "" }, set: { value in
         store.edit { $0.model = value }; HostAssistantClient.shared.defaultModel = value
+        store.rememberCurrentModel()
         if let conversation = store.current, conversation.runtimeSessionID != nil {
             var settings: [String: HarnessJSON] = ["model": .string(value)]
             if conversation.harnessID == "pi", conversation.authMode == "multivibe" { settings["provider"] = .string("multivibe") }
@@ -114,15 +116,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
         }
     }) }
     private var harness: Binding<String> { Binding(get: { store.current?.harnessID ?? "native" }, set: { value in
-        store.edit { conversation in
-            conversation.harnessID = value == "native" ? nil : value
-            conversation.harnessSessionID = nil
-            conversation.authMode = "native"
-            conversation.nativeModelID = nil
-            conversation.nativeModelProvider = nil
-            conversation.workspace = nil
-        }
-        NativeChatStore.defaultHarnessID = value
+        store.selectHarness(value)
     }) }
     private var visible: [NativeChatConversation] {
         store.conversations.filter { ($0.archived == true) == showingArchives && (!$0.messages.isEmpty || !$0.draft.isEmpty || $0.runtimeSessionID != nil || $0.remoteChatID != nil) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.messages.contains { $0.content.localizedCaseInsensitiveContains(search) }) }
@@ -309,10 +303,6 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             RemoteHarnessConnectionSheet(harnessID: remoteID, target: store.current?.executionTargetID ?? "local") {
                 await loadHarnesses()
                 harness.wrappedValue = remoteID
-                store.edit { $0.authMode = "native" }
-                if let config = try? await DesktopHarnessClient.shared.call("/" + remoteID, target: store.current?.executionTargetID ?? "local") {
-                    store.edit { $0.model = config["agentId"].string ?? "" }
-                }
                 recordHarnessUse(remoteID)
                 await store.synchronizeRemoteChats(force: true)
             }
@@ -900,11 +890,6 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 if item.configured {
                     harness.wrappedValue = item.id
                     recordHarnessUse(item.id)
-                    Task {
-                        if let config = try? await DesktopHarnessClient.shared.call("/" + item.id, target: store.current?.executionTargetID ?? "local") {
-                            store.edit { $0.model = config["agentId"].string ?? "" }
-                        }
-                    }
                 } else { configuringRemoteHarness = item.id }
             } else if item.available {
                 harness.wrappedValue = item.id
@@ -1036,6 +1021,9 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     private var availableProjects: [DesktopHarnessProject] {
         loadedProjectsKey == projectCatalogKey ? projects : []
     }
+    private var visibleProjects: [DesktopHarnessProject] {
+        availableProjects.filter { $0.matches(search: projectQuery) }
+    }
     private var selectedProject: DesktopHarnessProject? {
         guard let workspace = store.current?.workspace else { return nil }
         return availableProjects.first { $0.path == workspace }
@@ -1049,7 +1037,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
         store.current?.messages.isEmpty == false || store.current?.runtimeSessionID != nil || store.isGenerating(store.selection)
     }
     private var projectSelector: some View {
-        Button { choosingProject = true } label: {
+        Button { projectQuery = ""; choosingProject = true } label: {
             HStack(spacing: 6) {
                 if loadingProjects { ProgressView().controlSize(.mini) }
                 else { Image(systemName: store.current?.workspace == nil ? "folder" : "folder.fill") }
@@ -1077,6 +1065,17 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 Button { Task { await loadProjects() } } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.borderless).help("Actualiser les projets")
             }
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Rechercher un projet…", text: $projectQuery)
+                    .textFieldStyle(.plain).accessibilityLabel("Rechercher un projet par nom ou chemin")
+                if !projectQuery.isEmpty {
+                    Button { projectQuery = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                        .buttonStyle(.plain).help("Effacer la recherche de projets")
+                        .accessibilityLabel("Effacer la recherche de projets")
+                }
+            }
+            .padding(9).background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 9))
             if let projectsError {
                 Label(projectsError, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.red)
             }
@@ -1089,13 +1088,16 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                         projectRow(title: selectedProjectName, path: workspace, icon: "folder.badge.questionmark", selected: true) {}
                             .disabled(true).opacity(0.65)
                     }
-                    ForEach(availableProjects) { project in
+                    ForEach(visibleProjects) { project in
                         projectRow(title: project.name, path: project.path, icon: "folder", selected: project.path == store.current?.workspace) {
                             store.edit { $0.workspace = project.path }; choosingProject = false
                         }
                     }
                     if availableProjects.isEmpty {
                         Text("Aucun projet existant n’a été détecté pour \(selectedHarness.name).")
+                            .font(.caption).foregroundStyle(.secondary).padding(.vertical, 14)
+                    } else if visibleProjects.isEmpty {
+                        Text("Aucun projet ne correspond à votre recherche.")
                             .font(.caption).foregroundStyle(.secondary).padding(.vertical, 14)
                     }
                 }.padding(1)
@@ -1353,6 +1355,11 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             let catalog = try await store.modelCatalog(id)
             guard !Task.isCancelled, key == harnessModelsKey else { return }
             harnessModels = catalog.models; harnessDefaultModel = catalog.currentModelId; harnessDefaultProvider = catalog.provider
+            if store.current?.authMode != "multivibe", store.current?.nativeModelID == nil,
+               store.current?.messages.isEmpty == true, store.current?.runtimeSessionID == nil,
+               let defaultModel = catalog.currentModelId {
+                store.edit { $0.nativeModelID = defaultModel; $0.nativeModelProvider = catalog.provider }
+            }
         } catch {
             guard !Task.isCancelled, key == harnessModelsKey else { return }
             harnessModelsError = error.localizedDescription
@@ -1369,6 +1376,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             }
             guard store.selection == id else { return }
             store.edit { $0.authMode = "native"; $0.nativeModelID = item.id; $0.nativeModelProvider = item.provider }
+            store.rememberCurrentModel()
             choosingModel = false
         } catch { harnessModelsError = error.localizedDescription }
     }
