@@ -1280,9 +1280,11 @@ private struct OfflineOpenUIWebView: UIViewRepresentable {
         init(_ parent: OfflineOpenUIWebView) { self.parent = parent }
         func render(_ view: WKWebView) {
             // Arguments cross as data, never interpolated executable JavaScript.
-            view.callAsyncJavaScript("window.renderOpenUI(text, streaming)",
-                arguments: ["text": parent.content, "streaming": parent.streaming],
-                in: nil, contentWorld: .page) { _ in }
+            Task { @MainActor in
+                try? await view.callAsyncJavaScript("window.renderOpenUI(text, streaming)",
+                    arguments: ["text": parent.content, "streaming": parent.streaming],
+                    in: nil, contentWorld: .page)
+            }
         }
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { ready = true; render(webView) }
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
