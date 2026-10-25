@@ -3,6 +3,11 @@ import SwiftUI
 import UniformTypeIdentifiers
 import AVFoundation
 
+private enum SidebarConversationLayout: String {
+    case flat
+    case grouped
+}
+
 // Intercept before SwiftUI button shortcuts, while preserving the field editor's
 // selection, undo stack and normal text-change notifications on macOS 13+.
 private struct ComposerNewlineShortcut: NSViewRepresentable {
@@ -50,6 +55,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     @State private var selectedImports: Set<UUID> = []
     @State private var search = ""
     @State private var showingArchives = false
+    @AppStorage("assistantConversationListLayout") private var conversationListLayout: SidebarConversationLayout = .flat
     @State private var renameID: UUID?
     @State private var renameTitle = ""
     @State private var targets: [DesktopHarnessTarget] = [.local]
@@ -144,14 +150,27 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 sidebarHeader
                 sidebarPrimaryActions
                 sidebarSearchField
+                if !cloudMode { sidebarConversationLayoutPicker }
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 4) {
                         if cloudMode { cloudConversationList }
                         else if visible.isEmpty { sidebarEmptyState }
-                        else {
+                        else if conversationListLayout == .flat {
                             ForEach(ChatConversationSection.sections(visible)) { section in
                                 Text(section.title).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
                                     .padding(.horizontal, 10).padding(.top, 16).padding(.bottom, 4)
+                                ForEach(section.conversations) { conversation in conversationLink(conversation) }
+                            }
+                        } else {
+                            ForEach(ChatHarnessConversationSection.sections(visible)) { section in
+                                HStack(spacing: 7) {
+                                    HarnessLogo(id: section.id, name: harnessName(section.id), size: 16)
+                                    Text(harnessName(section.id))
+                                    Spacer(minLength: 0)
+                                    Text("\(section.conversations.count)").foregroundStyle(.tertiary)
+                                }
+                                .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                                .padding(.horizontal, 10).padding(.top, 16).padding(.bottom, 4)
                                 ForEach(section.conversations) { conversation in conversationLink(conversation) }
                             }
                         }
@@ -344,9 +363,12 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     private func conversationLink(_ conversation: NativeChatConversation) -> some View {
         Button { store.selection = conversation.id } label: {
             HStack(spacing: 9) {
-                Image(systemName: conversation.pinned == true ? "pin" : "bubble.left")
-                    .font(.system(size: 12)).foregroundStyle(store.selection == conversation.id ? ChatPalette.accent : .secondary)
+                let harnessID = conversation.harnessID ?? "native"
+                HarnessLogo(id: harnessID, name: harnessName(harnessID), size: 18)
                 Text(conversation.title).font(.system(size: 13)).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                if conversation.pinned == true {
+                    Image(systemName: "pin").font(.system(size: 10)).foregroundStyle(.secondary).accessibilityLabel("Conversation épinglée")
+                }
                 if conversation.runtimeSession?.state == "waiting_user" {
                     Image(systemName: "questionmark.bubble.fill").font(.system(size: 11)).foregroundStyle(.orange).accessibilityLabel("Votre réponse est attendue")
                 } else if store.isGenerating(conversation.id) {
@@ -362,6 +384,10 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 Divider()
                 Button("Supprimer", role: .destructive) { deleteID = conversation.id }.disabled(store.isGenerating(conversation.id))
             }
+    }
+    private func harnessName(_ id: String) -> String {
+        if id == "native" { return "MultiVibe" }
+        return harnesses.first { $0.id == id }?.name ?? id
     }
     private func updateConversation(_ id: UUID, change: (inout NativeChatConversation) -> Void) {
         guard let index = store.conversations.firstIndex(where: { $0.id == id }) else { return }
@@ -407,6 +433,22 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
         .padding(.horizontal, 10).frame(height: 30)
         .background(ChatPalette.surface, in: RoundedRectangle(cornerRadius: 8))
         .padding(.horizontal, 16).padding(.top, 18).padding(.bottom, 4)
+    }
+    private var sidebarConversationLayoutPicker: some View {
+        HStack {
+            Spacer()
+            Picker("Organisation des conversations", selection: $conversationListLayout) {
+                Image(systemName: "list.bullet").tag(SidebarConversationLayout.flat)
+                    .accessibilityLabel("Liste à plat")
+                Image(systemName: "square.stack.3d.up").tag(SidebarConversationLayout.grouped)
+                    .accessibilityLabel("Grouper par harness")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 70)
+            .help(conversationListLayout == .flat ? "Liste à plat" : "Conversations groupées par harness")
+        }
+        .padding(.horizontal, 16).padding(.top, 6)
     }
     private var sidebarPrimaryActions: some View {
         VStack(spacing: 2) {
