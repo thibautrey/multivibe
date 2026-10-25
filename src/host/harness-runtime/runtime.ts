@@ -103,6 +103,7 @@ export class HostHarnessRuntime {
   async command(id:string,input:any):Promise<HarnessCommandReceipt> {
     const s=this.session(id);identifier(input?.id);if(!COMMANDS.has(input?.type))fail("Unknown harness command");
     const command:HarnessCommand={id:input.id,type:input.type,...(input.turnId?{turnId:identifier(input.turnId)}:{}),...(input.parts?{parts:messageParts(input.parts)}:{}),...(input.value?{value:input.value}:{})};
+    if(typeof input.displayText==="string" && input.displayText.length<=32_000)command.displayText=input.displayText;
     if(input.value && (typeof input.value!=="object" || Array.isArray(input.value) || Buffer.byteLength(JSON.stringify(input.value))>256*1024))fail("Invalid command parameters");
     if(["prompt","steer"].includes(command.type) && !command.parts)fail("Message content is required");
     for(const p of command.parts??[])if(p.type==="attachment")this.store.attachment(id,p.attachmentId);
@@ -167,6 +168,7 @@ export class HostHarnessRuntime {
       if(receipt.state!=="accepted")receipt.state="completed";
       this.save(s);
     }catch(e:any){receipt.state="failed";receipt.error=String(redact(e.message??"Harness command failed"));}
+    if(receipt.result!==undefined)receipt.result=redact(receipt.result);
     this.store.saveReceipt(receipt);this.emit(id,{type:"command.updated",payload:receipt});
     if(!s.queuePaused)void this.drain(id);return receipt;
   }
@@ -179,7 +181,7 @@ export class HostHarnessRuntime {
         if(s.queuePaused || this.stopped || s.state==="uncertain")break;
         const c=this.store.commands(id).find(v=>v.command.type==="prompt" && v.state==="queued");if(!c)break;
         c.state="dispatching";this.store.saveReceipt(c);s.activeTurnId=c.id;s.state="starting";this.save(s);
-        this.emit(id,{type:"message.user",itemId:c.id,payload:{parts:c.command.parts}});
+        this.emit(id,{type:"message.user",itemId:c.id,payload:{parts:c.command.parts,displayText:c.command.displayText,attachments:(c.command.parts??[]).filter(p=>p.type==="attachment").map(p=>this.store.attachment(id,(p as any).attachmentId).info)}});
         try {
           const adapter=await this.ensure(id);if(this.stopped)break;
           s.state="running";c.state="accepted";this.store.saveReceipt(c);this.save(s);this.emit(id,{type:"command.updated",payload:c});

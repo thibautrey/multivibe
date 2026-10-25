@@ -11,6 +11,7 @@ struct NativeChatMessage: Codable, Identifiable, Equatable {
     var parts: [DesktopMessagePart]?
     var runtimeTurnID: String?
     var runtimeTextParts: [String: String]?
+    var attachedFiles: [DesktopHarnessAttachment]?
 }
 
 struct NativeQueuedMessage: Codable, Identifiable {
@@ -69,8 +70,8 @@ struct NativeChatConversation: Codable, Identifiable {
     private let file: URL
     private var canSave = true
 
-    init(file: URL? = nil, runtime: any DesktopHarnessServing = DesktopHarnessClient.shared) {
-        self.runtime = runtime
+    init(file: URL? = nil, runtime: (any DesktopHarnessServing)? = nil) {
+        self.runtime = runtime ?? DesktopHarnessClient.shared
         self.file = file ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("MultiVibe/NativeChat/conversations.json")
         do {
@@ -277,7 +278,7 @@ struct NativeChatConversation: Codable, Identifiable {
         let text = conversations[i].draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = conversations[i].draftAttachments ?? []
         guard (!text.isEmpty || !attachments.isEmpty), text.count <= 32_000 else { error = "Saisissez un message ou joignez un fichier."; return }
-        let submission = DesktopPendingSubmission(id: UUID(), text: interactiveAnswers && !text.isEmpty ? NativeInteractiveDocument.prompt(text) : text, attachments: attachments, intent: steer ? "steer" : "prompt", turnID: steer ? conversations[i].runtimeSession?.activeTurnId : nil)
+        let submission = DesktopPendingSubmission(id: UUID(), text: interactiveAnswers && !text.isEmpty ? NativeInteractiveDocument.prompt(text) : text, attachments: attachments, intent: steer ? "steer" : "prompt", turnID: steer ? conversations[i].runtimeSession?.activeTurnId : nil, displayText: text)
         var userText = conversations[i].runtimeUserText ?? [:]; userText[submission.id.uuidString.lowercased()] = text; conversations[i].runtimeUserText = userText
         conversations[i].pendingSubmissions = (conversations[i].pendingSubmissions ?? []) + [submission]
         conversations[i].draft = ""; conversations[i].draftAttachments = []
@@ -302,6 +303,7 @@ struct NativeChatConversation: Codable, Identifiable {
                     }
                     var command: [String: HarnessJSON] = ["id": .string(submission.id.uuidString.lowercased()), "type": .string(submission.intent ?? "prompt"), "parts": try .encode(parts)]
                     if let turnID = submission.turnID { command["turnId"] = .string(turnID) }
+                    command["displayText"] = .string(submission.displayText ?? submission.text)
                     let result = try await runtime.call("/sessions/\(sessionID)/commands", method: "POST", target: target, body: .object(command))
                     let receipt = try result["receipt"].decode(DesktopHarnessReceipt.self)
                     if receipt.state == "failed" { throw DesktopHarnessError.rejected(receipt.error ?? "Envoi refusé") }
@@ -349,7 +351,7 @@ struct NativeChatConversation: Codable, Identifiable {
                 guard let conversation = conversations.first(where: { $0.id == id }), let sessionID = conversation.runtimeSessionID else { break }
                 do {
                     try await refreshRuntime(id)
-                    try await runtime.events(sessionID: sessionID, target: conversation.executionTargetID ?? "local", after: conversation.runtimeCursor ?? 0) { [weak self] event in self?.applyRuntime(event, conversationID: id) }
+                    try await runtime.events(sessionID: sessionID, target: conversation.executionTargetID ?? "local", after: conversation.runtimeCursor ?? 0) { [weak owner = self] event in owner?.applyRuntime(event, conversationID: id) }
                     delay = 1_000_000_000
                 } catch { if Task.isCancelled { break }; if selection == id { self.error = error.localizedDescription } }
                 try? await Task.sleep(nanoseconds: delay); delay = min(delay * 2, 30_000_000_000)
@@ -372,8 +374,9 @@ struct NativeChatConversation: Codable, Identifiable {
         case "message.user":
             if !conversations[i].messages.contains(where: { $0.runtimeTurnID == turnID && $0.role == "user" }) {
                 let parts = (try? event.payload["parts"].decode([DesktopMessagePart].self)) ?? []
-                let text = conversations[i].runtimeUserText?[turnID] ?? parts.compactMap(\.text).joined(separator: "\n")
-                conversations[i].messages.append(.init(role: "user", content: text, parts: parts, runtimeTurnID: turnID))
+                let text = event.payload["displayText"].string ?? conversations[i].runtimeUserText?[turnID] ?? parts.compactMap(\.text).joined(separator: "\n")
+                let files = try? event.payload["attachments"].decode([DesktopHarnessAttachment].self)
+                conversations[i].messages.append(.init(role: "user", content: text, parts: parts, runtimeTurnID: turnID, attachedFiles: files))
             }
         case "message.delta", "message.part":
             if !conversations[i].messages.contains(where: { $0.runtimeTurnID == turnID && $0.role == "assistant" }) { conversations[i].messages.append(.init(role: "assistant", content: "", interrupted: true, runtimeTurnID: turnID)) }
