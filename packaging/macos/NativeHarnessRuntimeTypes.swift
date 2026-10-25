@@ -121,6 +121,9 @@ struct DesktopHarnessModel: Codable, Identifiable, Sendable {
 struct DesktopHarnessModelCatalog: Codable, Sendable {
     let models: [DesktopHarnessModel]; let currentModelId: String?; let provider: String?
 }
+struct DesktopHarnessProject: Codable, Identifiable, Equatable, Sendable {
+    let id: String; let harnessId: String; let name: String; let path: String; let updatedAt: Double
+}
 struct DesktopHarnessEvent: Codable, Identifiable, Equatable, Sendable {
     let seq: Int; let sessionId: String; let type: String; let turnId: String?; let itemId: String?; let payload: HarnessJSON; let createdAt: Double
     var id: Int { seq }
