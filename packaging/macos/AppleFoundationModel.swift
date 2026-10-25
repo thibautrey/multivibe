@@ -78,10 +78,22 @@ struct AppleFoundationModel: AppleFoundationServing {
     }
 
     static func boundedTranscript(_ messages: [[String: String]]) throws -> String {
-        let recent = messages.suffix(8).map { message in
+        let messages = Array(messages.suffix(8))
+        guard let current = messages.lastIndex(where: { $0["role"] == "user" }) ?? messages.indices.last else {
+            throw AppleFoundationModelError.contextTooLarge
+        }
+        var rows = messages.enumerated().map { index, message in
             let role = message["role"] == "assistant" ? "Assistant" : "Utilisateur"
-            return "\(role): \((message["content"] ?? "").prefix(1_000))"
-        }.joined(separator: "\n\n")
+            let content = message["content"] ?? ""
+            // Presentation instructions precede the request. Truncating this message
+            // can remove the entire user request, even for a one-line question.
+            return "\(role): \(index == current ? content : String(content.prefix(1_000)))"
+        }
+        var removed = 0
+        while rows.joined(separator: "\n\n").count > 9_600 && removed < current {
+            rows.removeFirst(); removed += 1
+        }
+        let recent = rows.joined(separator: "\n\n")
         guard !recent.isEmpty, recent.count <= 9_600 else { throw AppleFoundationModelError.contextTooLarge }
         return recent
     }
