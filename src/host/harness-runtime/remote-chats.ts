@@ -76,7 +76,7 @@ export class RemoteChats {
       summary=this.summary(native);endpoint=native.endpoint;
       const source=await this.config.json(`/messages/${encodeURIComponent(id)}`);
       if(!Array.isArray(source))fail("Invalid LibreChat message history",502);
-      const ordered=source.slice().sort((a:any,b:any)=>time(a.createdAt)-time(b.createdAt));
+      const ordered=source.map((message:any,index:number)=>({message,index})).sort((a:any,b:any)=>{const left=time(a.message.createdAt),right=time(b.message.createdAt);return left && right?left-right:a.index-b.index;}).map((v:any)=>v.message);
       messages=branch(ordered.map((m:any)=>({id:m.messageId,role:m.isCreatedByUser?"user":"assistant",content:remoteText(m.content)||m.text||"",parentId:m.parentMessageId,done:!m.unfinished,native:m})),native.lastMessageId??ordered.at(-1)?.messageId);
     }
     if(messages.length>20_000 || messages.some(m=>typeof m.id!=="string" || !m.id || !["user","assistant","system","tool"].includes(m.role)))fail("Invalid remote message history",502);
