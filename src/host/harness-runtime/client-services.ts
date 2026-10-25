@@ -25,7 +25,7 @@ export class ClientServices {
       return {outcome:choice?{outcome:"selected",optionId:choice.optionId}:{outcome:"cancelled"}};
     }
     if(/elicitation|request_user_input/iu.test(method)) {
-      const answer=await this.ctx.ask("question",p.message??p.title??"Une réponse est nécessaire",p);return answer;
+      const answer=await this.ctx.ask(p.mode==="url"?"authentication":"question",p.message??p.title??"Une réponse est nécessaire",{...p,_kind:"mcp_elicitation"});return answer;
     }
     if(method==="fs/read_text_file") {
       const file=await this.scoped(p.path);const st=await fs.stat(file);if(st.size>1024*1024)fail("File exceeds client text limit",413);

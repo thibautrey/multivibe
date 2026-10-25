@@ -143,3 +143,73 @@ test("runtime HTTP replay is bounded, read-only and disconnect leaves generation
   const batch=await (await fetch(`${origin}/sessions/${session.id}/events?poll=1&after=0`)).json();assert.ok(batch.events.length>0);assert.equal(batch.cursor,batch.events.at(-1).seq);
   assert.equal((await fetch(`${origin}/sessions/${session.id}/events?poll=1&after=-1`)).status,400);
 });
+
+test("completed controls release the session before dispatching queued messages",async t=>{
+  const {runtime,adapters}=fixture(t);const s=await runtime.create({harnessId:"pi"});
+  for(const command of [operation("compact"),operation("configure",{model:"test"}),operation("native",{method:"read"})])assert.equal((await runtime.command(s.id,command)).state,"completed");
+  const adapter=adapters.get(s.id)!;let release!:(value:Record<string,unknown>)=>void;
+  adapter.configure=async()=>new Promise<Record<string,unknown>>(resolve=>{release=resolve;});
+  const configure=runtime.command(s.id,operation("configure",{model:"next"}));
+  await eventually(()=>!!release);await runtime.command(s.id,prompt("after configuration"));
+  assert.equal(adapter.calls.length,0);
+  assert.equal((await runtime.command(s.id,operation("native",{method:"collision"}))).state,"failed");
+  release({model:"next"});assert.equal((await configure).state,"completed");
+  await eventually(()=>adapter.calls.length===1);adapter.finish!();await eventually(()=>s.state==="idle");
+});
+
+test("stop preserves a native completion or failure that races with cancellation",async t=>{
+  const {runtime,adapters}=fixture(t);
+  for(const status of ["completed","failed"]){
+    const s=await runtime.create({harnessId:"pi"});const command=prompt(status);
+    await runtime.command(s.id,command);await eventually(()=>!!adapters.get(s.id)?.finish);const adapter=adapters.get(s.id)!;
+    adapter.interrupt=async()=>{adapter.ctx.emit({type:"turn.status",payload:{status,...(status==="failed"?{error:"native failure"}:{})}});adapter.finish!();};
+    assert.equal((await runtime.command(s.id,operation("interrupt"))).state,"completed");await eventually(()=>!s.activeTurnId);
+    assert.equal(runtime.store.receipt(command.id)!.state,status);assert.equal(s.queuePaused,true);
+    assert.equal(runtime.store.receipt(command.id)!.cancelAcknowledged,true);
+  }
+});
+
+test("native failure remains terminal even when a settlement event follows it",async t=>{
+  const {runtime,adapters}=fixture(t);const s=await runtime.create({harnessId:"pi"});const command=prompt("failure");
+  await runtime.command(s.id,command);await eventually(()=>!!adapters.get(s.id)?.finish);const adapter=adapters.get(s.id)!;
+  adapter.ctx.emit({type:"turn.status",payload:{status:"failed",error:"authentication failed"}});
+  adapter.ctx.emit({type:"turn.status",payload:{type:"agent_settled"}});adapter.finish!();
+  await eventually(()=>!s.activeTurnId);assert.equal(runtime.store.receipt(command.id)!.state,"failed");assert.equal(s.state,"failed");assert.equal(s.queuePaused,true);
+});
+
+test("late native completion reconciles an uncertain command without replay",async t=>{
+  const {runtime,adapters}=fixture(t);const s=await runtime.create({harnessId:"pi"});await runtime.inspect(s.id,"settings");const adapter=adapters.get(s.id)!;
+  adapter.prompt=async()=>{throw new Error("Connection lost after submission");};
+  const command=prompt("uncertain");await runtime.command(s.id,command);await eventually(()=>s.state==="uncertain");
+  assert.equal(s.activeTurnId,command.id);assert.equal((await runtime.command(s.id,operation("resume_queue"))).state,"failed");
+  adapter.ctx.emit({type:"turn.status",payload:{status:"completed"}});
+  assert.equal(runtime.store.receipt(command.id)!.state,"completed");assert.equal(s.state,"idle");assert.equal(s.activeTurnId,undefined);assert.equal(s.queuePaused,true);
+  assert.ok(runtime.store.events(s.id).some(e=>e.type==="turn.completed" && (e.payload as any).reconciled));
+});
+
+test("parallel interactions stay pending until every question has been answered",async t=>{
+  const {runtime,adapters}=fixture(t);const s=await runtime.create({harnessId:"pi"});await runtime.inspect(s.id,"settings");const adapter=adapters.get(s.id)!;
+  const first=adapter.ctx.ask("question","first",{}),second=adapter.ctx.ask("question","second",{});
+  const [a,b]=runtime.snapshot(s.id).interactions;
+  await runtime.command(s.id,operation("respond",{interactionId:a.id,answer:{text:"a"}}));await first;assert.equal(s.state,"waiting_user");
+  await runtime.command(s.id,operation("respond",{interactionId:b.id,answer:{text:"b"}}));await second;assert.equal(s.state,"idle");
+});
+
+test("authentication challenges are available after reconnect without entering the journal or export",async t=>{
+  const {runtime,adapters}=fixture(t);const s=await runtime.create({harnessId:"pi"});await runtime.inspect(s.id,"settings");
+  const url="https://example.test/login?code=temporary-code";
+  const answer=adapters.get(s.id)!.ctx.ask("authentication","Connect",{url,mode:"url"});
+  const interaction=runtime.snapshot(s.id).interactions[0];assert.equal((interaction.detail as any).url,url);
+  assert.ok(!JSON.stringify(runtime.store.events(s.id)).includes(url));assert.ok(!JSON.stringify(runtime.store.interactions(s.id)).includes(url));
+  await runtime.command(s.id,operation("respond",{interactionId:interaction.id,answer:{action:"cancel"}}));await answer;
+  assert.equal(runtime.snapshot(s.id).interactions.length,0);
+});
+
+test("binary tool results become intact session-owned downloadable artifacts",async t=>{
+  const {runtime,adapters}=fixture(t);const s=await runtime.create({harnessId:"pi"});await runtime.inspect(s.id,"settings");
+  const bytes=Buffer.alloc(256*1024,42);
+  adapters.get(s.id)!.ctx.emit({type:"tool",itemId:"image-tool",payload:{content:[{type:"image",mimeType:"image/png",data:bytes.toString("base64")}]}});
+  const event=runtime.store.events(s.id).find(e=>e.type==="tool")!;const file=(event.payload as any).artifacts[0];
+  assert.equal(event.itemId,"image-tool");assert.deepEqual(runtime.store.attachment(s.id,file.id).data,bytes);
+  assert.ok(!JSON.stringify(event).includes(bytes.toString("base64")));
+});

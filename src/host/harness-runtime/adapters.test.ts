@@ -103,3 +103,14 @@ test("OpenCode authenticates its loopback API and filters events from other sess
   const f=fixture(t,"opencode");const adapter=new OpenCodeAdapter(f.ctx);t.after(()=>adapter.close());await adapter.start();await adapter.prompt([{type:"text",text:"hello"}]);
   assert.ok(f.events.some(e=>e.type==="message.part" && (e.payload as any).text==="hello"));assert.ok(!JSON.stringify(f.events).includes("MUST NOT LEAK"));assert.ok(!JSON.stringify(f.events).includes("MUST NOT ECHO USER"));
 });
+
+test("Claude preserves result-only output and keeps child-agent text out of the parent reply",async t=>{
+  const f=fixture(t,"claude-code");
+  const sdk={query:({prompt}:any)=>({
+    async *[Symbol.asyncIterator](){for await(const _ of prompt){yield {type:"assistant",parent_tool_use_id:"child-tool",message:{id:"child-message",content:[{type:"text",text:"child private response"}]}};yield {type:"result",is_error:false,result:"Final parent response"};}},
+    close(){},
+  })};
+  const adapter=new ClaudeAdapter(f.ctx,async()=>sdk);t.after(()=>adapter.close());await adapter.start();await adapter.prompt([{type:"text",text:"read only"}]);
+  assert.deepEqual(f.events.filter(e=>e.type==="message.part").map(e=>(e.payload as any).text),["Final parent response"]);
+  assert.ok(f.events.some(e=>e.type==="agent" && e.itemId==="child-tool"));
+});
