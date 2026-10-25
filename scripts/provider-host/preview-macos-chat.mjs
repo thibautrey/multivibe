@@ -34,6 +34,7 @@ const previewProjects = [
 ];
 const session = (id, state) => ({ id, harnessId: 'pi', targetId: 'local', workspace: '/workspace/exemple', title: 'Préparer le lancement', model: 'Claude Sonnet', authMode: 'native', state, queuePaused: false, revision: 1, activeTurnId: `${id}-turn`, archived: false, pinned: false, createdAt: now, updatedAt: now, capabilities });
 const sessions = { 'preview-working': session('preview-working', 'running'), 'preview-question': session('preview-question', 'waiting_user') };
+const goals = {};
 const queues = Object.fromEntries(Object.keys(sessions).map(id => [id, []]));
 const interactions = { 'preview-working': [], 'preview-question': [{ id: 'preview-choice', sessionId: 'preview-question', kind: 'question', title: 'Quel ton souhaitez-vous pour cette présentation ?', detail: { questions: [{ id: 'tone', question: 'Choisissez la direction qui vous convient.', options: [{ label: 'Clair et accessible', description: 'Une présentation directe, compréhensible par tous.' }, { label: 'Précis et technique', description: 'Plus de détails pour un public spécialisé.' }] }] }, status: 'pending', createdAt: now, expiresAt: now + 3_600_000 }] };
 for (const [index, text] of ['Ajoute une synthèse des prochaines étapes.', 'Prépare aussi une version en anglais.'].entries()) queues['preview-working'].push({ id: `queued-${index}`, sessionId: 'preview-working', command: { type: 'prompt', parts: [{ type: 'text', text }] }, state: 'queued', createdAt: now, ordinal: index });
@@ -91,7 +92,15 @@ const server = createServer(async (request, response) => {
   if (route.endsWith('/catalog')) return send({ harnesses: catalog });
   if (route.endsWith('/projects')) return send({ projects: previewProjects.map(project => ({ ...project, harnessId: url.searchParams.get('harnessId') ?? project.harnessId })) });
   if (route.includes('/native-sessions')) return send({ sessions: [] });
-  if (route.endsWith('/sessions')) return send({ sessions: Object.values(sessions) });
+  if (route.endsWith('/sessions')) {
+    if (request.method === 'POST') {
+      let text = ''; for await (const chunk of request) text += chunk; const body = JSON.parse(text), id = body.id;
+      sessions[id] = { ...session(id, 'idle'), harnessId: body.harnessId, workspace: body.workspace ?? '/workspace/exemple', title: body.title, model: body.model, authMode: body.authMode, activeTurnId: undefined };
+      queues[id] = []; interactions[id] = [];
+      return send({ session: sessions[id] });
+    }
+    return send({ sessions: Object.values(sessions) });
+  }
   if (route.endsWith('/features')) {
     let text = ''; for await (const chunk of request) text += chunk; const body = JSON.parse(text);
     const items = [
@@ -128,8 +137,12 @@ const server = createServer(async (request, response) => {
     if (command.type === 'queue_edit') queues[id] = queues[id].map(row => row.id === command.value.commandId ? { ...row, command: { ...row.command, parts: command.value.parts } } : row);
     if (command.type === 'queue_reorder') queues[id] = command.value.ids.map((key, ordinal) => ({ ...queues[id].find(row => row.id === key), ordinal }));
     if (command.type === 'configure') sessions[id].configuration = { ...sessions[id].configuration, ...command.value };
+    let result = command.type === 'inspect' ? { commands: [{ name: 'compact', description: 'Compacter le contexte' }] } : {};
+    if (command.type === 'native' && command.value.method === 'thread/goal/get') result = { goal: goals[id] ? { objective: goals[id] } : null };
+    if (command.type === 'native' && command.value.method === 'thread/goal/set') { goals[id] = command.value.params.objective; result = { goal: { objective: goals[id] } }; }
+    if (command.type === 'native' && command.value.method === 'thread/goal/clear') { delete goals[id]; result = { goal: null }; }
     publish(id, 'session.updated', sessions[id]);
-    return send({ receipt: { id: command.id, sessionId: id, command, state: 'completed', createdAt: Date.now(), ordinal: 0, result: command.type === 'inspect' ? { commands: [{ name: 'compact', description: 'Compacter le contexte' }] } : {} } });
+    return send({ receipt: { id: command.id, sessionId: id, command, state: 'completed', createdAt: Date.now(), ordinal: 0, result } });
   }
   response.writeHead(404, { 'content-type': 'application/json' }); response.end('{"error":"Unavailable in isolated UI preview"}');
 });
