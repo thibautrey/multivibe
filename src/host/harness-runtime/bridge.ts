@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import http from "node:http";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 import express from "express";
@@ -13,7 +14,8 @@ import { harnessRuntimeRoutes } from "./routes.js";
 import { redact } from "./types.js";
 
 const root=process.env.MULTIVIBE_HARNESS_STATE_DIRECTORY??path.join(os.homedir(),".local/state/multivibe/harness-runtime");
-const socket=path.join(root,"bridge.sock");
+const preferredSocket=path.join(root,"bridge.sock");
+const socket=Buffer.byteLength(preferredSocket)>100?path.join(os.tmpdir(),`mvh-${createHash("sha256").update(root).digest("hex").slice(0,16)}.sock`):preferredSocket;
 async function call(method:string,route:string,body?:unknown):Promise<{status:number;body:unknown}> {
   if(!["GET","POST","PATCH","DELETE"].includes(method) || !route.startsWith("/") || route.includes(".."))throw new Error("Invalid bridge request");
   return new Promise((resolve,reject)=>{
@@ -26,8 +28,9 @@ async function daemon() {
   if(fs.existsSync(socket)){try{await call("GET","/targets");return;}catch(e:any){if(!["ECONNREFUSED","ENOENT"].includes(e.code))throw e;if(fs.lstatSync(socket).isSocket())fs.unlinkSync(socket);else throw new Error("Bridge socket path is not a socket");}}
   const integrations=new HostHarnessIntegrationManager({homeDirectory:os.homedir(),statePath:path.join(root,"integrations.json"),baseUrl:process.env.MULTIVIBE_HARNESS_MODEL_BASE_URL??"http://127.0.0.1:1455"});
   const runtime=new HostHarnessRuntime(root,integrations);const app=express();app.use(harnessRuntimeRoutes(runtime));
-  const server=app.listen(socket,()=>fs.chmodSync(socket,0o600));server.on("error",()=>process.exitCode=1);
-  const stop=async()=>{server.close();await runtime.close();try{fs.unlinkSync(socket);}catch{}};
+  const pidFile=path.join(root,"daemon.pid");
+  const server=app.listen(socket,()=>{fs.chmodSync(socket,0o600);fs.writeFileSync(pidFile,String(process.pid),{mode:0o600});});server.on("error",()=>process.exitCode=1);
+  const stop=async()=>{server.close();await runtime.close();for(const file of [socket,pidFile])try{fs.unlinkSync(file);}catch{}};
   process.once("SIGTERM",()=>void stop());process.once("SIGINT",()=>void stop());
 }
 async function bridge() {
