@@ -1,6 +1,12 @@
 import AppKit
 import SwiftUI
 
+// The window uses full-size content so the conversation header can occupy the
+// titlebar while SwiftUI still receives the complete content height.
+final class FullSizeHostingView<Content: View>: NSHostingView<Content> {
+    override var safeAreaInsets: NSEdgeInsets { NSEdgeInsets() }
+}
+
 @MainActor
 final class HostAssistantWindow: NSWindowController, NSWindowDelegate {
     let store = NativeChatStore()
@@ -10,11 +16,12 @@ final class HostAssistantWindow: NSWindowController, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
+        window.toolbarStyle = .unifiedCompact
         window.isMovableByWindowBackground = true
         window.backgroundColor = .textBackgroundColor
         window.minSize = NSSize(width: 760, height: 540)
         window.setFrameAutosaveName("MultiVibeNativeChat")
-        window.contentView = NSHostingView(rootView: NativeChatView(store: store))
+        window.contentView = FullSizeHostingView(rootView: NativeChatView(store: store))
         window.isReleasedWhenClosed = false
         window.center()
         super.init(window: window)
