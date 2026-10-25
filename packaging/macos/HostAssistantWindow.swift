@@ -11,6 +11,7 @@ final class HostAssistantWindow: NSWindowController, NSWindowDelegate {
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.isMovableByWindowBackground = true
+        window.backgroundColor = .textBackgroundColor
         window.minSize = NSSize(width: 760, height: 540)
         window.setFrameAutosaveName("MultiVibeNativeChat")
         window.contentView = NSHostingView(rootView: NativeChatView(store: store))
