@@ -16,7 +16,7 @@ test('native chat preserves local history and isolates generation from navigatio
     await execute('xcrun', ['swiftc', '-parse-as-library', path.join(root, 'packaging/macos/NativeHarnessRuntimeTypes.swift'), path.join(root, 'packaging/macos/NativeChatStore.swift'), path.join(root, 'packaging/macos/NativeChatPresentation.swift'), path.join(root, 'packaging/macos/NativeChatStyle.swift'), path.join(root, 'packaging/macos/NativeChatMarkdown.swift'), path.join(root, 'packaging/macos/NativeInteractiveDocument.swift'), path.join(root, 'packaging/macos/validation/DesktopAgentStub.swift'), path.join(root, 'packaging/macos/validation/DesktopHarnessRuntimeStub.swift'), path.join(root, 'packaging/macos/validation/NativeChatPresentationHarness.swift'), path.join(root, 'packaging/macos/validation/NativeChatStoreHarness.swift'), '-o', binary]);
     const { stdout } = await execute(binary);
     assert.match(stdout, /PASS history persistence/);
-    assert.match(stdout, /PASS activity grouping/);
+    assert.match(stdout, /PASS inline activity ordering/);
     assert.match(stdout, /PASS concise errors/);
     assert.match(stdout, /PASS native Markdown/);
     assert.match(stdout, /PASS conversation date sections/);

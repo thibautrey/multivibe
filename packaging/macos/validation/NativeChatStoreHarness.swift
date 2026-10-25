@@ -140,6 +140,8 @@ enum HostAssistantError: Error { case emptyReply }
         runtimeEvent("message.part", .object(["text": .string("Parent complet")]))
         runtimeEvent("message.part", .object(["text": .string("Deuxième bloc")]), item: "second")
         precondition(store.current?.messages.last?.content == "Parent complet\n\nDeuxième bloc")
+        precondition(store.current?.messages.last?.runtimeTextSequences?["parent"] == sequence - 3)
+        precondition(store.current?.messages.last?.runtimeTextSequences?["second"] == sequence - 1)
         store.applyRuntime(.init(seq: sequence + 100, sessionId: "other-session", type: "message.delta", turnId: "projection-turn", itemId: "parent", payload: .object(["text": .string("MUST NOT LEAK")]), createdAt: 1), conversationID: second)
         precondition(store.current?.runtimeCursor == sequence - 1)
         runtimeEvent("turn.completed", .object([:]))
