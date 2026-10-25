@@ -59,6 +59,9 @@ enum HostAssistantError: Error { case emptyReply }
         store.newConversation()
         precondition(store.selection == first && store.conversations.count == 1)
         precondition(store.current?.model == "latest-model" && store.current?.harnessID == "pi")
+        store.edit { $0.queuePaused = true }
+        store.newConversation()
+        precondition(store.selection == first && store.current?.queuePaused == false)
         HostAssistantClient.shared.defaultModel = "fixture"
         NativeChatStore.defaultHarnessID = "native"
         store.edit { $0.model = "fixture"; $0.harnessID = nil }
