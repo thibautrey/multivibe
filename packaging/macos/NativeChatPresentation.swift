@@ -54,6 +54,39 @@ enum HarnessPresentation {
         }
         return Array(rows.suffix(30))
     }
+    static func turnItems(message: NativeChatMessage, events: [DesktopHarnessEvent]) -> [HarnessTurnItem] {
+        guard let turnID = message.runtimeTurnID else {
+            return message.content.isEmpty ? [] : [.text(id: "message:\(message.id.uuidString)", sequence: Int.min, message.content)]
+        }
+        var items: [HarnessTurnItem] = activities(events.filter { $0.turnId == turnID }).map { activity in
+            .activity(id: activity.id, sequence: activity.updates.first?.seq ?? Int.max, activity)
+        }
+        let order = message.runtimeTextOrder ?? []
+        let parts = message.runtimeTextParts ?? [:]
+        for key in order {
+            guard let text = parts[key], !text.isEmpty else { continue }
+            items.append(.text(id: "text:\(message.id.uuidString):\(key)", sequence: message.runtimeTextSequences?[key] ?? Int.min, text))
+        }
+        if order.isEmpty, !message.content.isEmpty {
+            items.append(.text(id: "message:\(message.id.uuidString)", sequence: Int.min, message.content))
+        }
+        return items.sorted {
+            if $0.sequence != $1.sequence { return $0.sequence < $1.sequence }
+            return $0.sortRank < $1.sortRank
+        }
+    }
+}
+
+struct HarnessTurnItem: Identifiable {
+    enum Content { case text(String), activity(HarnessActivity) }
+    let id: String
+    let sequence: Int
+    let content: Content
+    fileprivate let sortRank: Int
+    static func text(id: String, sequence: Int, _ value: String) -> Self { .init(id: id, sequence: sequence, content: .text(value), sortRank: 0) }
+    static func activity(id: String, sequence: Int, _ value: HarnessActivity) -> Self { .init(id: id, sequence: sequence, content: .activity(value), sortRank: 1) }
+    var text: String? { if case .text(let value) = content { return value }; return nil }
+    var activity: HarnessActivity? { if case .activity(let value) = content { return value }; return nil }
 }
 
 struct HarnessActivity: Identifiable {

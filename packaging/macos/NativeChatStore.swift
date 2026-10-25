@@ -12,6 +12,7 @@ struct NativeChatMessage: Codable, Identifiable, Equatable {
     var runtimeTurnID: String?
     var runtimeTextParts: [String: String]?
     var runtimeTextOrder: [String]?
+    var runtimeTextSequences: [String: Int]?
     var remoteMessageID: String?
     var attachedFiles: [DesktopHarnessAttachment]?
 }
@@ -469,9 +470,12 @@ struct NativeChatConversation: Codable, Identifiable {
                 let key = event.itemId ?? "assistant", text = event.payload["text"].string ?? ""
                 var parts = conversations[i].messages[index].runtimeTextParts ?? [:]
                 var order = conversations[i].messages[index].runtimeTextOrder ?? parts.keys.sorted(); if !order.contains(key) { order.append(key) }
+                var sequences = conversations[i].messages[index].runtimeTextSequences ?? [:]
+                if sequences[key] == nil { sequences[key] = event.seq }
                 parts[key] = event.type == "message.part" ? text : (parts[key] ?? "") + text
                 conversations[i].messages[index].runtimeTextParts = parts
                 conversations[i].messages[index].runtimeTextOrder = order
+                conversations[i].messages[index].runtimeTextSequences = sequences
                 conversations[i].messages[index].content = order.compactMap { parts[$0] }.joined(separator: "\n\n")
             }
         case "history.message":

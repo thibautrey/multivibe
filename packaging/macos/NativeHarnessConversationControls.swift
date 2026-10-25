@@ -187,19 +187,44 @@ import SwiftUI
                     }.transition(.opacity)
                 }
             }.padding(14).background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 12))
-                .onAppear { if running { expanded = true } }
         }
     }
 }
 
-@MainActor private struct HarnessActivityRow: View {
+@MainActor struct NativeHarnessTurnContent: View {
+    let message: NativeChatMessage
+    let events: [DesktopHarnessEvent]
+    let sessionID: String?
+    let target: String
+    let running: Bool
+    let streaming: Bool
+    let proposePrompt: (String) -> Void
+    private var items: [HarnessTurnItem] { HarnessPresentation.turnItems(message: message, events: events) }
+    private var lastTextID: String? { items.last(where: { $0.text != nil })?.id }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(items) { item in
+                if let text = item.text {
+                    NativeInteractiveAnswerView(content: text, streaming: streaming && item.id == lastTextID, proposePrompt: proposePrompt)
+                } else if let activity = item.activity {
+                    HarnessActivityRow(activity: activity, sessionID: sessionID, target: target, running: running)
+                        .padding(.horizontal, 12).padding(.vertical, 10)
+                        .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 10))
+                }
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+@MainActor struct HarnessActivityRow: View {
     let activity: HarnessActivity
     let sessionID: String?
     let target: String
     let running: Bool
+    @State private var expanded = false
     private var tint: Color { activity.status == .failed ? .red : activity.status == .completed ? ChatPalette.accent : .secondary }
     var body: some View {
-        DisclosureGroup {
+        DisclosureGroup(isExpanded: $expanded) {
             VStack(alignment: .leading, spacing: 10) {
                 if !activity.plan.isEmpty {
                     ForEach(Array(activity.plan.enumerated()), id: \.offset) { _, step in
@@ -224,6 +249,8 @@ import SwiftUI
                 Text(activity.status == .active && !running ? "" : activity.statusLabel).font(.system(size: 10)).foregroundStyle(tint)
             }
         }.font(.caption).tint(.secondary)
+            .accessibilityLabel(activity.title)
+            .accessibilityValue(expanded ? "Développé" : "Replié")
     }
 }
 

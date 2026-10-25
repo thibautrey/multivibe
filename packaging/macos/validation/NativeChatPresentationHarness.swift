@@ -27,8 +27,12 @@ enum NativeChatPresentationHarness {
         precondition(HarnessPresentation.activities([usage]).isEmpty)
         let terminal = [event(11, "terminal.output", .object(["output": .string("hello")] ), item: "terminal"), event(12, "terminal.output", .object(["output": .string("hello world")]), item: "terminal")]
         precondition(HarnessPresentation.activities(terminal)[0].readable == "hello world")
+        let message = NativeChatMessage(role: "assistant", content: "Avant\n\nAprès", runtimeTurnID: "turn", runtimeTextParts: ["before": "Avant", "after": "Après"], runtimeTextOrder: ["before", "after"], runtimeTextSequences: ["before": 0, "after": 3])
+        let inline = HarnessPresentation.turnItems(message: message, events: [start, end])
+        precondition(inline.map { $0.text ?? $0.activity?.title ?? "" } == ["Avant", "Lire les notes", "Après"])
+        precondition(inline.compactMap(\.activity).count == 1)
         precondition(HarnessPresentation.origin("unknown") == "À confirmer")
-        print("PASS activity grouping, native status, artifact retention and hidden usage telemetry")
+        print("PASS inline activity ordering, grouping, native status, artifact retention and hidden usage telemetry")
 
         let traceback = "2026-10-25 [ERROR] Streaming failed before delivery: Connection error.\nTraceback (most recent call last):\n  internal.py"
         let presented = ChatPresentedError(traceback)

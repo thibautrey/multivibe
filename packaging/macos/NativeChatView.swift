@@ -704,7 +704,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 30) {
                     ForEach(conversation.messages) { message in messageRow(message, conversation: conversation).id(message.id) }
-                    NativeHarnessTimeline(events: conversation.runtimeEvents ?? [], sessionID: conversation.runtimeSessionID, target: conversation.executionTargetID ?? "local", running: store.isGenerating(conversation.id))
+                    NativeHarnessTimeline(events: unmatchedRuntimeEvents(in: conversation), sessionID: conversation.runtimeSessionID, target: conversation.executionTargetID ?? "local", running: store.isGenerating(conversation.id))
                     Color.clear.frame(height: 1).id("end")
                 }.padding(.horizontal, 28).padding(.vertical, 28).frame(maxWidth: 820).frame(maxWidth: .infinity)
                     .background(ChatScrollPositionReader { followsTranscript = $0 })
@@ -727,20 +727,29 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     @ViewBuilder private func messageRow(_ message: NativeChatMessage, conversation: NativeChatConversation) -> some View {
         let isUser = message.role == "user"
         let streaming = store.isGenerating(conversation.id) && message.id == conversation.messages.last?.id
+        let turnEvents = message.runtimeTurnID.map { turnID in (conversation.runtimeEvents ?? []).filter { $0.turnId == turnID } } ?? []
+        let hasInlineActivity = !HarnessPresentation.activities(turnEvents).isEmpty
         HStack(alignment: .top, spacing: 12) {
             if isUser { Spacer(minLength: 48) }
             if !isUser { HarnessLogo(id: conversation.harnessID ?? "native", name: selectedHarness.name, size: 26).padding(.top, 1) }
             VStack(alignment: isUser ? .trailing : .leading, spacing: 10) {
                 if !isUser { Text(selectedHarness.name).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary) }
-                if message.content.isEmpty && streaming && !isUser {
+                if message.content.isEmpty && streaming && !isUser && !hasInlineActivity {
                     HStack(spacing: 9) { ProgressView().controlSize(.small); Text("Préparation de la réponse…").font(.callout).foregroundStyle(.secondary) }.padding(.vertical, 4)
                 } else if isUser {
                     Text(markdown(message.content)).textSelection(.enabled).font(.system(size: 15)).lineSpacing(5)
                         .padding(.horizontal, 16).padding(.vertical, 13).background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 16))
                 } else {
-                    NativeInteractiveAnswerView(content: message.content, streaming: streaming) { text in
-                        guard store.selection == conversation.id, !store.isGenerating(conversation.id) else { return }
-                        store.edit { $0.draft = text }; composing = true
+                    if hasInlineActivity {
+                        NativeHarnessTurnContent(message: message, events: turnEvents, sessionID: conversation.runtimeSessionID, target: conversation.executionTargetID ?? "local", running: store.isGenerating(conversation.id), streaming: streaming) { text in
+                            guard store.selection == conversation.id, !store.isGenerating(conversation.id) else { return }
+                            store.edit { $0.draft = text }; composing = true
+                        }
+                    } else {
+                        NativeInteractiveAnswerView(content: message.content, streaming: streaming) { text in
+                            guard store.selection == conversation.id, !store.isGenerating(conversation.id) else { return }
+                            store.edit { $0.draft = text }; composing = true
+                        }
                     }
                 }
                 if let sessionID = conversation.runtimeSessionID, let files = message.attachedFiles { NativeHarnessAttachments(files: files, sessionID: sessionID, target: conversation.executionTargetID ?? "local") }
@@ -803,6 +812,13 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                     .disabled(store.current?.runtimeSession?.capabilities["interrupt"]?.support == "unsupported")
             }
             sendButton(icon: working ? "text.badge.plus" : "arrow.up", title: working ? "Ajouter à la file d’attente" : "Envoyer", action: { sendMessage() }).disabled(!canSend)
+        }
+    }
+    private func unmatchedRuntimeEvents(in conversation: NativeChatConversation) -> [DesktopHarnessEvent] {
+        let renderedTurns = Set(conversation.messages.compactMap { $0.role == "assistant" ? $0.runtimeTurnID : nil })
+        return (conversation.runtimeEvents ?? []).filter { event in
+            guard let turnID = event.turnId else { return true }
+            return !renderedTurns.contains(turnID)
         }
     }
     private func sendButton(icon: String, title: String, action: @escaping () -> Void) -> some View {
