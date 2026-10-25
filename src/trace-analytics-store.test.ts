@@ -26,6 +26,7 @@ const lines=(records:TraceEntry[])=>records.map(t=>JSON.stringify(t)).join("\n")
 
 test("models.dev backfills absent costs once, preserves recorded/free costs and rebuilds reports", async t => {
   const f = await fixture(t);
+  f.config.retentionMax = 10;
   const missing = { ...trace("missing"), model: "future-sol", costUsd: undefined, costStatus: "unpriced" as const,
     tokensInput: 100000, tokensInputCached: 20000, tokensOutput: 10000 };
   f.store.append([missing, { ...missing, id: "recorded", costUsd: 0.7 }, { ...missing, id: "free", costUsd: 0 },
