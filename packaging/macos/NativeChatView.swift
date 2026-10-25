@@ -1263,11 +1263,11 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     @State private var endpoint = ""
     @State private var apiKey = ""
     @State private var agentID = ""
-    @State private var agents: [LibreChatAgentChoice] = []
+    @State private var agents: [RemoteHarnessChoice] = []
     @State private var hasApiKey = false
     @State private var busy = false
     @State private var error: String?
-    private struct LibreChatAgentChoice: Decodable, Identifiable { let id: String; let name: String }
+    private struct RemoteHarnessChoice: Decodable, Identifiable { let id: String; let name: String }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Connexion \(serviceName)").font(.title2.weight(.semibold))
@@ -1312,7 +1312,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
         do {
             let result = try await DesktopHarnessClient.shared.call("/" + harnessID, method: "POST", target: target,
                 body: .object(["endpoint": .string(endpoint), "apiKey": .string(apiKey), "agentId": .string(agentID), "discover": .bool(discover)]))
-            agents = try result["agents"].decode([LibreChatAgentChoice].self)
+            agents = try result["agents"].decode([RemoteHarnessChoice].self)
             if !agents.contains(where: { $0.id == agentID }) { agentID = agents.first?.id ?? "" }
             if agents.isEmpty { error = isOpenWebUI ? "Aucun modèle accessible avec cette clé API." : "Aucun agent accessible avec cette clé API." }
             if !discover { apiKey = ""; await saved(); dismiss() }
