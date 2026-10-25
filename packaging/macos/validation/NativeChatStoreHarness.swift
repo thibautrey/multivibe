@@ -50,6 +50,7 @@ enum HostAssistantError: Error { case emptyReply }
         NativeChatStore.defaultHarnessID = "native"
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
+        try await validateRemoteChatSynchronization(folder: directory)
         let file = directory.appendingPathComponent("history.json")
         let store = NativeChatStore(file: file)
         store.newConversation()
@@ -184,4 +185,70 @@ enum HostAssistantError: Error { case emptyReply }
         precondition(original == "invalid-history")
         print("PASS history persistence, permissions, harness routing/session, multi-turn context, cancellation, retry, selection isolation, deletion, corrupt-file preservation")
     }
+}
+
+@MainActor private final class RemoteChatRuntimeFixture: DesktopHarnessServing {
+    var identity = "account-one"
+    var title = "Web conversation"
+    var text = "Answer from web"
+    var revision = "one"
+    var present = true
+    var denied = false
+    var deleted = false
+    var attached = false
+    func call(_ route: String, method: String, target: String, body: HarnessJSON?) async throws -> HarnessJSON {
+        if denied { throw DesktopHarnessError.rejected("Connection unavailable") }
+        if route == "/librechat" { return .object(["configured": .bool(true)]) }
+        if route == "/openwebui" { return .object(["configured": .bool(false)]) }
+        let summary: HarnessJSON = .object(["id": .string("native-chat"), "title": .string(title), "updatedAt": .number(1792900000000), "archived": .bool(false), "pinned": .bool(false), "model": .string("agent-web")])
+        if route == "/remote-chats?harnessId=librechat" {
+            return .object(["connectionId": .string(identity), "endpoint": .string("https://fixture.example/api/agents/v1"), "complete": .bool(true), "conversations": .array(present ? [summary] : [])])
+        }
+        if route.hasPrefix("/remote-chats/") {
+            if method == "DELETE" { deleted = true; present = false; return .object(["deleted": .bool(true)]) }
+            if method == "PATCH" { title = body?["title"].string ?? title; revision += "changed" }
+            var snapshot = summary.object
+            snapshot["title"] = .string(title); snapshot["revision"] = .string(revision)
+            snapshot["messages"] = .array([.object(["id": .string("user-one"), "role": .string("user"), "content": .string("Hello"), "done": .bool(true)]), .object(["id": .string("assistant-one"), "role": .string("assistant"), "content": .string(text), "done": .bool(true)])])
+            return .object(["connectionId": .string(identity), "conversation": .object(snapshot)])
+        }
+        throw DesktopHarnessError.invalidResponse
+    }
+    func events(sessionID: String, target: String, after: Int, update: @MainActor @escaping (DesktopHarnessEvent) -> Void) async throws { }
+}
+
+@MainActor private func validateRemoteChatSynchronization(folder: URL) async throws {
+    let remote = RemoteChatRuntimeFixture()
+    let store = NativeChatStore(file: folder.appendingPathComponent("remote-conversations.json"), runtime: remote)
+    await store.synchronizeRemoteChats(force: true)
+    precondition(store.conversations.count == 1)
+    let id = store.conversations[0].id
+    store.selection = id
+    await store.synchronizeRemoteChats(force: true)
+    precondition(store.current?.messages.map(\.content) == ["Hello", "Answer from web"])
+    let messageID = store.current!.messages[1].id
+    store.edit { $0.draft = "Preserve this draft" }
+    remote.text = "Edited in the web client"; remote.title = "Renamed on server"; remote.revision = "two"
+    await store.synchronizeRemoteChats(force: true)
+    precondition(store.conversations.count == 1 && store.current?.id == id)
+    precondition(store.current?.messages[1].id == messageID && store.current?.messages[1].content == remote.text)
+    precondition(store.current?.draft == "Preserve this draft" && store.current?.title == remote.title)
+    remote.denied = true
+    await store.synchronizeRemoteChats(force: true)
+    precondition(store.conversations.count == 1 && !store.remoteSyncErrors.isEmpty)
+    remote.denied = false; remote.identity = "account-two"
+    await store.synchronizeRemoteChats(force: true)
+    precondition(store.conversations.count == 2 && store.current?.messages[1].content == "Edited in the web client")
+    remote.identity = "account-one"; remote.present = false
+    await store.synchronizeRemoteChats(force: true)
+    precondition(store.current?.remoteUnavailable == true && store.current?.draft == "Preserve this draft")
+    remote.present = true; store.edit { $0.draft = "" }
+    await store.synchronizeRemoteChats(force: true)
+    store.updateMetadata(id, title: "Renamed in Desktop")
+    for _ in 0..<100 where store.current?.title != "Renamed in Desktop" { try await Task.sleep(nanoseconds: 10_000_000) }
+    precondition(remote.title == "Renamed in Desktop" && store.current?.title == remote.title)
+    store.delete(id)
+    for _ in 0..<100 where !remote.deleted { try await Task.sleep(nanoseconds: 10_000_000) }
+    precondition(remote.deleted && !store.conversations.contains { $0.id == id })
+    print("PASS remote chat list, live messages, stable identity, account isolation, drafts, offline preservation and server mutations")
 }

@@ -17,6 +17,33 @@ export function harnessRuntimeRoutes(runtime?:HostHarnessRuntime,remotes=new Rem
   router.post("/librechat",route(async(req,res)=>res.json(await proxy(req,"POST","/librechat",req.body)??await runtime!.librechat.configure(req.body))));
   router.get("/openwebui",route(async(req,res)=>res.json(await proxy(req,"GET","/openwebui")??runtime!.openwebui.publicConfiguration())));
   router.post("/openwebui",route(async(req,res)=>res.json(await proxy(req,"POST","/openwebui",req.body)??await runtime!.openwebui.configure(req.body))));
+  router.get("/remote-chats",route(async(req,res)=>{
+    const query=`?harnessId=${encodeURIComponent(String(req.query.harnessId??""))}`;
+    return res.json(await proxy(req,"GET","/remote-chats"+query)??await runtime!.remoteChats(req.query.harnessId).list());
+  }));
+  router.get("/remote-chats/:chatId",route(async(req,res)=>{
+    const query=`?harnessId=${encodeURIComponent(String(req.query.harnessId??""))}`;
+    const forwarded=await proxy(req,"GET",`/remote-chats/${encodeURIComponent(String(req.params.chatId))}`+query);
+    if(forwarded)return res.json(forwarded);
+    const remote=runtime!.remoteChats(req.query.harnessId);const {native,...conversation}=await remote.snapshot(String(req.params.chatId));
+    return res.json({...remote.identity(),conversation});
+  }));
+  router.patch("/remote-chats/:chatId",route(async(req,res)=>{
+    const forwarded=await proxy(req,"PATCH",`/remote-chats/${encodeURIComponent(String(req.params.chatId))}`,req.body);
+    if(forwarded)return res.json(forwarded);
+    const remote=runtime!.remoteChats(req.body.harnessId);
+    if(req.body.connectionId!==remote.identity().connectionId)fail("Remote connection changed",409);
+    const {native,...conversation}=await remote.update(String(req.params.chatId),req.body);
+    return res.json({...remote.identity(),conversation});
+  }));
+  router.delete("/remote-chats/:chatId",route(async(req,res)=>{
+    const forwarded=await proxy(req,"DELETE",`/remote-chats/${encodeURIComponent(String(req.params.chatId))}`,req.body);
+    if(forwarded)return res.json(forwarded);
+    const remote=runtime!.remoteChats(req.body.harnessId);
+    if(req.body.connectionId!==remote.identity().connectionId)fail("Remote connection changed",409);
+    await remote.delete(String(req.params.chatId));return res.json({deleted:true});
+  }));
+  router.post("/sessions/remote",route(async(req,res)=>res.status(201).json(await proxy(req,"POST","/sessions/remote",req.body)??{session:await runtime!.connectRemoteChat(req.body)})));
   router.get("/targets",route((_req,res)=>res.json({targets:runtime!.store.targets()})));
   router.post("/registrations",route(async(req,res)=>{if(req.body.id in ADAPTERS || ["librechat","openwebui"].includes(req.body.id))fail("Built-in adapters cannot be replaced");return res.status(201).json(await proxy(req,"POST","/registrations",req.body)??{harness:runtime!.store.register(req.body)});}));
   router.post("/targets",route((req,res)=>{const v=req.body;const target:HarnessTarget={id:v.id??randomUUID(),name:v.name,kind:v.kind,...(v.sshHost?{sshHost:v.sshHost}:{}),...(v.bridgePath?{bridgePath:v.bridgePath}:{}),...(v.container?{container:v.container}:{})};runtime!.store.saveTarget(target);return res.status(201).json({target});}));
