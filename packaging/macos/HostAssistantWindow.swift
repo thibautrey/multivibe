@@ -7,7 +7,10 @@ final class HostAssistantWindow: NSWindowController, NSWindowDelegate {
     init() {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780), styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.title = "MultiVibe"
+        window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        window.isMovableByWindowBackground = true
         window.minSize = NSSize(width: 760, height: 540)
         window.setFrameAutosaveName("MultiVibeNativeChat")
         window.contentView = NSHostingView(rootView: NativeChatView(store: store))
