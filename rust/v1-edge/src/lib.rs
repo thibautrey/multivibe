@@ -5611,6 +5611,8 @@ fn prepared_payload(
     }
     let chat_route = path.contains("chat/completions");
     let messages_route = path.ends_with("/messages");
+    let anthropic_request = messages_route.then(|| anthropic_to_responses(body, claude_code, config));
+    let body = anthropic_request.as_ref().unwrap_or(body);
     let compact = path.ends_with("/responses/compact");
     let optimized = if !chat_route && !messages_route && !compact
         && account.multivibe_cloud != Some(true) {
@@ -5644,10 +5646,7 @@ fn prepared_payload(
     } else if chat_route {
         chat_completions_to_responses(body, session_id)
     } else if messages_route {
-        normalize_responses_payload(
-            &anthropic_to_responses(body, claude_code, config),
-            session_id,
-        )
+        normalize_responses_payload(body, session_id)
     } else {
         normalize_responses_payload(body, session_id)
     };
@@ -6137,7 +6136,7 @@ fn transform_for(
     // Content-Type header. The chat-compatible route still needs conversion;
     // only the native Responses route can safely pass those bytes through.
     let headerless_openai_chat_stream =
-        client_chat && normalize_provider(account) == "openai" && content_type.trim().is_empty();
+        (client_chat || path.ends_with("/messages")) && normalize_provider(account) == "openai" && content_type.trim().is_empty();
     if !client_stream || (!upstream_sse && !headerless_openai_chat_stream) {
         return StreamTransform::None;
     }
@@ -7473,6 +7472,9 @@ struct AnthropicStreamState {
     next_index: usize,
     blocks: HashMap<String, usize>,
     stopped: bool,
+    has_tools: bool,
+    output_tokens: u64,
+    max_tokens: bool,
 }
 
 impl AnthropicStreamState {
@@ -7501,7 +7503,7 @@ impl AnthropicStreamState {
         }
         self.stopped = true;
         let mut out = String::new();
-        out.push_str(&sse_frame("message_delta", &json!({"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": Value::Null}, "usage": {"output_tokens": 0}})));
+        out.push_str(&sse_frame("message_delta", &json!({"type": "message_delta", "delta": {"stop_reason": if self.max_tokens {"max_tokens"} else if self.has_tools {"tool_use"} else {"end_turn"}, "stop_sequence": Value::Null}, "usage": {"output_tokens": self.output_tokens}})));
         out.push_str(&sse_frame("message_stop", &json!({"type": "message_stop"})));
         out
     }
@@ -7513,6 +7515,7 @@ struct SseStreamTransformer {
     chat_response: ChatResponseStreamState,
     response_chat: ResponseChatStreamState,
     anthropic: AnthropicStreamState,
+    anthropic_chat: bool,
 }
 
 impl SseStreamTransformer {
@@ -7523,6 +7526,7 @@ impl SseStreamTransformer {
             chat_response: ChatResponseStreamState::new(model),
             response_chat: ResponseChatStreamState::new(model),
             anthropic: AnthropicStreamState::new(model),
+            anthropic_chat: false,
         }
     }
 
@@ -7546,7 +7550,7 @@ impl SseStreamTransformer {
         match self.mode {
             StreamTransform::ChatToResponse => output.push_str(&self.chat_response.finish()),
             StreamTransform::ResponseToChat => output.push_str(&self.response_chat.finish()),
-            StreamTransform::ResponseToAnthropic => output.push_str(&self.anthropic.stop()),
+            StreamTransform::ResponseToAnthropic => output.push_str(&self.finish_anthropic()),
             StreamTransform::None => {}
         }
         output
@@ -7568,7 +7572,7 @@ impl SseStreamTransformer {
             return match self.mode {
                 StreamTransform::ChatToResponse => self.chat_response.finish(),
                 StreamTransform::ResponseToChat => self.response_chat.finish(),
-                StreamTransform::ResponseToAnthropic => self.anthropic.stop(),
+                StreamTransform::ResponseToAnthropic => self.finish_anthropic(),
                 StreamTransform::None => format!("{frame}\n\n"),
             };
         }
@@ -7734,7 +7738,33 @@ impl SseStreamTransformer {
         String::new()
     }
 
+    fn anthropic_frames(&mut self, frames: &str) -> String {
+        let mut output = String::new();
+        for line in frames.lines().filter_map(|line| line.strip_prefix("data: ")) {
+            if let Ok(value) = serde_json::from_str::<Value>(line) {
+                output.push_str(&self.transform_anthropic_event(&value));
+            }
+        }
+        output
+    }
+
+    fn finish_anthropic(&mut self) -> String {
+        let mut output = String::new();
+        if self.anthropic_chat {
+            let frames = self.chat_response.finish();
+            output.push_str(&self.anthropic_frames(&frames));
+        }
+        output.push_str(&self.anthropic.stop());
+        output
+    }
+
     fn transform_anthropic_event(&mut self, value: &Value) -> String {
+        if value.get("choices").is_some() {
+            self.anthropic_chat = true;
+            let frames = self.transform_chat_chunk(value);
+            return self.anthropic_frames(&frames);
+        }
+        if self.anthropic.stopped { return String::new(); }
         let mut output = self.anthropic.start();
         let event_type = value
             .get("type")
@@ -7743,6 +7773,8 @@ impl SseStreamTransformer {
         match event_type {
             "response.output_item.added" => {
                 let item = value.get("item").unwrap_or(&Value::Null);
+                let kind = item.get("type").and_then(Value::as_str).unwrap_or_default();
+                if !matches!(kind, "message" | "function_call") { return output; }
                 let key = value_string(item.get("id"))
                     .or_else(|| value_string(value.get("item_id")))
                     .unwrap_or_else(|| format!("block-{}", self.anthropic.next_index));
@@ -7750,6 +7782,7 @@ impl SseStreamTransformer {
                 self.anthropic.next_index += 1;
                 self.anthropic.blocks.insert(key, index);
                 if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                    self.anthropic.has_tools = true;
                     output.push_str(&sse_frame("content_block_start", &json!({"type": "content_block_start", "index": index, "content_block": {"type": "tool_use", "id": item.get("call_id").or_else(|| item.get("id")), "name": item.get("name"), "input": {}}})));
                 } else {
                     output.push_str(&sse_frame("content_block_start", &json!({"type": "content_block_start", "index": index, "content_block": {"type": "text", "text": ""}})));
@@ -7786,8 +7819,15 @@ impl SseStreamTransformer {
                     ));
                 }
             }
-            "response.completed" | "response.failed" | "response.incomplete" | "error" => {
+            "response.completed" | "response.incomplete" => {
+                self.anthropic.output_tokens = value.pointer("/response/usage/output_tokens").and_then(Value::as_u64).unwrap_or(0);
+                self.anthropic.max_tokens = value.pointer("/response/incomplete_details/reason").and_then(Value::as_str) == Some("max_output_tokens");
                 output.push_str(&self.anthropic.stop())
+            }
+            "response.failed" | "error" => {
+                self.anthropic.stopped = true;
+                let message = value.pointer("/response/error/message").or_else(|| value.pointer("/error/message")).and_then(Value::as_str).unwrap_or("Upstream stream failed");
+                output.push_str(&sse_frame("error", &anthropic_error_value(StatusCode::BAD_GATEWAY, message)));
             }
             _ => {}
         }
@@ -15708,6 +15748,47 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
             transform_for("/v1/responses", &openai, "gpt-test", true, ""),
             StreamTransform::None
         );
+        assert_eq!(transform_for("/v1/messages", &openai, "gpt-test", true, ""), StreamTransform::ResponseToAnthropic);
+        assert_eq!(transform_for("/messages", &openai, "gpt-test", true, ""), StreamTransform::ResponseToAnthropic);
+    }
+
+    #[test]
+    fn anthropic_stream_preserves_tool_lifecycle_and_native_usage() {
+        let mut converter = SseStreamTransformer::new(StreamTransform::ResponseToAnthropic, "model");
+        let mut output = converter.transform_anthropic_event(&json!({"type":"response.output_item.added","item":{"id":"reasoning","type":"reasoning"}}));
+        output.push_str(&converter.transform_anthropic_event(&json!({"type":"response.output_item.added","item":{"id":"fc_read","type":"function_call","call_id":"call_read","name":"Read"}})));
+        output.push_str(&converter.transform_anthropic_event(&json!({"type":"response.function_call_arguments.delta","item_id":"fc_read","delta":"{\"file_path\":\"probe.txt\"}"})));
+        output.push_str(&converter.transform_anthropic_event(&json!({"type":"response.output_item.done","item":{"id":"fc_read"}})));
+        output.push_str(&converter.transform_anthropic_event(&json!({"type":"response.completed","response":{"usage":{"output_tokens":12}}})));
+        let frames = output.lines().filter_map(|line| line.strip_prefix("data: ")).map(|data| serde_json::from_str::<Value>(data).unwrap()).collect::<Vec<_>>();
+        assert_eq!(frames.iter().filter(|v| v["type"]=="content_block_start").count(), 1);
+        assert_eq!(frames[1]["content_block"]["name"], "Read");
+        assert_eq!(frames[1]["content_block"]["id"], "call_read");
+        let end = frames.iter().find(|v| v["type"]=="message_delta").unwrap();
+        assert_eq!(end["delta"]["stop_reason"], "tool_use");assert_eq!(end["usage"]["output_tokens"], 12);
+        assert!(converter.finish().is_empty());
+    }
+
+    #[test]
+    fn anthropic_chat_upstream_keeps_requests_tools_and_tool_results() {
+        let account: Account = serde_json::from_value(json!({"id":"console","provider":"opencode","enabled":true,"accessToken":"fixture"})).unwrap();
+        let route = RouteCandidate { requested_model:"big-pickle".into(),model:"big-pickle".into(),provider:Some("opencode".into()),account_ids:vec![] };
+        let payload = prepared_payload(&json!({"model":"big-pickle","max_tokens":128,"tools":[{"name":"Read","input_schema":{"type":"object","properties":{}}}],"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call_read","name":"Read","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_read","content":"marker"}]}]}), "/v1/messages", &account, &route, None, true, false, &EdgeConfig::default());
+        assert_eq!(payload["tools"][0]["function"]["name"], "Read");
+        assert!(payload["messages"].as_array().unwrap().iter().any(|m| m["role"]=="tool" && m["tool_call_id"]=="call_read" && m["content"]=="marker"));
+        let mut converter = SseStreamTransformer::new(StreamTransform::ResponseToAnthropic,"big-pickle");
+        let mut output = converter.transform_anthropic_event(&json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":"Read","arguments":"{}"}}]}}]}));
+        output.push_str(&converter.transform_anthropic_event(&json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"completion_tokens":9}})));
+        output.push_str(&converter.finish());
+        assert!(output.contains("\"stop_reason\":\"tool_use\""));assert!(output.contains("\"name\":\"Read\""));
+        assert!(!output.contains("event: response."));assert_eq!(output.matches("event: message_stop").count(),1);
+    }
+
+    #[test]
+    fn anthropic_stream_reports_failure_instead_of_successful_completion() {
+        let mut converter = SseStreamTransformer::new(StreamTransform::ResponseToAnthropic,"model");
+        let output = converter.transform_anthropic_event(&json!({"type":"response.failed","response":{"error":{"message":"provider failed"}}}));
+        assert!(output.contains("event: error"));assert!(output.contains("provider failed"));assert!(!output.contains("event: message_stop"));assert!(converter.finish().is_empty());
     }
 
     #[test]
