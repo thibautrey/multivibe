@@ -4,7 +4,7 @@ import SwiftUI
 @MainActor struct NativeHarnessInspector: View {
     @ObservedObject var store: NativeChatStore
     @Environment(\.dismiss) private var dismiss
-    @State private var page = "session"
+    @State private var page = "overview"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var targets: [DesktopHarnessTarget] = [.local]
     @State private var harnesses: [DesktopHarnessDescriptor] = []
@@ -50,6 +50,12 @@ import SwiftUI
     }
     private var descriptor: DesktopHarnessDescriptor? { harnesses.first { $0.id == harnessID } }
     private var capabilities: [String: DesktopHarnessCapability] { conversation?.runtimeSession?.capabilities ?? descriptor?.capabilities ?? [:] }
+    private var availableCapabilities: [(String, DesktopHarnessCapability)] {
+        capabilities.filter { $0.value.available }.sorted { HarnessPresentation.title($0.key).localizedStandardCompare(HarnessPresentation.title($1.key)) == .orderedAscending }
+    }
+    private var unavailableCapabilities: [(String, DesktopHarnessCapability)] {
+        capabilities.filter { !$0.value.available }.sorted { HarnessPresentation.title($0.key).localizedStandardCompare(HarnessPresentation.title($1.key)) == .orderedAscending }
+    }
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
@@ -63,8 +69,9 @@ import SwiftUI
                 ChatIconButton(title: "Fermer les détails", icon: "xmark") { dismiss() }.keyboardShortcut(.cancelAction)
             }.padding(22)
             Picker("Section", selection: $page) {
-                Text("Session").tag("session"); Text("Fonctions").tag("features"); Text("Avancé").tag("advanced")
-            }.labelsHidden().pickerStyle(.segmented).padding(.horizontal, 22).padding(.bottom, 18)
+                Label("Aperçu", systemImage: "rectangle.grid.1x2").tag("overview")
+                Label("Réglages", systemImage: "slider.horizontal.3").tag("settings")
+            }.labelsHidden().pickerStyle(.segmented).frame(width: 260).padding(.bottom, 16)
             Divider()
             if let message {
                 HStack(alignment: .top, spacing: 8) {
@@ -77,18 +84,16 @@ import SwiftUI
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if let id = conversation?.id { ForEach(store.runtimeInteractions[id] ?? []) { interaction in NativeHarnessInteractionView(store: store, conversationID: id, interaction: interaction) } }
-                    if page == "session" {
+                    if page == "overview" {
                         executionSettings
                         if let session = conversation?.runtimeSession { sessionSummary(session) }
-                        if harnessID != "native" { existingSessions }
-                    } else if page == "features" {
                         capabilityList
-                        if harnessID != "native" { inspectionPanel }
-                    } else { advancedPanel }
+                        if harnessID != "native" { existingSessions }
+                    } else { settingsPanel }
                 }.padding(22)
             }
         }
-        .frame(minWidth: 610, idealWidth: 660, minHeight: 500, idealHeight: 690)
+        .frame(minWidth: 610, idealWidth: 660, minHeight: 500, idealHeight: 680)
         .background(ChatPalette.elevated).tint(ChatPalette.accent)
         .animation(ChatPalette.motion(reduceMotion), value: page)
         .task(id: target) { await load() }
@@ -105,12 +110,15 @@ import SwiftUI
         }
     }
     private var executionSettings: some View {
-        ChatSection(title: "Environnement de travail", icon: "desktopcomputer") {
+        ChatSection(title: "Environnement", icon: "desktopcomputer") {
             VStack(alignment: .leading, spacing: 14) {
                 if locked {
-                    inspectorValue("Machine", targets.first { $0.id == target }?.name ?? target)
-                    inspectorValue("Harness", descriptor?.name ?? harnessID)
-                    inspectorValue("Dossier de travail", conversation?.workspace ?? conversation?.runtimeSession?.workspace ?? "Non défini", monospaced: true)
+                    HStack(spacing: 10) {
+                        environmentBadge(targets.first { $0.id == target }?.name ?? target, icon: "desktopcomputer")
+                        environmentBadge(descriptor?.name ?? harnessID, icon: "bolt.horizontal.circle")
+                        Spacer(minLength: 0)
+                    }
+                    inspectorValue("Dossier", conversation?.workspace ?? conversation?.runtimeSession?.workspace ?? "Non défini", monospaced: true)
                 } else {
                     Picker("Machine", selection: binding({ $0?.executionTargetID ?? "local" }, { $0.executionTargetID = $1 })) {
                         ForEach(targets) { Text($0.name).tag($0.id) }
@@ -120,7 +128,7 @@ import SwiftUI
                         ForEach(harnesses) { Text($0.name + ($0.available ? "" : " · indisponible")).tag($0.id) }
                     }
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Dossier de travail").font(.caption).foregroundStyle(.secondary)
+                        Text("Dossier").font(.caption).foregroundStyle(.secondary)
                         TextField("Chemin absolu sur cette machine", text: binding({ $0?.workspace ?? "" }, { $0.workspace = $1 })).textFieldStyle(.roundedBorder)
                     }
                 }
@@ -137,6 +145,12 @@ import SwiftUI
                 }
             }
         }
+    }
+    private func environmentBadge(_ title: String, icon: String) -> some View {
+        Label(title, systemImage: icon)
+            .font(.callout.weight(.medium)).lineLimit(1)
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
     private func inspectorValue(_ label: String, _ value: String, monospaced: Bool = false) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 16) {
@@ -164,20 +178,65 @@ import SwiftUI
         }
     }
     private var capabilityList: some View {
-        ChatSection(title: "Fonctions disponibles", icon: "square.grid.2x2") {
-            if capabilities.isEmpty { Text("Les fonctions du harness apparaîtront ici lorsqu’elles seront connues.").font(.callout).foregroundStyle(.secondary) }
-            ForEach(capabilities.keys.sorted(by: { HarnessPresentation.title($0).localizedStandardCompare(HarnessPresentation.title($1)) == .orderedAscending }), id: \.self) { key in
-                let capability = capabilities[key]!
-                HStack(alignment: .top, spacing: 11) {
-                    Image(systemName: capability.available ? "checkmark.circle.fill" : capability.support == "unknown" ? "questionmark.circle" : "minus.circle")
-                        .foregroundStyle(capability.available ? ChatPalette.accent : Color.secondary).frame(width: 16)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(HarnessPresentation.title(key)).font(.system(size: 12, weight: .medium))
-                        Text(capability.available ? HarnessPresentation.origin(capability.support) : (capability.reason ?? HarnessPresentation.origin(capability.support))).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        ChatSection(title: "Fonctions", icon: "sparkles") {
+            if capabilities.isEmpty {
+                Label("Les fonctions apparaîtront au démarrage de la conversation.", systemImage: "hourglass")
+                    .font(.callout).foregroundStyle(.secondary)
+            } else {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("\(availableCapabilities.count) disponibles").font(.title3.weight(.semibold))
+                    if !unavailableCapabilities.isEmpty { Text("· \(unavailableCapabilities.count) non disponibles").font(.caption).foregroundStyle(.secondary) }
+                    Spacer()
+                }
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible())], spacing: 10) {
+                    ForEach(availableCapabilities, id: \.0) { item in
+                        capabilityTile(item.0, item.1)
                     }
-                    Spacer(minLength: 0)
-                }.padding(.vertical, 3)
+                }
+                if !unavailableCapabilities.isEmpty {
+                    DisclosureGroup("Voir les fonctions indisponibles ou inconnues") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(unavailableCapabilities, id: \.0) { item in
+                                HStack(spacing: 9) {
+                                    Image(systemName: item.1.support == "unknown" ? "questionmark.circle" : "minus.circle").foregroundStyle(.secondary)
+                                    Text(HarnessPresentation.title(item.0)).font(.callout)
+                                    Spacer()
+                                    Text(item.1.reason ?? HarnessPresentation.origin(item.1.support)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                            }
+                        }.padding(.top, 8)
+                    }.font(.caption).foregroundStyle(.secondary)
+                }
             }
+        }
+    }
+    private func capabilityTile(_ key: String, _ capability: DesktopHarnessCapability) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: capabilityIcon(key))
+                .font(.system(size: 14, weight: .medium)).foregroundStyle(ChatPalette.accent)
+                .frame(width: 28, height: 28).background(ChatPalette.accent.opacity(0.10), in: Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(HarnessPresentation.title(key)).font(.callout.weight(.medium)).lineLimit(1)
+                Text(HarnessPresentation.origin(capability.support)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+        .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+    }
+    private func capabilityIcon(_ key: String) -> String {
+        switch key {
+        case "tools", "commands": return "hammer"
+        case "automations", "hooks": return "clock.arrow.2.circlepath"
+        case "diagnostics", "usage": return "waveform.path.ecg"
+        case "workspace", "artifacts", "attachments": return "folder"
+        case "memory", "context": return "brain"
+        case "sessions", "history": return "clock.arrow.circlepath"
+        case "mcp", "plugins": return "puzzlepiece.extension"
+        case "agents": return "person.2"
+        case "audio": return "waveform"
+        case "images", "video": return "photo.on.rectangle"
+        default: return "checkmark.circle"
         }
     }
     private var existingSessions: some View {
@@ -216,12 +275,16 @@ import SwiftUI
             }
         }
     }
-    private var advancedPanel: some View {
+    private var settingsPanel: some View {
         VStack(alignment: .leading, spacing: 16) {
+            if harnessID != "native" { inspectionPanel }
             ChatSection(title: "Machines et intégrations", icon: "network") {
-                Button("Ajouter une machine ou un conteneur…") { addingTarget = true }
-                Button("Ajouter un harness ACP…") { addingACP = true }
-                Button("Actualiser le catalogue") { Task { await load() } }.disabled(busy)
+                HStack(spacing: 10) {
+                    Button("Ajouter une machine…") { addingTarget = true }
+                    Button("Ajouter un harness…") { addingACP = true }
+                    Spacer()
+                    Button("Actualiser", systemImage: "arrow.clockwise") { Task { await load() } }.disabled(busy)
+                }
             }
             if harnessID != "native" {
                 ChatSection(title: "Réglages natifs", icon: "slider.horizontal.3") {
