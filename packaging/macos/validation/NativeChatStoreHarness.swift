@@ -54,11 +54,12 @@ enum HostAssistantError: Error { case emptyReply }
         let store = NativeChatStore(file: file)
         store.newConversation()
         let first = store.selection!
+        store.edit { $0.workspace = "/tmp/previous-project" }
         HostAssistantClient.shared.defaultModel = "latest-model"
         NativeChatStore.defaultHarnessID = "pi"
         store.newConversation()
         precondition(store.selection == first && store.conversations.count == 1)
-        precondition(store.current?.model == "latest-model" && store.current?.harnessID == "pi")
+        precondition(store.current?.model == "latest-model" && store.current?.harnessID == "pi" && store.current?.workspace == nil)
         let initialReceipt = DesktopHarnessReceipt(id: "initial", sessionId: "session", command: .object(["displayText": .string("Premier message")]), state: "queued", createdAt: 1, ordinal: 1, result: nil, error: nil)
         let secondReceipt = DesktopHarnessReceipt(id: "second", sessionId: "session", command: .object(["displayText": .string("Deuxième message")]), state: "queued", createdAt: 2, ordinal: 2, result: nil, error: nil)
         let thirdReceipt = DesktopHarnessReceipt(id: "third", sessionId: "session", command: .object(["displayText": .string("Troisième message")]), state: "queued", createdAt: 3, ordinal: 3, result: nil, error: nil)
@@ -114,10 +115,14 @@ enum HostAssistantError: Error { case emptyReply }
         while store.generating != nil { try await Task.sleep(nanoseconds: 10_000_000) }
         precondition(store.current?.draft == "Brouillon à conserver")
         precondition(store.current?.messages.isEmpty == true)
-        store.edit { $0.harnessID = "pi" }
+        let selectedWorkspace = "/tmp/multivibe-project"
+        store.edit { $0.harnessID = "pi"; $0.workspace = selectedWorkspace }
         store.send()
         while store.generating != nil { try await Task.sleep(nanoseconds: 10_000_000) }
         precondition(NativeHarnessClient.shared.receivedHarnessID == "pi")
+        precondition(DesktopHarnessClient.shared.lastCreatedWorkspace == selectedWorkspace)
+        precondition(store.current?.runtimeSession?.workspace == selectedWorkspace)
+        precondition(NativeChatStore(file: file).conversations.first { $0.id == second }?.workspace == selectedWorkspace)
         precondition(store.current?.harnessSessionID == "session-fixture")
         precondition(store.current?.messages.last?.content == "Réponse du harness")
         store.delete(first)

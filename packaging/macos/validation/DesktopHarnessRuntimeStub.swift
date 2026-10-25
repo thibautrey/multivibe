@@ -5,6 +5,7 @@ import Foundation
     private var sessions: [String: HarnessJSON] = [:]
     private var journal: [String: [DesktopHarnessEvent]] = [:]
     private var sequence = 0
+    var lastCreatedWorkspace: String?
     func call(_ route: String, method: String, target: String, body: HarnessJSON?) async throws -> HarnessJSON {
         let body = body ?? .null
         if route == "/models" {
@@ -13,7 +14,8 @@ import Foundation
         }
         if route == "/sessions", method == "POST" {
             let id = body["id"].string!
-            let session: HarnessJSON = .object(["id": .string(id), "harnessId": body["harnessId"], "targetId": .string(target), "workspace": .string("/tmp"), "nativeSessionId": .string("session-fixture"), "title": body["title"], "authMode": body["authMode"], "state": .string("idle"), "queuePaused": .bool(false), "revision": .number(1), "archived": .bool(false), "pinned": .bool(false), "createdAt": .number(1), "updatedAt": .number(1), "capabilities": .object([:])])
+            let workspace = body["workspace"].string ?? "/tmp"; lastCreatedWorkspace = workspace
+            let session: HarnessJSON = .object(["id": .string(id), "harnessId": body["harnessId"], "targetId": .string(target), "workspace": .string(workspace), "nativeSessionId": .string("session-fixture"), "title": body["title"], "authMode": body["authMode"], "state": .string("idle"), "queuePaused": .bool(false), "revision": .number(1), "archived": .bool(false), "pinned": .bool(false), "createdAt": .number(1), "updatedAt": .number(1), "capabilities": .object([:])])
             if body["model"].string == "native-picked" { precondition(body["nativeProvider"].string == "native-provider"); precondition(body["authMode"].string == "native") }
             sessions[id] = session; return .object(["session": session])
         }

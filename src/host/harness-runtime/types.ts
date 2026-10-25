@@ -4,7 +4,7 @@ export const HARNESS_FEATURES = [
   "sessions", "history", "fork", "queue", "steer", "interrupt", "streaming", "modes", "plans",
   "instructions", "context", "compaction", "memory", "skills", "commands", "tools", "mcp", "plugins",
   "interactions", "attachments", "images", "audio", "video", "artifacts", "terminals", "workspace", "git",
-  "checkpoints", "models", "settings", "usage", "agents", "automations", "hooks", "remote", "diagnostics",
+  "projects", "checkpoints", "models", "settings", "usage", "agents", "automations", "hooks", "remote", "diagnostics",
 ] as const;
 export type HarnessFeature = typeof HARNESS_FEATURES[number];
 export type HarnessCapability = {

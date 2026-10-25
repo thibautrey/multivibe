@@ -7,6 +7,7 @@ struct NativeConversationHarness: Codable, Identifiable, Hashable {
         let streaming: Bool
         let tools: Bool
         let longTermMemory: Bool
+        let projects: Bool?
     }
     let id: String
     let name: String
@@ -25,7 +26,7 @@ struct NativeConversationHarness: Codable, Identifiable, Hashable {
     static let native = NativeConversationHarness(
         id: "native", name: "MultiVibe", available: true, configured: true,
         description: "Conversation directe avec le modèle sélectionné.",
-        capabilities: .init(sessions: true, streaming: true, tools: false, longTermMemory: false), unavailableReason: nil,
+        capabilities: .init(sessions: true, streaming: true, tools: false, longTermMemory: false, projects: false), unavailableReason: nil,
         canInstall: false, compatible: true, detected: true, conversationCapable: true,
         category: "native", popularityRank: 0
     )

@@ -8,6 +8,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { HostHarnessIntegrationManager } from "../harness-integrations.js";
 import { harnessModels } from "./models.js";
+import { discoverHarnessProjects, PROJECT_HARNESS_IDS } from "./discovery.js";
 import { adapterFor } from "./adapters.js";
 import { harnessEnvironment } from "./process.js";
 import { harnessResources, writeHarnessResource } from "./resources.js";
@@ -95,12 +96,17 @@ export class HostHarnessRuntime {
       const found=detected.get(id);const executable=target.kind==="container"?await this.containerExecutable(target.container!,definition.command):definition.custom?definition.command:await this.integrations.executablePath(id);
       const caps=capabilities();for(const key of ["queue","attachments","remote","diagnostics","automations"] as const)caps[key]=supported("multivibe");
       caps.sessions=supported();caps.streaming=supported();
+      if(PROJECT_HARNESS_IDS.has(id))caps.projects=supported("multivibe");
       if(target.kind==="container" && ["claude-code","opencode"].includes(id)){caps.sessions=unsupported("Install a MultiVibe Host inside this container for SDK/HTTP supervision");}
       return {id,name:definition.name,protocol:definition.protocol,detected:target.kind==="container"?Boolean(executable):definition.custom || Boolean(found?.detected),configured:target.kind!=="container" && (Boolean(found?.configured) || (["claude-code","hermes-agent"].includes(id) && Boolean(this.options.modelConnection?.().apiKey))),available:Boolean(executable)&&caps.sessions.available,
         authentication:"unknown",capabilities:caps,...(!executable?{reason:"Harness executable is not installed on this Host"}:!caps.sessions.available?{reason:caps.sessions.reason}:{})} as HarnessDescriptor;
     }));
     if(target.kind==="local")result.push(this.librechat.descriptor(),this.openwebui.descriptor());
     return result;
+  }
+  projects(input:any,home=os.homedir()) {
+    const harnessId=identifier(input.harnessId),targetId=identifier(input.targetId??"local"),target=this.store.target(targetId);
+    return {projects:target.kind==="local"?discoverHarnessProjects(harnessId,home):[]};
   }
   async models(input:any) {
     const harnessId=identifier(input.harnessId),targetId=identifier(input.targetId??"local");

@@ -17,7 +17,8 @@ const capabilities = Object.fromEntries(['sessions', 'history', 'queue', 'steer'
 capabilities.queue = { support: 'multivibe', available: true };
 capabilities.audio = { support: 'unsupported', available: false, reason: 'Ce harness ne prend pas en charge les fichiers audio.' };
 capabilities.memory = { support: 'unknown', available: false };
-const descriptor = (id, name, protocol) => ({ id, name, protocol, version: 'preview', detected: true, configured: true, available: true, authentication: 'ready', capabilities });
+const projectHarnesses = new Set(['pi', 'hermes-agent', 'openai-codex', 'claude-code', 'opencode', 'gemini-cli']);
+const descriptor = (id, name, protocol) => ({ id, name, protocol, version: 'preview', detected: true, configured: true, available: true, authentication: 'ready', capabilities: { ...capabilities, ...(projectHarnesses.has(id) ? { projects: { support: 'multivibe', available: true } } : {}) } });
 const catalog = [descriptor('pi', 'Pi', 'pi-rpc'), descriptor('hermes-agent', 'Hermes', 'acp'), descriptor('openai-codex', 'OpenAI Codex', 'codex'), descriptor('claude-code', 'Claude Code', 'claude-sdk'), descriptor('opencode', 'OpenCode', 'opencode'), descriptor('openclaw', 'OpenClaw', 'openclaw'), descriptor('goose', 'Goose', 'acp'), descriptor('openhands', 'OpenHands', 'openhands'), descriptor('gemini-cli', 'Gemini CLI', 'acp')];
 const previewModels = [
   ['preview-model', 'Claude Sonnet'], ['preview-model-2', 'GPT · Exemple'], ['codex-auto-review', 'Codex Auto Review'],
@@ -26,6 +27,11 @@ const previewModels = [
   ['gpt-6.1-sol', 'GPT-6.1 Sol'], ['gpt-6-astra', 'GPT-6 Astra'], ['gpt-6-luna', 'GPT-6 Luna'],
   ['kimi-k2-thinking', 'Kimi K2 Thinking'], ['mistral-large', 'Mistral Large'], ['llama-4-scout', 'Llama 4 Scout'],
 ].map(([id, name]) => ({ id, name, local: false }));
+const previewProjects = [
+  { id: 'preview-project-multivibe', harnessId: 'openai-codex', name: 'multivibe', path: '/Users/demo/Projects/multivibe', updatedAt: now },
+  { id: 'preview-project-store', harnessId: 'openai-codex', name: 'astronomy-store', path: '/Users/demo/Projects/astronomy-store', updatedAt: now - 60_000 },
+  { id: 'preview-project-pixatwin', harnessId: 'openai-codex', name: 'pixatwin', path: '/Users/demo/Projects/pixatwin', updatedAt: now - 120_000 },
+];
 const session = (id, state) => ({ id, harnessId: 'pi', targetId: 'local', workspace: '/workspace/exemple', title: 'Préparer le lancement', model: 'Claude Sonnet', authMode: 'native', state, queuePaused: false, revision: 1, activeTurnId: `${id}-turn`, archived: false, pinned: false, createdAt: now, updatedAt: now, capabilities });
 const sessions = { 'preview-working': session('preview-working', 'running'), 'preview-question': session('preview-question', 'waiting_user') };
 const queues = Object.fromEntries(Object.keys(sessions).map(id => [id, []]));
@@ -55,9 +61,10 @@ const server = createServer(async (request, response) => {
   if (route === '/admin/host-conversation-harnesses') return send({ harnesses: [] });
   if (route.endsWith('/targets')) return send({ targets: [{ id: 'local', name: 'Ce Mac', kind: 'local' }, { id: 'preview-remote', name: 'Serveur de travail', kind: 'ssh' }] });
   if (route.endsWith('/catalog')) return send({ harnesses: catalog });
+  if (route.endsWith('/projects')) return send({ projects: previewProjects.map(project => ({ ...project, harnessId: url.searchParams.get('harnessId') ?? project.harnessId })) });
   if (route.includes('/native-sessions')) return send({ sessions: [] });
   if (route.endsWith('/sessions')) return send({ sessions: Object.values(sessions) });
-  if (route === '/models') return send({ models: previewModels.map(model => ({ id: model.id, name: model.name, provider: 'preview' })), currentModelId: 'preview-model', provider: 'preview' });
+  if (route.endsWith('/models')) return send({ models: previewModels.map(model => ({ id: model.id, name: model.name, provider: 'preview' })), currentModelId: 'preview-model', provider: 'preview' });
   const match = route.match(/\/sessions\/([^/]+)(?:\/(events|commands))?$/u);
   if (match) {
     const [, id, action] = match;
