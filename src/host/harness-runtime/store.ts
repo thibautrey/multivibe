@@ -57,7 +57,7 @@ export class HarnessRuntimeStore {
       const hash=fingerprint({sessionId,command});
       const row=this.db.prepare("SELECT value,fingerprint FROM commands WHERE id=?").get(command.id);
       if (row) { if(row.fingerprint!==hash) fail("Operation identifier already used for different content",409); return {receipt:JSON.parse(row.value),fresh:false}; }
-      const receipt: HarnessCommandReceipt={id:command.id,sessionId,command,state:"queued",createdAt:Date.now(),ordinal:Date.now()*1000+this.commands(sessionId).length};
+      const receipt: HarnessCommandReceipt={id:command.id,sessionId,command:["native","configure","respond"].includes(command.type)?redact(command):command,state:"queued",createdAt:Date.now(),ordinal:Date.now()*1000+this.commands(sessionId).length};
       this.db.prepare("INSERT INTO commands VALUES(?,?,?,?)").run(command.id,sessionId,hash,JSON.stringify(receipt));
       return {receipt,fresh:true};
     })();
@@ -74,6 +74,7 @@ export class HarnessRuntimeStore {
       if(!value.bridgePath || !path.posix.isAbsolute(value.bridgePath) || /[\r\n\0]/u.test(value.bridgePath)) fail("An absolute remote bridge path is required");
     }
     if(value.kind==="container" && (!value.container || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/u.test(value.container))) fail("Invalid container name");
+    if(value.kind==="container" && value.bridgePath && (!path.posix.isAbsolute(value.bridgePath) || /[\r\n\0]/u.test(value.bridgePath)))fail("An absolute container bridge path is required");
     this.db.prepare("INSERT INTO targets VALUES(?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value").run(value.id,JSON.stringify(value));
   }
   target(id: string): HarnessTarget { return this.targets().find(v=>v.id===id) ?? fail("Execution target not found",404); }

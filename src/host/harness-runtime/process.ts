@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { fail, redact, type AdapterContext } from "./types.js";
+import { StringDecoder } from "node:string_decoder";
+import { fail, HarnessRuntimeError, redact, type AdapterContext } from "./types.js";
 
 export function harnessEnvironment(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv={NO_COLOR:"1",TERM:"dumb"};
@@ -16,7 +17,7 @@ export function startProcess(context: AdapterContext, args: string[], extraEnv: 
 /** JSONL transport. The process belongs to the Host, never to an HTTP subscriber. */
 export class JsonPeer {
   private pending=new Map<string,{resolve:(v:any)=>void;reject:(e:Error)=>void;timer?:ReturnType<typeof setTimeout>}>();
-  private buffer=""; private closed=false; private stderrBytes=0;
+  private buffer=""; private closed=false; private stderrBytes=0; private decoder=new StringDecoder("utf8");
   constructor(readonly child: ChildProcessWithoutNullStreams,
     private event:(v:any)=>void,
     private serverRequest:(method:string,params:any,id:unknown)=>Promise<unknown>,
@@ -30,21 +31,22 @@ export class JsonPeer {
     child.stdin.on("error",e=>this.end(e));
   }
   private consume(chunk:Buffer) {
-    this.buffer+=chunk.toString("utf8");
-    if(Buffer.byteLength(this.buffer)>this.maxRecordBytes) {this.end(new Error("Harness protocol record exceeds its size limit"));this.close();return;}
+    this.buffer+=this.decoder.write(chunk);
     for(;;) {
       const newline=this.buffer.indexOf("\n");if(newline<0)break;
       const line=this.buffer.slice(0,newline).trim();this.buffer=this.buffer.slice(newline+1);if(!line)continue;
+      if(Buffer.byteLength(line)>this.maxRecordBytes){this.end(new Error("Harness protocol record exceeds its size limit"));this.close();return;}
       let v:any;try{v=JSON.parse(line);}catch{this.diagnostic("Ignored non-JSON harness output");continue;}
       const key=v.id===undefined?undefined:String(v.id);
       if(this.rpc && v.method && key!==undefined) {
         void this.serverRequest(v.method,v.params??{},v.id).then(result=>this.write({jsonrpc:"2.0",id:v.id,result}),error=>this.write({jsonrpc:"2.0",id:v.id,error:{code:-32603,message:String(redact(error?.message??"Client request failed"))}})).catch(()=>{});
       } else if(key && this.pending.has(key) && ("result" in v || "error" in v || v.type==="response")) {
         const p=this.pending.get(key)!;this.pending.delete(key);if(p.timer)clearTimeout(p.timer);
-        if(v.error || v.success===false)p.reject(new Error(String(redact(v.error?.message??v.error??"Harness rejected command"))));
+        if(v.error || v.success===false)p.reject(new HarnessRuntimeError(String(redact(v.error?.message??v.error??"Harness rejected command")),v.error?.code===-32800?499:422));
         else p.resolve(v.type==="response"?v.data:v.result);
       } else this.event(v);
     }
+    if(Buffer.byteLength(this.buffer)>this.maxRecordBytes){this.end(new Error("Harness protocol record exceeds its size limit"));this.close();}
   }
   private write(value:unknown) {
     if(this.closed || this.child.stdin.destroyed) fail("Harness connection closed",409);

@@ -121,7 +121,14 @@ private struct HarnessLogo: View {
     private var draft: Binding<String> { Binding(get: { cloudMode ? cloudDraft : (store.current?.draft ?? "") }, set: { value in
         if cloudMode { cloudDraft = value } else { store.edit { $0.draft = value } }
     }) }
-    private var model: Binding<String> { Binding(get: { store.current?.model ?? "" }, set: { value in store.edit { $0.model = value }; HostAssistantClient.shared.defaultModel = value }) }
+    private var model: Binding<String> { Binding(get: { store.current?.model ?? "" }, set: { value in
+        store.edit { $0.model = value }; HostAssistantClient.shared.defaultModel = value
+        if let conversation = store.current, conversation.runtimeSessionID != nil {
+            var settings: [String: HarnessJSON] = ["model": .string(value)]
+            if conversation.harnessID == "pi", conversation.authMode == "multivibe" { settings["provider"] = .string("multivibe") }
+            store.runtimeCommand(conversation.id, type: "configure", value: .object(settings))
+        }
+    }) }
     private var harness: Binding<String> { Binding(get: { store.current?.harnessID ?? "native" }, set: { value in
         store.edit { conversation in
             conversation.harnessID = value == "native" ? nil : value
@@ -529,7 +536,7 @@ private struct HarnessLogo: View {
                     ForEach(conversation.messages) { message in
                         messageRow(message, conversation: conversation).id(message.id)
                     }
-                    NativeHarnessTimeline(events: conversation.runtimeEvents ?? [])
+                    NativeHarnessTimeline(events: conversation.runtimeEvents ?? [], sessionID: conversation.runtimeSessionID, target: conversation.executionTargetID ?? "local")
                     Color.clear.frame(height: 1).id("end")
                 }.padding(.horizontal, 24).padding(.vertical, 22).frame(maxWidth: 900).frame(maxWidth: .infinity)
             }
@@ -574,6 +581,7 @@ private struct HarnessLogo: View {
                         if message.id == conversation.messages.last?.id { Button("Réessayer") { sendMessage(retry: true) }.disabled(store.generating != nil) }
                     }
                 }
+                if let sessionID = conversation.runtimeSessionID, let files = message.attachedFiles { NativeHarnessAttachments(files: files, sessionID: sessionID, target: conversation.executionTargetID ?? "local") }
             }
             .padding(isUser ? 13 : 0)
             .background(isUser ? ChatPalette.accent.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 15))

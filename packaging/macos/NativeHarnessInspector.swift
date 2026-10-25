@@ -45,6 +45,7 @@ import SwiftUI
         VStack(alignment: .leading, spacing: 12) {
             HStack { Text("Session et capacités").font(.title2.weight(.semibold)); Spacer(); if busy { ProgressView().controlSize(.small) }; Button("Fermer") { dismiss() } }
             if let message { Text(message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
+            if let id = conversation?.id { ForEach(store.runtimeInteractions[id] ?? []) { interaction in NativeHarnessInteractionView(store: store, conversationID: id, interaction: interaction) } }
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     GroupBox("Exécution") {
@@ -143,7 +144,11 @@ import SwiftUI
                 TextField("Alias SSH déjà configuré", text: $sshHost)
                 TextField("Chemin du bridge MultiVibe installé sur la machine", text: $bridgePath)
                 Text("Utilise l’authentification SSH existante et un Host persistant sur cette machine. La clé d’hôte doit déjà être connue.").font(.caption).foregroundStyle(.secondary)
-            } else { TextField("Nom du conteneur en cours d’exécution", text: $containerName) }
+            } else {
+                TextField("Nom du conteneur en cours d’exécution", text: $containerName)
+                TextField("Chemin du bridge installé dans le conteneur (facultatif)", text: $bridgePath)
+                Text("Le bridge donne accès à toutes les fonctions du Host dans le conteneur. Sans bridge, les CLI compatibles utilisent une connexion directe.").font(.caption).foregroundStyle(.secondary)
+            }
             HStack { Button("Annuler") { addingTarget = false }; Spacer(); Button("Ajouter") { Task { await addTarget() } }.disabled(targetName.isEmpty || (targetKind == "ssh" ? sshHost.isEmpty || bridgePath.isEmpty : containerName.isEmpty)) }
         }.padding(20).frame(width: 530)
     }
@@ -191,7 +196,7 @@ import SwiftUI
     private func addTarget() async {
         do {
             var values: [String: HarnessJSON] = ["name": .string(targetName), "kind": .string(targetKind)]
-            if targetKind == "ssh" { values["sshHost"] = .string(sshHost); values["bridgePath"] = .string(bridgePath) } else { values["container"] = .string(containerName) }
+            if targetKind == "ssh" { values["sshHost"] = .string(sshHost); values["bridgePath"] = .string(bridgePath) } else { values["container"] = .string(containerName); if !bridgePath.isEmpty { values["bridgePath"] = .string(bridgePath) } }
             _ = try await DesktopHarnessClient.shared.call("/targets", method: "POST", body: .object(values)); addingTarget = false; await load()
         } catch { message = error.localizedDescription }
     }

@@ -21,7 +21,7 @@ import SwiftUI
                     }
                 }
                 if let pending = conversation.pendingSubmissions, !pending.isEmpty {
-                    HStack { Text("\(pending.count) envoi(s) conservé(s) sur ce Mac").font(.caption); Spacer(); Button("Réessayer l’envoi") { store.retryPending(conversation.id) } }.foregroundStyle(.secondary)
+                    HStack { Text("\(pending.count) envoi(s) conservé(s) sur ce Mac").font(.caption); Spacer(); Button("En brouillon") { store.restorePending(conversation.id) }; Button("Réessayer l’envoi") { store.retryPending(conversation.id) } }.foregroundStyle(.secondary)
                 }
                 ForEach(store.runtimeInteractions[conversation.id] ?? []) { interaction in NativeHarnessInteractionView(store: store, conversationID: conversation.id, interaction: interaction) }
                 if !queue.isEmpty {
@@ -79,14 +79,56 @@ import SwiftUI
 
 @MainActor struct NativeHarnessTimeline: View {
     let events: [DesktopHarnessEvent]
-    private var visible: [DesktopHarnessEvent] { Array(events.filter { ["tool", "plan", "compaction", "usage", "agent", "terminal.output", "notice", "retry", "reasoning", "artifact"].contains($0.type) }.suffix(30)) }
+    var sessionID: String? = nil
+    var target = "local"
+    private var visible: [DesktopHarnessEvent] { Array(events.filter { ["tool", "plan", "compaction", "usage", "agent", "terminal.output", "notice", "retry", "reasoning", "artifact"].contains($0.type) || !$0.payload["artifacts"].array.isEmpty }.suffix(30)) }
     var body: some View {
         if !visible.isEmpty {
             DisclosureGroup("Activité du harness · \(visible.count)") {
                 ForEach(visible) { event in
-                    DisclosureGroup(event.type) { Text(event.payload.display).font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                    DisclosureGroup(event.type) {
+                        if let sessionID { NativeHarnessAttachments(files: files(event.payload), sessionID: sessionID, target: target) }
+                        Text(event.payload.display).font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
             }.font(.caption).foregroundStyle(.secondary).padding(.vertical, 8)
         }
+    }
+    private func files(_ value: HarnessJSON) -> [DesktopHarnessAttachment] {
+        var files = (try? value["artifacts"].decode([DesktopHarnessAttachment].self)) ?? []
+        if let file = try? value["attachment"].decode(DesktopHarnessAttachment.self) { files.append(file) }
+        return Dictionary(grouping: files, by: \.id).values.compactMap(\.first).sorted { $0.name < $1.name }
+    }
+}
+
+@MainActor struct NativeHarnessAttachments: View {
+    let files: [DesktopHarnessAttachment]
+    let sessionID: String
+    let target: String
+    @State private var preview: NSImage?
+    @State private var message: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(files) { file in
+                HStack {
+                    Button { Task { await open(file, save: false) } } label: { Label(file.name, systemImage: file.mimeType.hasPrefix("image/") ? "photo" : "doc") }.buttonStyle(.borderless)
+                    Text(ByteCountFormatter.string(fromByteCount: Int64(file.size), countStyle: .file)).font(.caption2).foregroundStyle(.secondary)
+                    Button { Task { await open(file, save: true) } } label: { Image(systemName: "arrow.down.to.line") }.buttonStyle(.borderless).help("Enregistrer le fichier")
+                }
+            }
+            if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
+        }
+        .sheet(isPresented: Binding(get: { preview != nil }, set: { if !$0 { preview = nil } })) {
+            VStack { if let preview { Image(nsImage: preview).resizable().scaledToFit() }; Button("Fermer") { preview = nil } }.padding(15).frame(minWidth: 400, idealWidth: 640, minHeight: 300, idealHeight: 500)
+        }
+    }
+    private func open(_ file: DesktopHarnessAttachment, save: Bool) async {
+        do {
+            let response = try await DesktopHarnessClient.shared.call("/sessions/\(sessionID)/attachments/\(file.id)", target: target)
+            guard let base64 = response["base64"].string, let data = Data(base64Encoded: base64) else { throw DesktopHarnessError.invalidResponse }
+            if !save, file.mimeType.hasPrefix("image/"), let image = NSImage(data: data) { preview = image; return }
+            let panel = NSSavePanel(); panel.nameFieldStringValue = file.name
+            if panel.runModal() == .OK, let url = panel.url { try data.write(to: url, options: .atomic) }
+        } catch { message = error.localizedDescription }
     }
 }
