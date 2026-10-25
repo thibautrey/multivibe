@@ -117,10 +117,23 @@ fn select(cost: &Value, input: u64) -> Option<Rates> {
 struct Cache {
     checked: Option<Instant>,
     models: HashMap<String, Value>,
+    fetched_at: Option<i64>,
+}
+static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+
+pub(super) fn version(model: &str) -> Option<String> {
+    let cache = CACHE.get()?.lock().ok()?;
+    if !cache.models.contains_key(model) {
+        return None;
+    }
+    let at = chrono::DateTime::from_timestamp_millis(cache.fetched_at?)?;
+    Some(format!(
+        "models.dev:{}",
+        at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    ))
 }
 
 pub(super) fn lookup(model: &str, input: u64) -> Option<Rates> {
-    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
     let mut cache = CACHE
         .get_or_init(|| Mutex::new(Cache::default()))
         .lock()
@@ -139,12 +152,13 @@ pub(super) fn lookup(model: &str, input: u64) -> Option<Rates> {
                 .with_file_name("models-dev-catalog.json")
             });
         if std::fs::metadata(&path).is_ok_and(|m| m.len() <= 16 * 1024 * 1024) {
-            if let Some(models) = std::fs::read(&path)
+            if let Some((models, fetched_at)) = std::fs::read(&path)
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                .and_then(|snapshot| prices(&snapshot))
+                .and_then(|snapshot| Some((prices(&snapshot)?, snapshot["fetchedAt"].as_i64())))
             {
                 cache.models = models;
+                cache.fetched_at = fetched_at;
             }
         }
     }

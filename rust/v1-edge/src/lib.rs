@@ -3955,7 +3955,7 @@ impl SessionAffinityCache {
     }
 }
 
-const TRACE_PRICING_VERSION: &str = "models.dev:2026-10-25";
+const TRACE_PRICING_VERSION: &str = "2026-10-25";
 
 #[derive(Clone)]
 struct TraceContext {
@@ -4875,7 +4875,8 @@ impl TraceSink {
             );
             if let Some(cost) = cost.and_then(serde_json::Number::from_f64) {
                 entry["costUsd"] = Value::Number(cost);
-                entry["pricingVersion"] = Value::String(TRACE_PRICING_VERSION.to_owned());
+                entry["pricingVersion"] = Value::String(context.resolved_model.as_deref().or(context.model.as_deref())
+                    .and_then(model_pricing::version).unwrap_or_else(|| TRACE_PRICING_VERSION.to_owned()));
                 entry["costStatus"] = Value::String("estimated".to_owned());
             } else {
                 entry["costStatus"] = Value::String(

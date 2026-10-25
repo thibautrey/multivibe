@@ -179,8 +179,10 @@ export class TraceAnalyticsStore {
             } else {
               // Freeze this migration's unknown-price result too: future report
               // rebuilds must not silently start repricing the old request.
-              if (normalized?.usageStatus === "measured") update.run(JSON.stringify({ ...normalized,
-                costUsd: undefined, costStatus: "unpriced", pricingVersion: MODEL_PRICING_VERSION }), row.id);
+              if (normalized?.usageStatus === "measured") {
+                update.run(JSON.stringify({ ...normalized, costUsd: undefined, costStatus: "unpriced", pricingVersion: MODEL_PRICING_VERSION }), row.id);
+                this.db.prepare("INSERT OR IGNORE INTO pricing_backfill_hours VALUES (?)").run(Math.floor(row.at / HOUR) * HOUR);
+              }
               next.unpriced++;
             }
             next.cursor = row.cursor;
