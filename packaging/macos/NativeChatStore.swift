@@ -65,7 +65,9 @@ struct NativeChatConversation: Codable, Identifiable {
         set { UserDefaults.standard.set(newValue, forKey: defaultHarnessKey) }
     }
     @Published var conversations: [NativeChatConversation] = []
-    @Published var selection: UUID?
+    @Published var selection: UUID? {
+        didSet { if selection != oldValue && canSave { error = nil } }
+    }
     @Published var error: String?
     @Published private(set) var activeConversations: Set<UUID> = []
     @Published private(set) var runtimeQueues: [UUID: [DesktopHarnessReceipt]] = [:]
@@ -126,6 +128,7 @@ struct NativeChatConversation: Codable, Identifiable {
         var ids = pending.map(\.id); ids.swapAt(source, destination); return ids
     }
     func newConversation(text: String = "") {
+        if canSave { error = nil }
         if text.isEmpty, let index = conversations.firstIndex(where: { $0.messages.isEmpty && $0.draft.isEmpty && $0.runtimeSessionID == nil && $0.pendingSubmissions?.isEmpty != false && $0.draftAttachments?.isEmpty != false && $0.nativeQueue?.isEmpty != false && $0.remoteChatID == nil && $0.archived != true }) {
             conversations[index].model = HostAssistantClient.shared.defaultModel
             let harness = Self.defaultHarnessID
@@ -265,7 +268,7 @@ struct NativeChatConversation: Codable, Identifiable {
                     conversations[index].messages[conversations[index].messages.count - 1].interrupted = false
                 }
             } catch {
-                if !Task.isCancelled { self.error = error.localizedDescription }
+                if !Task.isCancelled && self.selection == id { self.error = error.localizedDescription }
                 if let index = conversations.firstIndex(where: { $0.id == id }) { conversations[index].queuePaused = true }
             }
         }
@@ -380,13 +383,13 @@ struct NativeChatConversation: Codable, Identifiable {
                     save()
                 }
                 try await refreshRuntime(id)
-            } catch { self.error = error.localizedDescription }
+            } catch { if self.selection == id { self.error = error.localizedDescription } }
         }
     }
     func runtimeCommand(_ id: UUID, type: String, value: HarnessJSON? = nil, parts: [DesktopMessagePart]? = nil) {
         Task { @MainActor in
             do { _ = try await command(id, type: type, value: value, parts: parts); try await refreshRuntime(id) }
-            catch { self.error = error.localizedDescription }
+            catch { if self.selection == id { self.error = error.localizedDescription } }
         }
     }
     func restorePending(_ id: UUID) {
@@ -492,7 +495,7 @@ struct NativeChatConversation: Codable, Identifiable {
                 if ["queued", "dispatching", "accepted", "uncertain"].contains(receipt.state) { queue.append(receipt) }
                 runtimeQueues[conversationID] = queue.sorted { $0.ordinal < $1.ordinal }
             }
-        case "turn.failed", "turn.uncertain": if let message = event.payload["message"].string ?? event.payload["error"].string { error = message }
+        case "turn.failed", "turn.uncertain": if selection == conversationID, let message = event.payload["message"].string ?? event.payload["error"].string { error = message }
         case "diagnostic": break
         default: break
         }

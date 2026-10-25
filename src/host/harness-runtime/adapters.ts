@@ -56,7 +56,7 @@ export class AcpAdapter extends Adapter {
   async start() {
     const requestedModel=this.ctx.session.model;
     const connection=this.ctx.modelConnection;
-    const peer=this.connect(this.args,true,this.ctx.session.harnessId==="hermes-agent" && connection?{LLM_PROVIDER:"openai",LLM_MODEL:this.ctx.session.model,OPENAI_BASE_URL:connection.baseUrl.replace(/\/$/u,"")+"/v1",OPENAI_API_KEY:connection.apiKey}:{});
+    const peer=this.connect(this.args,true,this.ctx.session.harnessId==="hermes-agent" && connection?{LLM_PROVIDER:"openai",LLM_MODEL:this.ctx.session.model,CUSTOM_BASE_URL:connection.baseUrl.replace(/\/$/u,"")+"/v1",OPENAI_BASE_URL:connection.baseUrl.replace(/\/$/u,"")+"/v1",OPENAI_API_KEY:connection.apiKey}:{});
     const hello=await peer.request("initialize",{protocolVersion:1,clientInfo:{name:"multivibe",version:"1"},clientCapabilities:{
       ...(this.ctx.target.kind!=="container" && !this.ctx.modelDiscovery?{fs:{readTextFile:true,writeTextFile:true},terminal:true}:{}),
       session:{compaction:{},notices:{}},
@@ -89,12 +89,13 @@ export class AcpAdapter extends Adapter {
     if(requestedModel) {
       const options=this.sessionInfo.configOptions??[];
       const modelOption=options.find((o:any)=>o.category==="model" || o.id==="model");
-      if(modelOption)await peer.request("session/set_config_option",{sessionId:this.id,configId:modelOption.id,value:this.ctx.session.model});
-      else if(this.sessionInfo.models)await peer.request("session/set_model",{sessionId:this.id,modelId:this.ctx.session.model});
+      if(modelOption)await peer.request("session/set_config_option",{sessionId:this.id,configId:modelOption.id,value:this.modelChoice(requestedModel)});
+      else if(this.sessionInfo.models)await peer.request("session/set_model",{sessionId:this.id,modelId:this.modelChoice(requestedModel)});
       else fail("The ACP harness does not expose model selection; use its native model configuration",422);
     }
   }
   private get id(){return this.ctx.session.nativeSessionId!;}
+  private modelChoice(model:string){return this.ctx.session.harnessId==="hermes-agent" && this.ctx.modelConnection?`custom:${model}`:model;}
   protected event(v:any) {
     const p=v.params??{};if(p.sessionId && this.id && p.sessionId!==this.id)return;
     const u=p.update??p;const kind=u.sessionUpdate;
@@ -161,7 +162,7 @@ export class AcpAdapter extends Adapter {
     if(typeof v.configId==="string" && typeof v.value==="string")return this.peer!.request("session/set_config_option",{sessionId:this.id,configId:v.configId,value:v.value});
     if(typeof v.model==="string") {
       const option=this.sessionInfo.configOptions?.find((o:any)=>o.category==="model" || o.id==="model");
-      const result=option?await this.peer!.request("session/set_config_option",{sessionId:this.id,configId:option.id,value:v.model}):this.sessionInfo.models?await this.peer!.request("session/set_model",{sessionId:this.id,modelId:v.model}):fail("Model selection is not exposed by this harness",422);
+      const result=option?await this.peer!.request("session/set_config_option",{sessionId:this.id,configId:option.id,value:this.modelChoice(v.model)}):this.sessionInfo.models?await this.peer!.request("session/set_model",{sessionId:this.id,modelId:this.modelChoice(v.model)}):fail("Model selection is not exposed by this harness",422);
       this.ctx.session.model=v.model;return result;
     }
     return super.configure(v);

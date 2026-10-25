@@ -1046,11 +1046,13 @@ export class HostHarnessIntegrationManager {
   }
 
   async list(): Promise<HostHarnessView[]> {
+    await this.operation;
     const state = await this.readState();
     return Promise.all(this.definitions.map((entry) => this.view(entry, state)));
   }
 
   async get(id: string): Promise<HostHarnessView> {
+    await this.operation;
     const definition = this.definition(id);
     return this.view(definition, await this.readState());
   }

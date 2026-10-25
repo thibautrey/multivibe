@@ -58,7 +58,9 @@ enum HostAssistantError: Error { case emptyReply }
         store.edit { $0.workspace = "/tmp/previous-project" }
         HostAssistantClient.shared.defaultModel = "latest-model"
         NativeChatStore.defaultHarnessID = "pi"
+        store.error = "Failure in the previous conversation"
         store.newConversation()
+        precondition(store.error == nil)
         precondition(store.selection == first && store.conversations.count == 1)
         precondition(store.current?.model == "latest-model" && store.current?.harnessID == "pi" && store.current?.workspace == nil)
         let initialReceipt = DesktopHarnessReceipt(id: "initial", sessionId: "session", command: .object(["displayText": .string("Premier message")]), state: "queued", createdAt: 1, ordinal: 1, result: nil, error: nil)
@@ -150,6 +152,11 @@ enum HostAssistantError: Error { case emptyReply }
         precondition(store.current?.runtimeEvents?.last?.type == "diagnostic")
         runtimeEvent("turn.failed", .object(["error": .string("Model request failed")]))
         precondition(store.error == "Model request failed")
+        store.selection = first
+        precondition(store.error == nil)
+        runtimeEvent("turn.failed", .object(["error": .string("Background failure")]))
+        precondition(store.error == nil)
+        store.selection = second
         store.error = nil
         let previousMessageCount = store.current!.messages.count
         store.edit { $0.draft = "Keep this draft" }
