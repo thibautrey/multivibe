@@ -55,5 +55,13 @@ enum NativeChatPresentationHarness {
         precondition(sections.map(\.id) == ["pinned", "today", "week", "older"])
         precondition(Set(sections.flatMap(\.conversations).map(\.id)).count == 4)
         print("PASS conversation date sections and pinned uniqueness")
+
+        var native = NativeChatConversation(); native.title = "MultiVibe"
+        var codex = NativeChatConversation(); codex.title = "Codex"; codex.harnessID = "codex"
+        var secondNative = NativeChatConversation(); secondNative.title = "Deuxième"; secondNative.harnessID = "native"
+        let harnessSections = ChatHarnessConversationSection.sections([codex, native, secondNative])
+        precondition(harnessSections.map(\.id) == ["codex", "native"])
+        precondition(harnessSections[1].conversations.map(\.title) == ["MultiVibe", "Deuxième"])
+        print("PASS conversation harness grouping and stable order")
     }
 }
