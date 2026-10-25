@@ -19,7 +19,7 @@ export let MODEL_PRICING_VERSION = "2026-10-25";
 let runtimePricing = new Map<string, ModelPricing>();
 // Only origin providers may supply bare model IDs. Gateway prices must retain
 // their provider prefix; otherwise the same model could inherit a reseller rate.
-const ORIGIN_PROVIDERS = new Set(["openai", "anthropic", "google", "deepseek", "xai", "mistral", "cohere", "groq", "cerebras", "perplexity", "zai", "moonshotai", "minimax"]);
+const ORIGIN_PROVIDERS = new Set(["openai", "anthropic", "google", "deepseek", "xai", "mistral", "cohere", "groq", "cerebras", "perplexity", "z-ai", "zai", "moonshotai", "minimax"]);
 
 function convertRates(cost: ModelsDevRates): ModelPricing {
   return { inputPer1M: cost.input, outputPer1M: cost.output,
@@ -27,7 +27,7 @@ function convertRates(cost: ModelsDevRates): ModelPricing {
     ...(cost.cache_write !== undefined ? { cacheWriteInputPer1M: cost.cache_write } : {}) };
 }
 
-export function installModelsDevPricing(providers: Record<string, Array<{ id: string; cost?: ModelsDevCost }>>, fetchedAt: number): void {
+export function installModelsDevPricing(providers: Record<string, Array<{ id: string; cost?: ModelsDevCost }>>, fetchedAt: number, providerAliases: Record<string, string> = {}): void {
   const next = new Map<string, ModelPricing>();
   const bare = new Map<string, ModelPricing | null>();
   for (const [provider, models] of Object.entries(providers)) for (const model of models) {
@@ -38,9 +38,15 @@ export function installModelsDevPricing(providers: Record<string, Array<{ id: st
     next.set(`${provider}/${model.id}`, pricing);
     if (ORIGIN_PROVIDERS.has(provider)) bare.set(model.id, bare.has(model.id) ? null : pricing);
   }
+  for (const [alias, provider] of Object.entries(providerAliases)) {
+    for (const model of providers[provider] ?? []) {
+      const pricing = next.get(`${provider}/${model.id}`);
+      if (pricing) next.set(`${alias}/${model.id}`, pricing);
+    }
+  }
   for (const [id, pricing] of bare) if (pricing) next.set(id, pricing);
   runtimePricing = next;
-  MODEL_PRICING_VERSION = `models.dev:${new Date(fetchedAt).toISOString()}`;
+  MODEL_PRICING_VERSION = next.size ? `models.dev:${new Date(fetchedAt).toISOString()}` : "2026-10-25";
 }
 
 

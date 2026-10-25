@@ -21,6 +21,7 @@ const ORIGINS: &[&str] = &[
     "cerebras",
     "perplexity",
     "zai",
+    "z-ai",
     "moonshotai",
     "minimax",
 ];
@@ -60,6 +61,24 @@ fn prices(snapshot: &Value) -> Option<HashMap<String, Value>> {
                 bare.entry(id.to_owned())
                     .and_modify(|cost| *cost = None)
                     .or_insert(Some(cost.clone()));
+            }
+        }
+    }
+    if let Some(aliases) = snapshot["providerAliases"].as_object() {
+        for (alias, provider) in aliases {
+            let Some(provider) = provider.as_str() else {
+                continue;
+            };
+            let Some(models) = snapshot["providers"][provider].as_array() else {
+                continue;
+            };
+            for model in models {
+                let Some(id) = model["id"].as_str() else {
+                    continue;
+                };
+                if let Some(cost) = result.get(&format!("{provider}/{id}")).cloned() {
+                    result.insert(format!("{alias}/{id}"), cost);
+                }
             }
         }
     }
@@ -139,7 +158,7 @@ mod tests {
     #[test]
     fn shared_snapshot_keeps_context_tiers_and_provider_identity() {
         let sol = json!({"id":"gpt-6.1-sol","cost":{"input":2,"output":10,"cache_read":0.1,"cache_write":2.5,"tiers":[{"input":4,"output":15,"cache_read":0.2,"cache_write":5,"tier":{"type":"context","size":272000}}]}});
-        let snapshot = json!({"version":2,"providers":{"openai":[sol],"openrouter":[{"id":"gpt-6.1-sol","cost":{"input":99,"output":99}}]}});
+        let snapshot = json!({"version":2,"providerAliases":{"test-openai":"openai"},"providers":{"openai":[sol],"openrouter":[{"id":"gpt-6.1-sol","cost":{"input":99,"output":99}}]}});
         let prices = prices(&snapshot).unwrap();
         assert_eq!(
             select(&prices["gpt-6.1-sol"], 272000),
@@ -152,6 +171,10 @@ mod tests {
         assert_eq!(
             select(&prices["openrouter/gpt-6.1-sol"], 1),
             Some((99.0, 99.0, 99.0, 99.0))
+        );
+        assert_eq!(
+            select(&prices["test-openai/gpt-6.1-sol"], 272001),
+            Some((4.0, 0.2, 5.0, 15.0))
         );
         assert!(rates(&json!({"input":2})).is_none());
     }

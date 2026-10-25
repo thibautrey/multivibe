@@ -95,6 +95,7 @@ test("persists the snapshot on disk and reloads it without fetching", async (t) 
   const stored = JSON.parse(await readFile(cachePath, "utf8"));
   assert.equal(stored.version, 2);
   assert.ok(stored.providers.deepseek);
+  assert.equal(stored.providerAliases.fireworks, "fireworks-ai");
 
   let calls = 0;
   const second = runtimeCatalog((async () => { calls++; return Response.json(payload); }) as typeof fetch, cachePath);
