@@ -140,6 +140,7 @@ private struct HarnessLogo: View {
                     Text(cloudMode ? "ESPACE CLOUD" : "RÉCENTES").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
                     Spacer()
                 }.padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 7)
+                sidebarSearchField
                 ScrollView {
                     LazyVStack(spacing: 4) {
                     if cloudMode {
@@ -300,31 +301,32 @@ private struct HarnessLogo: View {
     }
 
     private var sidebarHeader: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 10) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 9).fill(ChatPalette.accent.opacity(0.13))
-                    Image(systemName: "waveform.path").font(.system(size: 15, weight: .semibold)).foregroundStyle(ChatPalette.accent)
-                }.frame(width: 32, height: 32)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("MultiVibe").font(.headline.weight(.semibold))
-                    Text(cloudMode ? "Espace agent" : "Host personnel").font(.caption2).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button { openDashboard() } label: { Image(systemName: "gearshape") }
-                    .buttonStyle(.plain).foregroundStyle(.secondary).help("Réglages du Host")
+        HStack(spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 9).fill(ChatPalette.accent.opacity(0.13))
+                Image(systemName: "waveform.path").font(.system(size: 15, weight: .semibold)).foregroundStyle(ChatPalette.accent)
+            }.frame(width: 32, height: 32)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("MultiVibe").font(.headline.weight(.semibold))
+                Text(cloudMode ? "Espace agent" : "Host personnel").font(.caption2).foregroundStyle(.secondary)
             }
-            HStack(spacing: 7) {
-                Image(systemName: "magnifyingglass").font(.caption).foregroundStyle(.tertiary)
-                TextField("Rechercher", text: $search).textFieldStyle(.plain)
-                if !search.isEmpty {
-                    Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }
-                        .buttonStyle(.plain).foregroundStyle(.tertiary)
-                }
-            }
-            .padding(.horizontal, 10).frame(height: 30)
-            .background(ChatPalette.surface, in: RoundedRectangle(cornerRadius: 8))
+            Spacer()
+            Button { openDashboard() } label: { Image(systemName: "gearshape") }
+                .buttonStyle(.plain).foregroundStyle(.secondary).help("Réglages du Host")
         }.padding(.horizontal, 12).padding(.top, 13).padding(.bottom, 7)
+    }
+    private var sidebarSearchField: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass").font(.caption).foregroundStyle(.tertiary)
+            TextField("Rechercher", text: $search).textFieldStyle(.plain)
+            if !search.isEmpty {
+                Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.plain).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.horizontal, 10).frame(height: 30)
+        .background(ChatPalette.surface, in: RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 12).padding(.bottom, 7)
     }
     private var sidebarPrimaryActions: some View {
         VStack(spacing: 2) {
