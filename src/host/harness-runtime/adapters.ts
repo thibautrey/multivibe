@@ -319,6 +319,7 @@ export class ClaudeAdapter extends Adapter {
   private query:any;private queue=new InputQueue();private abort=new AbortController();
   private stderrBytes=0;
   private settingsFile?:string;
+  private currentMessageId="claude-assistant";private sawText=false;
   constructor(ctx:AdapterContext,private sdkLoader?:()=>Promise<any>){super(ctx);}
   async start() {
     if(this.ctx.target.kind==="container")fail("Claude SDK requires a Host inside the container",422);
@@ -349,23 +350,33 @@ export class ClaudeAdapter extends Adapter {
   private async consume() {for await(const event of this.query)this.event(event);if(!this.abort.signal.aborted){this.failure=new Error("Claude SDK stream ended before the session closed");this.rejectTurn(this.failure);}}
   protected event(v:any) {
     if(v.session_id && v.session_id!==this.ctx.session.nativeSessionId)this.ctx.nativeSession(v.session_id);
+    if(v.parent_tool_use_id && ["assistant","stream_event","user"].includes(v.type)){this.ctx.emit({type:"agent",itemId:v.parent_tool_use_id,payload:v});return;}
     if(v.type==="stream_event") {
-      const e=v.event;if(e?.type==="content_block_delta" && e.delta?.type==="text_delta")this.ctx.emit({type:"message.delta",itemId:v.parent_tool_use_id??undefined,payload:{text:e.delta.text,role:"assistant"}});
+      const e=v.event;if(e?.type==="message_start")this.currentMessageId=e.message?.id??this.currentMessageId;
+      else if(e?.type==="content_block_delta" && e.delta?.type==="text_delta"){this.sawText=true;this.ctx.emit({type:"message.delta",itemId:`${this.currentMessageId}:${e.index??0}`,payload:{text:e.delta.text,role:"assistant"}});}
       else if(e?.delta?.type==="thinking_delta")this.ctx.emit({type:"reasoning",payload:{text:e.delta.thinking}});
       else if(e?.content_block?.type==="tool_use")this.ctx.emit({type:"tool",itemId:e.content_block.id,payload:e.content_block});
     } else if(v.type==="assistant") {
-      for(const p of v.message?.content??[])if(p.type==="tool_use")this.ctx.emit({type:"tool",itemId:p.id,payload:p});
+      this.currentMessageId=v.message?.id??this.currentMessageId;
+      for(const [index,p] of (v.message?.content??[]).entries()) {
+        if(p.type==="tool_use")this.ctx.emit({type:"tool",itemId:p.id,payload:p});
+        else if(p.type==="text"){this.sawText=true;this.ctx.emit({type:"message.part",itemId:`${this.currentMessageId}:${index}`,payload:{text:p.text,role:"assistant"}});}
+      }
     } else if(v.type==="user") {
       for(const p of v.message?.content??[])if(p.type==="tool_result")this.ctx.emit({type:"tool",itemId:p.tool_use_id,payload:{status:p.is_error?"failed":"completed",...p}});
     } else if(v.type==="result") {
-      this.ctx.emit({type:"usage",payload:{usage:v.usage,modelUsage:v.modelUsage,totalCostUsd:v.total_cost_usd,durationMs:v.duration_ms}});
+      if(!this.sawText && typeof v.result==="string" && v.result){this.sawText=true;this.ctx.emit({type:"message.part",itemId:"claude-final",payload:{text:v.result,role:"assistant"}});}
+      this.ctx.emit({type:"usage",payload:{origin:"harness",usage:v.usage,modelUsage:v.modelUsage,estimatedCostUsd:v.total_cost_usd,durationMs:v.duration_ms}});
       if(v.is_error)this.rejectTurn(new HarnessRuntimeError(v.errors?.join("; ")??"Claude could not complete this turn",422));else this.finish(v);
     } else if(v.type==="system" && v.subtype==="compact_boundary"){this.ctx.capabilities({compaction:supported()});this.ctx.emit({type:"compaction",payload:v});}
     else if(v.type==="system" && v.subtype==="api_retry")this.ctx.emit({type:"retry",payload:v});
+    else if(v.type==="tool_progress")this.ctx.emit({type:"tool",itemId:v.tool_use_id,payload:v});
+    else if(v.type==="system" && ["task_started","task_progress","task_notification"].includes(v.subtype))this.ctx.emit({type:"agent",itemId:v.task_id,payload:v});
     else this.ctx.emit({type:"native.event",payload:v});
   }
   async prompt(parts:MessagePart[],steer=false) {
     if(steer)fail("The SDK does not advertise true in-flight steer",422);
+    this.sawText=false;
     const content=parts.map(p=>{
       if(p.type==="attachment"){const a=this.ctx.attachment(p.attachmentId);if(a.info.mimeType.startsWith("image/"))return {type:"image",source:{type:"base64",media_type:a.info.mimeType,data:a.data.toString("base64")}};}
       return {type:"text",text:this.text([p])};
