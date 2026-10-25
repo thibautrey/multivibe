@@ -47,6 +47,18 @@ extension Array where Element == NativeConversationHarness {
     }
 }
 
+@MainActor
+func loadNativeChatDependencies(
+    restoreCloud: @MainActor @escaping () async -> Void,
+    loadModels: @MainActor @escaping () async -> Void,
+    loadHarnesses: @MainActor @escaping () async -> Void
+) async {
+    async let cloud: Void = restoreCloud()
+    async let models: Void = loadModels()
+    async let harnesses: Void = loadHarnesses()
+    _ = await (cloud, models, harnesses)
+}
+
 enum NativeHarnessError: LocalizedError {
     case unavailable, invalidResponse, rejected(String), emptyReply
     var errorDescription: String? {

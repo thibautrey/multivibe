@@ -1,6 +1,12 @@
 import AppKit
 import Foundation
 
+private actor BootstrapEvents {
+    private var order: [String] = []
+    func record(_ value: String) { order.append(value) }
+    func values() -> [String] { order }
+}
+
 final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate {
     let base: URL
     init(port: String) { base = URL(string: "http://127.0.0.1:\(port)")! }
@@ -15,6 +21,21 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate {
 
 @main struct NativeHarnessClientHarness {
     @MainActor static func main() async throws {
+        let events = BootstrapEvents()
+        await loadNativeChatDependencies(
+            restoreCloud: {
+                try? await Task.sleep(for: .milliseconds(150))
+                await events.record("cloud")
+            },
+            loadModels: {
+                try? await Task.sleep(for: .milliseconds(75))
+                await events.record("models")
+            },
+            loadHarnesses: { await events.record("harnesses") }
+        )
+        let bootstrapOrder = await events.values()
+        precondition(bootstrapOrder == ["harnesses", "models", "cloud"])
+
         let app = NSApplication.shared
         let delegate = MultiVibeMenuBarApp(port: CommandLine.arguments[1])
         app.delegate = delegate
@@ -33,6 +54,6 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate {
         ) { updates.append($0) }
         precondition(updates == ["Bon", "Bonjour"])
         precondition(session == "session-1")
-        print("PASS native harness discovery, capabilities, bounded SSE and session binding")
+        print("PASS native harness discovery, independent bootstrap, capabilities, bounded SSE and session binding")
     }
 }
