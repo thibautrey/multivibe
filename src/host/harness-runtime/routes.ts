@@ -45,6 +45,7 @@ export function harnessRuntimeRoutes(runtime?:HostHarnessRuntime,remotes=new Rem
     await remote.delete(String(req.params.chatId));return res.json({deleted:true});
   }));
   router.post("/sessions/remote",route(async(req,res)=>res.status(201).json(await proxy(req,"POST","/sessions/remote",req.body)??{session:await runtime!.connectRemoteChat(req.body)})));
+  router.get("/projects",route(async(req,res)=>{const harnessId=String(req.query.harnessId??"");return res.json(await proxy(req,"GET",`/projects?harnessId=${encodeURIComponent(harnessId)}`)??runtime!.projects({harnessId,targetId:String(req.query.targetId??"local")}));}));
   router.get("/targets",route((_req,res)=>res.json({targets:runtime!.store.targets()})));
   router.post("/registrations",route(async(req,res)=>{if(req.body.id in ADAPTERS || ["librechat","openwebui"].includes(req.body.id))fail("Built-in adapters cannot be replaced");return res.status(201).json(await proxy(req,"POST","/registrations",req.body)??{harness:runtime!.store.register(req.body)});}));
   router.post("/targets",route((req,res)=>{const v=req.body;const target:HarnessTarget={id:v.id??randomUUID(),name:v.name,kind:v.kind,...(v.sshHost?{sshHost:v.sshHost}:{}),...(v.bridgePath?{bridgePath:v.bridgePath}:{}),...(v.container?{container:v.container}:{})};runtime!.store.saveTarget(target);return res.status(201).json({target});}));
