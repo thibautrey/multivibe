@@ -58,6 +58,7 @@ export class AcpAdapter extends Adapter {
       session:{compaction:{},notices:{}},
     }});
     if(hello.protocolVersion!==1)fail("The harness negotiated an unsupported ACP version",409);
+    this.ctx.emit({type:"harness.metadata",payload:{name:hello.agentInfo?.name,version:hello.agentInfo?.version,protocolVersion:String(hello.protocolVersion)}});
     const caps=this.agentCapabilities=hello.agentCapabilities??{};
     this.ctx.capabilities({sessions:supported(),streaming:supported(),interrupt:supported(),tools:supported(),interactions:supported(),
       images:caps.promptCapabilities?.image?supported():unsupported("Image input is not advertised"),
@@ -77,6 +78,7 @@ export class AcpAdapter extends Adapter {
     this.loading=true;
     try{this.sessionInfo=await peer.request(old?"session/load":"session/new",{...(old?{sessionId:old}:{}),cwd:this.ctx.session.workspace,mcpServers:[]});}finally{this.loading=false;}
     this.ctx.nativeSession(old??this.sessionInfo.sessionId);
+    const nativeModel=this.sessionInfo.models?.currentModelId??this.sessionInfo.configOptions?.find((v:any)=>v.category==="model")?.currentValue;if(this.ctx.session.authMode==="native" && typeof nativeModel==="string")this.ctx.session.model=nativeModel;
     if(this.sessionInfo.modes)this.ctx.capabilities({modes:supported()});
     if(this.sessionInfo.models)this.ctx.capabilities({models:supported()});
     if(this.sessionInfo.configOptions)this.ctx.capabilities({settings:supported()});
@@ -174,6 +176,7 @@ export class PiAdapter extends Adapter {
     else if(typeof this.ctx.session.configuration?.nativeProvider==="string")args.push("--provider",this.ctx.session.configuration.nativeProvider);
     if(this.ctx.session.model)args.push("--model",this.ctx.session.model);
     const peer=this.connect(args,false);const state=await peer.request("get_state");
+    if(this.ctx.session.authMode==="native" && typeof state?.model?.id==="string")this.ctx.session.model=state.model.id;
     this.ctx.nativeSession(state?.sessionFile??this.ctx.session.nativeSessionId??sessionFile);
     if(this.ctx.session.configuration?.sourceId && !this.ctx.session.configuration?.historyImported){const history=await peer.request("get_messages");for(const [index,message] of (history?.messages??[]).entries()){if(["user","assistant"].includes(message.role)){const text=typeof message.content==="string"?message.content:(message.content??[]).filter((p:any)=>p.type==="text").map((p:any)=>p.text).join("\n");this.ctx.emit({type:"history.message",itemId:`pi-history-${index}`,payload:{role:message.role,text}});}}this.ctx.session.configuration.historyImported=true;}
     this.ctx.capabilities(Object.fromEntries(["sessions","history","steer","interrupt","streaming","compaction","tools","skills","commands","models","settings","usage","images","fork"].map(k=>[k,supported()])));
@@ -228,7 +231,7 @@ export class CodexAdapter extends Adapter {
   async start() {
     const args=["app-server"];
     const child=startProcess(this.ctx,args);
-    this.peer=new JsonPeer(child,v=>this.event(v),(m,p)=>this.request(m,p),e=>this.rejectTurn(e),text=>this.ctx.emit({type:"diagnostic",payload:{message:text}}));
+    this.peer=new JsonPeer(child,v=>this.event(v),(m,p)=>this.request(m,p),e=>{this.failure=e;this.rejectTurn(e);},text=>this.ctx.emit({type:"diagnostic",payload:{message:text}}));
     await this.peer.request("initialize",{clientInfo:{name:"multivibe",version:"1"},capabilities:{experimentalApi:true}});
     this.peer.notify("initialized");
     const s=this.ctx.session;
@@ -236,7 +239,7 @@ export class CodexAdapter extends Adapter {
     const result=await this.peer.request(s.nativeSessionId?"thread/resume":"thread/start",{
       ...(s.nativeSessionId?{threadId:s.nativeSessionId}:{}),cwd:s.workspace,...(s.model?{model:s.model}:{}),...(s.authMode==="multivibe"?{modelProvider:"multivibe"}:{}),
     });
-    this.threadId=result.thread.id;this.currentModel=result.model??s.model??"";this.ctx.nativeSession(this.threadId);
+    this.threadId=result.thread.id;this.currentModel=result.model??s.model??"";if(this.currentModel)s.model=this.currentModel;this.ctx.nativeSession(this.threadId);
     if(s.configuration?.sourceId && !s.configuration?.historyImported){const history=await this.peer.request("thread/read",{threadId:this.threadId,includeTurns:true});for(const turn of history.thread?.turns??[])for(const item of turn.items??[]){if(item.type==="userMessage" || item.type==="agentMessage"){const text=item.type==="agentMessage"?item.text:(item.content??[]).filter((p:any)=>p.type==="text").map((p:any)=>p.text).join("\n");this.ctx.emit({type:"history.message",itemId:item.id,payload:{role:item.type==="userMessage"?"user":"assistant",text}});}}s.configuration.historyImported=true;}
     this.ctx.capabilities(Object.fromEntries(["sessions","history","fork","steer","interrupt","streaming","compaction","tools","skills","mcp","hooks","models","modes","plans","settings","usage","agents","images","interactions","workspace","git","terminals"].map(k=>[k,supported()])));
   }
@@ -357,6 +360,7 @@ export class ClaudeAdapter extends Adapter {
   private async consume() {for await(const event of this.query)this.event(event);if(!this.abort.signal.aborted){this.failure=new Error("Claude SDK stream ended before the session closed");this.rejectTurn(this.failure);}}
   protected event(v:any) {
     if(v.parent_tool_use_id && ["assistant","stream_event","user"].includes(v.type)){this.ctx.emit({type:"agent",itemId:v.parent_tool_use_id,payload:v});return;}
+    if(v.type==="system" && v.subtype==="init" && typeof v.model==="string")this.ctx.session.model=v.model;
     if(v.session_id && v.session_id!==this.ctx.session.nativeSessionId)this.ctx.nativeSession(v.session_id);
     if(v.type==="stream_event") {
       const e=v.event;if(e?.type==="message_start")this.currentMessageId=e.message?.id??this.currentMessageId;
@@ -441,6 +445,7 @@ export class OpenCodeAdapter extends Adapter {
     const session=source?(this.ctx.session.configuration?.forkNativeSession?await this.call("POST",`/session/${encodeURIComponent(source)}/fork`,{}):await this.call("GET",`/session/${encodeURIComponent(source)}`)):await this.call("POST","/session",{title:this.ctx.session.title});
     if(this.ctx.session.configuration)delete this.ctx.session.configuration.forkNativeSession;
     this.nativeId=session.id;this.ctx.nativeSession(session.id);
+    if(this.ctx.session.authMode==="native" && !this.ctx.session.model){try{const config=await this.call("GET","/config");if(typeof config.model==="string")this.ctx.session.model=config.model;}catch{/* The server may select a default only on its first turn. */}}
     if(this.ctx.session.configuration?.sourceId && !this.ctx.session.configuration?.historyImported){const history=await this.call("GET",`/session/${this.nativeId}/message`);for(const message of history){if(["user","assistant"].includes(message.info?.role))this.ctx.emit({type:"history.message",itemId:message.info.id,payload:{role:message.info.role,text:(message.parts??[]).filter((p:any)=>p.type==="text").map((p:any)=>p.text).join("\n")}});}this.ctx.session.configuration.historyImported=true;}
     await this.subscribe();
     this.ctx.capabilities(Object.fromEntries(["sessions","history","fork","interrupt","streaming","tools","skills","commands","mcp","models","modes","plans","usage","agents","interactions","images","compaction","checkpoints"].map(k=>[k,supported()])));

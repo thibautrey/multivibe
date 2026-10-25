@@ -2,7 +2,7 @@ import express from "express";
 import { randomUUID } from "node:crypto";
 import { HostHarnessRuntime, ADAPTERS } from "./runtime.js";
 import { RemoteHarnessHosts } from "./remote.js";
-import { discoverNativeSessions } from "./discovery.js";
+import { discoverNativeSessions, readNativeSession } from "./discovery.js";
 import { fail, redact, type HarnessTarget } from "./types.js";
 
 export function harnessRuntimeRoutes(runtime?:HostHarnessRuntime,remotes=new RemoteHarnessHosts()) {
@@ -19,6 +19,10 @@ export function harnessRuntimeRoutes(runtime?:HostHarnessRuntime,remotes=new Rem
   router.get("/sessions",route(async(req,res)=>res.json(await proxy(req,"GET","/sessions")??{sessions:runtime!.store.sessions().filter(s=>s.targetId===String(req.query.targetId??"local"))})));
   router.post("/sessions",route(async(req,res)=>{const target=remote(req);return res.status(201).json(target?await remotes.request(target,"POST","/sessions",{...req.body,targetId:"local"}):{session:await runtime!.create(req.body)});}));
   router.get("/native-sessions",route(async(req,res)=>res.json(await proxy(req,"GET",`/native-sessions?harnessId=${encodeURIComponent(String(req.query.harnessId??""))}`)??{sessions:discoverNativeSessions(String(req.query.harnessId??"")).map(({file,...v})=>v)})));
+  router.get("/native-sessions/:sourceId",route(async(req,res)=>{
+    const id=String(req.params.sourceId),harness=String(req.query.harnessId??""),after=Number(req.query.after??0);
+    return res.json(await proxy(req,"GET",`/native-sessions/${encodeURIComponent(id)}?harnessId=${encodeURIComponent(harness)}&after=${after}`)??readNativeSession(harness,id,undefined,after));
+  }));
   router.post("/sessions/import",route(async(req,res)=>{
     const target=remote(req);if(target)return res.status(201).json(await remotes.request(target,"POST","/sessions/import",{...req.body,targetId:"local"}));
     const source=discoverNativeSessions(req.body.harnessId).find(v=>v.sourceId===req.body.sourceId);

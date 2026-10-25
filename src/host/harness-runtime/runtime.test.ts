@@ -8,7 +8,9 @@ import { createServer } from "node:http";
 import express from "express";
 import { HostHarnessRuntime } from "./runtime.js";
 import { harnessRuntimeRoutes } from "./routes.js";
-import { discoverNativeSessions } from "./discovery.js";
+import { legacyHarnessRun } from "./legacy.js";
+import { bridgeModelConnection } from "./bridge.js";
+import { discoverNativeSessions, readNativeSession } from "./discovery.js";
 import { supported, type AdapterContext, type HarnessAdapter, type MessagePart } from "./types.js";
 
 const prompt=(text:string,id=randomUUID())=>({id,type:"prompt",parts:[{type:"text",text}]});
@@ -130,6 +132,8 @@ test("native discovery only returns metadata and isolated-fork sources",t=>{
   fs.writeFileSync(path.join(directory,"old.jsonl"),JSON.stringify({type:"session",id:"native-id",cwd:"/tmp"})+"\n"+JSON.stringify({type:"message",secret:"never return transcript"}));
   fs.symlinkSync(path.join(directory,"old.jsonl"),path.join(directory,"alias.jsonl"));
   const sources=discoverNativeSessions("pi",home);assert.equal(sources.length,1);assert.equal(sources[0].strategy,"isolated_fork");assert.ok(!JSON.stringify(sources).includes("never return"));
+  const preview=readNativeSession("pi",sources[0].sourceId,home);assert.equal(preview.readOnly,true);assert.equal(preview.records.length,2);assert.ok(!JSON.stringify(preview).includes("never return"));assert.equal((preview.records[1] as any).secret,"[private]");
+  assert.throws(()=>readNativeSession("pi","missing",home),/not found/u);
 });
 test("runtime HTTP replay is bounded, read-only and disconnect leaves generation running",async t=>{
   const {runtime,adapters}=fixture(t);const app=express();app.use(harnessRuntimeRoutes(runtime));const server=createServer(app);
@@ -228,7 +232,7 @@ test("stopping expires pending interactions and keeps queued attachments intact"
   const file=runtime.store.attach(s.id,"pending.txt","text/plain",Buffer.from("still pending").toString("base64"));const queued={...prompt("next"),parts:[{type:"text",text:"next"},{type:"attachment",attachmentId:file.id}]};await runtime.command(s.id,queued);
   assert.equal((await runtime.command(s.id,operation("interrupt"))).state,"completed");await rejected;await eventually(()=>!s.activeTurnId);
   assert.equal(runtime.snapshot(s.id).interactions.length,0);assert.equal(runtime.store.receipt(queued.id)!.state,"queued");assert.equal(runtime.store.attachment(s.id,file.id).data.toString(),"still pending");
-  assert.ok(runtime.store.events(s.id).some(e=>e.type==="interaction.updated" && (e.payload as any).status==="expired"));
+  assert.ok(runtime.store.events(s.id).some(e=>e.type==="interaction.updated" && (e.payload as any).status==="cancelled"));
 });
 
 test("Desktop migration supplies prior messages as context once without replaying their actions",async t=>{
@@ -241,4 +245,22 @@ test("Desktop migration supplies prior messages as context once without replayin
   assert.deepEqual(JSON.parse(runtime.store.attachment(s.id,(attachment as any).attachmentId).data.toString()),history);
   assert.equal(received[1].some(p=>p.type==="attachment"),false);assert.equal(received[0].at(-1)?.type,"text");
   await assert.rejects(runtime.create({harnessId:"pi",history:[{role:"system",content:"Cannot inject privileged instructions"}]}),/migration history/u);
+});
+
+test("legacy HTTP clients use supervised sessions and disconnecting leaves the turn running",async t=>{
+  const {runtime,adapters}=fixture(t);const id=randomUUID(),controller=new AbortController();let text="";
+  const result=legacyHarnessRun(runtime,{harnessId:"pi",conversationId:id,prompt:"legacy",model:"fixture"},controller.signal,value=>{text=value;});
+  const disconnected=assert.rejects(result,(e:any)=>e.name==="AbortError");
+  await eventually(()=>!!adapters.get(id)?.finish);controller.abort();await disconnected;
+  assert.equal(runtime.session(id).state,"running");assert.equal(text,"partial");
+  adapters.get(id)!.finish!();await eventually(()=>runtime.session(id).state==="idle");
+  assert.equal(runtime.store.commands(id).filter(c=>c.command.type==="prompt").length,1);
+});
+
+test("remote bridges use only private managed Host credentials and a loopback model gateway",t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),"multivibe-bridge-credentials-"));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));const file=path.join(root,"host-credentials.json");
+  fs.writeFileSync(file,JSON.stringify({schema_version:"multivibe-host-credentials-v1",proxy_api_key:"test-managed-proxy-key-012345678901234567890"}),{mode:0o600});
+  assert.equal(bridgeModelConnection(root,"http://127.0.0.1:1455")?.apiKey,"test-managed-proxy-key-012345678901234567890");
+  assert.equal(bridgeModelConnection(root,"https://external.example.test"),undefined);assert.equal(bridgeModelConnection(root,"http://127.0.0.1:1455/?token=private"),undefined);
+  if(process.platform!=="win32"){fs.chmodSync(file,0o644);assert.equal(bridgeModelConnection(root,"http://127.0.0.1:1455"),undefined);}
 });

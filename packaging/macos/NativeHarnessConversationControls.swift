@@ -11,6 +11,7 @@ import SwiftUI
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             if let conversation {
+                if let session = conversation.runtimeSession { Text("\(session.harnessId)\(session.harnessVersion.map { " · " + $0 } ?? "") · \(conversation.executionTargetID == nil || conversation.executionTargetID == "local" ? "Ce Mac" : conversation.executionTargetID!) · \(session.model ?? "Modèle natif à confirmer")").font(.caption2).foregroundStyle(.secondary).lineLimit(1).textSelection(.enabled) }
                 if conversation.harnessID != nil { NativeHarnessCommandSuggestions(store: store, conversationID: conversation.id) }
                 if let attachments = conversation.draftAttachments, !attachments.isEmpty {
                     ScrollView(.horizontal) {

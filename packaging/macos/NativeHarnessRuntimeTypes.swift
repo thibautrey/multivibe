@@ -57,6 +57,7 @@ struct DesktopHarnessSession: Codable, Sendable {
     var revision: Int; var activeTurnId: String?; var archived: Bool; var pinned: Bool
     var createdAt: Double; var updatedAt: Double; var capabilities: [String: DesktopHarnessCapability]
     var configuration: HarnessJSON?
+    var harnessVersion: String?; var protocolVersion: String?
     var running: Bool { ["starting", "running", "waiting_user", "compacting"].contains(state) }
 }
 struct DesktopMessagePart: Codable, Equatable, Sendable {

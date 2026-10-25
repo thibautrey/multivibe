@@ -134,6 +134,7 @@ import type { MultivibeTeamSyncService, TeamSyncManifest } from "../../team-sync
 import type { ManagedTeamEnrollmentService } from "../../managed-team-enrollment.js";
 import type { HostHarnessRuntime } from "../../host/harness-runtime/runtime.js";
 import { harnessRuntimeRoutes } from "../../host/harness-runtime/routes.js";
+import { legacyHarnessRun } from "../../host/harness-runtime/legacy.js";
 import { isInstallableConversationHarness } from "../../host/conversation-harnesses.js";
 
 const MULTIVIBE_CLOUD_FLOW_ID_PATTERN =
@@ -635,7 +636,14 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       return res.json({ harnesses: [] });
     }
     try {
-      return res.json({ harnesses: await options.hostConversationHarnesses.list() });
+      const [legacy,descriptors]=await Promise.all([options.hostConversationHarnesses.list(),options.hostHarnessRuntime?.catalog()??Promise.resolve([])]);
+      const byId=new Map(descriptors.map(v=>[v.id,v]));
+      return res.json({harnesses:legacy.map(entry=>{
+        const descriptor=byId.get(entry.id);if(!descriptor)return entry;
+        return {...entry,available:descriptor.available && descriptor.configured,configured:descriptor.configured,conversationCapable:true,
+          description:`Conversation supervisée · ${descriptor.protocol}`,unavailableReason:descriptor.reason??(!descriptor.configured?"Connectez ce harness à MultiVibe pour utiliser l’ancien client.":undefined),
+          capabilities:{sessions:descriptor.capabilities.sessions.available,streaming:descriptor.capabilities.streaming.available,tools:descriptor.capabilities.tools.available,longTermMemory:descriptor.capabilities.memory.available}};
+      })});
     } catch (error: any) {
       const status = error instanceof ConversationHarnessError ? error.status : 500;
       return res.status(status).json({ error: error?.message ?? "Conversation harness detection failed" });
@@ -655,17 +663,21 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     res.flushHeaders();
     const emit = (value: unknown) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(value)}\n\n`); };
     try {
-      const result = await options.hostConversationHarnesses.run({
+      const input = {
         harnessId: String(req.params.id) as "hermes-agent" | "pi",
         conversationId: String(req.body?.conversationId ?? ""),
         prompt: String(req.body?.prompt ?? ""),
         model: String(req.body?.model ?? ""),
         ...(req.body?.sessionId ? { sessionId: String(req.body.sessionId) } : {}),
-      }, controller.signal, (text) => emit({ type: "text", text }));
+      };
+      const update = (text:string) => emit({ type: "text", text });
+      const result = options.hostHarnessRuntime
+        ? await legacyHarnessRun(options.hostHarnessRuntime,input,controller.signal,update)
+        : await options.hostConversationHarnesses.run(input,controller.signal,update);
       emit({ type: "result", ...result });
       res.end();
     } catch (error: any) {
-      const status = error instanceof ConversationHarnessError ? error.status : 500;
+      const status = Number.isInteger(error?.status) && error.status>=400 && error.status<=599 ? error.status : 500;
       emit({ type: "error", status, error: error?.message ?? "Conversation harness failed" });
       res.end();
     }
