@@ -3,15 +3,17 @@ import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { fail, HarnessRuntimeError, redact, type AdapterContext } from "./types.js";
 
-export function harnessEnvironment(): NodeJS.ProcessEnv {
+export function harnessEnvironment(nativeCredentials=false): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv={NO_COLOR:"1",TERM:"dumb"};
   for(const key of ["HOME","USER","LOGNAME","PATH","TMPDIR","LANG","LC_ALL","SHELL","XDG_CONFIG_HOME","XDG_DATA_HOME","XDG_STATE_HOME","SSH_AUTH_SOCK","SSL_CERT_FILE","NODE_EXTRA_CA_CERTS","CODEX_HOME","CLAUDE_CONFIG_DIR","PI_CODING_AGENT_DIR","HERMES_HOME","GEMINI_CLI_HOME","OPENCODE_CONFIG_DIR"])
     if(process.env[key]) env[key]=process.env[key];
+  for(const key of ["HTTP_PROXY","HTTPS_PROXY","ALL_PROXY","NO_PROXY","http_proxy","https_proxy","all_proxy","no_proxy"])if(process.env[key])env[key]=process.env[key];
+  if(nativeCredentials)for(const key of ["ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","ANTHROPIC_BASE_URL","CLAUDE_CODE_OAUTH_TOKEN","OPENAI_API_KEY","OPENAI_BASE_URL","OPENAI_ORG_ID","OPENAI_PROJECT_ID","CODEX_API_KEY","GOOGLE_API_KEY","GEMINI_API_KEY","GOOGLE_GENAI_USE_VERTEXAI","GOOGLE_APPLICATION_CREDENTIALS","GOOGLE_CLOUD_PROJECT","GOOGLE_CLOUD_LOCATION","AWS_PROFILE","AWS_REGION","AWS_ACCESS_KEY_ID","AWS_SECRET_ACCESS_KEY","AWS_SESSION_TOKEN","AZURE_OPENAI_API_KEY","AZURE_OPENAI_ENDPOINT","MISTRAL_API_KEY","GROQ_API_KEY","DEEPSEEK_API_KEY","OPENROUTER_API_KEY","LLM_PROVIDER","LLM_MODEL","LLM_API_KEY","LLM_BASE_URL"])if(process.env[key])env[key]=process.env[key];
   return env;
 }
 export function startProcess(context: AdapterContext, args: string[], extraEnv: NodeJS.ProcessEnv={}): ChildProcessWithoutNullStreams {
   if(context.target.kind==="container") return spawn("docker",["exec","-i","-w",context.session.workspace,context.target.container!,context.executable,...args],{stdio:"pipe",windowsHide:true});
-  return spawn(context.executable,args,{cwd:context.session.workspace,env:{...harnessEnvironment(),...extraEnv},stdio:"pipe",windowsHide:true});
+  return spawn(context.executable,args,{cwd:context.session.workspace,env:{...harnessEnvironment(context.session.authMode==="native"),...extraEnv},stdio:"pipe",windowsHide:true});
 }
 
 /** JSONL transport. The process belongs to the Host, never to an HTTP subscriber. */

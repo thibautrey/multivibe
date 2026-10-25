@@ -11,6 +11,7 @@ import SwiftUI
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             if let conversation {
+                if conversation.harnessID != nil { NativeHarnessCommandSuggestions(store: store, conversationID: conversation.id) }
                 if let attachments = conversation.draftAttachments, !attachments.isEmpty {
                     ScrollView(.horizontal) {
                         HStack {
@@ -74,6 +75,36 @@ import SwiftUI
         }
         if let item = editingNative { store.editNativeQueued(item, text: editText) }
         editing = nil; editingNative = nil
+    }
+}
+
+@MainActor private struct NativeHarnessCommandSuggestions: View {
+    @ObservedObject var store: NativeChatStore
+    let conversationID: UUID
+    @State private var commands: [HarnessJSON] = []
+    private var conversation: NativeChatConversation? { store.conversations.first { $0.id == conversationID } }
+    private var prefix: String? {
+        guard let draft = conversation?.draft, draft.hasPrefix("/"), !draft.contains(where: { $0.isWhitespace }) else { return nil }
+        return String(draft.dropFirst()).lowercased()
+    }
+    var body: some View {
+        Group {
+            if let prefix {
+                let matches = commands.filter { ($0["name"].string ?? "").lowercased().hasPrefix(prefix) }
+                ForEach(Array(matches.prefix(6).enumerated()), id: \.offset) { _, command in
+                    Button {
+                        store.edit { $0.draft = "/" + (command["name"].string ?? "") + " " }
+                    } label: {
+                        HStack { Text("/" + (command["name"].string ?? "")); Text(command["description"].string ?? "").lineLimit(1).foregroundStyle(.secondary); Spacer() }.font(.caption)
+                    }.buttonStyle(.borderless)
+                }
+            }
+        }.task(id: conversation?.runtimeSessionID) {
+            guard conversation?.runtimeSessionID != nil else { return }
+            if let receipt = try? await store.command(conversationID, type: "inspect", value: .object(["subject": .string("commands")])), let result = receipt.result {
+                commands = result.array.isEmpty ? result["commands"].array : result.array
+            }
+        }
     }
 }
 

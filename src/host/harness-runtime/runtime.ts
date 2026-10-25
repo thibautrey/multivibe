@@ -9,7 +9,7 @@ import type { HostHarnessIntegrationManager } from "../harness-integrations.js";
 import { adapterFor } from "./adapters.js";
 import { harnessResources, writeHarnessResource } from "./resources.js";
 import { HarnessRuntimeStore } from "./store.js";
-import { capabilities, fail, identifier, messageParts, redact, requiredText, supported, unsupported, type AdapterContext, type AdapterEvent, type HarnessAdapter, type HarnessCommand, type HarnessCommandReceipt, type HarnessDescriptor, type HarnessEvent, type HarnessSession, type PendingInteraction } from "./types.js";
+import { capabilities, fail, HarnessRuntimeError, identifier, messageParts, redact, requiredText, supported, unsupported, type AdapterContext, type AdapterEvent, type HarnessAdapter, type HarnessCommand, type HarnessCommandReceipt, type HarnessDescriptor, type HarnessEvent, type HarnessSession, type PendingInteraction } from "./types.js";
 
 export const ADAPTERS = {
   "hermes-agent": {name:"Hermes Agent",protocol:"acp",command:"hermes"},
@@ -107,13 +107,20 @@ export class HostHarnessRuntime {
     const descriptor=(await this.catalog(targetId)).find(v=>v.id===harnessId);if(!descriptor?.available)fail(descriptor?.reason??"Harness is unavailable",409);
     const authMode=input.authMode??"native";if(!["native","multivibe"].includes(authMode))fail("Invalid model authentication mode");
     if(authMode==="multivibe" && (!descriptor.configured || !input.model))fail("Connect this harness to MultiVibe and select a model first",409);
+    let history:string|undefined;
+    if(input.history!==undefined){
+      if(!Array.isArray(input.history) || input.history.length>20_000 || input.history.some((v:any)=>!["user","assistant"].includes(v?.role) || typeof v.content!=="string"))fail("Invalid conversation migration history");
+      history=JSON.stringify(input.history);if(Buffer.byteLength(history)>16*1024*1024)fail("Conversation migration exceeds 16 MiB; export it before continuing",413);
+    }
     let workspace:string;
     if(input.workspace){workspace=requiredText(input.workspace,4096);if(!path.isAbsolute(workspace))fail("Workspace must be an absolute path");if(target.kind==="local"){workspace=fs.realpathSync(workspace);if(!fs.statSync(workspace).isDirectory())fail("Workspace is not a directory");}}
     else {if(target.kind==="container")fail("Specify a workspace inside the container");workspace=path.join(this.root,"workspaces",id);fs.mkdirSync(workspace,{recursive:true,mode:0o700});}
     if(input.nativeSessionId)fail("Use native-session discovery and its ownership check to resume an external session",409);
     const now=Date.now();const s:HarnessSession={id,harnessId,targetId,workspace,title:typeof input.title==="string"?input.title.slice(0,200):"Nouvelle conversation",...(input.model?{model:requiredText(input.model,256)}:{}),authMode,state:"idle",queuePaused:false,revision:0,archived:false,pinned:false,createdAt:now,updatedAt:now,capabilities:descriptor.capabilities};
     const registration=this.store.registrations().find(v=>v.id===harnessId);if(registration)s.configuration={acpArgs:registration.args};
-    this.states.set(id,s);this.store.save(s);this.emit(id,{type:"session.created",payload:s});return s;
+    this.states.set(id,s);this.store.save(s);
+    if(history){try{const attachment=this.store.attach(id,"prior-conversation.json","text/plain",Buffer.from(history).toString("base64"));s.configuration={...s.configuration,migrationContext:attachment.id};this.store.save(s);this.emit(id,{type:"notice",payload:{message:"The previous conversation is preserved as an attached transcript for the first turn. Native operations from the old session are not replayed.",attachment}});}catch(e){this.states.delete(id);this.store.delete(id);throw e;}}
+    this.emit(id,{type:"session.created",payload:s});return s;
   }
   update(id:string,value:any) {
     const s=this.session(id);
@@ -170,14 +177,14 @@ export class HostHarnessRuntime {
         case "queue_reorder": {
           const pending=this.store.commands(id).filter(c=>c.command.type==="prompt" && c.state==="queued");
           if(!Array.isArray(v.ids) || v.ids.length!==pending.length || new Set(v.ids).size!==pending.length || v.ids.some(key=>!pending.some(c=>c.id===key)))fail("Reordering must include exactly the pending messages",409);
-          (v.ids as string[]).forEach((key,index)=>{const c=pending.find(p=>p.id===key)!;c.ordinal=index;this.store.saveReceipt(c);});break;
+          (v.ids as string[]).forEach((key,index)=>{const c=pending.find(p=>p.id===key)!;c.ordinal=index;this.store.saveReceipt(c);this.emit(id,{type:"command.updated",payload:c});});break;
         }
         case "interrupt": {
           s.queuePaused=true;s.state="interrupted";this.save(s);
           const activeId=s.activeTurnId,active=activeId?this.store.receipt(activeId):undefined;
           if(active){active.cancelRequested=true;this.store.saveReceipt(active);}
-          for(const [key,answer] of this.answers)if(answer.sessionId===id){answer.reject(new Error("Interaction interrupted"));clearTimeout(answer.timer);this.answers.delete(key);this.privateInteractions.delete(key);const interaction=this.store.interactions(id).find(i=>i.id===key);if(interaction){interaction.status="expired";this.store.interaction(interaction);}}
-          if(this.adapters.has(id) && activeId){const adapter=await this.ensure(id);await adapter.interrupt();if(adapter.restartAfterInterrupt){adapter.close();this.adapters.delete(id);}const current=this.store.receipt(activeId);if(current){current.cancelRequested=true;current.cancelAcknowledged=true;if(!["completed","failed","cancelled"].includes(current.state)){current.state="cancelled";this.emit(id,{type:"turn.cancelled",itemId:activeId,payload:{commandId:activeId}});}this.store.saveReceipt(current);s.state=current.state==="completed"?"idle":current.state==="failed"?"failed":"interrupted";}}
+          for(const [key,answer] of this.answers)if(answer.sessionId===id){answer.reject(new HarnessRuntimeError("Interaction interrupted",499));clearTimeout(answer.timer);this.answers.delete(key);this.privateInteractions.delete(key);const interaction=this.store.interactions(id).find(i=>i.id===key);if(interaction){interaction.status="expired";this.store.interaction(interaction);this.emit(id,{type:"interaction.updated",payload:interaction});}}
+          if(this.adapters.has(id) && activeId){const adapter=await this.ensure(id);try{await adapter.interrupt();}catch(e:any){if(e.status!==499)throw e;}if(adapter.restartAfterInterrupt){adapter.close();this.adapters.delete(id);}const current=this.store.receipt(activeId);if(current){current.cancelRequested=true;current.cancelAcknowledged=true;if(!["completed","failed","cancelled"].includes(current.state)){current.state="cancelled";this.emit(id,{type:"turn.cancelled",itemId:activeId,payload:{commandId:activeId}});}this.store.saveReceipt(current);s.state=current.state==="completed"?"idle":current.state==="failed"?"failed":"interrupted";}}
           break;
         }
         case "steer": {
@@ -236,7 +243,12 @@ export class HostHarnessRuntime {
           if(this.store.receipt(c.id)?.cancelRequested)c.state="cancelled";
           else {
             s.state="running";c.state="accepted";this.store.saveReceipt(c);this.save(s);this.emit(id,{type:"command.updated",payload:c});
-            submitted=true;await adapter.prompt(c.command.parts!);
+            let parts=c.command.parts!;
+            if(typeof s.configuration?.migrationContext==="string"){
+              parts=[{type:"text",text:"Previous conversation transcript, supplied as conversation context. Continue from it; do not repeat actions merely because they appear in the transcript."},{type:"attachment",attachmentId:s.configuration.migrationContext},...parts];
+              delete s.configuration.migrationContext;this.store.save(s);
+            }
+            submitted=true;await adapter.prompt(parts);
             const terminal=this.nativeTerminals.get(c.id);c.state=terminal?.state??(this.store.receipt(c.id)?.cancelRequested?"cancelled":"completed");if(terminal?.error)c.error=terminal.error;
           }
           s.state=c.state==="cancelled"?"interrupted":c.state==="failed"?"failed":"idle";if(c.state==="failed")s.queuePaused=true;
@@ -252,7 +264,7 @@ export class HostHarnessRuntime {
         }
         if(this.stopped)break;
         const cancellation=this.store.receipt(c.id);c.cancelRequested=cancellation?.cancelRequested;c.cancelAcknowledged=cancellation?.cancelAcknowledged;
-        this.store.saveReceipt(c);this.emit(id,{type:`turn.${c.state}`,payload:{commandId:c.id,error:c.error}});if(c.state!=="uncertain"){delete s.activeTurnId;this.nativeTerminals.delete(c.id);}this.save(s);
+        this.store.saveReceipt(c);this.emit(id,{type:"command.updated",payload:c});this.emit(id,{type:`turn.${c.state}`,payload:{commandId:c.id,error:c.error}});if(c.state!=="uncertain"){delete s.activeTurnId;this.nativeTerminals.delete(c.id);}this.save(s);
       }
     }finally{this.working.delete(id);}
   }

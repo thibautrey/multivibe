@@ -267,6 +267,9 @@ struct NativeChatConversation: Codable, Identifiable {
         var body: [String: HarnessJSON] = ["id": .string(id.uuidString.lowercased()), "harnessId": .string(harness), "targetId": .string(conversation.executionTargetID ?? "local"), "authMode": .string(conversation.authMode ?? "native"), "title": .string(conversation.title)]
         if conversation.authMode == "multivibe", !conversation.model.isEmpty { body["model"] = .string(conversation.model) }
         if let workspace = conversation.workspace, !workspace.isEmpty { body["workspace"] = .string(workspace) }
+        if !conversation.messages.isEmpty {
+            body["history"] = .array(conversation.messages.filter { ["user", "assistant"].contains($0.role) }.map { .object(["role": .string($0.role), "content": .string($0.content)]) })
+        }
         let response = try await runtime.call("/sessions", method: "POST", target: conversation.executionTargetID ?? "local", body: .object(body))
         let session = try response["session"].decode(DesktopHarnessSession.self)
         guard let current = conversations.firstIndex(where: { $0.id == id }) else { throw DesktopHarnessError.invalidResponse }
@@ -451,10 +454,14 @@ struct NativeChatConversation: Codable, Identifiable {
         let destination = index + (up ? -1 : 1); guard queue.indices.contains(destination) else { return }; queue.swapAt(index, destination); conversations[i].nativeQueue = queue; save()
     }
     func importRuntimeSession(_ session: DesktopHarnessSession, target: String) {
-        guard let id = UUID(uuidString: session.id) else { return }
+        if let existing = conversations.first(where: { $0.runtimeSessionID == session.id && ($0.executionTargetID ?? "local") == target }) {
+            selection = existing.id; save(); attachRuntime(existing.id); return
+        }
+        var id = UUID(uuidString: session.id) ?? UUID()
+        if conversations.contains(where: { $0.id == id }) { id = UUID() }
         var conversation = NativeChatConversation(); conversation.id = id; conversation.title = session.title
         conversation.model = session.model ?? ""; conversation.harnessID = session.harnessId; conversation.runtimeSessionID = session.id
         conversation.runtimeSession = session; conversation.executionTargetID = target; conversation.authMode = session.authMode; conversation.workspace = session.workspace
-        conversations.removeAll { $0.id == id }; conversations.insert(conversation, at: 0); selection = id; save(); attachRuntime(id)
+        conversations.insert(conversation, at: 0); selection = id; save(); attachRuntime(id)
     }
 }

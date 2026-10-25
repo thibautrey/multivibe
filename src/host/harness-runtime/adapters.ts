@@ -263,7 +263,8 @@ export class CodexAdapter extends Adapter {
       else this.finish({status:p.turn.status});
     } else if(v.method==="item/started" || v.method==="item/completed") {
       const item=p.item??{};
-      if(["commandExecution","fileChange","mcpToolCall","dynamicToolCall","webSearch","imageView","collabAgentToolCall"].includes(item.type))this.ctx.emit({type:item.type==="collabAgentToolCall"?"agent":"tool",itemId:item.id,payload:{phase:v.method,item}});
+      if(item.type==="agentMessage" && v.method==="item/completed")this.ctx.emit({type:"message.part",itemId:item.id,payload:{text:item.text??"",role:"assistant",phase:item.phase}});
+      else if(["commandExecution","fileChange","mcpToolCall","dynamicToolCall","webSearch","imageView","collabAgentToolCall","collabToolCall"].includes(item.type))this.ctx.emit({type:["collabAgentToolCall","collabToolCall"].includes(item.type)?"agent":"tool",itemId:item.id,payload:{phase:v.method,item}});
       else if(item.type==="contextCompaction"){this.ctx.emit({type:"compaction",payload:{phase:v.method,item}});if(v.method==="item/completed"){this.compactionDone?.resolve(item);this.compactionDone=undefined;}}
       else if(item.type==="plan")this.ctx.emit({type:"plan",payload:item});
       else this.ctx.emit({type:"native.event",payload:v});
@@ -339,7 +340,7 @@ export class ClaudeAdapter extends Adapter {
     this.query=sdk.query({prompt:this.queue.stream(),options:{
       cwd:s.workspace,pathToClaudeCodeExecutable:this.ctx.executable,settingSources:["user","project","local"],
       systemPrompt:{type:"preset",preset:"claude_code"},includePartialMessages:true,permissionMode:"default",abortController:this.abort,
-      env:harnessEnvironment(),...(s.nativeSessionId?{resume:s.nativeSessionId}:{}),...(s.configuration?.forkNativeSession?{forkSession:true}:{}),...(s.model?{model:s.model}:{}),enableFileCheckpointing:true,
+      env:harnessEnvironment(s.authMode==="native"),...(s.nativeSessionId?{resume:s.nativeSessionId}:{}),...(s.configuration?.forkNativeSession?{forkSession:true}:{}),...(s.model?{model:s.model}:{}),enableFileCheckpointing:true,
       ...(this.settingsFile?{settings:this.settingsFile}:{}),
       stderr:(message:string)=>{if(this.stderrBytes<16_384){this.stderrBytes+=message.length;this.ctx.emit({type:"diagnostic",payload:{message:String(redact(message)).slice(0,2048)}});}},
       onElicitation:async(request:any)=>this.ctx.ask(request.mode==="url"?"authentication":"question",request.message??"Un connecteur attend une réponse",{...request,_kind:"mcp_elicitation"}),
@@ -355,8 +356,8 @@ export class ClaudeAdapter extends Adapter {
   }
   private async consume() {for await(const event of this.query)this.event(event);if(!this.abort.signal.aborted){this.failure=new Error("Claude SDK stream ended before the session closed");this.rejectTurn(this.failure);}}
   protected event(v:any) {
-    if(v.session_id && v.session_id!==this.ctx.session.nativeSessionId)this.ctx.nativeSession(v.session_id);
     if(v.parent_tool_use_id && ["assistant","stream_event","user"].includes(v.type)){this.ctx.emit({type:"agent",itemId:v.parent_tool_use_id,payload:v});return;}
+    if(v.session_id && v.session_id!==this.ctx.session.nativeSessionId)this.ctx.nativeSession(v.session_id);
     if(v.type==="stream_event") {
       const e=v.event;if(e?.type==="message_start")this.currentMessageId=e.message?.id??this.currentMessageId;
       else if(e?.type==="content_block_delta" && e.delta?.type==="text_delta"){this.sawText=true;this.ctx.emit({type:"message.delta",itemId:`${this.currentMessageId}:${e.index??0}`,payload:{text:e.delta.text,role:"assistant"}});}
@@ -481,11 +482,11 @@ export class OpenCodeAdapter extends Adapter {
       return {type:"text",text:this.text([p])};
     });
     const model=this.ctx.session.model;const slash=model?.indexOf("/")??-1;
-    const selected=model?(slash>0?{providerID:model.slice(0,slash),modelID:model.slice(slash+1)}:this.ctx.session.authMode==="multivibe"?{providerID:"multivibe",modelID:model}:undefined):undefined;
+    const selected=model?(this.ctx.session.authMode==="multivibe"?{providerID:"multivibe",modelID:model}:slash>0?{providerID:model.slice(0,slash),modelID:model.slice(slash+1)}:undefined):undefined;
     await this.untilEnd(()=>this.call("POST",`/session/${this.nativeId}/prompt_async`,{parts:converted,...(selected?{model:selected}:{}),...(this.ctx.session.configuration?.mode?{agent:this.ctx.session.configuration.mode}:{})}));
   }
   async interrupt(){const done=this.settled;await this.call("POST",`/session/${this.nativeId}/abort`);await done;}
-  async compact(){const model=this.ctx.session.model??"";const slash=model.indexOf("/");if(slash<0)fail("Select a provider/model before manual OpenCode compaction",422);return this.call("POST",`/session/${this.nativeId}/summarize`,{providerID:model.slice(0,slash),modelID:model.slice(slash+1)});}
+  async compact(){const model=this.ctx.session.model??"";const slash=model.indexOf("/");if(!model || this.ctx.session.authMode!=="multivibe" && slash<0)fail("Select a provider/model before manual OpenCode compaction",422);return this.call("POST",`/session/${this.nativeId}/summarize`,this.ctx.session.authMode==="multivibe"?{providerID:"multivibe",modelID:model}:{providerID:model.slice(0,slash),modelID:model.slice(slash+1)});}
   async inspect(subject:string) {
     const routes:Record<string,string>={history:`/session/${this.nativeId}/message`,models:"/provider",commands:"/command",mcp:"/mcp",tools:"/tool/ids",agents:`/session/${this.nativeId}/children`,plans:`/session/${this.nativeId}/todo`,settings:"/config",modes:"/agent",skills:"/skill"};
     return routes[subject]?this.call("GET",routes[subject]):super.inspect(subject);
