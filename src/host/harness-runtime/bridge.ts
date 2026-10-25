@@ -24,7 +24,7 @@ async function call(method:string,route:string,body?:unknown):Promise<{status:nu
 async function daemon() {
   fs.mkdirSync(root,{recursive:true,mode:0o700});
   if(fs.existsSync(socket)){try{await call("GET","/targets");return;}catch(e:any){if(!["ECONNREFUSED","ENOENT"].includes(e.code))throw e;if(fs.lstatSync(socket).isSocket())fs.unlinkSync(socket);else throw new Error("Bridge socket path is not a socket");}}
-  const integrations=new HostHarnessIntegrationManager({statePath:path.join(root,"integrations.json"),baseUrl:process.env.MULTIVIBE_HARNESS_MODEL_BASE_URL??"http://127.0.0.1:1455"});
+  const integrations=new HostHarnessIntegrationManager({homeDirectory:os.homedir(),statePath:path.join(root,"integrations.json"),baseUrl:process.env.MULTIVIBE_HARNESS_MODEL_BASE_URL??"http://127.0.0.1:1455"});
   const runtime=new HostHarnessRuntime(root,integrations);const app=express();app.use(harnessRuntimeRoutes(runtime));
   const server=app.listen(socket,()=>fs.chmodSync(socket,0o600));server.on("error",()=>process.exitCode=1);
   const stop=async()=>{server.close();await runtime.close();try{fs.unlinkSync(socket);}catch{}};
