@@ -19,3 +19,14 @@ test('native chat preserves local history and isolates generation from navigatio
     console.log(stdout.trim());
   } finally { await rm(temporary, { recursive: true, force: true }); }
 });
+
+test('native file imports preserve ordered drafts and reject unsupported or oversized files', { skip: process.platform !== 'darwin', timeout: 60000 }, async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(), 'multivibe-file-import-test-'));
+  try {
+    const binary = path.join(temporary, 'test');
+    await execute('xcrun', ['swiftc', '-parse-as-library', path.join(root, 'packaging/macos/NativeChatFileImport.swift'), path.join(root, 'packaging/macos/validation/NativeChatFileImportHarness.swift'), '-o', binary]);
+    const { stdout } = await execute(binary);
+    assert.match(stdout, /PASS ordered multi-file import/);
+    console.log(stdout.trim());
+  } finally { await rm(temporary, { recursive: true, force: true }); }
+});
