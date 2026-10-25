@@ -203,6 +203,9 @@ enum HostAssistantError: Error { case emptyReply }
         precondition(catalog.models.first?.id == "native-picked" && catalog.models.first?.provider == "native-provider")
         let effort = try await store.effortCatalog(store.selection!)!
         try await store.selectEffort("high", catalog: effort, conversationID: store.selection!)
+        try await store.resetEffort(catalog: effort, conversationID: store.selection!)
+        precondition(store.current?.selectedEffort == nil)
+        try await store.selectEffort("high", catalog: effort, conversationID: store.selection!)
         do { try await store.selectEffort("invented", catalog: effort, conversationID: store.selection!); preconditionFailure("Unadvertised effort was accepted") }
         catch { }
         let effortSelection = store.current!

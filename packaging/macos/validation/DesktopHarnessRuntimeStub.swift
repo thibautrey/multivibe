@@ -10,7 +10,7 @@ import Foundation
         let body = body ?? .null
         if route == "/effort" {
             precondition(body["harnessId"].string == "pi")
-            return .object(["effort": .object(["options": .array([.object(["value": .string("high"), "label": .string("High")])]), "currentValue": .string("high")])])
+            return .object(["effort": .object(["options": .array([.object(["value": .string("low"), "label": .string("Low")]), .object(["value": .string("high"), "label": .string("High")])]), "currentValue": .string("low"), "defaultValue": .string("low")])])
         }
         if route == "/models" {
             precondition(body["harnessId"].string == "pi")

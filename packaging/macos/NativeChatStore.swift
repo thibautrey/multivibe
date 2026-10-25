@@ -488,6 +488,17 @@ private struct NativeChatModelPreference: Codable {
         guard let i = conversations.firstIndex(where: { $0.id == id }), conversations[i].effortContext == key else { return }
         conversations[i].effortLevel = value; conversations[i].effortModelKey = key; save()
     }
+    func resetEffort(catalog: DesktopHarnessEffort, conversationID id: UUID) async throws {
+        guard catalog.defaultValue != nil,
+              let conversation = conversations.first(where: { $0.id == id }), !isGenerating(id) else { throw DesktopHarnessError.rejected("Le niveau d’effort par défaut n’est pas disponible.") }
+        let key = conversation.effortContext
+        if conversation.runtimeSessionID != nil {
+            _ = try await command(id, type: "configure", value: .object(["effort": .null]))
+            try await refreshRuntime(id)
+        }
+        guard let i = conversations.firstIndex(where: { $0.id == id }), conversations[i].effortContext == key else { return }
+        conversations[i].effortLevel = nil; conversations[i].effortModelKey = nil; save()
+    }
     func modelCatalog(_ id: UUID) async throws -> DesktopHarnessModelCatalog {
         guard let conversation = conversations.first(where: { $0.id == id }), let harness = conversation.harnessID else { throw DesktopHarnessError.invalidResponse }
         var body: [String: HarnessJSON] = ["harnessId": .string(harness)]

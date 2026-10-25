@@ -335,6 +335,8 @@ test("effort discovery uses the chosen model and preserves session/target owners
   assert.equal(session.configuration?.pendingEffort,undefined);assert.equal(session.configuration?.effort,"high");
   await runtime.command(session.id,operation("configure",{effort:"low"}));
   assert.equal(runtime.store.sessions().find(s=>s.id===session.id)?.configuration?.effort,"low");
+  await runtime.command(session.id,operation("configure",{effort:null}));
+  assert.equal(runtime.store.sessions().find(s=>s.id===session.id)?.configuration?.effort,undefined);
   await runtime.command(session.id,operation("configure",{model:"other"}));assert.equal(session.configuration?.effort,undefined);
   await assert.rejects(runtime.effort({harnessId:"hermes-agent",sessionId:session.id}),/does not match/);
 });

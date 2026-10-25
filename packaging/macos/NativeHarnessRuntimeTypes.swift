@@ -121,6 +121,7 @@ struct DesktopHarnessEffort: Codable, Equatable, Sendable {
     }
     let options: [Option]
     let currentValue: String?
+    let defaultValue: String?
 }
 struct DesktopHarnessModel: Codable, Identifiable, Sendable {
     let id: String; let name: String; let provider: String?; let description: String?; let isDefault: Bool?

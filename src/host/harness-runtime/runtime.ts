@@ -319,6 +319,7 @@ export class HostHarnessRuntime {
           receipt.result=await (await this.ensure(id)).configure(v);
           if(typeof v.model==="string"){s.model=v.model;if(s.configuration)delete s.configuration.effort;}
           if(typeof v.effort==="string")s.configuration={...s.configuration,effort:v.effort};
+          else if(v.effort===null && s.configuration)delete s.configuration.effort;
           break;
         }
         case "compact": {
