@@ -44,6 +44,7 @@ struct ChatView: View {
     @State private var lastStreamingHaptic = Date.distantPast
     @State private var voiceConversationPresented = false
     @State private var voiceConversationPreparing = false
+    @State private var composerContextExpanded = false
     @FocusState private var composerFocused: Bool
     private let latestMessageAnchor = "latest-message"
 
@@ -513,7 +514,7 @@ struct ChatView: View {
         UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
     private var welcome: some View {
-        ChatWelcomeView(text: $text, suggestions: suggestions, execute: executeSuggestion, edit: { suggestion in
+        ChatWelcomeView(suggestions: suggestions, execute: executeSuggestion, edit: { suggestion in
             highlightedSuggestion = suggestion.id
             suggestionsPresented = true
         })
@@ -559,30 +560,38 @@ struct ChatView: View {
         @Bindable var manager = manager
         return VStack(alignment: .leading, spacing: 8) {
             if ModelExecution(manager.selectedModel).isLocal || manager.session != nil {
-                VStack(alignment:.leading,spacing:6) {
-                    if ModelExecution(manager.selectedModel).isLocal {
-                        Label(HermesOnDeviceCapabilities.current.title, systemImage: "iphone")
-                        Text(HermesOnDeviceCapabilities.current.summary).font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        Label("Hermes · environnement Linux personnel",systemImage:"cloud")
+                DisclosureGroup(isExpanded: $composerContextExpanded) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if ModelExecution(manager.selectedModel).isLocal {
+                            Text(HermesOnDeviceCapabilities.current.summary)
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if manager.session != nil {
+                            Button(manager.currentCloudHermesAuthorized ? "Gérer les autorisations de cette conversation" : "Autoriser Hermes pour cette conversation") { cloudHermesConsentPresented = true }
+                        }
+                        if let status = manager.currentCloudHermesStatus {
+                            Text("Exécution : " + status.replacingOccurrences(of: "_", with: " ")).font(.caption)
+                        }
+                        if manager.currentCloudHermesPending {
+                            Text("La reprise vérifie la même exécution. Aucune commande incertaine ne sera rejouée automatiquement.").font(.caption).foregroundStyle(.secondary)
+                            HStack {
+                                Button("Vérifier la reprise") { Task { await manager.resumeCloudHermes() } }
+                                Button("Annuler l’exécution", role: .destructive) { Task { await manager.cancelPendingCloudHermes() } }
+                            }.disabled(manager.isStreaming)
+                        }
+                        if manager.currentCloudHermesStatus == "awaiting_resolution" {
+                            Text("Des effets restent à vérifier. Examinez l’environnement avant de recommencer ; annuler ne revient pas sur les commandes déjà exécutées.").font(.caption).foregroundStyle(.orange)
+                        }
                     }
-                    if manager.session != nil {
-                        Button(manager.currentCloudHermesAuthorized ? "Gérer les autorisations de cette conversation" : "Autoriser Hermes pour cette conversation") { cloudHermesConsentPresented = true }
-                    }
-                    if let status = manager.currentCloudHermesStatus {
-                        Text("Exécution : " + status.replacingOccurrences(of:"_",with:" ")).font(.caption)
-                    }
-                    if manager.currentCloudHermesPending {
-                        Text("La reprise vérifie la même exécution. Aucune commande incertaine ne sera rejouée automatiquement.").font(.caption).foregroundStyle(.secondary)
-                        HStack {
-                            Button("Vérifier la reprise") { Task { await manager.resumeCloudHermes() } }
-                            Button("Annuler l’exécution",role:.destructive) { Task { await manager.cancelPendingCloudHermes() } }
-                        }.disabled(manager.isStreaming)
-                    }
-                    if manager.currentCloudHermesStatus == "awaiting_resolution" {
-                        Text("Des effets restent à vérifier. Examinez l’environnement avant de recommencer ; annuler ne revient pas sur les commandes déjà exécutées.").font(.caption).foregroundStyle(.orange)
-                    }
-                }.accessibilityIdentifier("cloudHermesStatus")
+                    .padding(.top, 6)
+                } label: {
+                    Label(ModelExecution(manager.selectedModel).isLocal ? "Sur cet iPhone" : "Hermes Cloud",
+                          systemImage: ModelExecution(manager.selectedModel).isLocal ? "iphone" : "cloud")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .accessibilityIdentifier("cloudHermesStatus")
             }
             if let error = voice.error {
                 Text(error).font(.callout).foregroundStyle(.red)
@@ -607,45 +616,55 @@ struct ChatView: View {
                 .accessibilityLabel("Changer de mode d’accès : \(access.label)")
                 .disabled(manager.isStreaming)
             }
-            HStack(alignment: .bottom, spacing: 4) {
-                ModelPickerButton(models: manager.models, selectedModel: $manager.selectedModel,
-                                  isLoading: manager.isLoadingModels, isDisabled: manager.isStreaming,
-                                  compact: true) {
-                    await manager.reloadModels()
-                }
+            VStack(alignment: .leading, spacing: 2) {
                 TextField("Écrire à MultiVibe", text: $text, axis: .vertical)
                     .focused($composerFocused)
                     .submitLabel(.send)
                     .onSubmit(sendComposerMessage)
                     .accessibilityLabel("Message")
                     .lineLimit(1...4)
-                    .padding(.vertical, 11)
-                if manager.isStreaming {
-                    composerCircleButton("Arrêter", systemImage: "stop.fill", foreground: .white, background: .primary) { manager.stop() }
-                } else if voice.recording {
-                    composerCircleButton("Terminer la dictée", systemImage: "stop.fill", foreground: .white, background: .red) { voice.stop() }
-                        .accessibilityIdentifier("stopDictation")
-                } else if voice.starting {
-                    ProgressView().frame(minWidth: 44, minHeight: 44)
-                        .accessibilityLabel("Démarrage de la dictée")
-                } else if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Button("Dicter sur cet appareil", systemImage: "mic") { startVoiceInput() }
-                        .accessibilityIdentifier("startDictation")
-                        .font(.title3.weight(.medium)).frame(minWidth: 40, minHeight: 44)
-                    composerCircleButton("Démarrer une conversation vocale", systemImage: "waveform", foreground: .white, background: .primary) { startVoiceConversation() }
-                        .accessibilityIdentifier("startVoiceConversation")
-                } else {
-                    composerCircleButton("Envoyer", systemImage: "arrow.up", foreground: .white, background: .primary) { sendComposerMessage() }
-                        .disabled(manager.selectedModel.isEmpty || (manager.isSynchronizing && !ModelExecution(manager.selectedModel).isLocal))
+                    .padding(.horizontal, 12)
+                    .padding(.top, 12)
+                    .padding(.bottom, 6)
+                HStack(spacing: 8) {
+                    Menu("Ajouter", systemImage: "plus") {
+                        Button("Documents et outils", systemImage: "folder") { documentsPresented = true }
+                        Button("Mémoire", systemImage: "brain") { manager.memoryPresented = true }
+                        Button("Confidentialité et données", systemImage: "hand.raised") { privacyPresented = true }
+                    }
+                    .labelStyle(.iconOnly)
+                    .font(.title2.weight(.regular))
+                    .frame(width: 40, height: 40)
+                    ModelPickerButton(models: manager.models, selectedModel: $manager.selectedModel,
+                                      isLoading: manager.isLoadingModels, isDisabled: manager.isStreaming) {
+                        await manager.reloadModels()
+                    }
+                    Spacer(minLength: 0)
+                    if manager.isStreaming {
+                        composerCircleButton("Arrêter", systemImage: "stop.fill", foreground: .white, background: .primary, size: 36) { manager.stop() }
+                    } else if voice.recording {
+                        composerCircleButton("Terminer la dictée", systemImage: "stop.fill", foreground: .white, background: .red, size: 36) { voice.stop() }
+                            .accessibilityIdentifier("stopDictation")
+                    } else if voice.starting {
+                        ProgressView().frame(width: 36, height: 36)
+                            .accessibilityLabel("Démarrage de la dictée")
+                    } else if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Button("Dicter sur cet appareil", systemImage: "mic") { startVoiceInput() }
+                            .accessibilityIdentifier("startDictation")
+                            .font(.title3.weight(.medium)).frame(width: 36, height: 36)
+                        composerCircleButton("Démarrer une conversation vocale", systemImage: "waveform", foreground: .white, background: MultiVibeTheme.accent, size: 36) { startVoiceConversation() }
+                            .accessibilityIdentifier("startVoiceConversation")
+                    } else {
+                        composerCircleButton("Envoyer", systemImage: "arrow.up", foreground: .white, background: MultiVibeTheme.accent, size: 36) { sendComposerMessage() }
+                            .disabled(manager.selectedModel.isEmpty || (manager.isSynchronizing && !ModelExecution(manager.selectedModel).isLocal))
+                    }
                 }
             }
             .labelStyle(.iconOnly)
             .buttonStyle(.plain)
-            .padding(.leading, 8)
-            .padding(.trailing, 6)
-            .padding(.vertical, 5)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous).stroke(.primary.opacity(0.12), lineWidth: 0.7))
+            .padding(6)
+            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).stroke(.primary.opacity(0.08), lineWidth: 0.7))
             .shadow(color: .black.opacity(0.06), radius: 12, y: 4)
         }
         .padding(.horizontal, 12)
@@ -656,11 +675,12 @@ struct ChatView: View {
     }
 
     private func composerCircleButton(_ title: String, systemImage: String, foreground: Color,
-                                      background: Color, action: @escaping () -> Void) -> some View {
+                                      background: Color, size: CGFloat = 44,
+                                      action: @escaping () -> Void) -> some View {
         Button(title, systemImage: systemImage, action: action)
             .font(.headline.weight(.semibold))
             .foregroundStyle(foreground)
-            .frame(width: 44, height: 44)
+            .frame(width: size, height: size)
             .background(background, in: Circle())
     }
 
@@ -1562,38 +1582,57 @@ private struct ContactController: UIViewControllerRepresentable {
 }
 
 struct ChatWelcomeView: View {
-    @Binding var text: String
     let suggestions: [HomeSuggestion]
     let execute: (HomeSuggestion) -> Void
     let edit: (HomeSuggestion) -> Void
     var body: some View {
         ScrollView {
-            VStack(spacing: 18) {
-                Spacer(minLength: 240)
-                VStack(alignment: .leading, spacing: 18) {
-                    ForEach(suggestions) { suggestionButton($0) }
+            VStack(spacing: 24) {
+                Spacer(minLength: 96)
+                Image("MultiVibeMark")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 64, height: 64)
+                    .accessibilityHidden(true)
+                VStack(spacing: 8) {
+                    Text("Comment puis-je vous aider ?")
+                        .font(.title2.bold())
+                    Text("Discutez, analysez et agissez avec le modèle de votre choix.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                 }
+                Spacer(minLength: 40)
+                ScrollView(.horizontal) {
+                    HStack(spacing: 10) {
+                        ForEach(suggestions) { suggestionButton($0) }
+                    }
+                    .padding(.horizontal, 24)
+                }
+                .scrollIndicators(.hidden)
             }
-            .frame(maxWidth: 720, minHeight: 560, alignment: .bottom)
-            .padding(.horizontal, 24)
-            .padding(.bottom, 12)
+            .frame(maxWidth: 720, minHeight: 520)
+            .padding(.bottom, 20)
             .frame(maxWidth: .infinity)
         }.scrollDismissesKeyboard(.interactively)
     }
 
     private func suggestionButton(_ suggestion: HomeSuggestion) -> some View {
         Button { execute(suggestion) } label: {
-            HStack(spacing: 12) {
+            HStack(spacing: 8) {
                 Image(systemName: suggestion.systemImage)
                     .foregroundStyle(.primary)
-                    .frame(width: 24)
+                    .frame(width: 20)
                 Text(suggestion.title)
-                    .font(.body)
-                    .foregroundStyle(.secondary)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
-                Spacer()
             }
-            .contentShape(Rectangle())
+            .padding(.horizontal, 14)
+            .frame(height: 42)
+            .background(Color(uiColor: .secondarySystemBackground), in: Capsule())
+            .overlay(Capsule().stroke(.primary.opacity(0.07), lineWidth: 0.7))
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         // Recognize a hold before Button consumes it as an ordinary activation.
