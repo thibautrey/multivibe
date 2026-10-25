@@ -77,7 +77,7 @@ export class RemoteChats {
       const source=await this.config.json(`/messages/${encodeURIComponent(id)}`);
       if(!Array.isArray(source))fail("Invalid LibreChat message history",502);
       const ordered=source.map((message:any,index:number)=>({message,index})).sort((a:any,b:any)=>{const left=time(a.message.createdAt),right=time(b.message.createdAt);return left && right?left-right:a.index-b.index;}).map((v:any)=>v.message);
-      messages=branch(ordered.map((m:any)=>({id:m.messageId,role:m.isCreatedByUser?"user":"assistant",content:remoteText(m.content)||m.text||"",parentId:m.parentMessageId,done:!m.unfinished,native:m})),native.lastMessageId??ordered.at(-1)?.messageId);
+      messages=branch(ordered.map((m:any)=>({id:m.messageId,role:m.isCreatedByUser?"user":"assistant",content:remoteText(m.content)||m.text||"",parentId:m.parentMessageId,done:!m.unfinished,native:m})),native.lastMessageId??native.lastResponseMessageId??ordered.at(-1)?.messageId);
       if(endpoint==="agents"){
         let status:any;
         try{status=await this.config.json(`/agents/chat/status/${encodeURIComponent(id)}`);}catch(error:any){if(error.status!==404)throw error;}
