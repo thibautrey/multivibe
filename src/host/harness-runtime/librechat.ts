@@ -82,6 +82,14 @@ export class RemoteChatConfiguration {
   }
   async json(route:string,body?:unknown,method?:string){return boundedJson(await this.userRequest(route,body,method),this.service.name);}
 
+  async models(){
+    if(this.service.id==="librechat" && this.read()?.userToken){
+      const catalog=await this.json("/agents?limit=100");const rows=Array.isArray(catalog)?catalog:catalog.data;
+      if(!Array.isArray(rows))fail("Invalid LibreChat agent catalog",502);
+      return rows.map((v:any)=>({id:v.id,name:v.name??v.id}));
+    }
+    return remoteChatModels(this.read()??fail("Configure the remote harness first",409),this.service.name);
+  }
   async configure(input:any){
     const endpoint=remoteChatEndpoint(input.endpoint,this.service.suffix,this.service.name),old=this.read();
     const apiKey=input.apiKey || (old?.endpoint===endpoint?old.apiKey:undefined);
