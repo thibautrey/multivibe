@@ -53,10 +53,11 @@ export class AcpAdapter extends Adapter {
   private activePrompt?:Promise<any>;
   constructor(ctx:AdapterContext,private args:string[]) {super(ctx);}
   async start() {
+    const requestedModel=this.ctx.session.model;
     const connection=this.ctx.modelConnection;
     const peer=this.connect(this.args,true,this.ctx.session.harnessId==="hermes-agent" && connection?{LLM_PROVIDER:"openai",LLM_MODEL:this.ctx.session.model,OPENAI_BASE_URL:connection.baseUrl.replace(/\/$/u,"")+"/v1",OPENAI_API_KEY:connection.apiKey}:{});
     const hello=await peer.request("initialize",{protocolVersion:1,clientInfo:{name:"multivibe",version:"1"},clientCapabilities:{
-      ...(this.ctx.target.kind!=="container"?{fs:{readTextFile:true,writeTextFile:true},terminal:true}:{}),
+      ...(this.ctx.target.kind!=="container" && !this.ctx.modelDiscovery?{fs:{readTextFile:true,writeTextFile:true},terminal:true}:{}),
       session:{compaction:{},notices:{}},
     }});
     if(hello.protocolVersion!==1)fail("The harness negotiated an unsupported ACP version",409);
@@ -80,11 +81,11 @@ export class AcpAdapter extends Adapter {
     this.loading=true;
     try{this.sessionInfo=await peer.request(old?"session/load":"session/new",{...(old?{sessionId:old}:{}),cwd:this.ctx.session.workspace,mcpServers:[]});}finally{this.loading=false;}
     this.ctx.nativeSession(old??this.sessionInfo.sessionId);
-    const nativeModel=this.sessionInfo.models?.currentModelId??this.sessionInfo.configOptions?.find((v:any)=>v.category==="model")?.currentValue;if(this.ctx.session.authMode==="native" && typeof nativeModel==="string")this.ctx.session.model=nativeModel;
+    const nativeModel=this.sessionInfo.models?.currentModelId??this.sessionInfo.configOptions?.find((v:any)=>v.category==="model")?.currentValue;if(this.ctx.session.authMode==="native" && !this.ctx.session.model && typeof nativeModel==="string")this.ctx.session.model=nativeModel;
     if(this.sessionInfo.modes)this.ctx.capabilities({modes:supported()});
     if(this.sessionInfo.models)this.ctx.capabilities({models:supported()});
     if(this.sessionInfo.configOptions)this.ctx.capabilities({settings:supported()});
-    if(this.ctx.session.model && this.ctx.session.authMode==="multivibe") {
+    if(requestedModel) {
       const options=this.sessionInfo.configOptions??[];
       const modelOption=options.find((o:any)=>o.category==="model" || o.id==="model");
       if(modelOption)await peer.request("session/set_config_option",{sessionId:this.id,configId:modelOption.id,value:this.ctx.session.model});
@@ -151,7 +152,11 @@ export class AcpAdapter extends Adapter {
   async configure(v:Record<string,unknown>) {
     if(typeof v.mode==="string")return this.peer!.request("session/set_mode",{sessionId:this.id,modeId:v.mode});
     if(typeof v.configId==="string" && typeof v.value==="string")return this.peer!.request("session/set_config_option",{sessionId:this.id,configId:v.configId,value:v.value});
-    if(typeof v.model==="string" && this.sessionInfo.models)return this.peer!.request("session/set_model",{sessionId:this.id,modelId:v.model});
+    if(typeof v.model==="string") {
+      const option=this.sessionInfo.configOptions?.find((o:any)=>o.category==="model" || o.id==="model");
+      const result=option?await this.peer!.request("session/set_config_option",{sessionId:this.id,configId:option.id,value:v.model}):this.sessionInfo.models?await this.peer!.request("session/set_model",{sessionId:this.id,modelId:v.model}):fail("Model selection is not exposed by this harness",422);
+      this.ctx.session.model=v.model;return result;
+    }
     return super.configure(v);
   }
   async native(method:string,params:Record<string,unknown>) {
@@ -179,6 +184,7 @@ export class PiAdapter extends Adapter {
     if(this.ctx.session.model)args.push("--model",this.ctx.session.model);
     const peer=this.connect(args,false);const state=await peer.request("get_state");
     if(this.ctx.session.authMode==="native" && typeof state?.model?.id==="string")this.ctx.session.model=state.model.id;
+    if(this.ctx.session.authMode==="native" && typeof state?.model?.provider==="string")this.ctx.session.configuration={...this.ctx.session.configuration,nativeProvider:state.model.provider};
     this.ctx.nativeSession(state?.sessionFile??this.ctx.session.nativeSessionId??sessionFile);
     if(this.ctx.session.configuration?.sourceId && !this.ctx.session.configuration?.historyImported){const history=await peer.request("get_messages");for(const [index,message] of (history?.messages??[]).entries()){if(["user","assistant"].includes(message.role)){const text=typeof message.content==="string"?message.content:(message.content??[]).filter((p:any)=>p.type==="text").map((p:any)=>p.text).join("\n");this.ctx.emit({type:"history.message",itemId:`pi-history-${index}`,payload:{role:message.role,text}});}}this.ctx.session.configuration.historyImported=true;}
     this.ctx.capabilities(Object.fromEntries(["sessions","history","steer","interrupt","streaming","compaction","tools","skills","commands","models","settings","usage","images","fork"].map(k=>[k,supported()])));
@@ -245,6 +251,7 @@ export class CodexAdapter extends Adapter {
     await this.peer.request("initialize",{clientInfo:{name:"multivibe",version:"1"},capabilities:{experimentalApi:true}});
     this.peer.notify("initialized");
     const s=this.ctx.session;
+    if(this.ctx.modelDiscovery)return;
     if(s.nativeSessionId && s.configuration?.forkNativeSession){const fork=await this.peer.request("thread/fork",{threadId:s.nativeSessionId,cwd:s.workspace});this.ctx.nativeSession(fork.thread.id);delete s.configuration.forkNativeSession;}
     const result=await this.peer.request(s.nativeSessionId?"thread/resume":"thread/start",{
       ...(s.nativeSessionId?{threadId:s.nativeSessionId}:{}),cwd:s.workspace,...(s.model?{model:s.model}:{}),...(s.authMode==="multivibe"?{modelProvider:"multivibe"}:{}),
@@ -311,6 +318,11 @@ export class CodexAdapter extends Adapter {
       mcp:["mcpServerStatus/list",{threadId:this.threadId}],tools:["mcpServerStatus/list",{threadId:this.threadId}],settings:["config/read",{}],
       modes:["collaborationMode/list",{}],history:["thread/read",{threadId:this.threadId,includeTurns:true}],terminals:["thread/backgroundTerminals/list",{threadId:this.threadId}],
     };
+    if(subject==="models") {
+      const data:any[]=[];let cursor:string|undefined;
+      for(let page=0;page<100;page++){const result=await this.peer!.request("model/list",{limit:100,...(cursor?{cursor}:{})});data.push(...(result.data??[]));if(!result.nextCursor || result.nextCursor===cursor)break;cursor=result.nextCursor;}
+      return {data};
+    }
     const call=calls[subject];return call?this.peer!.request(call[0],call[1]):super.inspect(subject);
   }
   async configure(v:Record<string,unknown>) {
@@ -451,6 +463,7 @@ export class OpenCodeAdapter extends Adapter {
       const consume=(c:Buffer)=>{output=(output+c.toString()).slice(-8000);const match=output.match(/http:\/\/127\.0\.0\.1:(\d+)/u);if(match){clearTimeout(timer);resolve(match[0]);}};
       child.stdout.on("data",consume);child.stderr.on("data",consume);child.once("error",e=>{clearTimeout(timer);reject(e);});child.once("close",()=>{clearTimeout(timer);reject(new Error("OpenCode server exited"));this.rejectTurn(new Error("OpenCode connection closed"));});
     });
+    if(this.ctx.modelDiscovery)return;
     const source=this.ctx.session.nativeSessionId;
     const session=source?(this.ctx.session.configuration?.forkNativeSession?await this.call("POST",`/session/${encodeURIComponent(source)}/fork`,{}):await this.call("GET",`/session/${encodeURIComponent(source)}`)):await this.call("POST","/session",{title:this.ctx.session.title});
     if(this.ctx.session.configuration)delete this.ctx.session.configuration.forkNativeSession;
