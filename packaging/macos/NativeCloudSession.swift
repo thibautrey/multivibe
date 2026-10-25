@@ -14,11 +14,13 @@ struct NativeCloudCredential: Codable, Sendable, Equatable {
 }
 
 enum NativeCloudSessionError: LocalizedError {
-    case disconnected, invalidCallback, invalidResponse, presentationUnavailable, rejected(Int), storage(OSStatus)
+    case disconnected, invalidCallback, invalidRequest, accessDenied, invalidResponse, presentationUnavailable, rejected(Int), storage(OSStatus)
     var errorDescription: String? {
         switch self {
         case .disconnected: "Connectez votre compte MultiVibe Cloud."
         case .invalidCallback: "Le retour de connexion MultiVibe est invalide ou expiré."
+        case .invalidRequest: "MultiVibe Cloud a refusé la demande de connexion."
+        case .accessDenied: "MultiVibe Cloud a refusé les autorisations demandées."
         case .invalidResponse: "La réponse de MultiVibe Cloud est invalide."
         case .presentationUnavailable: "La fenêtre de connexion n’a pas pu être ouverte."
         case .rejected(let status): "MultiVibe Cloud a refusé la connexion (HTTP \(status))."
@@ -159,8 +161,17 @@ enum NativeCloudSessionError: LocalizedError {
         guard let value = URLComponents(url: callback, resolvingAgainstBaseURL: false), value.scheme == "multivibe", value.host == "oauth",
               value.path == "/callback/macos", value.port == nil, value.user == nil, value.password == nil, value.fragment == nil else { throw NativeCloudSessionError.invalidCallback }
         let items = value.queryItems ?? []
-        guard items.count == 2, items.filter({ $0.name == "state" }).count == 1, items.first(where: { $0.name == "state" })?.value == expectedState,
-              items.filter({ $0.name == "code" }).count == 1, let code = items.first(where: { $0.name == "code" })?.value, !code.isEmpty, code.utf8.count <= 4096 else { throw NativeCloudSessionError.invalidCallback }
+        guard items.count == 2, items.filter({ $0.name == "state" }).count == 1,
+              items.first(where: { $0.name == "state" })?.value == expectedState else { throw NativeCloudSessionError.invalidCallback }
+        if items.filter({ $0.name == "error" }).count == 1,
+           let error = items.first(where: { $0.name == "error" })?.value {
+            if error == "access_denied" { throw NativeCloudSessionError.accessDenied }
+            if error == "invalid_request" { throw NativeCloudSessionError.invalidRequest }
+            throw NativeCloudSessionError.invalidCallback
+        }
+        guard items.filter({ $0.name == "code" }).count == 1,
+              let code = items.first(where: { $0.name == "code" })?.value,
+              !code.isEmpty, code.utf8.count <= 4096 else { throw NativeCloudSessionError.invalidCallback }
         return code
     }
     func completeAuthorization(_ callback: URL, authorization: Authorization) async throws {
