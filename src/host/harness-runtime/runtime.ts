@@ -1,3 +1,4 @@
+import { RemoteChats } from "./remote-chats.js";
 import { LibreChatConfiguration, RemoteChatConfiguration } from "./librechat.js";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
@@ -160,12 +161,28 @@ export class HostHarnessRuntime {
     else {if(target.kind==="container")fail("Specify a workspace inside the container");workspace=path.join(this.root,"workspaces",id);fs.mkdirSync(workspace,{recursive:true,mode:0o700});}
     if(input.nativeSessionId)fail("Use native-session discovery and its ownership check to resume an external session",409);
     const now=Date.now();const s:HarnessSession={id,harnessId,targetId,workspace,title:typeof input.title==="string"?input.title.slice(0,200):"Nouvelle conversation",...(input.model?{model:requiredText(input.model,256)}:{}),authMode,state:"idle",queuePaused:false,revision:0,archived:false,pinned:false,createdAt:now,updatedAt:now,capabilities:descriptor.capabilities};
-    if(harnessId==="librechat" || harnessId==="openwebui"){const connection=this[harnessId].read()!;s.model=s.model??connection.agentId;s.configuration={endpoint:connection.endpoint};}
+    if(harnessId==="librechat" || harnessId==="openwebui"){const connection=this[harnessId].read()!;s.model=s.model??connection.agentId;s.configuration={endpoint:connection.endpoint,connectionId:this.remoteChats(harnessId).identity().connectionId};}
     const registration=this.store.registrations().find(v=>v.id===harnessId);if(registration)s.configuration={acpArgs:registration.args};
     if(authMode==="native" && harnessId==="pi" && input.nativeProvider)s.configuration={...s.configuration,nativeProvider:requiredText(input.nativeProvider,256)};
     this.states.set(id,s);this.store.save(s);
     if(history){try{const attachment=this.store.attach(id,"prior-conversation.json","text/plain",Buffer.from(history).toString("base64"));s.configuration={...s.configuration,migrationContext:attachment.id};this.store.save(s);this.emit(id,{type:"notice",payload:{message:"The previous conversation is preserved as an attached transcript for the first turn. Native operations from the old session are not replayed.",attachment}});}catch(e){this.states.delete(id);this.store.delete(id);throw e;}}
     this.emit(id,{type:"session.created",payload:s});return s;
+  }
+  remoteChats(id:unknown){
+    if(id!=="librechat" && id!=="openwebui")fail("Select a remote chat harness");
+    return new RemoteChats(id,this[id]);
+  }
+  async connectRemoteChat(input:any){
+    const remote=this.remoteChats(input.harnessId),identity=remote.identity();
+    if(input.connectionId!==identity.connectionId)fail("Reconnect the original remote account",409);
+    const snapshot=await remote.snapshot(requiredText(input.remoteChatId,256));
+    const existing=this.store.sessions().find(v=>v.harnessId===input.harnessId && v.nativeSessionId===snapshot.id && v.configuration?.connectionId===identity.connectionId);
+    if(existing)return existing;
+    const session=await this.create({...input,id:undefined,targetId:"local",authMode:"native",title:snapshot.title});
+    session.nativeSessionId=snapshot.id;session.model=snapshot.model??session.model;
+    session.archived=snapshot.archived;session.pinned=snapshot.pinned;
+    session.configuration={...session.configuration,...identity};
+    this.save(session);return session;
   }
   update(id:string,value:any) {
     const s=this.session(id);
@@ -175,6 +192,8 @@ export class HostHarnessRuntime {
   }
   private async ensure(id:string) {
     if(this.stopped)fail("Host runtime is shutting down",503);
+    const session=this.session(id);
+    if(["librechat","openwebui"].includes(session.harnessId) && session.configuration?.connectionId!==undefined && this.remoteChats(session.harnessId).identity().connectionId!==session.configuration.connectionId)fail("Reconnect the original remote account",409);
     let adapter=this.adapters.get(id);if(adapter)return adapter;
     adapter=(async()=>{
       const s=this.session(id),target=this.store.target(s.targetId);
@@ -183,8 +202,8 @@ export class HostHarnessRuntime {
       if(!executable)fail("Harness executable is unavailable",409);
       const root=path.join(this.root,"sessions",s.id);fs.mkdirSync(root,{recursive:true,mode:0o700});
       const connection=s.harnessId==="librechat" || s.harnessId==="openwebui"?this[s.harnessId].read():undefined;
-      if(["librechat","openwebui"].includes(s.harnessId) && (!connection || connection.endpoint!==s.configuration?.endpoint))fail("Reconnect the original server endpoint to resume this conversation",409);
-      const instance=this.factory({session:s,root,executable,target,...(connection?(s.harnessId==="openwebui"?{openWebUIConnection:connection}:{libreChatConnection:connection}):{}),emit:event=>{if(!this.stopped && this.states.has(id))this.emit(id,event);},
+      if(["librechat","openwebui"].includes(s.harnessId) && (!connection || connection.endpoint!==s.configuration?.endpoint || s.configuration?.connectionId && this.remoteChats(s.harnessId).identity().connectionId!==s.configuration.connectionId))fail("Reconnect the original server endpoint to resume this conversation",409);
+      const instance=this.factory({session:s,root,executable,target,...(connection?(s.harnessId==="openwebui"?{openWebUIConnection:connection,remoteChats:this.remoteChats(s.harnessId)}:{libreChatConnection:connection,remoteChats:this.remoteChats(s.harnessId)}):{}),emit:event=>{if(!this.stopped && this.states.has(id))this.emit(id,event);},
         ...(s.authMode==="multivibe" && target.kind==="local" && this.options.modelConnection?{modelConnection:this.options.modelConnection()}:{}),
         nativeSession:nativeId=>{if(this.stopped || !this.states.has(id))return;requiredText(nativeId,4096);s.nativeSessionId=nativeId;this.store.save(s);this.emit(id,{type:"session.updated",payload:s});},
         capabilities:values=>{if(this.stopped || !this.states.has(id) || Object.entries(values).every(([key,value])=>JSON.stringify(s.capabilities[key as keyof typeof s.capabilities])===JSON.stringify(value)))return;Object.assign(s.capabilities,values);this.store.save(s);this.emit(id,{type:"capabilities.updated",payload:s.capabilities});},
