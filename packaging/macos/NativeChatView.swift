@@ -73,6 +73,7 @@ private struct HarnessLogo: View {
     @State private var harnessLastUsedAt: [String: Double] = UserDefaults.standard.dictionary(forKey: "assistantHarnessLastUsedAt") as? [String: Double] ?? [:]
     @State private var loading = false
     @State private var importing = false
+    @State private var fileDropTargeted = false
     @State private var deleteID: UUID?
     @State private var speech = AVSpeechSynthesizer()
     @FocusState private var composing: Bool
@@ -204,6 +205,20 @@ private struct HarnessLogo: View {
                 if !cloudMode { AgentAccessView(controller: desktopAgent, conversation: store.selection, stop: { store.stop() }) }
                 composer
             }.background(ChatPalette.canvas)
+            .onDrop(of: [UTType.fileURL], isTargeted: $fileDropTargeted, perform: importDroppedFiles)
+            .overlay {
+                if fileDropTargeted && !cloudMode {
+                    RoundedRectangle(cornerRadius: 17)
+                        .fill(ChatPalette.accent.opacity(0.08))
+                        .overlay(RoundedRectangle(cornerRadius: 17).strokeBorder(ChatPalette.accent, style: StrokeStyle(lineWidth: 2, dash: [8])))
+                        .overlay {
+                            Label("Déposez vos documents texte ici", systemImage: "doc.badge.plus")
+                                .font(.headline).padding(18)
+                                .background(ChatPalette.elevated, in: RoundedRectangle(cornerRadius: 12))
+                        }
+                        .padding(10).allowsHitTesting(false)
+                }
+            }
         }
         .frame(minWidth: 680)
         if browser.isVisible {
@@ -238,21 +253,50 @@ private struct HarnessLogo: View {
             Button("Annuler", role: .cancel) { deleteID = nil }
             Button("Supprimer", role: .destructive) { if let id = deleteID { store.delete(id) }; deleteID = nil; if store.current == nil { store.newConversation() } }
         } message: { Text("Elle sera supprimée de l’historique de ce Mac.") }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText, .sourceCode, .json], allowsMultipleSelection: false) { result in
-            do {
-                guard let url = try result.get().first else { return }
-                let access = url.startAccessingSecurityScopedResource()
-                defer { if access { url.stopAccessingSecurityScopedResource() } }
-                let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-                guard size <= 100_000 else { throw HostAssistantError.invalidInput }
-                let text = try String(contentsOf: url, encoding: .utf8)
-                let combined = draft.wrappedValue + "\n\nDocument : \(url.lastPathComponent)\n\(text)"
-                guard combined.count <= 32_000 else { throw HostAssistantError.invalidInput }
-                draft.wrappedValue = combined
-                composing = true
-            } catch { store.error = "Import impossible : \(error.localizedDescription)" }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText, .sourceCode, .json], allowsMultipleSelection: true) { result in
+            do { importFiles(try result.get(), conversationID: store.selection) }
+            catch { store.error = "Import impossible : \(error.localizedDescription)" }
         }
     }
+
+    private func importFiles(_ urls: [URL], conversationID: UUID?) {
+        guard let conversationID,
+              let conversation = store.conversations.first(where: { $0.id == conversationID }) else { return }
+        do {
+            let combined = try NativeChatFileImport.appending(urls, to: conversation.draft)
+            // The drop belongs to the conversation where it started, even after navigation.
+            guard let index = store.conversations.firstIndex(where: { $0.id == conversationID }) else { return }
+            store.conversations[index].draft = combined
+            store.save()
+            if !cloudMode && store.selection == conversationID { composing = true }
+        } catch { store.error = "Import impossible : \(error.localizedDescription)" }
+    }
+
+    private func importDroppedFiles(_ providers: [NSItemProvider]) -> Bool {
+        guard !cloudMode, let conversationID = store.selection else { return false }
+        let files = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+        guard !files.isEmpty else { return false }
+        Task { @MainActor in
+            do {
+                var urls: [URL] = []
+                for provider in files {
+                    let data: Data = try await withCheckedThrowingContinuation { continuation in
+                        provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, error in
+                            if let data { continuation.resume(returning: data) }
+                            else { continuation.resume(throwing: error ?? HostAssistantError.invalidInput) }
+                        }
+                    }
+                    guard let url = URL(dataRepresentation: data, relativeTo: nil), url.isFileURL else {
+                        throw HostAssistantError.invalidInput
+                    }
+                    urls.append(url)
+                }
+                importFiles(urls, conversationID: conversationID)
+            } catch { store.error = "Import impossible : \(error.localizedDescription)" }
+        }
+        return true
+    }
+
     private var sidebarHeader: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
@@ -507,7 +551,7 @@ private struct HarnessLogo: View {
                     }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     .background(ChatPalette.surface, in: Circle())
-                    .help("Joindre un document texte").disabled(cloudMode)
+                    .help("Joindre des documents texte ou les glisser dans la conversation").disabled(cloudMode)
                     if !cloudMode { harnessSelector }
                     modelSelector
                     Spacer(minLength: 12)
