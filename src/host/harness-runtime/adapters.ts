@@ -4,12 +4,13 @@ import { randomBytes } from "node:crypto";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { ClientServices } from "./client-services.js";
 import { JsonPeer, startProcess, harnessEnvironment } from "./process.js";
-import { fail, redact, supported, unsupported, type AdapterContext, type HarnessAdapter, type MessagePart } from "./types.js";
+import { fail, HarnessRuntimeError, redact, supported, unsupported, type AdapterContext, type HarnessAdapter, type MessagePart } from "./types.js";
 
 abstract class Adapter implements HarnessAdapter {
   protected peer?: JsonPeer;
   protected ended?: {resolve:()=>void;reject:(error:Error)=>void};
   protected services: ClientServices;
+  protected failure?: Error;
   constructor(protected ctx:AdapterContext) {this.services=new ClientServices(ctx);}
   protected connect(args:string[],rpc=true) {
     this.peer=new JsonPeer(startProcess(this.ctx,args),v=>this.event(v),(m,p)=>this.services.request(m,p),e=>this.rejectTurn(e),text=>this.ctx.emit({type:"diagnostic",payload:{message:text}}),rpc);
@@ -17,7 +18,7 @@ abstract class Adapter implements HarnessAdapter {
   }
   protected finish(payload:unknown={}) {this.ctx.emit({type:"turn.status",payload});const end=this.ended;this.ended=undefined;end?.resolve();}
   protected rejectTurn(error:Error){const end=this.ended;this.ended=undefined;end?.reject(error);}
-  protected wait() {if(this.ended)fail("A turn is already active",409);return new Promise<void>((resolve,reject)=>{this.ended={resolve,reject};});}
+  protected wait() {if(this.failure)throw this.failure;if(this.ended)fail("A turn is already active",409);return new Promise<void>((resolve,reject)=>{this.ended={resolve,reject};});}
   protected async untilEnd(send:()=>Promise<unknown>) {
     const done=this.wait();
     // Register both rejection handlers before submitting: a harness may fail synchronously.
@@ -45,6 +46,7 @@ abstract class Adapter implements HarnessAdapter {
 /** Shared ACP v1 client; omitted capabilities remain unavailable. */
 export class AcpAdapter extends Adapter {
   private sessionInfo:any; private commands:any[]=[]; private agentCapabilities:any={};
+  private loading=false;private historyRole="";private historyIndex=0;
   constructor(ctx:AdapterContext,private args:string[]) {super(ctx);}
   async start() {
     const peer=this.connect(this.args);
@@ -69,7 +71,8 @@ export class AcpAdapter extends Adapter {
       this.ctx.nativeSession(old!);delete this.ctx.session.configuration.forkNativeSession;
     }
     if(old && !caps.loadSession)fail("This harness cannot resume its existing session",409);
-    this.sessionInfo=await peer.request(old?"session/load":"session/new",{...(old?{sessionId:old}:{}),cwd:this.ctx.session.workspace,mcpServers:[]});
+    this.loading=true;
+    try{this.sessionInfo=await peer.request(old?"session/load":"session/new",{...(old?{sessionId:old}:{}),cwd:this.ctx.session.workspace,mcpServers:[]});}finally{this.loading=false;}
     this.ctx.nativeSession(old??this.sessionInfo.sessionId);
     if(this.sessionInfo.modes)this.ctx.capabilities({modes:supported()});
     if(this.sessionInfo.models)this.ctx.capabilities({models:supported()});
@@ -87,10 +90,13 @@ export class AcpAdapter extends Adapter {
     const p=v.params??{};if(p.sessionId && this.id && p.sessionId!==this.id)return;
     const u=p.update??p;const kind=u.sessionUpdate;
     if(kind==="agent_message_chunk") {
-      if(u.content?.type==="text")this.ctx.emit({type:"message.delta",itemId:u.messageId,payload:{text:u.content.text,role:"assistant"}});
+      if(u.content?.type==="text") {
+        if(this.loading){if(this.historyRole!=="assistant"){this.historyRole="assistant";this.historyIndex++;}this.ctx.emit({type:"history.message",itemId:u.messageId??`acp-history-${this.historyIndex}`,payload:{text:u.content.text,role:"assistant",append:true}});}
+        else this.ctx.emit({type:"message.delta",itemId:u.messageId,payload:{text:u.content.text,role:"assistant"}});
+      }
       else this.ctx.emit({type:"artifact",payload:u.content});
     } else if(kind==="agent_thought_chunk")this.ctx.emit({type:"reasoning",payload:u.content});
-    else if(kind==="user_message_chunk")this.ctx.emit({type:"history.message",itemId:u.messageId,payload:{role:"user",content:u.content}});
+    else if(kind==="user_message_chunk") {if(this.historyRole!=="user"){this.historyRole="user";this.historyIndex++;}this.ctx.emit({type:"history.message",itemId:u.messageId??`acp-history-${this.historyIndex}`,payload:{role:"user",text:u.content?.text??"",append:true}});}
     else if(kind==="tool_call" || kind==="tool_call_update")this.ctx.emit({type:"tool",itemId:u.toolCallId,payload:u});
     else if(kind==="plan"){this.ctx.capabilities({plans:supported()});this.ctx.emit({type:"plan",payload:u});}
     else if(kind?.startsWith("compaction")){this.ctx.capabilities({compaction:supported()});this.ctx.emit({type:"compaction",payload:u});}
@@ -164,6 +170,7 @@ export class PiAdapter extends Adapter {
     if(this.ctx.session.model)args.push("--model",this.ctx.session.model);
     const peer=this.connect(args,false);const state=await peer.request("get_state");
     this.ctx.nativeSession(state?.sessionFile??this.ctx.session.nativeSessionId??sessionFile);
+    if(this.ctx.session.configuration?.sourceId && !this.ctx.session.configuration?.historyImported){const history=await peer.request("get_messages");for(const [index,message] of (history?.messages??[]).entries()){if(["user","assistant"].includes(message.role)){const text=typeof message.content==="string"?message.content:(message.content??[]).filter((p:any)=>p.type==="text").map((p:any)=>p.text).join("\n");this.ctx.emit({type:"history.message",itemId:`pi-history-${index}`,payload:{role:message.role,text}});}}this.ctx.session.configuration.historyImported=true;}
     this.ctx.capabilities(Object.fromEntries(["sessions","history","steer","interrupt","streaming","compaction","tools","skills","commands","models","settings","usage","images","fork"].map(k=>[k,supported()])));
     this.ctx.emit({type:"configuration",payload:state});
   }
@@ -173,7 +180,8 @@ export class PiAdapter extends Adapter {
       if(e?.type==="text_delta")this.ctx.emit({type:"message.delta",payload:{text:e.delta,role:"assistant"}});
       else if(e?.type==="thinking_delta")this.ctx.emit({type:"reasoning",payload:{text:e.delta}});
       else this.ctx.emit({type:"native.event",payload:v});
-    } else if(v.type==="agent_settled")this.finish(v);
+    } else if(v.type==="message_end" && v.message?.role==="assistant" && ["error","aborted"].includes(v.message.stopReason))this.rejectTurn(new HarnessRuntimeError(v.message.errorMessage??"Pi did not complete this turn",422));
+    else if(v.type==="agent_settled")this.finish(v);
     else if(v.type==="agent_end") {
       // Older Pi versions have no agent_settled. Query its actual queue/compaction state.
       void this.peer!.request("get_state").then(s=>{if(!s?.isStreaming && !s?.isCompacting && !(s?.pendingMessageCount>0))this.finish(v);}).catch(e=>this.rejectTurn(e));
@@ -224,6 +232,7 @@ export class CodexAdapter extends Adapter {
       ...(s.nativeSessionId?{threadId:s.nativeSessionId}:{}),cwd:s.workspace,...(s.model?{model:s.model}:{}),...(s.authMode==="multivibe"?{modelProvider:"multivibe"}:{}),
     });
     this.threadId=result.thread.id;this.currentModel=result.model??s.model??"";this.ctx.nativeSession(this.threadId);
+    if(s.configuration?.sourceId && !s.configuration?.historyImported){const history=await this.peer.request("thread/read",{threadId:this.threadId,includeTurns:true});for(const turn of history.thread?.turns??[])for(const item of turn.items??[]){if(item.type==="userMessage" || item.type==="agentMessage"){const text=item.type==="agentMessage"?item.text:(item.content??[]).filter((p:any)=>p.type==="text").map((p:any)=>p.text).join("\n");this.ctx.emit({type:"history.message",itemId:item.id,payload:{role:item.type==="userMessage"?"user":"assistant",text}});}}s.configuration.historyImported=true;}
     this.ctx.capabilities(Object.fromEntries(["sessions","history","fork","steer","interrupt","streaming","compaction","tools","skills","mcp","hooks","models","modes","plans","settings","usage","agents","images","interactions","workspace","git","terminals"].map(k=>[k,supported()])));
   }
   private async request(method:string,p:any):Promise<unknown> {
@@ -245,7 +254,7 @@ export class CodexAdapter extends Adapter {
     if(v.method==="item/agentMessage/delta")this.ctx.emit({type:"message.delta",itemId:p.itemId,payload:{text:p.delta,role:"assistant"}});
     else if(v.method==="turn/started")this.turnId=p.turn.id;
     else if(v.method==="turn/completed") {
-      if(p.turn.status==="failed")this.rejectTurn(new Error(p.turn.error?.message??"Codex turn failed"));
+      if(p.turn.status==="failed")this.rejectTurn(new HarnessRuntimeError(p.turn.error?.message??"Codex turn failed",422));
       else this.finish({status:p.turn.status});
     } else if(v.method==="item/started" || v.method==="item/completed") {
       const item=p.item??{};
@@ -307,27 +316,31 @@ class InputQueue {
 }
 export class ClaudeAdapter extends Adapter {
   private query:any;private queue=new InputQueue();private abort=new AbortController();
+  private stderrBytes=0;
   constructor(ctx:AdapterContext,private sdkLoader?:()=>Promise<any>){super(ctx);}
   async start() {
     if(this.ctx.target.kind==="container")fail("Claude SDK requires a Host inside the container",422);
     const moduleName="@anthropic-ai/claude-agent-sdk";const sdk:any=this.sdkLoader?await this.sdkLoader():await import(moduleName);
     const s=this.ctx.session;
+    if(s.configuration?.sourceId && !s.configuration?.historyImported && typeof sdk.getSessionMessages==="function"){const history=await sdk.getSessionMessages(s.nativeSessionId,{dir:s.workspace});for(const [index,message] of history.entries()){if(["user","assistant"].includes(message.type)){const text=(message.message?.content??[]).filter((p:any)=>p.type==="text").map((p:any)=>p.text).join("\n");this.ctx.emit({type:"history.message",itemId:message.uuid??`claude-history-${index}`,payload:{role:message.type,text}});}}s.configuration.historyImported=true;}
     this.query=sdk.query({prompt:this.queue.stream(),options:{
       cwd:s.workspace,pathToClaudeCodeExecutable:this.ctx.executable,settingSources:["user","project","local"],
       systemPrompt:{type:"preset",preset:"claude_code"},includePartialMessages:true,permissionMode:"default",abortController:this.abort,
       env:harnessEnvironment(),...(s.nativeSessionId?{resume:s.nativeSessionId}:{}),...(s.configuration?.forkNativeSession?{forkSession:true}:{}),...(s.model?{model:s.model}:{}),enableFileCheckpointing:true,
+      stderr:(message:string)=>{if(this.stderrBytes<16_384){this.stderrBytes+=message.length;this.ctx.emit({type:"diagnostic",payload:{message:String(redact(message)).slice(0,2048)}});}},
       canUseTool:async(name:string,input:any,options:any)=>{
         const question=name==="AskUserQuestion";
         const answer=await this.ctx.ask(question?"question":"permission",question?"Claude attend une réponse":`Autoriser ${name} ?`,{name,input,toolUseId:options?.toolUseID,...(!question?{options:[{optionId:"allow",name:"Autoriser une fois",kind:"allow_once"},{optionId:"deny",name:"Refuser",kind:"reject_once"}]}:{})});
         return question?{behavior:"allow",updatedInput:{...input,answers:answer.answers??{}}}:answer.optionId==="allow"?{behavior:"allow",updatedInput:input}:{behavior:"deny",message:"Action refusée par l’utilisateur"};
       },
     }});
-    void this.consume().catch(e=>this.rejectTurn(e));
+    void this.consume().catch(e=>{this.failure=e;this.rejectTurn(e);});
+    if(typeof this.query.supportedCommands==="function")await this.query.supportedCommands();
     this.ctx.capabilities(Object.fromEntries(["sessions","history","fork","interrupt","streaming","tools","skills","commands","mcp","plugins","hooks","images","models","settings","plans","usage","agents","interactions","checkpoints"].map(k=>[k,supported()])));
   }
-  private async consume() {for await(const event of this.query)this.event(event);}
+  private async consume() {for await(const event of this.query)this.event(event);if(!this.abort.signal.aborted){this.failure=new Error("Claude SDK stream ended before the session closed");this.rejectTurn(this.failure);}}
   protected event(v:any) {
-    if(v.session_id)this.ctx.nativeSession(v.session_id);
+    if(v.session_id && v.session_id!==this.ctx.session.nativeSessionId)this.ctx.nativeSession(v.session_id);
     if(v.type==="stream_event") {
       const e=v.event;if(e?.type==="content_block_delta" && e.delta?.type==="text_delta")this.ctx.emit({type:"message.delta",itemId:v.parent_tool_use_id??undefined,payload:{text:e.delta.text,role:"assistant"}});
       else if(e?.delta?.type==="thinking_delta")this.ctx.emit({type:"reasoning",payload:{text:e.delta.thinking}});
@@ -338,7 +351,7 @@ export class ClaudeAdapter extends Adapter {
       for(const p of v.message?.content??[])if(p.type==="tool_result")this.ctx.emit({type:"tool",itemId:p.tool_use_id,payload:{status:p.is_error?"failed":"completed",...p}});
     } else if(v.type==="result") {
       this.ctx.emit({type:"usage",payload:{usage:v.usage,modelUsage:v.modelUsage,totalCostUsd:v.total_cost_usd,durationMs:v.duration_ms}});
-      if(v.is_error)this.rejectTurn(new Error(v.errors?.join("; ")??"Claude could not complete this turn"));else this.finish(v);
+      if(v.is_error)this.rejectTurn(new HarnessRuntimeError(v.errors?.join("; ")??"Claude could not complete this turn",422));else this.finish(v);
     } else if(v.type==="system" && v.subtype==="compact_boundary"){this.ctx.capabilities({compaction:supported()});this.ctx.emit({type:"compaction",payload:v});}
     else this.ctx.emit({type:"native.event",payload:v});
   }
@@ -375,6 +388,7 @@ export class ClaudeAdapter extends Adapter {
 
 export class OpenCodeAdapter extends Adapter {
   private child?:ChildProcessWithoutNullStreams;private origin="";private password=randomBytes(24).toString("base64url");private abort=new AbortController();private nativeId="";
+  private messageRoles=new Map<string,string>();private pendingParts:any[]=[];private hasActivity=false;
   private headers(){return {authorization:`Basic ${Buffer.from(`opencode:${this.password}`).toString("base64")}`,"content-type":"application/json"};}
   private async call(method:string,route:string,body?:unknown) {
     const response=await fetch(`${this.origin}${route}${route.includes("?")?"&":"?"}directory=${encodeURIComponent(this.ctx.session.workspace)}`,{method,headers:this.headers(),...(body!==undefined?{body:JSON.stringify(body)}:{}),signal:AbortSignal.any([this.abort.signal,AbortSignal.timeout(30_000)])});
@@ -393,6 +407,7 @@ export class OpenCodeAdapter extends Adapter {
     const session=source?(this.ctx.session.configuration?.forkNativeSession?await this.call("POST",`/session/${encodeURIComponent(source)}/fork`,{}):await this.call("GET",`/session/${encodeURIComponent(source)}`)):await this.call("POST","/session",{title:this.ctx.session.title});
     if(this.ctx.session.configuration)delete this.ctx.session.configuration.forkNativeSession;
     this.nativeId=session.id;this.ctx.nativeSession(session.id);
+    if(this.ctx.session.configuration?.sourceId && !this.ctx.session.configuration?.historyImported){const history=await this.call("GET",`/session/${this.nativeId}/message`);for(const message of history){if(["user","assistant"].includes(message.info?.role))this.ctx.emit({type:"history.message",itemId:message.info.id,payload:{role:message.info.role,text:(message.parts??[]).filter((p:any)=>p.type==="text").map((p:any)=>p.text).join("\n")}});}this.ctx.session.configuration.historyImported=true;}
     await this.subscribe();
     this.ctx.capabilities(Object.fromEntries(["sessions","history","fork","interrupt","streaming","tools","skills","commands","mcp","models","modes","plans","usage","agents","interactions","images","compaction","checkpoints"].map(k=>[k,supported()])));
   }
@@ -403,21 +418,31 @@ export class OpenCodeAdapter extends Adapter {
   }
   protected event(v:any) {
     const p=v.properties??{};const sid=p.sessionID??p.part?.sessionID??p.info?.sessionID;if(sid && sid!==this.nativeId)return;
-    if(v.type==="message.part.updated") {
+    if(v.type==="message.updated") {
+      if(p.info?.id && p.info?.role){this.messageRoles.set(p.info.id,p.info.role);const pending=this.pendingParts.filter(e=>(e.properties?.part?.messageID??e.properties?.messageID)===p.info.id);this.pendingParts=this.pendingParts.filter(e=>!pending.includes(e));for(const event of pending)this.event(event);}
+      if(p.info?.role==="assistant" && p.info?.error)this.rejectTurn(new HarnessRuntimeError(p.info.error?.data?.message??p.info.error.message??"OpenCode model request failed",422));
+      else this.ctx.emit({type:"native.event",payload:v});
+    }else if(v.type==="message.part.updated" || v.type==="message.part.delta") {
+      const messageId=p.part?.messageID??p.messageID;const role=this.messageRoles.get(messageId);
+      if(role==="user")return;
+      if(!role){if(this.pendingParts.length<256)this.pendingParts.push(v);return;}
+      this.hasActivity=true;
+      if(v.type==="message.part.delta"){this.ctx.emit({type:"message.delta",itemId:p.partID,payload:{text:p.delta??"",role:"assistant"}});return;}
       const part=p.part??{};
       if(part.type==="text")this.ctx.emit({type:"message.part",itemId:part.id,payload:{text:part.text??"",role:"assistant"}});
       else if(part.type==="tool")this.ctx.emit({type:"tool",itemId:part.callID??part.id,payload:part});
       else if(part.type==="reasoning")this.ctx.emit({type:"reasoning",payload:part});
       else this.ctx.emit({type:"artifact",payload:part});
-    } else if(v.type==="message.part.delta")this.ctx.emit({type:"message.delta",itemId:p.partID,payload:{text:p.delta??"",role:"assistant"}});
-    else if(v.type==="session.idle" || (v.type==="session.status" && p.status?.type==="idle")){if(sid===this.nativeId)this.finish(p);}
-    else if(v.type==="session.error"){if(sid===this.nativeId)this.rejectTurn(new Error(p.error?.data?.message??"OpenCode session failed"));}
+    }else if(v.type==="session.status" && p.status?.type==="busy"){if(sid===this.nativeId)this.hasActivity=true;}
+    else if(v.type==="session.idle" || (v.type==="session.status" && p.status?.type==="idle")){if(sid===this.nativeId && this.hasActivity){this.hasActivity=false;this.finish(p);}}
+    else if(v.type==="session.error"){if(sid===this.nativeId)this.rejectTurn(new HarnessRuntimeError(p.error?.data?.message??"OpenCode session failed",422));}
     else if(v.type==="permission.asked" || v.type==="permission.updated")void this.ctx.ask("permission",p.permission??"Autoriser cet outil OpenCode ?",{...p,options:[{optionId:"once",name:"Autoriser une fois",kind:"allow_once"},{optionId:"reject",name:"Refuser",kind:"reject_once"}]}).then(a=>this.call("POST",`/permission/${encodeURIComponent(p.id)}/reply`,{reply:a.optionId==="once"?"once":"reject"})).catch(e=>this.rejectTurn(e));
     else if(v.type==="question.asked")void this.ctx.ask("question","OpenCode attend une réponse",p).then(a=>this.call("POST",`/question/${encodeURIComponent(p.id)}/reply`,{answers:a.answers??[]})).catch(e=>this.rejectTurn(e));
     else this.ctx.emit({type:"native.event",payload:v});
   }
   async prompt(parts:MessagePart[],steer=false) {
     if(steer)fail("OpenCode does not advertise steer with a turn identity",422);
+    this.hasActivity=false;
     const converted=parts.map(p=>{
       if(p.type==="attachment"){const a=this.ctx.attachment(p.attachmentId);return {type:"file",mime:a.info.mimeType,filename:a.info.name,url:`data:${a.info.mimeType};base64,${a.data.toString("base64")}`};}
       return {type:"text",text:this.text([p])};
@@ -439,7 +464,7 @@ export class OpenCodeAdapter extends Adapter {
     if(method==="unrevert")return this.call("POST",`/session/${this.nativeId}/unrevert`);
     return super.native(method,params);
   }
-  close(){this.abort.abort();this.child?.kill("SIGTERM");super.close();}
+  close(){this.abort.abort();if(this.child){this.child.stdin.destroy();this.child.stdout.destroy();this.child.stderr.destroy();this.child.kill("SIGTERM");}super.close();}
 }
 
 export function adapterFor(ctx:AdapterContext):HarnessAdapter {

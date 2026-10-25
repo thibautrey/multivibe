@@ -57,7 +57,13 @@ type SpawnHarness = typeof spawn;
 const INSTALLERS = {
   "hermes-agent": { command: "uv", args: ["tool", "install", "hermes-agent==0.15.2"], label: "Hermes Agent 0.15.2" },
   pi: { command: "npm", args: ["install", "--global", "@mariozechner/pi-coding-agent@0.73.1"], label: "Pi 0.73.1" },
+  "openai-codex": {command:"npm",args:["install","--global","@openai/codex@0.154.0"],label:"Codex 0.154.0"},
+  "claude-code": {command:"npm",args:["install","--global","@anthropic-ai/claude-code@2.1.241"],label:"Claude Code 2.1.241"},
+  opencode: {command:"npm",args:["install","--global","opencode-ai@1.19.3"],label:"OpenCode 1.19.3"},
+  "gemini-cli": {command:"npm",args:["install","--global","@google/gemini-cli@0.65.0"],label:"Gemini CLI 0.65.0"},
 } as const;
+export type InstallableConversationHarness = keyof typeof INSTALLERS;
+export const isInstallableConversationHarness = (id:string):id is InstallableConversationHarness => id in INSTALLERS;
 const INSTALL_TIMEOUT_MS = 10 * 60_000;
 const MAX_INSTALL_LOG_BYTES = 2 * 1024 * 1024;
 
@@ -112,7 +118,7 @@ export class HostConversationHarnessManager {
   }
 
   async install(
-    id: "hermes-agent" | "pi",
+    id: InstallableConversationHarness,
     signal: AbortSignal,
     log: (line: string) => void,
   ): Promise<void> {

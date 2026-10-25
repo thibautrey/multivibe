@@ -37,7 +37,7 @@ export class JsonPeer {
       const line=this.buffer.slice(0,newline).trim();this.buffer=this.buffer.slice(newline+1);if(!line)continue;
       let v:any;try{v=JSON.parse(line);}catch{this.diagnostic("Ignored non-JSON harness output");continue;}
       const key=v.id===undefined?undefined:String(v.id);
-      if(v.method && key!==undefined) {
+      if(this.rpc && v.method && key!==undefined) {
         void this.serverRequest(v.method,v.params??{},v.id).then(result=>this.write({jsonrpc:"2.0",id:v.id,result}),error=>this.write({jsonrpc:"2.0",id:v.id,error:{code:-32603,message:String(redact(error?.message??"Client request failed"))}})).catch(()=>{});
       } else if(key && this.pending.has(key) && ("result" in v || "error" in v || v.type==="response")) {
         const p=this.pending.get(key)!;this.pending.delete(key);if(p.timer)clearTimeout(p.timer);
@@ -65,6 +65,7 @@ export class JsonPeer {
   }
   close() {
     const child=this.child;this.end(new Error("Harness connection closed"));
-    child.kill("SIGTERM");const timer=setTimeout(()=>{if(child.exitCode===null)child.kill("SIGKILL");},2000);timer.unref();
+    child.stdin.destroy();child.stdout.destroy();child.stderr.destroy();
+    child.kill("SIGTERM");if(child.exitCode===null){const timer=setTimeout(()=>{if(child.exitCode===null)child.kill("SIGKILL");},2000);child.once("exit",()=>clearTimeout(timer));}
   }
 }

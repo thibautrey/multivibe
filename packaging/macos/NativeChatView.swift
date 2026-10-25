@@ -752,7 +752,7 @@ private struct HarnessLogo: View {
         installationRunning = true
         Task {
             do {
-                try await NativeHarnessClient.shared.install(harnessID: item.id) { line in installationLogs.append(line) }
+                try await NativeHarnessClient.shared.install(harnessID: item.id, connectToMultiVibe: false) { line in installationLogs.append(line) }
                 await loadHarnesses()
             } catch is CancellationError {
                 installationError = "Installation annulée."

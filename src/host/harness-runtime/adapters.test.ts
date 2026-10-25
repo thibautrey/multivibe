@@ -20,7 +20,7 @@ if(process.argv.includes('serve')){
   if(req.url.startsWith('/session') && req.method==='POST' && !req.url.includes('/prompt_async')){res.setHeader('content-type','application/json');res.end(JSON.stringify({id:'open-session'}));return;}
   if(req.url.includes('/prompt_async')){
    res.writeHead(204).end();setTimeout(()=>{
-    for(const v of [{type:'message.part.updated',properties:{part:{id:'p',sessionID:'another-session',type:'text',text:'MUST NOT LEAK'}}},{type:'message.part.updated',properties:{part:{id:'p',sessionID:'open-session',type:'text',text:'hello'}}},{type:'session.status',properties:{sessionID:'open-session',status:{type:'idle'}}}])stream.write('data: '+JSON.stringify(v)+'\n\n');
+    for(const v of [{type:'message.updated',properties:{info:{id:'u',sessionID:'open-session',role:'user'}}},{type:'message.part.updated',properties:{part:{id:'up',messageID:'u',sessionID:'open-session',type:'text',text:'MUST NOT ECHO USER'}}},{type:'message.part.updated',properties:{part:{id:'p',sessionID:'another-session',type:'text',text:'MUST NOT LEAK'}}},{type:'message.updated',properties:{info:{id:'a',sessionID:'open-session',role:'assistant'}}},{type:'message.part.updated',properties:{part:{id:'p',messageID:'a',sessionID:'open-session',type:'text',text:'hello'}}},{type:'session.status',properties:{sessionID:'open-session',status:{type:'idle'}}}])stream.write('data: '+JSON.stringify(v)+'\n\n');
    },15);return;
   }
   res.setHeader('content-type','application/json');res.end('{}');
@@ -39,7 +39,9 @@ if(process.argv.includes('serve')){
   notify('session/update',{sessionId:'acp-session',update:{sessionUpdate:'tool_call_update',toolCallId:'tool',status:'failed'}});reply(global.prompt,{stopReason:'end_turn'});
  }else if(m==='get_state')reply(v,{sessionFile:'/tmp/pi-fixture.jsonl',isStreaming:false,isCompacting:compacting,pendingMessageCount:0});
  else if(m==='prompt'){
+  if(p.message==='reject'){reply(v,{});send({type:'message_end',message:{role:'assistant',stopReason:'error',errorMessage:'401 authentication required'}});send({type:'agent_settled'});return;}
   reply(v,{});compacting=true;
+  send({type:'extension_ui_request',id:'ui-confirm',method:'confirm',title:'Continue?'});
   send({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:'Pi text'}});send({type:'agent_end'});
   setTimeout(()=>{compacting=false;send({type:'compaction_end',result:{summary:'retained'}});send({type:'agent_settled'});},25);
  }else if(m==='turn/start'){
@@ -70,6 +72,11 @@ test("Gemini uses the same negotiated ACP contract without assuming extra capabi
 test("Pi waits for compaction/settlement rather than treating agent_end as completion",async t=>{
   const f=fixture(t,"pi");const adapter=new PiAdapter(f.ctx);t.after(()=>adapter.close());await adapter.start();await adapter.prompt([{type:"text",text:"hello"}]);
   const compact=f.events.findIndex(e=>e.type==="compaction");const settled=f.events.findIndex(e=>e.type==="turn.status");assert.ok(compact>=0 && settled>compact);
+  assert.ok(f.questions.some(q=>q.title==="Continue?"));
+});
+test("Pi reports native provider errors as failure instead of successful empty output",async t=>{
+  const f=fixture(t,"pi");const adapter=new PiAdapter(f.ctx);t.after(()=>adapter.close());await adapter.start();
+  await assert.rejects(adapter.prompt([{type:"text",text:"reject"}]),(e:any)=>e.status===422 && /401/u.test(e.message));
 });
 test("Codex steering targets the actual native turn and manual compaction waits for completion",async t=>{
   const f=fixture(t,"openai-codex");const adapter=new CodexAdapter(f.ctx);t.after(()=>adapter.close());await adapter.start();
@@ -89,5 +96,5 @@ test("Claude SDK preserves continuous input and surfaces native usage/tool event
 });
 test("OpenCode authenticates its loopback API and filters events from other sessions",async t=>{
   const f=fixture(t,"opencode");const adapter=new OpenCodeAdapter(f.ctx);t.after(()=>adapter.close());await adapter.start();await adapter.prompt([{type:"text",text:"hello"}]);
-  assert.ok(f.events.some(e=>e.type==="message.part" && (e.payload as any).text==="hello"));assert.ok(!JSON.stringify(f.events).includes("MUST NOT LEAK"));
+  assert.ok(f.events.some(e=>e.type==="message.part" && (e.payload as any).text==="hello"));assert.ok(!JSON.stringify(f.events).includes("MUST NOT LEAK"));assert.ok(!JSON.stringify(f.events).includes("MUST NOT ECHO USER"));
 });
