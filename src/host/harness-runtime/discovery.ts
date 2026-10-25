@@ -3,6 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
+import { fail, redact } from "./types.js";
 
 export type NativeSessionSource={sourceId:string;harnessId:string;nativeSessionId:string;title:string;workspace?:string;updatedAt:number;canContinue:boolean;strategy:"isolated_fork"|"read_only";reason?:string;file?:string};
 /** Read native metadata only. Authentication/configuration files are never scanned. */
@@ -43,4 +44,31 @@ export function discoverNativeSessions(harnessId:string,home=os.homedir()):Nativ
     }
   };
   visit(path.join(home,relative),0);return result.sort((a,b)=>b.updatedAt-a.updatedAt);
+}
+
+/** Explicit read-only preview. Native processes and their session ownership are never acquired. */
+export function readNativeSession(harnessId:string,sourceId:string,home=os.homedir(),after=0) {
+  if(!Number.isSafeInteger(after) || after<0)fail("Invalid native history cursor");
+  const source=discoverNativeSessions(harnessId,home).find(s=>s.sourceId===sourceId);if(!source)fail("Native session not found",404);
+  let records:unknown[]=[];let complete=true;
+  if(source.file){
+    const stat=fs.lstatSync(source.file);if(!stat.isFile() || stat.size>16*1024*1024)fail("Native preview exceeds 16 MiB; use the native CLI to inspect it",413);
+    const text=fs.readFileSync(source.file,"utf8");
+    if(source.file.endsWith(".jsonl")){
+      const lines=text.split("\n").filter(v=>v.trim());const page=lines.slice(after,after+100);
+      records=page.map(line=>{try{return JSON.parse(line);}catch{return {incomplete:true};}});complete=after+page.length>=lines.length;
+    }else{if(after)records=[];else try{records=[JSON.parse(text)];}catch{fail("The native session is incomplete; retry after its writer finishes",409);}}
+  }else{
+    const file=harnessId==="hermes-agent"?path.join(home,".hermes/state.db"):path.join(home,".local/share/opencode/opencode.db");
+    const table=harnessId==="hermes-agent"?"messages":"part";const db=new Database(file,{readonly:true,fileMustExist:true});
+    try{
+      const columns=new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((r:any)=>r.name));
+      if(!columns.has("session_id"))fail("This native database schema does not expose a supported read-only transcript",422);
+      const fields=["id","role","content","data","tool_calls","tool_call_id"].filter(name=>columns.has(name));if(!fields.length)fail("Native transcript fields are unavailable",422);
+      const rows=db.prepare(`SELECT ${fields.join(",")} FROM ${table} WHERE session_id=? ORDER BY rowid LIMIT 101 OFFSET ?`).all(source.nativeSessionId,after) as any[];
+      complete=rows.length<=100;records=rows.slice(0,100).map(row=>Object.fromEntries(Object.entries(row).map(([key,value])=>{if(typeof value==="string")try{return [key,JSON.parse(value)];}catch{}return [key,value];})));
+    }finally{db.close();}
+  }
+  const {file:_,...metadata}=source;
+  return {source:metadata,records:redact(records),cursor:after+records.length,complete,readOnly:true};
 }

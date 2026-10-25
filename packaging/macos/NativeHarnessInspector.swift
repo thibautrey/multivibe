@@ -34,6 +34,10 @@ import SwiftUI
     @State private var nativeMethod = ""
     @State private var nativeParameters = "{}"
     @State private var configurationParameters = "{}"
+    @State private var nativePreview: String?
+    @State private var nativePreviewSource: DesktopNativeSessionSource?
+    @State private var nativePreviewCursor = 0
+    @State private var nativePreviewComplete = true
     private var conversation: NativeChatConversation? { store.current }
     private var target: String { conversation?.executionTargetID ?? "local" }
     private var locked: Bool { conversation?.messages.isEmpty == false || conversation?.runtimeSessionID != nil || conversation?.pendingSubmissions?.isEmpty == false }
@@ -109,6 +113,7 @@ import SwiftUI
                                     HStack {
                                         VStack(alignment: .leading) { Text(session.title).lineLimit(1); Text(session.reason ?? "Continuité de l’historique dans une copie isolée").font(.caption).foregroundStyle(.secondary) }
                                         Spacer()
+                                        Button("Lire") { Task { await previewNative(session) } }
                                         Button("Continuer dans une copie") { Task { await importNative(session) } }.disabled(!session.canContinue)
                                     }
                                 }
@@ -146,6 +151,21 @@ import SwiftUI
         .sheet(isPresented: $addingACP) { acpForm }
         .sheet(isPresented: $addingSchedule) { scheduleForm }
         .sheet(isPresented: Binding(get: { editingResource != nil }, set: { if !$0 { editingResource = nil } })) { memoryForm }
+        .sheet(isPresented: Binding(get: { nativePreview != nil }, set: { if !$0 { nativePreview = nil } })) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Historique natif · lecture seule").font(.headline)
+                ScrollView { Text(nativePreview ?? "").font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                HStack { if !nativePreviewComplete, let source = nativePreviewSource { Button("Lire la suite") { Task { await previewNative(source, append: true) } } }; Spacer(); Button("Fermer") { nativePreview = nil } }
+            }.padding(20).frame(width: 760, height: 580)
+        }
+    }
+    private func previewNative(_ source: DesktopNativeSessionSource, append: Bool = false) async {
+        do {
+            let after = append ? nativePreviewCursor : 0
+            let result = try await DesktopHarnessClient.shared.call("/native-sessions/\(source.sourceId)?harnessId=\(harnessID)&after=\(after)", target: target)
+            nativePreviewSource = source; nativePreviewCursor = (try? result["cursor"].decode(Int.self)) ?? 0; nativePreviewComplete = result["complete"] == .bool(true)
+            nativePreview = append ? (nativePreview ?? "") + "\n\n" + result["records"].display : result.display
+        } catch { message = error.localizedDescription }
     }
     private var targetForm: some View {
         VStack(alignment: .leading, spacing: 14) {
