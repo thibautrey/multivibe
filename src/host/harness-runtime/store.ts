@@ -20,6 +20,7 @@ export class HarnessRuntimeStore {
       CREATE TABLE IF NOT EXISTS attachments(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS targets(id TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS registrations(id TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS schedules(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, value TEXT NOT NULL);
     `);
   }
   session(id: string): HarnessSession {
@@ -84,6 +85,11 @@ export class HarnessRuntimeStore {
     const registration={id:value.id,name:value.name,executable:value.executable,args:value.args};
     this.db.prepare("INSERT INTO registrations VALUES(?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value").run(value.id,JSON.stringify(registration));return registration;
   }
+  schedules(sessionId?:string):Array<{id:string;sessionId:string;name:string;parts:unknown[];nextAt:number;intervalMs?:number;enabled:boolean;lastCommandId?:string}> {
+    return (sessionId?this.db.prepare("SELECT value FROM schedules WHERE session_id=?").all(sessionId):this.db.prepare("SELECT value FROM schedules").all()).map((r:any)=>JSON.parse(r.value));
+  }
+  saveSchedule(value:ReturnType<HarnessRuntimeStore["schedules"]>[number]) {this.db.prepare("INSERT INTO schedules VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value").run(value.id,value.sessionId,JSON.stringify(value));}
+  removeSchedule(id:string,sessionId:string){this.db.prepare("DELETE FROM schedules WHERE id=? AND session_id=?").run(id,sessionId);}
   attach(sessionId: string, name: unknown, mimeType: unknown, base64: unknown, expectedHash?: unknown): HarnessAttachment {
     this.session(sessionId); name=requiredText(name,255); mimeType=requiredText(mimeType,128);
     if(typeof base64!=="string" || base64.length>24*1024*1024 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(base64)) fail("Invalid attachment or file exceeds 16 MiB",413);

@@ -5,6 +5,7 @@ import path from "node:path";
 import os from "node:os";
 import type { HostHarnessIntegrationManager } from "../harness-integrations.js";
 import { adapterFor } from "./adapters.js";
+import { harnessResources, writeHarnessResource } from "./resources.js";
 import { HarnessRuntimeStore } from "./store.js";
 import { capabilities, fail, identifier, messageParts, redact, requiredText, supported, unsupported, type AdapterContext, type AdapterEvent, type HarnessAdapter, type HarnessCommand, type HarnessCommandReceipt, type HarnessDescriptor, type HarnessEvent, type HarnessSession, type PendingInteraction } from "./types.js";
 
@@ -27,8 +28,10 @@ export class HostHarnessRuntime {
   private working=new Set<string>();
   private answers=new Map<string,{sessionId:string;resolve:(v:Record<string,unknown>)=>void;reject:(e:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
   private stopped=false;
+  private scheduler:ReturnType<typeof setInterval>;
   constructor(readonly root:string,private integrations:Integration,private factory:(ctx:AdapterContext)=>HarnessAdapter=adapterFor) {
     this.store=new HarnessRuntimeStore(root);this.events.setMaxListeners(100);
+    this.scheduler=setInterval(()=>void this.tickSchedules().catch(()=>{}),15_000);this.scheduler.unref();
     for(const s of this.store.sessions()) {
       this.states.set(s.id,s);
       if(s.activeTurnId || !["idle","interrupted","failed","uncertain"].includes(s.state)) {
@@ -54,7 +57,7 @@ export class HostHarnessRuntime {
     const definitions:Array<[string,{name:string;protocol:HarnessDescriptor["protocol"];command:string;custom?:boolean}]>=[...Object.entries(ADAPTERS),...this.store.registrations().map(v=>[v.id,{name:v.name,protocol:"acp" as const,command:v.executable,custom:true}] as [string,{name:string;protocol:"acp";command:string;custom:boolean}])];
     return Promise.all(definitions.map(async([id,definition])=>{
       const found=detected.get(id);const executable=target.kind==="container" || definition.custom?definition.command:await this.integrations.executablePath(id);
-      const caps=capabilities();for(const key of ["queue","attachments","remote","diagnostics"] as const)caps[key]=supported("multivibe");
+      const caps=capabilities();for(const key of ["queue","attachments","remote","diagnostics","automations"] as const)caps[key]=supported("multivibe");
       caps.sessions=supported();caps.streaming=supported();
       if(target.kind==="container" && ["claude-code","opencode"].includes(id)){caps.sessions=unsupported("Install a MultiVibe Host inside this container for SDK/HTTP supervision");}
       return {id,name:definition.name,protocol:definition.protocol,detected:definition.custom || (target.kind!=="container" && Boolean(found?.detected)),configured:Boolean(found?.configured),available:Boolean(executable)&&caps.sessions.available,
@@ -92,7 +95,7 @@ export class HostHarnessRuntime {
       const executable=registration?.executable??(target.kind==="container"?ADAPTERS[s.harnessId as keyof typeof ADAPTERS]?.command:await this.integrations.executablePath(s.harnessId));
       if(!executable)fail("Harness executable is unavailable",409);
       const root=path.join(this.root,"sessions",s.id);fs.mkdirSync(root,{recursive:true,mode:0o700});
-      const instance=this.factory({session:s,root,executable,target,emit:event=>{if(!this.stopped)this.emit(id,event);},
+      const instance=this.factory({session:s,root,executable,target,emit:event=>{if(!this.stopped && this.states.has(id))this.emit(id,event);},
         nativeSession:nativeId=>{requiredText(nativeId,4096);s.nativeSessionId=nativeId;this.store.save(s);this.emit(id,{type:"session.updated",payload:s});},
         capabilities:values=>{Object.assign(s.capabilities,values);this.store.save(s);this.emit(id,{type:"capabilities.updated",payload:s.capabilities});},
         attachment:attachmentId=>this.store.attachment(id,attachmentId),ask:(kind,title,detail)=>this.ask(id,kind,title,detail),
@@ -133,7 +136,7 @@ export class HostHarnessRuntime {
         case "interrupt": {
           s.queuePaused=true;s.state="interrupted";this.save(s);
           for(const [key,answer] of this.answers)if(answer.sessionId===id){answer.reject(new Error("Interaction interrupted"));clearTimeout(answer.timer);this.answers.delete(key);const interaction=this.store.interactions(id).find(i=>i.id===key);if(interaction){interaction.status="expired";this.store.interaction(interaction);}}
-          if(this.adapters.has(id) && s.activeTurnId)await (await this.ensure(id)).interrupt();
+          if(this.adapters.has(id) && s.activeTurnId){const adapter=await this.ensure(id);await adapter.interrupt();adapter.close();this.adapters.delete(id);}
           s.state="interrupted";break;
         }
         case "steer": {
@@ -150,8 +153,10 @@ export class HostHarnessRuntime {
         }
         case "inspect":receipt.result=await this.inspect(id,requiredText(v.subject,64));break;
         case "configure": {
+          if(v.schedule){receipt.result=this.configureSchedule(id,v.schedule);break;}
           if(s.activeTurnId)fail("Change session settings between turns",409);
-          receipt.result=await (await this.ensure(id)).configure(v);break;
+          if(v.resource){if(this.store.target(s.targetId).kind!=="local")fail("Edit memory through the Host that owns this environment",422);receipt.result=writeHarnessResource(s,v.resource);break;}
+          receipt.result=await (await this.ensure(id)).configure(v);if(typeof v.model==="string")s.model=v.model;break;
         }
         case "compact": {
           if(s.activeTurnId)fail("Wait for the active turn before manually compacting",409);
@@ -184,9 +189,12 @@ export class HostHarnessRuntime {
         this.emit(id,{type:"message.user",itemId:c.id,payload:{parts:c.command.parts,displayText:c.command.displayText,attachments:(c.command.parts??[]).filter(p=>p.type==="attachment").map(p=>this.store.attachment(id,(p as any).attachmentId).info)}});
         try {
           const adapter=await this.ensure(id);if(this.stopped)break;
-          s.state="running";c.state="accepted";this.store.saveReceipt(c);this.save(s);this.emit(id,{type:"command.updated",payload:c});
-          await adapter.prompt(c.command.parts!);
-          c.state=s.queuePaused && this.session(id).state==="interrupted"?"cancelled":"completed";
+          if(this.session(id).state==="interrupted")c.state="cancelled";
+          else {
+            s.state="running";c.state="accepted";this.store.saveReceipt(c);this.save(s);this.emit(id,{type:"command.updated",payload:c});
+            await adapter.prompt(c.command.parts!);
+            c.state=s.queuePaused && this.session(id).state==="interrupted"?"cancelled":"completed";
+          }
           s.state=c.state==="cancelled"?"interrupted":"idle";
         }catch(e:any) {
           c.error=String(redact(e.message??"Harness turn failed"));
@@ -210,6 +218,14 @@ export class HostHarnessRuntime {
   }
   async inspect(id:string,subject:string):Promise<unknown> {
     const s=this.session(id);
+    if(subject==="automations")return {origin:"multivibe",schedules:this.store.schedules(id),nativeAutomations:"not_advertised"};
+    if(subject==="memory" || subject==="instructions") {
+      if(this.store.target(s.targetId).kind!=="local")fail("Inspect resources through the Host inside this environment",422);
+      const sources=harnessResources(s,subject);
+      if(!sources.length)fail("This harness does not publish inspectable resources for this feature",422);
+      s.capabilities[subject]=supported("native",{composition:"harness_owned",editable:sources.some(v=>v.writable)});this.save(s);
+      return {kind:subject,composition:"harness_owned",sources};
+    }
     if(subject==="capabilities")return s.capabilities;
     if(subject==="diagnostics")return {session:s,queue:this.store.commands(id),events:this.store.events(id,0,500)};
     if(subject==="workspace")return {path:s.workspace,target:this.store.target(s.targetId)};
@@ -218,6 +234,33 @@ export class HostHarnessRuntime {
       return this.skills(s);
     }
     return (await this.ensure(id)).inspect(subject);
+  }
+  private configureSchedule(sessionId:string,input:any) {
+    const id=input.id?identifier(input.id):randomUUID();const existing=this.store.schedules().find(s=>s.id===id);
+    if(existing && existing.sessionId!==sessionId)fail("Schedule belongs to another session",403);
+    if(input.remove===true){this.store.removeSchedule(id,sessionId);return {id,removed:true};}
+    if(existing && typeof input.enabled==="boolean" && !input.parts){existing.enabled=input.enabled;this.store.saveSchedule(existing);return existing;}
+    if(!existing && (this.store.schedules(sessionId).length>=50 || this.store.schedules().length>=500))fail("Schedule limit reached",409);
+    const parts=messageParts(input.parts);for(const part of parts)if(part.type==="attachment")this.store.attachment(sessionId,part.attachmentId);
+    if(!Number.isSafeInteger(input.nextAt) || input.nextAt<0)fail("Invalid scheduled time");
+    if(input.intervalMs!==undefined && (!Number.isSafeInteger(input.intervalMs) || input.intervalMs<60_000 || input.intervalMs>365*24*3600_000))fail("Schedule interval must be between one minute and one year");
+    const schedule={id,sessionId,name:requiredText(input.name,200),parts,nextAt:input.nextAt,...(input.intervalMs?{intervalMs:input.intervalMs}:{}),enabled:true,...(existing?.lastCommandId?{lastCommandId:existing.lastCommandId}:{})};
+    this.store.saveSchedule(schedule);this.emit(sessionId,{type:"automation.updated",payload:schedule});return schedule;
+  }
+  async tickSchedules(now=Date.now()) {
+    if(this.stopped)return;
+    for(const schedule of this.store.schedules()) {
+      if(!schedule.enabled || schedule.nextAt>now)continue;
+      const previous=schedule.lastCommandId?this.store.receipt(schedule.lastCommandId):undefined;
+      if(!previous || !["queued","dispatching","accepted","uncertain"].includes(previous.state)) {
+        const id=`schedule-${schedule.id}-${schedule.nextAt}`;
+        await this.command(schedule.sessionId,{id,type:"prompt",parts:schedule.parts});schedule.lastCommandId=id;
+        this.emit(schedule.sessionId,{type:"automation.enqueued",payload:{scheduleId:schedule.id,commandId:id}});
+      }
+      if(schedule.intervalMs)schedule.nextAt+=Math.max(1,Math.floor((now-schedule.nextAt)/schedule.intervalMs)+1)*schedule.intervalMs;
+      else schedule.enabled=false;
+      this.store.saveSchedule(schedule);
+    }
   }
   private skills(s:HarnessSession) {
     if(this.store.target(s.targetId).kind!=="local")fail("Discover skills through the Host inside this environment",422);
@@ -236,6 +279,7 @@ export class HostHarnessRuntime {
   }
   async close() {
     this.stopped=true;
+    clearInterval(this.scheduler);
     for(const answer of this.answers.values()){clearTimeout(answer.timer);answer.reject(new Error("Host shutting down"));}this.answers.clear();
     for(const [id,promise] of this.adapters){const s=this.session(id);if(s.activeTurnId){s.state="uncertain";s.queuePaused=true;this.store.save(s);}try{(await promise).close();}catch{}}
     this.events.removeAllListeners();

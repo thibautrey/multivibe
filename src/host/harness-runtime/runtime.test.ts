@@ -116,6 +116,14 @@ test("capabilities remain unknown until advertised and a harness cannot change",
   assert.equal((await runtime.command(s.id,operation("compact"))).state,"completed");assert.equal(s.capabilities.compaction.support,"native");
   assert.equal((await runtime.catalog()).find(v=>v.id==="gemini-cli")!.available,false);
 });
+test("Host schedules coalesce missed deadlines and never duplicate a pending execution",async t=>{
+  const {runtime}=fixture(t);const s=await runtime.create({harnessId:"pi"});await runtime.command(s.id,operation("pause_queue"));
+  const created=await runtime.command(s.id,operation("configure",{schedule:{name:"check",parts:[{type:"text",text:"scheduled"}],nextAt:1000,intervalMs:60_000}}));assert.equal(created.state,"completed");
+  await runtime.tickSchedules(1000);await runtime.tickSchedules(180_000);
+  assert.equal(runtime.snapshot(s.id).queue.length,1);assert.equal(runtime.store.schedules(s.id)[0].nextAt,181_000);
+  await runtime.tickSchedules(180_000);assert.equal(runtime.snapshot(s.id).queue.length,1);
+  const schedule=runtime.store.schedules(s.id)[0];await runtime.command(s.id,operation("configure",{schedule:{id:schedule.id,enabled:false}}));await runtime.tickSchedules(500_000);assert.equal(runtime.snapshot(s.id).queue.length,1);
+});
 test("native discovery only returns metadata and isolated-fork sources",t=>{
   const home=fs.mkdtempSync(path.join(os.tmpdir(),"multivibe-native-source-"));t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
   const directory=path.join(home,".pi/agent/sessions/project");fs.mkdirSync(directory,{recursive:true});

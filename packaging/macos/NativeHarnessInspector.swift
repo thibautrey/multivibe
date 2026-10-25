@@ -10,6 +10,14 @@ import SwiftUI
     @State private var hostSessions: [DesktopHarnessSession] = []
     @State private var subject = "capabilities"
     @State private var output = ""
+    @State private var inspected: HarnessJSON = .null
+    @State private var editingResource: HarnessJSON?
+    @State private var resourceText = ""
+    @State private var addingSchedule = false
+    @State private var scheduleName = ""
+    @State private var schedulePrompt = ""
+    @State private var scheduleDate = Date().addingTimeInterval(3600)
+    @State private var scheduleRepeat = "once"
     @State private var busy = false
     @State private var message: String?
     @State private var addingTarget = false
@@ -107,6 +115,7 @@ import SwiftUI
                         GroupBox("Inspecter le harness") {
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack { Picker("Fonction", selection: $subject) { ForEach(subjects, id: \.self) { Text($0).tag($0) } }; Button("Lire") { Task { await inspect() } } }
+                                inspectionControls
                                 if !output.isEmpty { Text(output).font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
                                 DisclosureGroup("Opération native avancée") {
                                     TextField("Nom de l’opération exposée par l’adaptateur", text: $nativeMethod)
@@ -122,6 +131,8 @@ import SwiftUI
         .task(id: target) { await load() }
         .sheet(isPresented: $addingTarget) { targetForm }
         .sheet(isPresented: $addingACP) { acpForm }
+        .sheet(isPresented: $addingSchedule) { scheduleForm }
+        .sheet(isPresented: Binding(get: { editingResource != nil }, set: { if !$0 { editingResource = nil } })) { memoryForm }
     }
     private var targetForm: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -169,7 +180,7 @@ import SwiftUI
     }
     private func inspect() async {
         guard let id = conversation?.id else { return }; busy = true; defer { busy = false }
-        do { let receipt = try await store.command(id, type: "inspect", value: .object(["subject": .string(subject)])); output = receipt.result?.display ?? "Aucun résultat"; message = nil }
+        do { let receipt = try await store.command(id, type: "inspect", value: .object(["subject": .string(subject)])); inspected = receipt.result ?? .null; output = receipt.result?.display ?? "Aucun résultat"; message = nil }
         catch { message = error.localizedDescription }
     }
     private func nativeOperation() async {
@@ -198,6 +209,89 @@ import SwiftUI
             let panel = NSSavePanel(); panel.nameFieldStringValue = "conversation.json"
             if panel.runModal() == .OK, let url = panel.url { try JSONEncoder().encode(export).write(to: url, options: .atomic) }
         } catch { message = error.localizedDescription }
+    }
+    @ViewBuilder private var inspectionControls: some View {
+        if subject == "memory" {
+            ForEach(Array(inspected["sources"].array.enumerated()), id: \.offset) { _, source in
+                HStack { Text(source["name"].string ?? "Mémoire"); Spacer(); Button("Modifier") { editingResource = source; resourceText = source["text"].string ?? "" }.disabled(source["writable"] != .bool(true)) }
+            }
+        }
+        if subject == "automations" {
+            Button("Planifier un message") { addingSchedule = true }
+            ForEach(Array(inspected["schedules"].array.enumerated()), id: \.offset) { _, schedule in
+                HStack {
+                    Text(schedule["name"].string ?? "Tâche")
+                    Spacer()
+                    Button(schedule["enabled"] == .bool(true) ? "Suspendre" : "Activer") { Task { await configure(.object(["schedule": .object(["id": schedule["id"], "enabled": .bool(schedule["enabled"] != .bool(true))])])) } }
+                    Button("Supprimer") { Task { await configure(.object(["schedule": .object(["id": schedule["id"], "remove": .bool(true)])])) } }
+                }
+            }
+        }
+        if subject == "commands" || subject == "skills" {
+            ForEach(Array(commandChoices.enumerated()), id: \.offset) { _, name in
+                Button(name) {
+                    let prefix = subject == "skills" ? (harnessID == "openai-codex" ? "$" : harnessID == "pi" ? "/skill:" : "/") : "/"
+                    store.edit { $0.draft += ($0.draft.isEmpty ? "" : " ") + prefix + name + " " }; dismiss()
+                }.buttonStyle(.borderless)
+            }
+        }
+        if subject == "models" {
+            ForEach(Array(modelChoices.enumerated()), id: \.offset) { _, option in
+                Button(option.name) { Task { var values: [String: HarnessJSON] = ["model": .string(option.id)]; if let provider = option.provider { values["provider"] = .string(provider) }; await configure(.object(values)) } }.disabled(store.isGenerating(conversation?.id))
+            }
+        }
+        if subject == "modes" {
+            ForEach(Array(modeChoices.enumerated()), id: \.offset) { _, mode in
+                Button(mode["name"].string ?? mode["mode"].string ?? mode["id"].string ?? "Mode") { Task { await configure(.object(["mode": mode["mode"] != .null ? mode["mode"] : mode["id"]])) } }.disabled(store.isGenerating(conversation?.id))
+            }
+        }
+    }
+    private var commandChoices: [String] {
+        var rows = inspected.array
+        if rows.isEmpty { rows = inspected["commands"].array }
+        if rows.isEmpty { rows = inspected["data"].array.flatMap { $0["skills"].array } }
+        return rows.compactMap { $0["name"].string }.prefix(100).map { $0.hasPrefix("/") ? String($0.dropFirst()) : $0 }
+    }
+    private struct ModelChoice { let id: String; let name: String; let provider: String? }
+    private var modelChoices: [ModelChoice] {
+        var rows = inspected.array
+        if rows.isEmpty { rows = inspected["data"].array }
+        if rows.isEmpty { rows = inspected["models"].array }
+        if rows.isEmpty { rows = inspected["models"]["availableModels"].array }
+        var options = rows.compactMap { row -> ModelChoice? in
+            guard let id = row["model"].string ?? row["modelId"].string ?? row["id"].string ?? row["value"].string else { return nil }
+            return .init(id: id, name: row["displayName"].string ?? row["name"].string ?? id, provider: row["provider"].string)
+        }
+        for provider in inspected["all"].array {
+            guard let providerID = provider["id"].string else { continue }
+            for (id, model) in provider["models"].object.sorted(by: { $0.key < $1.key }) { options.append(.init(id: providerID + "/" + id, name: (provider["name"].string ?? providerID) + " · " + (model["name"].string ?? id), provider: nil)) }
+        }
+        return Array(options.prefix(100))
+    }
+    private var modeChoices: [HarnessJSON] { let modes = inspected["modes"]["availableModes"].array; return modes.isEmpty ? inspected["data"].array : modes }
+    private func configure(_ value: HarnessJSON) async {
+        guard let id = conversation?.id else { return }
+        do { let result = try await store.command(id, type: "configure", value: value); output = result.result?.display ?? "Configuration appliquée"; try await store.refreshRuntime(id); if subject == "automations" { await inspect() } }
+        catch { message = error.localizedDescription }
+    }
+    private var memoryForm: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Mémoire du harness").font(.headline)
+            Text(editingResource?["path"].string ?? "").font(.caption).foregroundStyle(.secondary)
+            TextEditor(text: $resourceText).frame(minHeight: 250)
+            HStack { Button("Annuler") { editingResource = nil }; Spacer(); Button("Enregistrer") { Task { guard let resource = editingResource else { return }; await configure(.object(["resource": .object(["kind": .string("memory"), "path": resource["path"], "sha256": resource["sha256"], "text": .string(resourceText)])])); editingResource = nil; await inspect() } } }
+        }.padding(20).frame(width: 600)
+    }
+    private var scheduleForm: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Planifier un message sur ce Host").font(.headline)
+            TextField("Nom", text: $scheduleName)
+            TextEditor(text: $schedulePrompt).frame(height: 120)
+            DatePicker("Prochaine exécution", selection: $scheduleDate)
+            Picker("Répétition", selection: $scheduleRepeat) { Text("Une fois").tag("once"); Text("Chaque heure").tag("hourly"); Text("Toutes les 24 heures").tag("daily") }
+            Text("Le Host doit rester en fonctionnement. Les exécutions sont ajoutées à la file de cette conversation ; les échéances manquées sont regroupées.").font(.caption).foregroundStyle(.secondary)
+            HStack { Button("Annuler") { addingSchedule = false }; Spacer(); Button("Planifier") { Task { var schedule: [String: HarnessJSON] = ["name": .string(scheduleName), "parts": .array([.object(["type": .string("text"), "text": .string(schedulePrompt)])]), "nextAt": .number(floor(scheduleDate.timeIntervalSince1970 * 1000))]; if scheduleRepeat != "once" { schedule["intervalMs"] = .number(scheduleRepeat == "hourly" ? 3_600_000 : 86_400_000) }; await configure(.object(["schedule": .object(schedule)])); addingSchedule = false } }.disabled(scheduleName.isEmpty || schedulePrompt.isEmpty) }
+        }.padding(20).frame(width: 560)
     }
 }
 

@@ -4,7 +4,7 @@ import { fail, redact, type AdapterContext } from "./types.js";
 
 export function harnessEnvironment(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv={NO_COLOR:"1",TERM:"dumb"};
-  for(const key of ["HOME","USER","LOGNAME","PATH","TMPDIR","LANG","LC_ALL","SHELL","XDG_CONFIG_HOME","XDG_DATA_HOME","XDG_STATE_HOME","SSH_AUTH_SOCK","SSL_CERT_FILE","NODE_EXTRA_CA_CERTS"])
+  for(const key of ["HOME","USER","LOGNAME","PATH","TMPDIR","LANG","LC_ALL","SHELL","XDG_CONFIG_HOME","XDG_DATA_HOME","XDG_STATE_HOME","SSH_AUTH_SOCK","SSL_CERT_FILE","NODE_EXTRA_CA_CERTS","CODEX_HOME","CLAUDE_CONFIG_DIR","PI_CODING_AGENT_DIR","HERMES_HOME","GEMINI_CLI_HOME","OPENCODE_CONFIG_DIR"])
     if(process.env[key]) env[key]=process.env[key];
   return env;
 }
