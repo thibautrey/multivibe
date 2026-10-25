@@ -36,6 +36,7 @@ export async function remoteChatModels(connection:RemoteChatConnection,name="Lib
 export const libreChatAgents=(connection:RemoteChatConnection)=>remoteChatModels(connection);
 export class RemoteChatConfiguration {
   private file:string;
+  private pendingConnection?:{id:string;endpoint:string;connection:RemoteChatConnection;expiresAt:number};
   constructor(root:string,private service:{id:"librechat"|"openwebui";name:string;suffix:string}={id:"librechat",name:"LibreChat",suffix:"/api/agents/v1"}){this.file=path.join(root,`${service.id}-connection.json`);}
   read():RemoteChatConnection|undefined {
     try{const stat=fs.lstatSync(this.file);if(!stat.isFile() || (stat.mode&0o077)!==0)fail(`${this.service.name} credentials must be a private file`,409);return JSON.parse(fs.readFileSync(this.file,"utf8"));}catch(e:any){if(e.code==="ENOENT")return;throw e;}
@@ -93,15 +94,40 @@ export class RemoteChatConfiguration {
   async configure(input:any){
     if(input.userToken && (typeof input.userToken!=="string" || input.userToken.length>16_384 || /[\r\n\0]/u.test(input.userToken)))fail("Enter a valid LibreChat user session token",422);
     if(input.password && (typeof input.password!=="string" || input.password.length>4096 || typeof input.email!=="string" || input.email.length>320))fail("Enter valid LibreChat account credentials",422);
+    if(input.twoFactorToken && (typeof input.twoFactorToken!=="string" || input.twoFactorToken.length>16_384 || /[\r\n\0]/u.test(input.twoFactorToken)))fail("Restart LibreChat sign-in",422);
+    if(input.twoFactorCode && (typeof input.twoFactorCode!=="string" || !/^\d{6}$/u.test(input.twoFactorCode)))fail("Enter the 6-digit LibreChat authentication code",422);
+    if(input.twoFactorBackupCode && (typeof input.twoFactorBackupCode!=="string" || input.twoFactorBackupCode.length>256 || /[\r\n\0]/u.test(input.twoFactorBackupCode)))fail("Enter a valid LibreChat backup code",422);
+    if(input.twoFactorToken && !input.twoFactorCode && !input.twoFactorBackupCode)fail("Enter the LibreChat authentication code",422);
+    if((input.twoFactorCode || input.twoFactorBackupCode) && !input.twoFactorToken)fail("Restart LibreChat sign-in",422);
+    if(input.twoFactorCode && input.twoFactorBackupCode)fail("Use either an authentication code or a backup code",422);
+    if(input.connectionAttemptId && (typeof input.connectionAttemptId!=="string" || input.connectionAttemptId.length>128 || /[\r\n\0]/u.test(input.connectionAttemptId)))fail("Restart LibreChat sign-in",422);
+    if(input.userToken && (input.password || input.twoFactorToken || input.connectionAttemptId))fail("Use either LibreChat account sign-in or an existing session token",422);
     const endpoint=remoteChatEndpoint(input.endpoint,this.service.suffix,this.service.name),old=this.read();
     const apiKey=input.apiKey || (old?.endpoint===endpoint?old.apiKey:undefined);
     if(apiKey && (typeof apiKey!=="string" || apiKey.length>4096 || /[\r\n\0]/u.test(apiKey)))fail(`Enter the ${this.service.name} API key`);
     let connection:RemoteChatConnection={endpoint,apiKey:apiKey??"",agentId:typeof input.agentId==="string"?input.agentId:"",...(old?.endpoint===endpoint?{userToken:old.userToken,userId:old.userId,cookies:old.cookies}:{})};
-    if(this.service.id==="librechat" && input.email && input.password){
+    if(this.service.id==="librechat" && input.connectionAttemptId){
+      const pending=this.pendingConnection;
+      if(!pending || pending.id!==input.connectionAttemptId || pending.endpoint!==endpoint || pending.expiresAt<Date.now()){this.pendingConnection=undefined;fail("LibreChat sign-in expired. Restart sign-in.",422);}
+      connection={...pending.connection,agentId:connection.agentId};
+    }else if(this.service.id==="librechat" && input.twoFactorToken){
       const base=endpoint.replace(/\/api\/agents\/v1$/u,"/api");
-      let response:Response;try{response=await fetch(base+"/auth/login",{method:"POST",headers:{"content-type":"application/json",origin:new URL(base).origin},body:JSON.stringify({email:input.email,password:input.password}),redirect:"error",signal:AbortSignal.timeout(15_000)});}catch{return fail("LibreChat sign-in failed",422);}
+      const body={tempToken:input.twoFactorToken,...(input.twoFactorBackupCode?{backupCode:input.twoFactorBackupCode}:{token:input.twoFactorCode})};
+      let response:Response;try{response=await fetch(base+"/auth/2fa/verify-temp",{method:"POST",headers:{"content-type":"application/json",accept:"application/json",origin:new URL(base).origin},body:JSON.stringify(body),redirect:"error",signal:AbortSignal.timeout(15_000)});}catch{return fail("LibreChat two-factor verification failed",422);}
+      if(!response.ok){await response.body?.cancel();fail(response.status===401?"The LibreChat authentication code is invalid or expired. Try again or restart sign-in.":"LibreChat two-factor verification was refused.",422);}
+      const result=await boundedJson(response);
+      if(typeof result.token!=="string" || !result.user?.id)fail("Invalid LibreChat two-factor verification response",502);
+      connection={...connection,userToken:result.token,userId:result.user.id,cookies:this.cookies(response)};
+    }else if(this.service.id==="librechat" && input.email && input.password){
+      const base=endpoint.replace(/\/api\/agents\/v1$/u,"/api");
+      let response:Response;try{response=await fetch(base+"/auth/login",{method:"POST",headers:{"content-type":"application/json",accept:"application/json",origin:new URL(base).origin},body:JSON.stringify({email:input.email,password:input.password}),redirect:"error",signal:AbortSignal.timeout(15_000)});}catch{return fail("LibreChat sign-in failed",422);}
       if(!response.ok){await response.body?.cancel();fail("LibreChat sign-in refused. Check your account credentials.",422);}
       const result=await boundedJson(response);
+      if(result.twoFAPending===true){
+        if(result.twoFASetupRequired===true)fail("LibreChat requires two-factor enrollment in its web interface before this account can connect.",422);
+        if(typeof result.tempToken!=="string" || !result.tempToken || result.tempToken.length>16_384 || /[\r\n\0]/u.test(result.tempToken))fail("Invalid LibreChat two-factor challenge",502);
+        return {twoFactorRequired:true,twoFactorToken:result.tempToken};
+      }
       if(typeof result.token!=="string" || !result.user?.id)fail("LibreChat requires an interactive sign-in. Use a user session token instead.",422);
       connection={...connection,userToken:result.token,userId:result.user.id,cookies:this.cookies(response)};
     }
@@ -128,9 +154,17 @@ export class RemoteChatConfiguration {
       }
     }
     // Discovery is read-only until the user selects an agent and saves.
-    if(input.discover===true)return {agents};
+    if(input.discover===true){
+      if(this.service.id==="librechat" && input.twoFactorToken){
+        const connectionAttemptId=randomUUID();
+        this.pendingConnection={id:connectionAttemptId,endpoint,connection,expiresAt:Date.now()+5*60_000};
+        return {agents,connectionAttemptId};
+      }
+      return {agents};
+    }
     if(!agents.some(v=>v.id===connection.agentId))fail(`Select an available ${this.service.name} model or agent`,422);
     this.persist(connection);
+    if(input.connectionAttemptId===this.pendingConnection?.id)this.pendingConnection=undefined;
     return {...this.publicConfiguration(),agents};
   }
   descriptor():HarnessDescriptor {
