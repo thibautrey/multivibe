@@ -1,3 +1,4 @@
+import { OpenWebUIAdapter } from "./openwebui.js";
 import { LibreChatAdapter } from "./librechat.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -522,6 +523,7 @@ export function adapterFor(ctx:AdapterContext):HarnessAdapter {
     case "pi":return new PiAdapter(ctx);
     case "openai-codex":return new CodexAdapter(ctx);
     case "claude-code":return new ClaudeAdapter(ctx);
+    case "openwebui":return new OpenWebUIAdapter(ctx);
     case "librechat":return new LibreChatAdapter(ctx);
     case "opencode":return new OpenCodeAdapter(ctx);
     default: {

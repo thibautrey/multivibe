@@ -64,7 +64,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     @AppStorage("desktopInteractiveAnswers") private var interactiveAnswers = true
     @State private var models: [HostAssistantModel] = []
     @State private var harnesses: [NativeConversationHarness] = [.native]
-    @State private var configuringLibreChat = false
+    @State private var configuringRemoteHarness: String?
     @State private var choosingHarness = false
     @State private var choosingModel = false
     @State private var modelSource = "multivibe"
@@ -272,12 +272,13 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             )
         }
         .sheet(isPresented: $cloudConsent) { consentSheet }
-        .sheet(isPresented: $configuringLibreChat) {
-            LibreChatConnectionSheet(target: store.current?.executionTargetID ?? "local") {
+        .sheet(isPresented: Binding(get: { configuringRemoteHarness != nil }, set: { if !$0 { configuringRemoteHarness = nil } })) {
+            let remoteID = configuringRemoteHarness ?? "librechat"
+            RemoteHarnessConnectionSheet(harnessID: remoteID, target: store.current?.executionTargetID ?? "local") {
                 await loadHarnesses()
-                harness.wrappedValue = "librechat"
+                harness.wrappedValue = remoteID
                 store.edit { $0.authMode = "native" }
-                recordHarnessUse("librechat")
+                recordHarnessUse(remoteID)
             }
         }
         .sheet(item: $installingHarness) { item in harnessInstallationSheet(item) }
@@ -808,9 +809,9 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     }
     private func harnessCard(_ item: NativeConversationHarness) -> some View {
         Button {
-            if item.id == "librechat" {
+            if ["librechat", "openwebui"].contains(item.id) {
                 choosingHarness = false
-                configuringLibreChat = true
+                configuringRemoteHarness = item.id
             } else if item.available {
                 harness.wrappedValue = item.id
                 recordHarnessUse(item.id)
@@ -854,7 +855,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                     Label("Disponible sur macOS", systemImage: "laptopcomputer")
                         .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
                 }
-                if item.id == "librechat" {
+                if ["librechat", "openwebui"].contains(item.id) {
                     Label("Configurer la connexion", systemImage: "network")
                         .font(.caption.weight(.semibold)).foregroundStyle(ChatPalette.accent)
                 }
@@ -870,8 +871,8 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 item.id == harness.wrappedValue ? ChatPalette.accent.opacity(0.8) : ChatPalette.hairline,
                 lineWidth: item.id == harness.wrappedValue ? 1.5 : 1))
         }
-        .buttonStyle(.plain).disabled(!item.available && item.canInstall != true && item.id != "librechat")
-        .opacity(item.available || item.canInstall == true || item.id == "librechat" ? 1 : 0.72)
+        .buttonStyle(.plain).disabled(!item.available && item.canInstall != true && !["librechat", "openwebui"].contains(item.id))
+        .opacity(item.available || item.canInstall == true || ["librechat", "openwebui"].contains(item.id) ? 1 : 0.72)
         .accessibilityLabel("\(item.name), \(item.description)\(item.id == harness.wrappedValue ? ", sélectionné" : "")")
     }
     private func beginInstallation(_ item: NativeConversationHarness) {
@@ -1208,6 +1209,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     }
     private func harnessDescription(_ id: String) -> String {
         switch id {
+        case "openwebui": return "Modèles et outils de votre serveur Open WebUI."
         case "librechat": return "Agents et outils de votre serveur LibreChat."
         case "hermes-agent": return "Agent autonome avec mémoire et outils."
         case "pi": return "Agent de codage léger et extensible."
@@ -1251,7 +1253,10 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
 }
 
 
-@MainActor private struct LibreChatConnectionSheet: View {
+@MainActor private struct RemoteHarnessConnectionSheet: View {
+    let harnessID: String
+    private var serviceName: String { harnessID == "openwebui" ? "Open WebUI" : "LibreChat" }
+    private var isOpenWebUI: Bool { harnessID == "openwebui" }
     let target: String
     let saved: () async -> Void
     @Environment(\.dismiss) private var dismiss
@@ -1265,17 +1270,17 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     private struct LibreChatAgentChoice: Decodable, Identifiable { let id: String; let name: String }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Connexion LibreChat").font(.title2.weight(.semibold))
-            Text("Connectez votre serveur puis choisissez l’agent qui répondra dans MultiVibe.")
+            Text("Connexion \(serviceName)").font(.title2.weight(.semibold))
+            Text(isOpenWebUI ? "Connectez votre serveur puis choisissez le modèle qui répondra dans MultiVibe." : "Connectez votre serveur puis choisissez l’agent qui répondra dans MultiVibe.")
                 .font(.callout).foregroundStyle(.secondary)
-            TextField("Endpoint (https://librechat.example.com)", text: $endpoint)
+            TextField("Endpoint (https://chat.example.com)", text: $endpoint)
                 .textFieldStyle(.roundedBorder).onChange(of: endpoint) { _ in agents = [] }.disabled(busy)
-            SecureField(hasApiKey ? "Clé API (laisser vide pour la conserver)" : "Clé API LibreChat", text: $apiKey)
+            SecureField(hasApiKey ? "Clé API (laisser vide pour la conserver)" : "Clé API \(serviceName)", text: $apiKey)
                 .textFieldStyle(.roundedBorder).onChange(of: apiKey) { _ in agents = [] }.disabled(busy)
-            Text("La clé reste dans un fichier privé du Host. Utilisez une clé API LibreChat autorisée à exécuter les agents distants.")
+            Text(isOpenWebUI ? "La clé reste dans un fichier privé du Host. Activez les clés API dans Open WebUI et autorisez l’accès aux modèles et aux conversations." : "La clé reste dans un fichier privé du Host. Utilisez une clé API LibreChat autorisée à exécuter les agents distants.")
                 .font(.caption).foregroundStyle(.secondary)
             if !agents.isEmpty {
-                Picker("Agent", selection: $agentID) {
+                Picker(isOpenWebUI ? "Modèle" : "Agent", selection: $agentID) {
                     ForEach(agents) { agent in Text(agent.name).tag(agent.id) }
                 }
             }
@@ -1284,7 +1289,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 Button("Annuler") { dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
                 if busy { ProgressView().controlSize(.small) }
-                Button("Charger les agents") { Task { await connect(discover: true) } }
+                Button(isOpenWebUI ? "Charger les modèles" : "Charger les agents") { Task { await connect(discover: true) } }
                     .disabled(busy || endpoint.isEmpty || (apiKey.isEmpty && !hasApiKey))
                 Button("Enregistrer") { Task { await connect(discover: false) } }
                     .keyboardShortcut(.defaultAction).disabled(busy || agents.isEmpty || agentID.isEmpty)
@@ -1293,7 +1298,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
         .task {
             busy = true
             do {
-                let value = try await DesktopHarnessClient.shared.call("/librechat", target: target)
+                let value = try await DesktopHarnessClient.shared.call("/" + harnessID, target: target)
                 endpoint = value["endpoint"].string ?? ""
                 agentID = value["agentId"].string ?? ""
                 hasApiKey = value["hasApiKey"] == .bool(true)
@@ -1305,11 +1310,11 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
         busy = true; error = nil
         defer { busy = false }
         do {
-            let result = try await DesktopHarnessClient.shared.call("/librechat", method: "POST", target: target,
+            let result = try await DesktopHarnessClient.shared.call("/" + harnessID, method: "POST", target: target,
                 body: .object(["endpoint": .string(endpoint), "apiKey": .string(apiKey), "agentId": .string(agentID), "discover": .bool(discover)]))
             agents = try result["agents"].decode([LibreChatAgentChoice].self)
             if !agents.contains(where: { $0.id == agentID }) { agentID = agents.first?.id ?? "" }
-            if agents.isEmpty { error = "Aucun agent accessible avec cette clé API." }
+            if agents.isEmpty { error = isOpenWebUI ? "Aucun modèle accessible avec cette clé API." : "Aucun agent accessible avec cette clé API." }
             if !discover { apiKey = ""; await saved(); dismiss() }
         } catch { self.error = error.localizedDescription }
     }
