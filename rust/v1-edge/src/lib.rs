@@ -15807,13 +15807,14 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         assert_eq!(payload["tools"][0]["function"]["name"], "Read");
         assert!(payload["messages"].as_array().unwrap().iter().any(|m| m["role"]=="tool" && m["tool_call_id"]=="call_read" && m["content"]=="marker"));
         let mut converter = SseStreamTransformer::new(StreamTransform::ResponseToAnthropic,"big-pickle");
-        let mut output = converter.transform_anthropic_event(&json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":"Read","arguments":"{}"}}]}}]}));
-        output.push_str(&converter.transform_anthropic_event(&json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"completion_tokens":9}})));
+        let mut output = converter.transform_anthropic_event(&json!({"object":"chat.completion.chunk","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":"Read","arguments":"{}"}}]}}]}));
+        output.push_str(&converter.transform_anthropic_event(&json!({"object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"completion_tokens":9}})));
         output.push_str(&converter.finish());
         let frames = output.lines().filter_map(|line| line.strip_prefix("data: ")).map(|data| serde_json::from_str::<Value>(data).unwrap()).collect::<Vec<_>>();
         let end = frames.iter().find(|v| v["type"]=="message_delta").expect(&output);
         assert_eq!(end["delta"]["stop_reason"], "tool_use");
         assert!(frames.iter().any(|v|v["content_block"]["name"]=="Read"));
+        assert!(frames.iter().any(|v|v["delta"]["partial_json"]=="{}"));
         assert!(!output.contains("event: response."));assert_eq!(output.matches("event: message_stop").count(),1);
     }
 
