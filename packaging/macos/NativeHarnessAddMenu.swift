@@ -17,6 +17,10 @@ import SwiftUI
             terms.allSatisfy { term in [item.name, item.description ?? "", sectionTitle(item.section)].contains { $0.localizedCaseInsensitiveContains(term) } }
         }
     }
+    private var menuHeight: CGFloat {
+        let populatedSections = Set(filtered.map(\.section).filter { $0 != "actions" }).count
+        return min(520, max(150, CGFloat(filtered.count + 1) * 47 + CGFloat(populatedSections) * 30))
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 9) {
@@ -50,7 +54,7 @@ import SwiftUI
                         Text("No feature matches your search.").font(.callout).foregroundStyle(.secondary).padding(12)
                     }
                 }
-            }.frame(maxHeight: 520)
+            }.frame(height: menuHeight)
         }
         .padding(14).frame(width: 510)
         .accessibilityElement(children: .contain)
