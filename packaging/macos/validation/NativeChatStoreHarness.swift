@@ -122,6 +122,17 @@ enum HostAssistantError: Error { case emptyReply }
         reuseStore.edit { $0.runtimeSessionID = "supervised-without-messages" }
         reuseStore.newConversation()
         precondition(reuseStore.selection != supervised && reuseStore.conversations.count == 2)
+        let formSchema: HarnessJSON = .object(["required": .array([.string("choice"), .string("count")]), "properties": .object([
+            "choice": .object(["type": .string("string"), "enum": .array([.string("read"), .string("write")])]),
+            "count": .object(["type": .string("integer"), "minimum": .number(1), "maximum": .number(5)]),
+            "enabled": .object(["type": .string("boolean")]),
+            "items": .object(["type": .string("array")])
+        ])])
+        let form = try DesktopHarnessForm.content(schema: formSchema, values: ["choice": "read", "count": "2", "items": "[1,2]"])
+        precondition(form["enabled"] == .bool(false) && form["count"] == .number(2) && form["items"] == .array([.number(1), .number(2)]))
+        for invalid in [["choice": "read"], ["choice": "other", "count": "2"], ["choice": "read", "count": "2.5"], ["choice": "read", "count": "6"], ["choice": "read", "count": "2", "items": "{}"]] {
+            do { _ = try DesktopHarnessForm.content(schema: formSchema, values: invalid); preconditionFailure("Invalid form was accepted") } catch {}
+        }
         let artifact = "```intelligent-ui\n{\"title\":\"Saved calculator\",\"html\":\"<output>42</output>\"}\n```"
         HostAssistantClient.shared.response = artifact
         store.newConversation(text: "Un outil")

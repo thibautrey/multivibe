@@ -305,18 +305,59 @@ import SwiftUI
     let conversationID: UUID
     let interaction: DesktopHarnessInteraction
     @State private var values: [String: String] = [:]
+    @State private var error: String?
+    @State private var showingAuthentication = false
+    @StateObject private var authenticationBrowser = ChromiumBrowser()
+    private var elicitation: Bool { interaction.detail["_kind"].string == "mcp_elicitation" }
+    private var schema: HarnessJSON { interaction.detail["requestedSchema"] }
+    private var authenticationURL: String? {
+        for key in ["url", "authUrl", "authorizationUrl", "loginUrl", "verification_uri_complete"] {
+            if let value = interaction.detail[key].string, let url = URL(string: value), ["http", "https"].contains(url.scheme?.lowercased() ?? "") { return value }
+        }
+        return nil
+    }
     private var questions: [HarnessJSON] { let direct = interaction.detail["questions"].array; return direct.isEmpty ? interaction.detail["input"]["questions"].array : direct }
     private func answer(_ value: HarnessJSON) { store.runtimeCommand(conversationID, type: "respond", value: .object(["interactionId": .string(interaction.id), "answer": value])) }
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             Label(interaction.title, systemImage: interaction.kind == "permission" ? "lock.shield" : "questionmark.bubble").font(.callout.weight(.semibold))
-            if interaction.kind == "permission" {
+            if interaction.kind == "authentication" {
+                Text(interaction.detail["message"].string ?? "Ouvrez le parcours de connexion, puis revenez ici.").font(.caption)
+                HStack {
+                    if let url = authenticationURL { Button("Se connecter") { authenticationBrowser.userNavigate(url); showingAuthentication = true } }
+                    Button("Connexion effectuée") { answer(.object(["action": .string("accept")])) }
+                    Button("Annuler") { answer(.object(["action": .string("cancel")])) }
+                }
+            } else if elicitation {
+                Text(interaction.detail["message"].string ?? interaction.title).font(.caption)
+                ForEach(schema["properties"].object.keys.sorted(), id: \.self) { key in
+                    let field = schema["properties"][key]
+                    if field["type"].string == "boolean" {
+                        Toggle(field["title"].string ?? key, isOn: Binding(get: { values[key] == "true" || values[key] == nil && field["default"] == .bool(true) }, set: { values[key] = $0 ? "true" : "false" }))
+                    } else if !field["enum"].array.isEmpty {
+                        Picker(field["title"].string ?? key, selection: Binding(get: { values[key] ?? field["default"].string ?? "" }, set: { values[key] = $0 })) {
+                            Text("Choisir…").tag("")
+                            ForEach(Array(field["enum"].array.enumerated()), id: \.offset) { _, value in Text(value.string ?? value.display).tag(value.string ?? value.display) }
+                        }
+                    } else { TextField(field["title"].string ?? key, text: Binding(get: { values[key] ?? "" }, set: { values[key] = $0 })) }
+                    if let description = field["description"].string { Text(description).font(.caption).foregroundStyle(.secondary) }
+                }
+                HStack {
+                    Button("Envoyer") { do { answer(.object(["action": .string("accept"), "content": try DesktopHarnessForm.content(schema: schema, values: values)])) } catch { self.error = error.localizedDescription } }
+                    Button("Refuser") { answer(.object(["action": .string("decline")])) }
+                    Button("Annuler") { answer(.object(["action": .string("cancel")])) }
+                }
+            } else if interaction.kind == "permission" {
                 DisclosureGroup("Détails de l’action") { Text(interaction.detail.display).font(.caption.monospaced()).textSelection(.enabled) }
                 HStack {
                     ForEach(Array(interaction.detail["options"].array.enumerated()), id: \.offset) { _, option in
                         Button(option["name"].string ?? option["optionId"].string ?? "Répondre") { answer(.object(["optionId": option["optionId"]])) }
                     }
                 }
+            } else if interaction.detail["method"].string == "confirm" {
+                HStack { Button("Oui") { answer(.object(["confirmed": .bool(true)])) }; Button("Non") { answer(.object(["confirmed": .bool(false)])) } }
+            } else if interaction.detail["method"].string == "select" {
+                ForEach(Array(interaction.detail["options"].array.enumerated()), id: \.offset) { _, option in Button(option.string ?? option.display) { answer(.object(["value": option])) } }
             } else {
                 if !questions.isEmpty {
                     ForEach(Array(questions.enumerated()), id: \.offset) { index, question in
@@ -337,7 +378,11 @@ import SwiftUI
                     Button("Annuler le tour") { store.runtimeCommand(conversationID, type: "interrupt") }
                 }
             }
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
         }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+        .sheet(isPresented: $showingAuthentication, onDismiss: { authenticationBrowser.close() }) {
+            VStack { ChromiumBrowserPanel(browser: authenticationBrowser); Button("Revenir à la demande") { showingAuthentication = false } }.padding(12).frame(width: 800, height: 600)
+        }
     }
     private func submitQuestions() {
         let harness = store.conversations.first(where: { $0.id == conversationID })?.harnessID
