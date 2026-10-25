@@ -106,6 +106,7 @@ private struct HarnessLogo: View {
     @State private var loading = false
     @State private var importing = false
     @State private var fileDropTargeted = false
+    @State private var showingHarnessInspector = false
     @State private var deleteID: UUID?
     @State private var speech = AVSpeechSynthesizer()
     @FocusState private var composing: Bool
@@ -125,17 +126,13 @@ private struct HarnessLogo: View {
         store.edit { conversation in
             conversation.harnessID = value == "native" ? nil : value
             conversation.harnessSessionID = nil
+            conversation.authMode = "native"
         }
         NativeChatStore.defaultHarnessID = value
-        if value != "native", selectedLocalModel?.local == true, let remote = models.first(where: { $0.local != true }) {
-            model.wrappedValue = remote.id
-        } else if value != "native", selectedLocalModel?.local == true {
-            store.error = "Ce harness nécessite un modèle fourni par le Host. Connectez un fournisseur ou choisissez MultiVibe natif."
-        }
     }) }
     private var visible: [NativeChatConversation] {
-        store.conversations.filter { (!$0.messages.isEmpty || !$0.draft.isEmpty) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.messages.contains { $0.content.localizedCaseInsensitiveContains(search) }) }
-            .sorted { $0.updatedAt > $1.updatedAt }
+        store.conversations.filter { $0.archived != true && (!$0.messages.isEmpty || !$0.draft.isEmpty || $0.runtimeSessionID != nil) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.messages.contains { $0.content.localizedCaseInsensitiveContains(search) }) }
+            .sorted { if ($0.pinned == true) != ($1.pinned == true) { return $0.pinned == true }; return $0.updatedAt > $1.updatedAt }
     }
     private var selectedLocalModel: HostAssistantModel? {
         models.first { $0.id == model.wrappedValue }
@@ -154,11 +151,12 @@ private struct HarnessLogo: View {
     }
     private var selectedModelName: String {
         if cloudMode { return selectedCloudModel?.name ?? selectedCloudModel?.id ?? "Choisir un modèle" }
+        if harness.wrappedValue != "native", store.current?.authMode != "multivibe" { return "Modèle du harness" }
         return selectedLocalModel?.displayName ?? (model.wrappedValue.isEmpty ? "Choisir un modèle" : model.wrappedValue)
     }
     private var conversationSubtitle: String {
         if cloudMode { return "Hermes Cloud" }
-        if harness.wrappedValue != "native" { return "Orchestré par \(selectedHarness.name) · sur ce Mac" }
+        if harness.wrappedValue != "native" { return "\(selectedHarness.name) · \(store.current?.executionTargetID == nil || store.current?.executionTargetID == "local" ? "sur ce Mac" : store.current!.executionTargetID!)" }
         if selectedLocalModel?.local == true { return "Privée · sur ce Mac" }
         return "Privée · via le Host"
     }
@@ -209,6 +207,8 @@ private struct HarnessLogo: View {
                             }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 9).padding(.vertical, 8)
                             .background(store.selection == conversation.id ? ChatPalette.accent.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
                         }.buttonStyle(.plain).contextMenu {
+                            Button(conversation.pinned == true ? "Désépingler" : "Épingler") { if let i = store.conversations.firstIndex(where: { $0.id == conversation.id }) { store.conversations[i].pinned = conversation.pinned != true; store.save() } }
+                            Button("Archiver") { if let i = store.conversations.firstIndex(where: { $0.id == conversation.id }) { store.conversations[i].archived = true; store.save() } }
                             Button("Supprimer", role: .destructive) { deleteID = conversation.id }.disabled(store.generating == conversation.id)
                         }
                     }
@@ -236,6 +236,7 @@ private struct HarnessLogo: View {
                     }.font(.callout).foregroundStyle(.red).padding(12)
                 }
                 if !cloudMode { AgentAccessView(controller: desktopAgent, conversation: store.selection, stop: { store.stop() }) }
+                if !cloudMode { NativeHarnessConversationControls(store: store) }
                 composer
             }.background(ChatPalette.canvas)
             .onDrop(of: [UTType.fileURL], isTargeted: $fileDropTargeted, perform: importDroppedFiles)
@@ -271,6 +272,7 @@ private struct HarnessLogo: View {
         }
         .sheet(isPresented: $cloudConsent) { consentSheet }
         .sheet(item: $installingHarness) { item in harnessInstallationSheet(item) }
+        .sheet(isPresented: $showingHarnessInspector, onDismiss: { Task { await loadHarnesses() } }) { NativeHarnessInspector(store: store) }
         .onChange(of: agent.accountID) { _ in
             cloudTask?.cancel(); cloudSending = false; cloudDraft = ""; cloudModel = ""; cloudSelection = nil
             if agent.accountID == nil { cloudMode = false }
@@ -282,13 +284,12 @@ private struct HarnessLogo: View {
         }
         .onChange(of: store.selection) { selection in
             speech.stopSpeaking(at: .immediate)
-            if store.computer.running && store.computer.conversationID != selection { store.stop() }
         }
         .alert("Supprimer cette conversation ?", isPresented: Binding(get: { deleteID != nil }, set: { if !$0 { deleteID = nil } })) {
             Button("Annuler", role: .cancel) { deleteID = nil }
             Button("Supprimer", role: .destructive) { if let id = deleteID { store.delete(id) }; deleteID = nil; if store.current == nil { store.newConversation() } }
         } message: { Text("Elle sera supprimée de l’historique de ce Mac.") }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText, .sourceCode, .json], allowsMultipleSelection: true) { result in
+        .fileImporter(isPresented: $importing, allowedContentTypes: harness.wrappedValue == "native" ? [.plainText, .sourceCode, .json] : [.item], allowsMultipleSelection: true) { result in
             do { importFiles(try result.get(), conversationID: store.selection) }
             catch { store.error = "Import impossible : \(error.localizedDescription)" }
         }
@@ -298,6 +299,11 @@ private struct HarnessLogo: View {
         guard let conversationID,
               let conversation = store.conversations.first(where: { $0.id == conversationID }) else { return }
         do {
+            if conversation.harnessID != nil && conversation.harnessID != "native" {
+                try store.stageAttachments(urls, conversationID: conversationID)
+                if store.selection == conversationID { composing = true }
+                return
+            }
             let combined = try NativeChatFileImport.appending(urls, to: conversation.draft)
             // The drop belongs to the conversation where it started, even after navigation.
             guard let index = store.conversations.firstIndex(where: { $0.id == conversationID }) else { return }
@@ -523,6 +529,7 @@ private struct HarnessLogo: View {
                     ForEach(conversation.messages) { message in
                         messageRow(message, conversation: conversation).id(message.id)
                     }
+                    NativeHarnessTimeline(events: conversation.runtimeEvents ?? [])
                     Color.clear.frame(height: 1).id("end")
                 }.padding(.horizontal, 24).padding(.vertical, 22).frame(maxWidth: 900).frame(maxWidth: .infinity)
             }
@@ -590,22 +597,27 @@ private struct HarnessLogo: View {
                     .background(ChatPalette.surface, in: Circle())
                     .help("Joindre des documents texte ou les glisser dans la conversation").disabled(cloudMode)
                     if !cloudMode { harnessSelector }
-                    modelSelector
+                    if !cloudMode && harness.wrappedValue != "native" && store.current?.authMode != "multivibe" {
+                        Button("Modèle du harness") { showingHarnessInspector = true }.font(.caption).buttonStyle(.borderless)
+                    } else { modelSelector }
+                    if !cloudMode {
+                        Button { showingHarnessInspector = true } label: { Image(systemName: "slider.horizontal.3") }.buttonStyle(.plain).help("Machine, workspace et capacités du harness")
+                    }
                     Spacer(minLength: 12)
                     if cloudMode {
                         Button { sendCloud() } label: { Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).frame(width: 25, height: 25) }
                             .buttonStyle(.borderedProminent).clipShape(Circle()).help("Envoyer à Hermes")
                             .disabled(cloudSelection == nil || cloudSending || agent.busy || agent.consent?.cloudEnabled != true || cloudDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !agent.models.contains { $0.id == cloudModel && $0.available != false })
-                    } else if store.generating != nil {
-                        Button { store.stop() } label: { Image(systemName: "stop.fill").font(.system(size: 11)).frame(width: 25, height: 25) }
-                            .buttonStyle(.borderedProminent).clipShape(Circle()).tint(.secondary).help("Arrêter")
                     } else {
-                        Button { sendMessage() } label: { Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).frame(width: 25, height: 25) }
-                            .buttonStyle(.borderedProminent).clipShape(Circle()).help("Envoyer")
-                            .disabled(draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                || !models.contains { $0.id == model.wrappedValue }
-                                || !selectedHarness.available
-                                || (harness.wrappedValue != "native" && selectedLocalModel?.local == true))
+                        if store.isGenerating(store.selection) {
+                            if store.current?.runtimeSession?.capabilities["steer"]?.available == true {
+                                Button { store.steer() } label: { Image(systemName: "arrow.triangle.branch") }.buttonStyle(.borderless).help("Intervenir dans le tour actif").disabled(!canSend)
+                            }
+                            Button { store.stop() } label: { Image(systemName: "stop.fill").font(.system(size: 11)).frame(width: 25, height: 25) }
+                                .buttonStyle(.borderedProminent).clipShape(Circle()).tint(.secondary).help("Arrêter le tour et suspendre la file")
+                        }
+                        Button { sendMessage() } label: { Image(systemName: store.isGenerating(store.selection) ? "text.badge.plus" : "arrow.up").font(.system(size: 13, weight: .bold)).frame(width: 25, height: 25) }
+                            .buttonStyle(.borderedProminent).clipShape(Circle()).help(store.isGenerating(store.selection) ? "Ajouter à la file" : "Envoyer").disabled(!canSend)
                     }
                 }.padding(.horizontal, 8).padding(.bottom, 7)
             }
@@ -617,6 +629,13 @@ private struct HarnessLogo: View {
         }
         .frame(maxWidth: 900).frame(maxWidth: .infinity)
         .padding(.horizontal, 22).padding(.top, 9).padding(.bottom, 16)
+    }
+    private var canSend: Bool {
+        let hasInput = !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.current?.draftAttachments?.isEmpty == false
+        guard hasInput else { return false }
+        if harness.wrappedValue == "native" { return models.contains { $0.id == model.wrappedValue } }
+        if store.current?.authMode == "multivibe" { return selectedHarness.available && models.contains { $0.id == model.wrappedValue && $0.local != true } }
+        return selectedHarness.available
     }
     private var harnessSelector: some View {
         Button { choosingHarness = true } label: {
@@ -632,7 +651,7 @@ private struct HarnessLogo: View {
         .buttonStyle(.plain).tint(.secondary)
         .fixedSize(horizontal: false, vertical: true).frame(maxWidth: 190, alignment: .leading)
         .help(selectedHarness.description)
-        .disabled(store.current?.messages.isEmpty == false || store.generating == store.selection)
+        .disabled(store.current?.messages.isEmpty == false || store.current?.runtimeSessionID != nil || store.isGenerating(store.selection))
         .popover(isPresented: $choosingHarness, arrowEdge: .bottom) { harnessGrid }
     }
     private var harnessGrid: some View {
@@ -919,8 +938,17 @@ private struct HarnessLogo: View {
         do {
             let detected = try await NativeHarnessClient.shared.harnesses()
             harnesses = detected.isEmpty ? [.native] : detected.filter { $0.id != "computer-use" }
+            let catalog = try await DesktopHarnessClient.shared.call("/catalog", target: store.current?.executionTargetID ?? "local")
+            let runtimes = try catalog["harnesses"].decode([DesktopHarnessDescriptor].self)
+            for item in runtimes {
+                let old = harnesses.first { $0.id == item.id }
+                let view = NativeConversationHarness(id: item.id, name: item.name, available: item.available, configured: item.configured,
+                    description: "\(item.name) · \(item.protocolName) · accès natif ou MultiVibe", capabilities: .init(sessions: true, streaming: true, tools: item.capabilities["tools"]?.available == true, longTermMemory: item.capabilities["memory"]?.available == true),
+                    unavailableReason: item.reason, canInstall: old?.canInstall, compatible: true, detected: item.detected, conversationCapable: true, category: old?.category ?? "agent", popularityRank: old?.popularityRank ?? 100)
+                if let index = harnesses.firstIndex(where: { $0.id == item.id }) { harnesses[index] = view } else { harnesses.append(view) }
+            }
         } catch {
-            harnesses = [.native]
+            if harnesses.isEmpty { harnesses = [.native] }
             if harness.wrappedValue != "native" { store.error = error.localizedDescription }
         }
     }
