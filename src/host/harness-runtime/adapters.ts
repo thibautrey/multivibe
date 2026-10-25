@@ -51,7 +51,7 @@ abstract class Adapter implements HarnessAdapter {
 
 /** Shared ACP v1 client; omitted capabilities remain unavailable. */
 export class AcpAdapter extends Adapter {
-  private sessionInfo:any; private commands:any[]=[]; private agentCapabilities:any={};
+  private sessionInfo:any; private commands:any[]=[]; private agentCapabilities:any={};private defaultEffort?:string;
   private loading=false;private historyRole="";private historyIndex=0;
   private activePrompt?:Promise<any>;
   constructor(ctx:AdapterContext,private args:string[]) {super(ctx);}
@@ -100,6 +100,7 @@ export class AcpAdapter extends Adapter {
     try{this.sessionInfo=await peer.request(old?"session/load":"session/new",{...(old?{sessionId:old}:{}),cwd:this.ctx.session.workspace,mcpServers:[]});}finally{this.loading=false;}
     this.ctx.nativeSession(old??this.sessionInfo.sessionId);
     const nativeModel=this.sessionInfo.models?.currentModelId??this.sessionInfo.configOptions?.find((v:any)=>v.category==="model")?.currentValue;if(this.ctx.session.authMode==="native" && !this.ctx.session.model && typeof nativeModel==="string")this.ctx.session.model=nativeModel;
+    this.defaultEffort=acpEffort(this.sessionInfo)?.effort.currentValue;
     if(this.sessionInfo.modes)this.ctx.capabilities({modes:supported()});
     if(this.sessionInfo.models)this.ctx.capabilities({models:supported()});
     if(this.sessionInfo.configOptions)this.ctx.capabilities({settings:supported()});
@@ -175,7 +176,9 @@ export class AcpAdapter extends Adapter {
     this.ctx.emit({type:"compaction",payload:{state:"completed"}});return {};
   }
   async inspect(subject:string) {
-    if(subject==="effort")return acpEffort(this.sessionInfo)?.effort??null;
+    if(subject==="effort"){
+      const setting=acpEffort(this.sessionInfo);return setting?{...setting.effort,...(this.defaultEffort?{defaultValue:this.defaultEffort}:{})}:null;
+    }
     if(subject==="commands")return this.commands;
     if(subject==="settings" || subject==="models" || subject==="modes")return this.sessionInfo;
     if(subject==="history" && this.agentCapabilities.sessionCapabilities?.list)return this.peer!.request("session/list",{cwd:this.ctx.session.workspace});
@@ -183,7 +186,7 @@ export class AcpAdapter extends Adapter {
   }
   async configure(v:Record<string,unknown>) {
     if(v.effort!==undefined){
-      const setting=acpEffort(this.sessionInfo);const value=validateEffort(setting?.effort??null,v.effort);
+      const setting=acpEffort(this.sessionInfo);const value=validateEffort(setting?.effort??null,v.effort===null?this.defaultEffort:v.effort);
       return this.setOption(setting!.id,value);
     }
     if(typeof v.mode==="string")return this.peer!.request("session/set_mode",{sessionId:this.id,modeId:v.mode});
@@ -203,7 +206,7 @@ export class AcpAdapter extends Adapter {
 }
 
 export class PiAdapter extends Adapter {
-  restartAfterInterrupt=false;
+  restartAfterInterrupt=false;private defaultEffort?:string;
   private images(parts:MessagePart[]) {return parts.filter(p=>p.type==="attachment" && this.ctx.attachment(p.attachmentId).info.mimeType.startsWith("image/")).map(p=>{const a=this.ctx.attachment((p as any).attachmentId);return {type:"image",data:a.data.toString("base64"),mimeType:a.info.mimeType};});}
   async start() {
     const sessionFile=this.ctx.target.kind==="container"?path.posix.join(this.ctx.session.workspace,`.multivibe-${this.ctx.session.id}.jsonl`):path.join(this.ctx.root,`pi-${this.ctx.session.id}.jsonl`);
@@ -219,6 +222,7 @@ export class PiAdapter extends Adapter {
     else if(typeof this.ctx.session.configuration?.nativeProvider==="string")args.push("--provider",this.ctx.session.configuration.nativeProvider);
     if(this.ctx.session.model)args.push("--model",this.ctx.session.model);
     const peer=this.connect(args,false);const state=await peer.request("get_state");
+    if(typeof state?.thinkingLevel==="string")this.defaultEffort=state.thinkingLevel;
     if(this.ctx.session.authMode==="native" && typeof state?.model?.id==="string")this.ctx.session.model=state.model.id;
     if(this.ctx.session.authMode==="native" && typeof state?.model?.provider==="string")this.ctx.session.configuration={...this.ctx.session.configuration,nativeProvider:state.model.provider};
     this.ctx.nativeSession(state?.sessionFile??this.ctx.session.nativeSessionId??sessionFile);
@@ -264,12 +268,12 @@ export class PiAdapter extends Adapter {
   async inspect(subject:string) {
     if(subject==="effort"){
       const state=await this.peer!.request("get_state");
-      if(Array.isArray(state?.availableThinkingLevels))return effortOptions(state.availableThinkingLevels,state.thinkingLevel);
+      if(Array.isArray(state?.availableThinkingLevels))return effortOptions(state.availableThinkingLevels,state.thinkingLevel,this.defaultEffort);
       // Older Pi RPC versions answer unknown commands without a request id.
       // Bound the optional probe so those versions do not stall discovery.
       try {
         const levels=await this.peer!.request("get_available_thinking_levels",{},2000);
-        return effortOptions(levels?.levels,state?.thinkingLevel);
+        return effortOptions(levels?.levels,state?.thinkingLevel,this.defaultEffort);
       } catch(error) {
         if(error instanceof HarnessRuntimeError && error.status===422 || error instanceof Error && /get_available_thinking_levels timed out/iu.test(error.message))return null;
         throw error;
@@ -281,7 +285,7 @@ export class PiAdapter extends Adapter {
   async configure(v:Record<string,unknown>) {
     if(typeof v.model==="string" && typeof v.provider==="string"){const result=await this.peer!.request("set_model",{provider:v.provider,modelId:v.model});this.ctx.session.model=v.model;this.ctx.session.configuration={...this.ctx.session.configuration,nativeProvider:v.provider};return result;}
     if(v.effort!==undefined || v.thinkingLevel!==undefined){
-      const level=validateEffort(await this.inspect("effort") as HarnessEffort|null,v.effort??v.thinkingLevel);
+      const level=validateEffort(await this.inspect("effort") as HarnessEffort|null,v.effort===null?this.defaultEffort:v.effort??v.thinkingLevel);
       return this.peer!.request("set_thinking_level",{level});
     }
     if(typeof v.autoCompaction==="boolean")return this.peer!.request("set_auto_compaction",{enabled:v.autoCompaction});
@@ -368,7 +372,7 @@ export class CodexAdapter extends Adapter {
     if(subject==="effort"){
       const {data}=await this.inspect("models") as any;
       const model=data.find((m:any)=>(m.model??m.id)===(this.ctx.session.model??this.currentModel))??(!this.ctx.session.model?data.find((m:any)=>m.isDefault):undefined);
-      return effortOptions(model?.supportedReasoningEfforts,this.ctx.session.configuration?.effort??this.defaultEffort??model?.defaultReasoningEffort);
+      return effortOptions(model?.supportedReasoningEfforts,this.ctx.session.configuration?.effort??this.defaultEffort??model?.defaultReasoningEffort,model?.defaultReasoningEffort);
     }
     const calls:Record<string,[string,Record<string,unknown>]>={
       models:["model/list",{}],skills:["skills/list",{cwds:[this.ctx.session.workspace]}],hooks:["hooks/list",{cwds:[this.ctx.session.workspace]}],
@@ -385,7 +389,11 @@ export class CodexAdapter extends Adapter {
   async configure(v:Record<string,unknown>) {
     // turn/start accepts these settings; no global config is rewritten.
     if(Object.keys(v).some(k=>!["model","effort","mode"].includes(k)))return super.configure(v);
-    if(v.effort!==undefined)validateEffort(await this.inspect("effort") as HarnessEffort|null,v.effort);
+    if(v.effort!==undefined){
+      const effort=await this.inspect("effort") as HarnessEffort|null;
+      if(v.effort===null){validateEffort(effort,effort?.defaultValue);if(this.ctx.session.configuration)delete this.ctx.session.configuration.effort;}
+      else validateEffort(effort,v.effort);
+    }
     if(typeof v.model==="string" && v.model!==this.ctx.session.model && this.ctx.session.configuration)delete this.ctx.session.configuration.effort;
     if(v.mode!==undefined && !["plan","default"].includes(String(v.mode)))fail("Unsupported Codex collaboration mode",422);
     this.ctx.session.configuration={...this.ctx.session.configuration,...v};if(typeof v.model==="string")this.ctx.session.model=v.model;
@@ -407,7 +415,7 @@ class InputQueue {
 }
 export class ClaudeAdapter extends Adapter {
   private query:any;private queue=new InputQueue();private abort=new AbortController();
-  private stderrBytes=0;private currentEffort?:string;
+  private stderrBytes=0;private currentEffort?:string;private defaultEffort?:string;
   private settingsFile?:string;
   private currentMessageId="claude-assistant";private sawText=false;
   constructor(ctx:AdapterContext,private sdkLoader?:()=>Promise<any>){super(ctx);}
@@ -443,7 +451,7 @@ export class ClaudeAdapter extends Adapter {
     if(v.parent_tool_use_id && ["assistant","stream_event","user"].includes(v.type)){this.ctx.emit({type:"agent",itemId:v.parent_tool_use_id,payload:v});return;}
     if(v.type==="system" && v.subtype==="init"){
       if(typeof v.model==="string")this.ctx.session.model=v.model;
-      if(typeof v.effort==="string")this.currentEffort=v.effort;
+      if(typeof v.effort==="string"){this.currentEffort=v.effort;this.defaultEffort??=v.effort;}
     }
     if(v.session_id && v.session_id!==this.ctx.session.nativeSessionId)this.ctx.nativeSession(v.session_id);
     if(v.type==="stream_event") {
@@ -484,7 +492,7 @@ export class ClaudeAdapter extends Adapter {
       if(typeof this.query.applyFlagSettings!=="function")return null;
       const models=await this.query.supportedModels();
       const model=models.find((m:any)=>m.value===this.ctx.session.model || m.resolvedModel===this.ctx.session.model);
-      return effortOptions(model?.supportedEffortLevels,this.ctx.session.configuration?.effort??this.currentEffort);
+      return effortOptions(model?.supportedEffortLevels,this.ctx.session.configuration?.effort??this.currentEffort,this.defaultEffort);
     }
     if(subject==="commands")return this.query.supportedCommands();
     if(subject==="models")return this.query.supportedModels();
@@ -495,7 +503,9 @@ export class ClaudeAdapter extends Adapter {
   }
   async configure(v:Record<string,unknown>) {
     if(v.effort!==undefined){
-      const effort=validateEffort(await this.inspect("effort") as HarnessEffort|null,v.effort);
+      const catalog=await this.inspect("effort") as HarnessEffort|null;
+      if(v.effort===null){validateEffort(catalog,catalog?.defaultValue);await this.query.applyFlagSettings({effortLevel:null});this.currentEffort=this.defaultEffort;return {effort:this.currentEffort};}
+      const effort=validateEffort(catalog,v.effort);
       await this.query.applyFlagSettings({effortLevel:effort});this.currentEffort=effort;return {effort};
     }
     if(typeof v.model==="string"){await this.query.setModel(v.model);

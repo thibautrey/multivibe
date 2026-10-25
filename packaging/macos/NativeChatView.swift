@@ -180,6 +180,7 @@ private struct NativeChatSuggestionEditor: View {
     @State private var configuringRemoteHarness: String?
     @State private var choosingHarness = false
     @State private var choosingModel = false
+    @State private var choosingEffort = false
     @State private var modelSource = "multivibe"
     @State private var modelQuery = ""
     @State private var harnessModels: [DesktopHarnessModel] = []
@@ -907,7 +908,6 @@ private struct NativeChatSuggestionEditor: View {
                     ChatIconButton(title: harness.wrappedValue == "native" ? "Joindre des documents texte" : "Joindre des fichiers", icon: "plus") { importing = true }.disabled(cloudMode)
                     if !cloudMode { harnessSelector }
                     modelSelector
-                    effortSelector
                     if supportsProjects { projectSelector }
                     Spacer(minLength: 4)
                     composerActions
@@ -1278,11 +1278,15 @@ private struct NativeChatSuggestionEditor: View {
         }
         if key == projectCatalogKey { loadingProjects = false }
     }
+    private func openModelPicker() {
+        modelSource = cloudMode ? (selectedCloudModel?.source == "relay" ? "relay" : "cloud") : (harness.wrappedValue != "native" && store.current?.authMode != "multivibe" ? "harness" : "multivibe")
+        modelQuery = ""
+        choosingModel = true
+    }
     private var modelSelector: some View {
         Button {
-            modelSource = cloudMode ? (selectedCloudModel?.source == "relay" ? "relay" : "cloud") : (harness.wrappedValue != "native" && store.current?.authMode != "multivibe" ? "harness" : "multivibe")
-            modelQuery = ""
-            choosingModel = true
+            if showsEffortControl { choosingEffort = true }
+            else { openModelPicker() }
         } label: {
             HStack(spacing: 6) {
                 if !cloudMode && harness.wrappedValue != "native" && store.current?.authMode != "multivibe" {
@@ -1291,16 +1295,22 @@ private struct NativeChatSuggestionEditor: View {
                     Image(systemName: cloudMode ? (selectedCloudModel?.source == "relay" ? "desktopcomputer" : "cloud") : (selectedLocalModel?.local == true ? "apple.logo" : "cpu"))
                 }
                 Text(selectedModelName).lineLimit(1)
-                Image(systemName: "chevron.up.chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
+                if showsEffortControl, let option = selectedEffortOption {
+                    Text(effortDisplayName(option)).foregroundStyle(.tertiary).lineLimit(1)
+                }
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
             }
             .font(.caption.weight(.medium)).foregroundStyle(.secondary)
             .padding(.horizontal, 9).frame(height: 28)
             .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(ChatActionStyle()).tint(.secondary)
-        .frame(maxWidth: 260, alignment: .leading).fixedSize(horizontal: true, vertical: true)
+        .frame(maxWidth: 320, alignment: .leading).fixedSize(horizontal: true, vertical: true)
         .disabled(cloudMode ? cloudSending : store.isGenerating(store.selection))
         .popover(isPresented: $choosingModel, arrowEdge: .bottom) { modelPicker }
+        .popover(isPresented: $choosingEffort, arrowEdge: .top) { effortPopover }
+        .accessibilityLabel(showsEffortControl ? "Modèle et effort" : "Modèle")
+        .accessibilityValue(showsEffortControl ? "\(selectedModelName), \(selectedEffortOption.map(effortDisplayName) ?? "")" : selectedModelName)
     }
     private var effortKey: String {
         let update = store.current?.runtimeEvents?.last(where: { $0.type == "configuration" })?.seq ?? 0
@@ -1311,46 +1321,119 @@ private struct NativeChatSuggestionEditor: View {
         if store.current?.runtimeSessionID != nil { return harnessEffort?.currentValue }
         return store.current?.selectedEffort ?? harnessEffort?.currentValue
     }
-    @ViewBuilder private var effortSelector: some View {
-        if !cloudMode, harness.wrappedValue != "native", loadedEffortKey == effortKey {
-            if let effort = harnessEffort, !effort.options.isEmpty {
-                Menu {
-                    Text("Effort du modèle").font(.headline)
-                    ForEach(effort.options) { option in
-                        Button {
-                            guard let id = store.selection, !changingEffort else { return }
-                            changingEffort = true
-                            Task { @MainActor in
-                                defer { changingEffort = false }
-                                do {
-                                    try await store.selectEffort(option.value, catalog: effort, conversationID: id)
-                                    if store.selection == id { await loadHarnessEffort() }
-                                } catch { if store.selection == id { store.error = error.localizedDescription } }
-                            }
-                        } label: {
-                            if effectiveEffort == option.value { Label(option.label, systemImage: "checkmark") }
-                            else { Text(option.label) }
-                        }.help(option.description ?? option.label)
-                    }
+    private var showsEffortControl: Bool {
+        !cloudMode && harness.wrappedValue != "native" && loadedEffortKey == effortKey && harnessEffort?.options.isEmpty == false
+    }
+    private var selectedEffortOption: DesktopHarnessEffort.Option? {
+        guard let effort = harnessEffort else { return nil }
+        return effort.options.first { $0.value == effectiveEffort } ?? effort.options.first { $0.value == effort.defaultValue }
+    }
+    private func effortDisplayName(_ option: DesktopHarnessEffort.Option) -> String {
+        if option.label != option.value { return option.label }
+        switch option.value.lowercased() {
+        case "none", "off": return "None"
+        case "minimal": return "Minimal"
+        case "low": return "Low"
+        case "medium": return "Medium"
+        case "high": return "High"
+        case "xhigh": return "Extra High"
+        case "max": return "Max"
+        case "ultra": return "Ultra"
+        default: return option.label
+        }
+    }
+    private var effortPopover: some View {
+        VStack(spacing: 18) {
+            ZStack(alignment: .trailing) {
+                Button {
+                    choosingEffort = false
+                    DispatchQueue.main.async { openModelPicker() }
                 } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "gauge.with.dots.needle.50percent")
-                        Text(effort.options.first(where: { $0.value == effectiveEffort })?.label ?? "Effort")
-                            .lineLimit(1)
-                    }.font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                    VStack(spacing: 4) {
+                        Text(selectedEffortOption.map(effortDisplayName) ?? "Select effort")
+                            .font(.title3.weight(.medium)).foregroundStyle(ChatPalette.accent)
+                        HStack(spacing: 4) {
+                            Text(selectedModelName).lineLimit(1)
+                            Image(systemName: "chevron.right").font(.caption2.weight(.semibold))
+                        }.font(.callout).foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity)
+                }.buttonStyle(.plain).help("Choisir un autre modèle")
+                if let effort = harnessEffort, effort.defaultValue != nil {
+                    Button { resetEffort(effort) } label: {
+                        Image(systemName: "arrow.counterclockwise").font(.system(size: 18, weight: .medium))
+                            .frame(width: 32, height: 32)
+                    }.buttonStyle(.plain).foregroundStyle(.secondary)
+                        .disabled(changingEffort || effectiveEffort == effort.defaultValue)
+                        .help("Revenir au niveau d’effort par défaut")
+                        .accessibilityLabel("Réinitialiser l’effort")
                 }
-                .menuStyle(.borderlessButton).fixedSize().frame(maxWidth: 130)
-                .padding(.horizontal, 7).frame(height: 28)
-                .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 8))
-                .disabled(working || changingEffort || loadingEffort)
-                .help("Niveau d’effort proposé par le harness pour ce modèle")
-                .accessibilityLabel("Effort du modèle")
-                .accessibilityValue(effectiveEffort ?? "Par défaut")
-            } else if effortError != nil {
-                Button { Task { await loadHarnessEffort() } } label: { Image(systemName: "gauge.with.dots.needle.50percent") }
-                    .buttonStyle(ChatActionStyle()).help("Effort indisponible. Réessayer : " + (effortError ?? ""))
-                    .accessibilityLabel("Recharger les niveaux d’effort")
             }
+            if let effort = harnessEffort {
+                effortScale(effort)
+            }
+        }
+        .padding(18).frame(width: 380)
+    }
+    private func effortScale(_ effort: DesktopHarnessEffort) -> some View {
+        let options = effort.options
+        let selected = max(0, options.firstIndex(where: { $0.value == effectiveEffort }) ?? options.firstIndex(where: { $0.value == effort.defaultValue }) ?? 0)
+        return GeometryReader { geometry in
+            let inset: CGFloat = 22
+            let available = max(0, geometry.size.width - inset * 2)
+            let step = options.count > 1 ? available / CGFloat(options.count - 1) : 0
+            let thumbX = inset + step * CGFloat(selected)
+            ZStack(alignment: .leading) {
+                Capsule().fill(ChatPalette.subtle)
+                    .overlay(Capsule().stroke(ChatPalette.hairline, lineWidth: 1))
+                Capsule().fill(ChatPalette.accent)
+                    .frame(width: max(44, thumbX + inset))
+                HStack(spacing: 0) {
+                    ForEach(Array(options.enumerated()), id: \.element.id) { index, option in
+                        Button { selectEffort(option, from: effort) } label: {
+                            Circle().fill(.white.opacity(index <= selected ? 0.38 : 0.30)).frame(width: 7, height: 7)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }.buttonStyle(.plain).disabled(changingEffort)
+                            .accessibilityLabel(effortDisplayName(option))
+                            .accessibilityValue(index == selected ? "Sélectionné" : "")
+                    }
+                }.padding(.horizontal, inset - 3)
+                Circle().fill(.white).frame(width: 42, height: 42)
+                    .shadow(color: .black.opacity(0.16), radius: 3, y: 1)
+                    .offset(x: thumbX - 21)
+                    .allowsHitTesting(false)
+            }
+            .contentShape(Capsule())
+            .gesture(DragGesture(minimumDistance: 0).onEnded { value in
+                guard !changingEffort, !options.isEmpty else { return }
+                let raw = step > 0 ? (value.location.x - inset) / step : 0
+                let index = min(options.count - 1, max(0, Int(raw.rounded())))
+                selectEffort(options[index], from: effort)
+            })
+        }
+        .frame(height: 48)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Niveau d’effort")
+    }
+    private func selectEffort(_ option: DesktopHarnessEffort.Option, from effort: DesktopHarnessEffort) {
+        guard let id = store.selection, !changingEffort, option.value != effectiveEffort else { return }
+        changingEffort = true
+        Task { @MainActor in
+            defer { changingEffort = false }
+            do {
+                try await store.selectEffort(option.value, catalog: effort, conversationID: id)
+                if store.selection == id { await loadHarnessEffort() }
+            } catch { if store.selection == id { store.error = error.localizedDescription } }
+        }
+    }
+    private func resetEffort(_ effort: DesktopHarnessEffort) {
+        guard let id = store.selection, !changingEffort else { return }
+        changingEffort = true
+        Task { @MainActor in
+            defer { changingEffort = false }
+            do {
+                try await store.resetEffort(catalog: effort, conversationID: id)
+                if store.selection == id { await loadHarnessEffort() }
+            } catch { if store.selection == id { store.error = error.localizedDescription } }
         }
     }
     private func loadHarnessEffort() async {

@@ -3,10 +3,11 @@ import { fail } from "./types.js";
 export type HarnessEffort = {
   options: { value: string; label: string; description?: string }[];
   currentValue?: string;
+  defaultValue?: string;
 };
 
 /** Keep native values and labels, including future levels unknown to MultiVibe. */
-export function effortOptions(rows: unknown, currentValue?: unknown): HarnessEffort | null {
+export function effortOptions(rows: unknown, currentValue?: unknown, defaultValue?: unknown): HarnessEffort | null {
   if (!Array.isArray(rows)) return null;
   const options = rows.flatMap(row => {
     const value = typeof row === "string" ? row : row?.value ?? row?.reasoningEffort;
@@ -16,14 +17,16 @@ export function effortOptions(rows: unknown, currentValue?: unknown): HarnessEff
       ...(typeof row?.description === "string" ? { description: row.description } : {}) }];
   });
   const unique = [...new Map(options.map(option => [option.value, option])).values()];
-  return unique.length ? { options: unique, ...(typeof currentValue === "string" && unique.some(o => o.value === currentValue) ? { currentValue } : {}) } : null;
+  return unique.length ? { options: unique,
+    ...(typeof currentValue === "string" && unique.some(o => o.value === currentValue) ? { currentValue } : {}),
+    ...(typeof defaultValue === "string" && unique.some(o => o.value === defaultValue) ? { defaultValue } : {}) } : null;
 }
 
 export function acpEffort(info: any): { id: string; effort: HarnessEffort } | null {
   const option = info?.configOptions?.find((o: any) => o.type === "select" &&
     (o.category === "thought_level" || /^(?:effort|reasoning[_-]?effort|thinking[_-]?level|thought[_-]?level)$/iu.test(o.id)));
   if (!option || typeof option.id !== "string") return null;
-  const effort = effortOptions((option.options ?? []).flatMap((o: any) => Array.isArray(o.options) ? o.options : [o]), option.currentValue);
+  const effort = effortOptions((option.options ?? []).flatMap((o: any) => Array.isArray(o.options) ? o.options : [o]), option.currentValue, option.defaultValue);
   return effort ? { id: option.id, effort } : null;
 }
 

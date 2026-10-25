@@ -194,7 +194,7 @@ test("Codex discovery reads every model page without creating a thread",async t=
 function requests(root:string){return fs.readFileSync(path.join(root,"requests.jsonl"),"utf8").trim().split("\n").map(line=>JSON.parse(line));}
 test("ACP exposes native effort choices and consumes configuration responses without notifications",async t=>{
   const f=fixture(t,"hermes-agent"),adapter=new AcpAdapter(f.ctx,["effort"]);t.after(()=>adapter.close());await adapter.start();
-  assert.deepEqual(await adapter.inspect("effort"),{options:[{value:"low",label:"Light"},{value:"ultra",label:"Thorough"}],currentValue:"low"});
+  assert.deepEqual(await adapter.inspect("effort"),{options:[{value:"low",label:"Light"},{value:"ultra",label:"Thorough"}],currentValue:"low",defaultValue:"low"});
   await adapter.configure({effort:"ultra"});
   assert.equal((await adapter.inspect("effort") as any).currentValue,"ultra");
   await assert.rejects(adapter.configure({effort:"invented"}),/not advertised/);

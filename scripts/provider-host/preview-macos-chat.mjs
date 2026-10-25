@@ -94,7 +94,7 @@ const server = createServer(async (request, response) => {
   if (route.endsWith('/sessions')) return send({ sessions: Object.values(sessions) });
   if (route.endsWith('/effort')) {
     let text = ''; for await (const chunk of request) text += chunk; const body = JSON.parse(text);
-    return send({ effort: ['librechat', 'openwebui'].includes(body.harnessId) ? null : { options: [{ value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }], currentValue: sessions[body.sessionId]?.configuration?.effort ?? 'medium' } });
+    return send({ effort: ['librechat', 'openwebui'].includes(body.harnessId) ? null : { options: [{ value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }], currentValue: sessions[body.sessionId]?.configuration?.effort ?? 'medium', defaultValue: 'low' } });
   }
   if (route.endsWith('/models')) return send({ models: previewModels.map(model => ({ id: model.id, name: model.name, provider: 'preview' })), currentModelId: 'preview-model', provider: 'preview' });
   const match = route.match(/\/sessions\/([^/]+)(?:\/(events|commands))?$/u);
