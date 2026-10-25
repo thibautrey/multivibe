@@ -50,7 +50,7 @@ async function fixture(t:any,id:"librechat"|"openwebui"){
     const final=()=>{
       assert.equal(calls.filter(v=>v.route==="/prefix/api/agents/chat").at(-1).body.parentMessageId,messages.at(-1).messageId);
       const request=calls.filter(v=>v.route==="/prefix/api/agents/chat").at(-1).body;
-      messages.push({messageId:"u2",isCreatedByUser:true,text:request.text,parentMessageId:request.parentMessageId},{messageId:"a2",isCreatedByUser:false,text:"Native reply",parentMessageId:"u2"});
+      messages.push({messageId:"u2",isCreatedByUser:true,text:request.text,parentMessageId:request.parentMessageId,createdAt:"2026-10-25T10:00:01Z"},{messageId:"a2",isCreatedByUser:false,text:"Native reply",parentMessageId:"u2",createdAt:"2026-10-25T10:00:02Z"});
       res.writeHead(200,{"content-type":"text/event-stream"});res.end(`data: ${JSON.stringify({final:true,conversation:convo,responseMessage:messages.at(-1)})}\n\n`);
     };
     if(route==="/prefix/api/agents/chat"){
@@ -89,7 +89,8 @@ for(const id of ["librechat","openwebui"] as const){
     const f=await fixture(t,id);const list=await f.remote.list();assert.equal(list.complete,true);assert.equal(list.conversations.length,1);
     const initial=await f.remote.snapshot("remote-1");assert.deepEqual(initial.messages.map(v=>v.content),["From web","Saved answer"]);
     const input={harnessId:id,connectionId:list.connectionId,remoteChatId:"remote-1"};
-    const session=await f.runtime.connectRemoteChat(input),again=await f.runtime.connectRemoteChat(input);
+    const [session,again]=await Promise.all([f.runtime.connectRemoteChat(input),f.runtime.connectRemoteChat(input)]);
+    assert.equal((await f.runtime.models({harnessId:id})).models[0].id,"agent-1");
     assert.equal(session.id,again.id);assert.equal(session.nativeSessionId,"remote-1");assert.equal(session.model,"agent-1");
     // A different native client changes the active branch after Desktop imported it.
     if(id==="librechat")f.messages.push({messageId:"external",isCreatedByUser:false,text:"From another client",parentMessageId:"a1",createdAt:"2026-10-25T10:00:00Z"});
