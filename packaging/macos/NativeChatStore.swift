@@ -54,6 +54,7 @@ struct NativeChatConversation: Codable, Identifiable {
     var remoteRevision: String?
     var remoteEndpoint: String?
     var remoteUnavailable: Bool?
+    var remoteActive: Bool?
 }
 
 /// Device-owned history; provider credentials are never stored here.
@@ -327,6 +328,7 @@ struct NativeChatConversation: Codable, Identifiable {
     }
     private func submitHarness(_ id: UUID, interactiveAnswers: Bool, steer: Bool = false) {
         guard let i = conversations.firstIndex(where: { $0.id == id }) else { return }
+        guard conversations[i].remoteActive != true else { error = "Ce serveur répond déjà dans cette conversation. Attendez la fin de la réponse."; return }
         guard conversations[i].remoteUnavailable != true else { error = "Cette conversation n’est plus disponible sur le serveur. Votre brouillon est conservé."; return }
         let text = conversations[i].draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = conversations[i].draftAttachments ?? []
@@ -610,7 +612,7 @@ struct NativeChatConversation: Codable, Identifiable {
         conversations[index].title = snapshot.title; conversations[index].model = snapshot.model ?? conversations[index].model
         conversations[index].pinned = snapshot.pinned; conversations[index].archived = snapshot.archived
         conversations[index].updatedAt = Date(timeIntervalSince1970: snapshot.updatedAt / 1000)
-        conversations[index].remoteRevision = snapshot.revision; saveSoon()
+        conversations[index].remoteActive = snapshot.active; conversations[index].remoteRevision = snapshot.revision; saveSoon()
     }
     func updateMetadata(_ id: UUID, title: String? = nil, pinned: Bool? = nil, archived: Bool? = nil) {
         guard let conversation = conversations.first(where: { $0.id == id }) else { return }
@@ -636,7 +638,7 @@ struct DesktopRemoteChatSummary: Codable {
 }
 struct DesktopRemoteChatSnapshot: Codable {
     var id: String; var title: String; var updatedAt: Double; var archived: Bool; var pinned: Bool; var model: String?
-    var revision: String; var messages: [DesktopRemoteMessage]
+    var revision: String; var messages: [DesktopRemoteMessage]; var active: Bool?
 }
 struct DesktopRemoteMessage: Codable {
     var id: String; var role: String; var content: String; var done: Bool

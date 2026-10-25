@@ -18,7 +18,7 @@ export class LibreChatNativeAdapter implements HarnessAdapter {
       return fail("LibreChat accepts text and text documents through this adapter",422);
     }).join("\n\n");
     const previous=this.ctx.session.nativeSessionId?await this.remote.snapshot(this.ctx.session.nativeSessionId):undefined;
-    if(previous?.messages.at(-1)?.done===false)fail("LibreChat is still processing this conversation",409);
+    if(previous?.active || previous?.messages.at(-1)?.done===false)fail("LibreChat is still processing this conversation",409);
     const endpoint=previous?.endpoint??"agents";
     const model=previous?.model??this.ctx.session.model;
     const body={text,endpoint,agent_id:endpoint==="agents"?model:undefined,model:endpoint==="agents"?undefined:model,conversationId:previous?.id??null,parentMessageId:previous?.messages.at(-1)?.id??"00000000-0000-0000-0000-000000000000",isContinued:false,isRegenerate:false,clientRequestId:this.ctx.session.activeTurnId??randomUUID(),messageId:randomUUID()};

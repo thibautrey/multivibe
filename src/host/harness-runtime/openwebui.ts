@@ -45,8 +45,10 @@ export class OpenWebUIAdapter implements HarnessAdapter {
     const text=this.text(parts),model=this.ctx.session.model??this.connection.agentId;
     let chat:any={title:this.ctx.session.title,models:[model],history:{currentId:null,messages:{}},messages:[]};
     let previous=this.checkpoint;
+    let baseline:string|undefined;
     if(previous){
       chat=(await this.call(this.chatPath(previous.chatId))).chat;
+      baseline=JSON.stringify(chat);
       // Read the latest native branch so a turn written in the web client is included.
       const current=chat?.history?.currentId;
       if(typeof current!=="string")fail("Open WebUI conversation has no active branch",409);
@@ -67,7 +69,7 @@ export class OpenWebUIAdapter implements HarnessAdapter {
     if(Buffer.byteLength(JSON.stringify(chat))>16*1024*1024)fail("Open WebUI conversation exceeds 16 MiB; start a new conversation",413);
     if(previous){
       const latest=await this.call(this.chatPath(previous.chatId));
-      if(latest?.chat?.history?.currentId!==previous.assistantId)fail("Open WebUI changed while preparing this message. Synchronize and send again.",409);
+      if(JSON.stringify(latest?.chat)!==baseline)fail("Open WebUI changed while preparing this message. Synchronize and send again.",409);
     }
     const saved=await this.call(previous?this.chatPath(previous.chatId):"/v1/chats/new",{chat});
     const chatId=previous?.chatId??saved?.id;if(typeof chatId!=="string" || !chatId || chatId.length>256)fail("Open WebUI did not return a valid chat identifier",502);
