@@ -37,6 +37,7 @@ import { AccountStoreManagedEnrollmentInstaller, ManagedTeamEnrollmentService } 
 import { createAdminRouter } from "./routes/admin/index.js";
 import { HostHarnessIntegrationManager } from "./host/harness-integrations.js";
 import { HostConversationHarnessManager } from "./host/conversation-harnesses.js";
+import { HostHarnessRuntime } from "./host/harness-runtime/runtime.js";
 import { oauthConfig } from "./oauth-config.js";
 import {
   ADMIN_TOKEN,
@@ -257,6 +258,9 @@ const hostHarnessIntegrations = MULTIVIBE_HOST_APPLICATION
   : undefined;
 const hostConversationHarnesses = hostHarnessIntegrations
   ? new HostConversationHarnessManager(hostHarnessIntegrations, path.join(dataDir, "conversation-harness-sessions"))
+  : undefined;
+const hostHarnessRuntime = hostHarnessIntegrations
+  ? new HostHarnessRuntime(path.join(dataDir, "harness-runtime-v1"), hostHarnessIntegrations)
   : undefined;
 const capacityTracker = new CapacityTracker();
 const jobStore = new JobStore(
@@ -556,6 +560,7 @@ const adminRouter = createAdminRouter({
   hostApplication: MULTIVIBE_HOST_APPLICATION,
   hostHarnessIntegrations,
   hostConversationHarnesses,
+  hostHarnessRuntime,
   providerWorkerEstimateClient,
   moduleManager,
   hostUpdateController,
@@ -915,6 +920,7 @@ async function shutdown(signal: NodeJS.Signals) {
   shuttingDown = true;
   smartRouting.stopHealthMonitoring();
   hostHarnessIntegrations?.stopCatalogSynchronization();
+  await hostHarnessRuntime?.close();
   usageRefreshMonitor.stop();
   anonymousUsageSharing.stop();
   communityReportSharing?.stop();

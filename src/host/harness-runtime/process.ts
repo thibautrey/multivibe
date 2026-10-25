@@ -1,0 +1,70 @@
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { fail, redact, type AdapterContext } from "./types.js";
+
+export function harnessEnvironment(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv={NO_COLOR:"1",TERM:"dumb"};
+  for(const key of ["HOME","USER","LOGNAME","PATH","TMPDIR","LANG","LC_ALL","SHELL","XDG_CONFIG_HOME","XDG_DATA_HOME","XDG_STATE_HOME","SSH_AUTH_SOCK","SSL_CERT_FILE","NODE_EXTRA_CA_CERTS"])
+    if(process.env[key]) env[key]=process.env[key];
+  return env;
+}
+export function startProcess(context: AdapterContext, args: string[], extraEnv: NodeJS.ProcessEnv={}): ChildProcessWithoutNullStreams {
+  if(context.target.kind==="container") return spawn("docker",["exec","-i","-w",context.session.workspace,context.target.container!,context.executable,...args],{stdio:"pipe",windowsHide:true});
+  return spawn(context.executable,args,{cwd:context.session.workspace,env:{...harnessEnvironment(),...extraEnv},stdio:"pipe",windowsHide:true});
+}
+
+/** JSONL transport. The process belongs to the Host, never to an HTTP subscriber. */
+export class JsonPeer {
+  private pending=new Map<string,{resolve:(v:any)=>void;reject:(e:Error)=>void;timer?:ReturnType<typeof setTimeout>}>();
+  private buffer=""; private closed=false; private stderrBytes=0;
+  constructor(readonly child: ChildProcessWithoutNullStreams,
+    private event:(v:any)=>void,
+    private serverRequest:(method:string,params:any,id:unknown)=>Promise<unknown>,
+    private failure:(e:Error)=>void,
+    private diagnostic:(text:string)=>void,
+    private rpc=true, private maxRecordBytes=4*1024*1024) {
+    child.stdout.on("data",chunk=>this.consume(chunk));
+    child.stderr.on("data",(chunk:Buffer)=>{if(this.stderrBytes<16_384){this.stderrBytes+=chunk.length;this.diagnostic(String(redact(chunk.toString("utf8"))).slice(0,2048));}});
+    child.once("error",e=>this.end(e));
+    child.once("close",code=>this.end(new Error(`Harness process exited (${code ?? "signal"})`)));
+    child.stdin.on("error",e=>this.end(e));
+  }
+  private consume(chunk:Buffer) {
+    this.buffer+=chunk.toString("utf8");
+    if(Buffer.byteLength(this.buffer)>this.maxRecordBytes) {this.end(new Error("Harness protocol record exceeds its size limit"));this.close();return;}
+    for(;;) {
+      const newline=this.buffer.indexOf("\n");if(newline<0)break;
+      const line=this.buffer.slice(0,newline).trim();this.buffer=this.buffer.slice(newline+1);if(!line)continue;
+      let v:any;try{v=JSON.parse(line);}catch{this.diagnostic("Ignored non-JSON harness output");continue;}
+      const key=v.id===undefined?undefined:String(v.id);
+      if(v.method && key!==undefined) {
+        void this.serverRequest(v.method,v.params??{},v.id).then(result=>this.write({jsonrpc:"2.0",id:v.id,result}),error=>this.write({jsonrpc:"2.0",id:v.id,error:{code:-32603,message:String(redact(error?.message??"Client request failed"))}})).catch(()=>{});
+      } else if(key && this.pending.has(key) && ("result" in v || "error" in v || v.type==="response")) {
+        const p=this.pending.get(key)!;this.pending.delete(key);if(p.timer)clearTimeout(p.timer);
+        if(v.error || v.success===false)p.reject(new Error(String(redact(v.error?.message??v.error??"Harness rejected command"))));
+        else p.resolve(v.type==="response"?v.data:v.result);
+      } else this.event(v);
+    }
+  }
+  private write(value:unknown) {
+    if(this.closed || this.child.stdin.destroyed) fail("Harness connection closed",409);
+    this.child.stdin.write(JSON.stringify(value)+"\n");
+  }
+  request(method:string,params:Record<string,unknown>={},timeout=30_000):Promise<any> {
+    const id=randomUUID();
+    return new Promise((resolve,reject)=>{
+      const timer=timeout ? setTimeout(()=>{this.pending.delete(id);reject(new Error(`Harness ${method} timed out; acceptance is unknown`));},timeout):undefined;
+      timer?.unref();this.pending.set(id,{resolve,reject,timer});
+      try{this.write(this.rpc?{jsonrpc:"2.0",id,method,params}:{id,type:method,...params});}catch(e){this.pending.delete(id);if(timer)clearTimeout(timer);reject(e);}
+    });
+  }
+  notify(method:string,params:Record<string,unknown>={}) {this.write(this.rpc?{jsonrpc:"2.0",method,params}:{type:method,...params});}
+  private end(error:Error) {
+    if(this.closed)return;this.closed=true;
+    for(const p of this.pending.values()){if(p.timer)clearTimeout(p.timer);p.reject(error);}this.pending.clear();this.failure(error);
+  }
+  close() {
+    const child=this.child;this.end(new Error("Harness connection closed"));
+    child.kill("SIGTERM");const timer=setTimeout(()=>{if(child.exitCode===null)child.kill("SIGKILL");},2000);timer.unref();
+  }
+}
