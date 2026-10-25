@@ -19,7 +19,7 @@ export function harnessResources(session:HarnessSession,kind:"memory"|"instructi
     const directories:string[]=[];for(let dir=session.workspace;;dir=path.dirname(dir)){directories.unshift(dir);if(path.dirname(dir)===dir || directories.length>=32)break;}
     for(const dir of directories)for(const name of ["AGENTS.md",...(session.harnessId==="claude-code"?["CLAUDE.md"]:session.harnessId==="gemini-cli"?["GEMINI.md"]:[])])add(path.join(dir,name),"project");
   }
-  return entries.flatMap(({file,scope,writable})=>{
+  return entries.flatMap<HarnessResource>(({file,scope,writable})=>{
     try {const st=fs.lstatSync(file);if(!st.isFile() || st.isSymbolicLink() || st.size>512*1024)return [];const text=fs.readFileSync(file,"utf8");const truncated=st.size>120_000;return [{path:file,name:path.basename(file),scope,exists:true,writable:writable&&!truncated,sha256:hash(text),text:truncated?text.slice(0,30_000):text,...(truncated?{truncated:true}:{})}];}
     catch(e:any){return e.code==="ENOENT" && writable?[{path:file,name:path.basename(file),scope,exists:false,writable,sha256:hash(""),text:""}]:[];}
   });
