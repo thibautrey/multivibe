@@ -19,7 +19,7 @@ if(process.argv.includes('serve')){
   if(req.headers.authorization!==expected){res.writeHead(401).end();return;}
   if(req.url.startsWith('/event')){stream=res;res.writeHead(200,{'content-type':'text/event-stream'});res.flushHeaders();return;}
   if(req.url.startsWith('/session') && req.method==='POST' && !req.url.includes('/prompt_async')){res.setHeader('content-type','application/json');res.end(JSON.stringify({id:'open-session'}));return;}
-  if(req.url==='/provider'){res.setHeader('content-type','application/json');res.end(JSON.stringify({connected:['native'],all:[{id:'native',models:{reasoner:{variants:{low:{},deep:{}}}}}]}));return;}
+  if(req.url.startsWith('/provider')){res.setHeader('content-type','application/json');res.end(JSON.stringify({connected:['native'],all:[{id:'native',models:{reasoner:{variants:{low:{},deep:{}}}}}]}));return;}
   if(req.url.includes('/prompt_async')){
    let raw='';for await(const part of req)raw+=part;fs.writeFileSync('prompt.json',raw);
    res.writeHead(204).end();setTimeout(()=>{
@@ -45,7 +45,9 @@ if(process.argv.includes('serve')){
  }else if(v.id==='approval'){
   if(v.result.outcome.optionId!=='deny')process.exit(9);
   notify('session/update',{sessionId:'acp-session',update:{sessionUpdate:'tool_call_update',toolCallId:'tool',status:'failed'}});reply(global.prompt,{stopReason:'end_turn'});
- }else if(m==='get_state')reply(v,{sessionFile:'/tmp/pi-fixture.jsonl',isStreaming:false,isCompacting:compacting,pendingMessageCount:0});
+ }else if(m==='get_available_thinking_levels')reply(v,{levels:['off','low','high']});
+ else if(m==='set_thinking_level'){thinkingLevel=p.level;reply(v,{level:thinkingLevel});}
+ else if(m==='get_state')reply(v,{thinkingLevel,sessionFile:'/tmp/pi-fixture.jsonl',isStreaming:false,isCompacting:compacting,pendingMessageCount:0});
  else if(m==='prompt'){
   if(p.message==='interrupt'){reply(v,{});send({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:'partial'}});return;}
   if(p.message==='reject'){reply(v,{});send({type:'message_end',message:{role:'assistant',stopReason:'error',errorMessage:'401 authentication required'}});send({type:'agent_settled'});return;}
@@ -216,7 +218,7 @@ test("Codex validates model-specific levels and forwards effort on the next turn
 });
 test("Claude uses session flag settings only when the SDK and model advertise effort",async t=>{
   const f=fixture(t,"claude-code");f.ctx.session.model="claude-exact";const applied:any[]=[];
-  const query:any={async *[Symbol.asyncIterator](){await new Promise(()=>{});},supportedCommands:async()=>[],supportedModels:async()=>[{value:"alias",resolvedModel:"claude-exact",supportedEffortLevels:["low","max"]}],applyFlagSettings:async(value:any)=>{applied.push(value);}};
+  const query:any={close(){},async *[Symbol.asyncIterator](){await new Promise(()=>{});},supportedCommands:async()=>[],supportedModels:async()=>[{value:"alias",resolvedModel:"claude-exact",supportedEffortLevels:["low","max"]}],applyFlagSettings:async(value:any)=>{applied.push(value);}};
   const adapter=new ClaudeAdapter(f.ctx,async()=>({query:()=>query}));t.after(()=>adapter.close());await adapter.start();
   await adapter.configure({effort:"max"});await assert.rejects(adapter.configure({effort:"high"}),/not advertised/);
   assert.deepEqual(applied,[{effortLevel:"max"}]);
