@@ -83,6 +83,9 @@ test("Hermes ACP receives the loopback MultiVibe model connection",async t=>{
   assert.match(fs.readFileSync(environment,"utf8"),/CUSTOM_BASE_URL="http:\/\/127\.0\.0\.1:1455\/v1"/u);
   assert.equal(fs.statSync(environment).mode & 0o777,0o600);
   assert.equal(fs.lstatSync(environment).isSymbolicLink(),false);
+  const config=JSON.parse(fs.readFileSync(path.join(f.ctx.root,"hermes-home/config.yaml"),"utf8"));
+  assert.deepEqual(config.model,{provider:"custom",default:"gpt-test",base_url:"http://127.0.0.1:1455/v1",api_mode:"chat_completions"});
+  assert.ok(!JSON.stringify(config).includes("fixture-proxy-key"));
   assert.ok(!JSON.stringify(f.events).includes("fixture-proxy-key"));
 });
 test("Gemini uses the same negotiated ACP contract without assuming extra capabilities",async t=>{
