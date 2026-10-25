@@ -11,7 +11,7 @@ function rates(value: unknown): ModelsDevRates | undefined {
   const source = value as Record<string, unknown>;
   const valid = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
   if (!valid(source.input) || !valid(source.output)) return;
-  const numeric = Object.fromEntries(Object.entries(source).filter(([, value]) => valid(value)));
+  const numeric = Object.fromEntries(Object.entries(source).filter(([key, value]) => key !== "tiers" && key !== "context_over_200k" && valid(value)));
   return { ...numeric, input: source.input, output: source.output,
     ...(valid(source.cache_read) ? { cache_read: source.cache_read } : {}),
     ...(valid(source.cache_write) ? { cache_write: source.cache_write } : {}) };
@@ -24,7 +24,7 @@ export function normalizeModelsDevCost(value: unknown): ModelsDevCost | undefine
   const tiers: NonNullable<ModelsDevCost["tiers"]> = [];
   if (Array.isArray(raw.tiers)) for (const item of raw.tiers) {
     const rate = rates(item);
-    if (rate && item.tier?.type === "context" && Number.isFinite(item.tier.size) && item.tier.size > 0)
+    if (rate && item.tier?.type === "context" && Number.isSafeInteger(item.tier.size) && item.tier.size > 0)
       tiers.push({ ...rate, tier: { type: "context", size: item.tier.size } });
   }
   tiers.sort((a, b) => a.tier.size - b.tier.size);
