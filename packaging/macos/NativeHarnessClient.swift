@@ -94,7 +94,7 @@ enum NativeHarnessError: LocalizedError {
         return decoded.harnesses
     }
 
-    func install(harnessID: String, update: @MainActor @escaping (String) -> Void) async throws {
+    func install(harnessID: String, connectToMultiVibe: Bool = true, update: @MainActor @escaping (String) -> Void) async throws {
         var request = try request(path: "/admin/host-conversation-harnesses/\(harnessID)/install", method: "POST")
         request.setValue("text/event-stream", forHTTPHeaderField: "accept")
         let configuration = URLSessionConfiguration.ephemeral
@@ -122,6 +122,7 @@ enum NativeHarnessError: LocalizedError {
         }
         guard finished else { throw NativeHarnessError.invalidResponse }
 
+        guard connectToMultiVibe else { update("Prêt pour l’authentification native du harness."); return }
         var configure = try self.request(path: "/admin/host-harnesses/\(harnessID)/install", method: "POST")
         configure.setValue("application/json", forHTTPHeaderField: "accept")
         let (_, configureResponse) = try await session.data(for: configure)

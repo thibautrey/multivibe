@@ -47,7 +47,7 @@ export class HostHarnessRuntime {
   session(id:string){return this.states.get(identifier(id))??this.store.session(id);}
   snapshot(id:string){return {session:this.session(id),queue:this.store.commands(id).filter(c=>c.command.type==="prompt" && ["queued","dispatching","accepted","uncertain"].includes(c.state)),interactions:this.store.interactions(id).filter(v=>v.status==="pending")};}
   private emit(id:string,event:AdapterEvent):HarnessEvent {
-    const s=this.session(id);const saved=this.store.event(id,event.type,event.payload,s.activeTurnId,event.itemId);this.events.emit(id,saved);return saved;
+    const s=this.session(id);const saved=this.store.event(id,event.type,event.payload,event.type==="history.message"?undefined:s.activeTurnId,event.itemId);this.events.emit(id,saved);return saved;
   }
   subscribe(id:string,fn:(event:HarnessEvent)=>void){this.session(id);this.events.on(id,fn);return ()=>{this.events.off(id,fn);};}
   private save(s:HarnessSession){this.store.save(s);this.emit(s.id,{type:"session.updated",payload:s});}
@@ -97,10 +97,10 @@ export class HostHarnessRuntime {
       const root=path.join(this.root,"sessions",s.id);fs.mkdirSync(root,{recursive:true,mode:0o700});
       const instance=this.factory({session:s,root,executable,target,emit:event=>{if(!this.stopped && this.states.has(id))this.emit(id,event);},
         nativeSession:nativeId=>{if(this.stopped || !this.states.has(id))return;requiredText(nativeId,4096);s.nativeSessionId=nativeId;this.store.save(s);this.emit(id,{type:"session.updated",payload:s});},
-        capabilities:values=>{if(this.stopped || !this.states.has(id))return;Object.assign(s.capabilities,values);this.store.save(s);this.emit(id,{type:"capabilities.updated",payload:s.capabilities});},
+        capabilities:values=>{if(this.stopped || !this.states.has(id) || Object.entries(values).every(([key,value])=>JSON.stringify(s.capabilities[key as keyof typeof s.capabilities])===JSON.stringify(value)))return;Object.assign(s.capabilities,values);this.store.save(s);this.emit(id,{type:"capabilities.updated",payload:s.capabilities});},
         attachment:attachmentId=>this.store.attachment(id,attachmentId),ask:(kind,title,detail)=>this.ask(id,kind,title,detail),
       });
-      try{await instance.start();return instance;}catch(e){instance.close();this.adapters.delete(id);throw e;}
+      try{await instance.start();this.store.save(s);return instance;}catch(e){instance.close();this.adapters.delete(id);throw e;}
     })();this.adapters.set(id,adapter);return adapter;
   }
   async command(id:string,input:any):Promise<HarnessCommandReceipt> {
@@ -124,7 +124,7 @@ export class HostHarnessRuntime {
           const pending=this.store.receipt(identifier(v.commandId));
           if(!pending || pending.sessionId!==id || pending.command.type!=="prompt" || pending.state!=="queued")fail("Only an undispatched message can be changed",409);
           if(command.type==="queue_remove")pending.state="cancelled";
-          else pending.command.parts=messageParts(v.parts);
+          else {pending.command.parts=messageParts(v.parts);pending.command.displayText=pending.command.parts.filter(p=>p.type==="text").map(p=>(p as any).text).join("\n");}
           for(const p of pending.command.parts??[])if(p.type==="attachment")this.store.attachment(id,p.attachmentId);
           this.store.saveReceipt(pending);this.emit(id,{type:"command.updated",payload:pending});break;
         }
@@ -186,9 +186,10 @@ export class HostHarnessRuntime {
         if(s.queuePaused || this.stopped || s.state==="uncertain")break;
         const c=this.store.commands(id).find(v=>v.command.type==="prompt" && v.state==="queued");if(!c)break;
         c.state="dispatching";this.store.saveReceipt(c);s.activeTurnId=c.id;s.state="starting";this.save(s);
-        this.emit(id,{type:"message.user",itemId:c.id,payload:{parts:c.command.parts,displayText:c.command.displayText,attachments:(c.command.parts??[]).filter(p=>p.type==="attachment").map(p=>this.store.attachment(id,(p as any).attachmentId).info)}});
+        let userEmitted=false;const emitUser=()=>{if(userEmitted)return;userEmitted=true;this.emit(id,{type:"message.user",itemId:c.id,payload:{parts:c.command.parts,displayText:c.command.displayText,attachments:(c.command.parts??[]).filter(p=>p.type==="attachment").flatMap(p=>{try{return [this.store.attachment(id,(p as any).attachmentId).info];}catch{return [];}})}});};
         try {
           const adapter=await this.ensure(id);if(this.stopped)break;
+          emitUser();
           if(this.session(id).state==="interrupted")c.state="cancelled";
           else {
             s.state="running";c.state="accepted";this.store.saveReceipt(c);this.save(s);this.emit(id,{type:"command.updated",payload:c});
@@ -197,6 +198,7 @@ export class HostHarnessRuntime {
           }
           s.state=c.state==="cancelled"?"interrupted":"idle";
         }catch(e:any) {
+          if(!this.stopped)emitUser();
           c.error=String(redact(e.message??"Harness turn failed"));
           if(s.state==="interrupted"){c.state="cancelled";}
           else if(e.status && e.status<500){c.state="failed";s.state="failed";}
