@@ -65,8 +65,8 @@ const server = createServer(async (request, response) => {
     const id = url.searchParams.get('harnessId'), fixture = remoteFixture[id];
     return send({ connectionId: 'preview-' + id, endpoint: fixture.endpoint, complete: true, conversations: fixture.connected && !fixture.deleted ? [{ id: 'server-' + id, title: fixture.title, updatedAt: now + fixture.revision * 1000, archived: fixture.archived, pinned: fixture.pinned, model: 'native-model' }] : [] });
   }
-  if (route.includes('/remote-chats/server-')) {
-    const id = route.split('/remote-chats/server-')[1], fixture = remoteFixture[id];
+  if (decodeURIComponent(route).includes('/remote-chats/server-')) {
+    const id = decodeURIComponent(route).split('/remote-chats/server-')[1], fixture = remoteFixture[id];
     if (request.method === 'DELETE') { fixture.deleted = true; return send({ deleted: true }); }
     if (request.method === 'PATCH') {
       let text = ''; for await (const chunk of request) text += chunk; const body = JSON.parse(text);
