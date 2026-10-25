@@ -69,6 +69,12 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     @State private var choosingModel = false
     @State private var modelSource = "multivibe"
     @State private var modelQuery = ""
+    @State private var harnessModels: [DesktopHarnessModel] = []
+    @State private var harnessDefaultModel: String?
+    @State private var harnessDefaultProvider: String?
+    @State private var loadingHarnessModels = false
+    @State private var harnessModelsError: String?
+    @State private var loadedHarnessModelsKey = ""
     @State private var installingHarness: NativeConversationHarness?
     @State private var installationLogs: [String] = []
     @State private var installationRunning = false
@@ -107,6 +113,8 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             conversation.harnessID = value == "native" ? nil : value
             conversation.harnessSessionID = nil
             conversation.authMode = "native"
+            conversation.nativeModelID = nil
+            conversation.nativeModelProvider = nil
         }
         NativeChatStore.defaultHarnessID = value
     }) }
@@ -131,7 +139,10 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     }
     private var selectedModelName: String {
         if cloudMode { return selectedCloudModel?.name ?? selectedCloudModel?.id ?? "Choisir un modèle" }
-        if harness.wrappedValue != "native", store.current?.authMode != "multivibe" { return store.current?.runtimeSession?.model ?? "Modèle du harness" }
+        if harness.wrappedValue != "native", store.current?.authMode != "multivibe" {
+            let id = selectedHarnessModelID
+            return harnessModels.first { $0.id == id && ($0.provider == selectedHarnessModelProvider || $0.provider == nil) }?.name ?? id ?? (loadingHarnessModels ? "Chargement des modèles…" : "Choisir un modèle")
+        }
         return selectedLocalModel?.displayName ?? (model.wrappedValue.isEmpty ? "Choisir un modèle" : model.wrappedValue)
     }
     private var targetName: String {
@@ -277,6 +288,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 loadHarnesses: { await loadHarnesses() }
             )
         }
+        .task(id: harnessModelsKey) { await loadHarnessModels() }
         .sheet(isPresented: $cloudConsent) { consentSheet }
         .sheet(isPresented: Binding(get: { configuringRemoteHarness != nil }, set: { if !$0 { configuringRemoteHarness = nil } })) {
             let remoteID = configuringRemoteHarness ?? "librechat"
@@ -1013,7 +1025,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                 Label("La source du modèle est attachée à cette conversation.", systemImage: "lock")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            if !cloudMode && modelSource == "harness" { harnessModelChoice }
+            if !cloudMode && modelSource == "harness" { harnessModelChoices }
             else {
                 if showsModelSearch { modelSearch }
                 modelCards
@@ -1023,7 +1035,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     }
     private var modelPickerSubtitle: String {
         if cloudMode { return "Sélectionnez le modèle utilisé dans votre espace Hermes Cloud." }
-        if harness.wrappedValue != "native" { return "Choisissez un modèle MultiVibe ou laissez \(selectedHarness.name) gérer son propre modèle." }
+        if harness.wrappedValue != "native" { return "Choisissez parmi les modèles disponibles de \(selectedHarness.name) ou de MultiVibe." }
         return "Sélectionnez le modèle qui répondra dans cette conversation."
     }
     private var hasCloudModels: Bool { agent.models.contains { $0.source != "relay" } }
@@ -1056,8 +1068,8 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             matchesModelQuery($0.name ?? "", $0.id, $0.source ?? "", $0.machineName ?? "", $0.source == "relay" ? "Relay" : "Hermes Cloud")
         }
     }
-    private var availableModelCount: Int { cloudMode ? availableCloudModels.count : availableHostModels.count }
-    private var visibleModelCount: Int { cloudMode ? visibleCloudModels.count : visibleHostModels.count }
+    private var availableModelCount: Int { cloudMode ? availableCloudModels.count : modelSource == "harness" ? harnessModels.count : availableHostModels.count }
+    private var visibleModelCount: Int { cloudMode ? visibleCloudModels.count : modelSource == "harness" ? visibleHarnessModels.count : visibleHostModels.count }
     private var showsModelSearch: Bool { availableModelCount > 6 || !modelQuery.isEmpty }
     private var modelSearch: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -1132,31 +1144,73 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             choosingModel = false
         }
     }
-    private var harnessModelChoice: some View {
-        let selected = store.current?.authMode != "multivibe"
-        let blocked = modelSourceLocked && !selected
-        return Button {
-            store.edit { $0.authMode = "native" }
-            choosingModel = false
-        } label: {
-            HStack(spacing: 14) {
-                HarnessLogo(id: selectedHarness.id, name: selectedHarness.name, size: 42)
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Modèle géré par \(selectedHarness.name)").font(.callout.weight(.semibold))
-                    Text(store.current?.runtimeSession?.model ?? "Utilise le modèle et l’authentification configurés dans le harness.")
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                }
-                Spacer()
-                if selected { Image(systemName: "checkmark.circle.fill").font(.title3).foregroundStyle(ChatPalette.accent) }
+    private var harnessModelsKey: String {
+        [store.selection?.uuidString ?? "", harness.wrappedValue, store.current?.executionTargetID ?? "local", store.current?.workspace ?? "", store.current?.runtimeSessionID ?? "", store.current?.authMode ?? "native", String(cloudMode)].joined(separator: "|")
+    }
+    private var selectedHarnessModelID: String? {
+        store.current?.nativeModelID ?? store.current?.runtimeSession?.model ?? (loadedHarnessModelsKey == harnessModelsKey ? harnessDefaultModel : nil)
+    }
+    private var selectedHarnessModelProvider: String? {
+        store.current?.nativeModelProvider ?? (loadedHarnessModelsKey == harnessModelsKey ? harnessDefaultProvider : nil)
+    }
+    private var visibleHarnessModels: [DesktopHarnessModel] {
+        harnessModels.filter { matchesModelQuery($0.name, $0.id, $0.provider ?? "", $0.description ?? "") }
+    }
+    @ViewBuilder private var harnessModelChoices: some View {
+        if loadingHarnessModels { HStack { ProgressView().controlSize(.small); Text("Chargement des modèles de \(selectedHarness.name)…").font(.callout) }.padding(.vertical, 20) }
+        else if let error = harnessModelsError {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Impossible de charger les modèles", systemImage: "exclamationmark.triangle").font(.callout.weight(.medium))
+                Text(error).font(.caption).foregroundStyle(.secondary)
+                Button("Réessayer") { Task { await loadHarnessModels() } }
+            }.padding(.vertical, 12)
+        } else if harnessModels.isEmpty {
+            Label("Ce harness ne publie aucun modèle disponible. Vérifiez sa connexion et ses réglages.", systemImage: "info.circle").font(.callout).foregroundStyle(.secondary).padding(.vertical, 16)
+        } else {
+            if showsModelSearch { modelSearch }
+            if visibleHarnessModels.isEmpty { Text("Aucun modèle ne correspond à votre recherche.").font(.callout).foregroundStyle(.secondary).padding(.vertical, 16) }
+            else {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible())], spacing: 10) {
+                        ForEach(visibleHarnessModels, id: \.key) { item in
+                            modelCard(title: item.name, detail: item.provider ?? item.description ?? selectedHarness.name, identifier: item.id, icon: "cpu",
+                                      selected: store.current?.authMode != "multivibe" && item.id == selectedHarnessModelID && (item.provider == nil || item.provider == selectedHarnessModelProvider),
+                                      disabled: modelSourceLocked && store.current?.authMode == "multivibe" || store.current?.runtimeSessionID != nil && ["librechat", "openwebui"].contains(harness.wrappedValue)) {
+                                Task { await selectHarnessModel(item) }
+                            }
+                        }
+                    }.padding(2)
+                }.frame(maxHeight: 420)
             }
-            .padding(16).frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
-            .background(selected ? ChatPalette.accent.opacity(0.10) : ChatPalette.elevated, in: RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(selected ? ChatPalette.accent.opacity(0.8) : ChatPalette.hairline, lineWidth: selected ? 1.5 : 1))
         }
-        .buttonStyle(.plain).disabled(blocked)
-        .overlay(alignment: .bottomLeading) {
-            if blocked { Text("La source du modèle est attachée à cette conversation.").font(.caption2).foregroundStyle(.secondary).padding(16) }
+    }
+    private func loadHarnessModels() async {
+        let key = harnessModelsKey
+        harnessModels = []; harnessDefaultModel = nil; harnessDefaultProvider = nil; harnessModelsError = nil; loadedHarnessModelsKey = key
+        guard !cloudMode, harness.wrappedValue != "native", let id = store.selection else { loadingHarnessModels = false; return }
+        loadingHarnessModels = true
+        do {
+            let catalog = try await store.modelCatalog(id)
+            guard !Task.isCancelled, key == harnessModelsKey else { return }
+            harnessModels = catalog.models; harnessDefaultModel = catalog.currentModelId; harnessDefaultProvider = catalog.provider
+        } catch {
+            guard !Task.isCancelled, key == harnessModelsKey else { return }
+            harnessModelsError = error.localizedDescription
         }
+        loadingHarnessModels = false
+    }
+    private func selectHarnessModel(_ item: DesktopHarnessModel) async {
+        guard let id = store.selection else { return }
+        do {
+            if store.current?.runtimeSessionID != nil {
+                var settings: [String: HarnessJSON] = ["model": .string(item.id)]
+                if let provider = item.provider { settings["provider"] = .string(provider) }
+                _ = try await store.command(id, type: "configure", value: .object(settings))
+            }
+            guard store.selection == id else { return }
+            store.edit { $0.authMode = "native"; $0.nativeModelID = item.id; $0.nativeModelProvider = item.provider }
+            choosingModel = false
+        } catch { harnessModelsError = error.localizedDescription }
     }
     private func modelCard(title: String, detail: String, identifier: String, icon: String, selected: Bool, disabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
@@ -1181,7 +1235,8 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
     private func refreshModels() async {
         if cloudMode {
             do { try await agent.loadModels() } catch { agent.error = error.localizedDescription }
-        } else { await loadModels() }
+        } else if modelSource == "harness" { await loadHarnessModels() }
+        else { await loadModels() }
     }
     private var composerPrivacyText: String {
         if cloudMode { return "Dans votre espace Hermes Cloud" }

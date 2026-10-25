@@ -114,6 +114,13 @@ enum DesktopHarnessForm {
         return .object(content)
     }
 }
+struct DesktopHarnessModel: Codable, Identifiable, Sendable {
+    let id: String; let name: String; let provider: String?; let description: String?; let isDefault: Bool?
+    var key: String { (provider ?? "") + "\u{0}" + id }
+}
+struct DesktopHarnessModelCatalog: Codable, Sendable {
+    let models: [DesktopHarnessModel]; let currentModelId: String?; let provider: String?
+}
 struct DesktopHarnessEvent: Codable, Identifiable, Equatable, Sendable {
     let seq: Int; let sessionId: String; let type: String; let turnId: String?; let itemId: String?; let payload: HarnessJSON; let createdAt: Double
     var id: Int { seq }
