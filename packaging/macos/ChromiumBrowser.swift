@@ -291,6 +291,7 @@ private let chromiumResult: CEFResultCallback = { context, ok, json in
 
 @MainActor struct ChromiumBrowserPanel: View {
     @ObservedObject var browser: ChromiumBrowser
+    var showsCloseButton = true
     @State private var address = ""
     var body: some View {
         VStack(spacing: 0) {
@@ -302,7 +303,9 @@ private let chromiumResult: CEFResultCallback = { context, ok, json in
                     Image(systemName: browser.url.hasPrefix("https://") ? "lock.fill" : "globe").font(.caption).foregroundStyle(.secondary)
                     TextField("Rechercher ou saisir une adresse", text: $address).textFieldStyle(.plain).onSubmit { browser.userNavigate(address) }
                 }.padding(.horizontal, 10).frame(height: 30).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-                Button { browser.hide() } label: { Image(systemName: "xmark") }.help("Fermer le panneau")
+                if showsCloseButton {
+                    Button { browser.hide() } label: { Image(systemName: "xmark") }.help("Fermer le panneau")
+                }
             }.buttonStyle(.borderless).padding(9)
             Divider()
             if let error = browser.runtimeError {
