@@ -33,6 +33,7 @@ export type HarnessAttachment = {
 };
 export type HarnessSession = {
   id: string; harnessId: string; targetId: string; workspace: string; nativeSessionId?: string;
+  harnessVersion?: string; protocolVersion?: string;
   title: string; model?: string; authMode: "native" | "multivibe";
   state: "idle" | "starting" | "running" | "waiting_user" | "compacting" | "interrupted" | "uncertain" | "failed";
   queuePaused: boolean; revision: number; activeTurnId?: string;
@@ -42,7 +43,7 @@ export type HarnessSession = {
 };
 export type PendingInteraction = {
   id: string; sessionId: string; kind: "permission" | "question" | "authentication";
-  title: string; detail: unknown; status: "pending" | "answered" | "expired";
+  title: string; detail: unknown; status: "pending" | "answered" | "expired" | "cancelled";
   createdAt: number; expiresAt: number;
 };
 export type HarnessCommand = {

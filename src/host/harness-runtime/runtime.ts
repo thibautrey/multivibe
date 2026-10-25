@@ -7,6 +7,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { HostHarnessIntegrationManager } from "../harness-integrations.js";
 import { adapterFor } from "./adapters.js";
+import { harnessEnvironment } from "./process.js";
 import { harnessResources, writeHarnessResource } from "./resources.js";
 import { HarnessRuntimeStore } from "./store.js";
 import { capabilities, fail, HarnessRuntimeError, identifier, messageParts, redact, requiredText, supported, unsupported, type AdapterContext, type AdapterEvent, type HarnessAdapter, type HarnessCommand, type HarnessCommandReceipt, type HarnessDescriptor, type HarnessEvent, type HarnessSession, type PendingInteraction } from "./types.js";
@@ -54,6 +55,7 @@ export class HostHarnessRuntime {
   snapshot(id:string){return {session:this.session(id),queue:this.store.commands(id).filter(c=>c.command.type==="prompt" && ["queued","dispatching","accepted","uncertain"].includes(c.state)),interactions:this.store.interactions(id).filter(v=>v.status==="pending").map(v=>({...v,detail:this.privateInteractions.get(v.id)??v.detail}))};}
   private emit(id:string,event:AdapterEvent):HarnessEvent {
     const s=this.session(id),active=s.activeTurnId;
+    if(event.type==="harness.metadata"){const p=event.payload as any;if(typeof p?.version==="string")s.harnessVersion=p.version.slice(0,128);if(typeof p?.protocolVersion==="string")s.protocolVersion=p.protocolVersion.slice(0,64);}
     const saved=this.store.event(id,event.type,this.captureArtifacts(id,event.payload),event.type==="history.message"?undefined:active,event.itemId);this.events.emit(id,saved);
     if(active && event.type==="turn.status") {
       const p=event.payload as any;const outcome=this.nativeTerminals.get(active)?.state==="failed"?this.nativeTerminals.get(active)!:{state:p?.status==="failed" || p?.is_error || ["refusal","error"].includes(p?.stopReason)?"failed" as const:["interrupted","cancelled"].includes(p?.status) || p?.stopReason==="cancelled" || p?.aborted?"cancelled" as const:"completed" as const,...(p?.error?{error:String(redact(p.error))}:{})};
@@ -102,7 +104,7 @@ export class HostHarnessRuntime {
   async create(input:any):Promise<HarnessSession> {
     const id=input.id?identifier(input.id):randomUUID();
     const existing=this.states.get(id);
-    if(existing){if(existing.harnessId!==input.harnessId || existing.targetId!==(input.targetId??"local"))fail("A conversation's harness and execution target are fixed",409);return existing;}
+    if(existing){if(existing.harnessId!==input.harnessId || existing.targetId!==(input.targetId??"local") || input.authMode && input.authMode!==existing.authMode)fail("A conversation's harness, authentication mode and execution target are fixed",409);return existing;}
     const harnessId=identifier(input.harnessId);const targetId=identifier(input.targetId??"local");const target=this.store.target(targetId);
     const descriptor=(await this.catalog(targetId)).find(v=>v.id===harnessId);if(!descriptor?.available)fail(descriptor?.reason??"Harness is unavailable",409);
     const authMode=input.authMode??"native";if(!["native","multivibe"].includes(authMode))fail("Invalid model authentication mode");
@@ -143,7 +145,13 @@ export class HostHarnessRuntime {
         capabilities:values=>{if(this.stopped || !this.states.has(id) || Object.entries(values).every(([key,value])=>JSON.stringify(s.capabilities[key as keyof typeof s.capabilities])===JSON.stringify(value)))return;Object.assign(s.capabilities,values);this.store.save(s);this.emit(id,{type:"capabilities.updated",payload:s.capabilities});},
         attachment:attachmentId=>this.store.attachment(id,attachmentId),ask:(kind,title,detail)=>this.ask(id,kind,title,detail),
       });
-      try{await instance.start();this.store.save(s);return instance;}catch(e){instance.close();this.adapters.delete(id);throw e;}
+      try{
+        await instance.start();
+        if(this.factory===adapterFor && target.kind==="local" && ["pi","openai-codex","claude-code","opencode"].includes(s.harnessId)){
+          try{const result=await promisify(execFile)(executable,["--version"],{cwd:s.workspace,env:harnessEnvironment(s.authMode==="native"),timeout:5000,maxBuffer:8192});const version=result.stdout.match(/\b\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.]+)?\b/u)?.[0];if(version)s.harnessVersion=version;}catch{/* Version remains unknown when the installed CLI does not report it. */}
+        }
+        this.save(s);return instance;
+      }catch(e){instance.close();this.adapters.delete(id);throw e;}
     })();this.adapters.set(id,adapter);return adapter;
   }
   async command(id:string,input:any):Promise<HarnessCommandReceipt> {
@@ -183,7 +191,7 @@ export class HostHarnessRuntime {
           s.queuePaused=true;s.state="interrupted";this.save(s);
           const activeId=s.activeTurnId,active=activeId?this.store.receipt(activeId):undefined;
           if(active){active.cancelRequested=true;this.store.saveReceipt(active);}
-          for(const [key,answer] of this.answers)if(answer.sessionId===id){answer.reject(new HarnessRuntimeError("Interaction interrupted",499));clearTimeout(answer.timer);this.answers.delete(key);this.privateInteractions.delete(key);const interaction=this.store.interactions(id).find(i=>i.id===key);if(interaction){interaction.status="expired";this.store.interaction(interaction);this.emit(id,{type:"interaction.updated",payload:interaction});}}
+          for(const [key,answer] of this.answers)if(answer.sessionId===id){answer.reject(new HarnessRuntimeError("Interaction interrupted",499));clearTimeout(answer.timer);this.answers.delete(key);this.privateInteractions.delete(key);const interaction=this.store.interactions(id).find(i=>i.id===key);if(interaction){interaction.status="cancelled";this.store.interaction(interaction);this.emit(id,{type:"interaction.updated",payload:interaction});}}
           if(this.adapters.has(id) && activeId){const adapter=await this.ensure(id);try{await adapter.interrupt();}catch(e:any){if(e.status!==499)throw e;}if(adapter.restartAfterInterrupt){adapter.close();this.adapters.delete(id);}const current=this.store.receipt(activeId);if(current){current.cancelRequested=true;current.cancelAcknowledged=true;if(!["completed","failed","cancelled"].includes(current.state)){current.state="cancelled";this.emit(id,{type:"turn.cancelled",itemId:activeId,payload:{commandId:activeId}});}this.store.saveReceipt(current);s.state=current.state==="completed"?"idle":current.state==="failed"?"failed":"interrupted";}}
           break;
         }
