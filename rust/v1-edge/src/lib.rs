@@ -2652,22 +2652,24 @@ fn anthropic_to_responses(body: &Value, claude_code: bool, config: &EdgeConfig) 
                     if let Some(text) = raw_string(part.get("text")) {
                         message_content.push(json!({"type": if role == "assistant" { "output_text" } else { "input_text" }, "text": text}));
                     }
+                } else if part.get("type").and_then(Value::as_str) == Some("tool_result") {
+                    if !message_content.is_empty() { input.push(json!({"role":role,"content":std::mem::take(&mut message_content)})); }
+                    input.push(json!({
+                        "type": "function_call_output",
+                        "call_id": value_string(part.get("tool_use_id")).unwrap_or_default(),
+                        "output": tool_content_to_output(part.get("content")),
+                    }));
                 } else if role == "user" {
                     if let Some(image) = anthropic_image_to_responses(&part) {
                         message_content.push(image);
                     }
                 } else if part.get("type").and_then(Value::as_str) == Some("tool_use") {
+                    if !message_content.is_empty() { input.push(json!({"role":role,"content":std::mem::take(&mut message_content)})); }
                     input.push(json!({
                         "type": "function_call",
                         "call_id": value_string(part.get("id")).unwrap_or_else(|| new_id("toolu")),
                         "name": value_string(part.get("name")).unwrap_or_else(|| "unknown".to_owned()),
                         "arguments": part.get("input").map(json_string).unwrap_or_else(|| "{}".to_owned()),
-                    }));
-                } else if part.get("type").and_then(Value::as_str) == Some("tool_result") {
-                    input.push(json!({
-                        "type": "function_call_output",
-                        "call_id": value_string(part.get("tool_use_id")).unwrap_or_default(),
-                        "output": tool_content_to_output(part.get("content")),
                     }));
                 }
             }
