@@ -1,4 +1,4 @@
-import { estimateCostUsd } from "./model-pricing.js";
+import { estimateTraceCostUsd } from "./model-pricing.js";
 import type { TraceEntry } from "./traces.js";
 
 export type ProjectUsageModel = {
@@ -81,16 +81,7 @@ function percentile(values: number[], percentileValue: number): number {
 }
 
 function traceCostUsd(trace: TraceEntry): number | undefined {
-  if (typeof trace.costUsd === "number" && Number.isFinite(trace.costUsd)) {
-    return trace.costUsd;
-  }
-  return estimateCostUsd(
-    trace.model,
-    trace.tokensInput ?? 0,
-    trace.tokensOutput ?? 0,
-    trace.tokensInputCached ?? 0,
-    trace.tokensInputCacheWrite ?? 0,
-  );
+  return estimateTraceCostUsd(trace);
 }
 
 export function addTrace(usage: MutableUsage, trace: TraceEntry) {

@@ -205,3 +205,14 @@ export function estimateCostUsdWithoutCache(
     tokensInputCacheWrite,
   );
 }
+
+/** Estimate only measured usage, preserving upstream/previously recorded costs. */
+export function estimateTraceCostUsd(trace: {
+  model?: string; resolvedModel?: string; usageStatus?: string; costUsd?: number;
+  tokensInput?: number; tokensOutput?: number; tokensInputCached?: number; tokensInputCacheWrite?: number;
+}): number | undefined {
+  if (typeof trace.costUsd === "number" && Number.isFinite(trace.costUsd)) return trace.costUsd;
+  if (trace.usageStatus === "missing") return undefined;
+  return estimateCostUsd(trace.resolvedModel ?? trace.model, trace.tokensInput ?? 0, trace.tokensOutput ?? 0,
+    trace.tokensInputCached ?? 0, trace.tokensInputCacheWrite ?? 0);
+}

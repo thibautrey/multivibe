@@ -1,4 +1,4 @@
-import { estimateCostUsd } from "./model-pricing.js";
+import { estimateCostUsd, estimateTraceCostUsd } from "./model-pricing.js";
 import { sessionKeyOf } from "./session-identity.js";
 import { ttftInputTokenBucket } from "./traces.js";
 import type { TtftInputTokenBucket } from "./traces.js";
@@ -134,24 +134,13 @@ function traceHasUsage(trace: TraceEntry): boolean {
 }
 
 function traceCostUsd(trace: TraceEntry): number {
-  if (typeof trace.costUsd === "number" && Number.isFinite(trace.costUsd)) {
-    return trace.costUsd;
-  }
-  return (
-    estimateCostUsd(
-      trace.model,
-      trace.tokensInput ?? 0,
-      trace.tokensOutput ?? 0,
-      trace.tokensInputCached ?? 0,
-      trace.tokensInputCacheWrite ?? 0,
-    ) ?? 0
-  );
+  return estimateTraceCostUsd(trace) ?? 0;
 }
 
 function traceCostUsdWithoutCache(trace: TraceEntry): number {
   const cachedInput = Math.max(0, trace.tokensInputCached ?? 0);
   if (cachedInput === 0) return traceCostUsd(trace);
-  if (!traceHasUsage(trace)) return 0;
+  if (trace.usageStatus === "missing" || !traceHasUsage(trace)) return 0;
   const input = Math.max(0, trace.tokensInput ?? 0);
   const cacheWrite = Math.min(
     input,

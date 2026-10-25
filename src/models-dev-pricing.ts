@@ -2,6 +2,7 @@
  * by the catalog, estimator and durable cache (including context tiers). */
 export type ModelsDevRates = { input: number; output: number; cache_read?: number; cache_write?: number };
 export type ModelsDevCost = ModelsDevRates & {
+  [key: string]: unknown;
   tiers?: Array<ModelsDevRates & { tier: { type: "context"; size: number } }>;
 };
 
@@ -10,7 +11,8 @@ function rates(value: unknown): ModelsDevRates | undefined {
   const source = value as Record<string, unknown>;
   const valid = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
   if (!valid(source.input) || !valid(source.output)) return;
-  return { input: source.input, output: source.output,
+  const numeric = Object.fromEntries(Object.entries(source).filter(([, value]) => valid(value)));
+  return { ...numeric, input: source.input, output: source.output,
     ...(valid(source.cache_read) ? { cache_read: source.cache_read } : {}),
     ...(valid(source.cache_write) ? { cache_write: source.cache_write } : {}) };
 }

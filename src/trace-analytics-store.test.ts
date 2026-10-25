@@ -66,9 +66,12 @@ test("interrupted cost backfill resumes committed batches and rebuilds affected 
   f.store.append(Array.from({ length: 1005 }, (_, i) => ({ ...trace(`backfill-${i}`), model: "future-resume", costUsd: undefined })));
   installModelsDevPricing({ openai: [{ id: "future-resume", cost: { input: 2, output: 10 } }] }, BASE);
   t.after(() => installModelsDevPricing({}, BASE));
+  // Finish import IO first, then interrupt at the first migration batch yield.
+  f.config.externalWriter = false;
+  await f.store.sync();
   f.store.enablePricingBackfill();
-  const syncing = f.store.sync();
   const closing = new Promise<void>((resolve, reject) => setImmediate(() => { f.store.close().then(resolve, reject); }));
+  const syncing = f.store.sync();
   await Promise.all([syncing, closing]);
   assert.equal(f.store.status.pricingBackfill?.state, "running");
   assert.equal(f.store.status.pricingBackfill?.updated, 1000);
