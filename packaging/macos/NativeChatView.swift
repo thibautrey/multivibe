@@ -1112,9 +1112,9 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             Text("Connectez votre serveur puis choisissez l’agent qui répondra dans MultiVibe.")
                 .font(.callout).foregroundStyle(.secondary)
             TextField("Endpoint (https://librechat.example.com)", text: $endpoint)
-                .textFieldStyle(.roundedBorder).onChange(of: endpoint) { _, _ in agents = [] }
+                .textFieldStyle(.roundedBorder).onChange(of: endpoint) { _ in agents = [] }.disabled(busy)
             SecureField(hasApiKey ? "Clé API (laisser vide pour la conserver)" : "Clé API LibreChat", text: $apiKey)
-                .textFieldStyle(.roundedBorder).onChange(of: apiKey) { _, _ in agents = [] }
+                .textFieldStyle(.roundedBorder).onChange(of: apiKey) { _ in agents = [] }.disabled(busy)
             Text("La clé reste dans un fichier privé du Host. Utilisez une clé API LibreChat autorisée à exécuter les agents distants.")
                 .font(.caption).foregroundStyle(.secondary)
             if !agents.isEmpty {

@@ -105,7 +105,8 @@ export class LibreChatAdapter implements HarnessAdapter {
     }
     if(!terminal)fail("LibreChat stream ended before a completion was acknowledged; do not automatically retry",502);
     this.history=[...messages,{role:"assistant",content:answer}];
-    fs.writeFileSync(this.file,JSON.stringify(this.history),{mode:0o600});
+    const temporary=this.file+"."+randomUUID();
+    try{fs.writeFileSync(temporary,JSON.stringify(this.history),{mode:0o600,flag:"wx"});fs.renameSync(temporary,this.file);}finally{fs.rmSync(temporary,{force:true});}
     this.ctx.emit({type:"turn.status",payload:{status:"completed"}});
   }
   async interrupt():Promise<void>{fail("Remote cancellation is not acknowledged by the LibreChat Chat Completions API",422);}
