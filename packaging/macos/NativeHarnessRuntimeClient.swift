@@ -1,10 +1,6 @@
 import AppKit
 import Foundation
 
-enum DesktopHarnessError: LocalizedError {
-    case rejected(String), invalidResponse
-    var errorDescription: String? { switch self { case .rejected(let message): return message; case .invalidResponse: return "Réponse invalide du runtime de harness." } }
-}
 @MainActor final class DesktopHarnessClient: DesktopHarnessServing {
     static let shared = DesktopHarnessClient()
     private func request(_ route: String, method: String, target: String) async throws -> URLRequest {

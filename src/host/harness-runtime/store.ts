@@ -33,8 +33,13 @@ export class HarnessRuntimeStore {
   }
   event(sessionId: string, type: string, payload: unknown, turnId?: string, itemId?: string): HarnessEvent {
     const event = { sessionId, type, payload: redact(payload), ...(turnId ? {turnId}:{}), ...(itemId ? {itemId}:{}), createdAt: Date.now() };
-    const bytes = JSON.stringify(event);
-    if (Buffer.byteLength(bytes) > 1024 * 1024) fail("Event exceeds its storage limit", 413);
+    let bytes = JSON.stringify(event);
+    if (Buffer.byteLength(bytes) > 1024 * 1024) {
+      const original=Buffer.from(JSON.stringify(event.payload));
+      const attachment=this.attach(sessionId,`${type.replace(/[^a-zA-Z0-9._-]/gu,"-")}.json`,"application/json",original.subarray(0,16*1024*1024).toString("base64"));
+      event.payload={truncated:true,attachment,preview:original.subarray(0,4000).toString("utf8"),complete:original.length<=16*1024*1024};
+      bytes=JSON.stringify(event);
+    }
     const result = this.db.prepare("INSERT INTO events(session_id,value) VALUES(?,?)").run(sessionId, bytes);
     return { ...event, seq: Number(result.lastInsertRowid) };
   }
@@ -85,6 +90,10 @@ export class HarnessRuntimeStore {
     const bytes=Buffer.from(base64,"base64"); if(!bytes.length || bytes.length>16*1024*1024) fail("File exceeds 16 MiB",413);
     const sha256=createHash("sha256").update(bytes).digest("hex");
     if(expectedHash!==undefined && expectedHash!==sha256) fail("Attachment checksum mismatch",409);
+    for(const row of this.db.prepare("SELECT value FROM attachments WHERE session_id=?").all(sessionId)) {
+      const existing=JSON.parse(row.value) as HarnessAttachment;
+      if(existing.sha256===sha256 && existing.name===path.basename(name as string) && existing.mimeType===mimeType){this.attachment(sessionId,existing.id);return existing;}
+    }
     const info: HarnessAttachment={id:randomUUID(),name:path.basename(name as string),mimeType:mimeType as string,size:bytes.length,sha256};
     const folder=path.join(this.root,"attachments",sessionId); fs.mkdirSync(folder,{recursive:true,mode:0o700});
     fs.writeFileSync(path.join(folder,info.id),bytes,{mode:0o600,flag:"wx"});
