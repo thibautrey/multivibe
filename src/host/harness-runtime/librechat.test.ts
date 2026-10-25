@@ -84,7 +84,7 @@ test("LibreChat completes two-factor and backup-code challenges without persisti
   assert.equal(JSON.stringify(discovered).includes("private-user-token"),false);
   assert.equal(config.read(),undefined);
   const saved=await config.configure({endpoint,connectionAttemptId:discovered.connectionAttemptId,agentId:"agent-1"});
-  assert.equal(saved.hasUserSession,true);
+  assert.equal("hasUserSession" in saved && saved.hasUserSession,true);
   const privateFile=fs.readFileSync(path.join(root,"librechat-connection.json"),"utf8");
   for(const transient of ["private-password","private-challenge-1","123456","private-backup-code"])assert.equal(privateFile.includes(transient),false);
   const before=privateFile;
