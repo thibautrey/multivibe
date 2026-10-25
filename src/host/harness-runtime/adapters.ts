@@ -64,11 +64,12 @@ export class AcpAdapter extends Adapter {
       // Hermes loads its .env with override=True. Shell variables alone cannot
       // override the user's native endpoint. Keep native policies/resources, but
       // give this supervised session its own credentials and session database.
-      for(const name of ["config.yaml","skills","memories","SOUL.md","AGENTS.md","hooks","plugins","tools","installs"]){
+      for(const name of ["skills","memories","SOUL.md","AGENTS.md","hooks","plugins","tools","installs"]){
         const source=path.join(nativeHome,name),destination=path.join(home,name);
         if(fs.existsSync(source) && !fs.existsSync(destination))fs.symlinkSync(source,destination);
       }
       environment={HERMES_HOME:home,LLM_PROVIDER:"openai",LLM_MODEL:this.ctx.session.model,CUSTOM_BASE_URL:connection.baseUrl.replace(/\/$/u,"")+"/v1",OPENAI_BASE_URL:connection.baseUrl.replace(/\/$/u,"")+"/v1",OPENAI_API_KEY:connection.apiKey};
+      fs.writeFileSync(path.join(home,"config.yaml"),JSON.stringify({model:{provider:"custom",default:this.ctx.session.model,base_url:environment.CUSTOM_BASE_URL,api_mode:"chat_completions"}},null,2)+"\n",{mode:0o600});
       fs.writeFileSync(path.join(home,".env"),Object.entries(environment).filter(([key,value])=>key!=="HERMES_HOME" && value!==undefined).map(([key,value])=>`${key}=${JSON.stringify(value)}`).join("\n")+"\n",{mode:0o600});
     }
     const peer=this.connect(this.args,true,environment);
