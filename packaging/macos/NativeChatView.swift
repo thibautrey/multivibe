@@ -3,6 +3,38 @@ import SwiftUI
 import UniformTypeIdentifiers
 import AVFoundation
 
+// Intercept before SwiftUI button shortcuts, while preserving the field editor's
+// selection, undo stack and normal text-change notifications on macOS 13+.
+private struct ComposerNewlineShortcut: NSViewRepresentable {
+    func makeNSView(context: Context) -> ShortcutView { ShortcutView() }
+    func updateNSView(_ nsView: ShortcutView, context: Context) {}
+
+    final class ShortcutView: NSView {
+        private var monitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self, let window = self.window, event.window === window,
+                      event.keyCode == 36 || event.keyCode == 76,
+                      event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                        .subtracting([.capsLock, .numericPad, .function]) == .command,
+                      let editor = window.firstResponder as? NSTextView,
+                      editor.isEditable, !editor.hasMarkedText(),
+                      let field = editor.delegate as? NSTextField,
+                      self.convert(self.bounds, to: nil).intersects(field.convert(field.bounds, to: nil))
+                else { return event }
+                editor.insertNewlineIgnoringFieldEditor(nil)
+                return nil
+            }
+        }
+
+        deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+    }
+}
+
 private enum ChatPalette {
     static let accent = Color(nsColor: NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
@@ -548,6 +580,7 @@ private struct HarnessLogo: View {
                     .textFieldStyle(.plain).font(.system(size: 15)).lineLimit(1...6)
                     .fixedSize(horizontal: false, vertical: true)
                     .focused($composing).accessibilityLabel("Message à MultiVibe")
+                    .background(ComposerNewlineShortcut())
                     .padding(.horizontal, 12).padding(.top, 11).padding(.bottom, 7)
                 HStack(spacing: 7) {
                     Button { importing = true } label: {
@@ -561,14 +594,14 @@ private struct HarnessLogo: View {
                     Spacer(minLength: 12)
                     if cloudMode {
                         Button { sendCloud() } label: { Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).frame(width: 25, height: 25) }
-                            .buttonStyle(.borderedProminent).clipShape(Circle()).help("Envoyer à Hermes (⌘↵)").keyboardShortcut(.return, modifiers: .command)
+                            .buttonStyle(.borderedProminent).clipShape(Circle()).help("Envoyer à Hermes")
                             .disabled(cloudSelection == nil || cloudSending || agent.busy || agent.consent?.cloudEnabled != true || cloudDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !agent.models.contains { $0.id == cloudModel && $0.available != false })
                     } else if store.generating != nil {
                         Button { store.stop() } label: { Image(systemName: "stop.fill").font(.system(size: 11)).frame(width: 25, height: 25) }
                             .buttonStyle(.borderedProminent).clipShape(Circle()).tint(.secondary).help("Arrêter")
                     } else {
                         Button { sendMessage() } label: { Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).frame(width: 25, height: 25) }
-                            .buttonStyle(.borderedProminent).clipShape(Circle()).help("Envoyer (⌘↵)").keyboardShortcut(.return, modifiers: .command)
+                            .buttonStyle(.borderedProminent).clipShape(Circle()).help("Envoyer")
                             .disabled(draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                 || !models.contains { $0.id == model.wrappedValue }
                                 || !selectedHarness.available
