@@ -13,8 +13,10 @@ export function harnessRuntimeRoutes(runtime?:HostHarnessRuntime,remotes=new Rem
   const remote=(req:express.Request):HarnessTarget|undefined=>{const id=String(req.query.targetId??"local");const target=runtime!.store.target(id);return target.kind==="ssh" || target.kind==="container" && target.bridgePath?target:undefined;};
   const proxy=async(req:express.Request,method:string,p:string,body?:unknown)=>{const target=remote(req);return target?remotes.request(target,method,p,body):undefined;};
   router.get("/catalog",route(async(req,res)=>res.json(await proxy(req,"GET","/catalog")??{harnesses:await runtime!.catalog(String(req.query.targetId??"local"))})));
+  router.get("/librechat",route(async(req,res)=>res.json(await proxy(req,"GET","/librechat")??runtime!.librechat.publicConfiguration())));
+  router.post("/librechat",route(async(req,res)=>res.json(await proxy(req,"POST","/librechat",req.body)??await runtime!.librechat.configure(req.body))));
   router.get("/targets",route((_req,res)=>res.json({targets:runtime!.store.targets()})));
-  router.post("/registrations",route(async(req,res)=>{if(req.body.id in ADAPTERS)fail("Built-in adapters cannot be replaced");return res.status(201).json(await proxy(req,"POST","/registrations",req.body)??{harness:runtime!.store.register(req.body)});}));
+  router.post("/registrations",route(async(req,res)=>{if(req.body.id in ADAPTERS || req.body.id==="librechat")fail("Built-in adapters cannot be replaced");return res.status(201).json(await proxy(req,"POST","/registrations",req.body)??{harness:runtime!.store.register(req.body)});}));
   router.post("/targets",route((req,res)=>{const v=req.body;const target:HarnessTarget={id:v.id??randomUUID(),name:v.name,kind:v.kind,...(v.sshHost?{sshHost:v.sshHost}:{}),...(v.bridgePath?{bridgePath:v.bridgePath}:{}),...(v.container?{container:v.container}:{})};runtime!.store.saveTarget(target);return res.status(201).json({target});}));
   router.get("/sessions",route(async(req,res)=>res.json(await proxy(req,"GET","/sessions")??{sessions:runtime!.store.sessions().filter(s=>s.targetId===String(req.query.targetId??"local"))})));
   router.post("/sessions",route(async(req,res)=>{const target=remote(req);return res.status(201).json(target?await remotes.request(target,"POST","/sessions",{...req.body,targetId:"local"}):{session:await runtime!.create(req.body)});}));
