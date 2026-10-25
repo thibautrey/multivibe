@@ -35,6 +35,8 @@ The ordinary Send action queues a future turn. MultiVibe is the sole owner of th
 
 Stop requests native interruption and suspends the follow-up queue. It preserves partial output, cancels pending questions and retains queued messages. If native completion or failure races with Stop, the native terminal result is retained. Background process termination remains a separate native operation. Pausing the queue does not claim to pause inference or tools.
 
+Pi interruption sends the documented abort command directly. The adapter then rebuilds its RPC connection from the retained native session to discard any queued native steering. It does not wait for an unsupported queue-clearing command from another Pi version.
+
 Closing a Desktop window or disconnecting SSE does not stop the Host-owned turn. SQLite stores sessions, operation fingerprints, queue ordinals, events, interactions and schedules. On Host restart, previously dispatched work becomes uncertain and is never automatically replayed. An authoritative late native event can reconcile a live uncertain turn. Otherwise the interface directs the user to native history and an isolated copy; it does not guess whether an external action happened.
 
 The Host expires unanswered interactions after 30 minutes. Parallel questions remain pending independently. Authentication challenge URLs are available to the live authenticated client for reconnect, and excluded from persistent events and exports. Native OAuth credentials remain owned by the harness.
