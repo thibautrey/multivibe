@@ -14,7 +14,7 @@ export class OpenWebUIAdapter implements HarnessAdapter {
   private file:string;
   private connection:RemoteChatConnection;
   constructor(private ctx:AdapterContext){this.file=path.join(ctx.root,"openwebui-session.json");this.connection=ctx.openWebUIConnection??fail("Configure Open WebUI first",409);}
-  private async call(route:string,body?:unknown){return boundedJson(await remoteChatRequest(this.connection,route,body,this.abort.signal,"Open WebUI"),"Open WebUI");}
+  private async call(route:string,body?:unknown){this.ctx.remoteChats?.identity();return boundedJson(await (this.ctx.remoteChats?this.ctx.remoteChats.config.userRequest(route,body,body?"POST":"GET",this.abort.signal):remoteChatRequest(this.connection,route,body,this.abort.signal,"Open WebUI")),"Open WebUI");}
   private chatPath(id:string){return `/v1/chats/${encodeURIComponent(id)}`;}
   private save(checkpoint:Checkpoint){
     const temporary=this.file+"."+randomUUID();
@@ -24,6 +24,12 @@ export class OpenWebUIAdapter implements HarnessAdapter {
   async start(){
     if(this.ctx.target.kind!=="local")fail("Configure Open WebUI on the executing Host",422);
     try{this.checkpoint=JSON.parse(fs.readFileSync(this.file,"utf8"));}catch(e:any){if(e.code!=="ENOENT")throw e;}
+    if(this.ctx.session.nativeSessionId && !this.checkpoint){
+      const snapshot=await this.call(this.chatPath(this.ctx.session.nativeSessionId));
+      const current=snapshot?.chat?.history?.currentId;
+      if(typeof current!=="string")fail("Open WebUI conversation has no active branch",409);
+      this.save({chatId:this.ctx.session.nativeSessionId,assistantId:current});
+    }
     if(this.ctx.session.nativeSessionId && this.ctx.session.nativeSessionId!==this.checkpoint?.chatId)fail("Open WebUI session checkpoint is missing or inconsistent",409);
     this.ctx.emit({type:"harness.metadata",payload:{name:"Open WebUI",protocolVersion:"saved-chat"}});
   }
@@ -34,15 +40,20 @@ export class OpenWebUIAdapter implements HarnessAdapter {
     return fail("Open WebUI accepts text and text documents through this adapter",422);
   }).join("\n\n");}
   async prompt(parts:MessagePart[],steer=false){
+    this.ctx.remoteChats?.identity();
     if(steer)fail("Open WebUI in-flight steering is unavailable",422);
     const text=this.text(parts),model=this.ctx.session.model??this.connection.agentId;
     let chat:any={title:this.ctx.session.title,models:[model],history:{currentId:null,messages:{}},messages:[]};
-    const previous=this.checkpoint;
+    let previous=this.checkpoint;
     if(previous){
       chat=(await this.call(this.chatPath(previous.chatId))).chat;
-      const last=chat?.history?.messages?.[previous.assistantId];
-      if(!last || last.done!==true)fail("Previous Open WebUI execution has not been reconciled. Inspect the remote chat before sending again.",409);
-      if(chat.history.currentId!==previous.assistantId)fail("This Open WebUI chat changed outside Desktop. Start a new conversation to preserve its history.",409);
+      // Read the latest native branch so a turn written in the web client is included.
+      const current=chat?.history?.currentId;
+      if(typeof current!=="string")fail("Open WebUI conversation has no active branch",409);
+      previous={chatId:previous.chatId,assistantId:current};
+      const last=chat?.history?.messages?.[current];
+      if(!last || last.role==="assistant" && last.done!==true)fail("Previous Open WebUI execution has not been reconciled. Inspect the remote chat before sending again.",409);
+
     }
     const userId=randomUUID(),assistantId=randomUUID(),timestamp=Math.floor(Date.now()/1000);
     const user={id:userId,role:"user",content:text,parentId:previous?.assistantId??null,childrenIds:[assistantId],models:[model],timestamp};
@@ -54,6 +65,10 @@ export class OpenWebUIAdapter implements HarnessAdapter {
     while(cursor){if(seen.has(cursor) || seen.size>20_000)fail("Invalid Open WebUI conversation history",502);seen.add(cursor);const message:any=chat.history.messages[cursor];if(!message)fail("Incomplete Open WebUI conversation history",502);branch.unshift(message);cursor=message.parentId??null;}
     chat.messages=[...branch,assistant];
     if(Buffer.byteLength(JSON.stringify(chat))>16*1024*1024)fail("Open WebUI conversation exceeds 16 MiB; start a new conversation",413);
+    if(previous){
+      const latest=await this.call(this.chatPath(previous.chatId));
+      if(latest?.chat?.history?.currentId!==previous.assistantId)fail("Open WebUI changed while preparing this message. Synchronize and send again.",409);
+    }
     const saved=await this.call(previous?this.chatPath(previous.chatId):"/v1/chats/new",{chat});
     const chatId=previous?.chatId??saved?.id;if(typeof chatId!=="string" || !chatId || chatId.length>256)fail("Open WebUI did not return a valid chat identifier",502);
     this.save({chatId,assistantId});

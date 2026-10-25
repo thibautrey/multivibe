@@ -1,3 +1,4 @@
+import { LibreChatNativeAdapter } from "./librechat-native.js";
 import { OpenWebUIAdapter } from "./openwebui.js";
 import { LibreChatAdapter } from "./librechat.js";
 import fs from "node:fs";
@@ -524,7 +525,7 @@ export function adapterFor(ctx:AdapterContext):HarnessAdapter {
     case "openai-codex":return new CodexAdapter(ctx);
     case "claude-code":return new ClaudeAdapter(ctx);
     case "openwebui":return new OpenWebUIAdapter(ctx);
-    case "librechat":return new LibreChatAdapter(ctx);
+    case "librechat":return ctx.libreChatConnection?.userToken?new LibreChatNativeAdapter(ctx):new LibreChatAdapter(ctx);
     case "opencode":return new OpenCodeAdapter(ctx);
     default: {
       const args=ctx.session.configuration?.acpArgs;

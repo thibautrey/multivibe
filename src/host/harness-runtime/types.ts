@@ -1,3 +1,4 @@
+import type { RemoteChats } from "./remote-chats.js";
 import { createHash } from "node:crypto";
 
 export const HARNESS_FEATURES = [
@@ -71,8 +72,9 @@ export type AdapterContext = {
   capabilities: (values: Partial<Record<HarnessFeature, HarnessCapability>>) => void;
   attachment: (id: string) => { info: HarnessAttachment; path: string; data: Buffer };
   ask: (kind: PendingInteraction["kind"], title: string, detail: unknown) => Promise<Record<string, unknown>>;
-  openWebUIConnection?: {endpoint:string;apiKey:string;agentId:string};
-  libreChatConnection?: {endpoint:string;apiKey:string;agentId:string};
+  remoteChats?: RemoteChats;
+  openWebUIConnection?: {endpoint:string;apiKey:string;agentId:string;userToken?:string};
+  libreChatConnection?: {endpoint:string;apiKey:string;agentId:string;userToken?:string};
   modelConnection?: {baseUrl:string;apiKey:string};
 };
 export interface HarnessAdapter {
