@@ -123,6 +123,12 @@ struct DesktopHarnessModelCatalog: Codable, Sendable {
 }
 struct DesktopHarnessProject: Codable, Identifiable, Equatable, Sendable {
     let id: String; let harnessId: String; let name: String; let path: String; let updatedAt: Double
+    func matches(search: String) -> Bool {
+        let terms = search.split(whereSeparator: { $0.isWhitespace })
+        return terms.allSatisfy { term in
+            [name, path].contains { $0.range(of: String(term), options: [.caseInsensitive, .diacriticInsensitive]) != nil }
+        }
+    }
 }
 struct DesktopHarnessEvent: Codable, Identifiable, Equatable, Sendable {
     let seq: Int; let sessionId: String; let type: String; let turnId: String?; let itemId: String?; let payload: HarnessJSON; let createdAt: Double

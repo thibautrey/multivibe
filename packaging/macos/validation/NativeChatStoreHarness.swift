@@ -39,6 +39,9 @@ enum HostAssistantError: Error { case emptyReply }
 
 @main struct NativeChatStoreHarness {
     @MainActor static func main() async throws {
+        let suite = "multivibe-model-preferences-test-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
         try NativeChatPresentationHarness.validate()
         let previousModel = HostAssistantClient.shared.defaultModel
         let previousHarness = NativeChatStore.defaultHarnessID
@@ -50,9 +53,13 @@ enum HostAssistantError: Error { case emptyReply }
         NativeChatStore.defaultHarnessID = "native"
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
-        try await validateRemoteChatSynchronization(folder: directory)
+        validateModelPreferences(folder: directory, defaults: defaults)
+        defaults.removeObject(forKey: NativeChatStore.modelPreferencesKey)
+        HostAssistantClient.shared.defaultModel = "fixture"
+        NativeChatStore.defaultHarnessID = "native"
+        try await validateRemoteChatSynchronization(folder: directory, defaults: defaults)
         let file = directory.appendingPathComponent("history.json")
-        let store = NativeChatStore(file: file)
+        let store = NativeChatStore(file: file, defaults: defaults)
         store.newConversation()
         let first = store.selection!
         store.edit { $0.workspace = "/tmp/previous-project" }
@@ -105,7 +112,7 @@ enum HostAssistantError: Error { case emptyReply }
         while store.generating != nil { try await Task.sleep(nanoseconds: 10_000_000) }
         precondition(store.current?.messages.count == 4)
         precondition(store.current?.messages.last?.interrupted == false)
-        let restored = NativeChatStore(file: file)
+        let restored = NativeChatStore(file: file, defaults: defaults)
         precondition(restored.current?.messages.count == 4)
         let mode = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as! NSNumber
         precondition(mode.intValue == 0o600)
@@ -125,7 +132,7 @@ enum HostAssistantError: Error { case emptyReply }
         precondition(NativeHarnessClient.shared.receivedHarnessID == "pi")
         precondition(DesktopHarnessClient.shared.lastCreatedWorkspace == selectedWorkspace)
         precondition(store.current?.runtimeSession?.workspace == selectedWorkspace)
-        precondition(NativeChatStore(file: file).conversations.first { $0.id == second }?.workspace == selectedWorkspace)
+        precondition(NativeChatStore(file: file, defaults: defaults).conversations.first { $0.id == second }?.workspace == selectedWorkspace)
         precondition(store.current?.harnessSessionID == "session-fixture")
         precondition(store.current?.messages.last?.content == "Réponse du harness")
         store.delete(first)
@@ -164,7 +171,7 @@ enum HostAssistantError: Error { case emptyReply }
         store.edit { $0.draft = "Keep this draft" }
         store.importRuntimeSession(store.current!.runtimeSession!, target: "local")
         precondition(store.current?.messages.count == previousMessageCount && store.current?.draft == "Keep this draft")
-        let reuseStore = NativeChatStore(file: directory.appendingPathComponent("reuse.json"))
+        let reuseStore = NativeChatStore(file: directory.appendingPathComponent("reuse.json"), defaults: defaults)
         reuseStore.newConversation(); let supervised = reuseStore.selection!
         reuseStore.edit { $0.runtimeSessionID = "supervised-without-messages" }
         reuseStore.newConversation()
@@ -187,14 +194,14 @@ enum HostAssistantError: Error { case emptyReply }
         store.send(interactiveAnswers: false)
         while store.generating != nil { try await Task.sleep(nanoseconds: 10_000_000) }
         precondition(HostAssistantClient.shared.received.last?["content"] == "Un outil")
-        let withArtifact = NativeChatStore(file: file)
+        let withArtifact = NativeChatStore(file: file, defaults: defaults)
         let saved = withArtifact.conversations.first { $0.messages.last?.content == artifact }!
         precondition(NativeInteractiveDocument.segments(saved.messages.last!.content).contains { if case .document = $0 { return true }; return false })
         store.newConversation(text: "Brouillon à conserver")
         store.edit { $0.harnessID = "pi"; $0.authMode = "native"; $0.nativeModelID = "native-picked"; $0.nativeModelProvider = "native-provider" }
         let catalog = try await store.modelCatalog(store.selection!)
         precondition(catalog.models.first?.id == "native-picked" && catalog.models.first?.provider == "native-provider")
-        let selectedNative = NativeChatStore(file: file).current
+        let selectedNative = NativeChatStore(file: file, defaults: defaults).current
         precondition(selectedNative?.nativeModelID == "native-picked" && selectedNative?.nativeModelProvider == "native-provider")
         store.send(interactiveAnswers: true)
         while store.current?.messages.last?.content != "Réponse du harness" { try await Task.sleep(nanoseconds: 10_000_000) }
@@ -205,7 +212,7 @@ enum HostAssistantError: Error { case emptyReply }
         precondition(store.current?.model == "remembered-model")
         precondition(store.current?.harnessID == "hermes-agent")
         try Data("invalid-history".utf8).write(to: file)
-        let corrupt = NativeChatStore(file: file)
+        let corrupt = NativeChatStore(file: file, defaults: defaults)
         precondition(corrupt.error != nil)
         corrupt.newConversation()
         let original = try String(contentsOf: file, encoding: .utf8)
@@ -244,9 +251,9 @@ enum HostAssistantError: Error { case emptyReply }
     func events(sessionID: String, target: String, after: Int, update: @MainActor @escaping (DesktopHarnessEvent) -> Void) async throws { }
 }
 
-@MainActor private func validateRemoteChatSynchronization(folder: URL) async throws {
+@MainActor private func validateRemoteChatSynchronization(folder: URL, defaults: UserDefaults) async throws {
     let remote = RemoteChatRuntimeFixture()
-    let store = NativeChatStore(file: folder.appendingPathComponent("remote-conversations.json"), runtime: remote)
+    let store = NativeChatStore(file: folder.appendingPathComponent("remote-conversations.json"), runtime: remote, defaults: defaults)
     await store.synchronizeRemoteChats(force: true)
     precondition(store.conversations.count == 1)
     let id = store.conversations[0].id
@@ -281,4 +288,60 @@ enum HostAssistantError: Error { case emptyReply }
     for _ in 0..<100 where !remote.deleted { try await Task.sleep(nanoseconds: 10_000_000) }
     precondition(remote.deleted && !store.conversations.contains { $0.id == id })
     print("PASS remote chat list, live messages, stable identity, account isolation, drafts, offline preservation and server mutations")
+}
+
+@MainActor private func validateModelPreferences(folder: URL, defaults: UserDefaults) {
+    let file = folder.appendingPathComponent("preferences.json")
+    let store = NativeChatStore(file: file, defaults: defaults)
+    store.newConversation()
+    store.edit { $0.model = "host-a" }
+    store.rememberCurrentModel()
+    store.selectHarness("pi")
+    store.edit { $0.nativeModelID = "shared-id"; $0.nativeModelProvider = "provider-a" }
+    store.rememberCurrentModel()
+    store.selectHarness("openai-codex")
+    precondition(store.current?.nativeModelID == nil && store.current?.nativeModelProvider == nil)
+    store.edit { $0.authMode = "multivibe"; $0.model = "host-b" }
+    store.rememberCurrentModel()
+    store.selectHarness("pi")
+    precondition(store.current?.nativeModelID == "shared-id" && store.current?.nativeModelProvider == "provider-a" && store.current?.authMode == "native")
+    store.selectHarness("native")
+    precondition(store.current?.model == "host-a" && store.current?.nativeModelID == nil)
+    store.selectHarness("openai-codex")
+    precondition(store.current?.authMode == "multivibe" && store.current?.model == "host-b")
+    // Reopening existing history must preserve that conversation's model.
+    store.edit { $0.model = "conversation-specific" }
+    let reopened = NativeChatStore(file: file, defaults: defaults)
+    precondition(reopened.current?.model == "conversation-specific")
+    reopened.newConversation()
+    precondition(reopened.current?.model == "host-b" && reopened.current?.authMode == "multivibe")
+    // A fresh store after restart restores the same persisted preference.
+    let restarted = NativeChatStore(file: folder.appendingPathComponent("fresh.json"), defaults: defaults)
+    restarted.newConversation(text: "New draft")
+    precondition(restarted.current?.model == "host-b")
+    restarted.selectHarness("pi")
+    precondition(restarted.current?.nativeModelID == "shared-id")
+    restarted.edit { $0.executionTargetID = "remote" }
+    restarted.selectHarness("pi")
+    precondition(restarted.current?.nativeModelID == nil)
+    restarted.edit { $0.nativeModelID = "remote-model"; $0.nativeModelProvider = "provider-b" }
+    restarted.rememberCurrentModel()
+    restarted.edit { $0.executionTargetID = nil }
+    restarted.selectHarness("pi")
+    precondition(restarted.current?.nativeModelID == "shared-id" && restarted.current?.nativeModelProvider == "provider-a")
+    // Reusing an empty draft also restores preferences and clears other harness fields.
+    restarted.newConversation()
+    precondition(restarted.current?.nativeModelID == "shared-id")
+    restarted.edit { $0.messages = [NativeChatMessage(role: "user", content: "Started")] }
+    restarted.selectHarness("native")
+    precondition(restarted.current?.harnessID == "pi" && restarted.current?.nativeModelID == "shared-id")
+    restarted.newConversation(text: "Fresh conversation")
+    precondition(restarted.current?.nativeModelID == "shared-id")
+    let project = DesktopHarnessProject(id: "one", harnessId: "pi", name: "Été Multivibe", path: "/Users/demo/Work/astronomy-store", updatedAt: 0)
+    precondition(project.matches(search: "  "))
+    precondition(project.matches(search: "ETE"))
+    precondition(project.matches(search: "STORE"))
+    precondition(project.matches(search: "multivibe astronomy"))
+    precondition(!project.matches(search: "multivibe absent"))
+    print("PASS per-harness model preferences, provider/source and target isolation, restart, fresh/reused drafts, existing conversations and project search")
 }
