@@ -61,8 +61,9 @@ import SwiftUI
         }
         menu.addItem(edit)
         let scenes = NSMenuItem(); scenes.submenu = NSMenu(title: "Scénarios")
-        for (index, title) in ["Accueil", "Conversation", "Travail et file", "Question", "Erreur", "Fenêtre étroite", "Fenêtre large", "Clair", "Sombre"].enumerated() {
-            let item = NSMenuItem(title: title, action: #selector(selectScene(_:)), keyEquivalent: String(index + 1)); item.target = self; item.tag = index
+        for (index, title) in ["Accueil", "Conversation", "Travail et file", "Question", "Erreur", "Fenêtre étroite", "Fenêtre large", "Clair", "Sombre", "Panneau navigateur"].enumerated() {
+            let shortcut = index < 9 ? String(index + 1) : ""
+            let item = NSMenuItem(title: title, action: #selector(selectScene(_:)), keyEquivalent: shortcut); item.target = self; item.tag = index
             scenes.submenu?.addItem(item)
         }
         menu.addItem(scenes); NSApplication.shared.mainMenu = menu
@@ -74,7 +75,9 @@ import SwiftUI
             store.error = sender.tag == 4 ? "2026-10-25 15:12:42 [ERROR] Streaming failed before delivery: Connection error.\nTraceback (most recent call last):\n  File \"internal.py\", line 101, in connect\n    raise ConnectionError()" : nil
         } else if sender.tag == 5 { window.setContentSize(NSSize(width: 760, height: 650)) }
         else if sender.tag == 6 { window.setContentSize(NSSize(width: 1180, height: 780)) }
-        else { window.appearance = NSAppearance(named: sender.tag == 7 ? .aqua : .darkAqua) }
+        else if sender.tag == 7 { window.appearance = NSAppearance(named: .aqua) }
+        else if sender.tag == 8 { window.appearance = NSAppearance(named: .darkAqua) }
+        else { store.computer.browser.show() }
     }
     override func applicationWillTerminate(_ notification: Notification) {}
 }
