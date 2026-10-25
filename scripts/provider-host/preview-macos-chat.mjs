@@ -92,6 +92,22 @@ const server = createServer(async (request, response) => {
   if (route.endsWith('/projects')) return send({ projects: previewProjects.map(project => ({ ...project, harnessId: url.searchParams.get('harnessId') ?? project.harnessId })) });
   if (route.includes('/native-sessions')) return send({ sessions: [] });
   if (route.endsWith('/sessions')) return send({ sessions: Object.values(sessions) });
+  if (route.endsWith('/features')) {
+    let text = ''; for await (const chunk of request) text += chunk; const body = JSON.parse(text);
+    const items = [
+      { id: 'goal', section: 'actions', name: 'Goal', description: 'Set a goal to keep pursuing', action: 'goal' },
+      { id: 'plan', section: 'actions', name: 'Plan mode', description: 'Turn plan mode on', action: 'configure', value: 'plan', subject: 'modes' },
+      { id: 'compact', section: 'actions', name: 'Compact context', description: 'Reduce the active context', action: 'compact' },
+      { id: 'review', section: 'commands', name: 'review', description: 'Review the current changes', action: 'insert', value: '/review ', subject: 'commands' },
+      { id: 'documents', section: 'skills', name: 'Documents', description: 'Create and edit documents', action: 'insert', value: '$documents ', subject: 'skills' },
+      { id: 'pdf', section: 'plugins', name: 'PDF', description: 'Read, create, and verify PDFs', action: 'insert', value: 'Use the PDF plugin for this request. ', subject: 'plugins' },
+      { id: 'explorer', section: 'agents', name: 'Explorer', description: 'Research an independent subtask', action: 'insert', value: 'Use the Explorer agent for this request. ', subject: 'agents' },
+      { id: 'shell', section: 'tools', name: 'Shell', description: 'Run commands in the workspace', action: 'insert', value: 'Use the Shell tool for this request. ', subject: 'tools' },
+      { id: 'github', section: 'mcp', name: 'GitHub', description: 'Repository and pull request tools', action: 'insert', value: 'Use the GitHub MCP server for this request. ', subject: 'mcp' },
+      { id: 'memory', section: 'capabilities', name: 'memory', description: 'native', action: 'inspect', subject: 'memory' },
+    ];
+    return send({ harnessId: body.harnessId, capabilities: {}, items, errors: {} });
+  }
   if (route.endsWith('/effort')) {
     let text = ''; for await (const chunk of request) text += chunk; const body = JSON.parse(text);
     return send({ effort: ['librechat', 'openwebui'].includes(body.harnessId) ? null : { options: [{ value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }], currentValue: sessions[body.sessionId]?.configuration?.effort ?? 'medium', defaultValue: 'low' } });

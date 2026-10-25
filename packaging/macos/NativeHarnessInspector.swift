@@ -6,6 +6,7 @@ import SwiftUI
     @Environment(\.dismiss) private var dismiss
     var onClose: (() -> Void)?
     var isEmbedded = false
+    var initialSubject = "capabilities"
     @State private var page = "overview"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var targets: [DesktopHarnessTarget] = [.local]
@@ -58,6 +59,14 @@ import SwiftUI
     private var unavailableCapabilities: [(String, DesktopHarnessCapability)] {
         capabilities.filter { !$0.value.available }.sorted { HarnessPresentation.title($0.key).localizedStandardCompare(HarnessPresentation.title($1.key)) == .orderedAscending }
     }
+    init(store: NativeChatStore, onClose: (() -> Void)? = nil, isEmbedded: Bool = false, initialSubject: String = "capabilities") {
+        _store = ObservedObject(wrappedValue: store)
+        self.onClose = onClose
+        self.isEmbedded = isEmbedded
+        self.initialSubject = initialSubject
+        _subject = State(initialValue: initialSubject)
+        _page = State(initialValue: initialSubject == "capabilities" ? "overview" : "settings")
+    }
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
@@ -101,6 +110,11 @@ import SwiftUI
         .background(ChatPalette.elevated).tint(ChatPalette.accent)
         .animation(ChatPalette.motion(reduceMotion), value: page)
         .task(id: target) { await load() }
+        .task(id: initialSubject) {
+            guard initialSubject != "capabilities" else { return }
+            page = "settings"; subject = initialSubject
+            await inspect()
+        }
         .sheet(isPresented: $addingTarget) { targetForm }
         .sheet(isPresented: $addingACP) { acpForm }
         .sheet(isPresented: $addingSchedule) { scheduleForm }

@@ -464,6 +464,20 @@ private struct NativeChatModelPreference: Codable {
         if conversations[i].initialRuntimeCommandID == pending.id.uuidString.lowercased() { conversations[i].initialRuntimeCommandID = nil }
         conversations[i].pendingSubmissions?.removeFirst(); save()
     }
+    func featureCatalog(_ id: UUID) async throws -> DesktopHarnessFeatureCatalog {
+        guard let conversation = conversations.first(where: { $0.id == id }), let harness = conversation.harnessID else {
+            return DesktopHarnessFeatureCatalog(harnessId: "native", capabilities: [:], items: [], errors: [:])
+        }
+        var body: [String: HarnessJSON] = ["harnessId": .string(harness), "authMode": .string(conversation.authMode ?? "native")]
+        if let sessionID = conversation.runtimeSessionID { body["sessionId"] = .string(sessionID) }
+        else {
+            let model = conversation.authMode == "multivibe" ? conversation.model : conversation.nativeModelID
+            if let model, !model.isEmpty { body["model"] = .string(model) }
+            if let provider = conversation.nativeModelProvider { body["provider"] = .string(provider) }
+            if let workspace = conversation.workspace { body["workspace"] = .string(workspace) }
+        }
+        return try await runtime.call("/features", method: "POST", target: conversation.executionTargetID ?? "local", body: .object(body)).decode(DesktopHarnessFeatureCatalog.self)
+    }
     func effortCatalog(_ id: UUID) async throws -> DesktopHarnessEffort? {
         guard let conversation = conversations.first(where: { $0.id == id }), let harness = conversation.harnessID else { return nil }
         var body: [String: HarnessJSON] = ["harnessId": .string(harness), "authMode": .string(conversation.authMode ?? "native")]

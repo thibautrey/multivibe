@@ -29,7 +29,12 @@ class Fixture implements HarnessAdapter {
   }
   async interrupt(){this.finish?.();}
   async compact(){this.ctx.emit({type:"compaction",payload:{state:"completed"}});return {summary:"retained"};}
-  async inspect(subject:string){return {subject};}
+  async inspect(subject:string){
+    if(subject==="commands")return [{name:"review",description:"Review code"}];
+    if(subject==="skills")return [{name:"documents",description:"Create documents"}];
+    if(subject==="modes")return {data:[{id:"plan",name:"Plan mode"}]};
+    return {subject};
+  }
   async configure(value:Record<string,unknown>){return value;}
   async native(method:string){return {method};}
   close(){this.reject?.(new Error("connection closed"));}
@@ -339,4 +344,15 @@ test("effort discovery uses the chosen model and preserves session/target owners
   assert.equal(runtime.store.sessions().find(s=>s.id===session.id)?.configuration?.effort,undefined);
   await runtime.command(session.id,operation("configure",{model:"other"}));assert.equal(session.configuration?.effort,undefined);
   await assert.rejects(runtime.effort({harnessId:"hermes-agent",sessionId:session.id}),/does not match/);
+});
+
+test("feature endpoint returns normalized harness actions without persisting its probe",async t=>{
+  const {runtime}=fixture(t);const app=express();app.use(harnessRuntimeRoutes(runtime));const server=createServer(app);
+  await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));t.after(()=>{server.closeAllConnections();server.close();});
+  const origin=`http://127.0.0.1:${(server.address() as any).port}`;
+  const response=await fetch(origin+"/features",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({harnessId:"pi"})});
+  assert.equal(response.status,200);const catalog:any=await response.json();
+  assert.deepEqual(catalog.items.filter((v:any)=>["commands","skills"].includes(v.section)).map((v:any)=>v.value),["/review ","/skill:documents "]);
+  assert.equal(catalog.items.find((v:any)=>v.name==="Plan mode").section,"actions");
+  assert.equal(runtime.store.sessions().length,0);
 });

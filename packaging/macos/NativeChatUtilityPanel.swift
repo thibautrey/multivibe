@@ -9,6 +9,7 @@ enum NativeChatUtilityPanel: Hashable {
     @ObservedObject var store: NativeChatStore
     @ObservedObject var browser: ChromiumBrowser
     let showsConversation: Bool
+    let inspectorSubject: String
     @Binding var selection: NativeChatUtilityPanel
     let closeConversation: () -> Void
     let closeBrowser: () -> Void
@@ -45,8 +46,9 @@ enum NativeChatUtilityPanel: Hashable {
                     NativeHarnessInspector(
                         store: store,
                         onClose: closeConversation,
-                        isEmbedded: true
-                    )
+                        isEmbedded: true,
+                        initialSubject: inspectorSubject
+                    ).id(inspectorSubject)
                 } else if browser.isVisible {
                     ChromiumBrowserPanel(browser: browser, showsCloseButton: false)
                 }
