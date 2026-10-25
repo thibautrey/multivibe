@@ -160,6 +160,7 @@ export class PiAdapter extends Adapter {
     }
     const args=["--mode","rpc","--session",nativeSession??sessionFile];
     if(this.ctx.session.authMode==="multivibe")args.push("--provider","multivibe");
+    else if(typeof this.ctx.session.configuration?.nativeProvider==="string")args.push("--provider",this.ctx.session.configuration.nativeProvider);
     if(this.ctx.session.model)args.push("--model",this.ctx.session.model);
     const peer=this.connect(args,false);const state=await peer.request("get_state");
     this.ctx.nativeSession(state?.sessionFile??this.ctx.session.nativeSessionId??sessionFile);
@@ -190,14 +191,14 @@ export class PiAdapter extends Adapter {
     if(steer){await this.peer!.request("steer",params);return;}
     await this.untilEnd(()=>this.peer!.request("prompt",params,0));
   }
-  async interrupt(){await this.peer!.request("clear_queue");await this.peer!.request("abort",{},0);}
+  async interrupt(){try{await this.peer!.request("clear_queue");}catch{/* Older Pi versions expose abort but no queue clearing. Closing after abort discards pending steering. */}await this.peer!.request("abort",{},0);}
   async compact(instructions?:string){return this.peer!.request("compact",instructions?{customInstructions:instructions}:{},0);}
   async inspect(subject:string) {
     const methods:Record<string,string>={settings:"get_state",history:"get_messages",models:"get_available_models",commands:"get_commands",usage:"get_session_stats",checkpoints:"get_fork_messages"};
     return methods[subject]?this.peer!.request(methods[subject]):super.inspect(subject);
   }
   async configure(v:Record<string,unknown>) {
-    if(typeof v.model==="string" && typeof v.provider==="string")return this.peer!.request("set_model",{provider:v.provider,modelId:v.model});
+    if(typeof v.model==="string" && typeof v.provider==="string"){const result=await this.peer!.request("set_model",{provider:v.provider,modelId:v.model});this.ctx.session.model=v.model;this.ctx.session.configuration={...this.ctx.session.configuration,nativeProvider:v.provider};return result;}
     if(typeof v.thinkingLevel==="string")return this.peer!.request("set_thinking_level",{level:v.thinkingLevel});
     if(typeof v.autoCompaction==="boolean")return this.peer!.request("set_auto_compaction",{enabled:v.autoCompaction});
     return super.configure(v);
@@ -209,7 +210,7 @@ export class PiAdapter extends Adapter {
 }
 
 export class CodexAdapter extends Adapter {
-  private threadId="";private turnId="";
+  private threadId="";private turnId="";private currentModel="";
   private compactionDone?:{resolve:(v:unknown)=>void;reject:(e:Error)=>void};
   async start() {
     const args=["app-server"];
@@ -222,7 +223,7 @@ export class CodexAdapter extends Adapter {
     const result=await this.peer.request(s.nativeSessionId?"thread/resume":"thread/start",{
       ...(s.nativeSessionId?{threadId:s.nativeSessionId}:{}),cwd:s.workspace,...(s.model?{model:s.model}:{}),...(s.authMode==="multivibe"?{modelProvider:"multivibe"}:{}),
     });
-    this.threadId=result.thread.id;this.ctx.nativeSession(this.threadId);
+    this.threadId=result.thread.id;this.currentModel=result.model??s.model??"";this.ctx.nativeSession(this.threadId);
     this.ctx.capabilities(Object.fromEntries(["sessions","history","fork","steer","interrupt","streaming","compaction","tools","skills","mcp","hooks","models","modes","plans","settings","usage","agents","images","interactions","workspace","git","terminals"].map(k=>[k,supported()])));
   }
   private async request(method:string,p:any):Promise<unknown> {
@@ -267,7 +268,7 @@ export class CodexAdapter extends Adapter {
   async prompt(parts:MessagePart[],steer=false) {
     if(steer){await this.peer!.request("turn/steer",{threadId:this.threadId,expectedTurnId:this.turnId,input:this.input(parts)});return;}
     const config=this.ctx.session.configuration??{};
-    await this.untilEnd(async()=>{const r=await this.peer!.request("turn/start",{threadId:this.threadId,input:this.input(parts),...(typeof config.model==="string"?{model:config.model}:{}),...(typeof config.effort==="string"?{effort:config.effort}:{})});this.turnId=r.turn.id;});
+    await this.untilEnd(async()=>{const r=await this.peer!.request("turn/start",{threadId:this.threadId,input:this.input(parts),...(typeof config.model==="string"?{model:config.model}:{}),...(typeof config.effort==="string"?{effort:config.effort}:{}),...(typeof config.mode==="string"?{collaborationMode:{mode:config.mode,settings:{model:this.ctx.session.model??this.currentModel,reasoning_effort:config.effort??null,developer_instructions:null}}}:{})});this.turnId=r.turn.id;});
   }
   async interrupt(){if(this.turnId)await this.peer!.request("turn/interrupt",{threadId:this.threadId,turnId:this.turnId});}
   async compact(instructions?:string){
@@ -287,6 +288,7 @@ export class CodexAdapter extends Adapter {
   async configure(v:Record<string,unknown>) {
     // turn/start accepts these settings; no global config is rewritten.
     if(Object.keys(v).some(k=>!["model","effort","mode"].includes(k)))return super.configure(v);
+    if(v.mode!==undefined && !["plan","default"].includes(String(v.mode)))fail("Unsupported Codex collaboration mode",422);
     this.ctx.session.configuration={...this.ctx.session.configuration,...v};if(typeof v.model==="string")this.ctx.session.model=v.model;
     return {effectiveFrom:"next_turn",...v};
   }
@@ -294,6 +296,7 @@ export class CodexAdapter extends Adapter {
     if(["thread/fork","thread/goal/get","thread/goal/set","thread/goal/clear","skills/config/write","config/mcpServer/reload","mcpServer/oauth/login","thread/backgroundTerminals/terminate"].includes(method))return this.peer!.request(method,{...params,threadId:this.threadId});
     return super.native(method,params);
   }
+  close(){this.compactionDone?.reject(new Error("Codex compaction connection closed"));this.compactionDone=undefined;super.close();}
 }
 
 class InputQueue {
@@ -355,7 +358,7 @@ export class ClaudeAdapter extends Adapter {
     return super.inspect(subject);
   }
   async configure(v:Record<string,unknown>) {
-    if(typeof v.model==="string"){await this.query.setModel(v.model);return {model:v.model};}
+    if(typeof v.model==="string"){await this.query.setModel(v.model);this.ctx.session.model=v.model;return {model:v.model};}
     if(typeof v.permissionMode==="string" && ["default","plan","acceptEdits"].includes(v.permissionMode)){await this.query.setPermissionMode(v.permissionMode);return {permissionMode:v.permissionMode};}
     return super.configure(v);
   }
