@@ -69,6 +69,7 @@ export type AdapterContext = {
   capabilities: (values: Partial<Record<HarnessFeature, HarnessCapability>>) => void;
   attachment: (id: string) => { info: HarnessAttachment; path: string; data: Buffer };
   ask: (kind: PendingInteraction["kind"], title: string, detail: unknown) => Promise<Record<string, unknown>>;
+  modelConnection?: {baseUrl:string;apiKey:string};
 };
 export interface HarnessAdapter {
   start(): Promise<void>;
