@@ -59,6 +59,11 @@ enum HostAssistantError: Error { case emptyReply }
         store.newConversation()
         precondition(store.selection == first && store.conversations.count == 1)
         precondition(store.current?.model == "latest-model" && store.current?.harnessID == "pi")
+        let initialReceipt = DesktopHarnessReceipt(id: "initial", sessionId: "session", command: .object(["displayText": .string("Premier message")]), state: "queued", createdAt: 1, ordinal: 1, result: nil, error: nil)
+        let followUpReceipt = DesktopHarnessReceipt(id: "follow-up", sessionId: "session", command: .object(["displayText": .string("Message suivant")]), state: "queued", createdAt: 2, ordinal: 2, result: nil, error: nil)
+        let projectedQueue = NativeChatStore.followUpQueue([initialReceipt, followUpReceipt], initialCommandID: initialReceipt.id)
+        precondition(projectedQueue.map(\.id) == [followUpReceipt.id])
+        precondition(NativeChatStore.followUpQueue([initialReceipt, followUpReceipt], initialCommandID: nil).map(\.id) == [initialReceipt.id, followUpReceipt.id])
         store.edit { $0.queuePaused = true }
         store.newConversation()
         precondition(store.selection == first && store.current?.queuePaused == false)

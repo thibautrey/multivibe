@@ -9,7 +9,7 @@ import SwiftUI
     @State private var editText = ""
     @State private var expanded = true
     private var conversation: NativeChatConversation? { store.current }
-    private var queue: [DesktopHarnessReceipt] { guard let id = conversation?.id else { return [] }; return (store.runtimeQueues[id] ?? []).filter { $0.state == "queued" } }
+    private var queue: [DesktopHarnessReceipt] { conversation.map { store.runtimeFollowUps($0.id) } ?? [] }
     private var count: Int { queue.count + (conversation?.nativeQueue?.count ?? 0) }
     private var paused: Bool { conversation?.runtimeSession?.queuePaused == true || conversation?.queuePaused == true }
     private var showsQueue: Bool { count > 0 }
