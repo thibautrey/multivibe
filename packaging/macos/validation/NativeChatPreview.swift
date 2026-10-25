@@ -37,6 +37,7 @@ import SwiftUI
                 window.titlebarAppearsTransparent = true
                 window.titlebarSeparatorStyle = .none
                 window.isMovableByWindowBackground = true
+                window.backgroundColor = .textBackgroundColor
                 window.minSize = NSSize(width: 760, height: 540)
                 window.contentView = NSHostingView(rootView: NativeChatView(store: store, agent: agent))
                 window.setContentSize(NSSize(width: 1180, height: 780))

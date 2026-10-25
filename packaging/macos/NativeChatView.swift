@@ -362,7 +362,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
             Text("MultiVibe").font(.system(size: 16, weight: .semibold))
             Spacer()
             ChatIconButton(title: "Réglages du Host", icon: "gearshape", action: openDashboard)
-        }.padding(.horizontal, 16).padding(.top, 44).padding(.bottom, 18)
+        }.padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 18)
     }
     private var sidebarEmptyState: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -591,7 +591,7 @@ private struct ComposerNewlineShortcut: NSViewRepresentable {
                     .menuStyle(.borderlessButton).fixedSize().help("Options de la conversation").accessibilityLabel("Options de la conversation")
             }
         }
-        .padding(.horizontal, 24).frame(height: 70).background(ChatPalette.canvas)
+        .padding(.horizontal, 24).frame(height: 44).background(ChatPalette.canvas)
         .animation(ChatPalette.motion(reduceMotion), value: conversationState)
     }
     private var welcome: some View {
