@@ -61,14 +61,14 @@ export function harnessRuntimeRoutes(runtime?:HostHarnessRuntime,remotes=new Rem
     } else {
       // Subscribe before replay; the cursor deduplicates overlapping records.
       const buffered:any[]=[];let replaying=true;off=runtime!.subscribe(id,event=>{if(replaying)buffered.push(event);else emit(event);});
-      for(;;){const batch=runtime!.store.events(id,cursor,500);for(const event of batch)emit(event);if(batch.length<500)break;}
+      for(;;){const batch=runtime!.store.events(id,cursor,500);for(const event of batch)emit(event);if(!batch.length || closed)break;}
       replaying=false;for(const event of buffered)emit(event);
     }
     return undefined;
   }));
   router.get("/sessions/:id/export",route(async(req,res)=>{
     const target=remote(req);if(target)return res.json(await remotes.request(target,"GET",`/sessions/${encodeURIComponent(String(req.params.id))}/export`));
-    const id=String(req.params.id),events:any[]=[];let cursor=0;for(;;){const page=runtime!.store.events(id,cursor,500);events.push(...page);if(page.length<500)break;cursor=page.at(-1)!.seq;if(events.length>50_000)fail("Export exceeds its limit",413);}
+    const id=String(req.params.id),events:any[]=[];let cursor=0,bytes=0;for(;;){const page=runtime!.store.events(id,cursor,500);if(!page.length)break;bytes+=Buffer.byteLength(JSON.stringify(page));if(bytes>24*1024*1024 || events.length+page.length>50_000)fail("Export exceeds its limit; retrieve events using cursor pages",413);events.push(...page);cursor=page.at(-1)!.seq;}
     return res.json({version:1,...runtime!.snapshot(id),interactions:runtime!.store.interactions(id).filter(v=>v.status==="pending"),events});
   }));
   router.use((error:any,_req:express.Request,res:express.Response,_next:express.NextFunction)=>{if(res.headersSent){res.end();return;}res.status(error.status??500).json({error:String(redact(error.status?error.message:"Harness runtime request failed"))});});

@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawn } from "node:child_process";
-import { JsonPeer } from "./process.js";
+import { JsonPeer, harnessEnvironment } from "./process.js";
+
+test("native model credentials are inherited only by native-auth harnesses and Host credentials stay private",()=>{
+  const keys=["ANTHROPIC_API_KEY","ADMIN_TOKEN","PROXY_API_KEY"] as const;
+  const previous=keys.map(key=>process.env[key]);
+  try{
+    for(const key of keys)process.env[key]="private-environment-fixture";
+    assert.equal(harnessEnvironment().ANTHROPIC_API_KEY,undefined);
+    assert.equal(harnessEnvironment(true).ANTHROPIC_API_KEY,"private-environment-fixture");
+    assert.equal(harnessEnvironment(true).ADMIN_TOKEN,undefined);assert.equal(harnessEnvironment(true).PROXY_API_KEY,undefined);
+  }finally{keys.forEach((key,index)=>{if(previous[index]===undefined)delete process.env[key];else process.env[key]=previous[index];});}
+});
 
 test("JSONL transport preserves Unicode split across process output chunks",async t=>{
   const child=spawn(process.execPath,["-e",String.raw`
