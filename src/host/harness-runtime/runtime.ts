@@ -39,6 +39,7 @@ export class HostHarnessRuntime {
   private answers=new Map<string,{sessionId:string;resolve:(v:Record<string,unknown>)=>void;reject:(e:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
   private privateInteractions=new Map<string,unknown>();
   private stopped=false;
+  private remoteImports=new Map<string,Promise<HarnessSession>>();
   private containerExecutables=new Map<string,{expires:number;value:string|null}>();
   private scheduler:ReturnType<typeof setInterval>;
   constructor(readonly root:string,private integrations:Integration,private factory:(ctx:AdapterContext)=>HarnessAdapter=adapterFor,private options:{modelConnection?:()=>{baseUrl:string;apiKey:string}}={}) {
@@ -128,7 +129,7 @@ export class HostHarnessRuntime {
       const now=Date.now(),session:HarnessSession={id:randomUUID(),harnessId,targetId,workspace,title:"Model catalog",authMode:"native",state:"idle",queuePaused:false,revision:0,archived:false,pinned:false,createdAt:now,updatedAt:now,capabilities:descriptor.capabilities,
         ...(connection?{model:connection.agentId}:{}),...(registration?{configuration:{acpArgs:registration.args}}:{})};
       adapter=this.factory({session,root,executable,target,modelDiscovery:true,
-        ...(connection?(harnessId==="openwebui"?{openWebUIConnection:connection}:{libreChatConnection:connection}):{}),
+        ...(connection?(harnessId==="openwebui"?{openWebUIConnection:connection,remoteChats:this.remoteChats(harnessId)}:{libreChatConnection:connection,remoteChats:this.remoteChats(harnessId)}):{}),
         emit:()=>{},nativeSession:id=>{session.nativeSessionId=id;},capabilities:values=>Object.assign(session.capabilities,values),
         attachment:()=>fail("Model discovery cannot access attachments",422),ask:async()=>fail("Authenticate in the harness before loading its models",401)});
       const instance=adapter;
@@ -175,6 +176,14 @@ export class HostHarnessRuntime {
   async connectRemoteChat(input:any){
     const remote=this.remoteChats(input.harnessId),identity=remote.identity();
     if(input.connectionId!==identity.connectionId)fail("Reconnect the original remote account",409);
+    const key=identity.connectionId+":"+requiredText(input.remoteChatId,256);
+    const pending=this.remoteImports.get(key);if(pending)return pending;
+    const operation=this.attachRemoteChat(input,remote);
+    this.remoteImports.set(key,operation);
+    try{return await operation;}finally{this.remoteImports.delete(key);}
+  }
+  private async attachRemoteChat(input:any,remote:RemoteChats){
+    const identity=remote.identity();
     const snapshot=await remote.snapshot(requiredText(input.remoteChatId,256));
     const existing=this.store.sessions().find(v=>v.harnessId===input.harnessId && v.nativeSessionId===snapshot.id && v.configuration?.connectionId===identity.connectionId);
     if(existing)return existing;
