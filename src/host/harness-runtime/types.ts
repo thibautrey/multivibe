@@ -50,6 +50,7 @@ export type HarnessCommand = {
   type: "prompt" | "steer" | "interrupt" | "resume_queue" | "pause_queue" | "queue_edit" | "queue_remove"
     | "queue_reorder" | "compact" | "respond" | "inspect" | "configure" | "fork" | "native";
   turnId?: string; parts?: MessagePart[]; value?: Record<string, unknown>;
+  displayText?: string;
 };
 export type HarnessCommandReceipt = {
   id: string; sessionId: string; command: HarnessCommand;
