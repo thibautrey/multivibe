@@ -11,6 +11,7 @@ struct NativeChatMessage: Codable, Identifiable, Equatable {
     var parts: [DesktopMessagePart]?
     var runtimeTurnID: String?
     var runtimeTextParts: [String: String]?
+    var runtimeTextOrder: [String]?
     var attachedFiles: [DesktopHarnessAttachment]?
 }
 
@@ -383,10 +384,17 @@ struct NativeChatConversation: Codable, Identifiable {
             if let index = conversations[i].messages.firstIndex(where: { $0.runtimeTurnID == turnID && $0.role == "assistant" }) {
                 let key = event.itemId ?? "assistant", text = event.payload["text"].string ?? ""
                 var parts = conversations[i].messages[index].runtimeTextParts ?? [:]
+                var order = conversations[i].messages[index].runtimeTextOrder ?? parts.keys.sorted(); if !order.contains(key) { order.append(key) }
                 parts[key] = event.type == "message.part" ? text : (parts[key] ?? "") + text
                 conversations[i].messages[index].runtimeTextParts = parts
-                conversations[i].messages[index].content = parts.keys.sorted().compactMap { parts[$0] }.joined(separator: "\n\n")
+                conversations[i].messages[index].runtimeTextOrder = order
+                conversations[i].messages[index].content = order.compactMap { parts[$0] }.joined(separator: "\n\n")
             }
+        case "history.message":
+            let role = event.payload["role"].string ?? "assistant", key = "history:" + (event.itemId ?? String(event.seq)), text = event.payload["text"].string ?? ""
+            if let index = conversations[i].messages.firstIndex(where: { $0.runtimeTurnID == key && $0.role == role }) {
+                conversations[i].messages[index].content = event.payload["append"] == .bool(true) ? conversations[i].messages[index].content + text : text
+            } else { conversations[i].messages.append(.init(role: role, content: text, runtimeTurnID: key)) }
         case "turn.completed":
             for index in conversations[i].messages.indices where conversations[i].messages[index].runtimeTurnID == turnID { conversations[i].messages[index].interrupted = false }
         case "interaction.requested":

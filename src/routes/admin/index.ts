@@ -134,6 +134,7 @@ import type { MultivibeTeamSyncService, TeamSyncManifest } from "../../team-sync
 import type { ManagedTeamEnrollmentService } from "../../managed-team-enrollment.js";
 import type { HostHarnessRuntime } from "../../host/harness-runtime/runtime.js";
 import { harnessRuntimeRoutes } from "../../host/harness-runtime/routes.js";
+import { isInstallableConversationHarness } from "../../host/conversation-harnesses.js";
 
 const MULTIVIBE_CLOUD_FLOW_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -675,7 +676,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       return res.status(404).json({ error: "Conversation harnesses are available only in MultiVibe Host" });
     }
     const id = String(req.params.id);
-    if (id !== "hermes-agent" && id !== "pi") return res.status(404).json({ error: "Unknown conversation harness" });
+    if (!isInstallableConversationHarness(id)) return res.status(404).json({ error: "Unknown conversation harness" });
     const controller = new AbortController();
     res.on("close", () => { if (!res.writableEnded) controller.abort(); });
     res.status(200);
