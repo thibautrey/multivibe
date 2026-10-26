@@ -182,3 +182,16 @@ test('large Unicode histories fit the existing Relay chunk contract without corr
  for(const chunk of chunks){assert.ok(Buffer.byteLength(chunk)<=32768);assert.equal(Buffer.from(chunk).toString('utf8'),chunk);}
  assert.deepEqual(instanceRelayChunks(''),['']);
 });
+
+
+test('imported history is authoritative even when its original CLI file no longer exists',async t=>{
+ const f=await fixture(t),session=await f.runtime.create({harnessId:'pi',model:'fixture/model'});
+ session.configuration={...session.configuration,sourceId:'missing-native-source'};f.runtime.store.save(session);
+ f.runtime.store.event(session.id,'history.message',{role:'user',text:'Imported original'},undefined,'h1');
+ f.runtime.store.event(session.id,'message.part',{role:'assistant',text:'Past response'},'past-turn','a1');
+ session.activeTurnId='current-turn';f.runtime.store.save(session);
+ f.runtime.store.event(session.id,'message.delta',{role:'assistant',text:'Current response'},'current-turn','a2');
+ const result=await f.service.conversations.history({targetId:'local',kind:'session',id:session.id,harnessId:'pi'});
+ assert.deepEqual(result.messages.map((m:any)=>[m.content,m.done]),[['Imported original',true],['Past response',true],['Current response',false]]);
+ assert.equal(f.calls(),0);
+});
