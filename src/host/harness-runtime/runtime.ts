@@ -109,7 +109,13 @@ export class HostHarnessRuntime {
   }
   projects(input:any,home=os.homedir()) {
     const harnessId=identifier(input.harnessId),targetId=identifier(input.targetId??"local"),target=this.store.target(targetId);
-    return {projects:target.kind==="local"?discoverHarnessProjects(harnessId,home):[]};
+    if(target.kind!=="local")return {projects:[]};
+    const generatedRoot=path.resolve(this.root,"workspaces");
+    const projects=discoverHarnessProjects(harnessId,home).filter(project=>{
+      const relative=path.relative(generatedRoot,path.resolve(project.path));
+      return relative!=="" && (relative.startsWith(".."+path.sep) || path.isAbsolute(relative));
+    });
+    return {projects};
   }
   async models(input:any) {
     return this.discover(input, async (adapter, session) => {

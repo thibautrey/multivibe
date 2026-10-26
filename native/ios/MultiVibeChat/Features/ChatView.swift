@@ -626,7 +626,7 @@ struct ChatView: View {
         @Bindable var manager = manager
         return VStack(alignment: .leading, spacing: 8) {
             executionSelector
-            if !isRemoteConversation && (ModelExecution(manager.selectedModel).isLocal || manager.session != nil) {
+            if !isRemoteConversation && !ModelExecution(manager.selectedModel).isLocal && manager.session != nil {
                 DisclosureGroup(isExpanded: $composerContextExpanded) {
                     VStack(alignment: .leading, spacing: 8) {
                         if ModelExecution(manager.selectedModel).isLocal {
