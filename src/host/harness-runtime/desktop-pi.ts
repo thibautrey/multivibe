@@ -10,7 +10,7 @@ export default function desktopExtension(pi:any) {
     execute:async(_id:string,args:unknown,signal?:AbortSignal)=>{
       const result=await callDesktop({socket,token},tool.name,args,signal);
       if(result.isError)throw new Error(result.content.filter(c=>c.type==="text").map(c=>c.text).join("\n"));
-      return {...result,details:{provider:"multivibe-host",isError:result.isError===true}};
+      return {...result,details:{provider:"multivibe-host",isError:false}};
     },
   });
 }
