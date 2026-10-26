@@ -378,7 +378,7 @@ test("automatic conversation catalog reads supervised sessions without starting 
   assert.equal(catalog.sessions[0].id,session.id);assert.ok(Array.isArray(catalog.nativeSessions));
   assert.ok(catalog.nativeSessions.every((v:any)=>!v.file));assert.equal(adapters.size,0);
   const container=await (await fetch(origin+"/conversation-sources?targetId=isolated-container")).json();
-  assert.deepEqual(container,{sessions:[],nativeSessions:[]});
+  assert.deepEqual(container,{sessions:[],nativeSessions:[],nextPage:null});
   assert.deepEqual(await (await fetch(origin+"/native-sessions?targetId=isolated-container&harnessId=pi")).json(),{sessions:[]});
   assert.equal((await fetch(origin+"/native-sessions/anything/messages?targetId=isolated-container&harnessId=pi")).status,422);
   assert.equal((await fetch(origin+"/sessions/import?targetId=isolated-container",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({harnessId:"pi",sourceId:"anything"})})).status,422);

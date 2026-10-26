@@ -2,7 +2,7 @@ import express from "express";
 import { randomUUID } from "node:crypto";
 import { HostHarnessRuntime, ADAPTERS } from "./runtime.js";
 import { RemoteHarnessHosts } from "./remote.js";
-import { discoverNativeSessions, readNativeSession, readNativeMessages } from "./discovery.js";
+import { discoverNativeSessions, discoverNativeSessionPage, findNativeSession, readNativeSession, readNativeMessages } from "./discovery.js";
 import { fail, redact, type HarnessTarget } from "./types.js";
 
 export function harnessRuntimeRoutes(runtime?:HostHarnessRuntime,remotes=new RemoteHarnessHosts()) {
@@ -54,12 +54,14 @@ export function harnessRuntimeRoutes(runtime?:HostHarnessRuntime,remotes=new Rem
   router.get("/sessions",route(async(req,res)=>res.json(await proxy(req,"GET","/sessions")??{sessions:runtime!.store.sessions().filter(s=>s.targetId===String(req.query.targetId??"local"))})));
   router.post("/sessions",route(async(req,res)=>{const target=remote(req);return res.status(201).json(target?await remotes.request(target,"POST","/sessions",{...req.body,targetId:"local"}):{session:await runtime!.create(req.body)});}));
   router.get("/conversation-sources",route(async(req,res)=>{
-    const forwarded=await proxy(req,"GET","/conversation-sources");if(forwarded)return res.json(forwarded);
+    const page=Number(req.query.page??0);if(!Number.isSafeInteger(page) || page<0 || page>1000)fail("Invalid native catalog page");
+    const forwarded=await proxy(req,"GET",`/conversation-sources?page=${page}`);if(forwarded)return res.json(forwarded);
     const targetId=String(req.query.targetId??"local");
     // A container without a Host bridge must never expose the Mac's native history.
-    const nativeSessions=runtime!.store.target(targetId).kind==="local"
-      ? (await runtime!.catalog(targetId)).filter(v=>v.detected && v.id in ADAPTERS).flatMap(v=>discoverNativeSessions(v.id).map(({file,...source})=>source)) : [];
-    return res.json({sessions:runtime!.store.sessions().filter(s=>s.targetId===targetId),nativeSessions});
+    const catalogs=runtime!.store.target(targetId).kind==="local"
+      ? (await runtime!.catalog(targetId)).filter(v=>v.detected && v.id in ADAPTERS).map(v=>discoverNativeSessionPage(v.id,undefined,page)) : [];
+    const nativeSessions=catalogs.flatMap(v=>v.sessions.map(({file,...source})=>source));
+    return res.json({sessions:page===0?runtime!.store.sessions().filter(s=>s.targetId===targetId):[],nativeSessions,nextPage:catalogs.some(v=>v.hasMore)?page+1:null});
   }));
   router.get("/native-sessions/:sourceId/messages",route(async(req,res)=>{
     const id=String(req.params.sourceId),harness=String(req.query.harnessId??"");
@@ -78,7 +80,7 @@ export function harnessRuntimeRoutes(runtime?:HostHarnessRuntime,remotes=new Rem
   router.post("/sessions/import",route(async(req,res)=>{
     const target=remote(req);if(target)return res.status(201).json(await remotes.request(target,"POST","/sessions/import",{...req.body,targetId:"local"}));
     if(runtime!.store.target(String(req.query.targetId??"local")).kind!=="local")fail("Native history requires a Host bridge in this environment",422);
-    const source=discoverNativeSessions(req.body.harnessId).find(v=>v.sourceId===req.body.sourceId);
+    const source=findNativeSession(req.body.harnessId,req.body.sourceId);
     if(!source || !source.canContinue)fail(source?.reason??"Native session not found or cannot be continued safely",409);
     // A retried attachment must reuse its session and must never fork twice.
     if(req.body.id){const prior=runtime!.store.sessions().find(s=>s.id===req.body.id);if(prior){if(prior.configuration?.sourceId!==source.sourceId || prior.harnessId!==source.harnessId)fail("Session belongs to another native source",409);return res.status(201).json({session:prior,strategy:"isolated_fork"});}}

@@ -10,7 +10,7 @@ import Foundation
               let url = request.url, var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { throw DesktopHarnessError.invalidResponse }
         var items = components.queryItems ?? []; items.append(URLQueryItem(name: "targetId", value: target)); components.queryItems = items
         request.url = components.url; request.timeoutInterval = 90
-        if method == "GET", route == "/targets" || route == "/conversation-sources" { request.timeoutInterval = 15 }
+        if method == "GET", route == "/targets" || route.hasPrefix("/conversation-sources") { request.timeoutInterval = 15 }
         return request
     }
     private func session() -> URLSession {

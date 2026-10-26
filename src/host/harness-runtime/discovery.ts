@@ -11,8 +11,10 @@ export const PROJECT_HARNESS_IDS=new Set(["hermes-agent","pi","openai-codex","cl
 // Cache metadata only; unchanged transcript files are not re-read on every catalog poll.
 const metadataCache=new Map<string,{mtime:number;size:number;nativeId:string;title:string;workspace?:string}>();
 /** Read native metadata only. Authentication/configuration files are never scanned. */
-export function discoverNativeSessions(harnessId:string,home=os.homedir()):NativeSessionSource[] {
+export function discoverNativeSessionPage(harnessId:string,home=os.homedir(),page=0):{sessions:NativeSessionSource[];hasMore:boolean} {
+  if(!Number.isSafeInteger(page) || page<0 || page>1000)fail("Invalid native catalog page");
   const result:NativeSessionSource[]=[];
+  let hasMore=false;
   const add=(nativeSessionId:string,title:string,workspace:string|undefined,updatedAt:number,file?:string)=>{
     if(!nativeSessionId || nativeSessionId.length>4096)return;
     const canContinue=["pi","claude-code","openai-codex","opencode"].includes(harnessId);
@@ -26,30 +28,34 @@ export function discoverNativeSessions(harnessId:string,home=os.homedir()):Nativ
         const columns=new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((r:any)=>r.name));
         const names=["id","title","cwd","directory","updated_at","started_at","time_updated"].filter(c=>columns.has(c));
         const order=["time_updated","updated_at","started_at"].find(c=>columns.has(c));
-        if(names.includes("id"))for(const row of db.prepare(`SELECT ${names.join(",")} FROM ${table}${order?` ORDER BY ${order} DESC`:""} LIMIT 500`).all()){
+        const rows=names.includes("id")?db.prepare(`SELECT ${names.join(",")} FROM ${table} ORDER BY ${order?`${order} DESC,`:""}id LIMIT 501 OFFSET ?`).all(page*500):[];
+        hasMore=rows.length>500;
+        for(const row of rows.slice(0,500)){
           const value=row.time_updated??row.updated_at??row.started_at??0;
           const updated=Number(value)||Date.parse(String(value))||0;
           add(String(row.id),row.title??row.id,row.cwd??row.directory,updated>0 && updated<1e12?updated*1000:updated);
         }
       }catch{/* A changed native schema is not interpreted as empty history proof. */}finally{db?.close();}
     }
-    return result.sort((a,b)=>b.updatedAt-a.updatedAt);
+    return {sessions:result.sort((a,b)=>b.updatedAt-a.updatedAt),hasMore};
   }
   const roots:Record<string,string>={pi:".pi/agent/sessions","openai-codex":".codex/sessions","claude-code":".claude/projects","gemini-cli":".gemini/tmp"};
-  const relative=roots[harnessId];if(!relative)return [];
+  const relative=roots[harnessId];if(!relative)return {sessions:[],hasMore:false};
   const titles=new Map<string,string>();
   if(harnessId==="openai-codex")try{
     const index=path.join(home,".codex/session_index.jsonl");
     if(fs.statSync(index).size<=8*1024*1024)for(const line of fs.readFileSync(index,"utf8").split("\n"))try{const row=JSON.parse(line);if(typeof row.id==="string" && typeof row.thread_name==="string")titles.set(row.id,row.thread_name);}catch{}
   }catch{/* Older Codex versions have no title index. */}
   let visited=0;
+  const start=page*5000,end=start+5000;
   const visit=(directory:string,depth:number)=>{
-    if(depth>6 || visited>5000)return;
+    if(depth>6 || visited>end)return;
     let entries:fs.Dirent[];try{entries=fs.readdirSync(directory,{withFileTypes:true});}catch{return;}
     // Date-based native directories must be visited newest first before applying limits.
     entries.sort((a,b)=>b.name.localeCompare(a.name));
-    for(const entry of entries){if(++visited>5000)break;if(entry.isSymbolicLink())continue;const file=path.join(directory,entry.name);
+    for(const entry of entries){if(++visited>end){hasMore=true;break;}if(entry.isSymbolicLink())continue;const file=path.join(directory,entry.name);
       if(entry.isDirectory()){visit(file,depth+1);continue;}
+      if(visited<=start)continue;
       if(!/\.(jsonl|json)$/u.test(entry.name))continue;
       let fd:number|undefined;
       try {const st=fs.statSync(file),cacheKey=harnessId+":"+file,cached=metadataCache.get(cacheKey);
@@ -68,7 +74,15 @@ export function discoverNativeSessions(harnessId:string,home=os.homedir()):Nativ
       }catch{/* Ignore incomplete or unsupported records without exposing transcript text. */}finally{if(fd!==undefined)fs.closeSync(fd);}
     }
   };
-  visit(path.join(home,relative),0);return result.sort((a,b)=>b.updatedAt-a.updatedAt);
+  visit(path.join(home,relative),0);return {sessions:result.sort((a,b)=>b.updatedAt-a.updatedAt),hasMore};
+}
+export function discoverNativeSessions(harnessId:string,home=os.homedir()):NativeSessionSource[]{return discoverNativeSessionPage(harnessId,home).sessions;}
+export function findNativeSession(harnessId:string,sourceId:string,home=os.homedir()):NativeSessionSource|undefined {
+  for(let page=0;page<=1000;page++){
+    const result=discoverNativeSessionPage(harnessId,home,page),source=result.sessions.find(v=>v.sourceId===sourceId);
+    if(source || !result.hasMore)return source;
+  }
+  fail("Native catalog exceeds its page limit",413);
 }
 
 export type NativeHistoryMessage={id:string;role:string;content:string;done:boolean};
@@ -83,7 +97,7 @@ function textContent(value:any):string {
 
 /** Reading history never creates a runtime session or starts/acquires a native process. */
 export function readNativeMessages(harnessId:string,sourceId:string,home=os.homedir()) {
-  const source=discoverNativeSessions(harnessId,home).find(s=>s.sourceId===sourceId);if(!source)fail("Native session not found",404);
+  const source=findNativeSession(harnessId,sourceId,home);if(!source)fail("Native session not found",404);
   let records:any[]=[];
   if(source.file){
     const stat=fs.lstatSync(source.file);if(!stat.isFile() || stat.size>16*1024*1024)fail("Native history exceeds 16 MiB; inspect it in its native tool",413);
@@ -145,7 +159,7 @@ export function discoverHarnessProjects(harnessId:string,home=os.homedir()):Harn
 /** Explicit read-only preview. Native processes and their session ownership are never acquired. */
 export function readNativeSession(harnessId:string,sourceId:string,home=os.homedir(),after=0) {
   if(!Number.isSafeInteger(after) || after<0)fail("Invalid native history cursor");
-  const source=discoverNativeSessions(harnessId,home).find(s=>s.sourceId===sourceId);if(!source)fail("Native session not found",404);
+  const source=findNativeSession(harnessId,sourceId,home);if(!source)fail("Native session not found",404);
   let records:unknown[]=[];let complete=true;
   if(source.file){
     const stat=fs.lstatSync(source.file);if(!stat.isFile() || stat.size>16*1024*1024)fail("Native preview exceeds 16 MiB; use the native CLI to inspect it",413);
