@@ -238,7 +238,7 @@ jobs:
               exit 1
             fi
           done
-          keychain="$HOME/Library/Keychains/multivibe-signing-${GITHUB_RUN_ID}.keychain-db"
+          keychain="$HOME/Library/Keychains/multivibe-signing-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.architecture }}.keychain-db"
           mkdir -p "$(dirname "$keychain")"
           printf 'SIGNING_KEYCHAIN=%s\n' "$keychain" >> "$GITHUB_ENV"
           keychain_password="$(openssl rand -hex 32)"
