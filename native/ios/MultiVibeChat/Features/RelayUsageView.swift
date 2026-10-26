@@ -221,7 +221,7 @@ struct RelayUsageDashboard: View {
             }
             .chartXSelection(value: $selectedDate)
             .chartXAxis {
-                if dynamicTypeSize.isAccessibility {
+                if dynamicTypeSize.isAccessibilitySize {
                     AxisMarks(values: [usage.daily.first!.timestamp, usage.daily.last!.timestamp]) { _ in
                         AxisValueLabel(format: dateFormat); AxisGridLine()
                     }
