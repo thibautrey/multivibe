@@ -7,13 +7,13 @@ import {randomUUID,randomBytes,createHash} from 'node:crypto';
 import {HostHarnessRuntime} from './harness-runtime/runtime.js';
 import {InstanceRelay,INSTANCE_RELAY_MODEL} from './instance-relay.js';
 
-async function fixture(t:any){
+async function fixture(t:any,options:{prompt?:()=>Promise<void>}={}){
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'multivibe-instance-')),account=randomUUID(),machine=randomUUID();let now=Date.now(),calls=0;
  const configurations:Record<string,unknown>[]=[],workspace=path.join(root,'project');fs.mkdirSync(workspace);
  const projectId=createHash('sha256').update('pi:'+workspace).digest('hex');
  const integration={list:async()=>[{id:'pi',detected:true,configured:true}],executablePath:async(id:string)=>id==='pi'?process.execPath:null} as any;
  const runtime=new HostHarnessRuntime(path.join(root,'runtime'),integration,ctx=>({
-  start:async()=>{},prompt:async()=>{calls++;ctx.emit({type:'message.delta',payload:{role:'assistant',text:'Verified response '+calls}});},
+  start:async()=>{},prompt:async()=>{calls++;ctx.emit({type:'message.delta',payload:{role:'assistant',text:'Verified response '+calls}});await options.prompt?.();},
   inspect:async subject=>subject==='effort'?{options:[{value:'low',label:'Low'},{value:'high',label:'High'}],defaultValue:'low'}:[{id:'fixture/model',name:'Fixture'}],interrupt:async()=>{},compact:async()=>{},configure:async value=>{configurations.push(value);},native:async()=>{},close:()=>{}
  }));
  runtime.projects=()=>({projects:[{id:projectId,harnessId:'pi',name:'Fixture project',path:workspace,updatedAt:now}]});
@@ -67,6 +67,16 @@ test('mobile turns use desktop receipts, recover without dispatch and keep other
  const second=randomUUID();const next=await f.send({...prompt,commandId:second,text:'Two turns'});assert.match(next,/Verified response 2/);assert.doesNotMatch(next,/Verified response 1/);
  await assert.rejects(f.send({...auth,deviceId:randomUUID(),operation:'recover',conversationId,commandId}),/expired or revoked/);
  assert.equal(f.urls.filter(u=>u.includes('native/v1/auth/session')).length,0);
+});
+test('mobile turn tracking remains attached beyond the former Host deadline',async t=>{
+ let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
+ const f=await fixture(t,{prompt:()=>gate}),a=await f.pair(),auth={deviceId:a.deviceId,deviceToken:a.deviceToken};
+ const pending=f.send({...auth,operation:'prompt',harnessId:'pi',model:'fixture/model',conversationId:randomUUID(),commandId:randomUUID(),text:'Long turn'});
+ for(let i=0;i<100&&f.calls()===0;i++)await new Promise(resolve=>setTimeout(resolve,5));
+ assert.equal(f.calls(),1);f.advance(250_001);
+ let settled=false;void pending.finally(()=>{settled=true;});
+ await new Promise(resolve=>setTimeout(resolve,250));assert.equal(settled,false);
+ release();assert.match(await pending,/completed/);assert.equal(f.calls(),1);
 });
 test('project and effort discovery expose bounded metadata and reject client supplied paths',async t=>{
  const f=await fixture(t),a=await f.pair(),auth={deviceId:a.deviceId,deviceToken:a.deviceToken};
