@@ -30,26 +30,23 @@ struct RealtimeVoiceView: View {
             if manager.session == nil {
                 signedOutContent
             } else {
-                GeometryReader { geometry in
-                    RealtimeVoiceCanvas(
-                        messages: messages,
-                        assistantDraft: controller.partialAssistant,
-                        userDraft: controller.partialUser,
-                        phase: controller.phase,
-                        error: controller.error,
-                        muted: controller.muted,
-                        closing: closing,
-                        audioLevel: controller.orbAudioLevel,
-                        viewportWidth: geometry.size.width,
-                        typed: $typed,
-                        reduceMotion: reduceMotion,
-                        openSettings: { settings = true },
-                        focusComposer: {},
-                        toggleMute: { controller.setMuted(!controller.muted) },
-                        submit: sendText,
-                        close: close
-                    )
-                }
+                RealtimeVoiceCanvas(
+                    messages: messages,
+                    assistantDraft: controller.partialAssistant,
+                    userDraft: controller.partialUser,
+                    phase: controller.phase,
+                    error: controller.error,
+                    muted: controller.muted,
+                    closing: closing,
+                    audioLevel: controller.orbAudioLevel,
+                    typed: $typed,
+                    reduceMotion: reduceMotion,
+                    openSettings: { settings = true },
+                    focusComposer: {},
+                    toggleMute: { controller.setMuted(!controller.muted) },
+                    submit: sendText,
+                    close: close
+                )
             }
         }
         .interactiveDismissDisabled(manager.session != nil && controller.phase != .ended)
@@ -270,7 +267,6 @@ private struct RealtimeVoiceCanvas: View {
     let muted: Bool
     let closing: Bool
     let audioLevel: Double
-    let viewportWidth: CGFloat
     @Binding var typed: String
     let reduceMotion: Bool
     let openSettings: () -> Void
@@ -283,7 +279,6 @@ private struct RealtimeVoiceCanvas: View {
     @State private var assistantSnapshot = ""
     @State private var finalizedAssistantCount = 0
     @FocusState private var composerFocused: Bool
-    @Namespace private var orbTransition
     private let latestAnchor = "voice-latest-message"
 
     var body: some View {
@@ -345,7 +340,6 @@ private struct RealtimeVoiceCanvas: View {
         VStack(spacing: 22) {
             Spacer(minLength: 24)
             VoiceOrb(phase: phase, audioLevel: audioLevel, reduceMotion: reduceMotion)
-                .matchedGeometryEffect(id: "voice-orb", in: orbTransition)
                 .frame(width: 132, height: 132)
                 .accessibilityElement(children: .ignore)
                 .accessibilityIdentifier("voiceOrb")
@@ -369,8 +363,8 @@ private struct RealtimeVoiceCanvas: View {
             if let error { errorView(error) }
             Spacer(minLength: 24)
         }
-        .frame(width: viewportWidth)
-        .frame(maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea(.container, edges: .horizontal)
     }
 
     private var transcript: some View {
@@ -405,7 +399,6 @@ private struct RealtimeVoiceCanvas: View {
     private var dockedOrb: some View {
         VStack(spacing: 7) {
             VoiceOrb(phase: phase, audioLevel: audioLevel, reduceMotion: reduceMotion)
-                .matchedGeometryEffect(id: "voice-orb", in: orbTransition)
                 .frame(width: 68, height: 68)
                 .accessibilityElement(children: .ignore)
                 .accessibilityIdentifier("voiceOrb")
@@ -418,7 +411,8 @@ private struct RealtimeVoiceCanvas: View {
                     .transition(.opacity)
             }
         }
-        .frame(width: viewportWidth, alignment: .center)
+        .frame(maxWidth: .infinity, alignment: .center)
+        .ignoresSafeArea(.container, edges: .horizontal)
         .padding(.bottom, 5)
         .allowsHitTesting(false)
     }
@@ -642,26 +636,23 @@ struct RealtimeVoiceFixtureView: View {
     private let speaking = ProcessInfo.processInfo.arguments.contains("-realtime-voice-ui-fixture-speaking")
 
     var body: some View {
-        GeometryReader { geometry in
-            RealtimeVoiceCanvas(
-                messages: hero ? [] : Self.sampleMessages,
-                assistantDraft: "",
-                userDraft: "",
-                phase: hero ? .listening : speaking ? .speaking : .thinking,
-                error: nil,
-                muted: false,
-                closing: false,
-                audioLevel: hero ? 0.78 : speaking ? 0.86 : 0.64,
-                viewportWidth: geometry.size.width,
-                typed: $typed,
-                reduceMotion: false,
-                openSettings: {},
-                focusComposer: {},
-                toggleMute: {},
-                submit: { typed = "" },
-                close: {}
-            )
-        }
+        RealtimeVoiceCanvas(
+            messages: hero ? [] : Self.sampleMessages,
+            assistantDraft: "",
+            userDraft: "",
+            phase: hero ? .listening : speaking ? .speaking : .thinking,
+            error: nil,
+            muted: false,
+            closing: false,
+            audioLevel: hero ? 0.78 : speaking ? 0.86 : 0.64,
+            typed: $typed,
+            reduceMotion: false,
+            openSettings: {},
+            focusComposer: {},
+            toggleMute: {},
+            submit: { typed = "" },
+            close: {}
+        )
     }
 
     private static let sampleMessages: [ChatMessage] = {
