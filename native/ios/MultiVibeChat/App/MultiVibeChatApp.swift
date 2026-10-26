@@ -56,6 +56,19 @@ struct ChatEntryView: View {
     var body: some View {
         @Bindable var manager = manager
         Group {
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("-realtime-voice-ui-fixture") }) {
+                RealtimeVoiceFixtureView()
+            }
+            else if manager.isRestoring {
+                VStack(spacing: 18) {
+                    Image("MultiVibeMark").resizable().scaledToFit().frame(width: 78, height: 78)
+                        .symbolEffect(.breathe, options: .repeating)
+                    ProgressView("Ouverture des conversations…")
+                }.frame(maxWidth: .infinity, maxHeight: .infinity).background(MultiVibeTheme.background)
+            }
+            else { ChatView() }
+            #else
             if manager.isRestoring {
                 VStack(spacing: 18) {
                     Image("MultiVibeMark").resizable().scaledToFit().frame(width: 78, height: 78)
@@ -64,6 +77,7 @@ struct ChatEntryView: View {
                 }.frame(maxWidth: .infinity, maxHeight: .infinity).background(MultiVibeTheme.background)
             }
             else { ChatView() }
+            #endif
         }
         .sheet(isPresented: $manager.authenticationPresented) {
             AuthenticationView().presentationDragIndicator(.visible)

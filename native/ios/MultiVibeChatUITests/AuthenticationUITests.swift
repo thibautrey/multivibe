@@ -368,3 +368,48 @@ final class LocalInternetUITests: XCTestCase {
         capture.name = "local-model-marketplace"; capture.lifetime = .keepAlways; add(capture)
     }
 }
+
+@MainActor final class RealtimeVoiceUITests: XCTestCase {
+    private func launch(_ fixture: String) -> XCUIApplication {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = [fixture, "-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR"]
+        app.launch()
+        XCTAssertTrue(app.descendants(matching: .any)["voiceComposer"].waitForExistence(timeout: 15))
+        return app
+    }
+
+    func testListeningStartsWithLargeOrbAndCompactControls() {
+        let app = launch("-realtime-voice-ui-fixture-hero")
+        let orb = app.descendants(matching: .any)["voiceOrb"].firstMatch
+        XCTAssertTrue(orb.waitForExistence(timeout: 5))
+        XCTAssertGreaterThan(orb.frame.width, 110)
+        XCTAssertTrue(app.staticTexts["Je vous écoute"].exists)
+        XCTAssertTrue(app.buttons["voiceSettings"].exists)
+        XCTAssertTrue(app.buttons["voiceMute"].exists)
+        XCTAssertTrue(app.buttons["voiceEnd"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["voiceTranscript"].exists)
+
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "realtime-voice-listening"
+        capture.lifetime = .keepAlways
+        add(capture)
+    }
+
+    func testRichAnswerKeepsVoiceActiveInTranscript() {
+        let app = launch("-realtime-voice-ui-fixture-results")
+        let transcript = app.descendants(matching: .any)["voiceTranscript"]
+        XCTAssertTrue(transcript.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Restaurants ouverts demain")).firstMatch.exists)
+        XCTAssertTrue(app.staticTexts["Réflexion…"].exists)
+        let orb = app.descendants(matching: .any)["voiceOrb"].firstMatch
+        XCTAssertTrue(orb.exists)
+        XCTAssertLessThan(orb.frame.width, 90)
+        XCTAssertTrue(app.buttons["voiceEnd"].isEnabled)
+
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "realtime-voice-rich-answer"
+        capture.lifetime = .keepAlways
+        add(capture)
+    }
+}
