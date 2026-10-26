@@ -45,6 +45,12 @@ struct ChatView: View {
     @State private var voiceConversationPresented = false
     @State private var voiceConversationPreparing = false
     @State private var composerContextExpanded = false
+    @State private var instances = RemoteInstances.shared
+    @State private var remoteConversationToDelete: RemoteChat?
+    @State private var remoteConfigurationError: String?
+    @State private var remoteInstancesPresented = false
+    @State private var remoteModelPickerPresented = false
+    @State private var remoteProjectPickerPresented = false
     @FocusState private var composerFocused: Bool
     private let latestMessageAnchor = "latest-message"
 
@@ -118,6 +124,7 @@ struct ChatView: View {
                 Section("Récents") {
                     ForEach(manager.historyConversations.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }) { conversation in
                         Button {
+                            instances.select(nil)
                             manager.selection = conversation.id
                             preferredColumn = .detail
                         } label: {
@@ -132,11 +139,33 @@ struct ChatView: View {
                         .buttonStyle(.plain)
                         .listRowBackground(
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .fill(conversation.id == manager.selection ? Color(uiColor: .secondarySystemBackground) : .clear)
+                                .fill(conversation.id == manager.selection && instances.selection == nil ? Color(uiColor: .secondarySystemBackground) : .clear)
                         )
-                        .accessibilityAddTraits(conversation.id == manager.selection ? .isSelected : [])
+                        .accessibilityAddTraits(conversation.id == manager.selection && instances.selection == nil ? .isSelected : [])
                         .swipeActions(allowsFullSwipe: false) {
                             Button("Supprimer", role: .destructive) { conversationToDelete = conversation }
+                        }
+                    }
+                }
+                if instances.chats.contains(where: { !$0.messages.isEmpty }) {
+                    Section("Instances") {
+                        ForEach(instances.chats.filter { !$0.messages.isEmpty && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search)) }.reversed()) { conversation in
+                            Button {
+                                manager.stop(); instances.select(conversation.id); preferredColumn = .detail
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(conversation.title).font(.body).foregroundStyle(.primary).lineLimit(1)
+                                    Text((instances.machines.first { $0.id == conversation.machine }?.name ?? "Instance") + " · " + conversation.harness)
+                                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .listRowBackground(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(conversation.id == instances.selection ? Color(uiColor: .secondarySystemBackground) : .clear))
+                            .accessibilityAddTraits(conversation.id == instances.selection ? .isSelected : [])
+                            .swipeActions(allowsFullSwipe: false) {
+                                Button("Supprimer", role: .destructive) { remoteConversationToDelete = conversation }
+                            }
                         }
                     }
                 }
@@ -206,7 +235,7 @@ struct ChatView: View {
                     ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 20) {
-                            ForEach(manager.current?.messages ?? []) { message in
+                            ForEach(displayMessages) { message in
                                 VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 8) {
                                     if message.role == "user" {
                                         Text(message.content).textSelection(.enabled)
@@ -251,10 +280,10 @@ struct ChatView: View {
                                                     Button("Sélectionner le texte", systemImage: "selection.pin.in.out") {
                                                         selectionContent = SelectableMessage(id: message.id, text: message.content)
                                                     }
-                                                    if message.canRetry && manager.current?.messages.last?.id == message.id {
+                                                    if !isRemoteConversation && message.canRetry && manager.current?.messages.last?.id == message.id {
                                                         Button("Réessayer", systemImage: "arrow.clockwise") {
                                                             if let conversation = manager.selection { retryTarget = RetryTarget(conversation: conversation, message: message.id) }
-                                                        }.disabled(manager.isStreaming)
+                                                        }.disabled(isGenerating)
                                                     }
                                                 }
                                             }
@@ -274,7 +303,7 @@ struct ChatView: View {
                             }
                             Color.clear.frame(height: 1).id(latestMessageAnchor)
                         }.padding(.horizontal, 14).padding(.vertical, 18)
-                            .animation(reduceMotion ? nil : .spring(duration: 0.38, bounce: 0.12), value: manager.current?.messages.count)
+                            .animation(reduceMotion ? nil : .spring(duration: 0.38, bounce: 0.12), value: displayMessages.count)
                     }
                     .defaultScrollAnchor(.bottom)
                     .onScrollPhaseChange { _, phase in
@@ -290,9 +319,10 @@ struct ChatView: View {
                         if followsLatest && !userScrolling { proxy.scrollTo(latestMessageAnchor, anchor: .bottom) }
                         playStreamingHaptic()
                     }
-                    .onChange(of: manager.current?.messages.count) { _, _ in
+                    .onChange(of: displayMessages.count) { _, _ in
                         scrollToLatest(proxy)
                     }
+                    .onChange(of: displayMessages.last?.content) { _, _ in scrollToLatest(proxy) }
                     .onChange(of: manager.selection) { _, _ in
                         followsLatest = true
                         proxy.scrollTo(latestMessageAnchor, anchor: .bottom)
@@ -309,7 +339,7 @@ struct ChatView: View {
                     // The first send replaces the welcome view. Its onChange can fire before this
                     // ScrollView has a laid-out anchor, leaving a restored offset
                     // outside the content until navigation recreates the view.
-                    .task(id: manager.current?.messages.count) {
+                    .task(id: displayMessages.count) {
                         await Task.yield()
                         scrollToLatest(proxy)
                     }
@@ -318,8 +348,8 @@ struct ChatView: View {
                 if voice.speaking {
                     Button("Arrêter la lecture", systemImage: "stop.circle") { voice.silence() }.padding(.horizontal)
                 }
-                if let error = manager.error { Text(error).font(.callout).foregroundStyle(.red).padding() }
-                if let error = manager.modelsError, !ModelExecution(manager.selectedModel).isLocal {
+                if let error = isRemoteConversation ? (remoteConfigurationError ?? instances.error) : manager.error { Text(error).font(.callout).foregroundStyle(.red).padding() }
+                if !isRemoteConversation, let error = manager.modelsError, !ModelExecution(manager.selectedModel).isLocal {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(error).font(.callout)
                         Button("Réessayer le chargement des modèles", systemImage: "arrow.clockwise") {
@@ -327,7 +357,7 @@ struct ChatView: View {
                         }.disabled(manager.isLoadingModels || manager.isStreaming)
                     }.padding(.horizontal)
                 }
-                if manager.isLoadingModels && !ModelExecution(manager.selectedModel).isLocal { ProgressView("Chargement des modèles…").padding(.horizontal) }
+                if !isRemoteConversation && manager.isLoadingModels && !ModelExecution(manager.selectedModel).isLocal { ProgressView("Chargement des modèles…").padding(.horizontal) }
             }
             .background(Color(uiColor: .systemBackground).ignoresSafeArea())
             .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -363,7 +393,7 @@ struct ChatView: View {
 
         }
         .overlay {
-            if manager.isStreaming {
+            if isGenerating {
                 AgentThinkingGlow()
                     .transition(.opacity.animation(reduceMotion ? nil : .easeOut(duration: 0.45)))
             }
@@ -397,6 +427,14 @@ struct ChatView: View {
             Button("Annuler", role: .cancel) { conversationToDelete = nil }
         } message: { conversation in
             Text("« \(conversation.title) » sera supprimée de cet appareil. Cette action est irréversible.")
+        }
+        .alert("Supprimer cette conversation distante ?", isPresented: Binding(
+            get: { remoteConversationToDelete != nil }, set: { if !$0 { remoteConversationToDelete = nil } }
+        ), presenting: remoteConversationToDelete) { conversation in
+            Button("Supprimer", role: .destructive) { try? instances.delete(conversation.id); remoteConversationToDelete = nil }
+            Button("Annuler", role: .cancel) { remoteConversationToDelete = nil }
+        } message: { conversation in
+            Text("« \(conversation.title) » sera supprimée de cet iPhone. La session reste dans le journal local du Mac.")
         }
         .confirmationDialog("Remplacer cette réponse ?", isPresented: Binding(
             get: { retryTarget != nil }, set: { if !$0 { retryTarget = nil } }
@@ -456,6 +494,9 @@ struct ChatView: View {
             .presentationDragIndicator(.hidden)
             .presentationCornerRadius(44)
         }
+        .sheet(isPresented: $remoteInstancesPresented) { RemoteInstancesView().environment(manager) }
+        .sheet(isPresented: $remoteModelPickerPresented) { if let chat = remoteChat { RemoteHarnessModelPicker(chatID: chat.id) } }
+        .sheet(isPresented: $remoteProjectPickerPresented) { if let chat = remoteChat { RemoteHarnessProjectPicker(chatID: chat.id) } }
         .sheet(isPresented: $suggestionsPresented) {
             SuggestionsEditor(suggestions: $suggestions, highlighted: highlightedSuggestion) {
                 HomeSuggestionStore.save(suggestions)
@@ -465,8 +506,12 @@ struct ChatView: View {
         .onChange(of: manager.selection) { _, selection in
             if shortcutDraftConversation != selection { text = "" }
             if selection != nil {
+                instances.select(nil)
                 preferredColumn = .detail
             }
+        }
+        .onChange(of: instances.selection) { _, selection in
+            if selection != nil { text = ""; voice.silence(); profilePresented = false; preferredColumn = .detail }
         }
         .onChange(of: voice.transcript) { _, value in text = value }
         .onChange(of: manager.wantsNewConversation) { _, _ in consumeIntent() }
@@ -475,6 +520,16 @@ struct ChatView: View {
             if phase != .active { voice.silence(); if phase == .background && ModelExecution(manager.selectedModel).isLocal { manager.stop() } } else { manager.foreground(); consumeIntent() }
         }
         .onAppear { consumeIntent() }
+        .task(id: manager.session?.accountId) {
+            instances.activate(manager.session?.accountId); await instances.reload()
+            for machine in instances.machines where instances.paired.contains(machine.id) && machine.online { try? await instances.catalog(machine.id) }
+        }
+        .task(id: instances.selection) {
+            guard let chat = remoteChat else { return }
+            do { try await instances.prepare(chat.machine, harness: chat.harness) }
+            catch is CancellationError { }
+            catch { remoteConfigurationError = "Configuration distante indisponible. Actualisez les modèles ou vérifiez la connexion au Mac." }
+        }
         .onChange(of: manager.nativeShortcut) { _, _ in consumeIntent() }
         .onChange(of: manager.isRestoring) { _, _ in consumeIntent() }
         .onChange(of: manager.wantsVoice) { _, _ in consumeIntent() }
@@ -484,6 +539,7 @@ struct ChatView: View {
     }
 
     private func playStreamingHaptic() {
+        guard !isRemoteConversation else { return }
         guard let message = manager.current?.messages.last, message.role == "assistant",
               message.completion == .streaming else { return }
         if hapticMessage != message.id {
@@ -511,6 +567,13 @@ struct ChatView: View {
         UIPasteboard.general.setItems([["public.utf8-plain-text": content]], options: [.localOnly: true])
         UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
+    private var remoteChat: RemoteChat? { instances.current }
+    private var isRemoteConversation: Bool { remoteChat != nil }
+    private var displayMessages: [ChatMessage] { remoteChat?.messages ?? manager.current?.messages ?? [] }
+    private var isGenerating: Bool { if let id = remoteChat?.id { return instances.activeChat == id }; return manager.isStreaming }
+    private var remoteMachine: RemoteMachine? { remoteChat.flatMap { chat in instances.machines.first { $0.id == chat.machine } } }
+    private var remoteHarnessName: String { remoteChat.flatMap { chat in instances.harnesses[chat.machine]?.first { $0.id == chat.harness }?.name } ?? remoteChat?.harness ?? "Harness" }
+    private var localExecutionName: String { ModelExecution(manager.selectedModel).isLocal ? "Sur cet iPhone" : "Hermes Cloud" }
     private var welcome: some View {
         ChatWelcomeView(suggestions: suggestions, execute: executeSuggestion, edit: { suggestion in
             highlightedSuggestion = suggestion.id
@@ -518,7 +581,7 @@ struct ChatView: View {
         })
     }
 
-    private var isNewConversation: Bool { manager.current?.messages.isEmpty != false }
+    private var isNewConversation: Bool { displayMessages.isEmpty }
 
     private var modalIsActive: Bool {
         manager.authenticationPresented || manager.internetApproval != nil || manager.memoryPresented || manager.memoryDraft != nil ||
@@ -533,14 +596,19 @@ struct ChatView: View {
             }
             prompt += prompt.isEmpty ? clipboard : ": " + clipboard
         } else if suggestion.behavior == .prepare { prompt += prompt.isEmpty ? "" : " " }
-        if suggestion.behavior == .send, manager.send(prompt) {
-            text = ""
-            dismissKeyboardAfterSend()
-        } else { text = prompt }
+        if suggestion.behavior == .send {
+            if let chat = remoteChat, instances.send(prompt, chat: chat.id) {
+                text = ""; dismissKeyboardAfterSend(); return
+            }
+            if remoteChat == nil, manager.send(prompt) { text = ""; dismissKeyboardAfterSend(); return }
+        }
+        text = prompt
     }
 
     private func sendComposerMessage() {
-        guard manager.send(text) else { return }
+        if let chat = remoteChat {
+            guard instances.send(text, chat: chat.id) else { return }
+        } else { guard manager.send(text) else { return } }
         text = ""
         dismissKeyboardAfterSend()
     }
@@ -557,7 +625,8 @@ struct ChatView: View {
     private var composer: some View {
         @Bindable var manager = manager
         return VStack(alignment: .leading, spacing: 8) {
-            if ModelExecution(manager.selectedModel).isLocal || manager.session != nil {
+            executionSelector
+            if !isRemoteConversation && (ModelExecution(manager.selectedModel).isLocal || manager.session != nil) {
                 DisclosureGroup(isExpanded: $composerContextExpanded) {
                     VStack(alignment: .leading, spacing: 8) {
                         if ModelExecution(manager.selectedModel).isLocal {
@@ -591,19 +660,20 @@ struct ChatView: View {
                 .padding(.horizontal, 12)
                 .accessibilityIdentifier("cloudHermesStatus")
             }
-            if let error = voice.error {
+            if isRemoteConversation { remoteConfigurationControls }
+            if !isRemoteConversation, let error = voice.error {
                 Text(error).font(.callout).foregroundStyle(.red)
                     .lineLimit(3).accessibilityIdentifier("dictationError")
-            } else if voice.recording {
+            } else if !isRemoteConversation && voice.recording {
                 Label("Écoute…", systemImage: "mic.fill")
                     .font(.callout).foregroundStyle(.red)
                     .accessibilityIdentifier("dictationListening")
-            } else if voice.starting {
+            } else if !isRemoteConversation && voice.starting {
                 Label("Démarrage de la dictée…", systemImage: "mic")
                     .font(.callout).foregroundStyle(.secondary)
                     .accessibilityIdentifier("dictationStarting")
             }
-            if let access = manager.selectedAccess {
+            if !isRemoteConversation, let access = manager.selectedAccess {
                 Button {
                     Task { await manager.chooseModel(manager.models.first { $0.id == access.modelId } ?? ModelOption(id: access.modelId), force: true) }
                 } label: {
@@ -625,28 +695,36 @@ struct ChatView: View {
                     .padding(.top, 12)
                     .padding(.bottom, 6)
                 HStack(spacing: 8) {
-                    Menu("Ajouter", systemImage: "plus") {
-                        Button("Documents et outils", systemImage: "folder") { documentsPresented = true }
-                        Button("Mémoire", systemImage: "brain") { manager.memoryPresented = true }
-                        Button("Confidentialité et données", systemImage: "hand.raised") { privacyPresented = true }
-                    }
-                    .labelStyle(.iconOnly)
-                    .font(.title2.weight(.regular))
-                    .frame(width: 40, height: 40)
-                    ModelPickerButton(models: manager.models, selectedModel: $manager.selectedModel,
-                                      isLoading: manager.isLoadingModels, isDisabled: manager.isStreaming) {
-                        await manager.reloadModels()
+                    if isRemoteConversation {
+                        Image(systemName: "desktopcomputer").font(.title3).foregroundStyle(.secondary).frame(width: 40, height: 40)
+                    } else {
+                        Menu("Ajouter", systemImage: "plus") {
+                            Button("Documents et outils", systemImage: "folder") { documentsPresented = true }
+                            Button("Mémoire", systemImage: "brain") { manager.memoryPresented = true }
+                            Button("Confidentialité et données", systemImage: "hand.raised") { privacyPresented = true }
+                        }
+                        .labelStyle(.iconOnly)
+                        .font(.title2.weight(.regular))
+                        .frame(width: 40, height: 40)
+                        ModelPickerButton(models: manager.models, selectedModel: $manager.selectedModel,
+                                          isLoading: manager.isLoadingModels, isDisabled: manager.isStreaming) {
+                            await manager.reloadModels()
+                        }
                     }
                     Spacer(minLength: 0)
-                    if manager.isStreaming {
-                        composerCircleButton("Arrêter", systemImage: "stop.fill", foreground: .white, background: .primary, size: 36) { manager.stop() }
+                    if isGenerating {
+                        composerCircleButton("Arrêter", systemImage: "stop.fill", foreground: .white, background: .primary, size: 36) {
+                            if let chat = remoteChat {
+                                Task { do { try await instances.interrupt(chat.id) } catch { remoteConfigurationError = "L’arrêt n’a pas été confirmé. Reprenez le suivi pour vérifier l’exécution." } }
+                            } else { manager.stop() }
+                        }
                     } else if voice.recording {
                         composerCircleButton("Terminer la dictée", systemImage: "stop.fill", foreground: .white, background: .red, size: 36) { voice.stop() }
                             .accessibilityIdentifier("stopDictation")
                     } else if voice.starting {
                         ProgressView().frame(width: 36, height: 36)
                             .accessibilityLabel("Démarrage de la dictée")
-                    } else if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    } else if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isRemoteConversation {
                         Button("Dicter sur cet appareil", systemImage: "mic") { startVoiceInput() }
                             .accessibilityIdentifier("startDictation")
                             .font(.title3.weight(.medium)).frame(width: 36, height: 36)
@@ -654,7 +732,8 @@ struct ChatView: View {
                             .accessibilityIdentifier("startVoiceConversation")
                     } else {
                         composerCircleButton("Envoyer", systemImage: "arrow.up", foreground: .white, background: MultiVibeTheme.accent, size: 36) { sendComposerMessage() }
-                            .disabled(manager.selectedModel.isEmpty || (manager.isSynchronizing && !ModelExecution(manager.selectedModel).isLocal))
+                            .disabled(isRemoteConversation ? (text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || remoteChat?.model.isEmpty != false || remoteChat?.command != nil || remoteChat?.pendingConfiguration != nil || instances.busy) :
+                                (manager.selectedModel.isEmpty || (manager.isSynchronizing && !ModelExecution(manager.selectedModel).isLocal)))
                     }
                 }
             }
@@ -672,6 +751,105 @@ struct ChatView: View {
         .frame(maxWidth: .infinity)
     }
 
+    private var executionSelector: some View {
+        Menu {
+            Button { selectLocalExecution() } label: {
+                Label("Cet iPhone", systemImage: instances.selection == nil && ModelExecution(manager.selectedModel).isLocal ? "checkmark" : "iphone")
+            }
+            Button { selectLocalExecution(cloud: true) } label: {
+                Label("Hermes Cloud", systemImage: instances.selection == nil && !ModelExecution(manager.selectedModel).isLocal ? "checkmark" : "cloud")
+            }
+            ForEach(instances.machines.filter { instances.paired.contains($0.id) }) { machine in
+                Menu(machine.name) {
+                    let available = instances.harnesses[machine.id]?.filter { $0.available } ?? []
+                    if available.isEmpty {
+                        Button("Charger les harness…") { Task { try? await instances.catalog(machine.id) } }
+                    } else {
+                        ForEach(available) { harness in
+                            Button {
+                                selectRemoteExecution(machine: machine, harness: harness)
+                            } label: {
+                                Label(harness.name, systemImage: remoteChat?.machine == machine.id && remoteChat?.harness == harness.id ? "checkmark" : "cpu")
+                            }.disabled(!machine.online || instances.busy)
+                        }
+                    }
+                }
+            }
+            Divider()
+            Button("Actualiser les instances", systemImage: "arrow.clockwise") { Task { await instances.reload() } }
+            Button("Gérer les instances…", systemImage: "desktopcomputer.and.iphone") { remoteInstancesPresented = true }
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: isRemoteConversation ? "desktopcomputer" : (ModelExecution(manager.selectedModel).isLocal ? "iphone" : "cloud"))
+                Text(isRemoteConversation ? (remoteMachine?.name ?? "Instance") + " · " + remoteHarnessName : localExecutionName)
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down").font(.system(size: 8, weight: .semibold))
+            }
+            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            .padding(.horizontal, 12).frame(minHeight: 30)
+        }
+        .accessibilityLabel("Lieu d’exécution et harness")
+        .accessibilityIdentifier("executionPicker")
+        .accessibilityValue(isRemoteConversation ? (remoteMachine?.name ?? "Instance") + ", " + (remoteChat?.harness ?? "") : localExecutionName)
+    }
+
+    @ViewBuilder private var remoteConfigurationControls: some View {
+        if let chat = remoteChat {
+            let key = chat.machine + ":" + chat.harness
+            let effortKey = key + ":" + chat.model
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    Button {
+                        remoteConfigurationError = nil; remoteModelPickerPresented = true
+                    } label: {
+                        Label((instances.modelCatalog[key] ?? []).first(where: { $0.id == chat.model && $0.provider == chat.provider })?.displayName ?? (chat.model.isEmpty ? "Modèle" : chat.model), systemImage: "cpu")
+                            .lineLimit(1)
+                    }
+                    .disabled(chat.command != nil || chat.pendingConfiguration != nil || isGenerating || instances.busy)
+                    .accessibilityIdentifier("integratedRemoteModelPicker")
+
+                    if let effort = instances.effortCatalog[effortKey], !effort.options.isEmpty {
+                        Menu {
+                            ForEach(effort.options) { option in
+                                Button {
+                                    Task { do { remoteConfigurationError = nil; try await instances.chooseEffort(option.value, machine: chat.machine) }
+                                        catch { remoteConfigurationError = "Le changement d’effort n’a pas été confirmé." } }
+                                } label: { Label(option.label, systemImage: option.value == chat.effort ? "checkmark" : "gauge.with.dots.needle.33percent") }
+                            }
+                            if effort.defaultValue != nil { Button("Valeur par défaut") { Task { try? await instances.chooseEffort(effort.defaultValue, machine: chat.machine) } } }
+                        } label: {
+                            Label(effort.options.first(where: { $0.value == chat.effort })?.label ?? "Effort", systemImage: "gauge.with.dots.needle.33percent")
+                        }
+                        .disabled(chat.command != nil || chat.pendingConfiguration != nil || isGenerating || instances.busy)
+                        .accessibilityIdentifier("integratedRemoteEffortPicker")
+                    }
+
+                    Button { remoteProjectPickerPresented = true } label: {
+                        Label(chat.projectName ?? "Aucun projet", systemImage: chat.projectId == nil ? "folder" : "folder.fill")
+                    }
+                    .disabled(!chat.messages.isEmpty || isGenerating || instances.busy)
+                    .accessibilityIdentifier("integratedRemoteProjectPicker")
+                    if instances.busy { ProgressView().controlSize(.small) }
+                }
+                .font(.caption.weight(.medium)).buttonStyle(.bordered).controlSize(.small)
+                .padding(.horizontal, 12)
+            }
+            Text(instances.transportLabel + " · Les réglages sont attachés à cette conversation")
+                .font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 12)
+            if chat.pendingConfiguration != nil {
+                Button("Vérifier le changement de configuration", systemImage: "arrow.clockwise") {
+                    Task { do { try await instances.configure(chat.id); remoteConfigurationError = nil } catch { remoteConfigurationError = "La configuration reste à vérifier sur cette instance." } }
+                }.font(.caption).padding(.horizontal, 12).disabled(instances.busy)
+            }
+            if chat.command != nil && !isGenerating {
+                HStack {
+                    Button("Reprendre le suivi", systemImage: "arrow.clockwise") { instances.send("", chat: chat.id, recover: true) }
+                    Button("Arrêter", systemImage: "stop.fill") { Task { try? await instances.interrupt(chat.id) } }
+                }.font(.caption).padding(.horizontal, 12).disabled(instances.busy)
+            }
+        }
+    }
+
     private func composerCircleButton(_ title: String, systemImage: String, foreground: Color,
                                       background: Color, size: CGFloat = 44,
                                       action: @escaping () -> Void) -> some View {
@@ -683,7 +861,32 @@ struct ChatView: View {
     }
 
     private func openNewConversation() {
-        manager.newConversation()
+        if let chat = remoteChat { do { _ = try instances.newChat(chat.machine, harness: chat.harness) } catch { remoteConfigurationError = error.localizedDescription } }
+        else { manager.newConversation() }
+        preferredColumn = .detail
+    }
+    private func selectLocalExecution(cloud: Bool = false) {
+        instances.select(nil)
+        remoteConfigurationError = nil
+        if cloud && manager.session == nil { manager.authenticationPresented = true; return }
+        if ModelExecution(manager.selectedModel).isLocal == cloud {
+            if let conversation = manager.historyConversations.first(where: { ModelExecution($0.model).isLocal != cloud }) {
+                manager.selection = conversation.id
+            } else {
+                manager.newConversation()
+                if let model = manager.models.first(where: { ModelExecution($0.id).isLocal != cloud }) {
+                    Task { await manager.chooseModel(model) }
+                }
+            }
+        }
+        if manager.selection == nil { manager.newConversation() }
+        preferredColumn = .detail
+    }
+    private func selectRemoteExecution(machine: RemoteMachine, harness: RemoteHarness) {
+        guard harness.available, instances.paired.contains(machine.id) else { return }
+        manager.stop(); voice.silence(); remoteConfigurationError = nil
+        do { _ = try instances.newChat(machine.id, harness: harness.id) }
+        catch { remoteConfigurationError = error.localizedDescription; return }
         preferredColumn = .detail
     }
 

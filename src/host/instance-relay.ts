@@ -17,7 +17,7 @@ const equal=(a:string,b:string)=>a.length===b.length&&timingSafeEqual(Buffer.fro
 const uuid=(v:unknown):v is string=>typeof v==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 type Device={id:string;name:string;digest:string;expiresAt:number;previous?:{digest:string;expiresAt:number}};
 type State={version:1;machineId:string;name:string;machineToken:string;devices:Device[]};
-type Envelope={version:1;accountId:string;machineId:string;operation:string;deviceId?:string;deviceToken?:string;handoff?:string;name?:string;harnessId?:string;model?:string;provider?:string;conversationId?:string;commandId?:string;text?:string;after?:number};
+type Envelope={version:1;accountId:string;machineId:string;operation:string;deviceId?:string;deviceToken?:string;handoff?:string;name?:string;harnessId?:string;model?:string;provider?:string;effort?:string|null;projectId?:string;conversationId?:string;commandId?:string;text?:string;after?:number};
 type Upload=(data:string,terminal?:boolean,status?:number,contentType?:string)=>Promise<void>;
 
 export class InstanceRelay {
@@ -118,10 +118,40 @@ export class InstanceRelay {
   if(e.operation==='revoke'){this.revokeDevice(device.id);await json({revoked:true});return;}
   if(e.operation==='catalog'){await json({name:this.state!.name,harnesses:await this.runtime.catalog()});return;}
   if(e.operation==='models'){await json(await this.runtime.models({harnessId:identifier(e.harnessId),targetId:'local',authMode:'native'}));return;}
-  if(e.operation!=='prompt'&&e.operation!=='recover')fail('Unsupported instance operation');
+  if(e.operation==='effort'){
+   const sessionId=uuid(e.conversationId)?'mobile-'+hash([this.state!.machineId,device.id,e.conversationId].join(':')).slice(0,40):undefined;
+   await json(await this.runtime.effort({harnessId:identifier(e.harnessId),targetId:'local',authMode:'native',model:requiredText(e.model,256),...(e.provider?{provider:requiredText(e.provider,256)}:{}),...(sessionId?{sessionId}:{})}));return;
+  }
+  if(e.operation==='projects'){
+   const projects=this.runtime.projects({harnessId:identifier(e.harnessId),targetId:'local'}).projects;
+   await json({projects:projects.map(({id,harnessId,name,updatedAt})=>({id,harnessId,name,updatedAt}))});return;
+  }
+  if(!['prompt','recover','configure','interrupt'].includes(e.operation))fail('Unsupported instance operation');
   if(!uuid(e.conversationId)||!uuid(e.commandId))fail('Invalid conversation operation');
   const sessionId='mobile-'+hash([this.state!.machineId,device.id,e.conversationId].join(':')).slice(0,40);
-  if(e.operation==='prompt')await this.runtime.create({id:sessionId,harnessId:identifier(e.harnessId),targetId:'local',authMode:'native',model:requiredText(e.model,256),...(e.provider?{nativeProvider:requiredText(e.provider,256)}:{}),title:'iPhone · '+device.name});
+  if(e.operation==='configure'||e.operation==='interrupt'){
+   const value:Record<string,unknown>={};
+   if(e.operation==='configure'){
+    if(e.projectId!==undefined)fail("A conversation's project is fixed",409);
+    if(e.model!==undefined)value.model=requiredText(e.model,256);
+    if(e.provider!==undefined)value.provider=requiredText(e.provider,256);
+    if(e.effort!==undefined)value.effort=e.effort===null?null:requiredText(e.effort,64);
+    if(!Object.keys(value).length)fail('Select a model or effort');
+   }
+   const receipt=await this.runtime.command(sessionId,{id:e.commandId,type:e.operation,...(e.operation==='configure'?{value}:{})});
+   // The command receipt, including its fingerprint, remains on the owning Host.
+   // Retrying the same ID recovers an acknowledgement without executing twice.
+   await json({state:receipt.state});return;
+  }
+  if(e.operation==='prompt'){
+   const harnessId=identifier(e.harnessId);let workspace:string|undefined;
+   if(e.projectId!==undefined){
+    if(!/^[a-f0-9]{64}$/u.test(e.projectId))fail('Invalid project selection');
+    const project=this.runtime.projects({harnessId,targetId:'local'}).projects.find(value=>value.id===e.projectId);
+    if(!project)fail('The selected project is unavailable on this Host',409);workspace=project.path;
+   }
+   await this.runtime.create({id:sessionId,harnessId,targetId:'local',authMode:'native',model:requiredText(e.model,256),...(e.provider?{nativeProvider:requiredText(e.provider,256)}:{}),...(e.effort?{effort:requiredText(e.effort,64)}:{}),...(workspace?{workspace}:{}),title:'iPhone · '+device.name});
+  }
   const emit=async(event:HarnessEvent)=>{
    // Credentials, auth URLs, paths and arbitrary tool records never enter the
    // mobile transcript. The complete journal remains on the owning Host.
@@ -131,6 +161,8 @@ export class InstanceRelay {
   let cursor=Number.isSafeInteger(e.after)&&e.after!>=0?e.after!:0;
   if(e.operation==='prompt'){
    // Repeated IDs use the desktop runtime's receipt/fingerprint protection.
+   const session=this.runtime.snapshot(sessionId).session;
+   if(session.queuePaused&&session.state==='interrupted')await this.runtime.command(sessionId,{id:e.commandId!+'-resume',type:'resume_queue'});
    await this.runtime.command(sessionId,{id:e.commandId!,type:'prompt',parts:[{type:'text',text:requiredText(e.text,32000)}]});
   }
   const deadline=this.clock()+250_000;

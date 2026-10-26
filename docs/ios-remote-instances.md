@@ -7,6 +7,21 @@ Host's existing Cloud account authentication and `/relay/v1/machines`. The
 machine credential remains in the Host's private data directory. It is never
 returned to iOS, put into a QR, or used as a proxy/admin credential.
 
+The main chat's execution picker switches between this iPhone, Hermes Cloud and
+each paired instance's available harnesses. Remote conversations use the existing
+composer, Markdown rendering and history sidebar, with their instance and harness
+shown explicitly. Instance management opens conversations in that same chat.
+Model and project pickers are searchable; effort options come from the harness.
+Preferences are retained per instance and harness. Switching sources preserves
+each conversation and stops following the previous stream without replaying it.
+
+The project picker contains Host-discovered folders. iOS sends an opaque project
+ID; only the Host resolves it to a directory. The project is fixed on the first
+turn. Model and effort can change between turns through durable Desktop runtime
+commands. An unconfirmed configuration is persisted with its command ID and blocks
+sending until the same receipt has been checked. Stop requests native interruption;
+Resume follows the saved prompt receipt without resubmitting the prompt.
+
 The adapter carries a bounded JSON envelope in one completion message over the
 existing Personal Relay transport. Cloud binds every directory, catalogue and
 completion operation to the authenticated owner; the Host never trusts the
