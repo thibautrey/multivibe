@@ -154,7 +154,7 @@ struct ComputerUseModelReply {
         if stopped || Task.isCancelled { status = "Arrêté · contrôle rendu" } else { status = completed ? "Terminé · contrôle rendu" : "Interrompu · contrôle rendu" }
     }
     /// Same policy and driver as the native loop; the harness owns model reasoning.
-    /// Observations and screenshots remain in memory and never enter the chat journal.
+    /// This controller keeps observations in memory; each harness owns its history policy.
     func executeExternal(conversation: UUID, command: ComputerUseCommand) async throws -> [[String: String]] {
         if !running { try begin(conversation: conversation); external = true }
         guard external, conversationID == conversation else { throw ComputerUseFailure("Une autre conversation utilise le contrôle graphique.") }
