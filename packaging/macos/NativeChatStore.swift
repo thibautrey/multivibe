@@ -736,14 +736,27 @@ private struct NativeChatModelPreference: Codable {
     func mergeNativeCatalog(_ sources: [DesktopNativeSessionSource], target: String) {
         let ids = Set(sources.map(\.sourceId))
         let hidden = Set(defaults.stringArray(forKey: "assistantHiddenNativeSources") ?? [])
+        let supervised = Set(conversations.compactMap { item -> String? in
+            guard (item.executionTargetID ?? "local") == target, item.runtimeSessionID != nil,
+                  let harness = item.harnessID else { return nil }
+            if let source = item.runtimeSession?.configuration?["sourceId"].string { return harness + ":source:" + source }
+            if let native = item.harnessSessionID ?? item.runtimeSession?.nativeSessionId { return harness + ":native:" + native }
+            return nil
+        })
+        var existing = Dictionary(uniqueKeysWithValues: conversations.indices.compactMap { index -> (String, Int)? in
+            let item = conversations[index]
+            guard (item.executionTargetID ?? "local") == target, let source = item.nativeSource else { return nil }
+            return (source.harnessId + ":" + source.sourceId, index)
+        })
         for source in sources {
             if hidden.contains(nativeSourceKey(source, target: target)) { continue }
-            if conversations.contains(where: { ($0.executionTargetID ?? "local") == target && $0.harnessID == source.harnessId && $0.runtimeSessionID != nil && ($0.harnessSessionID == source.nativeSessionId || $0.runtimeSession?.nativeSessionId == source.nativeSessionId || $0.runtimeSession?.configuration?["sourceId"].string == source.sourceId) }) { continue }
+            if supervised.contains(source.harnessId + ":source:" + source.sourceId) || supervised.contains(source.harnessId + ":native:" + source.nativeSessionId) { continue }
             let index: Int
-            if let existing = conversations.firstIndex(where: { ($0.executionTargetID ?? "local") == target && $0.nativeSource?.sourceId == source.sourceId }) { index = existing }
+            let key = source.harnessId + ":" + source.sourceId
+            if let known = existing[key] { index = known }
             else {
                 var item = NativeChatConversation(); item.harnessID = source.harnessId; item.executionTargetID = target; item.authMode = "native"; item.workspace = source.workspace
-                conversations.append(item); index = conversations.count - 1
+                conversations.append(item); index = conversations.count - 1; existing[key] = index
             }
             conversations[index].nativeSource = source; conversations[index].sourceUnavailable = false
             conversations[index].title = source.title; conversations[index].updatedAt = Date(timeIntervalSince1970: source.updatedAt / 1000)
