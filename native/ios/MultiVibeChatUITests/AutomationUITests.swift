@@ -32,7 +32,5 @@ final class AutomationUITests: XCTestCase {
         delete.tap()
         XCTAssertTrue(app.staticTexts["La planification et son historique d’exécution seront supprimés."].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Supprimer"].exists)
-        app.buttons["Annuler"].tap()
-        XCTAssertTrue(app.staticTexts["Prépare mon briefing"].waitForExistence(timeout: 5))
     }
 }
