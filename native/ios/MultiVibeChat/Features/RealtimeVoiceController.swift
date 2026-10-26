@@ -26,6 +26,7 @@ import UIKit
     private var ledger = VoiceTranscriptLedger()
     private var captureTapInstalled = false
     private var pendingAudio: [String: Int] = [:]
+    private var audioFramers: [String: VoicePCM16Framer] = [:]
     private var audioGeneration = 0
     private var onTurn: (@MainActor (String, String, String) async -> Bool)?
     private var sessionClosed = false
@@ -168,6 +169,9 @@ import UIKit
         case "response.output_audio.delta":
             guard let response = event["response_id"] as? String, response == ledger.activeResponse else { break }
             if let encoded = event["delta"] as? String, let audio = Data(base64Encoded: encoded) { play(audio, response: response) }
+        case "response.output_audio.done":
+            guard let response = event["response_id"] as? String else { break }
+            if audioFramers.removeValue(forKey: response)?.isComplete == false { fail("Format audio invalide.") }
         case "output_audio_buffer.started": phase = .speaking
         case "output_audio_buffer.stopped": partialAssistant = ""; phase = .listening
         case "response.done":
@@ -186,11 +190,15 @@ import UIKit
         await persist(turns)
     }
     private func play(_ data: Data, response: String) {
-        guard !data.isEmpty, data.count.isMultiple(of: 2), data.count <= 1_048_576,
-              let buffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: AVAudioFrameCount(data.count / 2)),
+        guard !data.isEmpty, data.count <= 1_048_576 else { fail("Format audio invalide."); return }
+        var framer = audioFramers[response] ?? VoicePCM16Framer()
+        let framed = framer.append(data)
+        audioFramers[response] = framer
+        guard !framed.isEmpty else { return }
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: AVAudioFrameCount(framed.count / 2)),
               let channel = buffer.floatChannelData?[0] else { fail("Format audio invalide."); return }
         buffer.frameLength = buffer.frameCapacity
-        data.withUnsafeBytes { raw in
+        framed.withUnsafeBytes { raw in
             for index in 0..<Int(buffer.frameLength) {
                 channel[index] = Float(Int16(littleEndian: raw.loadUnaligned(fromByteOffset: index * 2, as: Int16.self))) / 32768
             }
@@ -276,7 +284,7 @@ import UIKit
         }
     }
     private func stopOutput() {
-        audioGeneration += 1; pendingAudio.removeAll()
+        audioGeneration += 1; pendingAudio.removeAll(); audioFramers.removeAll()
         player.stop(); player.reset()
         if playback.isRunning { player.play() }
     }
@@ -352,6 +360,21 @@ import UIKit
         remoteCommands.removeAll()
         partialUser = ""; partialAssistant = ""
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+}
+
+struct VoicePCM16Framer: Sendable {
+    private var remainder = Data()
+    var isComplete: Bool { remainder.isEmpty }
+
+    mutating func append(_ data: Data) -> Data {
+        guard !data.isEmpty else { return Data() }
+        let combined: Data
+        if remainder.isEmpty { combined = data }
+        else { combined = remainder + data }
+        let completeBytes = combined.count - combined.count % MemoryLayout<Int16>.size
+        remainder = completeBytes == combined.count ? Data() : Data(combined.suffix(combined.count - completeBytes))
+        return Data(combined.prefix(completeBytes))
     }
 }
 

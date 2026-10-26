@@ -6,6 +6,18 @@ import AuthenticationServices
 private struct CapturedVoiceTap: @unchecked Sendable { let block: AVAudioNodeTapBlock }
 
 @MainActor final class RealtimeVoiceCaptureTests: XCTestCase {
+    func testPCM16NetworkChunksPreserveSamplesAcrossOddPacketBoundaries() {
+        var framer = VoicePCM16Framer()
+        XCTAssertEqual(framer.append(Data([0x01])), Data())
+        XCTAssertFalse(framer.isComplete)
+        XCTAssertEqual(framer.append(Data([0x02, 0x03, 0x04])), Data([0x01, 0x02, 0x03, 0x04]))
+        XCTAssertTrue(framer.isComplete)
+        XCTAssertEqual(framer.append(Data([0x05, 0x06, 0x07])), Data([0x05, 0x06]))
+        XCTAssertFalse(framer.isComplete)
+        XCTAssertEqual(framer.append(Data([0x08])), Data([0x07, 0x08]))
+        XCTAssertTrue(framer.isComplete)
+    }
+
     func testMicrophoneTapCreatedByTheInterfaceCanRunOnTheAudioQueue() async throws {
         let controller = RealtimeVoiceController()
         let input = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
