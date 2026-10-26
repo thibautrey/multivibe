@@ -2,7 +2,7 @@ import express from "express";
 import { randomUUID } from "node:crypto";
 import { HostHarnessRuntime, ADAPTERS } from "./runtime.js";
 import { RemoteHarnessHosts } from "./remote.js";
-import { discoverNativeSessions, readNativeSession } from "./discovery.js";
+import { discoverNativeSessions, readNativeSession, readNativeMessages } from "./discovery.js";
 import { fail, redact, type HarnessTarget } from "./types.js";
 
 export function harnessRuntimeRoutes(runtime?:HostHarnessRuntime,remotes=new RemoteHarnessHosts()) {
@@ -53,17 +53,37 @@ export function harnessRuntimeRoutes(runtime?:HostHarnessRuntime,remotes=new Rem
   router.post("/targets",route((req,res)=>{const v=req.body;const target:HarnessTarget={id:v.id??randomUUID(),name:v.name,kind:v.kind,...(v.sshHost?{sshHost:v.sshHost}:{}),...(v.bridgePath?{bridgePath:v.bridgePath}:{}),...(v.container?{container:v.container}:{})};runtime!.store.saveTarget(target);return res.status(201).json({target});}));
   router.get("/sessions",route(async(req,res)=>res.json(await proxy(req,"GET","/sessions")??{sessions:runtime!.store.sessions().filter(s=>s.targetId===String(req.query.targetId??"local"))})));
   router.post("/sessions",route(async(req,res)=>{const target=remote(req);return res.status(201).json(target?await remotes.request(target,"POST","/sessions",{...req.body,targetId:"local"}):{session:await runtime!.create(req.body)});}));
-  router.get("/native-sessions",route(async(req,res)=>res.json(await proxy(req,"GET",`/native-sessions?harnessId=${encodeURIComponent(String(req.query.harnessId??""))}`)??{sessions:discoverNativeSessions(String(req.query.harnessId??"")).map(({file,...v})=>v)})));
+  router.get("/conversation-sources",route(async(req,res)=>{
+    const forwarded=await proxy(req,"GET","/conversation-sources");if(forwarded)return res.json(forwarded);
+    const targetId=String(req.query.targetId??"local");
+    // A container without a Host bridge must never expose the Mac's native history.
+    const nativeSessions=runtime!.store.target(targetId).kind==="local"
+      ? (await runtime!.catalog(targetId)).filter(v=>v.detected && v.id in ADAPTERS).flatMap(v=>discoverNativeSessions(v.id).map(({file,...source})=>source)) : [];
+    return res.json({sessions:runtime!.store.sessions().filter(s=>s.targetId===targetId),nativeSessions});
+  }));
+  router.get("/native-sessions/:sourceId/messages",route(async(req,res)=>{
+    const id=String(req.params.sourceId),harness=String(req.query.harnessId??"");
+    const forwarded=await proxy(req,"GET",`/native-sessions/${encodeURIComponent(id)}/messages?harnessId=${encodeURIComponent(harness)}`);
+    if(forwarded)return res.json(forwarded);
+    if(runtime!.store.target(String(req.query.targetId??"local")).kind!=="local")fail("Native history requires a Host bridge in this environment",422);
+    return res.json(readNativeMessages(harness,id));
+  }));
+  router.get("/native-sessions",route(async(req,res)=>res.json(await proxy(req,"GET",`/native-sessions?harnessId=${encodeURIComponent(String(req.query.harnessId??""))}`)??{sessions:runtime!.store.target(String(req.query.targetId??"local")).kind==="local"?discoverNativeSessions(String(req.query.harnessId??"")).map(({file,...v})=>v):[]})));
   router.get("/native-sessions/:sourceId",route(async(req,res)=>{
     const id=String(req.params.sourceId),harness=String(req.query.harnessId??""),after=Number(req.query.after??0);
-    return res.json(await proxy(req,"GET",`/native-sessions/${encodeURIComponent(id)}?harnessId=${encodeURIComponent(harness)}&after=${after}`)??readNativeSession(harness,id,undefined,after));
+    const forwarded=await proxy(req,"GET",`/native-sessions/${encodeURIComponent(id)}?harnessId=${encodeURIComponent(harness)}&after=${after}`);if(forwarded)return res.json(forwarded);
+    if(runtime!.store.target(String(req.query.targetId??"local")).kind!=="local")fail("Native history requires a Host bridge in this environment",422);
+    return res.json(readNativeSession(harness,id,undefined,after));
   }));
   router.post("/sessions/import",route(async(req,res)=>{
     const target=remote(req);if(target)return res.status(201).json(await remotes.request(target,"POST","/sessions/import",{...req.body,targetId:"local"}));
+    if(runtime!.store.target(String(req.query.targetId??"local")).kind!=="local")fail("Native history requires a Host bridge in this environment",422);
     const source=discoverNativeSessions(req.body.harnessId).find(v=>v.sourceId===req.body.sourceId);
     if(!source || !source.canContinue)fail(source?.reason??"Native session not found or cannot be continued safely",409);
-    const session=await runtime!.create({...req.body,nativeSessionId:undefined,workspace:req.body.workspace??source.workspace,title:source.title,authMode:"native"});
-    session.configuration={forkNativeSession:true,sourceId:source.sourceId};session.nativeSessionId=source.nativeSessionId;runtime!.store.save(session);
+    // A retried attachment must reuse its session and must never fork twice.
+    if(req.body.id){const prior=runtime!.store.sessions().find(s=>s.id===req.body.id);if(prior){if(prior.configuration?.sourceId!==source.sourceId || prior.harnessId!==source.harnessId)fail("Session belongs to another native source",409);return res.status(201).json({session:prior,strategy:"isolated_fork"});}}
+    const session=await runtime!.create({...req.body,history:undefined,nativeSessionId:undefined,workspace:req.body.workspace??source.workspace,title:source.title,authMode:"native"});
+    session.configuration={...session.configuration,forkNativeSession:true,sourceId:source.sourceId};session.nativeSessionId=source.nativeSessionId;runtime!.store.save(session);
     return res.status(201).json({session,strategy:"isolated_fork"});
   }));
   router.get("/sessions/:id",route(async(req,res)=>res.json(await proxy(req,"GET",`/sessions/${encodeURIComponent(String(req.params.id))}`)??runtime!.snapshot(String(req.params.id)))));

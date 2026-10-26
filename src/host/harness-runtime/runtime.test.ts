@@ -366,3 +366,21 @@ test("feature endpoint returns normalized harness actions without persisting its
   assert.equal(catalog.items.find((v:any)=>v.name==="Plan mode").section,"actions");
   assert.equal(runtime.store.sessions().length,0);
 });
+
+test("automatic conversation catalog reads supervised sessions without starting adapters and isolates unbridged containers",async t=>{
+  const {runtime,adapters}=fixture(t);
+  const session=await runtime.create({harnessId:"pi",title:"Created by another client"});
+  runtime.store.saveTarget({id:"isolated-container",name:"Container",kind:"container",container:"isolated"});
+  const app=express();app.use(harnessRuntimeRoutes(runtime));const server=createServer(app);
+  await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));t.after(()=>{server.closeAllConnections();server.close();});
+  const origin=`http://127.0.0.1:${(server.address() as any).port}`;
+  const catalog=await (await fetch(origin+"/conversation-sources")).json();
+  assert.equal(catalog.sessions[0].id,session.id);assert.ok(Array.isArray(catalog.nativeSessions));
+  assert.ok(catalog.nativeSessions.every((v:any)=>!v.file));assert.equal(adapters.size,0);
+  const container=await (await fetch(origin+"/conversation-sources?targetId=isolated-container")).json();
+  assert.deepEqual(container,{sessions:[],nativeSessions:[]});
+  assert.deepEqual(await (await fetch(origin+"/native-sessions?targetId=isolated-container&harnessId=pi")).json(),{sessions:[]});
+  assert.equal((await fetch(origin+"/native-sessions/anything/messages?targetId=isolated-container&harnessId=pi")).status,422);
+  assert.equal((await fetch(origin+"/sessions/import?targetId=isolated-container",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({harnessId:"pi",sourceId:"anything"})})).status,422);
+  assert.equal(adapters.size,0);
+});
