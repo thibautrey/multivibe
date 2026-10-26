@@ -16553,8 +16553,10 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
     async fn native_job_runner_bounds_global_concurrency() {
         let active = Arc::new(AtomicUsize::new(0));
         let maximum = Arc::new(AtomicUsize::new(0));
+        let concurrency_gate = Arc::new(tokio::sync::Barrier::new(2));
         let upstream_active = active.clone();
         let upstream_maximum = maximum.clone();
+        let upstream_gate = concurrency_gate.clone();
         let upstream = Router::new()
             .route(
                 "/backend-api/codex/models",
@@ -16565,10 +16567,14 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 post(move || {
                     let active = upstream_active.clone();
                     let maximum = upstream_maximum.clone();
+                    let concurrency_gate = upstream_gate.clone();
                     async move {
                         let current = active.fetch_add(1, AtomicOrdering::SeqCst) + 1;
                         maximum.fetch_max(current, AtomicOrdering::SeqCst);
-                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        // A reusable two-party barrier proves that both worker
+                        // slots can be active without relying on scheduler
+                        // timing under the parallel test suite.
+                        concurrency_gate.wait().await;
                         active.fetch_sub(1, AtomicOrdering::SeqCst);
                         Json(json!({
                             "id": new_id("resp"),
