@@ -1,4 +1,4 @@
-import {instanceActivity,mergeInstanceActivity,type InstanceActivity} from './instance-activity.js';
+import {instanceActivities,mergeInstanceActivity,type InstanceActivity} from './instance-activity.js';
 import {createHash} from 'node:crypto';
 import {HostHarnessRuntime,ADAPTERS} from './harness-runtime/runtime.js';
 import {RemoteHarnessHosts} from './harness-runtime/remote.js';
@@ -97,8 +97,7 @@ export class InstanceConversations {
     const batch=(await this.events(source.targetId,source.id,after)).events;
     if(!batch.length)break;
     for(const e of batch){after=e.seq;const p=e.payload as any;
-     const activity=instanceActivity(e);
-     if(activity&&e.turnId){const values=activities.get(e.turnId)??[];mergeInstanceActivity(values,activity);activities.set(e.turnId,values);}
+     for(const activity of instanceActivities(e))if(e.turnId){const values=activities.get(e.turnId)??[];mergeInstanceActivity(values,activity);activities.set(e.turnId,values);}
      if(e.type==='history.message'&&['user','assistant','system','tool'].includes(p?.role)&&typeof p.text==='string'){const key=e.itemId??String(e.seq),prior=imported.get(key);imported.set(key,{id:'history:'+key,role:p.role,content:p.append?(prior?.content??'')+p.text:p.text,done:true});}
      if(e.type==='message.user'){const text=p?.parts?.filter((v:any)=>v.type==='text').map((v:any)=>v.text).join('\n');if(text)items.set('user:'+(e.turnId??e.itemId),{id:'user:'+(e.turnId??e.itemId),role:'user',content:text,done:true});}
      if(['message.delta','message.part'].includes(e.type)&&['user','assistant','system','tool'].includes(p?.role)&&typeof p.text==='string'){

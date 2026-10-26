@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {setTimeout as delay} from 'node:timers/promises';
 import express from 'express';
-import {instanceActivity} from './instance-activity.js';
+import {instanceActivities} from './instance-activity.js';
 import {InstanceConversations,type InstanceConversationSource} from './instance-conversations.js';
 import type {HostHarnessRuntime} from './harness-runtime/runtime.js';
 import {fail,identifier,requiredText,type HarnessEvent} from './harness-runtime/types.js';
@@ -178,8 +178,8 @@ export class InstanceRelay {
   const emit=async(event:HarnessEvent)=>{
    if(event.turnId!==e.commandId)return;
    // Transmit only the bounded display projection, never the raw native record.
-   const activity=instanceActivity(event);
-   if(activity)await upload('data: '+JSON.stringify({type:'activity',activity,seq:event.seq})+'\n\n',false,200,'text/event-stream');
+   const activities=instanceActivities(event);
+   if(activities.length)await upload('data: '+JSON.stringify(activities.length===1?{type:'activity',activity:activities[0],seq:event.seq}:{type:'activities',activities,seq:event.seq})+'\n\n',false,200,'text/event-stream');
    const p=event.payload as any;
    if(event.turnId===e.commandId&&['message.delta','message.part'].includes(event.type)&&p?.role==='assistant'&&typeof p.text==='string')await upload('data: '+JSON.stringify({type:event.type,text:p.text,itemId:event.itemId??'assistant',seq:event.seq})+'\n\n',false,200,'text/event-stream');
   };

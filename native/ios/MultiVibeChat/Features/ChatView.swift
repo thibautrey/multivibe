@@ -4558,14 +4558,14 @@ private struct CloudConflictReviewView: View {
     }
 }
 
-/// Keep each tool visible while its arguments and result stay available on demand.
+/// Keep every harness activity visible while details stay available on demand.
 struct AgentActivityView: View {
     let events: [LocalAgentEvent]
     let completion: ChatMessage.Completion?
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(events.filter { $0.tool != "hermes_agent" }) { event in
-                if event.tool == "hermes_message" {
+                if event.kind == "message" || event.tool == "hermes_message" {
                     Text(event.detail).font(.subheadline).foregroundStyle(.secondary).textSelection(.enabled)
                         .accessibilityIdentifier("agentIntermediateMessage")
                 } else {

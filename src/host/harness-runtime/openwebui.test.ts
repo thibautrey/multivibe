@@ -67,6 +67,7 @@ test("Open WebUI runs the native remote loop, replaces snapshots and resumes the
   assert.deepEqual(calls[1].body.messages,[{role:"user",content:"First"},{role:"assistant",content:"Completed answer"},{role:"user",content:"Second"}]);
   const user=f.chat().history.messages[calls[1].body.user_message.id];assert.equal(user.parentId,firstAssistant);
   assert.ok(f.events.some(e=>e.type==="message.part" && e.payload.text==="Partial"));assert.ok(f.events.some(e=>e.type==="usage"));
+  assert.ok(f.events.some(e=>e.type==="tool" && e.payload.name==="remote-tool" && e.payload.status==="completed"));
   assert.equal(f.events.filter(e=>e.type==="turn.status").length,2);assert.equal(JSON.stringify(f.events).includes(f.connection.apiKey),false);
   assert.equal(fs.statSync(path.join(f.root,"openwebui-session.json")).mode&0o777,0o600);
 });
