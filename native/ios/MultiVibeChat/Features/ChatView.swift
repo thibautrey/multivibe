@@ -976,31 +976,7 @@ struct ChatView: View {
                                       compact: dynamicTypeSize.isAccessibilitySize,
                                       reload: reloadPickerModels, select: selectPickerModel)
                     Spacer(minLength: 0)
-                    if isGenerating {
-                        composerCircleButton("Arrêter", systemImage: "stop.fill", foreground: .white, background: .primary, size: 36) {
-                            if let chat = remoteChat {
-                                Task { do { try await instances.interrupt(chat.id) } catch { remoteConfigurationError = "L’arrêt n’a pas été confirmé. Reprenez le suivi pour vérifier l’exécution." } }
-                            } else { manager.stop() }
-                        }
-                    } else if voice.recording {
-                        composerCircleButton("Terminer la dictée", systemImage: "stop.fill", foreground: .white, background: .red, size: 36) { voice.stop() }
-                            .accessibilityIdentifier("stopDictation")
-                    } else if voice.starting {
-                        ProgressView().frame(width: 36, height: 36)
-                            .accessibilityLabel("Démarrage de la dictée")
-                    } else if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        if !isRemoteConversation {
-                            Button("Dicter sur cet appareil", systemImage: "mic") { startVoiceInput() }
-                                .accessibilityIdentifier("startDictation")
-                                .font(.title3.weight(.medium)).frame(width: 36, height: 36)
-                        }
-                        composerCircleButton("Démarrer une conversation vocale", systemImage: "waveform", foreground: .white, background: MultiVibeTheme.accent, size: 36) { startVoiceConversation() }
-                            .accessibilityIdentifier("startVoiceConversation")
-                    } else {
-                        composerCircleButton("Envoyer", systemImage: "arrow.up", foreground: .white, background: MultiVibeTheme.accent, size: 36) { sendComposerMessage() }
-                            .disabled(isRemoteConversation ? (text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || remoteChat?.model.isEmpty != false || remoteChat?.command != nil || remoteChat?.pendingConfiguration != nil || instances.busy) :
-                                (manager.selectedModel.isEmpty || (manager.isSynchronizing && !ModelExecution(manager.selectedModel).isLocal)))
-                    }
+                    composerActionControls
                 }
                 .dynamicTypeSize(.small ... .accessibility1)
             }
@@ -1016,6 +992,41 @@ struct ChatView: View {
         .padding(.bottom, 6)
         .frame(maxWidth: 780)
         .frame(maxWidth: .infinity)
+    }
+
+    // This high-churn control tree is type-erased at the composer boundary.
+    // It keeps SwiftUI from recursively resolving the entire ChatView generic
+    // graph when a remote voice turn changes the available actions.
+    private var composerActionControls: AnyView {
+        if isGenerating {
+            return AnyView(composerCircleButton("Arrêter", systemImage: "stop.fill", foreground: .white, background: .primary, size: 36) {
+                if let chat = remoteChat {
+                    Task { do { try await instances.interrupt(chat.id) } catch { remoteConfigurationError = "L’arrêt n’a pas été confirmé. Reprenez le suivi pour vérifier l’exécution." } }
+                } else { manager.stop() }
+            })
+        }
+        if voice.recording {
+            return AnyView(composerCircleButton("Terminer la dictée", systemImage: "stop.fill", foreground: .white, background: .red, size: 36) { voice.stop() }
+                .accessibilityIdentifier("stopDictation"))
+        }
+        if voice.starting {
+            return AnyView(ProgressView().frame(width: 36, height: 36).accessibilityLabel("Démarrage de la dictée"))
+        }
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let voiceButton = composerCircleButton("Démarrer une conversation vocale", systemImage: "waveform", foreground: .white,
+                                                   background: MultiVibeTheme.accent, size: 36) { startVoiceConversation() }
+                .accessibilityIdentifier("startVoiceConversation")
+            if isRemoteConversation { return AnyView(voiceButton) }
+            return AnyView(HStack(spacing: 0) {
+                Button("Dicter sur cet appareil", systemImage: "mic") { startVoiceInput() }
+                    .accessibilityIdentifier("startDictation")
+                    .font(.title3.weight(.medium)).frame(width: 36, height: 36)
+                voiceButton
+            })
+        }
+        return AnyView(composerCircleButton("Envoyer", systemImage: "arrow.up", foreground: .white, background: MultiVibeTheme.accent, size: 36) { sendComposerMessage() }
+            .disabled(isRemoteConversation ? (remoteChat?.model.isEmpty != false || remoteChat?.command != nil || remoteChat?.pendingConfiguration != nil || instances.busy) :
+                (manager.selectedModel.isEmpty || (manager.isSynchronizing && !ModelExecution(manager.selectedModel).isLocal))))
     }
 
     @ViewBuilder private var executionMenuItems: some View {
