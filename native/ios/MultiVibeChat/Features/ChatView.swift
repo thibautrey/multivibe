@@ -4316,7 +4316,7 @@ private struct CloudWorkspaceInformationView: View {
         NavigationStack {
             List {
                 Section("Espace Hermes") { Label("\(fileCount) fichier\(fileCount == 1 ? "":"s")",systemImage:"doc.on.doc");Label("Synchronisé entre vos clients autorisés",systemImage:"arrow.triangle.2.circlepath") }
-                Section("Limites") { LabeledContent("Documents texte","64 Ko par fichier · 512 Ko par projet");LabeledContent("Autres fichiers","64 Mio par fichier · 256 Mio par projet");LabeledContent("Nombre maximal","200 fichiers") }
+                Section("Limites") { LabeledContent("Documents texte",value:"64 Ko par fichier · 512 Ko par projet");LabeledContent("Autres fichiers",value:"64 Mio par fichier · 256 Mio par projet");LabeledContent("Nombre maximal",value:"200 fichiers") }
                 Section { Text("Les dossiers sont construits à partir des chemins des fichiers. Les modifications enregistrées hors ligne sont synchronisées au retour du réseau.") }
             }.navigationTitle("À propos de cet espace").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement:.confirmationAction) { Button("Fermer") { dismiss() } } }
