@@ -866,7 +866,7 @@ async function validateNativeFiles(root, manifest) {
   ] : ["bin/node", "runtime/ollama/bin/ollama", "bin/multivibe-provider-agent", "bin/multivibe-runtime-benchmark", "bin/multivibe-host", "bin/multivibe-host-menu"];
   const runtimePrefix = mac ? `${prefix}Resources/ollama-runtime/` : "runtime/ollama/";
   const native = manifest.files.filter((entry) => explicit.includes(entry.path) ||
-    (mac ? /\.(?:dylib|node|so)$/u.test(entry.path) : windows ? /\.(?:dll|exe|node)$/iu.test(entry.path) : /(?:\.node|\.so(?:\.|$))/u.test(entry.path)) ||
+    (mac ? /\.(?:dylib|node|so)$/u.test(entry.path) : windows ? /\.(?:dll|exe|node)$/iu.test(entry.path) : /(?:\.node$|\.so(?:\.|$))/u.test(entry.path)) ||
     (entry.path.startsWith(runtimePrefix) && (entry.mode & 0o111) !== 0));
   for (const entry of native) {
     const header = await readBinaryHeader(path.join(root, entry.path), windows ? 64 * 1024 : 4096);

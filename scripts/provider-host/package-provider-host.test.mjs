@@ -8,7 +8,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { argumentsFrom, archiveBundle, commandInvocation, download, submitMacNotarization, validateOllamaWindowsFiles } from "./package-provider-host.mjs";
+import { argumentsFrom, archiveBundle, commandInvocation, download, stapleMacArtifact, submitMacNotarization, validateOllamaWindowsFiles } from "./package-provider-host.mjs";
 
 const packager = fileURLToPath(new URL("./package-provider-host.mjs", import.meta.url));
 const verifier = fileURLToPath(new URL("./verify-provider-host.mjs", import.meta.url));
@@ -487,4 +487,35 @@ test("notarization stops after three offline waits", async () => {
     throw Object.assign(new Error("xcrun failed with exit 1"), { stderr: "NSURLErrorDomain Code=-1009" });
   }), /could not be verified/);
   assert.equal(waits, 3);
+});
+
+
+test("stapling retries Apple ticket service failures then validates the ticket", async () => {
+  const actions = [];
+  const delays = [];
+  await stapleMacArtifact("Host.dmg", async (_program, args) => {
+    actions.push(args);
+    if (actions.length < 3) throw Object.assign(new Error("ticket lookup unavailable"), { code: 68 });
+  }, async (delay) => delays.push(delay));
+  assert.deepEqual(actions.map((args) => args[1]), ["staple", "staple", "staple", "validate"]);
+  assert.ok(actions.every((args) => args[2] === "Host.dmg"));
+  assert.deepEqual(delays, [5000, 10000]);
+});
+
+test("stapling stops on exhausted retries, permanent failures and invalid tickets", async () => {
+  for (const [code, expectedCalls] of [[68, 3], [65, 1]]) {
+    let calls = 0;
+    const failure = Object.assign(new Error("stapler failed"), { code });
+    await assert.rejects(stapleMacArtifact("Host.app", async () => {
+      calls += 1;
+      throw failure;
+    }, async () => {}), (error) => error === failure);
+    assert.equal(calls, expectedCalls);
+  }
+  const actions = [];
+  await assert.rejects(stapleMacArtifact("Host.app", async (_program, args) => {
+    actions.push(args[1]);
+    if (args[1] === "validate") throw new Error("invalid ticket");
+  }, async () => {}), /invalid ticket/);
+  assert.deepEqual(actions, ["staple", "validate"]);
 });

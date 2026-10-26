@@ -644,19 +644,33 @@ export async function submitMacNotarization(file, profile, run = command, attemp
   }
 }
 
+// stapler uses EX_NOHOST (68) when Apple's ticket service cannot be reached.
+// Retry the ticket lookup without repeating the accepted notarization submission.
+export async function stapleMacArtifact(file, run = command, wait = pause) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await run("xcrun", ["stapler", "staple", file]);
+      break;
+    } catch (error) {
+      if (error.code !== 68 || attempt >= 3) throw error;
+      console.warn(`Apple ticket lookup unavailable; retrying stapler (attempt ${attempt + 1}/3)`);
+      await wait(attempt * 5000);
+    }
+  }
+  await run("xcrun", ["stapler", "validate", file]);
+}
+
 async function notarizeMacApplication(application, profile, work) {
   const submission = path.join(work, "notary-submission.zip");
   await command("ditto", ["-c", "-k", "--keepParent", application, submission]);
   await submitMacNotarization(submission, profile);
-  await command("xcrun", ["stapler", "staple", application]);
-  await command("xcrun", ["stapler", "validate", application]);
+  await stapleMacArtifact(application);
   await command("spctl", ["--assess", "--type", "execute", "--verbose=2", application]);
 }
 
 async function notarizeMacDiskImage(diskImage, profile) {
   await submitMacNotarization(diskImage, profile);
-  await command("xcrun", ["stapler", "staple", diskImage]);
-  await command("xcrun", ["stapler", "validate", diskImage]);
+  await stapleMacArtifact(diskImage);
   await command("spctl", ["--assess", "--type", "open", "--context", "context:primary-signature", "--verbose=2", diskImage]);
 }
 
