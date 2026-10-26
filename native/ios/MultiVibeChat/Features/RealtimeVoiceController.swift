@@ -33,7 +33,7 @@ import UIKit
     private var cueEngine: AVAudioEngine?
     private var cuePlayer: AVAudioPlayerNode?
 
-    func start(session: VoiceSession, history: [ChatMessage], accountToken: String, backgroundAudio: Bool,
+    func start(session: VoiceSession, history: [ChatMessage], accountToken: String, backgroundAudio: Bool, headers: [String: String] = [:],
                onTurn: @escaping @MainActor (String, String, String) async -> Bool) async {
         endAudio()
         self.session = session; self.accountToken = accountToken; self.onTurn = onTurn
@@ -61,7 +61,10 @@ import UIKit
                 guard session.credential.transport == "websocket", session.credential.endpoint.scheme == "wss" else { throw URLError(.unsupportedURL) }
                 var request = URLRequest(url: session.credential.endpoint)
                 request.setValue("Bearer \(session.credential.token)", forHTTPHeaderField: "Authorization")
-                let task = URLSession(configuration: .ephemeral).webSocketTask(with: request)
+                for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+                let configuration = URLSessionConfiguration.ephemeral
+                configuration.httpCookieStorage = nil; configuration.urlCache = nil
+                let task = URLSession(configuration: configuration, delegate: VoiceSocketRedirectPolicy(), delegateQueue: nil).webSocketTask(with: request)
                 socket = task; task.resume()
                 playback.attach(player)
                 playback.connect(player, to: playback.mainMixerNode, format: outputFormat)
@@ -168,6 +171,9 @@ import UIKit
         case "response.function_call_arguments.done":
             // Tool dispatch is unavailable until connected to the existing ownership/approval boundary.
             fail("Les outils ne sont pas encore disponibles dans ce mode vocal. Continuez dans le chat.")
+        case "multivibe.voice.input_disabled":
+            muted = true
+            error = "Le quota Relay est atteint. Vous pouvez écouter la réponse en cours."
         case "error": fail("Le service vocal a rencontré une erreur. La session a été arrêtée.")
         default: break
         }
@@ -204,8 +210,10 @@ import UIKit
             guard await onTurn?(turn.role, turn.text, session.id + ":" + turn.id) == true else {
                 fail("La transcription n’a pas pu être enregistrée. La session a été arrêtée."); return
             }
-            do { _ = try await ChatAPI.shared.reconcileVoiceTurn(session: session, turnID: turn.id, token: accountToken) }
-            catch { self.error = "Transcription enregistrée sur l’appareil ; réconciliation vocale indisponible." }
+            if session.route != "instance" {
+                do { _ = try await ChatAPI.shared.reconcileVoiceTurn(session: session, turnID: turn.id, token: accountToken) }
+                catch { self.error = "Transcription enregistrée sur l’appareil ; réconciliation vocale indisponible." }
+            }
         }
     }
     func setMuted(_ value: Bool) {
@@ -283,6 +291,7 @@ import UIKit
         phase = .ended; ledger.interrupt(); endAudio()
         guard !sessionClosed, let session else { return }
         sessionClosed = true
+        guard session.route != "instance" else { return }
         let token = accountToken
         Task { await ChatAPI.shared.closeVoiceSession(session, token: token) }
     }
@@ -338,4 +347,9 @@ import UIKit
         partialUser = ""; partialAssistant = ""
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
+}
+
+private final class VoiceSocketRedirectPolicy: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) { completionHandler(nil) }
 }

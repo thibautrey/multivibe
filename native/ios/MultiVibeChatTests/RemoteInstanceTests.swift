@@ -3,6 +3,16 @@ import SwiftUI
 @testable import MultiVibeChat
 
 final class RemoteInstanceTests: XCTestCase {
+    func testVoiceTransportKeepsThePairedMachineOnTheFirstPartyOrigin() throws {
+        let machine = UUID().uuidString.lowercased()
+        let url = try RemoteInstanceAPI.voiceEndpoint(machine, operation: "realtime", voice: "kokoro:ff_siwis")
+        XCTAssertEqual(url.scheme, "wss")
+        XCTAssertEqual(url.host, "app.multivibe.cloud")
+        XCTAssertEqual(url.path, "/relay/voice/v1/machines/\(machine)/realtime")
+        XCTAssertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems, [.init(name: "voice", value: "kokoro:ff_siwis")])
+        XCTAssertThrowsError(try RemoteInstanceAPI.voiceEndpoint("../completions", operation: "realtime"))
+        XCTAssertThrowsError(try RemoteInstanceAPI.voiceEndpoint(machine, operation: "https://evil.invalid"))
+    }
     func testPairingAcceptsOnlyExactFirstPartyShapeAndNeverAnEndpoint() {
         let machine = UUID().uuidString.lowercased()
         XCTAssertNotNil(RemotePairing.parse(URL(string: "multivibe-chat://instance/pair?machine=\(machine)&handoff=SYNTHETIC123")!))

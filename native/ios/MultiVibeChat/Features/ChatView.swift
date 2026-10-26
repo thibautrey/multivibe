@@ -418,7 +418,7 @@ struct ChatView: View {
             voiceConversationPreparing = false
             composerFocused = false
         }) {
-            RealtimeVoiceView().environment(manager)
+            RealtimeVoiceView(remoteChatID: remoteChat?.id).environment(manager)
         }
         .alert("Résultat d’action inconnu", isPresented: Binding(
             get: { manager.hermesRecovery != nil }, set: { if !$0 { manager.hermesRecovery = nil } }
@@ -1114,7 +1114,7 @@ struct ChatView: View {
         preferredColumn = .detail
         voice.silence()
         if manager.session == nil { manager.authenticationPresented = true; return }
-        manager.newConversation()
+        if remoteChat == nil { manager.newConversation() }
         // The compact composer is itself a sheet. Dismiss it before presenting
         // the full-screen voice UI so UIKit never restores it at a large detent.
         voiceConversationPreparing = true
