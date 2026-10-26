@@ -201,6 +201,7 @@ test('mobile activity streams before completion, recovers by cursor and survives
  const f=await fixture(t,{prompt:async ctx=>{
   ctx.emit({type:'reasoning',payload:{type:'text',text:'Je vérifie la source.'}});
   ctx.emit({type:'tool',itemId:'web-1',payload:{title:'Lire la page',status:'in_progress',rawInput:{url:'https://example.com',api_key:'synthetic-private-value'},env:{PRIVATE:'must-not-travel'}}});
+  ctx.emit({type:'tool',payload:{tool_calls:[{id:'batch-1',function:{name:'search',arguments:'{}'}},{id:'batch-2',function:{name:'read',arguments:'{}'}}]}});
   await gate;
   ctx.emit({type:'tool',itemId:'web-1',payload:{status:'completed',content:[{type:'content',content:{type:'text',text:'Source vérifiée'}}]}});
  }}),a=await f.pair(),auth={deviceId:a.deviceId,deviceToken:a.deviceToken},conversationId=randomUUID(),commandId=randomUUID();
@@ -211,11 +212,13 @@ test('mobile activity streams before completion, recovers by cursor and survives
  await pending;
  const events=chunks.join('').split('\n').filter(v=>v.startsWith('data: ')).map(v=>JSON.parse(v.slice(6)));
  const tools=events.filter(v=>v.activity?.kind==='tool');assert.equal(tools.length,2);assert.equal(tools[0].activity.status,'running');assert.equal(tools[1].activity.status,'success');
+ const batch=events.find(v=>v.type==='activities');assert.deepEqual(batch.activities.map((v:any)=>v.title),['search','read']);
  assert.ok(events.some(v=>v.activity?.text==='Je vérifie la source.'));
  const replay=await f.send({...auth,operation:'recover',conversationId,commandId,after:tools[0].seq});
  assert.doesNotMatch(replay,/Je vérifie la source/);assert.match(replay,/Source vérifiée/);assert.equal(f.calls(),1);
  const session=f.runtime.store.sessions()[0];
  const history=await f.service.conversations.history({targetId:'local',kind:'session',id:session.id,harnessId:'pi'});
  const saved=history.messages.find((v:any)=>v.activities)?.activities;
- assert.equal(saved.length,2);assert.equal(saved[1].title,'Lire la page');assert.equal(saved[1].status,'success');assert.equal(saved[1].output,'Source vérifiée');
+ assert.equal(saved.length,4);assert.equal(saved[1].title,'Lire la page');assert.equal(saved[1].status,'success');assert.equal(saved[1].output,'Source vérifiée');
+ assert.deepEqual(saved.slice(2).map((v:any)=>v.title),['search','read']);
 });
