@@ -42,9 +42,22 @@ test("native file histories normalize Codex, Claude, Pi and Gemini without start
   write(".gemini/tmp/project/chats/session.json",[{sessionId:"gemini-native",messages:[{id:"u",type:"user",content:"Hello"},{id:"a",type:"gemini",content:"World"}]}]);
   assert.deepEqual(read("gemini-cli").messages.map(v=>v.content),["Hello","World"]);
   assert.equal(read("gemini-cli").source.canContinue,false);
+  const gemini=path.join(home,".gemini/tmp/project/chats/session.json");
+  const geminiValue=JSON.parse(fs.readFileSync(gemini,"utf8"));fs.writeFileSync(gemini,JSON.stringify({...geminiValue,padding:"x".repeat(130000)},null,2));
+  assert.equal(read("gemini-cli").messages.length,2);
   fs.appendFileSync(codex,JSON.stringify({type:"response_item",payload:{type:"message",role:"assistant",content:"New external reply"}})+"\n"+'{"partial":');
   const updated=read("openai-codex");assert.equal(updated.messages.at(-1)?.content,"New external reply");assert.equal(updated.readOnly,true);
   assert.throws(()=>readNativeMessages("openai-codex","untrusted-path",home),/not found/u);
+});
+test("Gemini JSONL text parts and changing Codex title metadata are reflected without leaking reasoning",t=>{
+  const {home,write,read}=fixture(t);
+  write(".gemini/tmp/project/chats/session.jsonl",[{sessionId:"gemini-native",kind:"session"},{id:"u",type:"user",content:[{text:"Hello"}]},{id:"a",type:"gemini",content:[{text:"World"},{type:"thinking",text:"hidden"}]}]);
+  assert.deepEqual(read("gemini-cli").messages.map(v=>v.content),["Hello","World"]);
+  write(".codex/sessions/session.jsonl",[{type:"session_meta",payload:{id:"c",cwd:"/project"}}]);
+  write(".codex/session_index.jsonl",[{id:"c",thread_name:"Native title"}]);
+  assert.equal(read("openai-codex").source.title,"Native title");
+  write(".codex/session_index.jsonl",[{id:"c",thread_name:"Renamed externally"}]);
+  assert.equal(read("openai-codex").source.title,"Renamed externally");
 });
 test("native database histories normalize Hermes and OpenCode in read-only connections",t=>{
   const {home,read}=fixture(t);
