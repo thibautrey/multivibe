@@ -27,5 +27,12 @@ final class AutomationUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Prépare mon briefing"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Reprendre"].exists)
         let detail = XCTAttachment(screenshot: app.screenshot()); detail.name = "Automation details"; detail.lifetime = .keepAlways; add(detail)
+        let delete = app.buttons["Supprimer"].firstMatch
+        XCTAssertTrue(delete.exists)
+        delete.tap()
+        XCTAssertTrue(app.staticTexts["La planification et son historique d’exécution seront supprimés."].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Supprimer"].exists)
+        app.buttons["Annuler"].tap()
+        XCTAssertTrue(app.staticTexts["Prépare mon briefing"].waitForExistence(timeout: 5))
     }
 }

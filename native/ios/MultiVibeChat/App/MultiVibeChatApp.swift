@@ -119,3 +119,56 @@ enum MultiVibeTheme {
     })
     static let softAccent = LinearGradient(colors: [accent.opacity(0.16), accent.opacity(0.035)], startPoint: .topLeading, endPoint: .bottomTrailing)
 }
+
+/// A consistent, icon-backed status surface. Color is never the only signal,
+/// and long diagnostics can wrap without shrinking adjacent controls.
+struct MultiVibeStatusMessage: View {
+    enum Kind {
+        case error, warning, information, success
+
+        var icon: String {
+            switch self {
+            case .error: "exclamationmark.circle.fill"
+            case .warning: "exclamationmark.triangle.fill"
+            case .information: "info.circle.fill"
+            case .success: "checkmark.circle.fill"
+            }
+        }
+
+        var color: Color {
+            switch self {
+            case .error: .red
+            case .warning: .orange
+            case .information: MultiVibeTheme.accent
+            case .success: .green
+            }
+        }
+    }
+
+    let message: String
+    var kind: Kind = .error
+    var actionTitle: String?
+    var action: (() -> Void)?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: kind.icon)
+                .foregroundStyle(kind.color)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(message)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let actionTitle, let action {
+                    Button(actionTitle, action: action)
+                        .fontWeight(.semibold)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.callout)
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(kind.color.opacity(0.09), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .accessibilityElement(children: .contain)
+    }
+}

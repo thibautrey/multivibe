@@ -24,7 +24,10 @@ struct LocalModelsView: View {
             }
             Section("Téléchargés") {
                 let installed = library.installed.filter(matches)
-                if installed.isEmpty { Text("Vos modèles téléchargés seront disponibles ici, même sans Internet.").foregroundStyle(.secondary) }
+                if installed.isEmpty {
+                    ContentUnavailableView("Aucun modèle téléchargé", systemImage: "arrow.down.circle",
+                        description: Text("Les modèles téléchargés resteront disponibles ici, même sans Internet."))
+                }
                 ForEach(installed) { LocalModelCard(model: $0, select: select) }
                 if !library.installed.isEmpty {
                     Text("Stockage utilisé : " + ByteCountFormatter.string(fromByteCount: library.installed.reduce(0) { $0 + $1.bytes }, countStyle: .file))
@@ -35,9 +38,12 @@ struct LocalModelsView: View {
                 let candidates = catalogModels
                 ForEach(candidates.filter { library.installation($0.id) == nil && matches($0) }) { LocalModelCard(model: $0, select: select) }
                 if loading { ProgressView("Recherche de modèles…") }
-                if let error { Text(error).font(.callout); Button("Réessayer") { Task { await load(reset: true) } } }
+                if let error {
+                    MultiVibeStatusMessage(message: error, actionTitle: "Réessayer") { Task { await load(reset: true) } }
+                }
                 if !search.isEmpty && !loading && catalogModels.isEmpty && error == nil {
-                    Text("Aucun modèle pris en charge trouvé. Essayez un autre nom.").foregroundStyle(.secondary)
+                    ContentUnavailableView("Aucun modèle pris en charge", systemImage: "magnifyingglass",
+                        description: Text("Essayez un autre nom ou éditeur."))
                 }
                 if next != nil && !loading { Button("Afficher plus") { Task { await load(reset: false) } } }
             }

@@ -12,6 +12,7 @@ import UserNotifications
     private(set) var scope = ""
     var error: String?
     var cloudAvailable = false
+    private(set) var notificationAuthorization: UNAuthorizationStatus = .notDetermined
     @ObservationIgnored private let location = CLLocationManager()
     @ObservationIgnored private var execution: Task<Void, Never>?
     @ObservationIgnored private var foregroundTimer: Task<Void, Never>?
@@ -74,8 +75,13 @@ import UserNotifications
             do { _ = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) }
             catch { self.error = error.localizedDescription }
         }
+        await refreshPermissionStatus()
         reconcile()
     }
+    func refreshPermissionStatus() async {
+        notificationAuthorization = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+    }
+    var locationAuthorization: CLAuthorizationStatus { location.authorizationStatus }
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) { reconcile() }
     func locationManager(_ manager: CLLocationManager, monitoringDidFailFor region: CLRegion?, withError error: Error) { self.error = error.localizedDescription }
     func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) { regionEvent(region, transition: "enter") }

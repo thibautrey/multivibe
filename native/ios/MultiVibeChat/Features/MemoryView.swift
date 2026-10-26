@@ -7,11 +7,18 @@ struct MemoryView: View {
     @State private var confirmSync = false
     @State private var forget: MemoryItem?
     @State private var project = ""
+    private var filteredItems: [MemoryItem] {
+        manager.memoryItems.filter {
+            search.isEmpty || $0.id.uuidString.localizedCaseInsensitiveContains(search)
+                || $0.memory.text.localizedCaseInsensitiveContains(search)
+                || $0.memory.topic.localizedCaseInsensitiveContains(search)
+        }
+    }
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    if let error = manager.memoryError { Text(error).foregroundStyle(.red) }
+                    if let error = manager.memoryError { MultiVibeStatusMessage(message: error) }
                     Button("Ajouter un souvenir", systemImage: "plus") {
                         manager.memoryDraft = MemoryDraft(text: "", evidence: MemoryEvidence(origin: .userEntry,
                             quote: "", date: Date(), sourceRole: "user"), scope: manager.current?.memoryScope ?? "")
@@ -20,11 +27,12 @@ struct MemoryView: View {
                 if manager.selection != nil {
                     Section("Projet de cette conversation") {
                         TextField("Nom du projet (vide : général)", text: $project).onSubmit { manager.setMemoryScope(project) }
-                        Button("Appliquer le projet") { manager.setMemoryScope(project) }
+                        Button("Appliquer le projet") { manager.setMemoryScope(project.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                            .disabled(project.trimmingCharacters(in: .whitespacesAndNewlines) == (manager.current?.memoryScope ?? ""))
                     }
                 }
                 Section("Souvenirs") {
-                    ForEach(manager.memoryItems.filter { search.isEmpty || $0.id.uuidString.localizedCaseInsensitiveContains(search) || $0.memory.text.localizedCaseInsensitiveContains(search) || $0.memory.topic.localizedCaseInsensitiveContains(search) }) { item in
+                    ForEach(filteredItems) { item in
                         VStack(alignment: .leading, spacing: 6) {
                             Text(item.memory.topic).font(.headline)
                             Text(item.memory.text)
@@ -55,9 +63,9 @@ struct MemoryView: View {
                             }.buttonStyle(.borderless)
                         }.accessibilityElement(children: .contain)
                     }
-                    if manager.memoryItems.isEmpty {
-                        Label("Aucun souvenir", systemImage: "brain")
-                            .foregroundStyle(.secondary)
+                    if filteredItems.isEmpty {
+                        ContentUnavailableView(search.isEmpty ? "Aucun souvenir" : "Aucun résultat", systemImage: search.isEmpty ? "brain" : "magnifyingglass",
+                            description: Text(search.isEmpty ? "Ajoutez une information que MultiVibe pourra réutiliser dans vos conversations." : "Essayez un autre terme de recherche."))
                     }
                 }
                 Section("Synchronisation") {
@@ -117,7 +125,7 @@ struct MemoryEditor: View {
                 }
                 Section {
                     Toggle("Remplacer les souvenirs contradictoires du même sujet et projet", isOn: $draft.resolveConflicts)
-                    if let error = manager.memoryError { Text(error).foregroundStyle(.red) }
+                    if let error = manager.memoryError { MultiVibeStatusMessage(message: error) }
 
                 }
             }
@@ -130,7 +138,7 @@ struct MemoryEditor: View {
                     Button("Valider") {
                         if draft.evidence.quote.isEmpty { draft.evidence.quote = draft.text; draft.evidence.date = Date() }
                         _ = manager.saveMemory(draft)
-                    }.disabled(draft.topic.trimmingCharacters(in: .whitespaces).isEmpty || draft.text.isEmpty)
+                    }.disabled(draft.topic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         .accessibilityLabel("Je confirme cette information").accessibilityIdentifier("confirmMemory")
                 }
             }

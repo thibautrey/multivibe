@@ -351,14 +351,17 @@ struct ChatView: View {
                 if voice.speaking {
                     Button("Arrêter la lecture", systemImage: "stop.circle") { voice.silence() }.padding(.horizontal)
                 }
-                if let error = isRemoteConversation ? (remoteConfigurationError ?? instances.error) : manager.error { Text(error).font(.callout).foregroundStyle(.red).padding() }
+                if let error = isRemoteConversation ? (remoteConfigurationError ?? instances.error) : manager.error {
+                    MultiVibeStatusMessage(message: error)
+                        .padding(.horizontal)
+                        .accessibilityIdentifier("chatError")
+                }
                 if !isRemoteConversation, let error = manager.modelsError, !ModelExecution(manager.selectedModel).isLocal {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(error).font(.callout)
-                        Button("Réessayer le chargement des modèles", systemImage: "arrow.clockwise") {
-                            Task { await manager.reloadModels() }
-                        }.disabled(manager.isLoadingModels || manager.isStreaming)
-                    }.padding(.horizontal)
+                    MultiVibeStatusMessage(message: error, actionTitle: "Réessayer") {
+                        Task { await manager.reloadModels() }
+                    }
+                    .padding(.horizontal)
+                    .allowsHitTesting(!manager.isLoadingModels && !manager.isStreaming)
                 }
                 if !isRemoteConversation && manager.isLoadingModels && !ModelExecution(manager.selectedModel).isLocal { ProgressView("Chargement des modèles…").padding(.horizontal) }
             }
@@ -2121,26 +2124,25 @@ struct ChatWelcomeView<ExecutionSelector: View>: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 24) {
-                Spacer(minLength: 96)
+                Spacer(minLength: 64)
                 executionSelector
                 VStack(spacing: 8) {
                     Text("Comment puis-je vous aider ?")
                         .font(.title2.bold())
+                        .accessibilityAddTraits(.isHeader)
                     Text("Discutez, analysez et agissez avec le modèle de votre choix.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
-                Spacer(minLength: 40)
-                ScrollView(.horizontal) {
-                    HStack(spacing: 10) {
-                        ForEach(suggestions) { suggestionButton($0) }
-                    }
-                    .padding(.horizontal, 24)
+                .padding(.horizontal, 20)
+                Spacer(minLength: 24)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 300), spacing: 10)], spacing: 10) {
+                    ForEach(suggestions) { suggestionButton($0) }
                 }
-                .scrollIndicators(.hidden)
+                .padding(.horizontal, 20)
             }
-            .frame(maxWidth: 720, minHeight: 520)
+            .frame(maxWidth: 720, minHeight: 480)
             .padding(.bottom, 20)
             .frame(maxWidth: .infinity)
         }.scrollDismissesKeyboard(.interactively)
@@ -2155,10 +2157,12 @@ struct ChatWelcomeView<ExecutionSelector: View>: View {
                 Text(suggestion.title)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.primary)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
             }
             .padding(.horizontal, 14)
-            .frame(height: 42)
+            .frame(maxWidth: .infinity, minHeight: 46, alignment: .leading)
             .background(Color(uiColor: .secondarySystemBackground), in: Capsule())
             .overlay(Capsule().stroke(.primary.opacity(0.07), lineWidth: 0.7))
             .contentShape(Capsule())
@@ -2272,7 +2276,7 @@ struct LocalDocumentsView: View {
                     Text("Ces fichiers sont disponibles hors ligne pour Apple Foundation Local. Importez un fichier texte de 100 Ko maximum. Les documents restent sur cet appareil.")
                     Button("Importer un document texte", systemImage: "square.and.arrow.down") { importing = true }
                         .disabled(manager.isStreaming)
-                    if let failure { Text(failure).foregroundStyle(.red) }
+                    if let failure { MultiVibeStatusMessage(message: failure) }
                 }
                 Section("Données de l’iPhone") {
                     Text("Le modèle local consulte ces données à votre demande. Les cartes interactives restent sur cet appareil ; seul leur résumé textuel fait partie de l’historique synchronisé.")
@@ -2288,9 +2292,13 @@ struct LocalDocumentsView: View {
                             .toolbar { ShareLink(item: document.text) { Label("Partager", systemImage: "square.and.arrow.up") } }
                     }
                 }
+                if manager.localDocuments.isEmpty {
+                    ContentUnavailableView("Aucun document importé", systemImage: "doc.text",
+                        description: Text("Importez un fichier texte pour que le modèle local puisse le consulter."))
+                }
             }
             .scrollContentBackground(.hidden).background(MultiVibeTheme.softAccent.ignoresSafeArea())
-            .navigationTitle("Outils locaux")
+            .navigationTitle("Documents et outils")
             .toolbar { Button("Terminé") { dismiss() } }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText]) { result in
                 do {
