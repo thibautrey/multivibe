@@ -213,6 +213,8 @@ struct RelayUsageDashboard: View {
             Text("Messages par jour").font(.headline)
             Text(selectedDay.map { "\($0.date) · \($0.started) messages" } ?? "Touchez le graphique pour voir un jour.")
                 .font(.caption).foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
             Chart(usage.daily) { day in
                 BarMark(x: .value("Jour", day.timestamp, unit: .day, calendar: utcCalendar), y: .value("Messages", day.started))
                     .foregroundStyle(MultiVibeTheme.accent).cornerRadius(3)
