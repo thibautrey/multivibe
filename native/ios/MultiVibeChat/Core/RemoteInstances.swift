@@ -187,6 +187,8 @@ struct RemoteChat: Codable, Identifiable, Sendable {
     var id = UUID(); var machine: String; var harness: String; var model: String; var provider: String? = nil
     var effort: String? = nil; var projectId: String? = nil; var projectName: String? = nil
     var title = "Nouvelle conversation"; var messages: [ChatMessage] = []
+    /// Optional so archives written before sidebar ordering was introduced remain readable.
+    var updatedAt: Date? = Date()
     var command: String?; var cursor = 0; var state = "idle"; var items: [String: String] = [:]; var itemOrder: [String] = []
     var pendingConfiguration: RemoteConfiguration? = nil
 }
@@ -310,6 +312,7 @@ struct RemoteModelPreference: Codable {
         if chats[index].messages.contains(where: { $0.id == id }) { return true }
         let previous = chats[index]
         chats[index].messages.append(ChatMessage(id: id, role: role, content: text, completion: role == "assistant" ? .completed : nil))
+        chats[index].updatedAt = Date()
         if previous.messages.isEmpty { chats[index].title = String(text.prefix(60)) }
         do { try persist(); return true } catch { chats[index] = previous; return false }
     }
@@ -467,6 +470,7 @@ struct RemoteModelPreference: Codable {
             guard !chats[index].model.isEmpty, chats[index].command == nil, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
             chats[index].command = UUID().uuidString.lowercased(); chats[index].cursor = 0; chats[index].items = [:]; chats[index].itemOrder = []
             chats[index].messages.append(.init(role: "user", content: text)); chats[index].messages.append(.init(role: "assistant", content: "", completion: .streaming))
+            chats[index].updatedAt = Date()
             if chats[index].messages.count == 2 { chats[index].title = ConversationTitle.fallback(for: text) }
         }
         chats[index].state = "running"

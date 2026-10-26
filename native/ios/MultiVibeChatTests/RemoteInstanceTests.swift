@@ -57,9 +57,10 @@ final class RemoteInstanceTests: XCTestCase {
     func testExistingRemoteConversationAndPreferenceDecodeWithoutDesktopControls() throws {
         let chat = RemoteChat(machine: UUID().uuidString, harness: "pi", model: "model")
         var chatObject = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(chat)) as? [String: Any])
-        for key in ["effort", "projectId", "projectName"] { chatObject.removeValue(forKey: key) }
+        for key in ["effort", "projectId", "projectName", "updatedAt"] { chatObject.removeValue(forKey: key) }
         let restored = try JSONDecoder().decode(RemoteChat.self, from: JSONSerialization.data(withJSONObject: chatObject))
         XCTAssertNil(restored.effort); XCTAssertNil(restored.projectId); XCTAssertNil(restored.projectName)
+        XCTAssertNil(restored.updatedAt)
 
         let oldPreference = Data(#"{"harness":"pi","model":"model"}"#.utf8)
         let preference = try JSONDecoder().decode(RemoteModelPreference.self, from: oldPreference)
