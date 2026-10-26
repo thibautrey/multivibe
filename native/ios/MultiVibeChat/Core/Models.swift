@@ -708,8 +708,9 @@ enum MessageBlock: Equatable {
 
     /// Model text may propose links, but must not launch app/deep-link schemes.
     static func inline(_ text: String) -> AttributedString {
-        var value = (try? AttributedString(markdown: text, options: .init(
-            interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
+        let presented = presentationText(text)
+        var value = (try? AttributedString(markdown: presented, options: .init(
+            interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(presented)
         let unsafeRanges = value.runs.compactMap { run -> Range<AttributedString.Index>? in
             guard let link = run.link else { return nil }
             guard ["https", "http"].contains(link.scheme?.lowercased() ?? ""),
@@ -718,6 +719,16 @@ enum MessageBlock: Equatable {
         }
         for range in unsafeRanges { value[range].link = nil }
         return value
+    }
+
+    /// Hosted web-search citations can arrive as private-use framing tokens without
+    /// a URL. Keep them in the stored message, but do not expose transport syntax.
+    private static func presentationText(_ text: String) -> String {
+        let framed = "\u{E200}cite\u{E202}[^\u{E200}\u{E201}\n]{1,240}\u{E201}"
+        let orphaned = "\u{E202}turn[0-9]+(?:search|news|image)[0-9]+(?:\u{E202}turn[0-9]+(?:search|news|image)[0-9]+)*\u{E201}?"
+        return text
+            .replacingOccurrences(of: framed, with: "", options: [.regularExpression, .caseInsensitive])
+            .replacingOccurrences(of: orphaned, with: "", options: [.regularExpression, .caseInsensitive])
     }
 }
 

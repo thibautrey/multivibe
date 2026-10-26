@@ -2036,19 +2036,7 @@ private struct MarkdownMessageContent: View {
                             Capsule().fill(MultiVibeTheme.accent).frame(width: 3)
                         }
                 case .table(let rows):
-                    ScrollView(.horizontal) {
-                        Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 9) {
-                            ForEach(Array(rows.enumerated()), id: \.offset) { row, cells in
-                                GridRow {
-                                    ForEach(Array(cells.enumerated()), id: \.offset) { _, cell in
-                                        Text(MessageBlock.inline(cell)).font(row == 0 ? .subheadline.bold() : .subheadline)
-                                            .padding(.vertical, 3).textSelection(.enabled)
-                                    }
-                                }
-                                if row == 0 { Divider().gridCellUnsizedAxes(.horizontal) }
-                            }
-                        }.padding(12)
-                    }.background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 14))
+                    MarkdownTable(rows: rows)
                 case .code(let text, let language):
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
@@ -2067,6 +2055,43 @@ private struct MarkdownMessageContent: View {
                 }
             }
         }
+    }
+}
+
+private struct MarkdownTable: View {
+    let rows: [[String]]
+    private var columnCount: Int { max(rows.map(\.count).max() ?? 0, 1) }
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            table.fixedSize(horizontal: true, vertical: false)
+            ScrollView(.horizontal) { table }
+                .scrollIndicators(.hidden)
+        }
+    }
+
+    private var table: some View {
+        Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 0) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { row, cells in
+                GridRow(alignment: .firstTextBaseline) {
+                    ForEach(Array(cells.enumerated()), id: \.offset) { _, cell in
+                        Text(MessageBlock.inline(cell))
+                            .font(.subheadline)
+                            .fontWeight(row == 0 ? .semibold : .regular)
+                            .padding(.vertical, row == 0 ? 7 : 8)
+                            .textSelection(.enabled)
+                    }
+                }
+                if row < rows.count - 1 {
+                    Divider().gridCellColumns(columnCount)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 4)
+        .background(Color(uiColor: .secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .accessibilityElement(children: .contain)
     }
 }
 
