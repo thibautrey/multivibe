@@ -10,7 +10,7 @@ test('Umbrel pins a multiarch index and preserves proxy authentication and data'
  assert.equal(services.server.ports,undefined);
  assert.deepEqual(services.app_proxy.environment,{APP_HOST:'multivibe-host_server_1',APP_PORT:1455});
  assert.equal(services.server.environment.MULTIVIBE_HOST_PUBLIC_URL,'http://${DEVICE_DOMAIN_NAME}:${APP_PROXY_PORT}');
- assert.deepEqual(services.server.volumes,['${APP_DATA_DIR}/data:/data','${APP_DATA_DIR}/models:/models']);
+ assert.deepEqual(services.server.volumes,['${APP_DATA_DIR}/data:/data']);
 });
 test('Umbrel rejects incomplete or unpinned images',()=>{
  for(const input of [{...descriptor,digest:'latest'},{...descriptor,manifests:descriptor.manifests.slice(0,1)},{...descriptor,mediaType:'application/vnd.oci.image.manifest.v1+json'}]) assert.throws(()=>umbrelPackage('1.2.3',input));

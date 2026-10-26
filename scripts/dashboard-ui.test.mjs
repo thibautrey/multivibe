@@ -10,9 +10,13 @@ import { CORE_CAPABILITIES, CLOUD_CAPABILITIES, dashboardResourceAllowed, provid
 import { validateSmartAlias, evaluateAliasPolicy, WeightedFairScheduler } from '../packages/ui/src/domain/routing-kernel.ts';
 
 test('Cloud profile refuses all Host resources while retaining shared workspace APIs', () => {
-  for (const resource of ['host-update', 'host-update/check', 'host-harnesses', 'modules', 'modules/models', 'team-machine', 'provider-agent/local-worker', 'local-runtimes/discover', 'local-model-preparation', 'model-recommendations?need=coding', 'model-memory', 'cloud/connect', 'grok/import', 'usage/refresh-stale', 'quota-reset-forecast']) {
+  for (const resource of ['host-update', 'host-update/check', 'host-harnesses', 'modules', 'modules/models', 'cloud/connect', 'grok/import', 'usage/refresh-stale', 'quota-reset-forecast']) {
     assert.equal(dashboardResourceAllowed(resource, CLOUD_CAPABILITIES), false, resource);
     assert.equal(dashboardResourceAllowed(resource, CORE_CAPABILITIES), true, resource);
+  }
+  for (const resource of ['team-machine', 'provider-agent/local-worker', 'local-runtimes/discover', 'local-model-preparation', 'model-recommendations?need=coding', 'model-memory']) {
+    assert.equal(dashboardResourceAllowed(resource, CLOUD_CAPABILITIES), false, resource);
+    assert.equal(dashboardResourceAllowed(resource, CORE_CAPABILITIES), false, resource);
   }
   for (const resource of ['session','accounts','model-aliases','application-policies','traces?limit=20','stats/usage','/v1/capacity?model=gpt']) assert.equal(dashboardResourceAllowed(resource, CLOUD_CAPABILITIES), true, resource);
   for (const resource of ['../host-update','/admin/accounts','https://localhost/admin/config','//localhost/admin/config']) assert.equal(dashboardResourceAllowed(resource, CLOUD_CAPABILITIES), false, resource);

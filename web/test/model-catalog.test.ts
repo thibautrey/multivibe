@@ -40,10 +40,10 @@ test('unrelated custom endpoints do not unlock models and expired authentication
     [{ id: 'a', enabled: true, state: { needsTokenRefresh: true } }], [], []);
   assert.equal(blocked[0].routes[0].ready, false);
 });
-test('local discovery requires no cloud provider and SDK candidates retain namespaced IDs', () => {
+test('retired local accounts publish no models and SDK candidates retain namespaced IDs', () => {
   const result = aggregateModels([], [{ id: 'local', enabled: true, localRuntime: { source: 'multivibe-local-discovery', adapter: 'ollama', endpoint: 'http://localhost:11434', authentication: 'none', confirmedModelIds: ['qwen:latest'] } }], [],
     [{ id: 'anthropic', name: 'Anthropic', models: [{ id: 'claude', name: 'Claude' }] }]);
-  assert.equal(result.find(model => model.id === 'ollama/qwen:latest')?.routes[0].ready, true);
+  assert.equal(result.find(model => model.id === 'ollama/qwen:latest'), undefined);
   assert.equal(result.find(model => model.id === 'anthropic/claude')?.routes[0].sdkProvider, 'anthropic');
   assert.equal(result.find(model => model.id === 'anthropic/claude')?.logo, 'anthropic.svg');
 });
@@ -58,7 +58,7 @@ test('provider display names label models without changing their routable id', (
   assert.equal(model.routes[0].modelId, 'deepseek/deepseek-flash');
 });
 
-test('runtime-prefixed local models keep their runtime label and account route', () => {
+test('stale model readiness cannot reactivate a retired local account', () => {
   const result = aggregateModels(
     [{
       id: 'omlx/Qwen3.8-27B-4bit',
@@ -67,6 +67,7 @@ test('runtime-prefixed local models keep their runtime label and account route',
         provider_candidates: ['openai-compatible'],
         account_ids: ['local-runtime-omlx'],
         runtime: 'omlx',
+        ready: true,
         upstream_model_id: 'Qwen3.8-27B-4bit',
       },
     }],
@@ -77,7 +78,7 @@ test('runtime-prefixed local models keep their runtime label and account route',
   assert.equal(result[0].routes.length, 1);
   assert.equal(result[0].routes[0].source, 'local');
   assert.equal(result[0].routes[0].label, 'omlx');
-  assert.equal(result[0].routes[0].ready, true);
+  assert.equal(result[0].routes[0].ready, false);
 });
 
 test('model logos use canonical authors, known aliases, and provider metadata with a safe fallback', () => {

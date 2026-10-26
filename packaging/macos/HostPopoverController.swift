@@ -5,7 +5,6 @@ final class HostPopoverController: NSViewController {
     var pinnedQuotaProvider: String?
     var openDashboard: (() -> Void)?
     var openAssistant: (() -> Void)?
-    var configureWorker: (() -> Void)?
     var checkForUpdates: (() -> Void)?
     var installUpdate: (() -> Void)?
     var setStartAtLogin: ((Bool) -> Void)?
@@ -80,7 +79,6 @@ final class HostPopoverController: NSViewController {
 
     func render(
         summary: MenuBarSummary?,
-        workerNeedsSetup: Bool,
         status: String,
         operational: Bool,
         updateStatus: HostUpdateStatus?,
@@ -125,10 +123,7 @@ final class HostPopoverController: NSViewController {
         accountSection.spacing = 10
         renderAccounts(operational: operational)
         contentStack.addArrangedSubview(accountSection)
-        if workerNeedsSetup {
-            contentStack.addArrangedSubview(sectionLabel("Worker"))
-            contentStack.addArrangedSubview(workerSetupCard())
-        } else if let earnings = summary?.earnings, earnings.hasStartedEarning {
+        if let earnings = summary?.earnings, earnings.hasStartedEarning {
             contentStack.addArrangedSubview(sectionLabel("Earnings"))
             contentStack.addArrangedSubview(earningsCard(earnings))
         }
@@ -223,7 +218,6 @@ final class HostPopoverController: NSViewController {
 
     @objc func didOpenAssistant() { openAssistant?() }
     @objc func didOpenDashboard() { openDashboard?() }
-    @objc func didConfigureWorker() { configureWorker?() }
     @objc func didCheckForUpdates() { checkForUpdates?() }
     @objc func didInstallUpdate() { installUpdate?() }
     @objc func didChangeStartAtLogin() { setStartAtLogin?(startAtLoginButton.state == .on) }

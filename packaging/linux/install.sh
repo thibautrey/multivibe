@@ -100,19 +100,18 @@ SCRIPT_DIRECTORY=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P) || fail "the 
 SOURCE_ROOT=$SCRIPT_DIRECTORY
 SOURCE_HOST="$SOURCE_ROOT/bin/multivibe-host"
 SOURCE_MENU="$SOURCE_ROOT/bin/multivibe-host-menu"
-SOURCE_AGENT="$SOURCE_ROOT/bin/multivibe-provider-agent"
 SOURCE_UPDATER="$SOURCE_ROOT/bin/multivibe-host-updater"
 SOURCE_NODE="$SOURCE_ROOT/bin/node"
 SOURCE_VERIFIER="$SOURCE_ROOT/verify-provider-host.mjs"
 SOURCE_MANIFEST="$SOURCE_ROOT/manifest.json"
 
-for required in "$SOURCE_HOST" "$SOURCE_MENU" "$SOURCE_AGENT" "$SOURCE_UPDATER" "$SOURCE_NODE"; do
+for required in "$SOURCE_HOST" "$SOURCE_MENU" "$SOURCE_UPDATER" "$SOURCE_NODE"; do
   [ -f "$required" ] && [ ! -L "$required" ] && [ -x "$required" ] || fail "the extracted release is incomplete"
 done
 [ -f "$SOURCE_VERIFIER" ] && [ ! -L "$SOURCE_VERIFIER" ] || fail "the release verifier is unavailable"
 [ -f "$SOURCE_MANIFEST" ] && [ ! -L "$SOURCE_MANIFEST" ] || fail "the extracted release manifest is unavailable"
 
-printf 'Checking the release bundle and NVIDIA host...\n'
+printf 'Checking the release bundle...\n'
 "$SOURCE_NODE" "$SOURCE_VERIFIER" --directory "$SOURCE_ROOT" --require-runtime || fail "the release verifier rejected the bundle or this host"
 
 LOCAL_ROOT="$HOME/.local"

@@ -15,7 +15,7 @@ if (!Number.isSafeInteger(port) || port < 1024 || port > 65535) throw new Error(
 const origin = `http://127.0.0.1:${port}`;
 const command = process.argv[2];
 const run = (bin, args, options = {}) => execFileSync(bin, args, { cwd: repo, stdio: 'inherit', ...options });
-const environment = { ...process.env, MULTIVIBE_PROVIDER_ACCELERATOR: 'cpu', MULTIVIBE_HOST_DATA_DIR: data,
+const environment = { ...process.env, MULTIVIBE_HOST_DATA_DIR: data,
   MULTIVIBE_HOST_BIND: '127.0.0.1', MULTIVIBE_HOST_PORT: String(port), MULTIVIBE_HOST_PUBLIC_URL: origin };
 const write = (name, value) => fs.writeFileSync(path.join(root, name), JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
 fs.mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -29,18 +29,16 @@ if (command === 'install') {
     run('npm', ['ci', '--no-audit', '--no-fund'], { cwd: security });
     run('npm', ['run', 'build'], { cwd: security });
   }
-  for (const dir of ['bin', 'app/modules', 'resources/provider', 'runtime/ollama']) fs.mkdirSync(path.join(bundle, dir), { recursive: true });
+  for (const dir of ['bin', 'app/modules']) fs.mkdirSync(path.join(bundle, dir), { recursive: true });
   for (const item of ['dist', 'web-dist', 'node_modules', 'package.json']) fs.cpSync(path.join(repo, item), path.join(bundle, 'app', item), { recursive: true, dereference: true });
   fs.cpSync(security, path.join(bundle, 'app/modules/security'), { recursive: true, filter: src => !src.endsWith('/.git') });
   fs.copyFileSync(process.execPath, path.join(bundle, 'bin/node'));
-  for (const file of ['provider-model-catalog.json', 'provider-host-dependencies.json']) fs.copyFileSync(path.join(repo, 'packaging', file), path.join(bundle, 'resources/provider', file));
   const goImage = 'golang@sha256:d2d2bc1c84f7e60d7d2438a3836ae7d0c847f4888464e7ec9ba3a1339a1ee804';
-  for (const [source, binary] of [['host/application', 'multivibe-host'], ['host/updater', 'multivibe-host-updater'], ['provider-agent', 'multivibe-provider-agent']]) {
+  for (const [source, binary] of [['host/application', 'multivibe-host'], ['host/updater', 'multivibe-host-updater']]) {
     run('docker', ['run', '--rm', '--user', `${process.getuid()}:${process.getgid()}`, '-e', 'GOCACHE=/tmp/go-cache',
       '-v', `${repo}:/source:ro`, '-v', `${bundle}/bin:/output`, '-w', `/source/${source}`, goImage,
       'go', 'build', '-trimpath', '-o', `/output/${binary}`, '.']);
   }
-  fs.writeFileSync(path.join(bundle, 'runtime/ollama/DEVELOPMENT.txt'), 'Cloud connection lab: no bundled Ollama or model weights. Local inference is outside this installation.\n');
   run(path.join(bundle, 'bin/multivibe-host'), ['doctor'], { env: environment });
   write('installation.json', { kind: 'source-development-cloud-only', coreCommit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim(),
     nodeVersion: process.version, goImage, origin, installedAt: new Date().toISOString() });

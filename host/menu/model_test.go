@@ -82,13 +82,3 @@ func TestSerializeAccountOnlyMarksWindowsWithResetTimesPresent(t *testing.T) {
 		t.Fatalf("weekly-only window was not omitted from the display model: %q", model)
 	}
 }
-
-func TestParseEnrollmentLink(t *testing.T) {
-	token := "mve_" + strings.Repeat("a", 43)
-	if got, invalid := parseEnrollmentLink("multivibe://add-worker#enrollment_token=" + token); invalid || got != token {
-		t.Fatalf("valid enrollment link parsed as %q, invalid=%t", got, invalid)
-	}
-	if _, invalid := parseEnrollmentLink("multivibe://other#enrollment_token=" + token); !invalid {
-		t.Fatal("invalid enrollment link was accepted")
-	}
-}

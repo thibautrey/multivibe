@@ -24,50 +24,16 @@ export const V1_EDGE_BASE_URL =
   process.env.V1_EDGE_BASE_URL ?? `http://127.0.0.1:${V1_EDGE_PORT}`;
 export const V1_EDGE_INTERNAL_JOB_TOKEN =
   process.env.V1_EDGE_INTERNAL_JOB_TOKEN ?? "";
-export const PROVIDER_AGENT_ENABLED =
-  (process.env.PROVIDER_AGENT_ENABLED ?? "false") === "true";
 export const MULTIVIBE_HOST_APPLICATION =
   (process.env.MULTIVIBE_HOST_APPLICATION ?? "false") === "true";
 export const MULTIVIBE_HOST_UPDATER_BINARY =
   process.env.MULTIVIBE_HOST_UPDATER_BINARY?.trim() || undefined;
-export const PROVIDER_AGENT_BINARY =
-  process.env.PROVIDER_AGENT_BINARY ?? "/opt/multivibe/bin/multivibe-provider-agent";
 export const STORE_PATH = process.env.STORE_PATH ?? "/data/accounts.json";
 export const HOST_HARNESS_HOME_DIRECTORY =
   process.env.HOST_HARNESS_HOME_DIRECTORY?.trim() || os.homedir();
 export const HOST_HARNESS_INTEGRATIONS_STATE_PATH =
   process.env.HOST_HARNESS_INTEGRATIONS_STATE_PATH ??
   path.resolve(path.dirname(STORE_PATH), "host-harness-integrations.json");
-export const PROVIDER_AGENT_STATE_PATH =
-  process.env.PROVIDER_AGENT_STATE_PATH ?? path.resolve(path.dirname(STORE_PATH), "provider-agent-selection.json");
-export const PROVIDER_AGENT_RUNTIME_STATE_PATH =
-  process.env.PROVIDER_AGENT_RUNTIME_STATE_PATH ?? path.resolve(path.dirname(STORE_PATH), "provider-agent-runtime-endpoints.json");
-export const PROVIDER_AGENT_DEVICE_KEY_PATH =
-  process.env.PROVIDER_AGENT_DEVICE_KEY_PATH ?? path.resolve(path.dirname(STORE_PATH), "provider-agent-device-identity.json");
-export const PROVIDER_AGENT_ENROLLMENT_STATE_PATH =
-  process.env.PROVIDER_AGENT_ENROLLMENT_STATE_PATH ?? path.resolve(path.dirname(STORE_PATH), "provider-agent-cloud-enrollment.json");
-export const PROVIDER_AGENT_CAPACITY_POLICY_PATH =
-  process.env.PROVIDER_AGENT_CAPACITY_POLICY_PATH ?? path.resolve(path.dirname(STORE_PATH), "provider-agent-capacity-policy.json");
-export const PROVIDER_AGENT_CLOUD_API_URL =
-  process.env.PROVIDER_AGENT_CLOUD_API_URL ?? "https://auth.multivibe.cloud";
-export const PROVIDER_AGENT_DEMAND_PLAN_PATH =
-  process.env.PROVIDER_AGENT_DEMAND_PLAN_PATH ?? path.resolve(path.dirname(STORE_PATH), "provider-agent-demand-plan.json");
-export const PROVIDER_AGENT_MODEL_CATALOG_PATH =
-  process.env.PROVIDER_AGENT_MODEL_CATALOG_PATH;
-export const PROVIDER_AGENT_DEMAND_TRUSTED_KEYS =
-  process.env.PROVIDER_AGENT_DEMAND_TRUSTED_KEYS;
-export const PROVIDER_AGENT_MANAGED_ROOT =
-  process.env.PROVIDER_AGENT_MANAGED_ROOT;
-export const PROVIDER_AGENT_BUNDLED_OLLAMA_ROOT =
-  process.env.PROVIDER_AGENT_BUNDLED_OLLAMA_ROOT;
-export const PROVIDER_AGENT_DEPENDENCY_MANIFEST_PATH =
-  process.env.PROVIDER_AGENT_DEPENDENCY_MANIFEST_PATH;
-export const PROVIDER_AGENT_MANAGED_PLANNER_STATE_PATH =
-  process.env.PROVIDER_AGENT_MANAGED_PLANNER_STATE_PATH;
-export const PROVIDER_AGENT_OLLAMA_LISTEN =
-  process.env.PROVIDER_AGENT_OLLAMA_LISTEN;
-export const PROVIDER_AGENT_CUDA_VISIBLE_DEVICES =
-  process.env.PROVIDER_AGENT_CUDA_VISIBLE_DEVICES;
 export const MODULES_PATH =
   process.env.MODULES_PATH ?? path.join(path.dirname(STORE_PATH), "modules");
 export const BUNDLED_SECURITY_MODULE_PATH =

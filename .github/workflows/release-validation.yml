@@ -1,4 +1,4 @@
-name: Runtime catalog validation
+name: Release bundle validation
 
 on:
   pull_request:
@@ -29,7 +29,5 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22.23.2'
-      - run: npm run catalog:check
-      - run: go -C provider-agent test -race ./...
       - name: Verify release archive fixtures
         run: node --test scripts/provider-host/package-provider-host.test.mjs scripts/provider-host/verify-provider-host-archive-fixtures.test.mjs

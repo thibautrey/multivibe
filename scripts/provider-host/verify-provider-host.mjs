@@ -690,118 +690,6 @@ function canonicalJSON(value) {
   return JSON.stringify(value);
 }
 
-function demandTrustJSONMap(raw) {
-  if (typeof raw !== "string" || Buffer.byteLength(raw) < 1 ||
-    Buffer.byteLength(raw) > maximumProviderDemandTrustBytes) {
-    throw new Error("provider demand trust is invalid");
-  }
-  let offset = 0;
-  const whitespace = () => {
-    while (offset < raw.length && /[\u0009\u000a\u000d\u0020]/u.test(raw[offset])) offset += 1;
-  };
-  const string = () => {
-    whitespace();
-    if (raw[offset] !== '"') throw new Error("provider demand trust is invalid");
-    const start = offset;
-    offset += 1;
-    while (offset < raw.length) {
-      const character = raw[offset];
-      if (character === '"') {
-        offset += 1;
-        try {
-          const value = JSON.parse(raw.slice(start, offset));
-          if (typeof value !== "string") throw new Error("provider demand trust is invalid");
-          return value;
-        } catch {
-          throw new Error("provider demand trust is invalid");
-        }
-      }
-      if (character === "\\") {
-        offset += 1;
-        if (offset >= raw.length || !/["\\/bfnrtu]/u.test(raw[offset])) {
-          throw new Error("provider demand trust is invalid");
-        }
-        if (raw[offset] === "u") {
-          if (!/^[0-9a-fA-F]{4}$/u.test(raw.slice(offset + 1, offset + 5))) {
-            throw new Error("provider demand trust is invalid");
-          }
-          offset += 4;
-        }
-      } else if (character.charCodeAt(0) < 0x20) {
-        throw new Error("provider demand trust is invalid");
-      }
-      offset += 1;
-    }
-    throw new Error("provider demand trust is invalid");
-  };
-
-  whitespace();
-  if (raw[offset] !== "{") throw new Error("provider demand trust is invalid");
-  offset += 1;
-  whitespace();
-  const entries = new Map();
-  if (raw[offset] !== "}") {
-    while (true) {
-      const key = string();
-      whitespace();
-      if (raw[offset] !== ":") throw new Error("provider demand trust is invalid");
-      offset += 1;
-      const value = string();
-      if (entries.has(key)) throw new Error("provider demand trust contains duplicate keys");
-      entries.set(key, value);
-      whitespace();
-      if (raw[offset] === "}") break;
-      if (raw[offset] !== ",") throw new Error("provider demand trust is invalid");
-      offset += 1;
-    }
-  }
-  if (raw[offset] !== "}") throw new Error("provider demand trust is invalid");
-  offset += 1;
-  whitespace();
-  if (offset !== raw.length || entries.size < 1 || entries.size > maximumProviderDemandTrustKeys) {
-    throw new Error("provider demand trust is invalid");
-  }
-  return entries;
-}
-
-export function normalizeProviderDemandTrust(raw) {
-  const entries = demandTrustJSONMap(raw);
-  const normalized = {};
-  for (const [declaredID, encodedSPKI] of [...entries].sort(([left], [right]) => left.localeCompare(right))) {
-    if (!/^ed25519:[A-Za-z0-9_-]{43}$/u.test(declaredID) || typeof encodedSPKI !== "string") {
-      throw new Error("provider demand trust is invalid");
-    }
-    const der = Buffer.from(encodedSPKI, "base64");
-    if (der.length < 1 || der.length > 256 || der.toString("base64") !== encodedSPKI) {
-      throw new Error("provider demand trust is invalid");
-    }
-    let publicKey;
-    try {
-      publicKey = createPublicKey({ key: der, format: "der", type: "spki" });
-    } catch {
-      throw new Error("provider demand trust is invalid");
-    }
-    const canonicalDER = publicKey.export({ format: "der", type: "spki" });
-    const computedID = `ed25519:${createHash("sha256").update(der).digest("base64url")}`;
-    if (publicKey.asymmetricKeyType !== "ed25519" || !Buffer.from(canonicalDER).equals(der) || computedID !== declaredID) {
-      throw new Error("provider demand trust is invalid");
-    }
-    normalized[declaredID] = encodedSPKI;
-  }
-  return `${canonicalJSON(normalized)}\n`;
-}
-
-async function validateProviderDemandTrustFile(file) {
-  const info = await lstat(file);
-  if (!info.isFile() || info.isSymbolicLink() || info.size < 1 || info.size > maximumProviderDemandTrustBytes) {
-    throw new Error("provider demand trust file is invalid");
-  }
-  const raw = await readFile(file, "utf8");
-  if (normalizeProviderDemandTrust(raw) !== raw) {
-    throw new Error("provider demand trust file is not canonical");
-  }
-}
-
 async function readBinaryHeader(file, bytes = 4096) {
   const handle = await open(file, "r");
   try {
@@ -853,392 +741,27 @@ async function validateNativeFiles(root, manifest) {
   const windows = manifest.platform === "windows";
   const prefix = mac ? "MultiVibe Host.app/Contents/" : "";
   const explicit = mac ? [
-    `${prefix}Frameworks/node`, `${prefix}Resources/ollama-runtime/ollama`, `${prefix}Resources/ollama-runtime/llama-server`,
+    `${prefix}Frameworks/node`, `${prefix}Helpers/multivibe-host-updater`,
     `${prefix}Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework`,
     `${prefix}Frameworks/MultiVibe Chromium Helper.app/Contents/MacOS/MultiVibe Chromium Helper`,
-    `${prefix}Resources/ollama-runtime/llama-quantize`, `${prefix}Helpers/multivibe-provider-agent`,
-    `${prefix}Helpers/multivibe-runtime-benchmark`, `${prefix}Helpers/multivibe-v1-edge`,
+    `${prefix}Helpers/multivibe-v1-edge`,
     `${prefix}MacOS/multivibe-host`,
     `${prefix}MacOS/MultiVibe Host`,
   ] : windows ? [
-    "bin/node.exe", "runtime/ollama/ollama.exe", "bin/multivibe-provider-agent.exe", "bin/multivibe-runtime-benchmark.exe",
+    "bin/node.exe",
     "bin/multivibe-host-updater.exe", "bin/multivibe-host.exe", "bin/multivibe-host-menu.exe",
-  ] : ["bin/node", "runtime/ollama/bin/ollama", "bin/multivibe-provider-agent", "bin/multivibe-runtime-benchmark", "bin/multivibe-host", "bin/multivibe-host-menu"];
-  const runtimePrefix = mac ? `${prefix}Resources/ollama-runtime/` : "runtime/ollama/";
+  ] : ["bin/node", "bin/multivibe-host-updater", "bin/multivibe-host", "bin/multivibe-host-menu"];
   const native = manifest.files.filter((entry) => explicit.includes(entry.path) ||
-    (mac ? /\.(?:dylib|node|so)$/u.test(entry.path) : windows ? /\.(?:dll|exe|node)$/iu.test(entry.path) : /(?:\.node$|\.so(?:\.|$))/u.test(entry.path)) ||
-    (entry.path.startsWith(runtimePrefix) && (entry.mode & 0o111) !== 0));
+    (mac ? /\.(?:dylib|node|so)$/u.test(entry.path) : windows ? /\.(?:dll|exe|node)$/iu.test(entry.path) : /(?:\.node$|\.so(?:\.|$))/u.test(entry.path)));
   for (const entry of native) {
     const header = await readBinaryHeader(path.join(root, entry.path), windows ? 64 * 1024 : 4096);
     const macCPUType = manifest.architecture === "arm64" ? 0x0100000c : manifest.architecture === "amd64" ? 0x01000007 : null;
     const valid = mac ? (macCPUType !== null && isMachO(header) &&
-      (entry.path.startsWith(runtimePrefix) && !explicit.includes(entry.path) || isMachOArchitecture(header, macCPUType))) :
+      isMachOArchitecture(header, macCPUType)) :
       windows ? isPEAmd64(header) : isELFArchitecture(header, manifest.architecture);
     if (!valid) {
       throw new Error(`provider-host native file has the wrong architecture: ${entry.path}`);
     }
-  }
-}
-
-function parseCatalogHex(value, maximum) {
-  if (typeof value !== "string" || !/^0x[0-9a-f]{1,16}$/u.test(value)) return null;
-  const parsed = BigInt(value);
-  return parsed >= 1n && parsed <= maximum ? parsed : null;
-}
-
-export async function validateProviderModelCatalogAssessments(root, platform, declaredFiles = null) {
-  const relativeCatalog = platform === "darwin" ?
-    "MultiVibe Host.app/Contents/Resources/provider/provider-model-catalog.json" :
-    "resources/provider/provider-model-catalog.json";
-  const catalogPath = path.join(root, ...relativeCatalog.split("/"));
-  const catalogInfo = await lstat(catalogPath);
-  if (!catalogInfo.isFile() || catalogInfo.isSymbolicLink() || catalogInfo.size < 1 || catalogInfo.size > 1024 * 1024) {
-    throw new Error("provider model catalog must be a bounded regular file");
-  }
-  const raw = await readFile(catalogPath, "utf8");
-  let catalog;
-  try {
-    catalog = JSON.parse(raw);
-  } catch {
-    throw new Error("provider model catalog JSON is invalid");
-  }
-  if (!exactKeys(catalog, ["schema_version", "models"]) || catalog.schema_version !== "provider-model-catalog-v1" ||
-    !Array.isArray(catalog.models) || catalog.models.length < 1 || catalog.models.length > 64) {
-    throw new Error("provider model catalog schema is invalid");
-  }
-  const modelIDs = new Set();
-  const ollamaModels = new Set();
-  const manifestPaths = new Set();
-  const assessmentFiles = new Set();
-  let previousModelID = "";
-  for (const model of catalog.models) {
-    if (!exactKeys(model, ["canonical_model_id", "ollama_model", "ollama_manifest_path", "content_digest",
-      "download_bytes_hex", "gpu_utilization_percent", "vram_estimates", "license"]) ||
-      typeof model.canonical_model_id !== "string" ||
-      !/^(?:hf|openrouter):[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9._-]{0,127}(?:\/[a-z0-9][a-z0-9._-]{0,127})*$/u.test(model.canonical_model_id) ||
-      model.canonical_model_id <= previousModelID || modelIDs.has(model.canonical_model_id) ||
-      typeof model.ollama_model !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}:[a-z0-9][a-z0-9._-]{0,63}$/u.test(model.ollama_model) ||
-      ollamaModels.has(model.ollama_model) || typeof model.ollama_manifest_path !== "string" ||
-      model.ollama_manifest_path.length > 256 || !safeRelative(model.ollama_manifest_path) ||
-      manifestPaths.has(model.ollama_manifest_path) || typeof model.content_digest !== "string" ||
-      !/^sha256:[a-f0-9]{64}$/u.test(model.content_digest) ||
-      parseCatalogHex(model.download_bytes_hex, 32n * 1024n * 1024n * 1024n * 1024n) === null ||
-      !Number.isSafeInteger(model.gpu_utilization_percent) || model.gpu_utilization_percent < 1 ||
-      model.gpu_utilization_percent > 100 || !Array.isArray(model.vram_estimates) ||
-      model.vram_estimates.length < 1 || model.vram_estimates.length > 7 ||
-      !exactKeys(model.license, ["license_id", "hosted_inference_allowed", "assessment_path", "assessment_digest"]) ||
-      typeof model.license.license_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9.+-]{0,63}$/u.test(model.license.license_id) ||
-      model.license.hosted_inference_allowed !== true || typeof model.license.assessment_digest !== "string" ||
-      !/^[a-f0-9]{64}$/u.test(model.license.assessment_digest) || typeof model.license.assessment_path !== "string" ||
-      !safeRelative(model.license.assessment_path) || model.license.assessment_path.length > 256 ||
-      !model.license.assessment_path.startsWith("provider-model-license-assessments/") ||
-      !model.license.assessment_path.endsWith(".md")) {
-      throw new Error("provider model catalog entry is invalid");
-    }
-    modelIDs.add(model.canonical_model_id);
-    ollamaModels.add(model.ollama_model);
-    manifestPaths.add(model.ollama_manifest_path);
-    previousModelID = model.canonical_model_id;
-    let previousContext = 0;
-    for (const estimate of model.vram_estimates) {
-      if (!exactKeys(estimate, ["context_tokens", "estimated_vram_bytes_hex"]) ||
-        ![2048, 4096, 8192, 16384, 32768, 65536, 131072].includes(estimate.context_tokens) ||
-        estimate.context_tokens <= previousContext ||
-        parseCatalogHex(estimate.estimated_vram_bytes_hex, 4n * 1024n * 1024n * 1024n * 1024n) === null) {
-        throw new Error("provider model catalog VRAM estimate is invalid");
-      }
-      previousContext = estimate.context_tokens;
-    }
-    const assessmentRelative = `THIRD_PARTY/${model.license.assessment_path}`;
-    if (declaredFiles !== null && !declaredFiles.has(assessmentRelative)) {
-      throw new Error("provider model license assessment is absent from the signed manifest");
-    }
-    const assessmentPath = path.join(root, ...assessmentRelative.split("/"));
-    const assessmentInfo = await lstat(assessmentPath);
-    if (!assessmentInfo.isFile() || assessmentInfo.isSymbolicLink() || assessmentInfo.size < 1 ||
-      assessmentInfo.size > maximumArchiveMetadataBytes || await sha256(assessmentPath) !== model.license.assessment_digest) {
-      throw new Error(`provider model license assessment digest mismatch: ${model.license.assessment_path}`);
-    }
-    assessmentFiles.add(assessmentRelative);
-  }
-  if (declaredFiles !== null) {
-    const declaredAssessments = [...declaredFiles].filter((file) =>
-      file.startsWith("THIRD_PARTY/provider-model-license-assessments/"));
-    if (declaredAssessments.length !== assessmentFiles.size ||
-      declaredAssessments.some((file) => !assessmentFiles.has(file))) {
-      throw new Error("provider model license assessments and catalog differ");
-    }
-  }
-}
-
-function validRuntimeDigest(value) {
-  return typeof value === "string" && /^sha256:[a-f0-9]{64}$/u.test(value);
-}
-
-function validRuntimeSlug(value, maximum = 64) {
-  return typeof value === "string" && value.length <= maximum && /^[a-z0-9][a-z0-9._-]*$/u.test(value);
-}
-
-function validRuntimeLicense(value) {
-  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9.+-]{0,63}$/u.test(value);
-}
-
-function validBoundedInteger(value, minimum, maximum) {
-  return Number.isSafeInteger(value) && value >= minimum && value <= maximum;
-}
-
-function validRuntimeHTTPSURL(value) {
-  try {
-    const parsed = new URL(value);
-    return parsed.protocol === "https:" && !parsed.username && !parsed.password && !parsed.hash &&
-      parsed.hostname.length > 0 && parsed.pathname.length <= 2048 && !/[\0-\x1f\x7f]/u.test(value);
-  } catch {
-    return false;
-  }
-}
-
-async function readProviderJSON(root, relative) {
-  const filePath = path.join(root, ...relative.split("/"));
-  const info = await lstat(filePath);
-  if (!info.isFile() || info.isSymbolicLink() || info.size < 2 || info.size > maximumArchiveMetadataBytes) {
-    throw new Error(`provider runtime resource must be a bounded regular file: ${relative}`);
-  }
-  try {
-    return JSON.parse(await readFile(filePath, "utf8"));
-  } catch {
-    throw new Error(`provider runtime resource JSON is invalid: ${relative}`);
-  }
-}
-
-function goJSON(value) {
-  return JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e").replaceAll("&", "\\u0026")
-    .replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
-}
-
-function runtimeProfileDigest(profile) {
-  const material = {
-    schema_version: profile.schema_version,
-    id: profile.id,
-    profile_digest: "",
-    priority: profile.priority,
-    model: {
-      id: profile.model.id,
-      content_digest: profile.model.content_digest,
-      format: profile.model.format,
-      quantization: profile.model.quantization,
-      artifact_bytes: profile.model.artifact_bytes,
-      license: profile.model.license,
-      hosted_inference_allowed: profile.model.hosted_inference_allowed,
-      license_assessment_digest: profile.model.license_assessment_digest,
-    },
-    hardware: {
-      class: profile.hardware.class,
-      os: profile.hardware.os,
-      architecture: profile.hardware.architecture,
-      accelerator_kind: profile.hardware.accelerator_kind,
-      minimum_accelerator_memory_bytes: profile.hardware.minimum_accelerator_memory_bytes,
-      unified_memory: profile.hardware.unified_memory,
-    },
-    runtime: {
-      backend_id: profile.runtime.backend_id,
-      contract_version: profile.runtime.contract_version,
-      adapter_version: profile.runtime.adapter_version,
-      runtime_artifact_digest: profile.runtime.runtime_artifact_digest,
-    },
-    tuning: {
-      context_tokens: profile.tuning.context_tokens,
-      batch_size: profile.tuning.batch_size,
-      parallelism: profile.tuning.parallelism,
-      gpu_offload_layers: profile.tuning.gpu_offload_layers,
-      estimated_memory_bytes: profile.tuning.estimated_memory_bytes,
-      reserve_memory_bytes: profile.tuning.reserve_memory_bytes,
-    },
-    provenance: {
-      recommendation_source_url: profile.provenance.recommendation_source_url,
-      recommendation_digest: profile.provenance.recommendation_digest,
-      method: profile.provenance.method,
-      license: profile.provenance.license,
-    },
-  };
-  return `sha256:${createHash("sha256").update(goJSON(material)).digest("hex")}`;
-}
-
-function runtimeCatalogDigest(catalog) {
-  const provenance = {
-    source_url: catalog.provenance.source_url,
-    source_digest: catalog.provenance.source_digest,
-  };
-  if (catalog.provenance.migrated_from) provenance.migrated_from = catalog.provenance.migrated_from;
-  const material = {
-    schema_version: catalog.schema_version,
-    format: catalog.format,
-    license: catalog.license,
-    provenance,
-    profiles: catalog.profiles.map((profile) => ({ id: profile.id, digest: profile.profile_digest })),
-  };
-  return `sha256:${createHash("sha256").update(goJSON(material)).digest("hex")}`;
-}
-
-function validateRuntimeProfile(profile, modelByID, modelCatalogDigest) {
-  const maximumMemory = 2 ** 50;
-  if (!exactKeys(profile, ["schema_version", "id", "profile_digest", "priority", "model", "hardware", "runtime", "tuning", "provenance"]) ||
-    profile.schema_version !== "provider-runtime-profile-v3" || !validRuntimeSlug(profile.id, 128) ||
-    !validRuntimeDigest(profile.profile_digest) || profile.profile_digest !== runtimeProfileDigest(profile) ||
-    !validBoundedInteger(profile.priority, 1, 65535) ||
-    !exactKeys(profile.model, ["id", "content_digest", "format", "quantization", "artifact_bytes", "license",
-      "hosted_inference_allowed", "license_assessment_digest"]) ||
-    typeof profile.model.id !== "string" || !/^[a-z][a-z0-9-]{0,31}:[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9._-]{0,127}(?:\/[a-z0-9][a-z0-9._-]{0,127})*$/u.test(profile.model.id) ||
-    !validRuntimeDigest(profile.model.content_digest) || !validRuntimeSlug(profile.model.format) ||
-    !validRuntimeSlug(profile.model.quantization) || !validBoundedInteger(profile.model.artifact_bytes, 1, maximumMemory) ||
-    !validRuntimeLicense(profile.model.license) || profile.model.hosted_inference_allowed !== true ||
-    !validRuntimeDigest(profile.model.license_assessment_digest) ||
-    !exactKeys(profile.hardware, ["class", "os", "architecture", "accelerator_kind", "minimum_accelerator_memory_bytes", "unified_memory"]) ||
-    !validRuntimeSlug(profile.hardware.class) || !validRuntimeSlug(profile.hardware.os) ||
-    !validRuntimeSlug(profile.hardware.architecture) || !validRuntimeSlug(profile.hardware.accelerator_kind) ||
-    !validBoundedInteger(profile.hardware.minimum_accelerator_memory_bytes, 1, maximumMemory) ||
-    typeof profile.hardware.unified_memory !== "boolean" ||
-    !exactKeys(profile.runtime, ["backend_id", "contract_version", "adapter_version", "runtime_artifact_digest"]) ||
-    !validRuntimeSlug(profile.runtime.backend_id) || !validRuntimeSlug(profile.runtime.contract_version, 128) ||
-    !validRuntimeSlug(profile.runtime.adapter_version, 128) || !validRuntimeDigest(profile.runtime.runtime_artifact_digest) ||
-    !exactKeys(profile.tuning, ["context_tokens", "batch_size", "parallelism", "gpu_offload_layers", "estimated_memory_bytes", "reserve_memory_bytes"]) ||
-    !validBoundedInteger(profile.tuning.context_tokens, 1, 1048576) ||
-    !validBoundedInteger(profile.tuning.batch_size, 1, 4096) ||
-    !validBoundedInteger(profile.tuning.parallelism, 1, 256) ||
-    !validBoundedInteger(profile.tuning.gpu_offload_layers, 0, 4096) ||
-    !validBoundedInteger(profile.tuning.estimated_memory_bytes, 1, maximumMemory) ||
-    !validBoundedInteger(profile.tuning.reserve_memory_bytes, 1, maximumMemory) ||
-    profile.tuning.estimated_memory_bytes + profile.tuning.reserve_memory_bytes > profile.hardware.minimum_accelerator_memory_bytes ||
-    !exactKeys(profile.provenance, ["recommendation_source_url", "recommendation_digest", "method", "license"]) ||
-    !validRuntimeHTTPSURL(profile.provenance.recommendation_source_url) ||
-    profile.provenance.recommendation_digest !== modelCatalogDigest || !validRuntimeSlug(profile.provenance.method) ||
-    !validRuntimeLicense(profile.provenance.license)) {
-    throw new Error("provider runtime profile is invalid");
-  }
-  const model = modelByID.get(profile.model.id);
-  if (!model || model.content_digest !== profile.model.content_digest ||
-    parseCatalogHex(model.download_bytes_hex, BigInt(maximumMemory)) !== BigInt(profile.model.artifact_bytes) ||
-    model.license.license_id !== profile.model.license || model.license.hosted_inference_allowed !== true ||
-    `sha256:${model.license.assessment_digest}` !== profile.model.license_assessment_digest) {
-    throw new Error("provider runtime profile and model catalog differ");
-  }
-}
-
-function validateRuntimeSchema(schema, name) {
-  const expectedID = `https://multivibe.cloud/schemas/${name}`;
-  const expectedKeys = name === "provider-runtime-benchmark-result.schema.json" ?
-    ["$schema", "$id", "title", "type", "additionalProperties", "required", "properties", "allOf", "$defs"] :
-    name === "provider-runtime-benchmark-spec.schema.json" || name === "provider-runtime-profiles.schema.json" ?
-      ["$schema", "$id", "title", "type", "additionalProperties", "required", "properties", "$defs"] :
-      ["$schema", "$id", "title", "type", "additionalProperties", "required", "properties"];
-  if (!exactKeys(schema, expectedKeys) || schema.$schema !== "https://json-schema.org/draft/2020-12/schema" ||
-    schema.$id !== expectedID || schema.type !== "object" || schema.additionalProperties !== false ||
-    !Array.isArray(schema.required) || schema.required.length < 1 || new Set(schema.required).size !== schema.required.length ||
-    !schema.properties || typeof schema.properties !== "object" || Array.isArray(schema.properties) ||
-    schema.required.some((property) => !Object.hasOwn(schema.properties, property))) {
-    throw new Error(`provider runtime schema is invalid: ${name}`);
-  }
-  if (name === "provider-runtime-profiles.schema.json" &&
-    (schema.properties.schema_version?.const !== "provider-runtime-profile-catalog-v3" || schema.properties.profiles?.minItems !== 1)) {
-    throw new Error(`provider runtime schema is incomplete: ${name}`);
-  }
-  if (name === "provider-runtime-profile-overrides.schema.json" &&
-    schema.properties.schema_version?.const !== "provider-runtime-profile-overrides-v1") {
-    throw new Error(`provider runtime schema is incomplete: ${name}`);
-  }
-  if (name === "provider-runtime-benchmark-spec.schema.json" &&
-    (schema.properties.schema_version?.const !== "provider-runtime-benchmark-spec-v1" ||
-      schema.properties.dataset?.const !== "multivibe-synthetic-term-sequence-v1" ||
-      !schema.required.includes("requested_runtime_settings") || !schema.required.includes("synthetic_terms"))) {
-    throw new Error(`provider runtime schema is incomplete: ${name}`);
-  }
-  if (name === "provider-runtime-benchmark-result.schema.json" &&
-    (schema.properties.schema_version?.const !== "provider-runtime-benchmark-result-v1" ||
-      schema.properties.pass_scope?.const !== "synthetic-runtime-execution-only" ||
-      schema.properties.profile_compatibility_attested?.const !== false ||
-      !schema.required.includes("runtime_settings_measurement") || !schema.required.includes("observed_prompt_tokens") ||
-      !schema.$defs?.memory?.required?.includes("sampled_peak_bytes") ||
-      !schema.$defs?.memory?.required?.includes("samples_per_run"))) {
-    throw new Error(`provider runtime schema is incomplete: ${name}`);
-  }
-  if (name === "provider-runtime-benchmark-store.schema.json" &&
-    (schema.properties.schema_version?.const !== "provider-runtime-benchmark-store-v1" ||
-      schema.properties.results?.maxItems !== 256 ||
-      schema.properties.results?.items?.$ref !== "provider-runtime-benchmark-result.schema.json")) {
-    throw new Error(`provider runtime schema is incomplete: ${name}`);
-  }
-}
-
-export async function validateProviderRuntimeResources(root, platform) {
-  const prefix = platform === "darwin" ? "MultiVibe Host.app/Contents/Resources/provider" : "resources/provider";
-  const modelCatalogRelative = `${prefix}/provider-model-catalog.json`;
-  const modelCatalogPath = path.join(root, ...modelCatalogRelative.split("/"));
-  const modelCatalog = await readProviderJSON(root, modelCatalogRelative);
-  const modelCatalogRaw = await readFile(modelCatalogPath);
-  const modelByID = new Map(modelCatalog.models.map((model) => [model.canonical_model_id, model]));
-  if (modelByID.size !== modelCatalog.models.length) throw new Error("provider model catalog contains duplicate IDs");
-  const modelCatalogDigest = `sha256:${createHash("sha256").update(modelCatalogRaw).digest("hex")}`;
-
-  const catalog = await readProviderJSON(root, `${prefix}/provider-runtime-profiles.json`);
-  const provenanceKeys = catalog?.provenance?.migrated_from ? ["source_url", "source_digest", "migrated_from"] :
-    ["source_url", "source_digest"];
-  if (!exactKeys(catalog, ["schema_version", "format", "catalog_digest", "license", "provenance", "profiles"]) ||
-    catalog.schema_version !== "provider-runtime-profile-catalog-v3" || catalog.format !== "multivibe-runtime-profile-catalog" ||
-    !validRuntimeDigest(catalog.catalog_digest) || !validRuntimeLicense(catalog.license) ||
-    !exactKeys(catalog.provenance, provenanceKeys) || !validRuntimeHTTPSURL(catalog.provenance.source_url) ||
-    catalog.provenance.source_digest !== modelCatalogDigest ||
-    (catalog.provenance.migrated_from !== undefined && catalog.provenance.migrated_from !== "provider-runtime-workload-profile-v2") ||
-    !Array.isArray(catalog.profiles) || catalog.profiles.length < 1 || catalog.profiles.length > 512) {
-    throw new Error("provider runtime profile catalog is invalid");
-  }
-  let previousID = "";
-  for (const profile of catalog.profiles) {
-    if (typeof profile.id !== "string" || profile.id <= previousID) throw new Error("provider runtime profiles are not uniquely sorted");
-    validateRuntimeProfile(profile, modelByID, modelCatalogDigest);
-    previousID = profile.id;
-  }
-  if (catalog.catalog_digest !== runtimeCatalogDigest(catalog)) {
-    throw new Error("provider runtime profile catalog digest mismatch");
-  }
-
-  const schemaNames = [
-    "provider-runtime-profiles.schema.json",
-    "provider-runtime-profile-overrides.schema.json",
-    "provider-runtime-benchmark-spec.schema.json",
-    "provider-runtime-benchmark-result.schema.json",
-    "provider-runtime-benchmark-store.schema.json",
-  ];
-  for (const name of schemaNames) {
-    validateRuntimeSchema(await readProviderJSON(root, `${prefix}/schemas/${name}`), name);
-  }
-
-  const overrides = await readProviderJSON(root, `${prefix}/examples/runtime-profile-overrides.json`);
-  const overrideKeys = ["schema_version", "require_profile_id", "require_backend_id", "context_tokens", "batch_size",
-    "parallelism", "gpu_offload_layers", "maximum_memory_bytes"];
-  if (!exactKeys(overrides, overrideKeys) || overrides.schema_version !== "provider-runtime-profile-overrides-v1" ||
-    !validRuntimeSlug(overrides.require_profile_id, 128) || !validRuntimeSlug(overrides.require_backend_id) ||
-    !validBoundedInteger(overrides.context_tokens, 1, 1048576) || !validBoundedInteger(overrides.batch_size, 1, 4096) ||
-    !validBoundedInteger(overrides.parallelism, 1, 256) || !validBoundedInteger(overrides.gpu_offload_layers, 0, 4096) ||
-    !validBoundedInteger(overrides.maximum_memory_bytes, 1, 2 ** 50)) {
-    throw new Error("provider runtime override example is invalid");
-  }
-
-  const benchmark = await readProviderJSON(root, `${prefix}/examples/runtime-benchmark-spec.json`);
-  const benchmarkKeys = ["schema_version", "enabled", "benchmark_id", "profile_id", "profile_digest", "catalog_digest",
-    "model_id", "model_content_digest", "hardware_class", "runtime_id", "dataset", "runs", "warmup_runs",
-    "synthetic_terms", "maximum_output_tokens", "requested_runtime_settings", "seed", "temperature_milli",
-    "run_timeout_milliseconds", "induce_oom"];
-  if (!exactKeys(benchmark, benchmarkKeys) || benchmark.schema_version !== "provider-runtime-benchmark-spec-v1" ||
-    benchmark.enabled !== false || benchmark.runtime_id !== "ollama-managed" ||
-    benchmark.dataset !== "multivibe-synthetic-term-sequence-v1" || benchmark.seed !== 7 ||
-    benchmark.temperature_milli !== 0 || benchmark.induce_oom !== false ||
-    !exactKeys(benchmark.requested_runtime_settings, ["context_tokens", "batch_size", "parallelism", "gpu_offload_layers"]) ||
-    !validBoundedInteger(benchmark.synthetic_terms, 32, 8192) ||
-    !validBoundedInteger(benchmark.maximum_output_tokens, 8, 2048) ||
-    !validBoundedInteger(benchmark.requested_runtime_settings.context_tokens, 1, 1048576) ||
-    !validBoundedInteger(benchmark.requested_runtime_settings.batch_size, 1, 4096) ||
-    benchmark.requested_runtime_settings.parallelism !== 1 ||
-    !validBoundedInteger(benchmark.requested_runtime_settings.gpu_offload_layers, 1, 4096)) {
-    throw new Error("provider runtime benchmark example is invalid");
   }
 }
 
@@ -1250,7 +773,7 @@ async function validateTree(root, options, archiveInspection) {
   if (Buffer.byteLength(manifestRaw) > 4 * 1024 * 1024) throw new Error("provider-host manifest is too large");
   const manifest = JSON.parse(manifestRaw);
   const manifestKeys = ["schemaVersion", "product", "version", "sourceCommit", "platform", "architecture",
-    "sourceTreeDirty", "releaseReady", "macOSSignature", "node", "managedRuntime", "files"];
+    "sourceTreeDirty", "releaseReady", "macOSSignature", "node", "files"];
   const targetIsValid = (manifest.platform === "darwin" && ["arm64", "amd64"].includes(manifest.architecture)) ||
     ((manifest.platform === "linux" && ["amd64", "arm64"].includes(manifest.architecture)) || (manifest.platform === "windows" && manifest.architecture === "amd64"));
   if (!exactKeys(manifest, manifestKeys) || manifest.schemaVersion !== 1 || manifest.product !== "multivibe-host" ||
@@ -1268,9 +791,6 @@ async function validateTree(root, options, archiveInspection) {
   }
   validateDependency("Node", manifest.node, {
     "darwin-amd64": "tar-gzip", "darwin-arm64": "tar-gzip", "linux-amd64": "tar-gzip", "linux-arm64": "tar-gzip", "windows-amd64": "zip",
-  });
-  validateDependency("Ollama", manifest.managedRuntime, {
-    "darwin-amd64": "tar-gzip", "darwin-arm64": "tar-gzip", "linux-amd64": "tar-zstd", "linux-arm64": "tar-zstd", "windows-amd64": "zip",
   });
 
   if (archiveInspection) {
@@ -1308,75 +828,36 @@ async function validateTree(root, options, archiveInspection) {
   if (actualFiles.length !== expectedFiles.length || actualFiles.some((file, index) => file !== expectedFiles[index])) {
     throw new Error("provider-host archive contains files outside the signed manifest");
   }
-  await validateProviderModelCatalogAssessments(root, manifest.platform, seen);
-  await validateProviderRuntimeResources(root, manifest.platform);
 
   const macPrefix = "MultiVibe Host.app/Contents";
-  const required = ["LICENSE", "NOTICE", "README.md", "THIRD_PARTY/node-LICENSE", "THIRD_PARTY/ollama-LICENSE",
+  const required = ["LICENSE", "NOTICE", "README.md", "THIRD_PARTY/node-LICENSE",
     "THIRD_PARTY/provider-host-dependencies.json"];
   if (manifest.platform === "darwin") required.push(
-    "install.sh", "uninstall.sh",
-    `${macPrefix}/Frameworks/node`, `${macPrefix}/Resources/ollama-runtime/ollama`, `${macPrefix}/Resources/ollama-runtime/llama-server`,
-    `${macPrefix}/Resources/ollama-runtime/llama-quantize`,
-    `${macPrefix}/Resources/ollama-runtime/.multivibe-bundle.json`, `${macPrefix}/Helpers/multivibe-provider-agent`,
-    `${macPrefix}/Helpers/multivibe-runtime-benchmark`,
+    "install.sh", "uninstall.sh", `${macPrefix}/Frameworks/node`,
     `${macPrefix}/MacOS/multivibe-host`, `${macPrefix}/MacOS/MultiVibe Host`,
-    `${macPrefix}/Resources/MultiVibeMenuBarTemplate.png`,
-    `${macPrefix}/Resources/MultiVibe.icns`,
+    `${macPrefix}/Helpers/multivibe-host-updater`, `${macPrefix}/Helpers/multivibe-v1-edge`,
+    `${macPrefix}/Resources/MultiVibeMenuBarTemplate.png`, `${macPrefix}/Resources/MultiVibe.icns`,
     `${macPrefix}/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework`,
     `${macPrefix}/Frameworks/MultiVibe Chromium Helper.app/Contents/MacOS/MultiVibe Chromium Helper`,
     `${macPrefix}/Resources/ChromiumEmbeddedFramework-LICENSE.txt`,
-    `${macPrefix}/Resources/app/dist/server.js`,
-    `${macPrefix}/Resources/app/dist/instrument.js`, `${macPrefix}/Resources/provider/provider-model-catalog.json`,
+    `${macPrefix}/Resources/app/dist/server.js`, `${macPrefix}/Resources/app/dist/instrument.js`,
     `${macPrefix}/Resources/app/modules/security/multivibe.module.json`,
     `${macPrefix}/Resources/app/modules/security/dist/index.js`,
-    `${macPrefix}/Resources/provider/provider-runtime-profiles.json`,
-    `${macPrefix}/Resources/provider/schemas/provider-runtime-profiles.schema.json`,
-    `${macPrefix}/Resources/provider/schemas/provider-runtime-profile-overrides.schema.json`,
-    `${macPrefix}/Resources/provider/schemas/provider-runtime-benchmark-spec.schema.json`,
-    `${macPrefix}/Resources/provider/schemas/provider-runtime-benchmark-result.schema.json`,
-    `${macPrefix}/Resources/provider/schemas/provider-runtime-benchmark-store.schema.json`,
-    `${macPrefix}/Resources/provider/examples/runtime-profile-overrides.json`,
-    `${macPrefix}/Resources/provider/examples/runtime-benchmark-spec.json`,
-    `${macPrefix}/Resources/provider/provider-demand-trust.json`,
-    `${macPrefix}/Resources/provider/provider-host-dependencies.json`, `${macPrefix}/Resources/verify-provider-host.mjs`,
-    `${macPrefix}/Info.plist`,
+    `${macPrefix}/Resources/verify-provider-host.mjs`, `${macPrefix}/Info.plist`,
   );
-  else if (manifest.platform === "windows") required.push(
-    "install.ps1", "uninstall.ps1", "bin/node.exe", "runtime/ollama/ollama.exe", "runtime/ollama/.multivibe-bundle.json",
-    "bin/multivibe-provider-agent.exe", "bin/multivibe-runtime-benchmark.exe", "bin/multivibe-host-updater.exe",
-    "bin/multivibe-host.exe", "bin/multivibe-host-menu.exe",
-    "app/dist/server.js", "app/dist/instrument.js", "app/modules/security/multivibe.module.json", "app/modules/security/dist/index.js",
-    "resources/provider/provider-model-catalog.json", "resources/provider/provider-runtime-profiles.json",
-    "resources/provider/schemas/provider-runtime-profiles.schema.json",
-    "resources/provider/schemas/provider-runtime-profile-overrides.schema.json",
-    "resources/provider/schemas/provider-runtime-benchmark-spec.schema.json",
-    "resources/provider/schemas/provider-runtime-benchmark-result.schema.json",
-    "resources/provider/schemas/provider-runtime-benchmark-store.schema.json",
-    "resources/provider/examples/runtime-profile-overrides.json",
-    "resources/provider/examples/runtime-benchmark-spec.json",
-    "resources/provider/provider-demand-trust.json",
-    "resources/provider/provider-host-dependencies.json", "resources/provider/multivibe-host.ico", "verify-provider-host.mjs",
-  );
-  else required.push("install.sh", "uninstall.sh", "bin/node", "runtime/ollama/bin/ollama", "runtime/ollama/.multivibe-bundle.json",
-    "bin/multivibe-provider-agent", "bin/multivibe-runtime-benchmark", "bin/multivibe-host", "app/dist/server.js", "app/dist/instrument.js",
-    "app/modules/security/multivibe.module.json", "app/modules/security/dist/index.js",
-    "resources/provider/provider-model-catalog.json", "resources/provider/provider-runtime-profiles.json",
-    "resources/provider/schemas/provider-runtime-profiles.schema.json",
-    "resources/provider/schemas/provider-runtime-profile-overrides.schema.json",
-    "resources/provider/schemas/provider-runtime-benchmark-spec.schema.json",
-    "resources/provider/schemas/provider-runtime-benchmark-result.schema.json",
-    "resources/provider/schemas/provider-runtime-benchmark-store.schema.json",
-    "resources/provider/examples/runtime-profile-overrides.json",
-    "resources/provider/examples/runtime-benchmark-spec.json",
-    "resources/provider/provider-demand-trust.json",
-    "resources/provider/provider-host-dependencies.json", "resources/provider/multivibe-host.png", "bin/multivibe-host-menu",
-    "verify-provider-host.mjs");
-  if (required.some((file) => !seen.has(file))) throw new Error("provider-host archive is missing a required file");
-  const demandTrustPath = manifest.platform === "darwin" ?
-    path.join(root, macPrefix, "Resources", "provider", "provider-demand-trust.json") :
-    path.join(root, "resources", "provider", "provider-demand-trust.json");
-  await validateProviderDemandTrustFile(demandTrustPath);
+  else {
+    const suffix = manifest.platform === "windows" ? ".exe" : "";
+    required.push(
+      `install.${suffix ? "ps1" : "sh"}`, `uninstall.${suffix ? "ps1" : "sh"}`,
+      `bin/node${suffix}`, `bin/multivibe-host${suffix}`, `bin/multivibe-host-updater${suffix}`,
+      `bin/multivibe-host-menu${suffix}`, "app/dist/server.js", "app/dist/instrument.js",
+      "app/modules/security/multivibe.module.json", "app/modules/security/dist/index.js", "verify-provider-host.mjs",
+      `resources/provider/multivibe-host.${suffix ? "ico" : "png"}`,
+    );
+  }
+  for (const file of required) {
+    if (!seen.has(file)) throw new Error(`provider-host required file is missing: ${file}`);
+  }
   if (manifest.platform === "darwin") {
     const icon = await readBinaryHeader(path.join(root, macPrefix, "Resources", "MultiVibe.icns"), 8);
     if (icon.length < 8 || icon.subarray(0, 4).toString("ascii") !== "icns" || icon.readUInt32BE(4) < 1024) {
@@ -1389,25 +870,8 @@ async function validateTree(root, options, archiveInspection) {
   }
 
   const dependencyFile = JSON.parse(await readFile(path.join(root, "THIRD_PARTY", "provider-host-dependencies.json"), "utf8"));
-  if (dependencyFile.schemaVersion !== 1 || canonicalJSON(dependencyFile.node) !== canonicalJSON(manifest.node) ||
-    canonicalJSON(dependencyFile.ollama) !== canonicalJSON(manifest.managedRuntime)) {
+  if (dependencyFile.schemaVersion !== 1 || canonicalJSON(dependencyFile.node) !== canonicalJSON(manifest.node)) {
     throw new Error("provider-host dependency metadata does not match the manifest");
-  }
-  const providerDependencyPath = manifest.platform === "darwin" ?
-    path.join(root, macPrefix, "Resources", "provider", "provider-host-dependencies.json") :
-    path.join(root, "resources", "provider", "provider-host-dependencies.json");
-  if (canonicalJSON(JSON.parse(await readFile(providerDependencyPath, "utf8"))) !== canonicalJSON(dependencyFile)) {
-    throw new Error("provider runtime dependency metadata is inconsistent");
-  }
-  const runtimeMarkerPath = manifest.platform === "darwin" ?
-    path.join(root, macPrefix, "Resources", "ollama-runtime", ".multivibe-bundle.json") :
-    path.join(root, "runtime", "ollama", ".multivibe-bundle.json");
-  const selectedTarget = `${manifest.platform}-${manifest.architecture}`;
-  const marker = JSON.parse(await readFile(runtimeMarkerPath, "utf8"));
-  if (!exactKeys(marker, ["schema_version", "version", "platform", "archive_sha256"]) ||
-    marker.schema_version !== "managed-ollama-bundle-v1" || marker.version !== manifest.managedRuntime.version ||
-    marker.platform !== selectedTarget || marker.archive_sha256 !== manifest.managedRuntime.artifacts[selectedTarget].sha256) {
-    throw new Error("bundled Ollama runtime marker is invalid");
   }
   await validateNativeFiles(root, manifest);
 
@@ -1432,8 +896,6 @@ async function validateTree(root, options, archiveInspection) {
 
   const executableSuffix = manifest.platform === "windows" ? ".exe" : "";
   const host = manifest.platform === "darwin" ? path.join(application, "Contents", "MacOS", "multivibe-host") : path.join(root, "bin", `multivibe-host${executableSuffix}`);
-  const agent = manifest.platform === "darwin" ? path.join(application, "Contents", "Helpers", "multivibe-provider-agent") : path.join(root, "bin", `multivibe-provider-agent${executableSuffix}`);
-  const benchmark = manifest.platform === "darwin" ? path.join(application, "Contents", "Helpers", "multivibe-runtime-benchmark") : path.join(root, "bin", `multivibe-runtime-benchmark${executableSuffix}`);
   const updater = manifest.platform === "darwin" ? path.join(application, "Contents", "Helpers", "multivibe-host-updater") : path.join(root, "bin", `multivibe-host-updater${executableSuffix}`);
   const menu = manifest.platform === "darwin" ? null : path.join(root, "bin", `multivibe-host-menu${executableSuffix}`);
   const applicationDirectory = manifest.platform === "darwin" ? path.join(application, "Contents", "Resources", "app") : path.join(root, "app");
@@ -1449,11 +911,9 @@ async function validateTree(root, options, archiveInspection) {
       (manifest.platform === "windows" && manifest.architecture === "amd64" && process.platform === "win32" && process.arch === "x64");
     if (!nativeTarget) throw new Error("provider-host runtime verification requires the matching target host");
     const hostVersion = await command(host, ["version"], { capture: true, captureLimit: 4096 });
-    const agentVersion = await command(agent, ["version"], { capture: true, captureLimit: 4096 });
-    const benchmarkVersion = await command(benchmark, ["version"], { capture: true, captureLimit: 4096 });
     const updaterVersion = await command(updater, ["version"], { capture: true, captureLimit: 4096 });
     const menuVersion = menu ? await command(menu, ["version"], { capture: true, captureLimit: 4096 }) : null;
-    if (hostVersion !== manifest.version || agentVersion !== manifest.version || benchmarkVersion !== manifest.version ||
+    if (hostVersion !== manifest.version ||
       updaterVersion !== manifest.version || (menu && menuVersion !== manifest.version)) {
       throw new Error("provider-host binary versions do not match the manifest");
     }
@@ -1463,7 +923,7 @@ async function validateTree(root, options, archiveInspection) {
       doctor.bundle !== "valid" || doctor.platform?.supported !== true) {
       throw new Error("provider-host doctor did not confirm the bundle and hardware");
     }
-    profile = doctor.platform.profile;
+    profile = null;
   }
   return { manifest, profile };
 }
@@ -1500,9 +960,6 @@ async function validateMacDiskImage(diskImage, work, options) {
       throw new Error("provider-host disk image background is invalid");
     }
     const application = path.join(mount, "MultiVibe Host.app");
-    await validateProviderDemandTrustFile(path.join(
-      application, "Contents", "Resources", "provider", "provider-demand-trust.json",
-    ));
     const metadata = JSON.parse(await readFile(path.join(application, "Contents", "Resources", "provider-host-release.json"), "utf8"));
     if (!exactKeys(metadata, ["schemaVersion", "product", "version", "sourceCommit", "platform", "architecture",
       "sourceTreeDirty", "releaseReady", "macOSSignature"]) || metadata.schemaVersion !== 1 ||
@@ -1554,8 +1011,6 @@ async function validateMacDiskImage(diskImage, work, options) {
       if (!metadata.releaseReady) throw new Error("provider-host runtime verification requires a release-ready disk image");
       for (const [relative, label] of [
         ["Contents/MacOS/multivibe-host", "host"],
-        ["Contents/Helpers/multivibe-provider-agent", "agent"],
-        ["Contents/Helpers/multivibe-runtime-benchmark", "benchmark"],
       ]) {
         const version = await command(path.join(application, relative), ["version"], { capture: true, captureLimit: 4096 });
         if (version !== metadata.version) throw new Error(`provider-host disk image ${label} version is invalid`);

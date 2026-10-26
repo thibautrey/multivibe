@@ -15,19 +15,14 @@ import (
 func TestExecutableLayoutIsBoundedToReleaseShape(t *testing.T) {
 	mac, err := executableLayout("/Applications/MultiVibe Host.app/Contents/MacOS/multivibe-host", "darwin")
 	if err != nil || mac.Node != "/Applications/MultiVibe Host.app/Contents/Frameworks/node" ||
-		mac.Agent != "/Applications/MultiVibe Host.app/Contents/Helpers/multivibe-provider-agent" ||
 		mac.Updater != "/Applications/MultiVibe Host.app/Contents/Helpers/multivibe-host-updater" ||
-		mac.BundledOllama != "/Applications/MultiVibe Host.app/Contents/Resources/ollama-runtime" ||
-		mac.ModelCatalog != "/Applications/MultiVibe Host.app/Contents/Resources/provider/provider-model-catalog.json" ||
-		mac.DemandTrust != "/Applications/MultiVibe Host.app/Contents/Resources/provider/provider-demand-trust.json" {
+		mac.App != "/Applications/MultiVibe Host.app/Contents/Resources/app" {
 		t.Fatalf("unexpected macOS layout: %#v %v", mac, err)
 	}
 	linux, err := executableLayout("/opt/multivibe-host/bin/multivibe-host", "linux")
 	if err != nil || linux.Node != "/opt/multivibe-host/bin/node" || linux.App != "/opt/multivibe-host/app" ||
 		linux.Updater != "/opt/multivibe-host/bin/multivibe-host-updater" ||
-		linux.BundledOllama != "/opt/multivibe-host/runtime/ollama" ||
-		linux.DependencyManifest != "/opt/multivibe-host/resources/provider/provider-host-dependencies.json" ||
-		linux.DemandTrust != "/opt/multivibe-host/resources/provider/provider-demand-trust.json" {
+		linux.Security != "/opt/multivibe-host/app/modules/security" {
 		t.Fatalf("unexpected Linux layout: %#v %v", linux, err)
 	}
 	for _, invalid := range []struct{ path, goos string }{
@@ -38,36 +33,6 @@ func TestExecutableLayoutIsBoundedToReleaseShape(t *testing.T) {
 		if _, err := executableLayout(invalid.path, invalid.goos); err == nil {
 			t.Fatalf("accepted invalid layout %#v", invalid)
 		}
-	}
-}
-
-func TestBundledDemandTrustIsStrictAndPublicOnly(t *testing.T) {
-	const keyID = "ed25519:BuP9j9opu2CrWVV95h7bCuzbIxE0vjDnW0Vfjht5L6k"
-	const spki = "MCowBQYDK2VwAyEA11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="
-	valid := ` { "` + keyID + `" : "` + spki + `" } `
-	want := `{"` + keyID + `":"` + spki + `"}`
-	if normalized, err := normalizeBundledDemandTrust([]byte(valid)); err != nil || normalized != want {
-		t.Fatalf("valid public trust did not normalize: %q %v", normalized, err)
-	}
-	for name, raw := range map[string]string{
-		"empty":     `{}`,
-		"duplicate": `{"` + keyID + `":"` + spki + `","` + keyID + `":"` + spki + `"}`,
-		"wrong-id":  `{"ed25519:` + strings.Repeat("A", 43) + `":"` + spki + `"}`,
-		"not-spki":  `{"` + keyID + `":"AQ=="}`,
-		"trailing":  want + `{}`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := normalizeBundledDemandTrust([]byte(raw)); err == nil {
-				t.Fatal("invalid bundled demand trust was accepted")
-			}
-		})
-	}
-	trustPath := filepath.Join(t.TempDir(), "provider-demand-trust.json")
-	if err := os.WriteFile(trustPath, []byte(valid), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if loaded, err := loadBundledDemandTrust(trustPath); err != nil || loaded != want {
-		t.Fatalf("bundled demand trust could not be loaded: %q %v", loaded, err)
 	}
 }
 
@@ -124,22 +89,14 @@ func TestCredentialsRejectTrailingJSON(t *testing.T) {
 func TestCoreEnvironmentIsAllowlistedAndPinsAllState(t *testing.T) {
 	t.Setenv("UNRELATED_SECRET", "must-not-leak")
 	t.Setenv("MODELS_CLIENT_VERSION", "0.144.1")
-	t.Setenv("MULTIVIBE_PROVIDER_DEMAND_TRUSTED_KEYS", `{"ambient":"must-not-override-the-bundle"}`)
-	t.Setenv("MULTIVIBE_PROVIDER_OLLAMA_LISTEN", "127.0.0.1:18081")
-	t.Setenv("MULTIVIBE_PROVIDER_CUDA_VISIBLE_DEVICES", "0")
 	t.Setenv("MULTIVIBE_HOST_CONTAINER", "")
 	layout := bundleLayout{
-		Agent: "/opt/multivibe/bin/agent", Security: "/opt/multivibe/app/modules/security",
-		Updater:            "/opt/multivibe/bin/updater",
-		BundledOllama:      "/opt/multivibe/runtime/ollama",
-		ModelCatalog:       "/opt/multivibe/resources/provider/provider-model-catalog.json",
-		DependencyManifest: "/opt/multivibe/resources/provider/provider-host-dependencies.json",
+		Security: "/opt/multivibe/app/modules/security",
+		Updater:  "/opt/multivibe/bin/updater",
 	}
 	environment := coreEnvironment(
 		layout,
 		"/var/lib/multivibe",
-		"/srv/multivibe-managed",
-		`{"ed25519:bundled":"public-spki"}`,
 		localCredentials{AdminToken: "admin", ProxyAPIKey: "proxy"},
 		coreNetworkConfiguration{
 			BindAddress: "0.0.0.0", Port: "1455", PublicBaseURL: "https://multivibe.home.example.com",
@@ -158,28 +115,17 @@ func TestCoreEnvironmentIsAllowlistedAndPinsAllState(t *testing.T) {
 	for _, expected := range append(expectedNetwork,
 		"OAUTH_REDIRECT_URI=https://multivibe.home.example.com/auth/callback",
 		"STORE_PATH=/var/lib/multivibe/accounts.json",
-		"PROVIDER_AGENT_ENABLED=true", "PROVIDER_AGENT_BINARY=/opt/multivibe/bin/agent",
 		"MULTIVIBE_HOST_APPLICATION=true",
 		"MULTIVIBE_HOST_UPDATER_BINARY=/opt/multivibe/bin/updater",
 		"APP_VERSION=dev",
 		"MODELS_CLIENT_VERSION=1.0.0",
-		"PROVIDER_AGENT_CAPACITY_POLICY_PATH=/var/lib/multivibe/provider-agent-capacity-policy.json",
-		"PROVIDER_AGENT_MANAGED_ROOT=/srv/multivibe-managed",
-		"PROVIDER_AGENT_BUNDLED_OLLAMA_ROOT=/opt/multivibe/runtime/ollama",
-		"PROVIDER_AGENT_DEPENDENCY_MANIFEST_PATH=/opt/multivibe/resources/provider/provider-host-dependencies.json",
-		"PROVIDER_AGENT_MANAGED_PLANNER_STATE_PATH=/var/lib/multivibe/provider-agent-managed-planner-state.json",
-		"PROVIDER_AGENT_DEMAND_PLAN_PATH=/var/lib/multivibe/provider-agent-demand-plan.json",
-		"PROVIDER_AGENT_MODEL_CATALOG_PATH=/opt/multivibe/resources/provider/provider-model-catalog.json",
-		`PROVIDER_AGENT_DEMAND_TRUSTED_KEYS={"ed25519:bundled":"public-spki"}`,
-		"PROVIDER_AGENT_OLLAMA_LISTEN=127.0.0.1:18081",
-		"PROVIDER_AGENT_CUDA_VISIBLE_DEVICES=0",
 		"TRACE_INCLUDE_BODY=false", "BUNDLED_SECURITY_MODULE_PATH=/opt/multivibe/app/modules/security",
 	) {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("missing environment contract %q in %s", expected, joined)
 		}
 	}
-	if strings.Contains(joined, "UNRELATED_SECRET") || strings.Contains(joined, "must-not-leak") ||
+	if strings.Contains(joined, "PROVIDER_AGENT_") || strings.Contains(joined, "UNRELATED_SECRET") || strings.Contains(joined, "must-not-leak") ||
 		strings.Contains(joined, "must-not-override-the-bundle") || strings.Contains(joined, "MODELS_CLIENT_VERSION=0.144.1") {
 		t.Fatalf("parent environment leaked: %s", joined)
 	}
@@ -228,23 +174,6 @@ func TestHostPublicBaseURLRequiresAnExplicitCleanOriginWhenExposed(t *testing.T)
 	} {
 		if _, err := hostPublicBaseURL(test.value, test.bind, "1455"); err == nil {
 			t.Fatalf("accepted invalid public URL %q", test.value)
-		}
-	}
-}
-
-func TestManagedDirectoryDefaultsToStateAndAllowsASeparateContainerMount(t *testing.T) {
-	t.Setenv("MULTIVIBE_HOST_MANAGED_DIR", "")
-	if actual, err := managedDirectory("/data"); err != nil || actual != "/data/provider-agent-managed" {
-		t.Fatalf("unexpected managed directory default: %q %v", actual, err)
-	}
-	t.Setenv("MULTIVIBE_HOST_MANAGED_DIR", "/models/runtime")
-	if actual, err := managedDirectory("/data"); err != nil || actual != "/models/runtime" {
-		t.Fatalf("unexpected separate managed directory: %q %v", actual, err)
-	}
-	for _, invalid := range []string{"relative", "/", "/models/../data"} {
-		t.Setenv("MULTIVIBE_HOST_MANAGED_DIR", invalid)
-		if _, err := managedDirectory("/data"); err == nil {
-			t.Fatalf("accepted invalid managed directory %q", invalid)
 		}
 	}
 }

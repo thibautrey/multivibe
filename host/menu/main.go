@@ -63,23 +63,18 @@ type menuClient struct {
 }
 
 type menuApplication struct {
-	client                  *menuClient
-	state                   menuState
-	actions                 chan int
-	enrollmentDecisions     chan bool
-	stop                    chan struct{}
-	done                    chan struct{}
-	startAttempt            bool
-	ownedHost               *exec.Cmd
-	pendingEnrollmentToken  string
-	pendingEnrollmentAccept bool
+	client       *menuClient
+	state        menuState
+	actions      chan int
+	stop         chan struct{}
+	done         chan struct{}
+	startAttempt bool
+	ownedHost    *exec.Cmd
 }
 
 var (
-	actionSinkMu     sync.RWMutex
-	actionSink       chan int
-	enrollmentSinkMu sync.RWMutex
-	enrollmentSink   chan bool
+	actionSinkMu sync.RWMutex
+	actionSink   chan int
 )
 
 //export goMenuAction
@@ -96,36 +91,17 @@ func goMenuAction(action C.int) {
 	}
 }
 
-//export goEnrollmentDecision
-func goEnrollmentDecision(accepted C.int) {
-	enrollmentSinkMu.RLock()
-	sink := enrollmentSink
-	enrollmentSinkMu.RUnlock()
-	if sink == nil {
-		return
-	}
-	select {
-	case sink <- accepted != 0:
-	default:
-	}
-}
-
 func main() {
 	if len(os.Args) == 2 && isVersionArgument(os.Args[1]) {
 		fmt.Fprintln(os.Stdout, menuApplicationVersion)
 		return
 	}
 	if len(os.Args) > 2 {
-		fmt.Fprintln(os.Stderr, "usage: multivibe-host-menu [version|multivibe://add-worker#enrollment_token=...]")
+		fmt.Fprintln(os.Stderr, "usage: multivibe-host-menu [version]")
 		os.Exit(2)
 	}
 
-	pendingToken := ""
-	invalidEnrollmentLink := false
-	if len(os.Args) == 2 {
-		pendingToken, invalidEnrollmentLink = parseEnrollmentLink(os.Args[1])
-	}
-	if err := runLinuxMenu(pendingToken, invalidEnrollmentLink); err != nil {
+	if err := runLinuxMenu(); err != nil {
 		fmt.Fprintf(os.Stderr, "multivibe-host-menu: %s\n", err)
 		os.Exit(1)
 	}
@@ -135,7 +111,7 @@ func isVersionArgument(value string) bool {
 	return value == "version" || value == "--version" || value == "-version"
 }
 
-func runLinuxMenu(pendingToken string, invalidEnrollmentLink bool) error {
+func runLinuxMenu() error {
 	if os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
 		return nil
 	}
@@ -173,21 +149,8 @@ func runLinuxMenu(pendingToken string, invalidEnrollmentLink bool) error {
 		actionSink = nil
 		actionSinkMu.Unlock()
 	}()
-	enrollmentSinkMu.Lock()
-	enrollmentSink = app.enrollmentDecisions
-	enrollmentSinkMu.Unlock()
-	defer func() {
-		enrollmentSinkMu.Lock()
-		enrollmentSink = nil
-		enrollmentSinkMu.Unlock()
-	}()
 
 	app.publish()
-	if invalidEnrollmentLink {
-		showMessage("Invalid connection link", "The MultiVibe connection link is invalid or incomplete. Start again from MultiVibe Cloud.", true)
-	} else if pendingToken != "" {
-		C.multivibe_menu_request_enrollment()
-	}
 	go app.eventLoop()
 	C.multivibe_menu_run()
 	close(app.stop)
@@ -339,16 +302,6 @@ func (app *menuApplication) eventLoop() {
 				app.startAttempt = false
 				app.refresh()
 			}
-		case accepted := <-app.enrollmentDecisions:
-			app.pendingEnrollmentAccept = accepted
-			if !accepted {
-				app.pendingEnrollmentToken = ""
-			} else if app.state.operational {
-				app.submitPendingEnrollment()
-			} else {
-				app.ensureOwnedHost()
-				app.refresh()
-			}
 		case <-ticker.C:
 			app.refresh()
 		case <-app.stop:
@@ -383,9 +336,6 @@ func (app *menuApplication) refresh() {
 		var update updateStatus
 		if app.client.get("/admin/host-update", &update) == nil {
 			app.state.update = &update
-		}
-		if app.state.operational && app.pendingEnrollmentAccept && app.pendingEnrollmentToken != "" {
-			app.submitPendingEnrollment()
 		}
 	}
 	app.state.refreshing = false
@@ -469,27 +419,6 @@ func (app *menuApplication) updateAction(path string) {
 	}
 	app.state.updateBusy = false
 	app.publish()
-}
-
-func (app *menuApplication) submitPendingEnrollment() {
-	if app.pendingEnrollmentToken == "" || !app.pendingEnrollmentAccept {
-		return
-	}
-	body, err := json.Marshal(map[string]string{"enrollment_token": app.pendingEnrollmentToken})
-	if err != nil {
-		return
-	}
-	var result struct {
-		State string `json:"state"`
-	}
-	connected := app.client.postBody("/admin/provider-agent/cloud-shadow/enroll-handoff", body, &result) == nil && result.State == "submitted"
-	app.pendingEnrollmentToken = ""
-	app.pendingEnrollmentAccept = false
-	if connected {
-		showMessage("This worker is connected", "Its public identity was registered securely. Cloud jobs use only MultiVibe's managed Ollama runtime and still require saved capacity consent.", false)
-	} else {
-		showMessage("This worker could not be connected", "MultiVibe Cloud rejected the connection. Start again from MultiVibe Cloud with a new connection link.", true)
-	}
 }
 
 func (app *menuApplication) publish() {

@@ -110,7 +110,7 @@ export function aggregateModels(models: ExposedModel[], accounts: Account[], clo
     if (!entry.routes.some(item => item.source === route.source && item.accountId === route.accountId && item.modelId === route.modelId && item.sdkProvider === route.sdkProvider)) entry.routes.push(route);
     entries.set(key, entry);
   };
-  const healthy = (account: Account, modelId: string) => account.enabled && !account.state?.needsTokenRefresh
+  const healthy = (account: Account, modelId: string) => !account.localRuntime && account.enabled && !account.state?.needsTokenRefresh
     && !(Number(account.state?.authBlockedUntil) > now) && !(Number(account.state?.modelBlocks?.[modelId]?.until) > now);
   for (const model of models) {
     const candidates = model.metadata?.provider_candidates ?? (model.metadata?.provider ? [model.metadata.provider] : []);
@@ -123,18 +123,11 @@ export function aggregateModels(models: ExposedModel[], accounts: Account[], clo
     for (const account of matching) {
       const source = (account.multivibeCloud || account.id === 'multivibe-cloud') ? 'cloud' : account.localRuntime || account.location === 'local' ? 'local' : 'provider';
       add(model.id, label, { source, label: source === 'cloud' ? 'MultiVibe Cloud' : account.localRuntime?.adapter ?? account.sdkProvider ?? account.provider ?? 'OpenAI',
-        modelId: model.id, ready: model.metadata?.ready ?? healthy(account, model.id), accessSource: model.metadata?.accessSource ?? account.accessSource, priceSummary: model.metadata?.priceSummary, availabilityLabel: model.metadata?.availabilityLabel, accountId: account.id, provider: account.provider ?? 'openai', sdkProvider: account.sdkProvider },
+        modelId: model.id, ready: !account.localRuntime && (model.metadata?.ready ?? healthy(account, model.id)), accessSource: model.metadata?.accessSource ?? account.accessSource, priceSummary: model.metadata?.priceSummary, availabilityLabel: model.metadata?.availabilityLabel, accountId: account.id, provider: account.provider ?? 'openai', sdkProvider: account.sdkProvider },
         authorHints.find(hint => knownOwner(hint)));
     }
     if (!matching.length) add(model.id, label, { source: 'provider', label: model.metadata?.is_alias ? 'Routing alias' : candidates.join(' · ') || 'Provider', modelId: model.id, ready: model.metadata?.ready ?? false, accessSource: model.metadata?.accessSource, priceSummary: model.metadata?.priceSummary, availabilityLabel: model.metadata?.availabilityLabel, provider: candidates[0] },
       authorHints.find(hint => knownOwner(hint)));
-  }
-  for (const account of accounts.filter(account => account.localRuntime)) {
-    const adapter = account.localRuntime!.adapter;
-    for (const id of account.localRuntime!.confirmedModelIds) {
-      const runtimeId = `${adapter}/${id}`;
-      add(runtimeId, runtimeId, { source: 'local', label: adapter, modelId: runtimeId, ready: healthy(account, id), accountId: account.id });
-    }
   }
   for (const provider of providers) for (const model of provider.models) {
     const id = `${provider.id}/${model.id}`;

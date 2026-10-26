@@ -8,7 +8,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { argumentsFrom, archiveBundle, commandInvocation, download, stapleMacArtifact, submitMacNotarization, validateOllamaWindowsFiles } from "./package-provider-host.mjs";
+import { argumentsFrom, archiveBundle, commandInvocation, download, stapleMacArtifact, submitMacNotarization } from "./package-provider-host.mjs";
 
 const packager = fileURLToPath(new URL("./package-provider-host.mjs", import.meta.url));
 const verifier = fileURLToPath(new URL("./verify-provider-host.mjs", import.meta.url));
@@ -103,14 +103,6 @@ test("the packaging CLI remains active when invoked through a symlink", async ()
   }
 });
 
-test("every provider Host package requires a public demand trust input", () => {
-  assert.throws(() => argumentsFrom(["--version", "0.3.0"]), /--provider-demand-trust-file is required/u);
-  const options = argumentsFrom([
-    "--version", "0.3.0", "--provider-demand-trust-file", "fixtures/provider-demand-trust.json",
-  ]);
-  assert.equal(options.providerDemandTrustFile, path.resolve("fixtures/provider-demand-trust.json"));
-});
-
 test("Linux archives use the native GTK menu binary and bundled icon", async () => {
   const source = await readFile(packager, "utf8");
   assert.match(source, /path\.join\(repositoryRoot, "host", "menu"\)/u);
@@ -201,19 +193,6 @@ test("packaging runs web and API builds in separate npm processes", async () => 
   const source = await readFile(packager, "utf8");
   assert.match(source, /await command\("npm", \["run", "build:web"\]\);\s+await command\("npm", \["run", "build:api"\]\);/u);
   assert.doesNotMatch(source, /await command\("npm", \["run", "build"\]\);/u);
-});
-
-
-test("the checksum-verified Ollama Windows inventory is accepted", async () => {
-  const fixture = JSON.parse(await readFile(new URL("./ollama-windows-inventory.fixture.json", import.meta.url), "utf8"));
-  const dependencies = JSON.parse(await readFile(new URL("../../packaging/provider-host-dependencies.json", import.meta.url), "utf8"));
-  assert.equal(fixture.sha256, dependencies.ollama.artifacts["windows-amd64"].sha256);
-  assert.equal(fixture.url, dependencies.ollama.artifacts["windows-amd64"].url);
-  validateOllamaWindowsFiles(fixture.files);
-  for (const unexpected of ["lib/ollama/other++.dll", "lib/ollama/cuda_v12/libc++.dll", "lib/ollama/start.ps1", "lib/ollama/../evil.dll"]) {
-    assert.throws(() => validateOllamaWindowsFiles([...fixture.files, unexpected]), /unexpected runtime file/);
-  }
-  assert.throws(() => validateOllamaWindowsFiles(fixture.files.filter(file => file !== "lib/ollama/llama-server.exe")), /missing a required runtime executable/);
 });
 
 const notaryID = "266f98c8-abb9-4420-9527-b1522ca23444";
@@ -518,4 +497,12 @@ test("stapling stops on exhausted retries, permanent failures and invalid ticket
     if (args[1] === "validate") throw new Error("invalid ticket");
   }, async () => {}), /invalid ticket/);
   assert.deepEqual(actions, ["staple", "validate"]);
+});
+
+test("packaging no longer needs inference runtimes or a demand trust anchor", async () => {
+  assert.equal(argumentsFrom(["--version", "0.3.0"]).version, "0.3.0");
+  const dependencies = JSON.parse(await readFile(new URL("../../packaging/provider-host-dependencies.json", import.meta.url), "utf8"));
+  assert.deepEqual(Object.keys(dependencies).sort(), ["node", "schemaVersion"]);
+  const source = await readFile(packager, "utf8");
+  assert.doesNotMatch(source, /ollama|multivibe-provider-agent|multivibe-runtime-benchmark|provider-demand-trust/iu);
 });

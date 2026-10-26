@@ -2,10 +2,7 @@ package main
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -17,7 +14,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -28,25 +24,17 @@ import (
 var hostApplicationVersion = "dev"
 
 type bundleLayout struct {
-	Root               string
-	Node               string
-	Edge               string
-	Agent              string
-	Updater            string
-	App                string
-	Security           string
-	BundledOllama      string
-	ModelCatalog       string
-	DependencyManifest string
-	DemandTrust        string
+	Root     string
+	Node     string
+	Edge     string
+	Updater  string
+	App      string
+	Security string
 }
 
 const (
-	maximumBundledDemandTrustBytes = 64 * 1024
-	modelsClientVersion            = "1.0.0"
+	modelsClientVersion = "1.0.0"
 )
-
-var bundledDemandTrustKeyID = regexp.MustCompile(`^ed25519:[A-Za-z0-9_-]{43}$`)
 
 type localCredentials struct {
 	SchemaVersion string `json:"schema_version"`
@@ -103,17 +91,12 @@ func executableLayout(executable, goos string) (bundleLayout, error) {
 			return bundleLayout{}, errors.New("the macOS application layout is invalid")
 		}
 		return bundleLayout{
-			Root:               filepath.Dir(contents),
-			Node:               filepath.Join(contents, "Frameworks", "node"),
-			Edge:               filepath.Join(contents, "Helpers", "multivibe-v1-edge"),
-			Agent:              filepath.Join(contents, "Helpers", "multivibe-provider-agent"),
-			Updater:            filepath.Join(contents, "Helpers", "multivibe-host-updater"),
-			App:                filepath.Join(contents, "Resources", "app"),
-			Security:           filepath.Join(contents, "Resources", "app", "modules", "security"),
-			BundledOllama:      filepath.Join(contents, "Resources", "ollama-runtime"),
-			ModelCatalog:       filepath.Join(contents, "Resources", "provider", "provider-model-catalog.json"),
-			DependencyManifest: filepath.Join(contents, "Resources", "provider", "provider-host-dependencies.json"),
-			DemandTrust:        filepath.Join(contents, "Resources", "provider", "provider-demand-trust.json"),
+			Root:     filepath.Dir(contents),
+			Node:     filepath.Join(contents, "Frameworks", "node"),
+			Edge:     filepath.Join(contents, "Helpers", "multivibe-v1-edge"),
+			Updater:  filepath.Join(contents, "Helpers", "multivibe-host-updater"),
+			App:      filepath.Join(contents, "Resources", "app"),
+			Security: filepath.Join(contents, "Resources", "app", "modules", "security"),
 		}, nil
 	}
 	if goos == "windows" {
@@ -123,16 +106,11 @@ func executableLayout(executable, goos string) (bundleLayout, error) {
 			return bundleLayout{}, errors.New("the Windows application layout is invalid")
 		}
 		return bundleLayout{
-			Root:               root,
-			Node:               filepath.Join(bin, "node.exe"),
-			Agent:              filepath.Join(bin, "multivibe-provider-agent.exe"),
-			Updater:            filepath.Join(bin, "multivibe-host-updater.exe"),
-			App:                filepath.Join(root, "app"),
-			Security:           filepath.Join(root, "app", "modules", "security"),
-			BundledOllama:      filepath.Join(root, "runtime", "ollama"),
-			ModelCatalog:       filepath.Join(root, "resources", "provider", "provider-model-catalog.json"),
-			DependencyManifest: filepath.Join(root, "resources", "provider", "provider-host-dependencies.json"),
-			DemandTrust:        filepath.Join(root, "resources", "provider", "provider-demand-trust.json"),
+			Root:     root,
+			Node:     filepath.Join(bin, "node.exe"),
+			Updater:  filepath.Join(bin, "multivibe-host-updater.exe"),
+			App:      filepath.Join(root, "app"),
+			Security: filepath.Join(root, "app", "modules", "security"),
 		}, nil
 	}
 	if goos != "linux" {
@@ -144,16 +122,11 @@ func executableLayout(executable, goos string) (bundleLayout, error) {
 		return bundleLayout{}, errors.New("the Linux application layout is invalid")
 	}
 	return bundleLayout{
-		Root:               root,
-		Node:               filepath.Join(bin, "node"),
-		Agent:              filepath.Join(bin, "multivibe-provider-agent"),
-		Updater:            filepath.Join(bin, "multivibe-host-updater"),
-		App:                filepath.Join(root, "app"),
-		Security:           filepath.Join(root, "app", "modules", "security"),
-		BundledOllama:      filepath.Join(root, "runtime", "ollama"),
-		ModelCatalog:       filepath.Join(root, "resources", "provider", "provider-model-catalog.json"),
-		DependencyManifest: filepath.Join(root, "resources", "provider", "provider-host-dependencies.json"),
-		DemandTrust:        filepath.Join(root, "resources", "provider", "provider-demand-trust.json"),
+		Root:     root,
+		Node:     filepath.Join(bin, "node"),
+		Updater:  filepath.Join(bin, "multivibe-host-updater"),
+		App:      filepath.Join(root, "app"),
+		Security: filepath.Join(root, "app", "modules", "security"),
 	}, nil
 }
 
@@ -182,14 +155,10 @@ func validateLayout(layout bundleLayout) error {
 		executable bool
 	}{
 		{layout.Node, true},
-		{layout.Agent, true},
 		{layout.Updater, true},
 		{filepath.Join(layout.App, "dist", "server.js"), false},
 		{filepath.Join(layout.App, "dist", "instrument.js"), false},
 		{filepath.Join(layout.App, "package.json"), false},
-		{layout.ModelCatalog, false},
-		{layout.DependencyManifest, false},
-		{layout.DemandTrust, false},
 	} {
 		if err := requireRegular(candidate.path, candidate.executable); err != nil {
 			return err
@@ -204,95 +173,7 @@ func validateLayout(layout bundleLayout) error {
 	if err != nil || !security.IsDir() || security.Mode()&os.ModeSymlink != 0 {
 		return errors.New("the bundled security module is unavailable")
 	}
-	ollama, err := os.Lstat(layout.BundledOllama)
-	if err != nil || !ollama.IsDir() || ollama.Mode()&os.ModeSymlink != 0 {
-		return errors.New("the bundled Ollama runtime is unavailable")
-	}
-	if _, err := loadBundledDemandTrust(layout.DemandTrust); err != nil {
-		return err
-	}
 	return nil
-}
-
-func normalizeBundledDemandTrust(raw []byte) (string, error) {
-	if len(raw) < 1 || len(raw) > maximumBundledDemandTrustBytes {
-		return "", errors.New("the bundled demand trust is invalid")
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	opening, err := decoder.Token()
-	if err != nil || opening != json.Delim('{') {
-		return "", errors.New("the bundled demand trust is invalid")
-	}
-	encoded := make(map[string]string)
-	for decoder.More() {
-		keyToken, keyErr := decoder.Token()
-		key, ok := keyToken.(string)
-		if keyErr != nil || !ok {
-			return "", errors.New("the bundled demand trust is invalid")
-		}
-		if _, duplicate := encoded[key]; duplicate {
-			return "", errors.New("the bundled demand trust is invalid")
-		}
-		var value string
-		if decoder.Decode(&value) != nil {
-			return "", errors.New("the bundled demand trust is invalid")
-		}
-		encoded[key] = value
-	}
-	closing, err := decoder.Token()
-	if err != nil || closing != json.Delim('}') || len(encoded) < 1 || len(encoded) > 64 {
-		return "", errors.New("the bundled demand trust is invalid")
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return "", errors.New("the bundled demand trust is invalid")
-	}
-	for declaredID, encodedSPKI := range encoded {
-		der, decodeErr := base64.StdEncoding.DecodeString(encodedSPKI)
-		if !bundledDemandTrustKeyID.MatchString(declaredID) || decodeErr != nil || len(der) < 1 || len(der) > 256 ||
-			base64.StdEncoding.EncodeToString(der) != encodedSPKI {
-			return "", errors.New("the bundled demand trust is invalid")
-		}
-		parsed, parseErr := x509.ParsePKIXPublicKey(der)
-		publicKey, ok := parsed.(ed25519.PublicKey)
-		digest := sha256.Sum256(der)
-		computedID := "ed25519:" + base64.RawURLEncoding.EncodeToString(digest[:])
-		if parseErr != nil || !ok || len(publicKey) != ed25519.PublicKeySize || computedID != declaredID {
-			return "", errors.New("the bundled demand trust is invalid")
-		}
-	}
-	normalized, err := json.Marshal(encoded)
-	if err != nil {
-		return "", errors.New("the bundled demand trust is invalid")
-	}
-	return string(normalized), nil
-}
-
-func loadBundledDemandTrust(path string) (string, error) {
-	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
-		return "", errors.New("the bundled demand trust path is invalid")
-	}
-	before, err := os.Lstat(path)
-	if err != nil || !before.Mode().IsRegular() || before.Mode()&os.ModeSymlink != 0 ||
-		before.Size() < 1 || before.Size() > maximumBundledDemandTrustBytes {
-		return "", errors.New("the bundled demand trust file is unavailable")
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return "", errors.New("the bundled demand trust file is unavailable")
-	}
-	defer file.Close()
-	opened, err := file.Stat()
-	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(before, opened) {
-		return "", errors.New("the bundled demand trust file changed while opening")
-	}
-	raw, err := io.ReadAll(io.LimitReader(file, maximumBundledDemandTrustBytes+1))
-	after, pathErr := os.Lstat(path)
-	if err != nil || pathErr != nil || len(raw) > maximumBundledDemandTrustBytes || !os.SameFile(before, after) ||
-		after.Size() != int64(len(raw)) {
-		return "", errors.New("the bundled demand trust file changed while reading")
-	}
-	return normalizeBundledDemandTrust(raw)
 }
 
 func doctor(output io.Writer) error {
@@ -303,21 +184,11 @@ func doctor(output io.Writer) error {
 	if err := validateLayout(layout); err != nil {
 		return err
 	}
-	command := exec.Command(layout.Agent, "doctor")
-	command.Stderr = os.Stderr
-	raw, err := command.Output()
-	if err != nil {
-		return errors.New("the host hardware is unsupported or unavailable")
-	}
-	var platform map[string]any
-	if len(raw) > 64*1024 || json.Unmarshal(raw, &platform) != nil || platform["supported"] != true {
-		return errors.New("the provider-agent hardware result is invalid")
-	}
 	return json.NewEncoder(output).Encode(map[string]any{
 		"schema_version": "multivibe-host-doctor-v1",
 		"version":        hostApplicationVersion,
 		"bundle":         "valid",
-		"platform":       platform,
+		"platform":       map[string]any{"os": runtime.GOOS, "architecture": runtime.GOARCH, "supported": true},
 	})
 }
 
@@ -544,18 +415,7 @@ func hostPublicBaseURL(value, bindAddress, port string) (string, error) {
 	return strings.TrimSuffix(value, "/"), nil
 }
 
-func managedDirectory(dataDirectory string) (string, error) {
-	configured := strings.TrimSpace(os.Getenv("MULTIVIBE_HOST_MANAGED_DIR"))
-	if configured == "" {
-		return filepath.Join(dataDirectory, "provider-agent-managed"), nil
-	}
-	if !filepath.IsAbs(configured) || filepath.Clean(configured) != configured || configured == string(filepath.Separator) {
-		return "", errors.New("MULTIVIBE_HOST_MANAGED_DIR must be a clean absolute non-root path")
-	}
-	return configured, nil
-}
-
-func coreEnvironment(layout bundleLayout, dataDirectory, managedDirectory, demandTrust string, credentials localCredentials, network coreNetworkConfiguration) []string {
+func coreEnvironment(layout bundleLayout, dataDirectory string, credentials localCredentials, network coreNetworkConfiguration) []string {
 	nodeHost, nodePort := network.BindAddress, network.Port
 	if runtime.GOOS == "darwin" {
 		nodeHost, nodePort = "127.0.0.1", "1456"
@@ -587,22 +447,7 @@ func coreEnvironment(layout bundleLayout, dataDirectory, managedDirectory, deman
 		"ANONYMOUS_USAGE_STATE_PATH=" + filepath.Join(dataDirectory, "anonymous-usage-state.json"),
 		"CODEX_PROJECTS_PATH=" + filepath.Join(dataDirectory, "codex-projects.json"),
 		"JOBS_DB_PATH=" + filepath.Join(dataDirectory, "jobs.sqlite"),
-		"PROVIDER_AGENT_ENABLED=true",
 		"MULTIVIBE_HOST_APPLICATION=true",
-		"PROVIDER_AGENT_BINARY=" + layout.Agent,
-		"PROVIDER_AGENT_STATE_PATH=" + filepath.Join(dataDirectory, "provider-agent-selection.json"),
-		"PROVIDER_AGENT_RUNTIME_STATE_PATH=" + filepath.Join(dataDirectory, "provider-agent-runtime-endpoints.json"),
-		"PROVIDER_AGENT_DEVICE_KEY_PATH=" + filepath.Join(dataDirectory, "provider-agent-device-identity.json"),
-		"PROVIDER_AGENT_ENROLLMENT_STATE_PATH=" + filepath.Join(dataDirectory, "provider-agent-cloud-enrollment.json"),
-		"PROVIDER_AGENT_CAPACITY_POLICY_PATH=" + filepath.Join(dataDirectory, "provider-agent-capacity-policy.json"),
-		"PROVIDER_AGENT_MANAGED_ROOT=" + managedDirectory,
-		"PROVIDER_AGENT_BUNDLED_OLLAMA_ROOT=" + layout.BundledOllama,
-		"PROVIDER_AGENT_DEPENDENCY_MANIFEST_PATH=" + layout.DependencyManifest,
-		"PROVIDER_AGENT_MANAGED_PLANNER_STATE_PATH=" + filepath.Join(dataDirectory, "provider-agent-managed-planner-state.json"),
-		"PROVIDER_AGENT_DEMAND_PLAN_PATH=" + filepath.Join(dataDirectory, "provider-agent-demand-plan.json"),
-		"PROVIDER_AGENT_MODEL_CATALOG_PATH=" + layout.ModelCatalog,
-		"PROVIDER_AGENT_DEMAND_TRUSTED_KEYS=" + demandTrust,
-		"PROVIDER_AGENT_CLOUD_API_URL=https://auth.multivibe.cloud",
 		"TRACE_INCLUDE_BODY=false",
 		"TRACE_INCLUDE_HEADERS=false",
 		"MULTIVIBE_HOST_DATA_DIR=" + dataDirectory,
@@ -635,7 +480,7 @@ func coreEnvironment(layout bundleLayout, dataDirectory, managedDirectory, deman
 	if inheritedEnvironment("MULTIVIBE_HOST_CONTAINER") != "true" {
 		environment = append(environment, "MULTIVIBE_HOST_UPDATER_BINARY="+layout.Updater)
 	}
-	for _, name := range []string{"MULTIVIBE_PROVIDER_ACCELERATOR", "HOME", "LANG", "LC_ALL", "SSL_CERT_DIR", "SSL_CERT_FILE", "TMPDIR", "TZ"} {
+	for _, name := range []string{"HOME", "LANG", "LC_ALL", "SSL_CERT_DIR", "SSL_CERT_FILE", "TMPDIR", "TZ"} {
 		if value := inheritedEnvironment(name); value != "" {
 			environment = append(environment, name+"="+value)
 		}
@@ -643,10 +488,7 @@ func coreEnvironment(layout bundleLayout, dataDirectory, managedDirectory, deman
 	for _, pair := range []struct {
 		source      string
 		destination string
-	}{
-		{"MULTIVIBE_PROVIDER_OLLAMA_LISTEN", "PROVIDER_AGENT_OLLAMA_LISTEN"},
-		{"MULTIVIBE_PROVIDER_CUDA_VISIBLE_DEVICES", "PROVIDER_AGENT_CUDA_VISIBLE_DEVICES"},
-	} {
+	}{} {
 		if value := inheritedEnvironment(pair.source); value != "" {
 			environment = append(environment, pair.destination+"="+value)
 		}
@@ -698,16 +540,6 @@ func run() error {
 			fmt.Fprintf(os.Stderr, "Host update scheduler unavailable: %s (%v)\n", output, err)
 		}
 	}
-	demandTrust, err := loadBundledDemandTrust(layout.DemandTrust)
-	if err != nil {
-		return err
-	}
-	probe := exec.Command(layout.Agent, "doctor")
-	probe.Stdout = io.Discard
-	probe.Stderr = os.Stderr
-	if err := probe.Run(); err != nil {
-		return errors.New("the host hardware is unsupported or unavailable")
-	}
 	data, err := dataDirectory()
 	if err != nil {
 		return err
@@ -728,10 +560,6 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	managed, err := managedDirectory(data)
-	if err != nil {
-		return err
-	}
 	entry := filepath.Join(layout.App, "dist", "server.js")
 	instrument := filepath.Join(layout.App, "dist", "instrument.js")
 	arguments := []string{layout.Node, "--import", instrument, entry}
@@ -743,7 +571,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	baseEnvironment := coreEnvironment(layout, data, managed, demandTrust, credentials, network)
+	baseEnvironment := coreEnvironment(layout, data, credentials, network)
 	if runtime.GOOS == "linux" {
 		return syscall.Exec(layout.Node, arguments, baseEnvironment)
 	}

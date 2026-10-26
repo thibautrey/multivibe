@@ -153,7 +153,6 @@ test("creates an OpenCode account and discovers its Go API root", async () => {
 
 test("resolves Console credential references on every request and scopes legacy accounts", async () => {
   const { openCodeInferenceToken, openCodeAccountHeaders } = await import("./opencode.js");
-  const { authorizationForAccountRequest } = await import("./local-runtime-discovery.js");
   const account = {
     id: "console", provider: "opencode" as const, enabled: true,
     accessToken: "old-session", opencodeApiKey: "{env:OPENCODE_CONSOLE_TOKEN}",
@@ -162,12 +161,12 @@ test("resolves Console credential references on every request and scopes legacy 
   };
   assert.equal(openCodeInferenceToken(account), "old-session");
   account.accessToken = "refreshed-session";
-  assert.equal(authorizationForAccountRequest(account, "https://opencode.ai/inference/openai/v1/responses"), "Bearer refreshed-session");
+  assert.equal(openCodeInferenceToken(account), "refreshed-session");
   assert.deepEqual(openCodeAccountHeaders(account), {
     "x-opencode-org-id": "org_selected", "x-org-id": "org_selected",
   });
   account.opencodeApiKey = "inference-key";
-  assert.equal(authorizationForAccountRequest(account, "https://opencode.ai/zen/v1/responses"), "Bearer inference-key");
+  assert.equal(openCodeInferenceToken(account), "inference-key");
   account.opencodeApiKey = "{env:UNRELATED_SECRET}";
   assert.throws(() => openCodeInferenceToken(account), /unsupported credential reference/);
   assert.equal(openCodeUsageUrl("https://opencode.ai/inference/openai/v1/"), undefined);

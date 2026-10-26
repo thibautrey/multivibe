@@ -24,9 +24,9 @@ test("the Host runtime image preserves the verified bundle layout and drops priv
   ]);
   assert.match(dockerfile, /^FROM debian:bookworm-slim@sha256:[0-9a-f]{64}$/mu);
   assert.match(dockerfile, /COPY --chown=10001:10001 bundle\/ \/opt\/multivibe-host\//u);
-  assert.match(dockerfile, /VOLUME \["\/data", "\/models"\]/u);
+  assert.match(dockerfile, /VOLUME \["\/data"\]/u);
   assert.match(dockerfile, /MULTIVIBE_HOST_BIND=0\.0\.0\.0/u);
-  assert.match(dockerfile, /MULTIVIBE_HOST_MANAGED_DIR=\/models\/runtime/u);
+  assert.doesNotMatch(dockerfile, /MULTIVIBE_HOST_MANAGED_DIR|NVIDIA|\/models/u);
   assert.match(dockerfile, /MULTIVIBE_HOST_CONTAINER=true/u);
   assert.match(dockerfile, /ENTRYPOINT \["\/usr\/local\/bin\/multivibe-host-container"\]/u);
   assert.match(entrypoint, /APPLICATION_USER_ID=10001/u);
@@ -36,16 +36,14 @@ test("the Host runtime image preserves the verified bundle layout and drops priv
   assert.doesNotMatch(dockerfile, /COPY\s+\.\s+/u);
 });
 
-test("the Compose deployment exposes only Core and keeps state and models separate", async () => {
+test("the Compose deployment exposes only Core and persists state without a model volume", async () => {
   const compose = await read("packaging/container/docker-compose.host.yml");
   assert.match(compose, /image: \$\{MULTIVIBE_HOST_IMAGE:-ghcr\.io\/thibautrey\/multivibe-host:latest\}/u);
   assert.doesNotMatch(compose, /^\s+build:/mu);
   assert.match(compose, /MULTIVIBE_HOST_BIND: 0\.0\.0\.0/u);
   assert.match(compose, /MULTIVIBE_HOST_PUBLIC_URL: \$\{MULTIVIBE_HOST_PUBLIC_URL:\?/u);
-  assert.match(compose, /MULTIVIBE_HOST_MANAGED_DIR: \/models\/runtime/u);
   assert.match(compose, /- multivibe-host-data:\/data/u);
-  assert.match(compose, /- multivibe-host-models:\/models/u);
-  assert.match(compose, /gpus: all/u);
+  assert.doesNotMatch(compose, /NVIDIA|gpus:|\/models|MANAGED_DIR/u);
   assert.match(compose, /read_only: true/u);
   assert.match(compose, /no-new-privileges:true/u);
   assert.match(compose, /cap_drop:\r?\n\s+- ALL/u);
@@ -54,7 +52,7 @@ test("the Compose deployment exposes only Core and keeps state and models separa
   assert.doesNotMatch(compose, /PROVIDER_DEMAND_TRUSTED_KEYS/u);
 });
 
-test("the Unraid template is beta, GPU-bounded and does not request credentials", async () => {
+test("the Unraid template is beta, GPU-independent and does not request credentials", async () => {
   const [profile, template] = await Promise.all([
     read("ca_profile.xml"),
     read("packaging/unraid/multivibe-host.xml"),
@@ -71,12 +69,9 @@ test("the Unraid template is beta, GPU-bounded and does not request credentials"
   assert.match(publicUrl, /></u, "require an operator-supplied origin instead of WebUI substitution tokens");
   assert.match(template, /<Privileged>false<\/Privileged>/u);
   assert.match(template, /<Beta>true<\/Beta>/u);
-  assert.match(template, /--runtime=nvidia/u);
+  assert.doesNotMatch(template, /NVIDIA|nvidia|\/models|MANAGED_DIR/u);
   assert.match(template, /Target="\/data"/u);
-  assert.match(template, /Target="\/models"/u);
   assert.match(template, /Target="MULTIVIBE_HOST_PUBLIC_URL"/u);
-  assert.match(template, /Target="NVIDIA_VISIBLE_DEVICES"/u);
-  assert.match(template, /compute capability 7\.0 or newer/u);
   assert.doesNotMatch(template, /ADMIN_TOKEN|PROXY_API_KEY/u);
   assert.doesNotMatch(template, /PROVIDER_DEMAND_TRUSTED_KEYS/u);
 });
@@ -85,7 +80,7 @@ test("the root README offers truthful latest-release paths for every Host format
   const readme = await read("README.md");
   assert.match(readme, /## ⬇️ Download MultiVibe Host/u);
   assert.match(readme, /Signed and notarized `\.dmg` for Apple Silicon and Intel/u);
-  assert.match(readme, /Linux `x86_64` with an NVIDIA GPU, compute capability 7\.0\+/u);
+  assert.match(readme, /Linux `x86_64`/u);
   assert.match(readme, /Docker \/ Unraid[\s\S]*GitHub Container Registry/u);
   assert.match(readme, /https:\/\/github\.com\/thibautrey\/multivibe\/releases\/latest/u);
   assert.match(readme, /docker pull ghcr\.io\/thibautrey\/multivibe-host:latest/u);
@@ -117,8 +112,8 @@ test("the release workflow publishes a tested image from the verified Linux arch
   assert.match(workflow, /subject-digest: \$\{\{ steps\.publish\.outputs\.digest \}\}/u);
   assert.match(workflow, /push-to-registry: true/u);
   assert.match(workflow, /name: provider-host-container-release/u);
-  assert.match(workflow, /vars\.PROVIDER_DEMAND_TRUSTED_KEYS_JSON/u);
-  assert.equal((workflow.match(/--provider-demand-trust-file/g) ?? []).length, 3);
+  assert.doesNotMatch(workflow, /PROVIDER_DEMAND_TRUSTED_KEYS_JSON/u);
+  assert.doesNotMatch(workflow, /--provider-demand-trust-file/u);
   assert.match(workflow, /container-release\/container-release\.json/u);
   assert.match(workflow, /MULTIVIBE_UPDATE_SIGNING_KEY_BASE64/u);
   assert.match(workflow, /build-provider-host-update-feed\.mjs/u);

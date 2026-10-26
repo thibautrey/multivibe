@@ -22,13 +22,13 @@ export function umbrelPackage(version, descriptor) {
         tmpfs: ['/tmp:rw,nosuid,nodev,noexec,mode=1777,size=512m'],
         cap_drop: ['ALL'], cap_add: ['CHOWN','FOWNER','SETGID','SETUID'],
         security_opt: ['no-new-privileges:true'], stop_grace_period: '45s',
-        environment: {MULTIVIBE_PROVIDER_ACCELERATOR: 'cpu', MULTIVIBE_HOST_PUBLIC_URL: 'http://${DEVICE_DOMAIN_NAME}:${APP_PROXY_PORT}'},
-        volumes: ['${APP_DATA_DIR}/data:/data','${APP_DATA_DIR}/models:/models']}
+        environment: {MULTIVIBE_HOST_PUBLIC_URL: 'http://${DEVICE_DOMAIN_NAME}:${APP_PROXY_PORT}'},
+        volumes: ['${APP_DATA_DIR}/data:/data']}
     }},
     'umbrel-app.yml': {manifestVersion: 1, id: 'multivibe-host', category: 'ai', name: 'MultiVibe Host', version,
-      tagline: 'Run a local AI provider on your Umbrel',
-      description: 'CPU hosting for amd64 and ARM64. Start with the reviewed Qwen 2.5 0.5B model and a 2048-token context. 8 GB RAM recommended; model capacity is limited to half of effective system/container memory before your capacity percentage. Model downloads and sharing are opt-in. In browser setup use /models/weights for model storage. Access through the Umbrel local device domain; alternative IP, Tor and reverse-proxy origins require explicit Host configuration.',
-      releaseNotes: 'Adds native ARM64 and amd64 CPU runtimes with bounded memory planning and zero GPU offload.',
+      tagline: 'Connect your AI providers on Umbrel',
+      description: 'AI API proxy and dashboard for amd64 and ARM64. Connect provider accounts in the dashboard. Access through the Umbrel local device domain; alternative IP, Tor and reverse-proxy origins require explicit Host configuration.',
+      releaseNotes: 'Removes local inference engines and GPU requirements.',
       developer: 'MultiVibe', website: 'https://multivibe.cloud', dependencies: [], repo: 'https://github.com/thibautrey/multivibe',
       support: 'https://github.com/thibautrey/multivibe/issues', port: 1455, gallery: [], path: '',
       defaultUsername: '', defaultPassword: '', submitter: 'MultiVibe', submission: 'https://github.com/thibautrey/multivibe'}
