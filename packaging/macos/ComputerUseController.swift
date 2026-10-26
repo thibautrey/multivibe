@@ -24,6 +24,7 @@ struct ComputerUseModelReply {
     private var taskApps: Set<String> = []
     private var approvalContinuation: CheckedContinuation<Int, Never>?
     private var stopped = false
+    private var external = false
     var onStop: (() -> Void)?
     private var inputMonitor: Any?
     private var browserInputMonitor: Any?
@@ -125,13 +126,9 @@ struct ComputerUseModelReply {
             record(command, target: target, succeeded: false, error: error.localizedDescription); throw error
         }
     }
-    func run(conversation: UUID, messages: [[String: String]], model: String,
-             turn: @MainActor ([[String: Any]], String) async throws -> ComputerUseModelReply,
-             update: @MainActor (String) -> Void) async throws {
+    private func begin(conversation: UUID) throws {
         guard !running, Self.owner == nil else { throw ComputerUseFailure("Une action graphique utilise déjà ce Mac.") }
-        guard model != AppleFoundationModel.id else { throw ComputerUseFailure("Choisissez un modèle Host qui prend en charge les images et les appels d’outils.") }
         Self.owner = self
-        var completed = false
         running = true; stopped = false; conversationID = conversation; events = []; preview = nil; taskApps = []; lastObservation = nil
         activeTarget = "browser"; driver.reset(); browser.reset(); browser.automating = true
         // Genuine user input in the controlled surface stops automation; injected PID events carry a distinct marker.
@@ -147,14 +144,42 @@ struct ComputerUseModelReply {
                event.cgEvent?.getIntegerValueField(.eventSourceUserData) != ComputerUseMacDriver.eventMarker { self.stop() }
             return event
         }
-        defer {
-            if let inputMonitor { NSEvent.removeMonitor(inputMonitor) }; inputMonitor = nil
-            if let browserInputMonitor { NSEvent.removeMonitor(browserInputMonitor) }; browserInputMonitor = nil
-            resolveApproval(0); running = false; taskApps = []; lastObservation = nil; driver.reset(); browser.reset(); browser.automating = false
-            if Self.owner === self { Self.owner = nil }
-            confirmActions = true
-            if stopped || Task.isCancelled { status = "Arrêté · contrôle rendu" } else { status = completed ? "Terminé · contrôle rendu" : "Interrompu · contrôle rendu" }
+    }
+    private func finish(completed: Bool) {
+        if let inputMonitor { NSEvent.removeMonitor(inputMonitor) }; inputMonitor = nil
+        if let browserInputMonitor { NSEvent.removeMonitor(browserInputMonitor) }; browserInputMonitor = nil
+        resolveApproval(0); running = false; external = false; taskApps = []; lastObservation = nil; driver.reset(); browser.reset(); browser.automating = false
+        if Self.owner === self { Self.owner = nil }
+        confirmActions = true
+        if stopped || Task.isCancelled { status = "Arrêté · contrôle rendu" } else { status = completed ? "Terminé · contrôle rendu" : "Interrompu · contrôle rendu" }
+    }
+    /// Same policy and driver as the native loop; the harness owns model reasoning.
+    /// Observations and screenshots remain in memory and never enter the chat journal.
+    func executeExternal(conversation: UUID, command: ComputerUseCommand) async throws -> [[String: String]] {
+        if !running { try begin(conversation: conversation); external = true }
+        guard external, conversationID == conversation else { throw ComputerUseFailure("Une autre conversation utilise le contrôle graphique.") }
+        try check()
+        let observed = try await execute(command)
+        var result: [[String: String]] = [["type": "text", "text": command.action == "list_apps"
+            ? "browser: Navigateur Chromium intégré\n" + apps.map { "\($0.id): \($0.name)" }.joined(separator: "\n")
+            : observed?.text ?? "Action exécutée ; observez la cible."]]
+        if let url = observed?.imageURL, let separator = url.firstIndex(of: ","), url.hasPrefix("data:image/") {
+            let mime = String(url.dropFirst(5).prefix { $0 != ";" })
+            result.append(["type": "image", "mimeType": mime, "data": String(url[url.index(after: separator)...])])
         }
+        return result
+    }
+    func releaseExternal(conversation: UUID) {
+        guard external, conversationID == conversation else { return }
+        finish(completed: !stopped)
+    }
+    func run(conversation: UUID, messages: [[String: String]], model: String,
+             turn: @MainActor ([[String: Any]], String) async throws -> ComputerUseModelReply,
+             update: @MainActor (String) -> Void) async throws {
+        guard model != AppleFoundationModel.id else { throw ComputerUseFailure("Choisissez un modèle Host qui prend en charge les images et les appels d’outils.") }
+        try begin(conversation: conversation)
+        var completed = false
+        defer { finish(completed: completed) }
         var context: [[String: Any]] = [["role": "system", "content": Self.instructions]] + messages.map { $0 as [String: Any] }
         let deadline = Date().addingTimeInterval(900)
         var accumulated = ""
