@@ -155,6 +155,7 @@ struct ChatView: View {
                     }
                 }
                 .listSectionSpacing(8)
+                .listRowSeparator(.hidden)
 
                 Section {
                     HStack(spacing: 10) {
@@ -707,6 +708,7 @@ struct ChatView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .listRowSeparator(.hidden)
         .listRowBackground(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(sidebarConversationIsSelected(item) ? Color(uiColor: .secondarySystemBackground) : .clear)
