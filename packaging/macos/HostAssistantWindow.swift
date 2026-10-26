@@ -27,7 +27,7 @@ final class HostAssistantWindow: NSWindowController, NSWindowDelegate {
         super.init(window: window)
         window.delegate = self
     }
-    func windowWillClose(_ notification: Notification) { if store.computer.running { store.stop() } }
+    func windowWillClose(_ notification: Notification) { if store.computer.running { store.computer.stop() } }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 }
 
