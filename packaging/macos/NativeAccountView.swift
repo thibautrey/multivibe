@@ -77,7 +77,7 @@ import SwiftUI
                 if !identity.profiles.isEmpty {
                     Divider()
                     VStack(alignment: .leading, spacing: 6) {
-                        Toggle("Ask everytime", isOn: Binding(get: { identity.asksEveryTime }, set: identity.setAsksEveryTime))
+                        Toggle("Ask everytime", isOn: Binding(get: { identity.asksEveryTime }, set: { identity.setAsksEveryTime($0) }))
                             .toggleStyle(.switch)
                         Text("Demander qui vous êtes au lancement et après 10 minutes sans interaction dans MultiVibe.")
                             .font(.caption).foregroundStyle(.secondary)

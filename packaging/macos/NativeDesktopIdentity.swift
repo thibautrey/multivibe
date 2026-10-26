@@ -70,6 +70,7 @@ struct NativeIdentityActivity {
     private var subscriptions: Set<AnyCancellable> = []
     private var recognition: Task<Void, Never>?
     private var epoch = UUID()
+    private var operation = UUID()
     private var foreground = false
     private var storageAvailable = true
     private weak var window: NSWindow?
@@ -131,6 +132,7 @@ struct NativeIdentityActivity {
         guard !foreground, window?.isVisible == true else { return }
         foreground = true
         tick()
+        guard !working, session?.isSigningIn != true else { return }
         if cameraEnabled && !configuringAppearance && !appearance.faces.isEmpty { recognizeForeground() }
         else if requiresSelection { showsPicker = true }
     }
@@ -149,6 +151,7 @@ struct NativeIdentityActivity {
     }
     func lock() {
         cancelRecognition()
+        operation = UUID(); working = false
         camera.cancel()
         agent.lockAccount()
         activity.clear(); pendingAccountID = nil; showsPicker = true
@@ -163,20 +166,22 @@ struct NativeIdentityActivity {
     func unlock(_ id: String, pin: String? = nil) async {
         guard !working else { return }
         cancelRecognition()
-        let expected = epoch
+        operation = UUID(); let expected = operation
         working = true; error = nil
-        defer { if epoch == expected { working = false } }
+        defer { if operation == expected { working = false } }
         do {
             try await agent.selectAccount(id, pin: pin)
-            guard expected == epoch else { return }
+            guard expected == operation else { return }
             activity.unlocked(at: now()); pendingAccountID = nil; showsPicker = false
-        } catch { if expected == epoch { self.error = error.localizedDescription } }
+        } catch { if expected == operation { self.error = error.localizedDescription } }
     }
     func addAccount() async {
         guard !working, let window else { return }
         cancelRecognition()
+        operation = UUID(); let expected = operation
         working = true; error = nil; pendingAccountID = nil
         await agent.connect(window: window)
+        guard operation == expected else { return }
         working = false
         if let error = agent.error { self.error = error }
         else if requiresSelection { pendingAccountID = session?.selectedAccountID }
@@ -242,7 +247,7 @@ struct NativeIdentityActivity {
         try storage.save(value); appearance = value
     }
     private func cancelRecognition() {
-        epoch = UUID(); recognition?.cancel(); recognition = nil; scanning = false; working = false
+        epoch = UUID(); recognition?.cancel(); recognition = nil; scanning = false
         camera.cancel()
     }
     private func recognizeForeground() {
@@ -284,7 +289,7 @@ struct NativeIdentityWindowActivity: NSViewRepresentable {
         private var timer: Timer?
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow(); cleanup()
-            guard let window else { return }
+            guard let window else { identity?.becameInactive(); return }
             identity?.attach(window: window)
             let center = NotificationCenter.default
             for name in [NSApplication.didBecomeActiveNotification, NSWindow.didBecomeMainNotification, NSWindow.didDeminiaturizeNotification] {
@@ -298,7 +303,10 @@ struct NativeIdentityWindowActivity: NSViewRepresentable {
                 })
             }
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel, .mouseMoved, .leftMouseDragged, .rightMouseDragged]) { [weak self, weak window] event in
-                guard let window, event.window === window || event.window?.sheetParent === window else { return event }
+                guard let window else { return event }
+                var owner = event.window
+                while let candidate = owner, candidate !== window { owner = candidate.sheetParent }
+                guard owner === window else { return event }
                 self?.identity?.interaction(); return event
             }
             let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.identity?.tick() } }

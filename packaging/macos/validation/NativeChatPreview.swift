@@ -31,6 +31,7 @@ import SwiftUI
                 let store = NativeChatStore(file: file)
                 previewStore = store
                 let cloud: NativeCloudSession
+                var cloudClient: NativeAgentClient?
                 if ProcessInfo.processInfo.environment["MULTIVIBE_PREVIEW_ACCOUNTS"] == "1" {
                     let salt = Data(repeating: 7, count: 32)
                     let verifier = try await Task.detached { try NativeCloudPIN.derive("2468", salt: salt, rounds: 120_000) }.value
@@ -38,15 +39,17 @@ import SwiftUI
                         .init(credential: .init(accessToken: "fixture-alice", refreshToken: "fixture-refresh-alice", expiresAt: .distantFuture, accountID: "preview-alice"), displayName: "Alice"),
                         .init(credential: .init(accessToken: "fixture-noah", refreshToken: "fixture-refresh-noah", expiresAt: .distantFuture, accountID: "preview-noah"), displayName: "Noah", pin: .init(salt: salt, verifier: verifier)),
                     ], selectedAccountID: "preview-alice")
-                    cloud = try NativeCloudSession(transport: { request in
+                    let previewTransport: @MainActor (URLRequest) async throws -> (Data, URLResponse) = { request in
                         let id = request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-noah" ? "preview-noah" : "preview-alice"
                         let payload: [String: Any] = ["accountId": id, "cloudEnabled": false, "exportSources": [], "revision": 1]
                         return (try JSONSerialization.data(withJSONObject: payload), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
-                    }, accountStorage: .init(load: { registry }, save: { registry = $0 }))
+                    }
+                    cloud = try NativeCloudSession(transport: previewTransport, accountStorage: .init(load: { registry }, save: { registry = $0 }))
+                    cloudClient = NativeAgentClient(token: { try await cloud.token() }, account: { cloud.accountID }, transport: previewTransport)
                 } else {
                     cloud = try NativeCloudSession(storage: .init(load: { nil }, save: { _ in }, clear: {}), transport: { _ in throw HostAssistantError.unavailable })
                 }
-                let agent = NativeChatAgentCoordinator(session: cloud, root: root.appendingPathComponent("cloud"))
+                let agent = NativeChatAgentCoordinator(session: cloud, client: cloudClient, root: root.appendingPathComponent("cloud"))
                 previewAgent = agent
                 let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780), styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)
                 window.title = "MultiVibe UI Preview"
