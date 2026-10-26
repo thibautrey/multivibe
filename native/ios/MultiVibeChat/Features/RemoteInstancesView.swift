@@ -139,63 +139,6 @@ private struct RemoteMachineView: View {
     }
 }
 
-struct RemoteHarnessModelPicker: View {
-    let chatID: UUID
-    @Environment(\.dismiss) private var dismiss
-    @State private var instances = RemoteInstances.shared
-    @State private var search = ""
-    @State private var failure: String?
-    private var chat: RemoteChat? { instances.chats.first { $0.id == chatID } }
-    private var models: [RemoteHarnessModel] {
-        guard let chat else { return [] }
-        return (instances.modelCatalog[chat.machine + ":" + chat.harness] ?? []).filter {
-            search.isEmpty || $0.displayName.localizedCaseInsensitiveContains(search) || $0.id.localizedCaseInsensitiveContains(search)
-        }
-    }
-    var body: some View {
-        NavigationStack {
-            List {
-                if let failure { Text(failure).foregroundStyle(.red) }
-                ForEach(models, id: \.selectionID) { model in
-                    Button {
-                        guard let chat else { return }
-                        Task {
-                            do {
-                                try await instances.choose(chat.machine, harness: chat.harness, model: model)
-                                dismiss()
-                                do { try await instances.efforts(chat.machine, harness: chat.harness, model: model.id, provider: model.provider) }
-                                catch { instances.error = "Le modèle est sélectionné ; son catalogue d’effort est momentanément indisponible." }
-                            } catch { failure = "Le changement n’a pas été confirmé. Reprenez sa vérification depuis le chat." }
-                        }
-                    } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(model.displayName).foregroundStyle(.primary)
-                                if let provider = model.provider { Text(provider).font(.caption).foregroundStyle(.secondary) }
-                            }
-                            Spacer()
-                            if chat?.model == model.id && chat?.provider == model.provider { Image(systemName: "checkmark") }
-                        }.padding(.vertical, 4)
-                    }.disabled(instances.busy || chat?.pendingConfiguration != nil).accessibilityIdentifier("remoteModelRow")
-                }
-                if models.isEmpty && !instances.busy { Text("Aucun modèle. Actualisez le catalogue ou modifiez la recherche.").foregroundStyle(.secondary) }
-            }
-            .searchable(text: $search, prompt: "Rechercher un modèle")
-            .navigationTitle("Modèle du harness").navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("Fermer") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Actualiser", systemImage: "arrow.clockwise") {
-                        guard let chat else { return }
-                        Task { do { try await instances.models(chat.machine, harness: chat.harness); failure = nil } catch { failure = "Catalogue indisponible sur cette instance." } }
-                    }.disabled(instances.busy)
-                }
-            }
-            .overlay { if instances.busy { ProgressView() } }
-        }
-    }
-}
-
 struct RemoteHarnessProjectPicker: View {
     let chatID: UUID
     @Environment(\.dismiss) private var dismiss
