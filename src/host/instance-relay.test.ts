@@ -35,6 +35,7 @@ async function fixture(t:any){
 }
 test('handoff is single-use, account/instance-bound, expires and never persists the device token',async t=>{
  const f=await fixture(t),pair=await f.pair();
+ assert.match(f.handoff.code,/^[A-HJ-NP-Z2-9]{12}$/);
  assert.equal(pair.deviceToken.length,43);assert.equal(pair.expiresAt-f.handoff.expiresAt,24*3600_000-5*60_000);
  assert.ok(!fs.readFileSync(f.file,'utf8').includes(pair.deviceToken));assert.equal(fs.statSync(f.file).mode&0o777,0o600);
  await assert.rejects(f.pair(),/expired or invalid/);
