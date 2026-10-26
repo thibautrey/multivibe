@@ -118,6 +118,7 @@ struct RelayUsageView: View {
 
 struct RelayUsageDashboard: View {
     let usage: RelayUsage
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var selectedDate: Date?
     private let utc = TimeZone(secondsFromGMT: 0)!
     private var selectedDay: RelayUsage.Day? {
@@ -149,7 +150,7 @@ struct RelayUsageDashboard: View {
                 breakdown("Par machine", groups: usage.machines, identifier: "relayUsageMachines")
             }
             Text("Un message est compté lorsque votre instance démarre son exécution, même si elle échoue ensuite. Les appels d’outils et les consultations de projets ou d’historique n’ajoutent aucun message. Les jours et le renouvellement mensuel sont calculés en UTC.")
-                .font(.footnote).foregroundStyle(.secondary)
+                .font(.footnote).foregroundStyle(.primary.opacity(0.82))
         }
     }
 
@@ -157,30 +158,41 @@ struct RelayUsageDashboard: View {
         card {
             Label("Messages disponibles ce mois-ci", systemImage: "message")
                 .font(.headline)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
             Text(usage.allowance.remainingLabel)
                 .font(.system(.largeTitle, design: .rounded, weight: .bold))
                 .accessibilityIdentifier("relayRemainingMessages")
             if usage.allowance.unlimited {
                 Text("Relay illimité avec votre abonnement Cloud.").font(.subheadline).foregroundStyle(.secondary)
             } else {
-                HStack(spacing: 22) {
-                    Chart {
-                        SectorMark(angle: .value("Utilisés", usage.allowance.used), innerRadius: .ratio(0.72)).foregroundStyle(MultiVibeTheme.accent)
-                        SectorMark(angle: .value("Réservés", usage.allowance.reserved), innerRadius: .ratio(0.72)).foregroundStyle(.orange)
-                        SectorMark(angle: .value("Disponibles", usage.allowance.remaining ?? 0), innerRadius: .ratio(0.72)).foregroundStyle(MultiVibeTheme.accent.opacity(0.12))
-                    }
-                    .frame(width: 84, height: 84)
-                    .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("\(usage.allowance.used) utilisés").foregroundStyle(MultiVibeTheme.accent)
-                        Text("\(usage.allowance.reserved) réservés").foregroundStyle(.secondary)
-                        Text("\(usage.allowance.included) inclus par mois").foregroundStyle(.secondary)
-                    }.font(.subheadline)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 22) { quotaChart; quotaLegend }
+                    VStack(alignment: .leading, spacing: 14) { quotaChart; quotaLegend }
                 }
                 Text("Renouvellement le \(usage.allowance.renewalDate.formatted(dateFormat))")
                     .font(.footnote).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+    private var quotaChart: some View {
+        Chart {
+            SectorMark(angle: .value("Utilisés", usage.allowance.used), innerRadius: .ratio(0.72)).foregroundStyle(MultiVibeTheme.accent)
+            SectorMark(angle: .value("Réservés", usage.allowance.reserved), innerRadius: .ratio(0.72)).foregroundStyle(.orange)
+            SectorMark(angle: .value("Disponibles", usage.allowance.remaining ?? 0), innerRadius: .ratio(0.72)).foregroundStyle(MultiVibeTheme.accent.opacity(0.12))
+        }
+        .frame(width: 84, height: 84)
+        .accessibilityHidden(true)
+    }
+    private var quotaLegend: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("\(usage.allowance.used) utilisés").foregroundStyle(MultiVibeTheme.accent)
+            Text("\(usage.allowance.reserved) réservés").foregroundStyle(.secondary)
+            Text("\(usage.allowance.included) inclus par mois").foregroundStyle(.secondary)
+        }
+        .font(.subheadline)
+        .fixedSize(horizontal: false, vertical: true)
     }
     @ViewBuilder private var metrics: some View {
         metric(usage.summary.started, "Utilisés")
@@ -208,7 +220,15 @@ struct RelayUsageDashboard: View {
                 }
             }
             .chartXSelection(value: $selectedDate)
-            .chartXAxis { AxisMarks(values: .automatic(desiredCount: 4)) { _ in AxisValueLabel(format: dateFormat); AxisGridLine() } }
+            .chartXAxis {
+                if dynamicTypeSize.isAccessibility {
+                    AxisMarks(values: [usage.daily.first!.timestamp, usage.daily.last!.timestamp]) { _ in
+                        AxisValueLabel(format: dateFormat); AxisGridLine()
+                    }
+                } else {
+                    AxisMarks(values: .automatic(desiredCount: 4)) { _ in AxisValueLabel(format: dateFormat); AxisGridLine() }
+                }
+            }
             .chartYAxis { AxisMarks(values: .automatic(desiredCount: 4)) { value in
                 if let count = value.as(Int.self), count >= 0 { AxisValueLabel(); AxisGridLine() }
             } }
