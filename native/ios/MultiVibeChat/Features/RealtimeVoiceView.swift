@@ -2,6 +2,7 @@ import AVFoundation
 import SwiftUI
 
 struct RealtimeVoiceView: View {
+    var remoteChatID: UUID? = nil
     @Environment(ConversationManager.self) private var manager
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -11,6 +12,17 @@ struct RealtimeVoiceView: View {
     @State private var typed = ""
     @State private var settings = false
     @State private var closing = false
+    @State private var instanceModel = ""
+    private var instances: RemoteInstances { .shared }
+    private var messages: [ChatMessage] {
+        if let remoteChatID { return instances.chats.first(where: { $0.id == remoteChatID })?.messages ?? [] }
+        return manager.current?.messages ?? []
+    }
+    private var preferenceKey: String {
+        let machine = remoteChatID.flatMap { id in instances.chats.first(where: { $0.id == id })?.machine }
+        let key = "cloud.multivibe.voice.\(manager.session?.accountId ?? "")"
+        return machine.map { key + "." + $0 } ?? key
+    }
 
     var body: some View {
         ZStack {
@@ -19,7 +31,7 @@ struct RealtimeVoiceView: View {
                 signedOutContent
             } else {
                 RealtimeVoiceCanvas(
-                    messages: manager.current?.messages ?? [],
+                    messages: messages,
                     assistantDraft: controller.partialAssistant,
                     userDraft: controller.partialUser,
                     phase: controller.phase,
@@ -43,11 +55,12 @@ struct RealtimeVoiceView: View {
             NavigationStack {
                 List {
                     Section("Conversation") {
-                        Picker("Voix", selection: $selectedVoice) {
+                        Picker(remoteChatID == nil ? "Voix" : "Modèle et voix", selection: $selectedVoice) {
                             ForEach(voices) { Text($0.name).tag($0.id) }
                         }
+                        if !instanceModel.isEmpty { LabeledContent("Modèle de réponse", value: instanceModel) }
                         if !controller.route.isEmpty {
-                            LabeledContent("Connexion", value: controller.route == "cascaded" ? "Mode compatible" : "Temps réel")
+                            LabeledContent("Connexion", value: controller.route == "instance" ? "Instance distante · Relay WAN" : controller.route == "cascaded" ? "Mode compatible" : "Temps réel")
                         }
                     }
                     Text("La nouvelle voix sera utilisée à la prochaine conversation.")
@@ -96,13 +109,13 @@ struct RealtimeVoiceView: View {
 
     private func begin() async {
         guard let account = manager.session else { return }
+        if let remoteChatID { await beginRemote(remoteChatID, account: account); return }
         manager.newConversation()
         guard let conversation = manager.current else {
             controller.error = "Impossible de démarrer maintenant. Réessayez dans un instant."
             return
         }
-        let key = "cloud.multivibe.voice.\(account.accountId)"
-        selectedVoice = UserDefaults.standard.string(forKey: key) ?? "coral"
+        selectedVoice = UserDefaults.standard.string(forKey: preferenceKey) ?? "coral"
         do {
             guard await AVAudioApplication.requestRecordPermission() else {
                 controller.error = "Autorisez le microphone dans les réglages de l’iPhone."
@@ -156,9 +169,30 @@ struct RealtimeVoiceView: View {
         }
     }
 
+    private func beginRemote(_ id: UUID, account: NativeSession) async {
+        guard let chat = instances.chats.first(where: { $0.id == id }), chat.command == nil, chat.pendingConfiguration == nil else {
+            controller.error = "Terminez le tour ou vérifiez sa configuration avant de parler à cette instance."; return
+        }
+        do {
+            guard await AVAudioApplication.requestRecordPermission() else {
+                controller.error = "Autorisez le microphone dans les réglages de l’iPhone."; return
+            }
+            let capabilities = try await instances.voiceCapabilities(chat.machine)
+            guard capabilities.enabled, !capabilities.voices.isEmpty else { throw APIError.noModel }
+            voices = capabilities.voices; instanceModel = capabilities.llmModel
+            selectedVoice = UserDefaults.standard.string(forKey: preferenceKey) ?? "kokoro:ff_siwis"
+            if !voices.contains(where: { $0.id == selectedVoice }) { selectedVoice = voices[0].id }
+            let connection = try await instances.voiceConnection(chat.machine, voice: selectedVoice)
+            await controller.start(session: connection.session, history: chat.messages, accountToken: "", backgroundAudio: false,
+                                   headers: connection.headers) { role, text, turnID in
+                instances.appendVoiceTurn(chatID: id, accountID: account.accountId, model: capabilities.llmModel, role: role, text: text, turnID: turnID)
+            }
+        } catch { controller.error = "Le vocal est indisponible sur cette instance. Vérifiez que sa passerelle et ses modèles vocaux sont démarrés." }
+    }
+
     private func saveVoice() {
-        guard let account = manager.session else { return }
-        UserDefaults.standard.set(selectedVoice, forKey: "cloud.multivibe.voice.\(account.accountId)")
+        guard manager.session != nil else { return }
+        UserDefaults.standard.set(selectedVoice, forKey: preferenceKey)
     }
 
     private func sendText() {

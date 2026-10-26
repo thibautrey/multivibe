@@ -28,6 +28,13 @@ struct RemoteHarnessProject: Codable, Identifiable, Sendable {
 struct RemoteDeviceAuthorization: Codable, Sendable {
     let deviceId: String; let deviceToken: String; let expiresAt: Double
 }
+struct RemoteVoiceCapabilities: Decodable, Sendable {
+    let enabled: Bool; let voices: [VoiceOption]; let llmModel: String
+    let transcriptionModel: String; let backgroundAudio: Bool
+}
+struct RemoteVoiceConnection: Sendable {
+    let session: VoiceSession; let headers: [String: String]
+}
 struct RemotePairing: Identifiable, Equatable {
     let machine: String; let handoff: String
     var id: String { machine }
@@ -109,6 +116,22 @@ actor RemoteInstanceAPI {
     }
     func revokeMachine(_ machine: String, token: String) async throws {
         let (_, response) = try await session.data(for: request("machines/" + machine, token: token, method: "DELETE")); try validate(response)
+    }
+    static func voiceEndpoint(_ machine: String, operation: String, voice: String? = nil) throws -> URL {
+        guard UUID(uuidString: machine) != nil, ["capabilities", "realtime"].contains(operation) else { throw APIError.invalidResponse }
+        var url = URLComponents(string: "https://app.multivibe.cloud/relay/voice/v1/machines/\(machine)/\(operation)")!
+        if operation == "realtime" { url.scheme = "wss" }
+        if let voice { url.queryItems = [URLQueryItem(name: "voice", value: voice)] }
+        guard let result = url.url else { throw APIError.invalidResponse }; return result
+    }
+    func voiceCapabilities(_ machine: String, token: String, fields: [String: HistoryJSON]) async throws -> RemoteVoiceCapabilities {
+        var request = URLRequest(url: try Self.voiceEndpoint(machine, operation: "capabilities"))
+        request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        request.setValue(fields["deviceId"]?.string, forHTTPHeaderField: "X-MultiVibe-Device-Id")
+        request.setValue(fields["deviceToken"]?.string, forHTTPHeaderField: "X-MultiVibe-Device-Token")
+        let (data, response) = try await session.data(for: request); try validate(response)
+        guard data.count <= 1_048_576 else { throw APIError.invalidResponse }
+        return try JSONDecoder().decode(RemoteVoiceCapabilities.self, from: data)
     }
     private func bridgeRequest(_ machine: String, account: String, token: String, fields: [String: HistoryJSON]) throws -> URLRequest {
         guard UUID(uuidString: machine) != nil else { throw APIError.invalidResponse }
@@ -246,6 +269,34 @@ struct RemoteModelPreference: Codable {
     }
     private func credentials(_ auth: RemoteDeviceAuthorization, operation: String) -> [String: HistoryJSON] {
         ["operation": .string(operation), "deviceId": .string(auth.deviceId), "deviceToken": .string(auth.deviceToken)]
+    }
+    func voiceCapabilities(_ machine: String) async throws -> RemoteVoiceCapabilities {
+        let owner = account, epoch = generation
+        let (session, fields) = try await authorizedFields(machine, operation: "voice")
+        let result = try await RemoteInstanceAPI.shared.voiceCapabilities(machine, token: session.accessToken, fields: fields)
+        guard let owner else { throw APIError.authenticationRequired }; try check(owner, epoch)
+        return result
+    }
+    func voiceConnection(_ machine: String, voice: String) async throws -> RemoteVoiceConnection {
+        let (accountSession, fields) = try await authorizedFields(machine, operation: "voice")
+        guard let device = fields["deviceId"]?.string, let token = fields["deviceToken"]?.string else { throw APIError.authenticationRequired }
+        let expires = min(accountSession.expiresAt, Date().addingTimeInterval(900))
+        let session = VoiceSession(id: UUID().uuidString.lowercased(), route: "instance", sessionToken: "", expiresAt: expires,
+            credential: VoiceCredential(protocolName: "openai-realtime-ga", transport: "websocket",
+                endpoint: try RemoteInstanceAPI.voiceEndpoint(machine, operation: "realtime", voice: voice), token: accountSession.accessToken, expiresAt: expires),
+            retainsAudio: false, transcriptPersistence: "final_only")
+        return RemoteVoiceConnection(session: session, headers: ["X-MultiVibe-Device-Id": device, "X-MultiVibe-Device-Token": token])
+    }
+    @discardableResult func appendVoiceTurn(chatID: UUID, accountID: String, model: String, role: String, text: String, turnID: String) -> Bool {
+        guard account == accountID, ConversationManager.shared.session?.accountId == accountID,
+              ["user", "assistant"].contains(role), let index = chats.firstIndex(where: { $0.id == chatID }), !text.isEmpty else { return false }
+        let bytes = Array(SHA256.hash(data: Data((accountID + ":" + chatID.uuidString + ":" + turnID).utf8)).prefix(16))
+        let id = UUID(uuid: (bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15]))
+        if chats[index].messages.contains(where: { $0.id == id }) { return true }
+        let previous = chats[index]
+        chats[index].messages.append(ChatMessage(id: id, role: role, content: text, completion: role == "assistant" ? .completed : nil))
+        if previous.messages.isEmpty { chats[index].title = String(text.prefix(60)) }
+        do { try persist(); return true } catch { chats[index] = previous; return false }
     }
     func pair(_ pairing: RemotePairing, name: String) async throws {
         guard let owner = account, !busy, machines.contains(where: { $0.id == pairing.machine && $0.online && $0.supportsHarness }) else { throw APIError.invalidResponse }
