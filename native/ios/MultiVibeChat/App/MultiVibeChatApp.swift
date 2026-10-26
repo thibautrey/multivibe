@@ -63,6 +63,9 @@ struct ChatEntryView: View {
             if ProcessInfo.processInfo.arguments.contains("-cloud-usage-ui-fixture") {
                 CloudUsageFixtureView()
             }
+            else if ProcessInfo.processInfo.arguments.contains("-voice-audio-configuration-ui-fixture") {
+                VoiceAudioConfigurationFixtureView()
+            }
             else if ProcessInfo.processInfo.arguments.contains("-cloud-workspace-ui-fixture") {
                 CloudWorkspaceFixtureView()
             }

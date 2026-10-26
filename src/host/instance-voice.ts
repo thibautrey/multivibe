@@ -29,7 +29,7 @@ export class InstanceVoiceBridge {
   private control?:WebSocket;
   private sessions=new Map<string,Live>();
   private stopped=false;
-  private voices=new Map<string,{model:string;voice:string;name:string}>();
+  private voices=new Map<string,{model:string;modelName:string;voice:string;name:string}>();
   private readonly edge:string;
   private readonly speech:string;
   private readonly origin:string;
@@ -43,17 +43,19 @@ export class InstanceVoiceBridge {
     if(!response.ok)throw Error('Speech runtime unavailable');
     const models=await response.json() as {data:{id:string}[]},loaded=new Set(models.data.map(m=>m.id));
     if(!loaded.has(SPEECH_MODELS.stt))throw Error('Transcription model unavailable');
-    const available=new Map<string,{model:string;voice:string;name:string}>();
+    const available=new Map<string,{model:string;modelName:string;voice:string;name:string}>();
     for(const [provider,label] of [['kokoro','Kokoro'],['qwen','Qwen3 TTS']] as const){
       const model=SPEECH_MODELS[provider];if(!loaded.has(model))continue;
       const result=await fetch(this.speech+'/v1/audio/voices?model='+encodeURIComponent(model),{redirect:'error',signal:AbortSignal.timeout(5000)});
       if(!result.ok)continue;const body=await result.json() as {voices:string[]};
-      for(const voice of body.voices){if(!/^[A-Za-z0-9_-]{1,80}$/.test(voice))continue;available.set(provider+':'+voice,{model,voice,name:label+' · '+voice});}
+      for(const voice of body.voices){if(!/^[A-Za-z0-9_-]{1,80}$/.test(voice))continue;available.set(provider+':'+voice,{model,modelName:label,voice,name:label+' · '+voice});}
     }
     this.voices=available;
-    const voices=[...available].map(([id,v])=>({id,name:v.name}));
+    const voices=[...available].map(([id,v])=>({id,name:v.name,model:v.model,voice:v.voice}));
     voices.sort((a,b)=>a.id==='kokoro:ff_siwis'?-1:b.id==='kokoro:ff_siwis'?1:a.name.localeCompare(b.name));
-    return {enabled:voices.length>0,voices,backgroundAudio:false,tools:false,retainsAudio:false,llmModel:this.options.llmModel,transcriptionModel:SPEECH_MODELS.stt};
+    const synthesisModels=[...new Map([...available.values()].map(v=>[v.model,{id:v.model,name:v.modelName}])).values()];
+    return {enabled:voices.length>0,voices,backgroundAudio:false,tools:false,retainsAudio:false,llmModel:this.options.llmModel,
+      transcriptionModel:SPEECH_MODELS.stt,transcriptionModels:[{id:SPEECH_MODELS.stt,name:'Whisper large v3 turbo'}],synthesisModels};
   }
   speechVoice(id:unknown){const voice=typeof id==='string'?this.voices.get(id):undefined;if(!voice)throw Error('Voice unavailable');return voice;}
   private send(body:unknown){

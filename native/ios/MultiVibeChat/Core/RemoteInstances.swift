@@ -31,6 +31,8 @@ struct RemoteDeviceAuthorization: Codable, Sendable {
 struct RemoteVoiceCapabilities: Decodable, Sendable {
     let enabled: Bool; let voices: [VoiceOption]; let llmModel: String
     let transcriptionModel: String; let backgroundAudio: Bool
+    var transcriptionModels: [VoiceModelOption]? = nil
+    var synthesisModels: [VoiceModelOption]? = nil
 }
 struct RemoteVoiceConnection: Sendable {
     let session: VoiceSession; let headers: [String: String]

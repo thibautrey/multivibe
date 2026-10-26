@@ -958,6 +958,45 @@ final class VoiceSystemEventTests: XCTestCase {
     }
 }
 
+final class VoiceAudioConfigurationTests: XCTestCase {
+    private let voices = [
+        VoiceOption(id: "kokoro:ff_siwis", name: "Kokoro · Siwis"),
+        VoiceOption(id: "qwen:serena", name: "Qwen3 TTS · Serena")
+    ]
+
+    func testLegacyInstanceCapabilitiesBecomeExplicitAudioModels() {
+        let catalog = VoiceAudioCatalog(
+            voices: voices,
+            legacyTranscriptionModel: "whisper-large-v3-turbo-asr-4bit"
+        )
+        XCTAssertEqual(catalog.transcriptionModels.map(\.id), ["whisper-large-v3-turbo-asr-4bit"])
+        XCTAssertEqual(catalog.synthesisModels.map(\.id), ["Kokoro-82M-bf16", "Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"])
+        XCTAssertEqual(catalog.voices(for: "Kokoro-82M-bf16").map(\.id), ["kokoro:ff_siwis"])
+        XCTAssertEqual(catalog.voices(for: "Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16").map(\.id), ["qwen:serena"])
+    }
+
+    func testStoredConfigurationIsNormalizedAgainstCurrentCapabilities() {
+        let catalog = VoiceAudioCatalog(voices: voices, legacyTranscriptionModel: "whisper-large-v3-turbo-asr-4bit")
+        let stale = VoiceAudioConfiguration(transcriptionModel: "removed-stt", synthesisModel: "Kokoro-82M-bf16", voice: "qwen:serena")
+        XCTAssertEqual(catalog.normalized(stale), VoiceAudioConfiguration(
+            transcriptionModel: "whisper-large-v3-turbo-asr-4bit",
+            synthesisModel: "Kokoro-82M-bf16",
+            voice: "kokoro:ff_siwis"
+        ))
+    }
+
+    func testConfigurationStorageIsScopedPerAccountAndInstance() throws {
+        let suite = "voice-audio-configuration-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let value = VoiceAudioConfiguration(transcriptionModel: "whisper", synthesisModel: "kokoro", voice: "siwis")
+        XCTAssertNil(VoiceAudioConfigurationStore.load(scope: "account-a.machine-a", defaults: defaults))
+        VoiceAudioConfigurationStore.save(value, scope: "account-a.machine-a", defaults: defaults)
+        XCTAssertEqual(VoiceAudioConfigurationStore.load(scope: "account-a.machine-a", defaults: defaults), value)
+        XCTAssertNil(VoiceAudioConfigurationStore.load(scope: "account-a.machine-b", defaults: defaults))
+    }
+}
+
 @MainActor final class VoiceCanvasPresentationTests: XCTestCase {
     func testCanvasWaitsForAssistantContent() {
         let user = ChatMessage(role: "user", content: "Quel temps fera-t-il ?")

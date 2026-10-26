@@ -363,13 +363,24 @@ enum ConversationTitle {
     }
 }
 struct ModelList: Decodable { let data: [ModelOption] }
-struct VoiceOption: Codable, Identifiable, Equatable, Sendable { let id: String; let name: String }
+struct VoiceModelOption: Codable, Identifiable, Equatable, Sendable {
+    let id: String
+    let name: String
+}
+struct VoiceOption: Codable, Identifiable, Equatable, Sendable {
+    let id: String
+    let name: String
+    var model: String? = nil
+    var voice: String? = nil
+}
 struct VoiceCapabilities: Decodable, Sendable {
     let enabled: Bool
     let voices: [VoiceOption]
     let backgroundAudio: Bool
     let tools: Bool
     let retainsAudio: Bool
+    var transcriptionModels: [VoiceModelOption]? = nil
+    var synthesisModels: [VoiceModelOption]? = nil
 }
 struct VoiceCredential: Decodable, Sendable {
     let protocolName: String
