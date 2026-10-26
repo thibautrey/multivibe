@@ -26,7 +26,7 @@
   ],
   "changelog_url": "https://github.com/thibautrey/multivibe/releases",
   "date_added": "2026-09-07",
-  "description": "Local AI model Host for x86_64 NVIDIA GPUs (compute capability 7.0+). Sharing and model downloads are opt-in.",
+  "description": "AI API proxy and account dashboard for x86_64 systems.",
   "home": "https://github.com/thibautrey/multivibe",
   "host_mounts": [],
   "icon": "https://raw.githubusercontent.com/thibautrey/multivibe/main/assets/brand/favicon/favicon-256x256.png",

@@ -1196,35 +1196,9 @@ fn account_ids_for_model(model: &str, catalog: &[Value]) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn is_local_runtime(account: &Account) -> bool {
-    let runtime = account.local_runtime.as_ref();
-    let discovered = account.location.as_deref() == Some("local")
-        && runtime.and_then(|value| value.source.as_deref()) == Some("multivibe-local-discovery");
-    let pair = account.id == "local-runtime-nvidia-pair"
-        && account.location.as_deref() == Some("personal-cluster")
-        && runtime.and_then(|value| value.source.as_deref())
-            == Some("multivibe-local-configuration")
-        && runtime.and_then(|value| value.adapter.as_deref()) == Some("nvidia-pair");
-    account.provider.as_deref() == Some("openai-compatible")
-        && (discovered || pair)
-        && account.access_token.is_empty()
-        && runtime.and_then(|value| value.authentication.as_deref()) == Some("none")
-        && !runtime
-            .map(|value| value.confirmed_model_ids.is_empty())
-            .unwrap_or(true)
-        && account.base_url.is_some()
-}
-
-fn local_runtime_label(account: &Account) -> Option<&str> {
-    if !is_local_runtime(account) {
-        return None;
-    }
-    account
-        .local_runtime
-        .as_ref()
-        .and_then(|runtime| runtime.adapter.as_deref())
-        .map(str::trim)
-        .filter(|adapter| !adapter.is_empty())
+// Compatibility metadata is retained only to reject accounts created by the retired local engine.
+fn is_retired_local_account(account: &Account) -> bool {
+    account.local_runtime.is_some()
 }
 
 fn account_inference_token(account: &Account) -> &str {
@@ -1264,10 +1238,10 @@ fn team_model_allowed(account: &Account, model: &str) -> bool {
 }
 
 fn account_usable(account: &Account, model: &str, blocked: &HashMap<String, u64>) -> bool {
-    if !account.enabled || !team_model_allowed(account, model) {
+    if !account.enabled || is_retired_local_account(account) || !team_model_allowed(account, model) {
         return false;
     }
-    if account_inference_token(account).is_empty() && !is_local_runtime(account) {
+    if account_inference_token(account).is_empty() {
         return false;
     }
     let now = now_ms();
@@ -1358,7 +1332,7 @@ fn select_accounts(
             normalize_provider(account) == route.provider.as_deref().unwrap_or("")
                 && (!is_cloud_model_selector(&route.requested_model)
                     || account.multivibe_cloud == Some(true))
-                && local_preparation_route_allowed(account, route)
+                && retired_local_model_route_allowed(route)
                 && (route.account_ids.is_empty() || route.account_ids.contains(&account.id))
                 && account_usable(account, &route.model, blocked)
         })
@@ -1482,40 +1456,9 @@ fn is_prepared_local_model(model: &str) -> bool {
     model.starts_with("multivibe-local-")
 }
 
-fn local_preparation_route_allowed(account: &Account, route: &RouteCandidate) -> bool {
-    if !is_prepared_local_model(&route.requested_model) && !is_prepared_local_model(&route.model) {
-        return true;
-    }
-    if (is_prepared_local_model(&route.requested_model) && route.requested_model != route.model)
-        || !is_local_runtime(account)
-        || account.location.as_deref() != Some("local")
-        || account.multivibe_cloud == Some(true)
-    {
-        return false;
-    }
-    let Some(runtime) = account.local_runtime.as_ref() else {
-        return false;
-    };
-    if runtime.adapter.as_deref() != Some("ollama")
-        || !runtime.confirmed_model_ids.contains(&route.model)
-    {
-        return false;
-    }
-    let Some(origin) = account
-        .base_url
-        .as_deref()
-        .and_then(|value| reqwest::Url::parse(value).ok())
-    else {
-        return false;
-    };
-    origin.scheme() == "http"
-        && matches!(origin.host_str(), Some("127.0.0.1" | "[::1]"))
-        && origin.port() == Some(11434)
-        && origin.username().is_empty()
-        && origin.password().is_none()
-        && origin.path() == "/"
-        && origin.query().is_none()
-        && origin.fragment().is_none()
+fn retired_local_model_route_allowed(route: &RouteCandidate) -> bool {
+    // Retired model IDs must never fall through to another provider or alias.
+    !is_prepared_local_model(&route.requested_model) && !is_prepared_local_model(&route.model)
 }
 
 fn is_cloud_model_selector(model: &str) -> bool {
@@ -5510,7 +5453,7 @@ fn upstream_headers(
     } else {
         account_inference_token(account)
     };
-    if !token.is_empty() && !is_local_runtime(account) {
+    if !token.is_empty() && !is_retired_local_account(account) {
         set_header(&mut headers, "authorization", format!("Bearer {token}"));
     }
     if provider == "openai" {
@@ -10244,19 +10187,6 @@ fn model_entry(
     json!({"id": id, "object": "model", "created": 0, "owned_by": provider, "metadata": metadata})
 }
 
-// Local runtime entries expose a runtime-prefixed catalog id (for example
-// "omlx/Qwen3.8-27B-4bit") while the runtime upstream keeps receiving its own
-// bare model id through metadata.upstream_model_id.
-fn apply_local_runtime_identity(entry: &mut Value, adapter: &str, upstream_id: &str) {
-    entry["id"] = Value::String(format!("{adapter}/{upstream_id}"));
-    if let Some(metadata) = entry.get_mut("metadata").and_then(Value::as_object_mut) {
-        metadata.insert("runtime".to_owned(), Value::String(adapter.to_owned()));
-        metadata.insert(
-            "upstream_model_id".to_owned(),
-            Value::String(upstream_id.to_owned()),
-        );
-    }
-}
 
 fn model_entry_from_upstream(
     id: &str,
@@ -10454,27 +10384,6 @@ fn static_exposed_models(store: &StoreFile, config: &EdgeConfig) -> Vec<Value> {
             );
         }
     }
-    for account in &store.accounts {
-        if !account.enabled {
-            continue;
-        }
-        let runtime_adapter = local_runtime_label(account);
-        if let Some(runtime) = account.local_runtime.as_ref() {
-            for model in &runtime.confirmed_model_ids {
-                let mut entry = model_entry(
-                    model,
-                    &normalize_provider(account),
-                    vec![account.id.clone()],
-                    false,
-                    Vec::new(),
-                );
-                if let Some(adapter) = runtime_adapter {
-                    apply_local_runtime_identity(&mut entry, adapter, model);
-                }
-                upsert_model(&mut models, entry);
-            }
-        }
-    }
     for alias in store.model_aliases.iter().filter(|alias| alias.enabled) {
         let targets = alias
             .rules
@@ -10610,7 +10519,7 @@ fn model_discovery_headers(account: &Account, config: &EdgeConfig) -> HeaderMap 
     } else {
         account_inference_token(account)
     };
-    if !token.is_empty() && !is_local_runtime(account) {
+    if !token.is_empty() && !is_retired_local_account(account) {
         set_header(&mut headers, "authorization", format!("Bearer {token}"));
     }
     if provider == "openai"
@@ -10717,16 +10626,9 @@ async fn discover_account_models(
         Ok(value) => value,
         Err(error) => return Err(format!("model discovery returned invalid JSON: {error}")),
     };
-    let runtime_adapter = local_runtime_label(account);
     let models = upstream_model_entries(&provider, &value)
         .into_iter()
-        .map(|(id, entry)| {
-            let mut model = model_entry_from_upstream(&id, &provider, &account.id, &entry);
-            if let Some(adapter) = runtime_adapter {
-                apply_local_runtime_identity(&mut model, adapter, &id);
-            }
-            model
-        })
+        .map(|(id, entry)| model_entry_from_upstream(&id, &provider, &account.id, &entry))
         .collect::<Vec<_>>();
     if models.is_empty() {
         Err("model discovery returned no models".to_owned())
@@ -10870,7 +10772,8 @@ fn active_model_accounts(store: &StoreFile) -> Vec<Account> {
         .iter()
         .filter(|account| {
             account.enabled
-                && (!account_inference_token(account).is_empty() || is_local_runtime(account))
+                && !is_retired_local_account(account)
+                && !account_inference_token(account).is_empty()
         })
         .cloned()
         .collect()
@@ -10951,7 +10854,7 @@ fn model_catalog_persisted_payload(
     for account in store
         .accounts
         .iter()
-        .filter(|account| account.enabled && !is_local_runtime(account))
+        .filter(|account| account.enabled && !is_retired_local_account(account))
     {
         let Some(entry) = cache.accounts.get(&account.id) else {
             continue;
@@ -13098,70 +13001,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn prepared_local_routes_never_fall_back_to_cloud_or_unconfirmed_runtimes() {
-        let model = "multivibe-local-0123456789abcdef0123456789abcdef:latest";
-        let mut local = account("managed-local");
-        local.provider = Some("openai-compatible".to_owned());
-        local.access_token.clear();
-        local.location = Some("local".to_owned());
-        local.base_url = Some("http://127.0.0.1:11434".to_owned());
-        local.local_runtime = Some(LocalRuntime {
-            source: Some("multivibe-local-discovery".to_owned()),
-            adapter: Some("ollama".to_owned()),
-            authentication: Some("none".to_owned()),
-            confirmed_model_ids: vec![model.to_owned()],
-            ..Default::default()
-        });
-        let mut cloud = account("cloud");
-        cloud.provider = Some("openai-compatible".to_owned());
-        cloud.multivibe_cloud = Some(true);
-        let routes = routes_for_model(&StoreFile::default(), model, "remote-default", &[]);
-        assert_eq!(routes.len(), 1);
-        let selected = select_accounts(
-            &[cloud.clone(), local.clone()],
-            &routes[0],
-            &HashMap::new(),
-            &HashMap::new(),
-        );
-        assert_eq!(
-            selected.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
-            vec!["managed-local"]
-        );
-        assert!(select_accounts(&[cloud], &routes[0], &HashMap::new(), &HashMap::new()).is_empty());
-        for origin in [
-            "https://127.0.0.1:11434",
-            "http://localhost:11434",
-            "http://192.168.1.2:11434",
-            "http://127.0.0.1:1234",
-            "http://user:secret@127.0.0.1:11434",
-            "http://127.0.0.1:11434/v1",
-            "http://127.0.0.1:11434/?x=1",
-        ] {
-            let mut unsafe_account = local.clone();
-            unsafe_account.base_url = Some(origin.to_owned());
-            assert!(
-                !local_preparation_route_allowed(&unsafe_account, &routes[0]),
-                "{origin}"
-            );
-        }
-        let mut unconfirmed = local.clone();
-        unconfirmed
-            .local_runtime
-            .as_mut()
-            .unwrap()
-            .confirmed_model_ids = vec!["another-model".to_owned()];
-        assert!(!local_preparation_route_allowed(&unconfirmed, &routes[0]));
-        let mut remapped = routes[0].clone();
-        remapped.model = "remote-model".to_owned();
-        assert!(!local_preparation_route_allowed(&local, &remapped));
-        local.base_url = Some("http://[::1]:11434".to_owned());
-        assert!(local_preparation_route_allowed(&local, &routes[0]));
-        let mut store = StoreFile::default();
-        store.settings.image_request_model_override = Some("remote-image-model".to_owned());
-        let image = json!({"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/image.png"}}]}]});
-        assert_eq!(image_aware_routing_model(&store, &[], &image, model), model);
-    }
 
     fn account(id: &str) -> Account {
         Account {
@@ -13202,56 +13041,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn catalog_models_route_only_to_accounts_that_expose_them() {
-        let catalog = vec![json!({
-            "id": "Qwen3.8-27B-4bit",
-            "metadata": {
-                "provider": "openai-compatible",
-                "provider_candidates": ["openai-compatible"],
-                "account_ids": ["local-runtime-omlx"],
-            },
-        })];
-        let mut local = account("local-runtime-omlx");
-        local.provider = Some("openai-compatible".to_owned());
-        local.access_token.clear();
-        local.location = Some("local".to_owned());
-        local.base_url = Some("http://127.0.0.1:8000".to_owned());
-        local.local_runtime = Some(LocalRuntime {
-            source: Some("multivibe-local-discovery".to_owned()),
-            adapter: Some("omlx".to_owned()),
-            authentication: Some("none".to_owned()),
-            confirmed_model_ids: vec!["Qwen3.8-27B-4bit".to_owned()],
-            ..Default::default()
-        });
-        let chatgpt = account("chatgpt");
-        let routes = routes_for_model(
-            &StoreFile::default(),
-            "Qwen3.8-27B-4bit",
-            "default",
-            &catalog,
-        );
-        assert_eq!(routes.len(), 1);
-        assert_eq!(routes[0].provider.as_deref(), Some("openai-compatible"));
-        assert_eq!(routes[0].account_ids, vec!["local-runtime-omlx".to_owned()]);
-        let selected = select_accounts(
-            &[chatgpt, local],
-            &routes[0],
-            &HashMap::new(),
-            &HashMap::new(),
-        );
-        assert_eq!(
-            selected
-                .iter()
-                .map(|value| value.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["local-runtime-omlx"]
-        );
-        // The reported regression: when discovery drops the model, the request
-        // must not be redirected to a ChatGPT account.
-        let routes = routes_for_model(&StoreFile::default(), "Qwen3.8-27B-4bit", "default", &[]);
-        assert!(routes.is_empty());
-    }
 
     fn local_runtime_account(id: &str, adapter: &str, models: &[&str]) -> Account {
         let mut value = account(id);
@@ -13270,139 +13059,22 @@ mod tests {
     }
 
     #[test]
-    fn local_runtime_models_expose_runtime_prefixed_ids() {
-        let mut store = StoreFile::default();
-        store.accounts.push(local_runtime_account(
-            "local-runtime-omlx",
-            "omlx",
-            &["Qwen3.8-27B-4bit", "mlx-community/Kokoro-82M-bf16"],
-        ));
-        store.accounts.push(local_runtime_account(
-            "local-runtime-lm-studio",
-            "lm-studio",
-            &["mlx-community/Kokoro-82M-bf16", "voxtral-realtime-et"],
-        ));
-        let models = static_exposed_models(&store, &EdgeConfig::default());
-        let local_ids = models
-            .iter()
-            .filter(|entry| entry["metadata"]["runtime"].is_string())
-            .filter_map(|entry| entry["id"].as_str())
-            .collect::<Vec<_>>();
+    fn retired_local_runtime_accounts_do_not_route_or_publish_models() {
+        let mut legacy = local_runtime_account("local-runtime-legacy", "retired", &["old-model"]);
+        legacy.access_token = "legacy-credential".to_owned();
+        assert!(!account_usable(&legacy, "old-model", &HashMap::new()));
+        let store = store_with_accounts(vec![legacy]);
+        assert!(active_model_accounts(&store).is_empty());
         assert_eq!(
-            local_ids,
-            vec![
-                "omlx/Qwen3.8-27B-4bit",
-                "omlx/mlx-community/Kokoro-82M-bf16",
-                "lm-studio/mlx-community/Kokoro-82M-bf16",
-                "lm-studio/voxtral-realtime-et",
-            ]
+            static_exposed_models(&store, &EdgeConfig::default()),
+            static_exposed_models(&StoreFile::default(), &EdgeConfig::default()),
         );
-        let qwen = models
-            .iter()
-            .find(|entry| entry["id"] == "omlx/Qwen3.8-27B-4bit")
-            .unwrap();
-        assert_eq!(qwen["metadata"]["runtime"], "omlx");
-        assert_eq!(qwen["metadata"]["upstream_model_id"], "Qwen3.8-27B-4bit");
-        assert_eq!(
-            qwen["metadata"]["account_ids"],
-            json!(["local-runtime-omlx"])
-        );
-        let kokoro = models
-            .iter()
-            .filter(|entry| {
-                entry["metadata"]["upstream_model_id"] == "mlx-community/Kokoro-82M-bf16"
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            kokoro.len(),
-            2,
-            "the same model on two runtimes stays two entries"
-        );
-        let response = models_list_response(&models, json!({}));
-        assert!(
-            response["data"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|entry| entry["id"] == "omlx/Qwen3.8-27B-4bit")
-        );
-        let native = response["models"].as_array().unwrap();
-        assert!(native.iter().any(|entry| {
-            entry["slug"] == "omlx/Qwen3.8-27B-4bit"
-                && entry["display_name"] == "omlx/Qwen3.8-27B-4bit"
-        }));
+        let routes = routes_for_model(&StoreFile::default(), "multivibe-local-old:latest", "default", &[]);
+        assert!(!retired_local_model_route_allowed(&routes[0]));
     }
 
-    #[test]
-    fn local_runtime_requests_resolve_the_bare_upstream_model() {
-        let mut store = StoreFile::default();
-        store.accounts.push(local_runtime_account(
-            "local-runtime-omlx",
-            "omlx",
-            &["Qwen3.8-27B-4bit"],
-        ));
-        store.accounts.push(local_runtime_account(
-            "local-runtime-lm-studio",
-            "lm-studio",
-            &["Qwen3.8-27B-4bit"],
-        ));
-        let catalog = static_exposed_models(&store, &EdgeConfig::default());
-        for (requested, account_id) in [
-            ("omlx/Qwen3.8-27B-4bit", "local-runtime-omlx"),
-            ("Qwen3.8-27B-4bit", "local-runtime-omlx"),
-            ("lm-studio/Qwen3.8-27B-4bit", "local-runtime-lm-studio"),
-        ] {
-            let routes = routes_for_model(&store, requested, "default", &catalog);
-            assert_eq!(routes.len(), 1, "{requested}");
-            assert_eq!(routes[0].requested_model, requested, "{requested}");
-            assert_eq!(routes[0].model, "Qwen3.8-27B-4bit", "{requested}");
-            assert_eq!(
-                routes[0].account_ids,
-                vec![account_id.to_owned()],
-                "{requested}"
-            );
-        }
-        store.model_aliases.push(ModelAlias {
-            id: "fast".to_owned(),
-            enabled: true,
-            rules: vec![RoutingRule {
-                id: "default".to_owned(),
-                candidates: vec![RoutingCandidate {
-                    model: "omlx/Qwen3.8-27B-4bit".to_owned(),
-                    provider: None,
-                    account_ids: Vec::new(),
-                }],
-            }],
-            ..Default::default()
-        });
-        let routes = routes_for_model(&store, "fast", "default", &catalog);
-        assert_eq!(routes.len(), 1);
-        assert_eq!(routes[0].requested_model, "fast");
-        assert_eq!(routes[0].model, "Qwen3.8-27B-4bit");
-        assert_eq!(routes[0].account_ids, vec!["local-runtime-omlx".to_owned()]);
-    }
 
-    #[test]
-    fn prefixed_local_requests_send_the_bare_upstream_model() {
-        let local = local_runtime_account("local-runtime-omlx", "omlx", &["Qwen3.8-27B-4bit"]);
-        let route = RouteCandidate {
-            requested_model: "omlx/Qwen3.8-27B-4bit".to_owned(),
-            model: "Qwen3.8-27B-4bit".to_owned(),
-            provider: Some("openai-compatible".to_owned()),
-            account_ids: vec![local.id.clone()],
-        };
-        let payload = prepared_payload(
-            &json!({"model": "omlx/Qwen3.8-27B-4bit", "input": "Bonjour", "stream": false}),
-            "/v1/responses",
-            &local,
-            &route,
-            None,
-            false,
-            false,
-            &EdgeConfig::default(),
-        );
-        assert_eq!(payload["model"], "Qwen3.8-27B-4bit");
-    }
+
 
     #[tokio::test]
     async fn embeddings_alias_works_without_discovery_and_rejects_invalid_requests() {
@@ -13698,97 +13370,6 @@ mod tests {
         let _ = fs::remove_file(jobs_path).await;
     }
 
-    #[tokio::test]
-    async fn local_runtime_discovery_exposes_prefixed_ids_and_rewrites_upstream_models() {
-        use std::sync::{Arc, Mutex};
-        let seen_models = Arc::new(Mutex::new(Vec::<String>::new()));
-        let runtime = {
-            let seen_models = seen_models.clone();
-            Router::new()
-                .route("/v1/models", get(|| async {
-                    Json(json!({"data": [{"id": "Qwen3.8-27B-4bit", "name": "Qwen3.8 27B", "context_window": 65536, "supports_tools": true}]}))
-                }))
-                .route("/v1/chat/completions", post(move |Json(body): Json<Value>| {
-                    let seen_models = seen_models.clone();
-                    async move {
-                        seen_models
-                            .lock()
-                            .unwrap()
-                            .push(body["model"].as_str().unwrap_or_default().to_owned());
-                        Json(json!({"id": "chat-local", "object": "chat.completion", "model": "Qwen3.8-27B-4bit", "created": 1,
-                            "choices": [{"index": 0, "message": {"role": "assistant", "content": "Hi"}, "finish_reason": "stop"}],
-                            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}))
-                    }
-                }))
-        };
-        let (runtime_url, runtime_task) = start_server(runtime).await;
-        let store_path = temporary_path("local-runtime-store");
-        let jobs_path = temporary_path("local-runtime-jobs");
-        let mut local = local_runtime_account("local-runtime-omlx", "omlx", &["Qwen3.8-27B-4bit"]);
-        local.base_url = Some(runtime_url.clone());
-        fs::write(
-            &store_path,
-            serde_json::to_vec(&store_with_accounts(vec![local])).unwrap(),
-        )
-        .await
-        .unwrap();
-        let mut config = EdgeConfig::default();
-        config.store_path = store_path.clone();
-        config.jobs_path = jobs_path.clone();
-        config.configured_api_keys = vec![("test".to_owned(), "local-secret".to_owned())];
-        let state = EdgeState::new(config).await.unwrap();
-        let (edge_url, edge_task) = start_server(build_router(state)).await;
-        let client = reqwest::Client::new();
-        let catalog: Value = client
-            .get(format!("{edge_url}/v1/models"))
-            .bearer_auth("local-secret")
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        let model = catalog["data"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|model| model["id"] == "omlx/Qwen3.8-27B-4bit")
-            .expect("discovered local model must expose a runtime-prefixed id");
-        assert_eq!(model["metadata"]["runtime"], "omlx");
-        assert_eq!(model["metadata"]["upstream_model_id"], "Qwen3.8-27B-4bit");
-        assert_eq!(
-            model["metadata"]["account_ids"],
-            json!(["local-runtime-omlx"])
-        );
-        assert_eq!(model["metadata"]["context_window"], 65536);
-        assert_eq!(model["metadata"]["display_name"], "Qwen3.8 27B");
-        let native = catalog["models"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|entry| entry["slug"] == "omlx/Qwen3.8-27B-4bit")
-            .expect("local model must stay visible to Codex");
-        assert_eq!(native["display_name"], "Qwen3.8 27B");
-        assert_eq!(native["context_window"], 65536);
-        for requested in ["omlx/Qwen3.8-27B-4bit", "Qwen3.8-27B-4bit"] {
-            let response = client
-                .post(format!("{edge_url}/v1/chat/completions"))
-                .bearer_auth("local-secret")
-                .json(&json!({"model": requested, "messages": [{"role": "user", "content": "Hello"}]}))
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK, "{requested}");
-        }
-        assert_eq!(
-            seen_models.lock().unwrap().as_slice(),
-            ["Qwen3.8-27B-4bit", "Qwen3.8-27B-4bit"]
-        );
-        edge_task.abort();
-        runtime_task.abort();
-        let _ = fs::remove_file(store_path).await;
-        let _ = fs::remove_file(jobs_path).await;
-    }
 
     #[test]
     fn api_key_authentication_is_constant_time_and_application_scoped() {

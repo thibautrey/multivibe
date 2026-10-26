@@ -21,7 +21,7 @@
 
 <p align="center">
   A free, self-hosted gateway for coding agents and AI apps.<br />
-  Connect provider accounts, route around quotas, and run models on your own supported hardware.
+  Connect provider accounts, route around quotas, and use your preferred AI providers.
 </p>
 
 <p align="center">
@@ -103,9 +103,9 @@ model runtime. Official builds are published together in one verified release.
 | Platform | Official package | Requirements | Download |
 | --- | --- | --- | --- |
 | **macOS** | Signed and notarized `.dmg` for Apple Silicon and Intel | Apple Silicon (`arm64`) or Intel (`amd64`) Mac | **[Download the latest macOS release →](https://github.com/thibautrey/multivibe/releases/latest)** |
-| **Linux** | Signed native Host archive | Linux `x86_64` with an NVIDIA GPU, compute capability 7.0+ | **[Download the latest Linux release →](https://github.com/thibautrey/multivibe/releases/latest)** |
-| **Windows** | Verified native `.zip` for amd64 | Windows amd64 with an NVIDIA GPU, compute capability 7.0+ | **[Download the latest Windows release →](https://github.com/thibautrey/multivibe/releases/latest)** |
-| **Docker / Unraid** | Hardened image on GitHub Container Registry | Linux `x86_64`, Docker or Unraid, NVIDIA container runtime | **[Open the latest Docker release →](https://github.com/thibautrey/multivibe/releases/latest)** |
+| **Linux** | Signed native Host archive | Linux `x86_64` | **[Download the latest Linux release →](https://github.com/thibautrey/multivibe/releases/latest)** |
+| **Windows** | Verified native `.zip` for amd64 | Windows amd64 | **[Download the latest Windows release →](https://github.com/thibautrey/multivibe/releases/latest)** |
+| **Docker / Unraid** | Hardened image on GitHub Container Registry | Linux `x86_64`, Docker or Unraid | **[Open the latest Docker release →](https://github.com/thibautrey/multivibe/releases/latest)** |
 
 <details>
 <summary><strong>macOS installation</strong></summary>
@@ -141,7 +141,7 @@ the archive, run:
 ./install.sh
 ```
 
-The installer verifies the release and supported NVIDIA hardware before it
+The installer verifies the release bundle before it
 starts the Host. It installs for the current user and does not require root.
 On systems with a user systemd manager it also enables the signed automatic
 update timer. The timer checks hourly but the updater itself schedules one
@@ -161,9 +161,8 @@ then run PowerShell as the current user:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-The installer verifies the complete bundle and the local NVIDIA driver before
-it changes the machine. It requires Windows amd64 and a GPU with compute
-capability 7.0 or newer, installs without administrator privileges, and
+The installer verifies the complete bundle before changing the machine.
+It requires Windows amd64, installs without administrator privileges, and
 registers a per-user Start Menu shortcut, login entry, `multivibe://` protocol
 handler, and scheduled update task. The native Win32 tray menu starts and
 stops the Host and opens the local dashboard. Application files are kept under

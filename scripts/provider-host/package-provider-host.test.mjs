@@ -8,7 +8,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { argumentsFrom, archiveBundle, commandInvocation, download, submitMacNotarization, validateOllamaWindowsFiles } from "./package-provider-host.mjs";
+import { argumentsFrom, archiveBundle, commandInvocation, download, stapleMacArtifact, submitMacNotarization } from "./package-provider-host.mjs";
 
 const packager = fileURLToPath(new URL("./package-provider-host.mjs", import.meta.url));
 const verifier = fileURLToPath(new URL("./verify-provider-host.mjs", import.meta.url));
@@ -103,14 +103,6 @@ test("the packaging CLI remains active when invoked through a symlink", async ()
   }
 });
 
-test("every provider Host package requires a public demand trust input", () => {
-  assert.throws(() => argumentsFrom(["--version", "0.3.0"]), /--provider-demand-trust-file is required/u);
-  const options = argumentsFrom([
-    "--version", "0.3.0", "--provider-demand-trust-file", "fixtures/provider-demand-trust.json",
-  ]);
-  assert.equal(options.providerDemandTrustFile, path.resolve("fixtures/provider-demand-trust.json"));
-});
-
 test("Linux archives use the native GTK menu binary and bundled icon", async () => {
   const source = await readFile(packager, "utf8");
   assert.match(source, /path\.join\(repositoryRoot, "host", "menu"\)/u);
@@ -201,19 +193,6 @@ test("packaging runs web and API builds in separate npm processes", async () => 
   const source = await readFile(packager, "utf8");
   assert.match(source, /await command\("npm", \["run", "build:web"\]\);\s+await command\("npm", \["run", "build:api"\]\);/u);
   assert.doesNotMatch(source, /await command\("npm", \["run", "build"\]\);/u);
-});
-
-
-test("the checksum-verified Ollama Windows inventory is accepted", async () => {
-  const fixture = JSON.parse(await readFile(new URL("./ollama-windows-inventory.fixture.json", import.meta.url), "utf8"));
-  const dependencies = JSON.parse(await readFile(new URL("../../packaging/provider-host-dependencies.json", import.meta.url), "utf8"));
-  assert.equal(fixture.sha256, dependencies.ollama.artifacts["windows-amd64"].sha256);
-  assert.equal(fixture.url, dependencies.ollama.artifacts["windows-amd64"].url);
-  validateOllamaWindowsFiles(fixture.files);
-  for (const unexpected of ["lib/ollama/other++.dll", "lib/ollama/cuda_v12/libc++.dll", "lib/ollama/start.ps1", "lib/ollama/../evil.dll"]) {
-    assert.throws(() => validateOllamaWindowsFiles([...fixture.files, unexpected]), /unexpected runtime file/);
-  }
-  assert.throws(() => validateOllamaWindowsFiles(fixture.files.filter(file => file !== "lib/ollama/llama-server.exe")), /missing a required runtime executable/);
 });
 
 const notaryID = "266f98c8-abb9-4420-9527-b1522ca23444";
@@ -487,4 +466,81 @@ test("notarization stops after three offline waits", async () => {
     throw Object.assign(new Error("xcrun failed with exit 1"), { stderr: "NSURLErrorDomain Code=-1009" });
   }), /could not be verified/);
   assert.equal(waits, 3);
+});
+
+
+test("stapling retries Apple ticket service failures then validates the ticket", async () => {
+  const actions = [];
+  const delays = [];
+  await stapleMacArtifact("Host.dmg", async (_program, args) => {
+    actions.push(args);
+    if (actions.length < 3) throw Object.assign(new Error("ticket lookup unavailable"), { code: 68 });
+  }, async (delay) => delays.push(delay));
+  assert.deepEqual(actions.map((args) => args[1]), ["staple", "staple", "staple", "validate"]);
+  assert.ok(actions.every((args) => args[2] === "Host.dmg"));
+  assert.deepEqual(delays, [5000, 10000]);
+});
+
+test("stapling stops on exhausted retries, permanent failures and invalid tickets", async () => {
+  for (const [code, expectedCalls] of [[68, 3], [65, 1]]) {
+    let calls = 0;
+    const failure = Object.assign(new Error("stapler failed"), { code });
+    await assert.rejects(stapleMacArtifact("Host.app", async () => {
+      calls += 1;
+      throw failure;
+    }, async () => {}), (error) => error === failure);
+    assert.equal(calls, expectedCalls);
+  }
+  const actions = [];
+  await assert.rejects(stapleMacArtifact("Host.app", async (_program, args) => {
+    actions.push(args[1]);
+    if (args[1] === "validate") throw new Error("invalid ticket");
+  }, async () => {}), /invalid ticket/);
+  assert.deepEqual(actions, ["staple", "validate"]);
+});
+
+test("packaging no longer needs inference runtimes or a demand trust anchor", async () => {
+  assert.equal(argumentsFrom(["--version", "0.3.0"]).version, "0.3.0");
+  const dependencies = JSON.parse(await readFile(new URL("../../packaging/provider-host-dependencies.json", import.meta.url), "utf8"));
+  assert.deepEqual(Object.keys(dependencies).sort(), ["node", "schemaVersion"]);
+  const source = await readFile(packager, "utf8");
+  assert.doesNotMatch(source, /ollama|multivibe-provider-agent|multivibe-runtime-benchmark|provider-demand-trust/iu);
+});
+
+
+test("ticket validation retries network failures without repeating stapling", async () => {
+  const actions = [];
+  const delays = [];
+  await stapleMacArtifact("Host.app", async (_program, args) => {
+    actions.push(args[1]);
+    if (args[1] === "validate" && actions.length < 4) {
+      throw Object.assign(new Error("Apple connection lost"), { code: 68 });
+    }
+  }, async (delay) => delays.push(delay));
+  assert.deepEqual(actions, ["staple", "validate", "validate", "validate"]);
+  assert.deepEqual(delays, [5000, 10000]);
+});
+
+test("ticket validation fails after three network failures", async () => {
+  const actions = [];
+  await assert.rejects(stapleMacArtifact("Host.dmg", async (_program, args) => {
+    actions.push(args[1]);
+    if (args[1] === "validate") throw Object.assign(new Error("Apple unavailable"), { code: 68 });
+  }, async () => {}), /Apple unavailable/);
+  assert.deepEqual(actions, ["staple", "validate", "validate", "validate"]);
+});
+
+
+test("notarization explicitly opens the signing keychain for upload and wait", async () => {
+  const calls = [];
+  const keychain = "/tmp/release signing.keychain-db";
+  await submitMacNotarization("Host.dmg", "release", async (_program, args) => {
+    calls.push(args);
+    return args[1] === "submit" ? `id: ${notaryID}` : notaryAccepted;
+  }, 3, async () => {}, keychain);
+  assert.equal(calls.length, 2);
+  for (const args of calls) {
+    assert.equal(args[args.indexOf("--keychain") + 1], keychain);
+    assert.equal(args[args.indexOf("--keychain-profile") + 1], "release");
+  }
 });

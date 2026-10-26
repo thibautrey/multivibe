@@ -1,20 +1,8 @@
 import { installModelsDevPricing } from "./model-pricing.js";
-import { COMMUNITY_BENCHMARKS_API_BASE_URL, COMMUNITY_BENCHMARKS_ENABLED, COMMUNITY_BENCHMARKS_STATE_PATH, COMMUNITY_BENCHMARK_STORE_PATH } from "./config.js";
+import { COMMUNITY_BENCHMARKS_API_BASE_URL, COMMUNITY_BENCHMARKS_ENABLED, COMMUNITY_BENCHMARKS_STATE_PATH } from "./config.js";
 import { createCommunityReportSharingWorker } from "./community-report-sharing.js";
-import { communityHostFromCapability, detectCommunityHost } from "./community-host-profile.js";
-import { totalmem } from "node:os";
-import fs from "node:fs/promises";
-import { LocalModelPreparation } from './local-model-preparation.js';
-import { HostLocalPreparationDriver } from './local-preparation-driver.js';
-import { createLocalPreparationResolver } from './local-preparation-preflight.js';
-import { verifyPreparedLocalChat } from './local-preparation-chat.js';
-import { loadOpenModelCatalog } from './open-model-catalog.js';
+import { detectCommunityHost } from "./community-host-profile.js";
 import { takeDeviceSignIn } from "./host/device-signin.js";
-import { teamMachineTrustedKeys } from "./team-machine-trust.js";
-import { createServer as createTeamHttpsServer } from "node:https";
-import { TeamMachineDirectory } from "./team-machine-directory.js";
-import { readFile as readTeamIdentity } from "node:fs/promises";
-import { TeamMachineSharing } from "./team-machine-sharing.js";
 import { getHostMenuProviderActivity, recordHostMenuTraceUsage } from "./host/menu-bar.js";
 import { automaticRouterManifest, createAutomaticRouter } from "./automatic-router.js";
 import { codingEconomyManifest, createCodingEconomy } from "./coding-economy.js";
@@ -80,27 +68,10 @@ import {
   PORT,
   V1_EDGE_BASE_URL,
   V1_EDGE_INTERNAL_JOB_TOKEN,
-  PROVIDER_AGENT_BINARY,
-  PROVIDER_AGENT_DEVICE_KEY_PATH,
-  PROVIDER_AGENT_ENROLLMENT_STATE_PATH,
-  PROVIDER_AGENT_CAPACITY_POLICY_PATH,
-  PROVIDER_AGENT_CLOUD_API_URL,
-  PROVIDER_AGENT_DEMAND_PLAN_PATH,
-  PROVIDER_AGENT_MODEL_CATALOG_PATH,
-  PROVIDER_AGENT_DEMAND_TRUSTED_KEYS,
-  PROVIDER_AGENT_MANAGED_ROOT,
-  PROVIDER_AGENT_BUNDLED_OLLAMA_ROOT,
-  PROVIDER_AGENT_DEPENDENCY_MANIFEST_PATH,
-  PROVIDER_AGENT_MANAGED_PLANNER_STATE_PATH,
-  PROVIDER_AGENT_OLLAMA_LISTEN,
-  PROVIDER_AGENT_CUDA_VISIBLE_DEVICES,
-  PROVIDER_AGENT_ENABLED,
   MULTIVIBE_HOST_APPLICATION,
   MULTIVIBE_HOST_UPDATER_BINARY,
   HOST_HARNESS_INTEGRATIONS_STATE_PATH,
   HOST_HARNESS_HOME_DIRECTORY,
-  PROVIDER_AGENT_RUNTIME_STATE_PATH,
-  PROVIDER_AGENT_STATE_PATH,
   PROXY_API_KEY,
   PROXY_API_KEYS,
   REQUEST_BODY_LIMIT,
@@ -115,7 +86,6 @@ import {
   MULTIVIBE_CONFIDENTIAL_INFERENCE_TRUST_POLICY,
 } from "./config.js";
 import { ModuleManager } from "./module-manager.js";
-import { createProviderWorkerEstimateClient } from "./provider-worker-estimate.js";
 import { createBodyParserMiddleware } from "./middleware/decompression.js";
 import http from "node:http";
 import {
@@ -142,7 +112,6 @@ import {
   createAdmissionMiddleware,
   createSmartRoutingRouter,
 } from "./smart-routing-routes.js";
-import { startEmbeddedProviderAgent } from "./provider-agent-supervisor.js";
 import { createRequestTracingMiddleware } from "./request-tracing.js";
 import { createInternalV1EdgeRouter } from "./internal-v1-edge-routes.js";
 import {
@@ -230,10 +199,6 @@ const dataDir = path.dirname(STORE_PATH);
 await cleanupOrphanedTmpFiles(dataDir);
 
 const store = new AccountStore(STORE_PATH);
-const teamMachineSharing = new TeamMachineSharing(store, path.join(dataDir, "team-machine-sharing.json"), teamMachineTrustedKeys(process.env.MULTIVIBE_TEAM_MACHINE_TRUSTED_KEYS));
-await teamMachineSharing.initialize();
-const teamMachineDirectory=new TeamMachineDirectory(path.join(dataDir,"team-machine-directory.json"),teamMachineTrustedKeys(process.env.MULTIVIBE_TEAM_MACHINE_TRUSTED_KEYS));
-await teamMachineDirectory.initialize();
 
 const teamSync = new MultivibeTeamSyncService(store, `${STORE_PATH}.team-instance.json`);
 const appVersion = process.env.APP_VERSION ?? "unknown";
@@ -244,7 +209,6 @@ const managedTeamEnrollment = new ManagedTeamEnrollmentService({
   installer: { install: (result, profile) => multivibeCloud.installManagedConnection(() => new AccountStoreManagedEnrollmentInstaller(store).install(result, profile)) },
   appVersion,
 });
-teamMachineSharing.setUsageRecorder((trace,memberId)=>teamSync.recordTrace(trace,{type:"member",id:memberId}));
 const hostHarnessIntegrations = MULTIVIBE_HOST_APPLICATION
   ? new HostHarnessIntegrationManager({
       homeDirectory: HOST_HARNESS_HOME_DIRECTORY,
@@ -352,47 +316,9 @@ if (MULTIVIBE_CONTROL_PLANE) {
     );
   }
 }
-const providerAgent = startEmbeddedProviderAgent({
-  enabled: PROVIDER_AGENT_ENABLED,
-  binaryPath: PROVIDER_AGENT_BINARY,
-  statePath: PROVIDER_AGENT_STATE_PATH,
-  runtimeStatePath: PROVIDER_AGENT_RUNTIME_STATE_PATH,
-  deviceKeyPath: PROVIDER_AGENT_DEVICE_KEY_PATH,
-  enrollmentStatePath: PROVIDER_AGENT_ENROLLMENT_STATE_PATH,
-  capacityPolicyPath: PROVIDER_AGENT_CAPACITY_POLICY_PATH,
-  cloudApiUrl: PROVIDER_AGENT_CLOUD_API_URL,
-  demandPlanPath: PROVIDER_AGENT_DEMAND_PLAN_PATH,
-  modelCatalogPath: PROVIDER_AGENT_MODEL_CATALOG_PATH,
-  trustedDemandKeys: PROVIDER_AGENT_DEMAND_TRUSTED_KEYS,
-  managedRoot: PROVIDER_AGENT_MANAGED_ROOT,
-  bundledOllamaRoot: PROVIDER_AGENT_BUNDLED_OLLAMA_ROOT,
-  dependencyManifestPath: PROVIDER_AGENT_DEPENDENCY_MANIFEST_PATH,
-  managedPlannerStatePath: PROVIDER_AGENT_MANAGED_PLANNER_STATE_PATH,
-  ollamaListen: PROVIDER_AGENT_OLLAMA_LISTEN,
-  cudaVisibleDevices: PROVIDER_AGENT_CUDA_VISIBLE_DEVICES,
-});
-const localPreparation = providerAgent.enabled ? new LocalModelPreparation(
-  path.join(dataDir, 'local-preparation-jobs.json'),
-  new HostLocalPreparationDriver(path.join(dataDir, 'local-preparation-plans.json'), {
-    host: providerAgent,
-    resolvePlan: createLocalPreparationResolver(providerAgent),
-    verifyChat: (model, signal) => verifyPreparedLocalChat({
-      store, model, signal, runtimeOrigin: 'http://127.0.0.1:11434',
-      edgeOrigin: V1_EDGE_BASE_URL, proxyKey: configuredProxyApiKeys[0]?.key,
-      attest: async (activeSignal) => {
-        activeSignal.throwIfAborted();
-        const [policy, status] = await Promise.all([providerAgent.getCapacityPolicy(), providerAgent.getManagedOllamaStatus()]);
-        if (policy.paused || !status.runtime.running || !status.runtime.runtime_installed ||
-            status.runtime.version !== '0.33.2' ||
-            (status.runtime.execution_runtime && status.runtime.execution_runtime !== 'ollama')) throw Error('chat_route_not_ready');
-      },
-    }),
-  }),
-) : undefined;
 const hostUpdateController = MULTIVIBE_HOST_APPLICATION
   ? new HostUpdateController(
       MULTIVIBE_HOST_UPDATER_BINARY,
-      providerAgent,
       MULTIVIBE_CONTROL_PLANE && V1_EDGE_INTERNAL_JOB_TOKEN
         ? {
             baseUrl: V1_EDGE_BASE_URL,
@@ -402,15 +328,7 @@ const hostUpdateController = MULTIVIBE_HOST_APPLICATION
     )
   : undefined;
 if (hostUpdateController) {
-  app.use(["/v1", "/team-machine"], hostUpdateController.inferenceMiddleware);
-}
-app.use("/v1",teamMachineDirectory.router());
-app.use("/team-machine", teamMachineSharing.inferenceRouter());
-// Optional dedicated private-network TLS listener. No listener is exposed without operator-provided certificates.
-if(process.env.MULTIVIBE_TEAM_MACHINE_TLS_CERT_PATH && process.env.MULTIVIBE_TEAM_MACHINE_TLS_KEY_PATH){
-  const privateApp=express();privateApp.use(express.json({limit:REQUEST_BODY_LIMIT}));if (hostUpdateController) privateApp.use("/team-machine", hostUpdateController.inferenceMiddleware);privateApp.use("/team-machine",teamMachineSharing.inferenceRouter());
-  const tlsServer=createTeamHttpsServer({cert:await readTeamIdentity(process.env.MULTIVIBE_TEAM_MACHINE_TLS_CERT_PATH),key:await readTeamIdentity(process.env.MULTIVIBE_TEAM_MACHINE_TLS_KEY_PATH)},privateApp);
-  tlsServer.listen(Number(process.env.MULTIVIBE_TEAM_MACHINE_TLS_PORT ?? "1456"),process.env.MULTIVIBE_TEAM_MACHINE_BIND ?? "127.0.0.1");
+  app.use("/v1", hostUpdateController.inferenceMiddleware);
 }
 
 const confidentialTrustPolicy = parseConfidentialTrustPolicy(
@@ -424,7 +342,6 @@ if (MULTIVIBE_CLOUD_PRIVACY_MODE === "confidential_verified" && !confidentialTru
 const confidentialInference = confidentialTrustPolicy
   ? new ConfidentialInferenceClient(confidentialTrustPolicy)
   : undefined;
-const providerWorkerEstimateClient = createProviderWorkerEstimateClient(ANONYMOUS_USAGE_API_BASE_URL);
 const multivibeCloud = new MultivibeCloudService(store, oauthStore, {
   authBaseUrl: MULTIVIBE_CLOUD_AUTH_BASE_URL,
   apiBaseUrl: MULTIVIBE_CLOUD_API_BASE_URL,
@@ -435,10 +352,6 @@ const multivibeCloud = new MultivibeCloudService(store, oauthStore, {
   managedTeamIdentity: teamSync,
 });
 multivibeCloud.start();
-const teamMachineTimer=setInterval(()=>{void multivibeCloud.syncMachine(teamMachineSharing).catch(()=>undefined);},2000);
-teamMachineTimer.unref();
-const teamMachineDirectoryTimer=setInterval(()=>{void multivibeCloud.syncMachineDirectory(teamMachineDirectory).catch(()=>undefined);},30000);
-teamMachineDirectoryTimer.unref();
 
 const teamSyncTimer=setInterval(()=>{void multivibeCloud.syncTeam(teamSync).catch(()=>undefined);},60_000);
 teamSyncTimer.unref();
@@ -491,21 +404,7 @@ const communityReportSharing = COMMUNITY_BENCHMARKS_ENABLED
   ? createCommunityReportSharingWorker({
       settingsStore: store,
       traceSource: traceManager,
-      hostProvider: async () => {
-        if (providerAgent.enabled) {
-          try {
-            const capability = await providerAgent.getCapability();
-            const fromCapability = communityHostFromCapability(capability, totalmem());
-            if (fromCapability) return fromCapability;
-          } catch {
-            // Fall through to bounded local detection.
-          }
-        }
-        return detectCommunityHost();
-      },
-      benchmarkStore: {
-        read: async () => JSON.parse(await fs.readFile(COMMUNITY_BENCHMARK_STORE_PATH, "utf8")),
-      },
+      hostProvider: detectCommunityHost,
       statePath: COMMUNITY_BENCHMARKS_STATE_PATH,
       apiBaseUrl: COMMUNITY_BENCHMARKS_API_BASE_URL,
     })
@@ -555,13 +454,10 @@ const adminRouter = createAdminRouter({
   usageRefreshCoordinator,
   anonymousUsageSharing,
   communityBenchmarks: communityReportSharing,
-  providerAgent,
-  localPreparation,
   hostApplication: MULTIVIBE_HOST_APPLICATION,
   hostHarnessIntegrations,
   hostConversationHarnesses,
   hostHarnessRuntime,
-  providerWorkerEstimateClient,
   moduleManager,
   hostUpdateController,
   multivibeCloud,
@@ -736,14 +632,11 @@ app.get("/admin/host/menu-bar/activity", adminGuard, (_req, res) => {
 
 app.get("/admin/host/menu-bar", adminGuard, async (req, res) => {
   res.setHeader("cache-control", "no-store");
-  const [accounts, traceStats, forecast, cloud, workerResult] = await Promise.all([
+  const [accounts, traceStats, forecast, cloud] = await Promise.all([
     store.listAccounts(),
     traceManager.getTraceStats(),
     quotaResetForecastCache.get().catch(() => undefined),
     hostCloudStatus().catch(() => undefined),
-    providerAgent.enabled
-      ? providerAgent.getCloudEnrollment().then(() => true).catch(() => false)
-      : Promise.resolve(false),
   ]);
   const accountSummary = buildHostMenuBarAccountsSummary(accounts);
   const previousForecastScoreValue = Number(req.query.previous_forecast_score);
@@ -767,17 +660,10 @@ app.get("/admin/host/menu-bar", adminGuard, async (req, res) => {
       ...(forecast ? { forecast } : {}),
       ...(previousForecastScore === undefined ? {} : { previousForecastScore }),
       ...(cloud ? { cloud } : {}),
-      workerConfigured: workerResult,
+      workerConfigured: false,
       generatedOutputTokens,
     }),
-    earnings: cloud?.workerEarnings && workerResult ? {
-      available: true,
-      currency: cloud.workerEarnings.currency,
-      today: null,
-      week: null,
-      month: Number(cloud.workerEarnings.monthNetUsd),
-      lifetime: Number(cloud.workerEarnings.lifetimeNetUsd),
-    } : {
+    earnings: {
       available: false,
       currency: null,
       today: null,
@@ -860,11 +746,6 @@ if (!MULTIVIBE_CONTROL_PLANE) {
   });
 }
 
-app.use("/admin/team-machine", adminGuard, teamMachineSharing.adminRouter(async () => {
-  const context=await multivibeCloud.machineConnection();
-  const identity=JSON.parse(await readTeamIdentity(`${STORE_PATH}.team-instance.json`, "utf8"));
-  return {...context,instanceId:identity.instanceId};
-}));
 app.use("/admin", adminGuard, adminRouter);
 
 // Public inference, realtime, and WebSocket routes are owned by the Rust edge.
@@ -891,8 +772,6 @@ app.get("/{*path}", (req, res, next) => {
 Sentry.setupExpressErrorHandler(app);
 
 const server = http.createServer(app);
-const stopOpenCatalog = loadOpenModelCatalog.start();
-server.once("close", stopOpenCatalog);
 // The shipped Compose default is a well-known placeholder. Serving the admin
 // boundary with it would let anyone on the reachable network authenticate.
 const INSECURE_ADMIN_TOKENS = new Set(["change-me"]);
@@ -924,7 +803,6 @@ async function shutdown(signal: NodeJS.Signals) {
   usageRefreshMonitor.stop();
   anonymousUsageSharing.stop();
   communityReportSharing?.stop();
-  await providerAgent.stop();
   console.log(`received ${signal}, flushing persistent state`);
   server.close(async (error) => {
     try {

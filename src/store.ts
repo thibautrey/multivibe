@@ -94,6 +94,10 @@ export class AccountStore {
     let migrated = false;
     this.inMemoryAccounts = Array.isArray(data.accounts)
       ? data.accounts.map((account) => {
+          if (account.localRuntime && account.enabled) {
+            migrated = true;
+            account = { ...account, enabled: false };
+          }
           if (account.location) return account;
           migrated = true;
           return { ...account, location: inferAccountLocation(account) };
@@ -275,6 +279,8 @@ export class AccountStore {
   }
 
   markAccountModified(accountId: string, account: Account) {
+    // Keep legacy metadata for recovery, but never reactivate the retired engine.
+    if (account.localRuntime) account.enabled = false;
     const normalized = account.location
       ? account
       : { ...account, location: inferAccountLocation(account) };

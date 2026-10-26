@@ -44,14 +44,10 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
     var operational = false
     var statusText = "Starting…"
     var summary: MenuBarSummary?
-    var workerConfigurationState: String?
-    var workerSetupURL: URL?
     var refreshing = false
     var updateStatus: HostUpdateStatus?
     var updateBusy = false
     var didFinishLaunching = false
-    var pendingEnrollmentToken: String?
-    var enrollmentInProgress = false
     var githubStarPromptPresented = false
     var startupNotificationPresented = false
     var notificationCloseWorkItem: DispatchWorkItem?
@@ -104,9 +100,6 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         if !isMenuPreview { synchronizeLoginItem() }
         render()
         if isMenuPreview { refresh() } else { ensureServiceIsRunning() }
-        if pendingEnrollmentToken != nil {
-            DispatchQueue.main.async { [weak self] in self?.presentPendingEnrollmentConfirmation() }
-        }
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in self?.refresh() }
 #if DEBUG
         if isMenuPreview {
@@ -155,11 +148,6 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         }
         popoverController.openDashboard = { [weak self] in
             self?.openDashboard()
-        }
-        popoverController.configureWorker = { [weak self] in
-            guard let self, let workerSetupURL = self.workerSetupURL else { return }
-            self.popover.performClose(nil)
-            NSWorkspace.shared.open(workerSetupURL)
         }
         popoverController.checkForUpdates = { [weak self] in self?.runUpdateAction(path: "/admin/host-update/check") }
         popoverController.installUpdate = { [weak self] in self?.runUpdateAction(path: "/admin/host-update/apply") }
@@ -231,7 +219,6 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         popoverController.pinnedQuotaProvider = quotaSelection.pin
         popoverController.render(
             summary: summary,
-            workerNeedsSetup: workerConfigurationState == "unconfigured" && workerSetupURL != nil,
             status: statusText,
             operational: operational,
             updateStatus: updateStatus,

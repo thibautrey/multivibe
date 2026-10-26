@@ -20,8 +20,8 @@ export type DashboardCapabilities = {
   providerModelDiscovery: boolean;
 };
 export const CORE_CAPABILITIES: Readonly<DashboardCapabilities> = Object.freeze({
-  host: true, hostOnboarding: true, localRuntimes: true, plugins: true,
-  hostUpdates: true, hostHarnesses: true, teamMachine: true, cloudConnection: true,
+  host: true, hostOnboarding: true, localRuntimes: false, plugins: true,
+  hostUpdates: true, hostHarnesses: true, teamMachine: false, cloudConnection: true,
   githubPromotion: true, teamHome: true, usageRefresh: true, localAuthentication: true,
   providerUpstreamSettings: true, providerCredentialEditing: true, providerPriority: true,
   providerCapacity: true, providerBrowserOAuth: true, providerModelDiscovery: true,
@@ -39,8 +39,8 @@ export function dashboardResourceAllowed(resource: string, capabilities: Dashboa
   if (/^(?:host-update)(?:\/|$)/.test(path)) return capabilities.hostUpdates;
   if (/^(?:host-harnesses)(?:\/|$)/.test(path)) return capabilities.hostHarnesses;
   if (/^(?:modules)(?:\/|$)/.test(path)) return capabilities.plugins;
-  if (/^(?:team-machine)(?:\/|$)/.test(path)) return capabilities.teamMachine;
-  if (/^(?:provider-agent|local-runtimes|local-model-preparation|model-memory|open-model-family|model-recommendations)(?:\/|$)/.test(path)) return capabilities.localRuntimes;
+  if (/^(?:team-machine)(?:\/|$)/.test(path)) return false;
+  if (/^(?:provider-agent|local-runtimes|local-model-preparation|model-memory|open-model-catalog|open-model-family|model-recommendations)(?:\/|$)/.test(path)) return false;
   if (/^cloud\/(?:connect|disconnect)$/.test(path)) return capabilities.cloudConnection;
   if (path === 'usage/refresh-stale') return capabilities.usageRefresh;
   if (path === 'quota-reset-forecast') return capabilities.host;

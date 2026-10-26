@@ -10,22 +10,12 @@
     }
   },
   "storage": {
-    "data_path": "/mnt/tank/multivibe/data",
-    "models_path": "/mnt/tank/multivibe/models"
+    "data_path": "/mnt/tank/multivibe/data"
   },
   "resources": {
     "limits": {
       "cpus": 4,
       "memory": 8192
-    },
-    "gpus": {
-      "use_all_gpus": false,
-      "nvidia_gpu_selection": {
-        "0000:01:00.0": {
-          "use_gpu": true,
-          "uuid": "GPU-00000000-0000-0000-0000-000000000000"
-        }
-      }
     }
   }
 }

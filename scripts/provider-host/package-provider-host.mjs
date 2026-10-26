@@ -24,16 +24,14 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { extractPreflightedTarArchive } from "./provider-host-tar-preflight.mjs";
 import { pruneProductionNativeDependencies } from "./provider-host-native-dependencies.mjs";
+import { runMacStapler } from "./macos-stapler.mjs";
 import { buildMacOSNative } from "./build-macos-native.mjs";
-import { normalizeProviderDemandTrust } from "./verify-provider-host.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const downloadHosts = new Set(["nodejs.org", "github.com", "release-assets.githubusercontent.com"]);
 const maximumCommandOutputBytes = 64 * 1024 * 1024;
 const maximumNodeFileBytes = 512 * 1024 * 1024;
 const maximumNodeExtractedBytes = 1024 * 1024 * 1024;
-const maximumOllamaFileBytes = 4 * 1024 * 1024 * 1024;
-const maximumOllamaExtractedBytes = 12 * 1024 * 1024 * 1024;
 const betterSQLiteSmokeTest = "const Database=require('better-sqlite3');const database=new Database(':memory:');try{const row=database.prepare('SELECT 1 AS value').get();if(row?.value!==1)throw new Error('better-sqlite3 smoke test failed')}finally{database.close()}";
 const macOSMinimumVersion = "13.0";
 const macOSDiskImageBackground = "dmg-background.png";
@@ -44,7 +42,7 @@ export function argumentsFrom(argv) {
     const argument = argv[index];
     if (argument === "--allow-dirty") options.allowDirty = true;
     else if (argument === "--allow-unsigned") options.allowUnsigned = true;
-    else if (["--version", "--output", "--sign-identity", "--notary-profile", "--provider-demand-trust-file"].includes(argument)) {
+    else if (["--version", "--output", "--sign-identity", "--notary-profile"].includes(argument)) {
       const value = argv[index + 1];
       if (!value) throw new Error(`${argument} requires a value`);
       options[{
@@ -52,7 +50,6 @@ export function argumentsFrom(argv) {
         "--output": "output",
         "--sign-identity": "signIdentity",
         "--notary-profile": "notaryProfile",
-        "--provider-demand-trust-file": "providerDemandTrustFile",
       }[argument]] = value;
       index += 1;
     } else {
@@ -65,36 +62,10 @@ export function argumentsFrom(argv) {
   if (options.notaryProfile && !options.signIdentity) {
     throw new Error("--notary-profile requires --sign-identity");
   }
-  if (!options.providerDemandTrustFile) {
-    throw new Error("--provider-demand-trust-file is required for every provider Host package");
-  }
-  options.providerDemandTrustFile = path.resolve(options.providerDemandTrustFile);
   options.output = path.resolve(options.output ?? path.join(repositoryRoot, "release"));
   return options;
 }
 
-async function loadProviderDemandTrust(filePath) {
-  const before = await lstat(filePath);
-  if (!before.isFile() || before.isSymbolicLink() || before.size < 1 || before.size > 64 * 1024) {
-    throw new Error("provider demand trust input must be a bounded regular file");
-  }
-  const handle = await open(filePath, "r");
-  try {
-    const opened = await handle.stat();
-    if (!opened.isFile() || before.dev !== opened.dev || before.ino !== opened.ino) {
-      throw new Error("provider demand trust input changed while opening");
-    }
-    const raw = await handle.readFile({ encoding: "utf8" });
-    const after = await lstat(filePath);
-    if (!after.isFile() || after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino ||
-      before.size !== after.size || raw.length < 1 || Buffer.byteLength(raw) !== opened.size) {
-      throw new Error("provider demand trust input changed while reading");
-    }
-    return normalizeProviderDemandTrust(raw);
-  } finally {
-    await handle.close();
-  }
-}
 
 function target() {
   if (process.platform === "darwin" && process.arch === "arm64") {
@@ -371,132 +342,8 @@ async function nodeRuntime(work, destination, dependency) {
   return path.join(extraction, root[0].name, "LICENSE");
 }
 
-async function findOllamaRoot(extraction) {
-  const direct = path.join(extraction, "bin", "ollama");
-  try {
-    if ((await lstat(direct)).isFile()) return extraction;
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
-  const entries = await readdir(extraction, { withFileTypes: true });
-  const directories = entries.filter((entry) => entry.isDirectory());
-  if (entries.length === 1 && directories.length === 1) {
-    const nested = path.join(extraction, directories[0].name);
-    try {
-      if ((await lstat(path.join(nested, "bin", "ollama"))).isFile()) return nested;
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-  }
-  return null;
-}
 
-export function validateOllamaWindowsFiles(runtimeFiles) {
-  for (const relative of runtimeFiles) {
-    if (relative === "ollama.exe" || relative === "lib/ollama/libc++.dll") continue;
-    const parts = relative.split("/");
-    const validLocation = parts.length === 4 && parts[0] === "lib" && parts[1] === "ollama" &&
-      new Set(["cuda_v12", "cuda_v13", "vulkan"]).has(parts[2]) && /^(?:[A-Za-z0-9._-]+)\.(?:dll|exe)$/u.test(parts[3]);
-    const validRootRuntime = parts.length === 3 && parts[0] === "lib" && parts[1] === "ollama" &&
-      /^(?:[A-Za-z0-9._-]+)\.(?:dll|exe)$/u.test(parts[2]);
-    if (!validLocation && !validRootRuntime) throw new Error(`Ollama Windows archive contains an unexpected runtime file: ${relative}`);
-  }
-  for (const required of ["ollama.exe", "lib/ollama/llama-server.exe", "lib/ollama/llama-quantize.exe"]) {
-    if (!runtimeFiles.includes(required)) throw new Error("Ollama Windows archive is missing a required runtime executable");
-  }
-}
 
-async function ollamaRuntime(work, destination, dependency, selectedTarget, version) {
-  const archiveName = dependency.archive === "zip" ? "ollama.zip" : dependency.archive === "tar-zstd" ? "ollama.tar.zst" : "ollama.tar.gz";
-  const archive = path.join(work, archiveName);
-  const maximumBytes = selectedTarget.goos === "darwin" ? 512 * 1024 * 1024 : 4 * 1024 * 1024 * 1024;
-  await download(dependency.url, archive, dependency.sha256, maximumBytes);
-  const extraction = path.join(work, "ollama-extracted");
-  await mkdir(extraction, { mode: 0o700 });
-  if (dependency.archive === "zip") await extractZip(archive, extraction);
-  else await extractTar(archive, extraction, dependency.archive, "ollama-runtime", maximumOllamaFileBytes, maximumOllamaExtractedBytes);
-  await validateDereferenceableTree(extraction);
-  await mkdir(destination, { recursive: true, mode: 0o755 });
-
-  if (selectedTarget.goos === "darwin") {
-    let runtimeRoot = extraction;
-    const entries = await readdir(extraction, { withFileTypes: true });
-    let source = path.join(runtimeRoot, "ollama");
-    try {
-      const info = await lstat(source);
-      if (!info.isFile() || info.isSymbolicLink()) source = null;
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-      source = null;
-    }
-    if (!source && entries.length === 1 && entries[0].isDirectory()) {
-      runtimeRoot = path.join(extraction, entries[0].name);
-      const candidate = path.join(runtimeRoot, "ollama");
-      try {
-        const info = await lstat(candidate);
-        if (info.isFile() && !info.isSymbolicLink()) source = candidate;
-      } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
-      }
-    }
-    if (!source) throw new Error("Ollama macOS archive layout is invalid");
-    for (const entry of await readdir(runtimeRoot, { withFileTypes: true })) {
-      await cp(path.join(runtimeRoot, entry.name), path.join(destination, entry.name), {
-        recursive: true,
-        dereference: true,
-        force: false,
-        errorOnExist: true,
-      });
-    }
-    await chmod(path.join(destination, "ollama"), 0o555);
-  } else if (selectedTarget.goos === "linux") {
-    const runtimeRoot = await findOllamaRoot(extraction);
-    if (!runtimeRoot) throw new Error("Ollama Linux archive layout is invalid");
-    const topLevel = await readdir(runtimeRoot, { withFileTypes: true });
-    const allowed = new Set(["bin", "lib", "share"]);
-    if (topLevel.some((entry) => !allowed.has(entry.name) || !entry.isDirectory())) {
-      throw new Error("Ollama Linux archive contains an unexpected top-level entry");
-    }
-    const binEntries = await readdir(path.join(runtimeRoot, "bin"), { withFileTypes: true });
-    if (binEntries.length !== 1 || binEntries[0].name !== "ollama" || !binEntries[0].isFile()) {
-      throw new Error("Ollama Linux executable layout is invalid");
-    }
-    for (const entry of topLevel) {
-      await cp(path.join(runtimeRoot, entry.name), path.join(destination, entry.name), {
-        recursive: true,
-        dereference: true,
-        force: false,
-        errorOnExist: true,
-      });
-    }
-    await chmod(path.join(destination, "bin", "ollama"), 0o555);
-  } else {
-    const entries = await readdir(extraction, { withFileTypes: true });
-    if (entries.length !== 2 || !entries.some((entry) => entry.isDirectory() && entry.name === "lib") ||
-      !entries.some((entry) => entry.isFile() && entry.name === "ollama.exe")) {
-      throw new Error("Ollama Windows archive layout is invalid");
-    }
-    const runtimeLibraryRoot = path.join(extraction, "lib", "ollama");
-    const libraryInfo = await lstat(runtimeLibraryRoot);
-    if (!libraryInfo.isDirectory() || libraryInfo.isSymbolicLink()) throw new Error("Ollama Windows library layout is invalid");
-    const runtimeFiles = await allFiles(extraction);
-    validateOllamaWindowsFiles(runtimeFiles);
-    await cp(path.join(extraction, "lib"), path.join(destination, "lib"), {
-      recursive: true,
-      dereference: true,
-      force: false,
-      errorOnExist: true,
-    });
-    await cp(path.join(extraction, "ollama.exe"), path.join(destination, "ollama.exe"));
-    await chmod(path.join(destination, "ollama.exe"), 0o555);
-  }
-  await writeFile(path.join(destination, ".multivibe-bundle.json"), `${JSON.stringify({
-    schema_version: "managed-ollama-bundle-v1",
-    version,
-    platform: selectedTarget.key,
-    archive_sha256: dependency.sha256,
-  })}\n`, { mode: 0o444 });
-}
 
 async function allFiles(root, relative = "") {
   const directory = path.join(root, relative);
@@ -517,8 +364,7 @@ async function signMacApplication(application, identity) {
   const node = path.join(contents, "Frameworks", "node");
   const native = [];
   for (const file of await allFiles(contents)) {
-    if (!file.startsWith(`Resources${path.sep}ollama-runtime${path.sep}`) &&
-      !file.endsWith(".node") && !file.endsWith(".dylib") && !file.endsWith(".so")) continue;
+    if (!file.endsWith(".node") && !file.endsWith(".dylib") && !file.endsWith(".so")) continue;
     const handle = await open(path.join(contents, file), "r");
     const header = Buffer.alloc(4);
     const { bytesRead } = await handle.read(header, 0, header.length, 0);
@@ -536,9 +382,6 @@ async function signMacApplication(application, identity) {
   await command("codesign", ["--verify", "--strict", "--verbose=2", node]);
   for (const binary of new Set([
     ...native,
-    path.join(contents, "Resources", "ollama-runtime", "ollama"),
-    path.join(contents, "Helpers", "multivibe-provider-agent"),
-    path.join(contents, "Helpers", "multivibe-runtime-benchmark"),
     path.join(contents, "Helpers", "multivibe-host-updater"),
     path.join(contents, "Helpers", "multivibe-v1-edge"),
     path.join(contents, "MacOS", "multivibe-host"),
@@ -599,8 +442,8 @@ const crashedNotaryClient = (error) => error.signal === "SIGBUS";
 const transientNotaryFailure = (error) => (crashedNotaryClient(error) || /abortedUpload|Connection reset by peer|Network\.NWError|NSURLErrorDomain|The network connection was lost|The request timed out/iu
   .test(`${error.stdout ?? ""}\n${error.stderr ?? ""}\n${error.message ?? ""}`));
 
-export async function submitMacNotarization(file, profile, run = command, attempts = 3, wait = pause) {
-  const credentials = ["--keychain-profile", profile];
+export async function submitMacNotarization(file, profile, run = command, attempts = 3, wait = pause, keychain = process.env.SIGNING_KEYCHAIN) {
+  const credentials = ["--keychain-profile", profile, ...(keychain ? ["--keychain", keychain] : [])];
   let output;
   for (let attempt = 1; ; attempt += 1) {
     try {
@@ -644,19 +487,22 @@ export async function submitMacNotarization(file, profile, run = command, attemp
   }
 }
 
+export async function stapleMacArtifact(file, run = command, wait = pause) {
+  await runMacStapler("staple", file, run, wait);
+  await runMacStapler("validate", file, run, wait);
+}
+
 async function notarizeMacApplication(application, profile, work) {
   const submission = path.join(work, "notary-submission.zip");
   await command("ditto", ["-c", "-k", "--keepParent", application, submission]);
   await submitMacNotarization(submission, profile);
-  await command("xcrun", ["stapler", "staple", application]);
-  await command("xcrun", ["stapler", "validate", application]);
+  await stapleMacArtifact(application);
   await command("spctl", ["--assess", "--type", "execute", "--verbose=2", application]);
 }
 
 async function notarizeMacDiskImage(diskImage, profile) {
   await submitMacNotarization(diskImage, profile);
-  await command("xcrun", ["stapler", "staple", diskImage]);
-  await command("xcrun", ["stapler", "validate", diskImage]);
+  await stapleMacArtifact(diskImage);
   await command("spctl", ["--assess", "--type", "open", "--context", "context:primary-signature", "--verbose=2", diskImage]);
 }
 
@@ -672,7 +518,7 @@ async function writeManifest(root, metadata) {
   await writeFile(path.join(root, "manifest.json"), `${JSON.stringify({ ...metadata, files: entries }, null, 2)}\n`, { mode: 0o444 });
 }
 
-async function assemble(options, selectedTarget, work, dependencies, sourceCommit, buildNumber, sourceTreeDirty, providerDemandTrust) {
+async function assemble(options, selectedTarget, work, dependencies, sourceCommit, buildNumber, sourceTreeDirty) {
   const baseName = `multivibe-host_${options.version}_${selectedTarget.key.replace("-", "_")}`;
   const root = path.join(work, baseName);
   await mkdir(root, { mode: 0o755 });
@@ -704,21 +550,10 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
     }
   }
   await mkdir(path.join(root, "THIRD_PARTY"), { mode: 0o755 });
-  await cp(path.join(repositoryRoot, "packaging", "third-party", "ollama-LICENSE"), path.join(root, "THIRD_PARTY", "ollama-LICENSE"));
   await cp(path.join(repositoryRoot, "packaging", "provider-host-dependencies.json"), path.join(root, "THIRD_PARTY", "provider-host-dependencies.json"));
-  const modelAssessments = path.join(root, "THIRD_PARTY", "provider-model-license-assessments");
-  await mkdir(modelAssessments, { mode: 0o755 });
-  await cp(
-    path.join(repositoryRoot, "docs", "provider-model-license-assessments", "qwen2.5-0.5b.md"),
-    path.join(modelAssessments, "qwen2.5-0.5b.md"),
-  );
-
   let applicationDirectory;
   let nodeDestination;
-  let ollamaDestination;
-  let agentDestination;
   let updaterDestination;
-  let benchmarkDestination;
   let hostDestination;
   let edgeDestination;
   let menuDestination;
@@ -731,16 +566,13 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
     const contents = path.join(macApplication, "Contents");
     applicationDirectory = path.join(contents, "Resources", "app");
     nodeDestination = path.join(contents, "Frameworks", "node");
-    ollamaDestination = path.join(contents, "Resources", "ollama-runtime");
-    agentDestination = path.join(contents, "Helpers", "multivibe-provider-agent");
     updaterDestination = path.join(contents, "Helpers", "multivibe-host-updater");
-    benchmarkDestination = path.join(contents, "Helpers", "multivibe-runtime-benchmark");
     hostDestination = path.join(contents, "MacOS", "multivibe-host");
     edgeDestination = path.join(contents, "Helpers", "multivibe-v1-edge");
     menuBarDestination = path.join(contents, "MacOS", "MultiVibe Host");
     resourceDirectory = path.join(contents, "Resources", "provider");
     verifierDestination = path.join(contents, "Resources", "verify-provider-host.mjs");
-    for (const directory of [applicationDirectory, path.dirname(nodeDestination), path.dirname(agentDestination), path.dirname(hostDestination), path.dirname(edgeDestination)]) {
+    for (const directory of [applicationDirectory, path.dirname(nodeDestination), path.dirname(hostDestination), path.dirname(edgeDestination)]) {
       await mkdir(directory, { recursive: true, mode: 0o755 });
     }
     const info = (await readFile(path.join(repositoryRoot, "packaging", "macos", "Info.plist"), "utf8"))
@@ -771,13 +603,10 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
   } else {
     applicationDirectory = path.join(root, "app");
     const executableSuffix = selectedTarget.goos === "windows" ? ".exe" : "";
-    agentDestination = path.join(root, "bin", `multivibe-provider-agent${executableSuffix}`);
     updaterDestination = path.join(root, "bin", `multivibe-host-updater${executableSuffix}`);
-    benchmarkDestination = path.join(root, "bin", `multivibe-runtime-benchmark${executableSuffix}`);
     hostDestination = path.join(root, "bin", `multivibe-host${executableSuffix}`);
     menuDestination = path.join(root, "bin", `multivibe-host-menu${executableSuffix}`);
     nodeDestination = path.join(root, "bin", `node${executableSuffix}`);
-    ollamaDestination = path.join(root, "runtime", "ollama");
     resourceDirectory = path.join(root, "resources", "provider");
     verifierDestination = path.join(root, "verify-provider-host.mjs");
     await mkdir(path.join(root, "bin"), { recursive: true, mode: 0o755 });
@@ -786,12 +615,6 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
 
   await productionApplication(applicationDirectory, selectedTarget);
   await mkdir(resourceDirectory, { recursive: true, mode: 0o755 });
-  await writeFile(path.join(resourceDirectory, "provider-demand-trust.json"), providerDemandTrust, { mode: 0o444 });
-  await cp(path.join(repositoryRoot, "packaging", "provider-model-catalog.json"), path.join(resourceDirectory, "provider-model-catalog.json"));
-  await cp(path.join(repositoryRoot, "packaging", "provider-runtime-profiles.json"), path.join(resourceDirectory, "provider-runtime-profiles.json"));
-  await cp(path.join(repositoryRoot, "packaging", "provider-host-dependencies.json"), path.join(resourceDirectory, "provider-host-dependencies.json"));
-  await cp(path.join(repositoryRoot, "packaging", "schemas"), path.join(resourceDirectory, "schemas"), { recursive: true });
-  await cp(path.join(repositoryRoot, "packaging", "examples"), path.join(resourceDirectory, "examples"), { recursive: true });
   if (selectedTarget.goos === "linux") {
     await cp(
       path.join(repositoryRoot, "assets", "brand", "favicon", "favicon-32x32.png"),
@@ -808,13 +631,7 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
   const nodeLicense = await nodeRuntime(work, nodeDestination, dependencies.node.artifacts[selectedTarget.key]);
   await cp(nodeLicense, path.join(root, "THIRD_PARTY", "node-LICENSE"));
   await command(nodeDestination, ["--eval", betterSQLiteSmokeTest], { cwd: applicationDirectory });
-  await ollamaRuntime(work, ollamaDestination, dependencies.ollama.artifacts[selectedTarget.key], selectedTarget, dependencies.ollama.version);
-  await buildGo(path.join(repositoryRoot, "provider-agent"), agentDestination, "providerAgentVersion", options.version, selectedTarget);
   await buildGo(path.join(repositoryRoot, "host", "updater"), updaterDestination, "hostUpdaterVersion", options.version, selectedTarget);
-  await buildGo(
-    path.join(repositoryRoot, "provider-agent"), benchmarkDestination, "runtimeBenchmarkVersion", options.version,
-    selectedTarget, "./cmd/runtime-benchmark",
-  );
   await buildGo(path.join(repositoryRoot, "host", "application"), hostDestination, "hostApplicationVersion", options.version, selectedTarget);
   if (edgeDestination) await buildRustEdge(edgeDestination);
   if (menuDestination) {
@@ -869,7 +686,6 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
     releaseReady: !sourceTreeDirty && (selectedTarget.goos !== "darwin" || macOSSignature === "developer-id-notarized"),
     macOSSignature,
     node: dependencies.node,
-    managedRuntime: dependencies.ollama,
   });
   await command(process.execPath, [path.join(repositoryRoot, "scripts", "provider-host", "verify-provider-host.mjs"), "--directory", root]);
   return { root, baseName };
@@ -953,19 +769,12 @@ export async function archiveBundle(bundle, options, selectedTarget) {
 async function main() {
   const options = argumentsFrom(process.argv.slice(2));
   const selectedTarget = target();
-  const providerDemandTrust = await loadProviderDemandTrust(options.providerDemandTrustFile);
   const dependencies = JSON.parse(await readFile(path.join(repositoryRoot, "packaging", "provider-host-dependencies.json"), "utf8"));
-  if (dependencies.schemaVersion !== 1 || !/^\d+\.\d+\.\d+$/u.test(dependencies.node?.version ?? "") ||
-    !/^\d+\.\d+\.\d+$/u.test(dependencies.ollama?.version ?? "")) {
+  if (dependencies.schemaVersion !== 1 || !/^\d+\.\d+\.\d+$/u.test(dependencies.node?.version ?? "")) {
     throw new Error("provider-host dependency manifest is invalid");
   }
   for (const key of ["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64", "windows-amd64"]) {
     validateDependency(`Node ${key}`, dependencies.node?.artifacts?.[key], key === "windows-amd64" ? "zip" : "tar-gzip");
-    validateDependency(
-      `Ollama ${key}`,
-      dependencies.ollama?.artifacts?.[key],
-      key === "windows-amd64" ? "zip" : key.startsWith("darwin-") ? "tar-gzip" : "tar-zstd",
-    );
   }
   const initialStatus = await command("git", ["status", "--porcelain"], { capture: true });
   if (initialStatus && !options.allowDirty) throw new Error("release packaging requires a clean worktree");
@@ -980,7 +789,7 @@ async function main() {
   const work = await mkdtemp(path.join(tmpdir(), "multivibe-host-package-"));
   try {
     const bundle = await assemble(
-      options, selectedTarget, work, dependencies, sourceCommit, buildNumber, Boolean(finalStatus), providerDemandTrust,
+      options, selectedTarget, work, dependencies, sourceCommit, buildNumber, Boolean(finalStatus),
     );
     const archive = await archiveBundle(bundle, options, selectedTarget);
     await command(process.execPath, [path.join(repositoryRoot, "scripts", "provider-host", "verify-provider-host.mjs"), archive]);

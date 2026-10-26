@@ -8,7 +8,7 @@ cask "multivibe-host" do
 
   url "https://github.com/thibautrey/multivibe/releases/download/v#{version}/multivibe-host_#{version}_darwin_#{arch}.dmg"
   name "MultiVibe Host"
-  desc "Local AI model host with a native menu bar and opt-in provider sharing"
+  desc "AI API proxy with a native menu bar"
   homepage "https://github.com/thibautrey/multivibe"
 
   auto_updates true
@@ -20,6 +20,6 @@ cask "multivibe-host" do
   caveats <<~EOS
     Launch MultiVibe Host from Applications to finish setup.
     Its built-in signed updater is enabled by default.
-    Uninstall preserves application data and downloaded models.
+    Uninstall preserves application data.
   EOS
 end

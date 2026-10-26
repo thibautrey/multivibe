@@ -107,14 +107,6 @@
               "type": "hostpath",
               "required": true
             }
-          },
-          {
-            "variable": "models_path",
-            "label": "Dedicated models dataset (startup assigns UID/GID 10001)",
-            "schema": {
-              "type": "hostpath",
-              "required": true
-            }
           }
         ]
       }
@@ -151,17 +143,6 @@
                   }
                 }
               ]
-            }
-          },
-          {
-            "variable": "gpus",
-            "label": "Select an NVIDIA GPU (required)",
-            "schema": {
-              "type": "dict",
-              "$ref": [
-                "definitions/gpu_configuration"
-              ],
-              "attrs": []
             }
           }
         ]

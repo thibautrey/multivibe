@@ -15,7 +15,6 @@ enum {
 int multivibe_menu_init(const char *icon_path);
 void multivibe_menu_run(void);
 void multivibe_menu_set_model(const char *model);
-void multivibe_menu_request_enrollment(void);
 void multivibe_menu_show_message(const char *title, const char *message, int warning);
 void multivibe_menu_stop(void);
 

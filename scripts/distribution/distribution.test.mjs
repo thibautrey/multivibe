@@ -29,10 +29,10 @@ test('generated packages preserve release identity and platform-specific install
       assert.equal(host.platform,'linux/amd64'); assert.equal(host.read_only,true);
       assert.deepEqual(host.cap_drop,['ALL']); assert.ok(!host.privileged);
       assert.ok(!JSON.stringify(host).includes('docker.sock'));
-      assert.ok(host.volumes.some(v=>v.endsWith(':/data'))); assert.ok(host.volumes.some(v=>v.endsWith(':/models')));
+      assert.ok(host.volumes.some(v=>v.endsWith(':/data'))); assert.ok(!host.volumes.some(v=>v.endsWith(':/models')));
       if (config['x-casaos']) {
         assert.equal(host.environment.MULTIVIBE_HOST_PUBLIC_URL,'');
-        assert.equal(host.runtime,'nvidia');
+        assert.equal(host.runtime,undefined);
         assert.deepEqual(config['x-casaos'].architectures,['amd64']);
       } else assert.match(host.environment.MULTIVIBE_HOST_PUBLIC_URL,/\:\?/);
     }

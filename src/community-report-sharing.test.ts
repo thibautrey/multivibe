@@ -42,7 +42,6 @@ async function harness(options: {
   settings: StoreSettings;
   hostAvailable?: boolean;
   reportStatus?: number;
-  benchmarks?: unknown;
 }) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-community-report-"));
   const statePath = path.join(directory, "state.json");
@@ -59,12 +58,6 @@ async function harness(options: {
       },
     },
     hostProvider: async () => (options.hostAvailable === false ? undefined : host),
-    benchmarkStore: {
-      read: async () => {
-        if (options.benchmarks === undefined) throw Object.assign(new Error("missing"), { code: "ENOENT" });
-        return options.benchmarks;
-      },
-    },
     statePath,
     clock: () => now,
     random: () => 0,

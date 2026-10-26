@@ -38,12 +38,11 @@ test("demo time ranges, pagination, and details operate on the same dataset", ()
 
 test("demo rejects writes, OAuth, inference, and exports without changing fixtures", () => {
   const original = structuredClone(read("/admin/accounts"));
-  for (const [method, path] of [["POST", "/admin/accounts"], ["PATCH", "/admin/settings"], ["DELETE", "/admin/accounts/demo-openai-studio"], ["POST", "/admin/oauth/start"], ["POST", "/v1/responses"], ["GET", "/admin/traces/export.zip"]]) {
+  for (const [method, path] of [["POST", "/admin/local-runtimes/discover"], ["POST", "/admin/accounts"], ["PATCH", "/admin/settings"], ["DELETE", "/admin/accounts/demo-openai-studio"], ["POST", "/admin/oauth/start"], ["POST", "/v1/responses"], ["GET", "/admin/traces/export.zip"]]) {
     assert.deepEqual(api(method, path), { status: 403, body: { error: DEMO_READ_ONLY } });
   }
   assert.deepEqual(read("/admin/accounts"), original);
   assert.equal(api("GET", "/admin/unknown").status, 404);
-  assert.deepEqual(api("POST", "/admin/local-runtimes/discover").body, { accounts: [] });
   assert.deepEqual(api("POST", "/admin/usage/refresh-stale").body, original);
   assert.equal(read("/admin/settings").settings.anonymousUsageSharingEnabled, false);
 });

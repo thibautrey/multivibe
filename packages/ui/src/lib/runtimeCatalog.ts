@@ -51,64 +51,6 @@ const RUNTIME_CATALOG: Record<string, RuntimeIdentity> = {
     iconUrl: "/assets/providers/deepseek.svg",
     homepageUrl: "https://www.deepseek.com",
   },
-  ollama: {
-    id: "ollama",
-    label: "Ollama",
-    iconUrl: "/assets/runtime/ollama.svg",
-    homepageUrl: "https://ollama.com",
-  },
-  "lm-studio": {
-    id: "lm-studio",
-    label: "LM Studio",
-    iconUrl: "/assets/runtime/lm-studio.svg",
-    homepageUrl: "https://lmstudio.ai",
-  },
-  omlx: {
-    id: "omlx",
-    label: "OMLX",
-    iconUrl: "/assets/runtime/omlx.svg",
-    homepageUrl: "https://omlx.ai",
-  },
-  mtplx: {
-    id: "mtplx",
-    label: "MTPLX",
-    iconUrl: "/assets/runtime/mtplx.png",
-    homepageUrl: "https://github.com/youssofal/MTPLX",
-  },
-  exo: {
-    id: "exo",
-    label: "Exo",
-    iconUrl: "/assets/runtime/exo.png",
-    homepageUrl: "https://github.com/exo-explore/exo",
-  },
-  "nvidia-pair": {
-    id: "nvidia-pair",
-    label: "NVIDIA PAIR",
-    iconUrl: GENERIC_RUNTIME_ICON,
-    homepageUrl: "https://github.com/NVIDIA/Personal-AI-Router",
-  },
-  "llama-cpp": { id: "llama-cpp", label: "llama.cpp", iconUrl: GENERIC_RUNTIME_ICON },
-  vllm: { id: "vllm", label: "vLLM", iconUrl: GENERIC_RUNTIME_ICON },
-  sglang: { id: "sglang", label: "SGLang", iconUrl: GENERIC_RUNTIME_ICON },
-  localai: { id: "localai", label: "LocalAI", iconUrl: GENERIC_RUNTIME_ICON },
-  "huggingface-tgi": { id: "huggingface-tgi", label: "Hugging Face TGI", iconUrl: GENERIC_RUNTIME_ICON },
-  "transformers-serve": { id: "transformers-serve", label: "Transformers Serve", iconUrl: GENERIC_RUNTIME_ICON },
-  xinference: { id: "xinference", label: "Xinference", iconUrl: GENERIC_RUNTIME_ICON },
-  "mlx-lm": { id: "mlx-lm", label: "MLX-LM", iconUrl: GENERIC_RUNTIME_ICON },
-  "mlc-llm": { id: "mlc-llm", label: "MLC LLM", iconUrl: GENERIC_RUNTIME_ICON },
-  jan: { id: "jan", label: "Jan", iconUrl: GENERIC_RUNTIME_ICON },
-  gpt4all: { id: "gpt4all", label: "GPT4All", iconUrl: GENERIC_RUNTIME_ICON },
-  koboldcpp: { id: "koboldcpp", label: "KoboldCpp", iconUrl: GENERIC_RUNTIME_ICON },
-  "text-generation-webui": { id: "text-generation-webui", label: "text-generation-webui", iconUrl: GENERIC_RUNTIME_ICON },
-  aphrodite: { id: "aphrodite", label: "Aphrodite", iconUrl: GENERIC_RUNTIME_ICON },
-  tabbyapi: { id: "tabbyapi", label: "TabbyAPI", iconUrl: GENERIC_RUNTIME_ICON },
-  "llama-box": { id: "llama-box", label: "llama-box", iconUrl: GENERIC_RUNTIME_ICON },
-  "mistral-rs": { id: "mistral-rs", label: "mistral.rs", iconUrl: GENERIC_RUNTIME_ICON },
-  "nvidia-nim": { id: "nvidia-nim", label: "NVIDIA NIM", iconUrl: GENERIC_RUNTIME_ICON },
-  "tensorrt-llm": { id: "tensorrt-llm", label: "TensorRT-LLM", iconUrl: GENERIC_RUNTIME_ICON },
-  triton: { id: "triton", label: "NVIDIA Triton", iconUrl: GENERIC_RUNTIME_ICON },
-  openllm: { id: "openllm", label: "OpenLLM", iconUrl: GENERIC_RUNTIME_ICON },
-  bentoml: { id: "bentoml", label: "BentoML", iconUrl: GENERIC_RUNTIME_ICON },
   "manual-openai-compatible": {
     id: "manual-openai-compatible",
     label: "OpenAI-compatible",
@@ -149,9 +91,6 @@ export function runtimeIdentityForAccount(
       account.sdkProvider ?? "ai-sdk",
       SDK_PROVIDER_NAMES[account.sdkProvider ?? ""] ?? "Cloud provider",
     );
-  }
-  if (account.localRuntime?.adapter) {
-    return runtimeIdentityForAdapter(account.localRuntime.adapter);
   }
   return runtimeIdentityForProvider(account.provider);
 }

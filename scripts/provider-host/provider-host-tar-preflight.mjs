@@ -428,18 +428,6 @@ function extractionPlan(report, profile) {
     }
     return { members, materializedLinks: [], declaredDirectories: [] };
   }
-  if (profile === "ollama-runtime") {
-    const members = report.regularFiles.filter((name) => !isMacMetadataSidecar(name));
-    const materializedLinks = report.symlinks.filter((link) => !isMacMetadataSidecar(link.name));
-    if (materializedLinks.some((link) => isMacMetadataSidecar(link.target))) {
-      throw new Error("Ollama dependency archive links to ignored macOS metadata");
-    }
-    return {
-      members,
-      materializedLinks,
-      declaredDirectories: report.directories,
-    };
-  }
   throw new Error("dependency tar extraction profile is unsupported");
 }
 
@@ -509,7 +497,7 @@ async function validateExtractedTree(root, expectedFiles, expectedDirectoriesSet
 
 export async function extractPreflightedTarArchive(archive, destination, format, options) {
   const { profile, ...limits } = options ?? {};
-  const linkHandling = profile === "node-runtime" ? "ignore" : profile === "ollama-runtime" ? "materialize" : "reject";
+  const linkHandling = profile === "node-runtime" ? "ignore" : "reject";
   const report = await preflightTarArchive(archive, format, { ...limits, linkHandling });
   const plan = extractionPlan(report, profile);
   const destinationInfo = await lstat(destination);

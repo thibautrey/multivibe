@@ -32,7 +32,7 @@ cask "multivibe-host" do
 
   url "https://github.com/thibautrey/multivibe/releases/download/v#{version}/multivibe-host_#{version}_darwin_#{arch}.dmg"
   name "MultiVibe Host"
-  desc "Local AI model host with a native menu bar and opt-in provider sharing"
+  desc "AI API proxy with a native menu bar"
   homepage "https://github.com/thibautrey/multivibe"
 
   auto_updates true
@@ -44,7 +44,7 @@ cask "multivibe-host" do
   caveats <<~EOS
     Launch MultiVibe Host from Applications to finish setup.
     Its built-in signed updater is enabled by default.
-    Uninstall preserves application data and downloaded models.
+    Uninstall preserves application data.
   EOS
 end
 `;
@@ -57,13 +57,9 @@ export function service(image) {
     cap_add: ['CHOWN', 'FOWNER', 'SETGID', 'SETUID'], stop_grace_period: '45s',
     environment: {
       MULTIVIBE_HOST_PUBLIC_URL: '${MULTIVIBE_HOST_PUBLIC_URL:?Set the exact browser-facing origin}',
-      MULTIVIBE_HOST_MANAGED_DIR: '/models/runtime',
-      MULTIVIBE_PROVIDER_CUDA_VISIBLE_DEVICES: '0',
-      NVIDIA_DRIVER_CAPABILITIES: 'compute,utility',
     },
     ports: ['${MULTIVIBE_HOST_PORT:-1455}:1455'],
-    volumes: ['${MULTIVIBE_DATA_DIR:?Select a dedicated appdata directory}:/data', '${MULTIVIBE_MODELS_DIR:?Select a dedicated models directory}:/models'],
-    deploy: { resources: { reservations: { devices: [{ driver: 'nvidia', device_ids: ['${NVIDIA_GPU_UUID:?Select an NVIDIA GPU UUID}'], capabilities: ['gpu'] }] } } },
+    volumes: ['${MULTIVIBE_DATA_DIR:?Select a dedicated appdata directory}:/data'],
   };
 }
 export async function generate(metadata, sums, output) {
@@ -73,20 +69,18 @@ export async function generate(metadata, sums, output) {
   const compose = { name: 'multivibe-host', services: { 'multivibe-host': service(`${metadata.versionTag}@${metadata.digest}`) } };
   const icon = 'https://raw.githubusercontent.com/thibautrey/multivibe/main/assets/brand/favicon/favicon-256x256.png';
   const casa = structuredClone(compose);
-  // CasaOS/ZimaOS supplies its persistent data root. Public URL and GPU selection
+  // CasaOS/ZimaOS supplies its persistent data root. Public URL settings
   // remain explicit inputs; never derive an origin from an internal container IP.
   const casaHost = casa.services['multivibe-host'];
-  casaHost.volumes = ['/DATA/AppData/multivibe-host/data:/data', '/DATA/AppData/multivibe-host/models:/models'];
+  casaHost.volumes = ['/DATA/AppData/multivibe-host/data:/data'];
   casaHost.environment.MULTIVIBE_HOST_PUBLIC_URL = '';
-  casaHost.environment.NVIDIA_VISIBLE_DEVICES = 'all';
-  casaHost.runtime = 'nvidia';
   casaHost.ports = ['1455:1455'];
   delete casaHost.deploy;
   casa['x-casaos'] = {
     id: 'cloud.multivibe.host', architectures: ['amd64'], main: 'multivibe-host',
     category: 'AI', developer: 'MultiVibe', author: 'MultiVibe',
-    title: { en_US: 'MultiVibe Host' }, tagline: { en_US: 'Run local AI models on your NVIDIA GPU' },
-    description: { en_US: 'Beta. Requires x86_64 and an NVIDIA GPU with compute capability 7.0+. In app settings, set MULTIVIBE_HOST_PUBLIC_URL to the exact browser origin (for example http://192.168.1.10:1455) before starting. Set NVIDIA_VISIBLE_DEVICES to a GPU UUID to select one GPU. Configure local capacity with /models/weights. Model downloads and provider sharing are opt-in. Application state and models survive container replacement.' },
+    title: { en_US: 'MultiVibe Host' }, tagline: { en_US: 'Connect your AI providers' },
+    description: { en_US: 'Beta. Requires x86_64. Set MULTIVIBE_HOST_PUBLIC_URL to the exact browser origin (for example http://192.168.1.10:1455) before starting. Application state survives container replacement. Connect your AI provider accounts in the dashboard.' },
     icon, scheme: 'http', index: '/', port_map: '1455', version: metadata.version,
     website: 'https://github.com/thibautrey/multivibe',
   };
@@ -97,15 +91,15 @@ export async function generate(metadata, sums, output) {
     annotations: { min_scale_version: '24.10.2.2' }, app_version: metadata.version,
     capabilities: ['CHOWN', 'FOWNER', 'SETGID', 'SETUID'].map(name => ({name, description: 'Prepare dedicated storage and drop to UID/GID 10001 at startup'})),
     categories: ['ai'], changelog_url: 'https://github.com/thibautrey/multivibe/releases',
-    date_added: '2026-09-07', description: 'Local AI model Host for x86_64 NVIDIA GPUs (compute capability 7.0+). Sharing and model downloads are opt-in.',
-    home: 'https://github.com/thibautrey/multivibe', host_mounts: [], icon, keywords: ['ai', 'llm', 'nvidia'],
+    date_added: '2026-09-07', description: 'AI API proxy and account dashboard for x86_64 systems.',
+    home: 'https://github.com/thibautrey/multivibe', host_mounts: [], icon, keywords: ['ai', 'llm'],
     lib_version: '2.3.11', lib_version_hash: '874636814efb275e5276ea9d709b7cd665fed42bb1d50328e853d9253a2e1229',
     maintainers: [{name: 'MultiVibe', url: 'https://github.com/thibautrey/multivibe/issues'}],
     name: 'multivibe-host', run_as_context: [{uid: 0, gid: 0, user_name: 'root', group_name: 'root', description: 'Entrypoint prepares dedicated mounts, then runs as UID/GID 10001 with no capabilities.'}],
     screenshots: [], sources: ['https://github.com/thibautrey/multivibe'], title: 'MultiVibe Host', train: 'community', version: '1.0.0',
   };
   files.set('truenas/multivibe-host/app.yaml', JSON.stringify(app, null, 2) + '\n');
-  files.set('truenas/multivibe-host/item.yaml', JSON.stringify({categories: ['ai'], icon_url: icon, screenshots: [], tags: ['ai', 'llm', 'nvidia']}, null, 2) + '\n');
+  files.set('truenas/multivibe-host/item.yaml', JSON.stringify({categories: ['ai'], icon_url: icon, screenshots: [], tags: ['ai', 'llm']}, null, 2) + '\n');
   for (const [name, contents] of files) {
     const destination = path.join(output, name);
     await mkdir(path.dirname(destination), { recursive: true });
