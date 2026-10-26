@@ -50,7 +50,7 @@
 
 | Area | What MultiVibe provides |
 | --- | --- |
-| Client APIs | Responses, Chat Completions, Anthropic Messages, models, Realtime WebRTC, SSE, and Responses over WebSocket |
+| Client APIs | Responses, Chat Completions, Anthropic Messages, models, Realtime WebRTC, cascaded Realtime voice over WebSocket, SSE, and Responses over WebSocket |
 | Providers | OpenAI/ChatGPT, GitHub Copilot, Poe, MiniMax, OpenRouter, Abacus.AI, Manus, Kimi, Hugging Face, Mammouth AI, Qwen Coding Plan, Z.AI GLM Coding Plan, Perplexity, Grok Build, OpenCode Zen/Go, Mistral, and other reviewed or custom APIs. See [provider setup and quota coverage](docs/providers/README.md). |
 | Account routing | Automatic model discovery, quota headroom selection, account/model blocks, retries, and optional Codex session affinity |
 | Smart aliases | Conditional schema-v2 policies, local/cloud candidates, capacity constraints, scoring, budgets, simulation, and queue/reject fallbacks |
@@ -88,7 +88,7 @@ accepts a publicly known value. Set `ADMIN_TOKEN` in `.env` next to
 | [Download the Host](#download-multivibe-host) | [Providers and onboarding](https://github.com/thibautrey/multivibe/wiki/Providers-and-onboarding#-providers-and-onboarding) | [Tracing and projects](https://github.com/thibautrey/multivibe/wiki/Tracing-and-projects#-tracing-and-project-attribution) |
 | [Gateway quick start](https://github.com/thibautrey/multivibe/wiki/Quick-start#-quick-start) | [API reference and examples](https://github.com/thibautrey/multivibe/wiki/API-reference#-api-surface) | [Storage and local models](https://github.com/thibautrey/multivibe/wiki/Persistence-and-local-models#-persistence) |
 | [Dashboard tour](https://github.com/thibautrey/multivibe/wiki/Dashboard) | [Routing and aliases](https://github.com/thibautrey/multivibe/wiki/Routing-and-aliases#-routing-strategy) | [Configuration](https://github.com/thibautrey/multivibe/wiki/Configuration) |
-| [Installation guide](./packaging/PROVIDER-HOST-README.md) | [Plugin API and migration](./docs/plugins-api.md) | [Development](https://github.com/thibautrey/multivibe/wiki/Local-development) · [More docs](https://github.com/thibautrey/multivibe/wiki/Home) |
+| [Installation guide](./packaging/PROVIDER-HOST-README.md) | [Realtime voice gateway](./docs/realtime-voice-gateway.md) · [Plugin API](./docs/plugins-api.md) | [Development](https://github.com/thibautrey/multivibe/wiki/Local-development) · [More docs](https://github.com/thibautrey/multivibe/wiki/Home) |
 
 ---
 
