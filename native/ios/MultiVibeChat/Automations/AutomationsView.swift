@@ -140,6 +140,12 @@ struct AutomationsView: View {
 private struct AutomationRow: View {
     let job: AgentAutomation
     private var icon: String { switch job.trigger.kind { case "at": "calendar.badge.clock"; case "daily": "sun.max"; case "interval": "repeat"; case "geofence": "location"; default: "bolt" } }
+    private var schedule: String {
+        guard job.trigger.kind == "daily" else { return job.trigger.label }
+        let time = String(format: "Chaque jour à %02d:%02d", job.trigger.hour ?? 0, job.trigger.minute ?? 0)
+        guard let timeZone = job.trigger.timeZone, timeZone != TimeZone.current.identifier else { return time }
+        return time + " · " + timeZone
+    }
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: icon)
@@ -156,7 +162,7 @@ private struct AutomationRow: View {
                     }
                 }
                 Text(job.prompt).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
-                Label(job.trigger.label, systemImage: "clock")
+                Label(schedule, systemImage: "clock")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -175,7 +181,8 @@ private struct StarterRow: View {
                 Image(systemName: icon).font(.body.weight(.semibold)).foregroundStyle(color).frame(width: 28)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title).font(.headline).foregroundStyle(.primary)
-                    Text(subtitle).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.leading).lineLimit(1)
+                    Text(subtitle).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.leading).lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(); Image(systemName: "plus").font(.headline).foregroundStyle(.secondary)
             }
