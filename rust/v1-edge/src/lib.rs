@@ -13,6 +13,7 @@ mod dashboard;
 mod idempotency;
 mod images;
 mod model_pricing;
+mod realtime_voice;
 mod token_refresh;
 
 use async_stream::stream;
@@ -150,6 +151,7 @@ pub struct EdgeConfig {
     pub models_client_version: String,
     pub realtime_provider: String,
     pub realtime_webrtc_call_url: Option<String>,
+    pub realtime_voice: realtime_voice::Config,
     pub proxy_models: Vec<String>,
     pub admin_token: String,
     pub configured_api_keys: Vec<(String, String)>,
@@ -214,6 +216,7 @@ impl Default for EdgeConfig {
             models_client_version: "0.144.1".to_owned(),
             realtime_provider: "openai".to_owned(),
             realtime_webrtc_call_url: None,
+            realtime_voice: realtime_voice::Config::default(),
             proxy_models: vec![
                 "gpt-5.3-codex".to_owned(),
                 "gpt-5.2-codex".to_owned(),
@@ -392,6 +395,7 @@ impl EdgeConfig {
                 .unwrap_or(defaults.models_client_version),
             realtime_provider: env("REALTIME_PROVIDER").unwrap_or(defaults.realtime_provider),
             realtime_webrtc_call_url: realtime_url,
+            realtime_voice: realtime_voice::Config::from_env(),
             proxy_models,
             admin_token: env("ADMIN_TOKEN").unwrap_or_default(),
             configured_api_keys,
@@ -5088,6 +5092,7 @@ pub struct EdgeState {
     capacity_version: Arc<AtomicU64>,
     admission: Arc<AdmissionController>,
     drain: DrainController,
+    realtime_secrets: realtime_voice::SecretStore,
     job_runner_started: Arc<AtomicBool>,
     dashboard: Arc<dashboard::DashboardState>,
 }
@@ -5168,6 +5173,7 @@ impl EdgeState {
             token_refresh: token_refresh::TokenRefreshManager::default(),
             admission: Arc::new(AdmissionController::new(capacity_version.clone())),
             drain: DrainController::default(),
+            realtime_secrets: realtime_voice::SecretStore::default(),
             capacity_version,
             job_runner_started: Arc::new(AtomicBool::new(false)),
             dashboard: Arc::new(dashboard::DashboardState::default()),
@@ -5386,6 +5392,8 @@ fn build_trace_context(
     let confidential = state.config.cloud_privacy_mode == "confidential_verified"
         || header_value(headers, "x-multivibe-privacy").as_deref() == Some("confidential_verified")
         || account.is_some_and(account_is_confidential);
+    let trace_content_redacted =
+        header_value(headers, "x-multivibe-internal-trace-redact").as_deref() == Some("1");
     let requested_model = (!requested_model.trim().is_empty()).then(|| requested_model.to_owned());
     let resolved_model = (!resolved_model.trim().is_empty()
         && resolved_model != requested_model.as_deref().unwrap_or_default())
@@ -5428,8 +5436,13 @@ fn build_trace_context(
         admission_wait_ms: Some(now_ms().saturating_sub(started_at)),
         latency_breakdown: None,
         account_selection: None,
-        input_context: trace_input_context(body),
-        request_body: (state.config.trace_include_body && !confidential).then(|| body.clone()),
+        input_context: (!trace_content_redacted)
+            .then(|| trace_input_context(body))
+            .flatten(),
+        request_body: (state.config.trace_include_body
+            && !confidential
+            && !trace_content_redacted)
+            .then(|| body.clone()),
         request_headers: state
             .config
             .trace_include_headers
@@ -9873,6 +9886,7 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
             Err(response) => return response,
         }
     };
+    headers.remove("x-multivibe-internal-trace-redact");
     if path.ends_with("/embeddings") {
         let valid_input = match body.get("input") {
             Some(Value::String(input)) => !input.trim().is_empty(),
@@ -10376,6 +10390,23 @@ fn upsert_model(models: &mut Vec<Value>, next: Value) {
 
 fn static_exposed_models(store: &StoreFile, config: &EdgeConfig) -> Vec<Value> {
     let mut models = Vec::new();
+    if config.realtime_voice.operational() {
+        let mut realtime = model_entry(
+            &config.realtime_voice.public_model,
+            "multivibe-realtime",
+            Vec::new(),
+            false,
+            Vec::new(),
+        );
+        realtime["name"] = Value::String("MultiVibe Realtime Voice".to_owned());
+        realtime["metadata"]["type"] = Value::String("realtime".to_owned());
+        realtime["metadata"]["execution"] = Value::String("cascaded".to_owned());
+        realtime["metadata"]["input_modalities"] = json!(["audio", "text"]);
+        realtime["metadata"]["output_modalities"] = json!(["audio", "text"]);
+        realtime["metadata"]["supports_tools"] = Value::Bool(true);
+        realtime["metadata"]["supported_tool_types"] = json!(["function"]);
+        upsert_model(&mut models, realtime);
+    }
     for model in &config.proxy_models {
         if let Some(provider) = infer_provider(model) {
             upsert_model(
@@ -12401,7 +12432,7 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
 async fn websocket_handler(
     State(state): State<EdgeState>,
     ws: WebSocketUpgrade,
-    headers: HeaderMap,
+    mut headers: HeaderMap,
     uri: Uri,
 ) -> Response {
     let path = uri.path().to_owned();
@@ -12426,6 +12457,7 @@ async fn websocket_handler(
     if state.drain.is_draining() {
         return draining_response();
     }
+    headers.remove("x-multivibe-internal-trace-redact");
     ws.on_upgrade(move |socket| handle_websocket(socket, state, headers, auth.application, path))
 }
 
@@ -12769,6 +12801,11 @@ pub fn build_router(state: EdgeState) -> Router {
         .route("/embeddings", post(inference_handler))
         .route("/messages", post(inference_handler))
         .route("/realtime/calls", post(realtime_call_handler))
+        .route("/realtime", get(realtime_voice::websocket_handler))
+        .route(
+            "/realtime/client_secrets",
+            post(realtime_voice::client_secret_handler),
+        )
         .route("/realtime/voices", get(realtime_voices_handler))
         .route("/settings/voices", get(realtime_voices_handler))
         .route(
@@ -12791,6 +12828,11 @@ pub fn build_router(state: EdgeState) -> Router {
         .route("/v1/embeddings", post(inference_handler))
         .route("/v1/messages", post(inference_handler))
         .route("/v1/realtime/calls", post(realtime_call_handler))
+        .route("/v1/realtime", get(realtime_voice::websocket_handler))
+        .route(
+            "/v1/realtime/client_secrets",
+            post(realtime_voice::client_secret_handler),
+        )
         .route("/v1/realtime/voices", get(realtime_voices_handler))
         .route("/v1/settings/voices", get(realtime_voices_handler))
         .route("/v1/capacity", get(capacity_handler))
