@@ -369,7 +369,8 @@ private struct RealtimeVoiceCanvas: View {
             if let error { errorView(error) }
             Spacer(minLength: 24)
         }
-        .frame(width: viewportWidth, maxHeight: .infinity)
+        .frame(width: viewportWidth)
+        .frame(maxHeight: .infinity)
     }
 
     private var transcript: some View {
