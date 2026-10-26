@@ -573,18 +573,7 @@ struct ChatView: View {
             if phase != .active { voice.silence(); if phase == .background && ModelExecution(manager.selectedModel).isLocal { manager.stop() } } else { manager.foreground(); consumeIntent() }
         }
         .onAppear { consumeIntent() }
-        .task(id: manager.session?.accountId) {
-            instances.activate(manager.session?.accountId)
-        }
-        .task(id: (manager.session?.accountId ?? "") + String(describing: scenePhase)) {
-            instances.activate(manager.session?.accountId)
-            guard scenePhase == .active, manager.session != nil else { return }
-            await instances.runSynchronization()
-        }
-        .task(id: (instances.selection?.uuidString ?? "") + String(describing: scenePhase)) {
-            guard scenePhase == .active else { return }
-            await instances.runSelectedSynchronization()
-        }
+        .modifier(RemoteConversationSynchronization(accountID: manager.session?.accountId))
         .task(id: instances.selection) {
             guard let chat = remoteChat, chat.source == nil else { return }
             do { try await instances.prepare(chat.machine, harness: chat.harness) }
@@ -4624,6 +4613,28 @@ private struct RemoteHermesConversationView: View {
                     if Task.isCancelled { return }
                     await manager.synchronizeCloudAgentState(); await manager.recoverRemoteHermes()
                 }
+            }
+    }
+}
+
+
+/// Keep synchronization tasks outside ChatView's large presentation modifier chain.
+private struct RemoteConversationSynchronization: ViewModifier {
+    let accountID: String?
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var instances = RemoteInstances.shared
+    private var accountKey: String { (accountID ?? "") + String(describing: scenePhase) }
+    private var selectionKey: String { (instances.selection?.uuidString ?? "") + String(describing: scenePhase) }
+    func body(content: Content) -> some View {
+        content
+            .task(id: accountKey) {
+                instances.activate(accountID)
+                guard scenePhase == .active, accountID != nil else { return }
+                await instances.runSynchronization()
+            }
+            .task(id: selectionKey) {
+                guard scenePhase == .active else { return }
+                await instances.runSelectedSynchronization()
             }
     }
 }
