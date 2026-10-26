@@ -447,7 +447,8 @@ export function createAdminRouter(options: AdminRoutesOptions) {
 
   const router = express.Router();
   router.use("/host-harness-runtime/v1", harnessRuntimeRoutes(options.hostHarnessRuntime));
-  router.use("/instance-relay/v1", instanceRelayRoutes(options.instanceRelay));
+  router.use("/instance-relay/v1", instanceRelayRoutes(options.instanceRelay,
+    options.multivibeCloud ? operation => options.multivibeCloud!.withRelayAccount(operation) : undefined));
   const benchmarkClient = createCachedModelBenchmarkClient(
     createModelBenchmarkClient({ artificialAnalysisApiKey: ARTIFICIAL_ANALYSIS_API_KEY }),
     { path: path.join(path.dirname(storagePaths.accountsPath), "model-benchmarks-v1.json") },

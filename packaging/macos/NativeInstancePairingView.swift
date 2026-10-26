@@ -6,7 +6,6 @@ import CoreImage.CIFilterBuiltins
 /// diagnostics, a browser URL, a persisted preference or analytics.
 struct NativeInstancePairingView: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var agent: NativeChatAgentCoordinator
     @State private var status: HarnessJSON = .null
     @State private var handoff: HarnessJSON = .null
     @State private var error: String?
@@ -50,13 +49,11 @@ struct NativeInstancePairingView: View {
                     HStack { Text(device["name"].string ?? "iPhone"); Spacer(); Button("Révoquer") { perform { status = try await call("/devices/" + (device["id"].string ?? ""), method: "DELETE") } } }
                 }
                 Button("Désactiver l’accès distant", role: .destructive) { perform {
-                    let (token, _) = try await agent.instanceAuthorization()
-                    _ = try await call("/disconnect", method: "POST", body: .object(["accessToken": .string(token)])); status = .null; handoff = .null
+                    _ = try await call("/disconnect", method: "POST", body: .object([:])); status = .null; handoff = .null
                 } }
             } else {
                 Button("Activer l’accès depuis mon compte") { perform {
-                    let (token, account) = try await agent.instanceAuthorization()
-                    status = try await call("/connect", method: "POST", body: .object(["accessToken": .string(token), "accountId": .string(account), "name": .string(Host.current().localizedName ?? "Mon Mac")]))
+                    status = try await call("/connect", method: "POST", body: .object(["name": .string(Host.current().localizedName ?? "Mon Mac")]))
                 } }.buttonStyle(.borderedProminent)
             }
             Text("Transport HTTPS sortant via MultiVibe Relay. Les échanges utilisent le quota Relay du compte. Le Cloud peut lire le contenu transitoire du transport.").font(.caption).foregroundStyle(.secondary)
