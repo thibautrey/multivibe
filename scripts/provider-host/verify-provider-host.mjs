@@ -10,6 +10,8 @@ import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 
+import { runMacStapler } from "./macos-stapler.mjs";
+
 const maximumArchiveBytes = 6 * 1024 * 1024 * 1024;
 const maximumExtractedBytes = 6 * 1024 * 1024 * 1024;
 const maximumArchiveEntries = 100_000;
@@ -76,7 +78,7 @@ async function command(program, args, options = {}) {
     child.once("exit", (code, signal) => {
       if (outputExceeded) reject(new Error(`${program} produced excessive output`));
       else if (code === 0) resolve(output.trim());
-      else reject(new Error(`${program} failed with ${signal ?? `exit ${code}`}`));
+      else reject(Object.assign(new Error(`${program} failed with ${signal ?? `exit ${code}`}`), { code, signal }));
     });
   });
 }
@@ -889,7 +891,7 @@ async function validateTree(root, options, archiveInspection) {
       throw new Error("provider-host macOS TeamIdentifier is invalid");
     }
     if (manifest.macOSSignature === "developer-id-notarized") {
-      await command("xcrun", ["stapler", "validate", application]);
+      await runMacStapler("validate", application, command);
       await command("spctl", ["--assess", "--type", "execute", "--verbose=2", application]);
     }
   }
@@ -1002,8 +1004,8 @@ async function validateMacDiskImage(diskImage, work, options) {
     }
     if (metadata.macOSSignature === "developer-id-notarized") {
       await command("codesign", ["--verify", "--strict", "--verbose=2", diskImage]);
-      await command("xcrun", ["stapler", "validate", diskImage]);
-      await command("xcrun", ["stapler", "validate", application]);
+      await runMacStapler("validate", diskImage, command);
+      await runMacStapler("validate", application, command);
       await command("spctl", ["--assess", "--type", "open", "--context", "context:primary-signature", "--verbose=2", diskImage]);
       await command("spctl", ["--assess", "--type", "execute", "--verbose=2", application]);
     }

@@ -506,3 +506,26 @@ test("packaging no longer needs inference runtimes or a demand trust anchor", as
   const source = await readFile(packager, "utf8");
   assert.doesNotMatch(source, /ollama|multivibe-provider-agent|multivibe-runtime-benchmark|provider-demand-trust/iu);
 });
+
+
+test("ticket validation retries network failures without repeating stapling", async () => {
+  const actions = [];
+  const delays = [];
+  await stapleMacArtifact("Host.app", async (_program, args) => {
+    actions.push(args[1]);
+    if (args[1] === "validate" && actions.length < 4) {
+      throw Object.assign(new Error("Apple connection lost"), { code: 68 });
+    }
+  }, async (delay) => delays.push(delay));
+  assert.deepEqual(actions, ["staple", "validate", "validate", "validate"]);
+  assert.deepEqual(delays, [5000, 10000]);
+});
+
+test("ticket validation fails after three network failures", async () => {
+  const actions = [];
+  await assert.rejects(stapleMacArtifact("Host.dmg", async (_program, args) => {
+    actions.push(args[1]);
+    if (args[1] === "validate") throw Object.assign(new Error("Apple unavailable"), { code: 68 });
+  }, async () => {}), /Apple unavailable/);
+  assert.deepEqual(actions, ["staple", "validate", "validate", "validate"]);
+});
