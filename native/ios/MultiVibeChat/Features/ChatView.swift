@@ -241,29 +241,10 @@ struct ChatView: View {
                             }
                         }
                     }
-                    HStack {
-                        Button(action: openNewConversation) {
-                            Label("Chat", systemImage: "square.and.pencil")
-                                .font(.headline)
-                                .padding(.horizontal, 20)
-                                .frame(height: 52)
-                                .foregroundStyle(Color(uiColor: .systemBackground))
-                                .background(.primary, in: Capsule())
-                        }
-                        .accessibilityLabel("Nouvelle conversation")
-                        Spacer()
-                        Button("Profil et réglages", systemImage: "gearshape") { profilePresented = true }
-                            .labelStyle(.iconOnly)
-                            .font(.title2.weight(.semibold))
-                            .frame(width: 52, height: 52)
-                            .background(.regularMaterial, in: Circle())
-                            .overlay(Circle().stroke(.primary.opacity(0.12), lineWidth: 0.7))
-                            .accessibilityIdentifier("openProfile")
-                    }
+                    sidebarFooterActions
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
-                .background(.ultraThinMaterial)
             }
         } detail: {
             VStack(spacing: 0) {
@@ -612,6 +593,49 @@ struct ChatView: View {
     private func copyMessage(_ content: String) {
         UIPasteboard.general.setItems([["public.utf8-plain-text": content]], options: [.localOnly: true])
         UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+
+    @ViewBuilder private var sidebarFooterActions: some View {
+        if #available(iOS 26.0, *) {
+            HStack {
+                Button(action: openNewConversation) { sidebarNewConversationLabel }
+                    .buttonStyle(.glassProminent)
+                    .buttonBorderShape(.capsule)
+                    .accessibilityLabel("Nouvelle conversation")
+                Spacer()
+                Button("Profil et réglages", systemImage: "gearshape") { profilePresented = true }
+                    .labelStyle(.iconOnly)
+                    .font(.title2.weight(.semibold))
+                    .frame(width: 52, height: 52)
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.circle)
+                    .accessibilityIdentifier("openProfile")
+            }
+        } else {
+            HStack {
+                Button(action: openNewConversation) { sidebarNewConversationLabel }
+                    .foregroundStyle(.primary)
+                    .background(.regularMaterial, in: Capsule())
+                    .overlay(Capsule().stroke(.primary.opacity(0.12), lineWidth: 0.7))
+                    .accessibilityLabel("Nouvelle conversation")
+                Spacer()
+                Button("Profil et réglages", systemImage: "gearshape") { profilePresented = true }
+                    .labelStyle(.iconOnly)
+                    .font(.title2.weight(.semibold))
+                    .frame(width: 52, height: 52)
+                    .background(.regularMaterial, in: Circle())
+                    .overlay(Circle().stroke(.primary.opacity(0.12), lineWidth: 0.7))
+                    .accessibilityIdentifier("openProfile")
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var sidebarNewConversationLabel: some View {
+        Label("Chat", systemImage: "square.and.pencil")
+            .font(.headline)
+            .padding(.horizontal, 20)
+            .frame(height: 52)
     }
 
     private var sidebarConversationItems: [SidebarConversationItem] {
