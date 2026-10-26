@@ -298,6 +298,7 @@ private struct RealtimeVoiceCanvas: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             composer
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(uiColor: .systemBackground).ignoresSafeArea())
         .onAppear { updatePresentation() }
         .onChange(of: assistantDraft) { _, value in
