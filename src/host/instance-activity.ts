@@ -22,9 +22,9 @@ function toolActivity(event:HarnessEvent,p:any):InstanceActivity[] {
   ??(type==='tool_execution_start' || type==='tool_progress'?'running':type==='tool_execution_end'?(p.isError?'error':'success'):undefined);
  const input=p.rawInput??p.args??p.input??state.input??item.arguments??item.command;
  const output=content(p.content??p.result?.content??p.result??state.output??p.output??item.output??item.aggregatedOutput);
+ const title=text(p.title??p.toolName??p.tool_name??p.name??item.title??item.name??item.type,160);
  return [{id:event.itemId??p.toolCallId??p.tool_use_id??p.callID??item.id??`tool-${event.seq}`,kind:'tool',
-  title:text(p.title??p.toolName??p.tool_name??p.name??item.title??item.name??item.type,160)??'Outil',
-  ...(resolved?{status:resolved}:{}),...(input!==undefined?{input:typeof input==='string'?text(input):json(input)}:{}),
+  ...(title?{title}:{}),...(resolved?{status:resolved}:{}),...(input!==undefined?{input:typeof input==='string'?text(input):json(input)}:{}),
   ...(output?{output}:{}),...(type==='tool_execution_update'?{append:true}:{})}];
 }
 
