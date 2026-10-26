@@ -17,6 +17,7 @@ test('staging copies only the reviewed runtime files with private modes',t=>{
   const source=path.join(root,'source'),home=path.join(root,'home'),node=path.join(root,'node');fs.mkdirSync(source);fs.writeFileSync(node,'runtime');
   for(const name of ['instance-voice-main.js','instance-voice.js','instance-voice-audio.js'])fs.writeFileSync(path.join(source,name),'// '+name);
   const result=stageInstanceVoiceCompanion({repository:root,home,dataDir:path.join(home,'data'),source,node});
-  assert.deepEqual(fs.readdirSync(path.dirname(result.main)).sort(),['instance-voice-audio.js','instance-voice-main.js','instance-voice.js']);
+  assert.deepEqual(fs.readdirSync(path.dirname(result.main)).sort(),['instance-voice-audio.js','instance-voice-main.js','instance-voice.js','package.json']);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(path.dirname(result.main),'package.json'))),{private:true,type:'module'});
   assert.equal(fs.statSync(result.main).mode&0o777,0o600);assert.equal(fs.statSync(result.plist).mode&0o777,0o600);
 });
