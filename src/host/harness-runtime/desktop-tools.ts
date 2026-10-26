@@ -39,8 +39,8 @@ export class DesktopTools {
     let s=this.sessions.get(id);
     if(!s){s={token:randomBytes(32).toString("hex"),seen:0,release:false};this.sessions.set(id,s);}
     if(this.available(id) && s.lease!==lease)fail("Another Desktop provider owns this session",409);
-    if(s.lease!==lease){this.cancel(id);s.lease=randomBytes(32).toString("hex");}
-    s.seen=Date.now();return {lease:s.lease};
+    if(!s.lease || s.lease!==lease){this.cancel(id);s.lease=randomBytes(32).toString("hex");}
+    s.seen=Date.now();return {lease:s.lease!};
   }
   private provider(id:string,lease:unknown) {
     const s=this.sessions.get(id);if(!s?.lease || typeof lease!=="string" || s.lease!==lease)fail("Desktop provider lease is invalid",403);
