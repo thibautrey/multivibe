@@ -3,6 +3,10 @@ import path from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { capabilities, fail, supported, unsupported, type AdapterContext, type HarnessAdapter, type HarnessDescriptor, type MessagePart } from "./types.js";
 
+// LibreChat protects browser-session agent routes with ua-parser-js and returns an SSE
+// "Illegal request" event for the default Node/Undici identity, even though the status is 200.
+const LIBRECHAT_BROWSER_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) MultiVibe/0.2 Chrome/140.0.0.0 Safari/537.36";
+
 export type RemoteChatConnection = {endpoint:string;apiKey:string;agentId:string;userId?:string;userToken?:string;cookies?:string};
 export const remoteConnectionId=(v:RemoteChatConnection)=>createHash("sha256").update(v.endpoint+"\0"+(v.userId??v.apiKey)).digest("hex");
 type Agent = {id:string;name:string};
@@ -57,7 +61,7 @@ export class RemoteChatConfiguration {
     if(isLibre && !connection.userToken)fail("Reconnect LibreChat with your account to synchronize conversations",409);
     const endpoint=isLibre?connection.endpoint.replace(/\/api\/agents\/v1$/u,"/api"):connection.endpoint;
     let response:Response;
-    try{response=await fetch(endpoint+route,{method,headers:{authorization:`Bearer ${isLibre?connection.userToken:connection.apiKey}`,accept:"application/json, text/event-stream",origin:new URL(endpoint).origin,...(connection.cookies?{cookie:connection.cookies}:{}),...(body!==undefined?{"content-type":"application/json"}:{})},...(body!==undefined?{body:JSON.stringify(body)}:{}),redirect:"error",signal:signal?AbortSignal.any([signal,AbortSignal.timeout(600_000)]):AbortSignal.timeout(15_000)});}catch{return fail(`${this.service.name} connection failed or timed out`,502);}
+    try{response=await fetch(endpoint+route,{method,headers:{authorization:`Bearer ${isLibre?connection.userToken:connection.apiKey}`,accept:"application/json, text/event-stream",origin:new URL(endpoint).origin,...(isLibre?{"user-agent":LIBRECHAT_BROWSER_USER_AGENT}:{}),...(connection.cookies?{cookie:connection.cookies}:{}),...(body!==undefined?{"content-type":"application/json"}:{})},...(body!==undefined?{body:JSON.stringify(body)}:{}),redirect:"error",signal:signal?AbortSignal.any([signal,AbortSignal.timeout(600_000)]):AbortSignal.timeout(15_000)});}catch{return fail(`${this.service.name} connection failed or timed out`,502);}
     if(response.status===401 && retry && isLibre && connection.cookies){
       await response.body?.cancel();
       if(!this.refreshing)this.refreshing=this.refresh(connection).finally(()=>{this.refreshing=undefined;});

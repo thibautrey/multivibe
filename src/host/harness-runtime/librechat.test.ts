@@ -49,10 +49,10 @@ test("LibreChat validates credentials and agents before private storage, never r
 });
 test("LibreChat completes two-factor and backup-code challenges without persisting transient secrets",async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),"librechat-2fa-test-"));
-  const calls:Array<{route:string;body:any}>=[];let challenge=0;
+  const calls:Array<{route:string;body:any;userAgent:string|undefined}>=[];let challenge=0;
   const server=http.createServer(async(req,res)=>{
     let text="";for await(const chunk of req)text+=chunk;const body=text?JSON.parse(text):undefined;
-    const route=new URL(req.url!,"http://localhost").pathname;calls.push({route,body});
+    const route=new URL(req.url!,"http://localhost").pathname;calls.push({route,body,userAgent:req.headers["user-agent"]});
     const send=(value:any,status=200)=>{res.writeHead(status,{"content-type":"application/json"});res.end(JSON.stringify(value));};
     assert.equal(req.headers.origin,`http://127.0.0.1:${(server.address() as any).port}`);
     if(route==="/api/auth/login"){
@@ -67,6 +67,7 @@ test("LibreChat completes two-factor and backup-code challenges without persisti
     }
     assert.equal(req.headers.authorization,"Bearer private-user-token");
     assert.match(req.headers.cookie!,/private-refresh/u);
+    if(route.startsWith("/api/agents") && !/Mozilla\/5\.0.*(?:Chrome|Safari)\//u.test(req.headers["user-agent"]??"")){res.writeHead(200);res.end('event: error\ndata: {"message":"Illegal request"}\n\n');return;}
     if(route==="/api/agents"){send({data:[{id:"agent-1",name:"Native agent"}]});return;}
     if(route==="/api/convos"){send({conversations:[]});return;}
     send({error:"unexpected"},404);
@@ -81,6 +82,7 @@ test("LibreChat completes two-factor and backup-code challenges without persisti
   const discovered=await config.configure({endpoint,twoFactorToken:prompted.twoFactorToken,twoFactorCode:"123456",discover:true});
   assert.deepEqual(discovered.agents,[{id:"agent-1",name:"Native agent"}]);
   assert.equal(typeof discovered.connectionAttemptId,"string");
+  assert.ok(calls.some(call=>call.route==="/api/agents" && /MultiVibe\/0\.2/u.test(call.userAgent??"")));
   assert.equal(JSON.stringify(discovered).includes("private-user-token"),false);
   assert.equal(config.read(),undefined);
   const saved=await config.configure({endpoint,connectionAttemptId:discovered.connectionAttemptId,agentId:"agent-1"});
