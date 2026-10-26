@@ -87,6 +87,8 @@
 		9603E8B8789A6DE4543FBADA /* RemoteInstances.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA6B89A03896D709E22D13C5 /* RemoteInstances.swift */; };
 		B28DAADAE29B17B03F7DF0FB /* RemoteInstancesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D499EB95F5048DD372591A0 /* RemoteInstancesView.swift */; };
 		DF18DD8A27AC6BAAD42D2194 /* RemoteInstanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65C2FB5C1C8357ED347AEC8F /* RemoteInstanceTests.swift */; };
+		207A00000000000000000002 /* CloudUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 207A00000000000000000001 /* CloudUsage.swift */; };
+		207B00000000000000000002 /* CloudUsageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 207B00000000000000000001 /* CloudUsageView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -190,6 +192,8 @@
 		FA6B89A03896D709E22D13C5 /* RemoteInstances.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteInstances.swift; sourceTree = "<group>"; };
 		2D499EB95F5048DD372591A0 /* RemoteInstancesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteInstancesView.swift; sourceTree = "<group>"; };
 		65C2FB5C1C8357ED347AEC8F /* RemoteInstanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteInstanceTests.swift; sourceTree = "<group>"; };
+		207A00000000000000000001 /* CloudUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudUsage.swift; sourceTree = "<group>"; };
+		207B00000000000000000001 /* CloudUsageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudUsageView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -250,6 +254,7 @@
 		4E2D41FACA6712F630B5551A /* Features */ = {
 			isa = PBXGroup;
 			children = (
+				207B00000000000000000001 /* CloudUsageView.swift */,
 				2D499EB95F5048DD372591A0 /* RemoteInstancesView.swift */,
 				CA4393E98F397246F4A41196 /* AuthenticationView.swift */,
 				4D23AAC6A6C06292DD31EC37 /* ChatView.swift */,
@@ -313,6 +318,7 @@
 		A61722CD3AFEF006161E3043 /* Core */ = {
 			isa = PBXGroup;
 			children = (
+				207A00000000000000000001 /* CloudUsage.swift */,
 				FA6B89A03896D709E22D13C5 /* RemoteInstances.swift */,
 				68DE1C2DEDCA28B710DD6C5D /* AgentMemory.swift */,
 				BD80E887E35614D8AAC6E385 /* CloudAgentState.swift */,
@@ -576,6 +582,8 @@
 				61EEC9C8DB8522810F721117 /* ChatAPI.swift in Sources */,
 				EDD89E16CC7EEE5F49D07739 /* ChatIntents.swift in Sources */,
 				FE9F141E961C8316B702D426 /* ChatView.swift in Sources */,
+				207B00000000000000000002 /* CloudUsageView.swift in Sources */,
+				207A00000000000000000002 /* CloudUsage.swift in Sources */,
 				92079D5C291F20B604251334 /* ConversationManager.swift in Sources */,
 				B85D75D9CEF4051E7820B844 /* DownloadedModelRuntime.swift in Sources */,
 				AB19983233E7FE9F37CFDDDC /* LocalAgent.swift in Sources */,

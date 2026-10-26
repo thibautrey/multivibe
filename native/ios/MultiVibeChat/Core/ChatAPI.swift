@@ -215,6 +215,15 @@ actor ChatAPI {
         try validate(response, data: data)
         return try decoder.decode(CloudCreditBalance.self, from: data)
     }
+    func usageAnalytics(token: String) async throws -> CloudUsageSnapshot {
+        let (data, response) = try await session.data(for: request("analytics", token: token))
+        try Task.checkCancellation()
+        try validate(response, data: data)
+        guard data.count <= 4_194_304 else { throw APIError.invalidResponse }
+        let snapshot = try decoder.decode(CloudUsageSnapshot.self, from: data)
+        guard snapshot.isValid else { throw APIError.invalidResponse }
+        return snapshot
+    }
     func providerRequest<T: Decodable & Sendable>(_ path: String, fields: [String: String]? = nil, token: String) async throws -> T {
         let body = try fields.map { try JSONSerialization.data(withJSONObject: $0) }
         let (data, response) = try await session.data(for: request(path, body: body, token: token))

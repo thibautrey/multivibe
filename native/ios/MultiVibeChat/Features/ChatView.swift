@@ -2970,13 +2970,22 @@ private struct AccountProfileView: View {
 
     private var cloudGroup: some View {
         AccountSettingsGroup(title: "MultiVibe Cloud") {
-            AccountSettingsRow(
-                icon: "gauge.with.dots.needle.50percent",
-                title: "Crédits disponibles",
-                value: balance?.formatted ?? (balanceFailed ? "Indisponible" : nil),
-                loading: loadingBalance
-            )
-            .accessibilityIdentifier("cloudCreditBalance")
+            if let accountId = manager.session?.accountId {
+                NavigationLink {
+                    CloudUsageView(accountId: accountId, initialBalance: balance).id(accountId)
+                } label: {
+                    AccountSettingsRow(
+                        icon: "gauge.with.dots.needle.50percent",
+                        title: "Crédits disponibles",
+                        value: balance?.formatted ?? (balanceFailed ? "Indisponible" : nil),
+                        loading: loadingBalance,
+                        showsChevron: true
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("cloudCreditBalance")
+                .accessibilityHint("Afficher les graphiques et le détail de votre usage Cloud")
+            }
             AccountSettingsDivider()
             Button {
                 billingPresented = true
