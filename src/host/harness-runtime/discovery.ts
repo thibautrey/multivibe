@@ -8,6 +8,8 @@ import { fail, redact } from "./types.js";
 export type NativeSessionSource={sourceId:string;harnessId:string;nativeSessionId:string;title:string;workspace?:string;updatedAt:number;canContinue:boolean;strategy:"isolated_fork"|"read_only";reason?:string;file?:string};
 export type HarnessProject={id:string;harnessId:string;name:string;path:string;updatedAt:number};
 export const PROJECT_HARNESS_IDS=new Set(["hermes-agent","pi","openai-codex","claude-code","opencode","gemini-cli"]);
+// Cache metadata only; unchanged transcript files are not re-read on every catalog poll.
+const metadataCache=new Map<string,{mtime:number;size:number;nativeId:string;title:string;workspace?:string}>();
 /** Read native metadata only. Authentication/configuration files are never scanned. */
 export function discoverNativeSessions(harnessId:string,home=os.homedir()):NativeSessionSource[] {
   const result:NativeSessionSource[]=[];
@@ -35,9 +37,14 @@ export function discoverNativeSessions(harnessId:string,home=os.homedir()):Nativ
   }
   const roots:Record<string,string>={pi:".pi/agent/sessions","openai-codex":".codex/sessions","claude-code":".claude/projects","gemini-cli":".gemini/tmp"};
   const relative=roots[harnessId];if(!relative)return [];
+  const titles=new Map<string,string>();
+  if(harnessId==="openai-codex")try{
+    const index=path.join(home,".codex/session_index.jsonl");
+    if(fs.statSync(index).size<=8*1024*1024)for(const line of fs.readFileSync(index,"utf8").split("\n"))try{const row=JSON.parse(line);if(typeof row.id==="string" && typeof row.thread_name==="string")titles.set(row.id,row.thread_name);}catch{}
+  }catch{/* Older Codex versions have no title index. */}
   let visited=0;
   const visit=(directory:string,depth:number)=>{
-    if(depth>6 || visited>5000 || result.length>=500)return;
+    if(depth>6 || visited>5000)return;
     let entries:fs.Dirent[];try{entries=fs.readdirSync(directory,{withFileTypes:true});}catch{return;}
     // Date-based native directories must be visited newest first before applying limits.
     entries.sort((a,b)=>b.name.localeCompare(a.name));
@@ -45,13 +52,19 @@ export function discoverNativeSessions(harnessId:string,home=os.homedir()):Nativ
       if(entry.isDirectory()){visit(file,depth+1);continue;}
       if(!/\.(jsonl|json)$/u.test(entry.name))continue;
       let fd:number|undefined;
-      try {const st=fs.statSync(file);if(entry.name.endsWith(".json") && st.size>16*1024*1024)continue;fd=fs.openSync(file,"r");const buffer=Buffer.alloc(Math.min(st.size,entry.name.endsWith(".json")?16*1024*1024:128*1024));fs.readSync(fd,buffer,0,buffer.length,0);const first=buffer.toString("utf8").split("\n").find(v=>v.trim());if(!first)continue;
+      try {const st=fs.statSync(file),cacheKey=harnessId+":"+file,cached=metadataCache.get(cacheKey);
+        if(cached && cached.mtime===st.mtimeMs && cached.size===st.size){add(cached.nativeId,titles.get(cached.nativeId)??cached.title,cached.workspace,st.mtimeMs,file);continue;}
+        if(entry.name.endsWith(".json") && st.size>16*1024*1024)continue;fd=fs.openSync(file,"r");const buffer=Buffer.alloc(Math.min(st.size,entry.name.endsWith(".json")?16*1024*1024:128*1024));fs.readSync(fd,buffer,0,buffer.length,0);const first=buffer.toString("utf8").split("\n").find(v=>v.trim());if(!first)continue;
         const records=entry.name.endsWith(".json")?[JSON.parse(buffer.toString("utf8"))]:buffer.toString("utf8").split("\n").flatMap(line=>{try{return [JSON.parse(line)];}catch{return [];}});
         const record=records.find(v=>v.sessionId || v.session_id || v.type==="session_meta" || v.type==="session" || v.cwd)??JSON.parse(first);
         const meta=record.payload??record;
         const nativeId=meta.sessionId??meta.session_id??meta.id;
-        const title=meta.title??meta.name??records.find(v=>v.type==="session_info" && typeof v.name==="string")?.name;
-        if(typeof nativeId==="string")add(harnessId==="pi"?file:nativeId,title??path.basename(file),typeof meta.cwd==="string"?meta.cwd:undefined,st.mtimeMs,file);
+        const title=meta.title??meta.name??records.find(v=>v.type==="session_info" && typeof v.name==="string")?.name??path.basename(file);
+        if(typeof nativeId==="string"){
+          const value={mtime:st.mtimeMs,size:st.size,nativeId:harnessId==="pi"?file:nativeId,title,workspace:typeof meta.cwd==="string"?meta.cwd:undefined};
+          if(metadataCache.size>=10000)metadataCache.delete(metadataCache.keys().next().value!);metadataCache.set(cacheKey,value);
+          add(value.nativeId,titles.get(value.nativeId)??title,value.workspace,st.mtimeMs,file);
+        }
       }catch{/* Ignore incomplete or unsupported records without exposing transcript text. */}finally{if(fd!==undefined)fs.closeSync(fd);}
     }
   };
@@ -64,7 +77,7 @@ function textContent(value:any):string {
   if(typeof value==="string")return value;
   if(Array.isArray(value))return value.map(textContent).filter(Boolean).join("\n\n");
   if(!value || typeof value!=="object")return "";
-  if(["text","input_text","output_text"].includes(value.type))return typeof value.text==="string"?value.text:"";
+  if(value.type===undefined || ["text","input_text","output_text"].includes(value.type))return typeof value.text==="string"?value.text:"";
   return "";
 }
 

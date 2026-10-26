@@ -90,6 +90,11 @@ const server = createServer(async (request, response) => {
   }
   if (route === '/admin/host-conversation-harnesses') return send({ harnesses: [] });
   if (route.endsWith('/targets')) return send({ targets: [{ id: 'local', name: 'Ce Mac', kind: 'local' }, { id: 'preview-remote', name: 'Serveur de travail', kind: 'ssh' }] });
+  if (route.endsWith('/conversation-sources')) {
+    const local = url.searchParams.get('targetId') === 'local';
+    return send({ sessions: local ? Object.values(sessions) : [], nativeSessions: [{ sourceId: 'external-codex', harnessId: 'openai-codex', nativeSessionId: 'external-cli-session', title: 'Conversation créée dans Codex', workspace: '/workspace/exemple', updatedAt: now, canContinue: true, strategy: 'isolated_fork' }] });
+  }
+  if (route.includes('/native-sessions/external-codex/messages')) return send({ source: { sourceId: 'external-codex' }, revision: 'external-one', readOnly: true, messages: [{ id: 'external-user', role: 'user', content: 'Cette conversation a été créée dans le terminal.', done: true }, { id: 'external-answer', role: 'assistant', content: 'Elle apparaît automatiquement dans MultiVibe, avec son environnement et son historique.', done: true }] });
   if (route.endsWith('/catalog')) return send({ harnesses: catalog });
   if (route.endsWith('/projects')) return send({ projects: previewProjects.map(project => ({ ...project, harnessId: url.searchParams.get('harnessId') ?? project.harnessId })) });
   if (route.includes('/native-sessions')) return send({ sessions: [] });

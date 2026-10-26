@@ -604,7 +604,12 @@ private struct NativeChatSuggestionEditor: View {
                     let harnessID = conversation.harnessID ?? "native"
                     HarnessLogo(id: harnessID, name: harnessName(harnessID), size: 18)
                 }
-                Text(conversation.title).font(.system(size: 13)).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(conversation.title).font(.system(size: 13)).lineLimit(1)
+                    if let target = conversation.executionTargetID, target != "local" {
+                        Text(targets.first { $0.id == target }?.name ?? target).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
                 if conversation.pinned == true {
                     Image(systemName: "pin").font(.system(size: 10)).foregroundStyle(.secondary).accessibilityLabel("Conversation épinglée")
                 }
