@@ -130,6 +130,14 @@ final class AuthenticationUITests: XCTestCase {
         groupedCapture.name = "conversation-list-grouped-by-harness"
         groupedCapture.lifetime = .keepAlways
         add(groupedCapture)
+
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "Message").firstMatch.waitForExistence(timeout: 15))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.buttons["groupedConversationLayout"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["groupedConversationLayout"].isSelected)
+
         app.buttons["flatConversationLayout"].tap()
         XCTAssertTrue(app.buttons["flatConversationLayout"].isSelected)
 
