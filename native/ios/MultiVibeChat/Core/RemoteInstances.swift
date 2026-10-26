@@ -200,20 +200,22 @@ struct RemoteConversationTarget: Decodable { var id: String; var name: String }
 /// Matches the Host's bounded display projection, not the native harness payload.
 struct RemoteHarnessActivity: Codable, Sendable {
     var id: String; var kind: String; var title: String?; var status: String?
-    var text: String?; var input: String?; var output: String?
-    func applying(to events: inout [LocalAgentEvent], scope: String, append: Bool = true) {
-        guard ["tool", "message"].contains(kind) else { return }
+    var text: String?; var input: String?; var output: String?; var append: Bool? = nil
+    func applying(to events: inout [LocalAgentEvent], scope: String, live: Bool = true) {
+        guard ["tool", "message", "agent", "plan", "status"].contains(kind) else { return }
         let bytes = Array(SHA256.hash(data: Data((scope + ":" + kind + ":" + id).utf8)).prefix(16))
         let uuid = UUID(uuid: (bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15]))
         let index = events.firstIndex { $0.id == uuid }
-        var event = index.map { events[$0] } ?? LocalAgentEvent(id: uuid, tool: kind == "message" ? "hermes_message" : "Outil Hermes", detail: "", status: kind == "message" ? "info" : "running")
-        if kind == "message", let text { event.detail = String(((append ? event.detail : "") + text).prefix(12_000)) }
-        else {
-            if let title { event.tool = title }
-            if let status { event.status = status }
-            if let input { event.input = input }
-            if let output { event.output = output }
+        let fallback = kind == "message" ? "Message intermédiaire" : kind == "agent" ? "Sous-agent" : kind == "plan" ? "Plan" : kind == "status" ? "Activité" : "Outil"
+        var event = index.map { events[$0] } ?? LocalAgentEvent(id: uuid, kind: kind, tool: title ?? fallback, detail: "", status: kind == "message" ? "info" : "running")
+        event.kind = kind
+        if let title { event.tool = title }
+        if let status { event.status = status }
+        if let text {
+            event.detail = String(((live && append == true ? event.detail : "") + text).prefix(12_000))
         }
+        if let input { event.input = String(((live && append == true ? event.input ?? "" : "") + input).prefix(12_000)) }
+        if let output { event.output = String(((live && append == true ? event.output ?? "" : "") + output).prefix(12_000)) }
         if let index { events[index] = event } else if events.count < 256 { events.append(event) }
     }
 }
@@ -232,11 +234,22 @@ struct RemoteChat: Codable, Identifiable, Sendable {
     var historyRevision: String? = nil
     var pendingConfiguration: RemoteConfiguration? = nil
     mutating func receiveActivity(_ activity: RemoteHarnessActivity, sequence: Int) {
+        receiveActivities([activity], sequence: sequence)
+    }
+    mutating func receiveActivities(_ activities: [RemoteHarnessActivity], sequence: Int) {
         guard sequence > cursor, let last = messages.indices.last, messages[last].role == "assistant" else { return }
         var events = messages[last].localEvents ?? []
-        activity.applying(to: &events, scope: messages[last].id.uuidString)
+        for activity in activities.prefix(32) { activity.applying(to: &events, scope: messages[last].id.uuidString) }
         messages[last].localEvents = events
         cursor = sequence; updatedAt = Date()
+    }
+    mutating func finishActivities(state: String) {
+        guard let last = messages.indices.last, var events = messages[last].localEvents else { return }
+        let finalStatus = state == "completed" ? "success" : state == "cancelled" ? "stopped" : "error"
+        for index in events.indices where events[index].kind != "message" && events[index].status == "running" {
+            events[index].status = finalStatus
+        }
+        messages[last].localEvents = events
     }
 }
 struct RemoteConfiguration: Codable, Sendable {
@@ -411,7 +424,7 @@ struct RemoteModelPreference: Codable {
                 let bytes = Array(SHA256.hash(data: Data((initial.machine + ":" + source.key + ":" + value.id).utf8)).prefix(16))
                 let id = UUID(uuid: (bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15]))
                 var events: [LocalAgentEvent] = []
-                for activity in value.activities ?? [] { activity.applying(to: &events, scope: id.uuidString, append: false) }
+                for activity in value.activities ?? [] { activity.applying(to: &events, scope: id.uuidString, live: false) }
                 return ChatMessage(id: id, role: value.role, content: value.content, localEvents: events.isEmpty ? nil : events, completion: value.role == "assistant" ? (value.done ? .completed : .streaming) : nil)
             }
             chats[index].historyRevision = revision
@@ -735,15 +748,19 @@ struct RemoteModelPreference: Codable {
             if type == "message.part" { chats[index].items[item] = text } else { chats[index].items[item, default: ""] += text }
             chats[index].cursor = Int(seq)
             chats[index].messages[chats[index].messages.count - 1].content = chats[index].itemOrder.compactMap { chats[index].items[$0] }.joined(separator: "\n")
-        } else if type == "activity", let activity = object["activity"], let seq = object["seq"]?.number,
+        } else if ["activity", "activities"].contains(type), let seq = object["seq"]?.number,
                   seq.isFinite, seq.rounded() == seq, seq >= 0, seq < Double(Int.max) {
-            chats[index].receiveActivity(try decode(RemoteHarnessActivity.self, activity), sequence: Int(seq))
+            let values = type == "activity" ? object["activity"].map { [$0] } ?? [] : object["activities"]?.array ?? []
+            guard !values.isEmpty, values.count <= 32 else { throw APIError.invalidResponse }
+            chats[index].receiveActivities(try values.map { try decode(RemoteHarnessActivity.self, $0) }, sequence: Int(seq))
         } else if type == "terminal" {
             let state = object["state"]?.string ?? "uncertain"; chats[index].state = state
             chats[index].cursor = Int(object["cursor"]?.number ?? Double(chats[index].cursor))
             if ["completed", "cancelled", "failed"].contains(state), !chats[index].messages.isEmpty {
                 chats[index].command = nil
-                chats[index].messages[chats[index].messages.count - 1].completion = state == "completed" ? .completed : state == "cancelled" ? .stopped : .failed
+                let messageIndex = chats[index].messages.count - 1
+                chats[index].messages[messageIndex].completion = state == "completed" ? .completed : state == "cancelled" ? .stopped : .failed
+                chats[index].finishActivities(state: state)
                 if state == "failed" { error = "Le harness a refusé ce tour. Vérifiez son accès au modèle sur le Mac." }
             }
             else { error = "Le harness n’a pas confirmé la réussite de ce tour. Consultez le Mac avant toute nouvelle tentative." }

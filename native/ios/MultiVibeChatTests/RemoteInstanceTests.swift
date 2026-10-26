@@ -133,26 +133,35 @@ extension RemoteInstanceTests {
 
 
 extension RemoteInstanceTests {
-    func testHarnessActivityUpdatesSameToolIgnoresReplayAndSurvivesArchive() throws {
-        var chat = RemoteChat(machine: "mac", harness: "hermes-agent", model: "model")
+    func testEveryHarnessActivityKindUpdatesIdempotentlyAndSurvivesArchive() throws {
+        var chat = RemoteChat(machine: "mac", harness: "openai-codex", model: "model")
         chat.messages = [.init(role: "user", content: "Inspecte"), .init(role: "assistant", content: "", completion: .streaming)]
-        let progress = RemoteHarnessActivity(id: "progress", kind: "message", text: "Je consulte la source.")
+        let progress = RemoteHarnessActivity(id: "progress", kind: "message", text: "Je consulte ", append: true)
         chat.receiveActivity(progress, sequence: 1)
         chat.receiveActivity(progress, sequence: 1)
-        chat.receiveActivity(.init(id: "web", kind: "tool", title: "Lecture web", status: "running", input: "https://example.com"), sequence: 2)
-        XCTAssertEqual(chat.messages.last?.localEvents?.count, 2)
-        let tool = try XCTUnwrap(chat.messages.last?.localEvents?.last)
-        chat.receiveActivity(.init(id: "web", kind: "tool", status: "error", output: "HTTP 404"), sequence: 3)
+        chat.receiveActivity(.init(id: "progress", kind: "message", text: "la source.", append: true), sequence: 2)
+        chat.receiveActivity(.init(id: "web", kind: "tool", title: "Lecture web", status: "running", input: "https://example.com"), sequence: 3)
+        chat.receiveActivity(.init(id: "agent", kind: "agent", title: "Sous-agent recherche", status: "running", text: "Analyse", append: true), sequence: 4)
+        chat.receiveActivity(.init(id: "plan", kind: "plan", title: "Plan", status: "running", text: "1. Lire"), sequence: 5)
+        chat.receiveActivity(.init(id: "compact", kind: "status", title: "Compression du contexte", status: "running"), sequence: 6)
+        chat.receiveActivity(.init(id: "terminal", kind: "tool", title: "Sortie de commande", status: "running", output: "A", append: true), sequence: 7)
+        chat.receiveActivity(.init(id: "terminal", kind: "tool", output: "B", append: true), sequence: 8)
+        chat.receiveActivity(.init(id: "web", kind: "tool", status: "success", output: "HTTP 200"), sequence: 9)
+        chat.finishActivities(state: "completed")
         let restored = try JSONDecoder().decode(RemoteChat.self, from: JSONEncoder().encode(chat))
         let events = try XCTUnwrap(restored.messages.last?.localEvents)
-        XCTAssertEqual(events.count, 2); XCTAssertEqual(events[0].detail, "Je consulte la source.")
-        XCTAssertEqual(events[1].id, tool.id); XCTAssertEqual(events[1].tool, "Lecture web")
-        XCTAssertEqual(events[1].input, "https://example.com"); XCTAssertEqual(events[1].status, "error")
-        XCTAssertEqual(events[1].output, "HTTP 404"); XCTAssertEqual(restored.cursor, 3)
+        XCTAssertEqual(events.map(\.kind), ["message", "tool", "agent", "plan", "status", "tool"])
+        XCTAssertEqual(events[0].detail, "Je consulte la source.")
+        XCTAssertEqual(events[1].tool, "Lecture web"); XCTAssertEqual(events[1].status, "success"); XCTAssertEqual(events[1].output, "HTTP 200")
+        XCTAssertEqual(events[2].status, "success"); XCTAssertEqual(events[3].status, "success"); XCTAssertEqual(events[4].status, "success")
+        XCTAssertEqual(events[5].output, "AB"); XCTAssertEqual(events[5].status, "success"); XCTAssertEqual(restored.cursor, 9)
     }
-    @MainActor func testHarnessActivityRendersDuringRunAndAfterInterruption() {
-        let events = [LocalAgentEvent(tool: "hermes_message", detail: "Je vérifie les données.", status: "info"),
-                      LocalAgentEvent(tool: "Lecture web", detail: "", status: "running")]
+    @MainActor func testEveryHarnessActivityKindRendersDuringRunAndAfterInterruption() {
+        let events = [LocalAgentEvent(kind: "message", tool: "Message intermédiaire", detail: "Je vérifie les données.", status: "info"),
+                      LocalAgentEvent(kind: "tool", tool: "Lecture web", detail: "", status: "running"),
+                      LocalAgentEvent(kind: "agent", tool: "Sous-agent", detail: "Recherche", status: "running"),
+                      LocalAgentEvent(kind: "plan", tool: "Plan", detail: "Inspecter puis vérifier", status: "success"),
+                      LocalAgentEvent(kind: "status", tool: "Compression du contexte", detail: "", status: "success")]
         for completion in [ChatMessage.Completion.streaming, .stopped, .failed, .completed] {
             let renderer = ImageRenderer(content: AgentActivityView(events: events, completion: completion).frame(width: 350))
             XCTAssertNotNil(renderer.uiImage)

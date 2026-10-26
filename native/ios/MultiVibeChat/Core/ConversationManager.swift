@@ -130,7 +130,9 @@ import Network
                         return
                     }
                     if ProcessInfo.processInfo.arguments.contains("-local-agent-ui-progress") {
-                        await workspace.recordHarness(tool: "hermes_message", input: "", output: "Je consulte la page demandée.", status: "info")
+                        await workspace.recordHarness(tool: "harness_message", input: "", output: "Je consulte la page demandée.", status: "info", kind: "message")
+                        await workspace.recordHarness(tool: "Plan", input: "", output: "Lire la source puis vérifier le résultat.", status: "success", kind: "plan")
+                        await workspace.recordHarness(tool: "Sous-agent recherche", input: "", output: "Recherche déléguée disponible.", status: "success", kind: "agent")
                     }
                     let result = try await workspace.execute(action: "fetch_website", query: "https://example.com", documentID: "", text: "", lhs: 0, rhs: 0)
                     await output(result)

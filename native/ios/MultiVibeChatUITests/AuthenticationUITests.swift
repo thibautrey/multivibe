@@ -485,6 +485,8 @@ final class HarnessActivityUITests: XCTestCase {
         let allow = app.buttons["allowConversationInternet"]
         XCTAssertTrue(allow.waitForExistence(timeout: 10)); allow.tap()
         XCTAssertTrue(app.staticTexts["Je consulte la page demandée."].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Plan"].exists)
+        XCTAssertTrue(app.staticTexts["Sous-agent recherche"].exists)
         XCTAssertTrue(app.staticTexts["En cours"].firstMatch.exists)
         XCTAssertFalse(app.staticTexts["EXAMPLE-FETCH-SUCCEEDED"].exists)
         let running = XCTAttachment(screenshot: app.screenshot()); running.name = "Hermes activity during tool execution"; running.lifetime = .keepAlways; add(running)
