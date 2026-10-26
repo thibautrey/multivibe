@@ -14,8 +14,8 @@ discovered from the local oMLX runtime. The explicitly configured language model
 uses the existing edge router. Credentials and audio adapter URLs stay on the Mac.
 
 The owner configures `instance-voice.json` in the Host data directory with an
-explicit `llm` object (`model`, `baseUrl`, `apiKeyEnvironmentFile`, `apiKeyName`).
-The file contains references to an existing private credential source. Optional
+explicit `llmModel` already published by that Host. All language-model calls go
+through the running MultiVibe Host, using its private local proxy credential. Optional
 `speechOrigin` must be a loopback HTTP origin; `edgePort` defaults to 1457.
 Run the companion with the Host's bundled Node runtime after starting oMLX.
 
