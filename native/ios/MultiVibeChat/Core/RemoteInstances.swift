@@ -192,10 +192,31 @@ struct RemoteConversationSummary: Decodable, Sendable {
     var source: RemoteConversationSource; var title: String; var updatedAt: Double; var model: String?; var canContinue: Bool
     var conversationId: String?; var nativeSourceId: String?; var nativeSessionId: String?; var connectionId: String?
 }
-struct RemoteConversationMessage: Decodable { var id: String; var role: String; var content: String; var done: Bool }
+struct RemoteConversationMessage: Decodable { var id: String; var role: String; var content: String; var done: Bool; var activities: [RemoteHarnessActivity]? }
 struct RemoteConversationPage: Decodable { var conversations: [RemoteConversationSummary]; var nextPage: Int? }
 struct RemoteConversationHistory: Decodable { var messages: [RemoteConversationMessage]; var revision: String; var model: String?; var nextOffset: Int? }
 struct RemoteConversationTarget: Decodable { var id: String; var name: String }
+
+/// Matches the Host's bounded display projection, not the native harness payload.
+struct RemoteHarnessActivity: Codable, Sendable {
+    var id: String; var kind: String; var title: String?; var status: String?
+    var text: String?; var input: String?; var output: String?
+    func applying(to events: inout [LocalAgentEvent], scope: String, append: Bool = true) {
+        guard ["tool", "message"].contains(kind) else { return }
+        let bytes = Array(SHA256.hash(data: Data((scope + ":" + kind + ":" + id).utf8)).prefix(16))
+        let uuid = UUID(uuid: (bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15]))
+        let index = events.firstIndex { $0.id == uuid }
+        var event = index.map { events[$0] } ?? LocalAgentEvent(id: uuid, tool: kind == "message" ? "hermes_message" : "Outil Hermes", detail: "", status: kind == "message" ? "info" : "running")
+        if kind == "message", let text { event.detail = String(((append ? event.detail : "") + text).prefix(12_000)) }
+        else {
+            if let title { event.tool = title }
+            if let status { event.status = status }
+            if let input { event.input = input }
+            if let output { event.output = output }
+        }
+        if let index { events[index] = event } else if events.count < 256 { events.append(event) }
+    }
+}
 
 struct RemoteChat: Codable, Identifiable, Sendable {
     var id = UUID(); var machine: String; var harness: String; var model: String; var provider: String? = nil
@@ -210,6 +231,13 @@ struct RemoteChat: Codable, Identifiable, Sendable {
     var environmentName: String? = nil
     var historyRevision: String? = nil
     var pendingConfiguration: RemoteConfiguration? = nil
+    mutating func receiveActivity(_ activity: RemoteHarnessActivity, sequence: Int) {
+        guard sequence > cursor, let last = messages.indices.last, messages[last].role == "assistant" else { return }
+        var events = messages[last].localEvents ?? []
+        activity.applying(to: &events, scope: messages[last].id.uuidString)
+        messages[last].localEvents = events
+        cursor = sequence; updatedAt = Date()
+    }
 }
 struct RemoteConfiguration: Codable, Sendable {
     var id = UUID().uuidString.lowercased()
@@ -382,7 +410,9 @@ struct RemoteModelPreference: Codable {
             chats[index].messages = messages.map { value in
                 let bytes = Array(SHA256.hash(data: Data((initial.machine + ":" + source.key + ":" + value.id).utf8)).prefix(16))
                 let id = UUID(uuid: (bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15]))
-                return ChatMessage(id: id, role: value.role, content: value.content, completion: value.role == "assistant" ? (value.done ? .completed : .streaming) : nil)
+                var events: [LocalAgentEvent] = []
+                for activity in value.activities ?? [] { activity.applying(to: &events, scope: id.uuidString, append: false) }
+                return ChatMessage(id: id, role: value.role, content: value.content, localEvents: events.isEmpty ? nil : events, completion: value.role == "assistant" ? (value.done ? .completed : .streaming) : nil)
             }
             chats[index].historyRevision = revision
             if let model { chats[index].model = model }
@@ -705,6 +735,9 @@ struct RemoteModelPreference: Codable {
             if type == "message.part" { chats[index].items[item] = text } else { chats[index].items[item, default: ""] += text }
             chats[index].cursor = Int(seq)
             chats[index].messages[chats[index].messages.count - 1].content = chats[index].itemOrder.compactMap { chats[index].items[$0] }.joined(separator: "\n")
+        } else if type == "activity", let activity = object["activity"], let seq = object["seq"]?.number,
+                  seq.isFinite, seq.rounded() == seq, seq >= 0, seq < Double(Int.max) {
+            chats[index].receiveActivity(try decode(RemoteHarnessActivity.self, activity), sequence: Int(seq))
         } else if type == "terminal" {
             let state = object["state"]?.string ?? "uncertain"; chats[index].state = state
             chats[index].cursor = Int(object["cursor"]?.number ?? Double(chats[index].cursor))
