@@ -4141,21 +4141,17 @@ struct CloudWorkspaceBrowserScreen: View {
     }
 
     private var header: some View {
-        HStack(spacing:14) {
-            ZStack {
-                RoundedRectangle(cornerRadius:18,style:.continuous).fill(MultiVibeTheme.accent.opacity(0.13)).frame(width:64,height:64)
-                Image(systemName:directory.isEmpty ? "externaldrive.fill" : "folder.fill").font(.system(size:29,weight:.semibold)).foregroundStyle(MultiVibeTheme.accent)
-            }
-            VStack(alignment:.leading,spacing:4) {
-                Text(directory.isEmpty ? title : directory.last ?? title).font(.title2.bold()).lineLimit(1)
-                Text(itemSummary).font(.subheadline).foregroundStyle(.secondary)
-                Label(pendingIDs.isEmpty ? "À jour" : "\(pendingIDs.count) en attente",systemImage:pendingIDs.isEmpty ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath")
-                    .font(.caption.weight(.semibold)).foregroundStyle(pendingIDs.isEmpty ? MultiVibeTheme.accent : .orange)
-            }
+        HStack(spacing:10) {
+            Label(itemSummary,systemImage:directory.isEmpty ? "externaldrive.fill" : "folder.fill")
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
             Spacer(minLength:0)
+            Label(pendingIDs.isEmpty ? "À jour" : "\(pendingIDs.count) en attente",systemImage:pendingIDs.isEmpty ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath")
+                .foregroundStyle(pendingIDs.isEmpty ? MultiVibeTheme.accent : .orange)
+                .lineLimit(1)
         }
-        .padding(16).background(MultiVibeTheme.softAccent,in:RoundedRectangle(cornerRadius:24,style:.continuous))
-        .overlay(RoundedRectangle(cornerRadius:24,style:.continuous).stroke(.primary.opacity(0.06)))
+        .font(.caption.weight(.semibold))
+        .padding(.horizontal,4)
     }
 
     private var filters: some View {
