@@ -18,6 +18,10 @@ explicit `llmModel` already published by that Host. All language-model calls go
 through the running MultiVibe Host, using its private local proxy credential. Optional
 `speechOrigin` must be a loopback HTTP origin; `edgePort` defaults to 1457.
 Run the companion with the Host's bundled Node runtime after starting oMLX.
+`scripts/provider-host/install-instance-voice-companion.mjs` stages the three
+compiled companion modules and a credential-free, independently supervised
+LaunchAgent. Stopping or updating that LaunchAgent does not signal MultiVibe
+Host or oMLX. The LaunchAgent retries while either dependency is unavailable.
 
 The Cloud duplex relay runs separately under `/relay/voice/v1`. It reserves the
 next Personal Relay message before accepting audio, commits on each spoken or
