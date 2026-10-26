@@ -65,6 +65,8 @@ struct ChatView: View {
                             .scaledToFit()
                             .frame(width: 34, height: 34)
                             .accessibilityHidden(true)
+                        Text("MultiVibe")
+                            .font(.title3.bold())
                         Spacer()
                         Button(sidebarSearchPresented ? "Fermer la recherche" : "Rechercher", systemImage: sidebarSearchPresented ? "xmark" : "magnifyingglass") {
                             withAnimation(.snappy) { sidebarSearchPresented.toggle() }
