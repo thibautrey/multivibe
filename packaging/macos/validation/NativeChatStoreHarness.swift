@@ -375,9 +375,10 @@ enum HostAssistantError: Error { case emptyReply }
     func call(_ route: String, method: String, target: String, body: HarnessJSON?) async throws -> HarnessJSON {
         if method != "GET" { mutations += 1 }
         if route == "/targets" { return .object(["targets": .array([.object(["id": .string("local"), "name": .string("Mac"), "kind": .string("local")]), .object(["id": .string("ssh-host"), "name": .string("Remote Host"), "kind": .string("ssh")])])]) }
-        if route == "/conversation-sources" {
+        if route.hasPrefix("/conversation-sources") {
             if offline { throw DesktopHarnessError.rejected("Offline") }
-            return .object(["sessions": .array([]), "nativeSessions": .array([try .encode(source())])])
+            if route.contains("page=1") { return .object(["sessions": .array([]), "nativeSessions": .array([try .encode(source())]), "nextPage": .null]) }
+            return .object(["sessions": .array([]), "nativeSessions": .array([]), "nextPage": .number(1)])
         }
         if route == "/librechat" || route == "/openwebui" { return .object(["configured": .bool(false)]) }
         if route.hasPrefix("/native-sessions/") {

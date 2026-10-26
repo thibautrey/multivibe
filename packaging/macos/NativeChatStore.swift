@@ -710,12 +710,22 @@ private struct NativeChatModelPreference: Codable {
         await withTaskGroup(of: Void.self) { group in
             for target in targets { group.addTask { @MainActor in
                 do {
-                    let result = try await self.runtime.call("/conversation-sources", method: "GET", target: target, body: nil)
-                    let sessions = try result["sessions"].decode([DesktopHarnessSession].self)
-                    let sources = try result["nativeSessions"].decode([DesktopNativeSessionSource].self)
-                    guard !Task.isCancelled else { return }
-                    for session in sessions { self.importRuntimeSession(session, target: target, select: false) }
-                    self.mergeNativeCatalog(sources, target: target)
+                    var sources: [String: DesktopNativeSessionSource] = [:]
+                    var page = 0
+                    while true {
+                        let route = page == 0 ? "/conversation-sources" : "/conversation-sources?page=\(page)"
+                        let result = try await self.runtime.call(route, method: "GET", target: target, body: nil)
+                        let sessions = try result["sessions"].decode([DesktopHarnessSession].self)
+                        let batch = try result["nativeSessions"].decode([DesktopNativeSessionSource].self)
+                        guard !Task.isCancelled else { return }
+                        for session in sessions { self.importRuntimeSession(session, target: target, select: false) }
+                        for source in batch { sources[source.sourceId] = source }
+                        if result["nextPage"] == .null { break }
+                        let next = try result["nextPage"].decode(Int.self)
+                        guard next == page + 1, next <= 1000 else { throw DesktopHarnessError.invalidResponse }
+                        page = next
+                    }
+                    self.mergeNativeCatalog(Array(sources.values), target: target)
                     self.remoteSyncErrors[target + ":sources"] = nil
                 } catch { if !Task.isCancelled { self.remoteSyncErrors[target + ":sources"] = error.localizedDescription } }
                 await self.synchronizeRemoteChats(targets: [target], includeSelected: false)
