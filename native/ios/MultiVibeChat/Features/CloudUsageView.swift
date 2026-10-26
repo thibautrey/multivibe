@@ -461,7 +461,7 @@ enum CloudUsageFixture {
             let requests: [[String: Any]] = (1...4).map { index in
                 ["id": "request-\(index)", "createdAt": generatedAt.addingTimeInterval(-Double(index) * 120).ISO8601Format(),
                  "model": index == 1 ? "Claude Sonnet" : "GPT", "project": "Personnel", "provider": "cloud",
-                 "state": missing ? "unknown" : "succeeded", "costUsd": missing ? NSNull() : 0.000001,
+                 "state": missing ? "unknown" : "succeeded", "costUsd": missing ? NSNull() : NSDecimalNumber(string: "0.000001"),
                  "inputTokens": missing ? NSNull() : 1200, "outputTokens": missing ? NSNull() : 300,
                  "totalTokens": missing ? NSNull() : 1500, "durationMs": missing ? NSNull() : 1240,
                  "ttftMs": missing ? NSNull() : 180]

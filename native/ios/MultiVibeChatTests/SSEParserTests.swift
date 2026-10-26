@@ -1409,15 +1409,16 @@ final class CloudUsageTests: XCTestCase {
         XCTAssertTrue(empty.recentRequests.isEmpty)
     }
     func testCSVPreservesPrecisionEscapesCellsAndNeutralizesFormulas() throws {
-        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: CloudUsageFixture.data()) as? [String: Any])
-        var periods = try XCTUnwrap(object["periods"] as? [String: [String: Any]])
-        var period = try XCTUnwrap(periods["7d"])
-        var requests = try XCTUnwrap(period["recentRequests"] as? [[String: Any]])
-        requests[0]["model"] = "=HYPERLINK(\"example\")"
-        requests[0]["project"] = "Projet, avec \"guillemets\""
-        period["recentRequests"] = requests; periods["7d"] = period; object["periods"] = periods
+        // Edit only string fields; JSONSerialization's generic numeric round trip
+        // otherwise converts the decimal fixture through a binary Double.
+        let encoder = JSONEncoder()
+        let model = String(decoding: try encoder.encode("=HYPERLINK(\"example\")"), as: UTF8.self)
+        let project = String(decoding: try encoder.encode("Projet, avec \"guillemets\""), as: UTF8.self)
+        let json = String(decoding: try CloudUsageFixture.data(), as: UTF8.self)
+            .replacingOccurrences(of: "\"Claude Sonnet\"", with: model)
+            .replacingOccurrences(of: "\"Personnel\"", with: project)
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-        let snapshot = try decoder.decode(CloudUsageSnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+        let snapshot = try decoder.decode(CloudUsageSnapshot.self, from: Data(json.utf8))
         let csv = try XCTUnwrap(snapshot.periods["7d"]?.csv)
         XCTAssertTrue(csv.contains("\"'=HYPERLINK(\"\"example\"\")\""))
         XCTAssertTrue(csv.contains("\"Projet, avec \"\"guillemets\"\"\""))
