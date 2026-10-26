@@ -24,6 +24,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { extractPreflightedTarArchive } from "./provider-host-tar-preflight.mjs";
 import { pruneProductionNativeDependencies } from "./provider-host-native-dependencies.mjs";
+import { runMacStapler } from "./macos-stapler.mjs";
 import { buildMacOSNative } from "./build-macos-native.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -486,20 +487,9 @@ export async function submitMacNotarization(file, profile, run = command, attemp
   }
 }
 
-// stapler uses EX_NOHOST (68) when Apple's ticket service cannot be reached.
-// Retry the ticket lookup without repeating the accepted notarization submission.
 export async function stapleMacArtifact(file, run = command, wait = pause) {
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      await run("xcrun", ["stapler", "staple", file]);
-      break;
-    } catch (error) {
-      if (error.code !== 68 || attempt >= 3) throw error;
-      console.warn(`Apple ticket lookup unavailable; retrying stapler (attempt ${attempt + 1}/3)`);
-      await wait(attempt * 5000);
-    }
-  }
-  await run("xcrun", ["stapler", "validate", file]);
+  await runMacStapler("staple", file, run, wait);
+  await runMacStapler("validate", file, run, wait);
 }
 
 async function notarizeMacApplication(application, profile, work) {
