@@ -1,4 +1,3 @@
-import type { OpenModel } from './open-model-ranking.js';
 export type GuidanceRoute = { source: 'provider' | 'local' | 'cloud'; label: string; modelId: string; ready: boolean; accountId?: string };
 export type GuidanceEntry = { id: string; name: string; routes: GuidanceRoute[] };
 
@@ -21,7 +20,7 @@ export type GuidedChoice = {
   data: string; speed: { label: string; kind: 'unknown'; measuredAt: null };
   dependency: string; evidence: { source: string; reviewedAt: string; version: string };
 };
-export function relevantChoices(catalog: GuidanceEntry[], need: ModelNeed, evidence: OpenModel[] = []): GuidedChoice[] {
+export function relevantChoices(catalog: GuidanceEntry[], need: ModelNeed, evidence: { id: string; url: string; needs: ModelNeed[] }[] = []): GuidedChoice[] {
   return catalog.flatMap(model => {
     const selection = evidence.find(item => item.needs.includes(need) && (item.id === model.id || model.routes.some(route => item.id === route.modelId)));
     if (!selection) return [];

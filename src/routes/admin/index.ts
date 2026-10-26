@@ -1,13 +1,6 @@
-import {localMemoryBudget} from '../../model-memory-budget.js';
-import {totalmem, platform, arch} from 'node:os';
-import {createMemoryEstimationQueue} from '../../model-memory-queue.js';
-import {modelMemoryRequest} from '../../model-memory-request.js';
-import { benchmarkProfiles, createRecommendationEvidence, type MemoryAvailability } from '../../model-recommendation-evidence.js';
 import { modelBenchmarkRoutes } from './model-benchmark-routes.js';
 import { createModelBenchmarkClient } from '../../model-benchmarks.js';
 import { createCachedModelBenchmarkClient } from '../../model-benchmark-cache.js';
-import { rankOpenModels, catalogSorts, type CatalogNeed, type CatalogSort, type RuntimeEstimate } from '../../open-model-ranking.js';
-import { loadOpenModelCatalog } from '../../open-model-catalog.js';
 import { GUIDANCE_VERSION, modelNeeds, relevantChoices, recommendedChoices, verifiedCloudCatalog, type GuidanceEntry, type ModelNeed } from '../../model-guidance.js';
 import { invoiceOverview } from "../../provider-invoices.js";
 import { publishDeviceSignIn } from "../../host/device-signin.js";
@@ -308,36 +301,6 @@ function filterVisibleTraces<T extends { route?: string }>(traces: T[]): T[] {
   return traces.filter((trace) => !isHiddenTraceRoute(trace.route));
 }
 
-function writeProviderCloudEnrollmentError(
-  res: express.Response,
-  error: unknown,
-  invalidError: "invalid_provider_cloud_enrollment" | "invalid_provider_cloud_handoff",
-): boolean {
-  if (!(error instanceof ProviderAgentControlRequestError)) return false;
-  switch (error.status) {
-    case 400:
-      res.status(400).json({ error: invalidError });
-      return true;
-    case 409:
-      res.status(409).json({ error: "provider_cloud_enrollment_conflict" });
-      return true;
-    case 410:
-      res.status(410).json({ error: "provider_cloud_enrollment_expired" });
-      return true;
-    case 422:
-      res.status(422).json({ error: "provider_cloud_enrollment_rejected" });
-      return true;
-    case 502:
-      res.status(502).json({ error: "provider_cloud_unavailable" });
-      return true;
-    case 503:
-      res.status(503).json({ error: "provider_agent_unavailable" });
-      return true;
-    default:
-      return false;
-  }
-}
-
 function isOpenAiEnabledAccount(account: Account | undefined): account is Account {
   return Boolean(account && (account.provider ?? "openai") === "openai" && account.enabled);
 }
@@ -487,13 +450,6 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     { path: path.join(path.dirname(storagePaths.accountsPath), "model-benchmarks-v1.json") },
   );
   router.use("/benchmarks", modelBenchmarkRoutes(benchmarkClient));
-  const memoryQueue=createMemoryEstimationQueue({path:path.join(path.dirname(storagePaths.accountsPath),'model-memory-queue-v2.json')});
-  const recommendationEvidence = createRecommendationEvidence(benchmarkClient, Date.now, undefined,memoryQueue);
-  router.get('/model-memory',async(req,res)=>{
-    try {res.setHeader('cache-control','no-store');res.json(await modelMemoryRequest(memoryQueue,loadOpenModelCatalog,String(req.query.model??''),String(req.query.variant??'')));}
-    catch {res.status(400).json({error:'Invalid model family or unavailable catalog'});}
-  });
-
   router.get("/host-update", async (_req, res) => {
     res.setHeader("cache-control", "no-store");
     if (!options.hostApplication || !options.hostUpdateController?.available()) {
@@ -1234,34 +1190,6 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       const status = message.includes("registration is disabled") ? 503 : 400;
       res.status(status).json({ error: message });
     }
-  });
-
-  router.get("/model-recommendations", async (req, res) => {
-    res.setHeader("cache-control", "no-store");
-    const need = String(req.query.need ?? 'writing'); const sort = String(req.query.sort ?? 'recommended');
-    if (!['writing','coding','translation','documents'].includes(need) || !catalogSorts.includes(sort as CatalogSort) || (req.query.host && req.query.host !== 'local')) return res.status(400).json({error:'Invalid recommendation query'});
-    const benchmark = req.query.benchmark === undefined ? undefined : String(req.query.benchmark);
-    const budgetMiB = req.query.memory_gib === undefined ? undefined : Number(req.query.memory_gib) * 1024;
-    if ((benchmark && !benchmarkProfiles.some(p => p.id === benchmark)) || (budgetMiB !== undefined && (!Number.isFinite(budgetMiB) || budgetMiB <= 0 || budgetMiB > 4096 * 1024))) return res.status(400).json({error:'Invalid benchmark or memory budget'});
-    try {
-      const catalog = await loadOpenModelCatalog();
-      const evidence = await recommendationEvidence(catalog, need as CatalogNeed, benchmark);
-      let memory: MemoryAvailability | undefined = options.hostApplication && platform()==='darwin' && arch()==='arm64' ? localMemoryBudget(totalmem(),budgetMiB) : undefined;
-      let host: { name: string; supported: boolean } | null = null; let estimates: RuntimeEstimate[] = [];
-      res.json({catalog, host, memory,memoryProgress:evidence.memoryProgress, contextTokens:8192, benchmarks:{selected:evidence.profile?.id, options:evidence.options, coverage:evidence.coverage}, recommendations: rankOpenModels(catalog, need as CatalogNeed, sort as CatalogSort, estimates, Date.now(), {...evidence, memory: memory ?? (budgetMiB ? {budgetMiB} : undefined)})});
-    } catch { res.status(503).json({error:'Public catalog unavailable'}); }
-  });
-
-  router.get("/open-model-family", async (req,res) => {
-    const model = String(req.query.model ?? '');
-    if (!/^[A-Za-z0-9][\w.-]{0,127}\/[A-Za-z0-9][\w.-]{0,127}$/.test(model)) return res.status(400).json({error:'Invalid model identity'});
-    try { res.json({models:await loadOpenModelCatalog.family(model),source:'Hugging Face',limit:100}); }
-    catch { res.status(503).json({error:'Model variants unavailable. Try again.'}); }
-  });
-
-  router.get("/open-model-catalog", async (_req, res) => {
-    try { res.json(await loadOpenModelCatalog()); }
-    catch { res.status(503).json({ error: "Public model catalog unavailable. Try again later." }); }
   });
 
   router.get("/provider-catalog", async (_req, res) => {

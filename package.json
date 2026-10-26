@@ -10,7 +10,7 @@
     "build:dsh-plugin": "npm --prefix plugins/dsh-multivibe run build",
     "test:distribution": "node --test scripts/distribution/*.test.mjs",
     "dev": "node scripts/start-native.mjs --dev",
-    "build:api": "tsc -p tsconfig.json",
+    "build:api": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
     "build:proxy-core-native": "node scripts/build-proxy-core-native.mjs",
     "benchmark:protocol-conversion": "node --import tsx scripts/benchmark-protocol-conversion.mjs",
     "benchmark:raw-protocol-conversion": "node --import tsx scripts/benchmark-raw-protocol-conversion.mjs",

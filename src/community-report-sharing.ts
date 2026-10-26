@@ -11,7 +11,6 @@ import {
   COMMUNITY_SPEED_UPPER_BOUNDS,
   COMMUNITY_CONTEXT_BUCKETS,
   buildCommunityReportModels,
-  readSyntheticBenchmarkResults,
   type CommunityReportModelEntry,
   type CommunityReportSyntheticEntry,
   type CommunityReportTrace,
@@ -62,8 +61,6 @@ export type CommunityReportSharingWorkerOptions = Readonly<{
   traceSource: { collectCommunityReportTraces(sinceMs: number, untilMs: number, limit?: number): Promise<CommunityReportTrace[]> };
   /** Resolves the bounded machine descriptor, or undefined when unsupported. */
   hostProvider: () => Promise<CommunityHostDescriptor | undefined>;
-  /** Reads the provider-agent synthetic benchmark store document, if any. */
-  benchmarkStore: { read(): Promise<unknown> };
   statePath: string;
   apiBaseUrl?: string;
   fetchFn?: typeof fetch;
@@ -388,20 +385,8 @@ export function createCommunityReportSharingWorker(
     }
     const traces = await options.traceSource.collectCommunityReportTraces(eligibleStart, periodEnd.getTime());
     if (!sharingEnabled || settingsEpoch !== epoch || stopped) return sharingEnabled ? "skipped" : "disabled";
-    let benchmarkDocument: unknown;
-    try {
-      benchmarkDocument = await options.benchmarkStore.read();
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
-        warn("community_report_benchmark_store_unavailable", {
-          errorType: error instanceof Error ? error.name : "unknown",
-        });
-      }
-    }
     const models = buildCommunityReportModels(traces, allowlist);
-    const syntheticBenchmarks = readSyntheticBenchmarkResults(
-      benchmarkDocument, allowlist, new Set(state.sentSyntheticDigests ?? []),
-    );
+    const syntheticBenchmarks: readonly CommunityReportSyntheticEntry[] = [];
     if (!models.length && !syntheticBenchmarks.length) {
       await writeState({ schemaVersion: 1, lastCompletedPeriodEnd: periodEndIso, ...(state.sentSyntheticDigests ? { sentSyntheticDigests: state.sentSyntheticDigests } : {}) });
       return "empty";

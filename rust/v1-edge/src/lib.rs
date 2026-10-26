@@ -1332,7 +1332,7 @@ fn select_accounts(
             normalize_provider(account) == route.provider.as_deref().unwrap_or("")
                 && (!is_cloud_model_selector(&route.requested_model)
                     || account.multivibe_cloud == Some(true))
-                && local_preparation_route_allowed(account, route)
+                && retired_local_model_route_allowed(route)
                 && (route.account_ids.is_empty() || route.account_ids.contains(&account.id))
                 && account_usable(account, &route.model, blocked)
         })
@@ -1456,7 +1456,7 @@ fn is_prepared_local_model(model: &str) -> bool {
     model.starts_with("multivibe-local-")
 }
 
-fn local_preparation_route_allowed(_account: &Account, route: &RouteCandidate) -> bool {
+fn retired_local_model_route_allowed(route: &RouteCandidate) -> bool {
     // Retired model IDs must never fall through to another provider or alias.
     !is_prepared_local_model(&route.requested_model) && !is_prepared_local_model(&route.model)
 }
@@ -10628,9 +10628,7 @@ async fn discover_account_models(
     };
     let models = upstream_model_entries(&provider, &value)
         .into_iter()
-        .map(|(id, entry)| {
-            model_entry_from_upstream(&id, &provider, &account.id, &entry)
-        })
+        .map(|(id, entry)| model_entry_from_upstream(&id, &provider, &account.id, &entry))
         .collect::<Vec<_>>();
     if models.is_empty() {
         Err("model discovery returned no models".to_owned())
@@ -10774,7 +10772,8 @@ fn active_model_accounts(store: &StoreFile) -> Vec<Account> {
         .iter()
         .filter(|account| {
             account.enabled
-                && !is_retired_local_account(account) && !account_inference_token(account).is_empty()
+                && !is_retired_local_account(account)
+                && !account_inference_token(account).is_empty()
         })
         .cloned()
         .collect()
@@ -13066,9 +13065,12 @@ mod tests {
         assert!(!account_usable(&legacy, "old-model", &HashMap::new()));
         let store = store_with_accounts(vec![legacy]);
         assert!(active_model_accounts(&store).is_empty());
-        assert!(static_exposed_models(&store, &EdgeConfig::default()).is_empty());
+        assert_eq!(
+            static_exposed_models(&store, &EdgeConfig::default()),
+            static_exposed_models(&StoreFile::default(), &EdgeConfig::default()),
+        );
         let routes = routes_for_model(&StoreFile::default(), "multivibe-local-old:latest", "default", &[]);
-        assert!(!local_preparation_route_allowed(&account("remote"), &routes[0]));
+        assert!(!retired_local_model_route_allowed(&routes[0]));
     }
 
 
