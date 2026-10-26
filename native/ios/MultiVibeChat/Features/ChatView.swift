@@ -121,7 +121,7 @@ struct ChatView: View {
                         .overlay(Circle().stroke(.primary.opacity(0.10), lineWidth: 0.7))
                         .accessibilityIdentifier("sidebarMoreOptions")
                     }
-                    .padding(.vertical, 8)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 4, trailing: 20))
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                 }
@@ -154,7 +154,7 @@ struct ChatView: View {
                         .accessibilityIdentifier("openCloudHermesState")
                     }
                 }
-                .listSectionSpacing(8)
+                .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
                 .listRowSeparator(.hidden)
 
                 Section {
@@ -190,7 +190,7 @@ struct ChatView: View {
                         .frame(width: 88)
                         .accessibilityIdentifier("conversationLayoutPicker")
                     }
-                    .padding(.vertical, 4)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 4, trailing: 20))
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                 }
@@ -225,6 +225,7 @@ struct ChatView: View {
                 }
             }
             .listStyle(.plain)
+            .listSectionSpacing(6)
             .scrollContentBackground(.hidden)
             .background(Color(uiColor: .systemBackground).ignoresSafeArea())
             .navigationTitle("")
@@ -2587,18 +2588,18 @@ private struct SidebarShortcutLabel: View {
     let systemImage: String
 
     var body: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: 12) {
             Image(systemName: systemImage)
                 .font(.title3.weight(.medium))
                 .foregroundStyle(.primary)
-                .frame(width: 28, height: 32)
+                .frame(width: 24, height: 28)
                 .accessibilityHidden(true)
             Text(title)
                 .font(.body.weight(.medium))
                 .foregroundStyle(.primary)
             Spacer(minLength: 0)
         }
-        .frame(minHeight: 48)
+        .frame(minHeight: 44)
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
