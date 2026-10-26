@@ -29,6 +29,7 @@ test('speech and voice edge destinations are loopback origins',()=>{
 });
 
 test('voice capabilities publish transcription and synthesis models separately',async t=>{
+  const before=process.env.NODE_ENV;process.env.NODE_ENV='test';t.after(()=>{if(before===undefined)delete process.env.NODE_ENV;else process.env.NODE_ENV=before;});
   const server=http.createServer((request,response)=>{
     response.setHeader('content-type','application/json');
     if(request.url==='/v1/models'){
