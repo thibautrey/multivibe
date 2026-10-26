@@ -103,16 +103,22 @@ import UIKit
         let format = input.outputFormat(forBus: 0)
         guard let target = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 24_000, channels: 1, interleaved: false),
               let converter = AVAudioConverter(from: format, to: target) else { throw URLError(.cannotDecodeContentData) }
-        input.installTap(onBus: 0, bufferSize: 960, format: format) { [weak self] buffer, _ in
-            guard let data = Self.pcm24k(buffer, converter: converter, targetFormat: target) else { return }
-            Task { @MainActor [weak self] in
-                guard let self, !self.muted, [.listening, .thinking, .speaking].contains(self.phase) else { return }
-                do { try await self.send(["type": "input_audio_buffer.append", "audio": data.base64EncodedString()]) }
-                catch { self.fail("La connexion audio est interrompue.") }
-            }
-        }
+        input.installTap(onBus: 0, bufferSize: 960, format: format,
+                         block: Self.captureTap(controller: self, converter: converter, targetFormat: target))
         captureTapInstalled = true
         capture.prepare(); try capture.start()
+    }
+    nonisolated static func captureTap(controller: RealtimeVoiceController, converter: AVAudioConverter, targetFormat: AVAudioFormat) -> AVAudioNodeTapBlock {
+        let conversion = VoiceCaptureConversion(converter: converter, format: targetFormat)
+        return { @Sendable [weak controller] buffer, _ in
+            guard let data = Self.pcm24k(buffer, converter: conversion.converter, targetFormat: conversion.format) else { return }
+            Task { @MainActor [weak controller] in await controller?.sendCapturedAudio(data) }
+        }
+    }
+    private func sendCapturedAudio(_ data: Data) async {
+        guard !muted, [.listening, .thinking, .speaking].contains(phase) else { return }
+        do { try await send(["type": "input_audio_buffer.append", "audio": data.base64EncodedString()]) }
+        catch { fail("La connexion audio est interrompue.") }
     }
     nonisolated private static func pcm24k(_ source: AVAudioPCMBuffer, converter: AVAudioConverter, targetFormat: AVAudioFormat) -> Data? {
         let capacity = AVAudioFrameCount(Double(source.frameLength) * 24_000 / source.format.sampleRate + 32)
@@ -193,7 +199,7 @@ import UIKit
         ledger.playbackStarted(response)
         pendingAudio[response, default: 0] += 1
         let generation = audioGeneration
-        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { @Sendable [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.audioGeneration == generation, self.phase != .ended else { return }
                 self.pendingAudio[response, default: 1] -= 1
@@ -235,14 +241,14 @@ import UIKit
         } catch { fail("Le texte n’a pas pu être transmis.") }
     }
     private func installLifecycle(backgroundAudio: Bool) {
-        observers.append(NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] notification in
+        observers.append(NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { @Sendable [weak self] notification in
             let began = (notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) == AVAudioSession.InterruptionType.began.rawValue
             Task { @MainActor in
                 guard began else { return }
                 self?.fail("L’audio a été interrompu. Reprenez depuis le chat après l’appel.")
             }
         })
-        observers.append(NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] notification in
+        observers.append(NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { @Sendable [weak self] notification in
             let reason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
             Task { @MainActor in
                 if reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue {
@@ -252,14 +258,14 @@ import UIKit
             }
         })
         if !backgroundAudio {
-            observers.append(NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+            observers.append(NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { @Sendable [weak self] _ in
                 Task { @MainActor in self?.end() }
             })
         } else {
             let center = MPRemoteCommandCenter.shared()
             for (command, action) in [(center.pauseCommand, 0), (center.playCommand, 1), (center.stopCommand, 2)] {
                 command.isEnabled = true
-                let target = command.addTarget { [weak self] _ in
+                let target = command.addTarget { @Sendable [weak self] _ in
                     Task { @MainActor in if action == 2 { self?.end() } else { self?.setMuted(action == 0) } }
                     return .success
                 }
@@ -323,7 +329,7 @@ import UIKit
         cueEngine = engine; cuePlayer = player
         do { try engine.start() } catch { cueEngine = nil; cuePlayer = nil; return }
         await withCheckedContinuation { continuation in
-            player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in continuation.resume() }
+            player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { @Sendable _ in continuation.resume() }
             player.play()
         }
         player.stop(); engine.stop()
@@ -347,6 +353,14 @@ import UIKit
         partialUser = ""; partialAssistant = ""
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
+}
+
+// AVAudioEngine invokes each installed tap serially on its audio queue. The
+// converter transfers to that queue after construction and is used only there.
+private final class VoiceCaptureConversion: @unchecked Sendable {
+    let converter: AVAudioConverter
+    let format: AVAudioFormat
+    init(converter: AVAudioConverter, format: AVAudioFormat) { self.converter = converter; self.format = format }
 }
 
 private final class VoiceSocketRedirectPolicy: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
