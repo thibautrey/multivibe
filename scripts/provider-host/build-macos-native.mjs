@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { buildAndInstallCef } from './cef-runtime.mjs';
+import { prepareFaceRecognition } from './prepare-face-recognition.mjs';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const run = (program, args, env = process.env) => execFileSync(program, args, { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -109,6 +110,7 @@ export function appIntentsFileArguments(help, { sources, constants, constantList
 export async function buildMacOSNative({ binary, resources, architecture = 'arm64', minimum = '13.0' }) {
   const temporary = await mkdtemp(path.join(tmpdir(), 'multivibe-native-'));
   try {
+    await prepareFaceRecognition({ resources });
     const developer = resolveMacOSDeveloperDirectory();
     const toolchain = path.join(developer, 'Toolchains/XcodeDefault.xctoolchain');
     const env = { ...process.env, DEVELOPER_DIR: developer };
