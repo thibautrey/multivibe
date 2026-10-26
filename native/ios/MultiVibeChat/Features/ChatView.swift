@@ -50,6 +50,7 @@ struct ChatView: View {
     @State private var remoteConfigurationError: String?
     @State private var remoteInstancesPresented = false
     @State private var remoteProjectPickerPresented = false
+    @AppStorage("chat.welcomeExecutionListExpanded") private var welcomeExecutionListExpanded = false
     @FocusState private var composerFocused: Bool
     private let latestMessageAnchor = "latest-message"
 
@@ -868,24 +869,103 @@ struct ChatView: View {
     private var selectedExecutionName: String { isRemoteConversation ? remoteHarnessName : localExecutionName }
 
     private var welcomeExecutionSelector: some View {
-        Menu {
-            executionMenuItems
-        } label: {
-            VStack(spacing: 7) {
-                HarnessIdentityLogo(id: selectedExecutionHarnessID, name: selectedExecutionName, size: 64)
-                HStack(spacing: 5) {
-                    Text(selectedExecutionName).lineLimit(1)
-                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+        VStack(spacing: 10) {
+            Button {
+                withAnimation(.snappy) { welcomeExecutionListExpanded.toggle() }
+            } label: {
+                VStack(spacing: 7) {
+                    HarnessIdentityLogo(id: selectedExecutionHarnessID, name: selectedExecutionName, size: 64)
+                    HStack(spacing: 5) {
+                        Text(selectedExecutionName).lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(welcomeExecutionListExpanded ? 180 : 0))
+                    }
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                    if let machine = remoteMachine { Text(machine.name).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
                 }
-                .font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
-                if let machine = remoteMachine { Text(machine.name).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                .frame(minWidth: 132).contentShape(Rectangle())
             }
-            .frame(minWidth: 132).contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .accessibilityLabel("Lieu d’exécution et harness")
+            .accessibilityIdentifier("welcomeExecutionPicker")
+            .accessibilityValue((isRemoteConversation ? (remoteMachine?.name ?? "Instance") + ", " + remoteHarnessName : localExecutionName) + (welcomeExecutionListExpanded ? ", liste ouverte" : ", liste fermée"))
+
+            if welcomeExecutionListExpanded {
+                welcomeExecutionList
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
+    }
+
+    private var welcomeExecutionList: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            welcomeExecutionRow(id: "native", name: "Cet iPhone",
+                                selected: instances.selection == nil && ModelExecution(manager.selectedModel).isLocal) {
+                selectLocalExecution()
+            }
+            welcomeExecutionRow(id: "hermes-cloud", name: "Hermes Cloud",
+                                selected: instances.selection == nil && !ModelExecution(manager.selectedModel).isLocal) {
+                selectLocalExecution(cloud: true)
+            }
+
+            ForEach(instances.machines.filter { instances.paired.contains($0.id) }) { machine in
+                Divider().padding(.vertical, 5)
+                Text(machine.name)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 2)
+                let available = instances.harnesses[machine.id]?.filter { $0.available } ?? []
+                if available.isEmpty {
+                    Button("Charger les harness…", systemImage: "arrow.clockwise") {
+                        Task { try? await instances.catalog(machine.id) }
+                    }
+                    .font(.subheadline)
+                    .padding(.horizontal, 10)
+                    .frame(minHeight: 42)
+                    .disabled(!machine.online || instances.busy)
+                } else {
+                    ForEach(available) { harness in
+                        welcomeExecutionRow(id: harness.id, name: harness.name,
+                                            selected: remoteChat?.machine == machine.id && remoteChat?.harness == harness.id,
+                                            disabled: !machine.online || instances.busy) {
+                            selectRemoteExecution(machine: machine, harness: harness)
+                        }
+                    }
+                }
+            }
+
+            Divider().padding(.vertical, 5)
+            Button("Actualiser les instances", systemImage: "arrow.clockwise") { Task { await instances.reload() } }
+                .disabled(instances.busy)
+            Button("Gérer les instances…", systemImage: "desktopcomputer.and.iphone") { remoteInstancesPresented = true }
+        }
+        .font(.subheadline)
         .buttonStyle(.plain)
-        .accessibilityLabel("Lieu d’exécution et harness")
-        .accessibilityIdentifier("welcomeExecutionPicker")
-        .accessibilityValue(isRemoteConversation ? (remoteMachine?.name ?? "Instance") + ", " + remoteHarnessName : localExecutionName)
+        .padding(8)
+        .frame(maxWidth: 310, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(.primary.opacity(0.1), lineWidth: 0.7))
+        .accessibilityIdentifier("welcomeExecutionList")
+    }
+
+    private func welcomeExecutionRow(id: String, name: String, selected: Bool, disabled: Bool = false,
+                                     action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                HarnessIdentityLogo(id: id, name: name, size: 30)
+                Text(name).foregroundStyle(.primary).lineLimit(1)
+                Spacer(minLength: 12)
+                if selected { Image(systemName: "checkmark").fontWeight(.semibold).foregroundStyle(MultiVibeTheme.accent) }
+            }
+            .padding(.horizontal, 8)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .disabled(disabled)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private var conversationExecutionSelector: some View {
@@ -2000,11 +2080,19 @@ private struct HarnessIdentityLogo: View {
             case "hermes-cloud":
                 Image(systemName: "cloud.fill").resizable().scaledToFit().padding(size * 0.23)
             case "hermes-agent":
-                Image(systemName: "bolt.horizontal.circle.fill").resizable().scaledToFit().padding(size * 0.14)
+                Image("HarnessHermes").resizable().scaledToFit().padding(size * 0.12)
             case "pi":
-                Image(systemName: "circle.hexagongrid.fill").resizable().scaledToFit().padding(size * 0.16)
+                Image("HarnessPi").resizable().scaledToFit().padding(size * 0.16)
             case "opencode":
-                Image(systemName: "terminal.fill").resizable().scaledToFit().padding(size * 0.2)
+                Image("HarnessOpenCode").resizable().scaledToFit().padding(size * 0.18)
+            case "librechat":
+                Image("HarnessLibreChat").resizable().scaledToFit().padding(size * 0.14)
+            case "openclaw":
+                Image("HarnessOpenClaw").resizable().scaledToFit().padding(size * 0.1)
+            case "goose":
+                Image("HarnessGoose").resizable().scaledToFit().padding(size * 0.12)
+            case "openhands":
+                Image("HarnessOpenHands").resizable().scaledToFit().padding(size * 0.12)
             default:
                 Text(name.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined().uppercased())
                     .font(.system(size: size * 0.3, weight: .bold, design: .rounded))
