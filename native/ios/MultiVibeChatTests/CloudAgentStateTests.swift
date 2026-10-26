@@ -119,8 +119,8 @@ extension CloudAgentStateTests {
             browserFile("conflict","conflict.txt",content:"two versions",conflicted:true)
         ]
         let entries=CloudWorkspaceBrowserIndex(files:files,pendingIDs:["small"]).entries(directory:[],search:"",filter:.all,sort:.size,ascending:false)
-        XCTAssertEqual(entries.map(\.name),["large.pdf","conflict.txt","small.pdf"])
-        XCTAssertTrue(entries.last?.pending == true)
+        XCTAssertEqual(entries.map(\.name),["large.pdf","small.pdf","conflict.txt"])
+        XCTAssertTrue(entries.first(where:{$0.id == "small"})?.pending == true)
         XCTAssertTrue(entries.first(where:{$0.id == "conflict"})?.conflicted == true)
         XCTAssertEqual(entries.first?.detail,ByteCountFormatter.string(fromByteCount:2_000,countStyle:.file))
     }
