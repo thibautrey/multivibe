@@ -10,6 +10,28 @@ import WebKit
 
 private struct SelectableMessage: Identifiable { let id: UUID; let text: String }
 
+private enum SidebarConversationLayout: String {
+    case flat
+    case grouped
+}
+
+private struct SidebarConversationItem: Identifiable {
+    enum Source { case local(Conversation), remote(RemoteChat) }
+    let id: String
+    let title: String
+    let updatedAt: Date
+    let harnessID: String
+    let harnessName: String
+    let source: Source
+}
+
+private struct SidebarConversationSection: Identifiable {
+    let id: String
+    let title: String
+    let harnessID: String?
+    let items: [SidebarConversationItem]
+}
+
 struct ChatView: View {
     @Environment(ConversationManager.self) private var manager
     @Environment(\.scenePhase) private var scenePhase
@@ -20,7 +42,8 @@ struct ChatView: View {
     @State private var shortcutDraftConversation: UUID?
     @State private var preferredColumn: NavigationSplitViewColumn = .detail
     @State private var search = ""
-    @State private var sidebarSearchPresented = false
+    @AppStorage("chat.sidebarConversationLayout") private var sidebarConversationLayout: SidebarConversationLayout = .flat
+    @FocusState private var sidebarSearchFocused: Bool
     @State private var conversationToDelete: Conversation?
     @State private var confirmGuestImport = false
     @State private var confirmHistorySync = false
@@ -67,31 +90,20 @@ struct ChatView: View {
                             .frame(width: 34, height: 34)
                             .accessibilityHidden(true)
                         Text("MultiVibe")
-                            .font(.title3.bold())
+                            .font(.title2.bold())
                         Spacer()
-                        Button(sidebarSearchPresented ? "Fermer la recherche" : "Rechercher", systemImage: sidebarSearchPresented ? "xmark" : "magnifyingglass") {
-                            withAnimation(.snappy) { sidebarSearchPresented.toggle() }
-                        }
+                        Button("Rechercher", systemImage: "magnifyingglass") { sidebarSearchFocused = true }
                         .labelStyle(.iconOnly)
                         .font(.title2.weight(.medium))
                         .frame(width: 44, height: 44)
+                        .background(.regularMaterial, in: Circle())
+                        .overlay(Circle().stroke(.primary.opacity(0.10), lineWidth: 0.7))
                         .contentShape(Circle())
                         .accessibilityIdentifier("searchConversations")
                     }
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 8)
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
-
-                    if sidebarSearchPresented {
-                        TextField("Rechercher", text: $search)
-                            .textFieldStyle(.plain)
-                            .padding(.horizontal, 14)
-                            .frame(height: 44)
-                            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                            .accessibilityLabel("Rechercher dans les conversations")
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
-                    }
                 }
 
                 Section {
@@ -115,60 +127,78 @@ struct ChatView: View {
                         SidebarShortcutLabel(title: "Documents et outils", systemImage: "folder")
                     }
                     .accessibilityIdentifier("openDocuments")
+                    if manager.session != nil {
+                        Button { cloudAgentBrowserPresented = true } label: {
+                            SidebarShortcutLabel(title: "Environnement Cloud", systemImage: "cloud")
+                        }
+                        .accessibilityIdentifier("openCloudHermesState")
+                    }
                 }
                 .listSectionSpacing(8)
 
-                if manager.session != nil {
-                    Section("Hermes Cloud") {
-                        Button("Environnement synchronisé",systemImage:"cloud") { cloudAgentBrowserPresented = true }
-                            .accessibilityIdentifier("openCloudHermesState")
-                    }
-                }
-                Section("Récents") {
-                    ForEach(manager.historyConversations.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }) { conversation in
-                        Button {
-                            instances.select(nil)
-                            manager.selection = conversation.id
-                            preferredColumn = .detail
-                        } label: {
-                            Text(conversation.title)
-                                .font(.body)
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 2)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .listRowBackground(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .fill(conversation.id == manager.selection && instances.selection == nil ? Color(uiColor: .secondarySystemBackground) : .clear)
-                        )
-                        .accessibilityAddTraits(conversation.id == manager.selection && instances.selection == nil ? .isSelected : [])
-                        .swipeActions(allowsFullSwipe: false) {
-                            Button("Supprimer", role: .destructive) { conversationToDelete = conversation }
-                        }
-                    }
-                }
-                if instances.chats.contains(where: { !$0.messages.isEmpty }) {
-                    Section("Instances") {
-                        ForEach(instances.chats.filter { !$0.messages.isEmpty && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search)) }.reversed()) { conversation in
-                            Button {
-                                manager.stop(); instances.select(conversation.id); preferredColumn = .detail
-                            } label: {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(conversation.title).font(.body).foregroundStyle(.primary).lineLimit(1)
-                                    Text((instances.machines.first { $0.id == conversation.machine }?.name ?? "Instance") + " · " + conversation.harness)
-                                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                Section {
+                    HStack(spacing: 10) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "magnifyingglass")
+                                .foregroundStyle(.tertiary)
+                                .accessibilityHidden(true)
+                            TextField("Rechercher", text: $search)
+                                .textFieldStyle(.plain)
+                                .focused($sidebarSearchFocused)
+                                .accessibilityLabel("Rechercher dans les conversations")
+                            if !search.isEmpty {
+                                Button("Effacer la recherche", systemImage: "xmark.circle.fill") { search = "" }
+                                    .labelStyle(.iconOnly)
+                                    .foregroundStyle(.tertiary)
                             }
-                            .buttonStyle(.plain)
-                            .listRowBackground(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .fill(conversation.id == instances.selection ? Color(uiColor: .secondarySystemBackground) : .clear))
-                            .accessibilityAddTraits(conversation.id == instances.selection ? .isSelected : [])
-                            .swipeActions(allowsFullSwipe: false) {
-                                Button("Supprimer", role: .destructive) { remoteConversationToDelete = conversation }
+                        }
+                        .padding(.horizontal, 12)
+                        .frame(height: 42)
+                        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+
+                        Picker("Organisation des conversations", selection: $sidebarConversationLayout) {
+                            Image(systemName: "list.bullet").tag(SidebarConversationLayout.flat)
+                                .accessibilityLabel("Liste à plat")
+                                .accessibilityIdentifier("flatConversationLayout")
+                            Image(systemName: "square.stack.3d.up").tag(SidebarConversationLayout.grouped)
+                                .accessibilityLabel("Grouper par harness")
+                                .accessibilityIdentifier("groupedConversationLayout")
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(width: 88)
+                        .accessibilityIdentifier("conversationLayoutPicker")
+                    }
+                    .padding(.vertical, 4)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                }
+
+                if sidebarConversationItems.isEmpty {
+                    Section {
+                        ContentUnavailableView(search.isEmpty ? "Aucune conversation" : "Aucun résultat",
+                            systemImage: search.isEmpty ? "bubble.left.and.bubble.right" : "magnifyingglass",
+                            description: Text(search.isEmpty ? "Vos conversations apparaîtront ici après le premier message." : "Essayez un autre titre, harness ou nom de machine."))
+                    }
+                    .listRowBackground(Color.clear)
+                } else if sidebarConversationLayout == .flat {
+                    ForEach(sidebarRecencySections) { section in
+                        Section(section.title) {
+                            ForEach(section.items) { item in sidebarConversationRow(item, showsHarnessLogo: true) }
+                        }
+                    }
+                } else {
+                    ForEach(sidebarHarnessSections) { section in
+                        Section {
+                            ForEach(section.items) { item in sidebarConversationRow(item, showsHarnessLogo: false) }
+                        } header: {
+                            HStack(spacing: 8) {
+                                HarnessIdentityLogo(id: section.harnessID ?? "native", name: section.title, size: 20)
+                                Text(section.title)
+                                Spacer(minLength: 0)
+                                Text("\(section.items.count)").foregroundStyle(.tertiary)
                             }
+                            .textCase(nil)
                         }
                     }
                 }
@@ -578,6 +608,142 @@ struct ChatView: View {
         UIPasteboard.general.setItems([["public.utf8-plain-text": content]], options: [.localOnly: true])
         UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
+
+    private var sidebarConversationItems: [SidebarConversationItem] {
+        let localItems = manager.historyConversations.map { conversation in
+            let local = ModelExecution(conversation.model).isLocal
+            return SidebarConversationItem(
+                id: "local:\(conversation.id.uuidString)",
+                title: conversation.title,
+                updatedAt: conversation.updatedAt,
+                harnessID: local ? "native" : "hermes-cloud",
+                harnessName: local ? "Sur cet iPhone" : "MultiVibe Cloud",
+                source: .local(conversation)
+            )
+        }
+        let remoteCount = instances.chats.count
+        let legacyDateAnchor = Date()
+        let remoteItems = instances.chats.enumerated().compactMap { index, conversation -> SidebarConversationItem? in
+            guard !conversation.messages.isEmpty else { return nil }
+            let harnessName = instances.harnesses[conversation.machine]?.first { $0.id == conversation.harness }?.name
+                ?? harnessDisplayName(conversation.harness)
+            return SidebarConversationItem(
+                id: "remote:\(conversation.id.uuidString)",
+                title: conversation.title,
+                updatedAt: conversation.updatedAt ?? legacyDateAnchor.addingTimeInterval(-Double(remoteCount - index)),
+                harnessID: conversation.harness,
+                harnessName: harnessName,
+                source: .remote(conversation)
+            )
+        }
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (localItems + remoteItems)
+            .filter { item in
+                guard !query.isEmpty else { return true }
+                let machineName: String
+                if case .remote(let conversation) = item.source {
+                    machineName = instances.machines.first { $0.id == conversation.machine }?.name ?? ""
+                } else {
+                    machineName = ""
+                }
+                return item.title.localizedCaseInsensitiveContains(query)
+                    || item.harnessName.localizedCaseInsensitiveContains(query)
+                    || machineName.localizedCaseInsensitiveContains(query)
+            }
+            .sorted {
+                if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
+                return $0.id < $1.id
+            }
+    }
+
+    private var sidebarRecencySections: [SidebarConversationSection] {
+        let calendar = Calendar.autoupdatingCurrent
+        let today = calendar.startOfDay(for: Date())
+        let sevenDaysAgo = calendar.date(byAdding: .day, value: -6, to: today) ?? today
+        let sections = [
+            ("today", "Aujourd’hui", sidebarConversationItems.filter { $0.updatedAt >= today }),
+            ("week", "7 derniers jours", sidebarConversationItems.filter { $0.updatedAt >= sevenDaysAgo && $0.updatedAt < today }),
+            ("older", "Plus anciennes", sidebarConversationItems.filter { $0.updatedAt < sevenDaysAgo })
+        ]
+        return sections.compactMap { id, title, items in
+            items.isEmpty ? nil : SidebarConversationSection(id: id, title: title, harnessID: nil, items: items)
+        }
+    }
+
+    private var sidebarHarnessSections: [SidebarConversationSection] {
+        Dictionary(grouping: sidebarConversationItems, by: \.harnessID)
+            .map { harnessID, items in
+                SidebarConversationSection(
+                    id: "harness:\(harnessID)",
+                    title: items.first?.harnessName ?? harnessDisplayName(harnessID),
+                    harnessID: harnessID,
+                    items: items
+                )
+            }
+            .sorted {
+                let lhsDate = $0.items.first?.updatedAt ?? .distantPast
+                let rhsDate = $1.items.first?.updatedAt ?? .distantPast
+                if lhsDate != rhsDate { return lhsDate > rhsDate }
+                return $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+            }
+    }
+
+    private func sidebarConversationRow(_ item: SidebarConversationItem, showsHarnessLogo: Bool) -> some View {
+        Button { selectSidebarConversation(item) } label: {
+            HStack(spacing: 11) {
+                if showsHarnessLogo {
+                    HarnessIdentityLogo(id: item.harnessID, name: item.harnessName, size: 28)
+                }
+                Text(item.title)
+                    .font(.body)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(sidebarConversationIsSelected(item) ? Color(uiColor: .secondarySystemBackground) : .clear)
+        )
+        .accessibilityLabel(item.title)
+        .accessibilityValue(item.harnessName)
+        .accessibilityAddTraits(sidebarConversationIsSelected(item) ? .isSelected : [])
+        .swipeActions(allowsFullSwipe: false) {
+            Button("Supprimer", role: .destructive) { deleteSidebarConversation(item) }
+        }
+    }
+
+    private func sidebarConversationIsSelected(_ item: SidebarConversationItem) -> Bool {
+        switch item.source {
+        case .local(let conversation):
+            return instances.selection == nil && manager.selection == conversation.id
+        case .remote(let conversation):
+            return instances.selection == conversation.id
+        }
+    }
+
+    private func selectSidebarConversation(_ item: SidebarConversationItem) {
+        switch item.source {
+        case .local(let conversation):
+            instances.select(nil)
+            manager.selection = conversation.id
+        case .remote(let conversation):
+            manager.stop()
+            instances.select(conversation.id)
+        }
+        preferredColumn = .detail
+    }
+
+    private func deleteSidebarConversation(_ item: SidebarConversationItem) {
+        switch item.source {
+        case .local(let conversation): conversationToDelete = conversation
+        case .remote(let conversation): remoteConversationToDelete = conversation
+        }
+    }
+
     private var remoteChat: RemoteChat? { instances.current }
     private var isRemoteConversation: Bool { remoteChat != nil }
     private var displayMessages: [ChatMessage] { remoteChat?.messages ?? manager.current?.messages ?? [] }
