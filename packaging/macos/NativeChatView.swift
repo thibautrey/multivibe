@@ -254,7 +254,7 @@ private struct NativeChatSuggestionEditor: View {
         store.selectHarness(value)
     }) }
     private var visible: [NativeChatConversation] {
-        store.conversations.filter { ($0.archived == true) == showingArchives && (!$0.messages.isEmpty || !$0.draft.isEmpty || $0.runtimeSessionID != nil || $0.remoteChatID != nil) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.messages.contains { $0.content.localizedCaseInsensitiveContains(search) }) }
+        store.conversations.filter { ($0.archived == true) == showingArchives && (!$0.messages.isEmpty || !$0.draft.isEmpty || $0.runtimeSessionID != nil || $0.remoteChatID != nil || $0.nativeSource != nil) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.messages.contains { $0.content.localizedCaseInsensitiveContains(search) }) }
             .sorted { if ($0.pinned == true) != ($1.pinned == true) { return $0.pinned == true }; return $0.updatedAt > $1.updatedAt }
     }
     private var selectedLocalModel: HostAssistantModel? {
@@ -449,6 +449,7 @@ private struct NativeChatSuggestionEditor: View {
         .task(id: harnessModelsKey) { await loadHarnessModels() }
         .task(id: effortKey) { await loadHarnessEffort() }
         .task(id: store.current?.executionTargetID ?? "local") { await store.runRemoteSynchronization() }
+        .task(id: store.selection) { await store.runSelectedConversationSynchronization() }
         .task(id: projectCatalogKey) { await loadProjects() }
         .sheet(isPresented: $cloudConsent) { consentSheet }
         .sheet(isPresented: $instancePairing) { NativeInstancePairingView() }
@@ -1143,6 +1144,8 @@ private struct NativeChatSuggestionEditor: View {
         else if canSend { sendMessage() }
     }
     private var canSend: Bool {
+        if let source = store.current?.nativeSource, store.current?.runtimeSessionID == nil,
+           !source.canContinue || store.current?.sourceUnavailable == true { return false }
         let hasInput = !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.current?.draftAttachments?.isEmpty == false
         guard hasInput else { return false }
         if harness.wrappedValue == "native" { return models.contains { $0.id == model.wrappedValue } }
@@ -1876,6 +1879,9 @@ private struct NativeChatSuggestionEditor: View {
     }
     private var composerPrivacyText: String {
         if cloudMode { return "Dans votre espace Hermes Cloud" }
+        if let source = store.current?.nativeSource, store.current?.runtimeSessionID == nil {
+            return source.canContinue && store.current?.sourceUnavailable != true ? "Historique synchronisé · Répondre crée une reprise isolée" : "Historique en lecture seule · Continuez dans l’outil d’origine"
+        }
         if harness.wrappedValue != "native" { return "\(targetName) · \(store.current?.authMode == "multivibe" ? "Modèles MultiVibe" : "Accès du harness")" }
         if selectedLocalModel?.local == true { return "Traité localement sur ce Mac" }
         return "Via votre Host · modèle sélectionné"

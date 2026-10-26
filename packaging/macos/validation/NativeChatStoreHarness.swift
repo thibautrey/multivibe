@@ -58,6 +58,7 @@ enum HostAssistantError: Error { case emptyReply }
         HostAssistantClient.shared.defaultModel = "fixture"
         NativeChatStore.defaultHarnessID = "native"
         try await validateRemoteChatSynchronization(folder: directory, defaults: defaults)
+        try await validateAutomaticConversationDiscovery(folder: directory, defaults: defaults)
         let file = directory.appendingPathComponent("history.json")
         let store = NativeChatStore(file: file, defaults: defaults)
         store.newConversation()
@@ -359,4 +360,71 @@ enum HostAssistantError: Error { case emptyReply }
     precondition(project.matches(search: "multivibe astronomy"))
     precondition(!project.matches(search: "multivibe absent"))
     print("PASS per-harness model preferences, provider/source and target isolation, restart, fresh/reused drafts, existing conversations and project search")
+}
+
+
+@MainActor private final class NativeSourcesRuntimeFixture: DesktopHarnessServing {
+    var offline = false
+    var revision = "one"
+    var text = "External answer"
+    var mutations = 0
+    var importedSource: String?
+    func source() -> DesktopNativeSessionSource {
+        .init(sourceId: "external-source", harnessId: "pi", nativeSessionId: "/native/session.jsonl", title: "Created in the CLI", workspace: "/project", updatedAt: 1793000000000, canContinue: true, strategy: "isolated_fork", reason: nil)
+    }
+    func call(_ route: String, method: String, target: String, body: HarnessJSON?) async throws -> HarnessJSON {
+        if method != "GET" { mutations += 1 }
+        if route == "/targets" { return .object(["targets": .array([.object(["id": .string("local"), "name": .string("Mac"), "kind": .string("local")]), .object(["id": .string("ssh-host"), "name": .string("Remote Host"), "kind": .string("ssh")])])]) }
+        if route == "/conversation-sources" {
+            if offline { throw DesktopHarnessError.rejected("Offline") }
+            return .object(["sessions": .array([]), "nativeSessions": .array([try .encode(source())])])
+        }
+        if route == "/librechat" || route == "/openwebui" { return .object(["configured": .bool(false)]) }
+        if route.hasPrefix("/native-sessions/") {
+            if offline { throw DesktopHarnessError.rejected("Offline") }
+            return .object(["source": try .encode(source()), "revision": .string(revision), "messages": .array([.object(["id": .string("native-user"), "role": .string("user"), "content": .string("External question"), "done": .bool(true)]), .object(["id": .string("native-answer"), "role": .string("assistant"), "content": .string(text), "done": .bool(true)])])])
+        }
+        if route == "/sessions/import" {
+            precondition(body?["history"] == .null || body?.object["history"] == nil)
+            importedSource = body?["sourceId"].string
+            throw DesktopHarnessError.rejected("Fixture stopped before execution")
+        }
+        throw DesktopHarnessError.invalidResponse
+    }
+    func events(sessionID: String, target: String, after: Int, update: @MainActor @escaping (DesktopHarnessEvent) -> Void) async throws { }
+}
+
+@MainActor private func validateAutomaticConversationDiscovery(folder: URL, defaults: UserDefaults) async throws {
+    let runtime = NativeSourcesRuntimeFixture()
+    let store = NativeChatStore(file: folder.appendingPathComponent("native-sources.json"), runtime: runtime, defaults: defaults)
+    store.newConversation(); let draftID = store.selection!
+    await store.synchronizeConversations()
+    precondition(store.selection == draftID && store.conversations.count == 3)
+    precondition(Set(store.conversations.filter { $0.nativeSource != nil }.compactMap(\.executionTargetID)) == ["local", "ssh-host"])
+    await store.synchronizeConversations()
+    precondition(store.conversations.count == 3 && runtime.mutations == 0)
+    let id = store.conversations.first { $0.executionTargetID == "ssh-host" }!.id
+    store.selection = id
+    try await store.refreshNativeConversation(id)
+    let messageID = store.current!.messages[1].id
+    store.edit { $0.draft = "Keep draft" }
+    runtime.revision = "two"; runtime.text = "Updated in native CLI"
+    try await store.refreshNativeConversation(id)
+    precondition(store.current?.messages[1].id == messageID && store.current?.messages[1].content == runtime.text && store.current?.draft == "Keep draft")
+    runtime.offline = true
+    await store.synchronizeConversations()
+    precondition(store.conversations.count == 3 && store.current?.messages.count == 2 && !store.remoteSyncErrors.isEmpty)
+    runtime.offline = false
+    await store.synchronizeConversations()
+    store.newConversation()
+    precondition(store.selection == draftID && store.conversations.count == 3)
+    store.selection = id
+    do { _ = try await store.command(id, type: "inspect"); preconditionFailure("Fixture should stop attachment") } catch { }
+    precondition(runtime.importedSource == "external-source" && runtime.mutations == 1)
+    store.delete(id)
+    await store.synchronizeConversations()
+    precondition(!store.conversations.contains { $0.id == id } && store.conversations.count == 2)
+    // Identical native IDs on distinct environments never collapse into one conversation.
+    precondition(store.conversations.filter { $0.nativeSource != nil }.count == 1)
+    print("PASS automatic native discovery across all environments, stable messages, live updates, read-only loading, drafts, offline cache, isolated continuation and dismissal")
 }
