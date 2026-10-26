@@ -39,6 +39,17 @@ private struct WelcomeExecutionAnchorKey: PreferenceKey {
     }
 }
 
+private struct WelcomeExecutionGlassSurface: ViewModifier {
+    @ViewBuilder func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular, in: shape)
+        } else {
+            content.background(.regularMaterial, in: shape)
+        }
+    }
+}
+
 struct ChatView: View {
     @Environment(ConversationManager.self) private var manager
     @Environment(\.scenePhase) private var scenePhase
@@ -1201,7 +1212,7 @@ struct ChatView: View {
         .buttonStyle(.plain)
         .frame(maxHeight: maxHeight, alignment: .top)
         .fixedSize(horizontal: false, vertical: true)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .modifier(WelcomeExecutionGlassSurface())
         .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(.primary.opacity(0.1), lineWidth: 0.7))
         .shadow(color: .black.opacity(0.18), radius: 24, y: 12)
         .accessibilityIdentifier("welcomeExecutionList")
