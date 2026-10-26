@@ -1222,7 +1222,7 @@ struct NativePrivacyView: View {
 
 
 /// System text and controls only: no HTML, remote images or embedded browser.
-private struct NativeMessageContent: View {
+struct NativeMessageContent: View {
     let content: String
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1361,7 +1361,7 @@ private struct MarkdownMessageContent: View {
     }
 }
 
-private struct NativeContentView: View {
+struct NativeContentView: View {
     let payload: NativeContentPayload
     var body: some View {
         VStack(spacing: 12) {

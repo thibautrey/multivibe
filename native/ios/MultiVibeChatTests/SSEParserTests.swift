@@ -875,6 +875,31 @@ final class VoiceSystemEventTests: XCTestCase {
     }
 }
 
+@MainActor final class VoiceCanvasPresentationTests: XCTestCase {
+    func testCanvasWaitsForAssistantContent() {
+        let user = ChatMessage(role: "user", content: "Quel temps fera-t-il ?")
+        XCTAssertFalse(VoiceCanvasPresentation.shouldActivate(messages: [], assistantDraft: ""))
+        XCTAssertFalse(VoiceCanvasPresentation.shouldActivate(messages: [user], assistantDraft: ""))
+        XCTAssertTrue(VoiceCanvasPresentation.shouldActivate(messages: [user], assistantDraft: "Il fera 20 °C"))
+
+        let assistant = ChatMessage(role: "assistant", content: "Il fera 20 °C", completion: .completed)
+        XCTAssertTrue(VoiceCanvasPresentation.shouldActivate(messages: [user, assistant], assistantDraft: ""))
+    }
+
+    func testFinalTranscriptReplacesMatchingStreamingDraft() {
+        let final = ChatMessage(role: "assistant", content: "Réponse complète", completion: .completed)
+        XCTAssertNil(VoiceCanvasPresentation.visibleDraft("  Réponse complète\n", messages: [final]))
+        XCTAssertEqual(VoiceCanvasPresentation.visibleDraft("Suite en cours", messages: [final]), "Suite en cours")
+    }
+
+    func testCompactStatusOnlyUsesBlockingPhases() {
+        XCTAssertEqual(VoiceCanvasPresentation.compactStatus(for: .thinking), "Réflexion…")
+        XCTAssertEqual(VoiceCanvasPresentation.compactStatus(for: .connecting), "Connexion…")
+        XCTAssertNil(VoiceCanvasPresentation.compactStatus(for: .listening))
+        XCTAssertNil(VoiceCanvasPresentation.compactStatus(for: .speaking))
+    }
+}
+
 final class MessageMarkdownTests: XCTestCase {
     func testExplicitRichStructuresAreParsedWithoutGuessingEntities() {
         XCTAssertEqual(MessageBlock.parse("- [x] Fait\n- [ ] À faire\n> Citation"), [.checklist("Fait", true), .checklist("À faire", false), .quote("Citation")])
