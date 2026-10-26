@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { discoverNativeSessions, readNativeMessages } from "./discovery.js";
+import { discoverNativeSessions, discoverNativeSessionPage, readNativeMessages } from "./discovery.js";
 
 function fixture(t:test.TestContext){
   const home=fs.mkdtempSync(path.join(os.tmpdir(),"multivibe-native-history-"));
@@ -72,4 +72,14 @@ test("native database histories normalize Hermes and OpenCode in read-only conne
   o.prepare("INSERT INTO message VALUES(?,?,?)").run("a","o",JSON.stringify({role:"assistant"}));
   o.prepare("INSERT INTO part VALUES(?,?,?,?)").run("text","a","o",JSON.stringify({type:"text",text:"Hello from OpenCode"}));o.close();
   assert.deepEqual(read("opencode").messages.map(v=>[v.role,v.content]),[["assistant","Hello from OpenCode"]]);
+});
+
+test("native catalogs paginate beyond one scan and older conversations remain readable",t=>{
+  const {home,write}=fixture(t);
+  for(let i=0;i<5001;i++)write(`.pi/agent/sessions/${String(i).padStart(5,"0")}.jsonl`,[{type:"session",id:`native-${i}`},{type:"message",message:{role:"user",content:"Older question"}}]);
+  const first=discoverNativeSessionPage("pi",home,0),next=discoverNativeSessionPage("pi",home,1);
+  assert.equal(first.sessions.length,5000);assert.equal(first.hasMore,true);assert.equal(next.sessions.length,1);assert.equal(next.hasMore,false);
+  assert.equal(new Set([...first.sessions,...next.sessions].map(v=>v.sourceId)).size,5001);
+  assert.equal(readNativeMessages("pi",next.sessions[0].sourceId,home).messages[0].content,"Older question");
+  assert.throws(()=>discoverNativeSessionPage("pi",home,-1),/Invalid/u);
 });
