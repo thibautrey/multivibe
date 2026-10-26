@@ -88,7 +88,7 @@ export class DesktopTools {
     if(!this.sessions.has(id))fail("Desktop provider is not attached",409);
     await this.listen();
     const source=import.meta.url.endsWith(".ts"),entry=fileURLToPath(new URL(source?"./desktop-mcp.ts":"./desktop-mcp.js",import.meta.url));
-    return {command:process.execPath,args:[...(source?["--import","tsx"]:[]),entry],env:{MULTIVIBE_DESKTOP_SOCKET:path.join(this.directory!,"tools.sock"),MULTIVIBE_DESKTOP_TOKEN:this.sessions.get(id)!.token}};
+    return {command:process.execPath,args:[...(source?["--import",import.meta.resolve("tsx")]:[]),entry],env:{MULTIVIBE_DESKTOP_SOCKET:path.join(this.directory!,"tools.sock"),MULTIVIBE_DESKTOP_TOKEN:this.sessions.get(id)!.token}};
   }
   private async listen() {
     if(this.closed)fail("Desktop broker closed",409);
