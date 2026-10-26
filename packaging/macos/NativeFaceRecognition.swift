@@ -87,6 +87,9 @@ private final class NativeFaceCamera: NSObject, AVCaptureVideoDataOutputSampleBu
                     guard !self.isCancelled(), let device = AVCaptureDevice.default(for: .video) else { throw NativeFaceRecognitionError.cancelled }
                     let input = try AVCaptureDeviceInput(device: device)
                     self.session.beginConfiguration()
+                    guard self.session.canSetSessionPreset(.vga640x480) else {
+                        self.session.commitConfiguration(); throw NativeFaceRecognitionError.unavailable
+                    }
                     self.session.sessionPreset = .vga640x480
                     guard self.session.canAddInput(input), self.session.canAddOutput(self.output) else {
                         self.session.commitConfiguration(); throw NativeFaceRecognitionError.unavailable

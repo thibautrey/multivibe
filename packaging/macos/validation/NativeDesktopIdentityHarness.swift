@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Security
 
 struct NativeChatMessage: Codable { let id: UUID; let role: String; let content: String; let interrupted: Bool }
 struct NativeChatConversation: Codable { let id: UUID; let title: String; let model: String; let messages: [NativeChatMessage] }
