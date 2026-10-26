@@ -58,6 +58,7 @@ const log=fs.createWriteStream(path.join(runtime,'edge.log'),{flags:'a',mode:0o6
 let ended=false;
 const stop=()=>{if(ended)return;ended=true;bridge?.stop();edge.kill('SIGTERM');tts.close();};
 for(const signal of ['SIGINT','SIGTERM'])process.once(signal,stop);
+process.once('exit',stop);
 edge.once('exit',()=>{stop();process.exitCode=1;});
 try{
   const origin='http://127.0.0.1:'+port;
