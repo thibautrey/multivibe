@@ -60,7 +60,10 @@ struct ChatEntryView: View {
         @Bindable var manager = manager
         Group {
             #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("-cloud-workspace-ui-fixture") {
+            if ProcessInfo.processInfo.arguments.contains("-cloud-usage-ui-fixture") {
+                CloudUsageFixtureView()
+            }
+            else if ProcessInfo.processInfo.arguments.contains("-cloud-workspace-ui-fixture") {
                 CloudWorkspaceFixtureView()
             }
             else if ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("-realtime-voice-ui-fixture") }) {

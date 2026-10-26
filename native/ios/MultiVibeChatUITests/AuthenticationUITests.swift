@@ -493,3 +493,48 @@ final class HarnessActivityUITests: XCTestCase {
         let completed = XCTAttachment(screenshot: app.screenshot()); completed.name = "Hermes completed activity"; completed.lifetime = .keepAlways; add(completed)
     }
 }
+
+@MainActor final class CloudUsageUITests: XCTestCase {
+    private func launch(_ flags: [String] = []) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["-cloud-usage-ui-fixture", "-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR"] + flags
+        app.launch()
+        let credits = app.buttons["cloudCreditBalance"]
+        XCTAssertTrue(credits.waitForExistence(timeout: 15)); credits.tap()
+        XCTAssertTrue(app.navigationBars["Usage et crédits"].waitForExistence(timeout: 5))
+        return app
+    }
+    func testUsageNavigationChartsFiltersAndRequestDetails() {
+        continueAfterFailure = false
+        let app = launch()
+        XCTAssertTrue(app.staticTexts["Crédits consommés"].exists)
+        app.segmentedControls["cloudUsageRange"].buttons["24 h"].tap()
+        app.segmentedControls["cloudUsageRange"].buttons["30 jours"].tap()
+        app.swipeUp()
+        let metric = app.segmentedControls["cloudUsageMetric"]
+        XCTAssertTrue(metric.waitForExistence(timeout: 5)); metric.buttons["Requêtes"].tap()
+        metric.buttons["Tokens"].tap()
+        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "ios-cloud-usage-chart"; shot.lifetime = .keepAlways; add(shot)
+        let search = app.textFields["cloudUsageSearch"]
+        for _ in 0..<10 { if search.isHittable { break }; app.swipeUp() }
+        XCTAssertTrue(search.isHittable); search.tap(); search.typeText("Claude")
+        let request = app.buttons["cloudUsageRequest-request-1"]
+        app.swipeUp(); XCTAssertTrue(request.waitForExistence(timeout: 5)); request.tap()
+        XCTAssertTrue(app.navigationBars["Détail de la requête"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Premier token"].exists)
+        app.buttons["Fermer"].tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.navigationBars["Compte"].waitForExistence(timeout: 5))
+    }
+    func testEmptyUsageAndMissingMeasurements() {
+        let empty = launch(["-usage-empty"])
+        XCTAssertTrue(empty.staticTexts["Aucun usage sur cette période"].exists)
+        empty.terminate()
+        let missing = launch(["-usage-missing", "-usage-stale"])
+        XCTAssertTrue(missing.staticTexts["Crédits consommés"].exists)
+        XCTAssertTrue(missing.staticTexts["Actualisation impossible. Les dernières statistiques chargées restent affichées."].exists)
+        missing.swipeUp()
+        XCTAssertTrue(missing.staticTexts["Coût partiel : seules les requêtes chiffrées sont représentées."].exists)
+        let shot = XCTAttachment(screenshot: missing.screenshot()); shot.name = "ios-cloud-usage-missing"; shot.lifetime = .keepAlways; add(shot)
+    }
+}
