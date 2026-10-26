@@ -99,7 +99,7 @@ export class InstanceConversations {
      if(e.type==='history.message'&&['user','assistant','system','tool'].includes(p?.role)&&typeof p.text==='string'){const key=e.itemId??String(e.seq),prior=imported.get(key);imported.set(key,{id:'history:'+key,role:p.role,content:p.append?(prior?.content??'')+p.text:p.text,done:true});}
      if(e.type==='message.user'){const text=p?.parts?.filter((v:any)=>v.type==='text').map((v:any)=>v.text).join('\n');if(text)items.set('user:'+(e.turnId??e.itemId),{id:'user:'+(e.turnId??e.itemId),role:'user',content:text,done:true});}
      if(['message.delta','message.part'].includes(e.type)&&['user','assistant','system','tool'].includes(p?.role)&&typeof p.text==='string'){
-      const key=(e.turnId??'')+':'+(e.itemId??p.role),prior=items.get(key);items.set(key,{id:key,role:p.role,content:e.type==='message.delta'?(prior?.content??'')+p.text:p.text,done:!snapshot.session.activeTurnId});
+      const key=(e.turnId??'')+':'+(e.itemId??p.role),prior=items.get(key);items.set(key,{id:key,role:p.role,content:e.type==='message.delta'?(prior?.content??'')+p.text:p.text,done:e.turnId!==snapshot.session.activeTurnId || !snapshot.session.activeTurnId});
      }
     }
    }
