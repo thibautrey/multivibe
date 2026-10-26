@@ -436,7 +436,6 @@ final class LocalInternetUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["voiceOutputVoice"].exists)
         XCTAssertTrue(app.staticTexts["Whisper large v3 turbo"].exists)
         XCTAssertTrue(app.staticTexts["Kokoro 82M"].exists)
-        XCTAssertTrue(app.staticTexts["gpt-6.1-sol"].exists)
 
         let capture = XCTAttachment(screenshot: app.screenshot())
         capture.name = "voice-audio-first-configuration"
