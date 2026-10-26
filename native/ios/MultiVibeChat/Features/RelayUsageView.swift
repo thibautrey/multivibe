@@ -131,7 +131,10 @@ struct RelayUsageDashboard: View {
         VStack(alignment: .leading, spacing: 24) {
             quota
             card {
-                Text("Sur les \(usage.days) derniers jours").font(.headline)
+                Text("Sur les \(usage.days) derniers jours")
+                    .font(.headline)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                 ViewThatFits(in: .horizontal) {
                     HStack(alignment: .top, spacing: 20) { metrics }
                     VStack(alignment: .leading, spacing: 16) { metrics }
@@ -158,7 +161,7 @@ struct RelayUsageDashboard: View {
         card {
             Label("Messages disponibles ce mois-ci", systemImage: "message")
                 .font(.headline)
-                .lineLimit(2)
+                .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
             Text(usage.allowance.remainingLabel)
                 .font(.system(.largeTitle, design: .rounded, weight: .bold))
@@ -222,9 +225,7 @@ struct RelayUsageDashboard: View {
             .chartXSelection(value: $selectedDate)
             .chartXAxis {
                 if dynamicTypeSize.isAccessibilitySize {
-                    AxisMarks(values: [usage.daily.first!.timestamp, usage.daily.last!.timestamp]) { _ in
-                        AxisValueLabel(format: dateFormat); AxisGridLine()
-                    }
+                    AxisMarks { AxisGridLine() }
                 } else {
                     AxisMarks(values: .automatic(desiredCount: 4)) { _ in AxisValueLabel(format: dateFormat); AxisGridLine() }
                 }
@@ -235,6 +236,15 @@ struct RelayUsageDashboard: View {
             .chartYScale(domain: 0...max(1, usage.daily.map(\.started).max() ?? 1))
             .frame(height: 190)
             .accessibilityIdentifier("relayUsageDailyChart")
+            if dynamicTypeSize.isAccessibilitySize {
+                HStack {
+                    Text(usage.daily.first!.timestamp.formatted(dateFormat))
+                    Spacer()
+                    Text(usage.daily.last!.timestamp.formatted(dateFormat))
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
         }
     }
     private var dateFormat: Date.FormatStyle { Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: utc).day().month(.abbreviated) }
