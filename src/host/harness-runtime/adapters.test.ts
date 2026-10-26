@@ -8,6 +8,7 @@ import { capabilities, type AdapterContext, type AdapterEvent, type HarnessSessi
 
 const fixtureProgram=String.raw`#!/usr/bin/env node
 const fs=require('node:fs');const readline=require('node:readline');
+fs.writeFileSync('launch.json',JSON.stringify({args:process.argv.slice(2),desktopSocket:process.env.MULTIVIBE_DESKTOP_SOCKET,openCodeConfig:process.env.OPENCODE_CONFIG_CONTENT}));
 const send=v=>process.stdout.write(JSON.stringify(v)+'\n');
 const codex=process.argv.includes('app-server');let compacting=false,thinkingLevel='low';
 const effortConfig=value=>[{id:'thought',category:'thought_level',type:'select',currentValue:value,options:[{value:'low',name:'Light'},{value:'ultra',name:'Thorough'}]}];
@@ -77,6 +78,26 @@ test("ACP negotiates capabilities, normalizes events and roundtrips a denied per
   await adapter.prompt([{type:"text",text:"read only"}]);
   assert.equal(f.questions.length,1);assert.ok(f.events.some(e=>e.type==="message.delta" && (e.payload as any).text==="ACP text"));assert.ok(f.events.some(e=>e.type==="tool" && (e.payload as any).status==="failed"));
   await assert.rejects(adapter.prompt([{type:"text",text:"steer"}],true),/steering/u);
+});
+
+test("Host Desktop capabilities are injected through each harness's own transport",async t=>{
+  const desktop={command:process.execPath,args:["desktop-test.js"],env:{MULTIVIBE_DESKTOP_SOCKET:"/tmp/test-only-desktop.sock",MULTIVIBE_DESKTOP_TOKEN:"test-only-capability"}};
+  for(const id of ["hermes-agent","gemini-cli","openai-codex","pi","opencode"]){
+    const f=fixture(t,id);f.ctx.desktop=desktop;
+    const adapter=id==="openai-codex"?new CodexAdapter(f.ctx):id==="pi"?new PiAdapter(f.ctx):id==="opencode"?new OpenCodeAdapter(f.ctx):new AcpAdapter(f.ctx,["acp"]);
+    try{
+      await adapter.start();const launch=JSON.parse(fs.readFileSync(path.join(f.ctx.root,"launch.json"),"utf8"));
+      assert.equal(f.ctx.session.capabilities.browser.support,"multivibe");assert.equal(f.ctx.session.capabilities.computer.available,true);
+      if(id==="pi"){assert.ok(launch.args.includes("--extension"));assert.match(launch.args[launch.args.indexOf("--extension")+1],/desktop-pi\.(ts|js)$/u);assert.equal(launch.desktopSocket,desktop.env.MULTIVIBE_DESKTOP_SOCKET);}
+      else if(id==="openai-codex"){assert.ok(launch.args.some((v:string)=>v.startsWith("mcp_servers.multivibe_desktop.command=")));}
+      else if(id==="opencode"){const config=JSON.parse(launch.openCodeConfig);assert.deepEqual(config.mcp.multivibe_desktop.command,[desktop.command,...desktop.args]);}
+      else {const messages=fs.readFileSync(path.join(f.ctx.root,"requests.jsonl"),"utf8").trim().split("\n").map(v=>JSON.parse(v));assert.deepEqual(messages.find(v=>v.method==="session/new").params.mcpServers,[{name:"multivibe_desktop",command:desktop.command,args:desktop.args,env:Object.entries(desktop.env).map(([name,value])=>({name,value}))}]);}
+    }finally{adapter.close();}
+  }
+  const f=fixture(t,"claude-code");f.ctx.desktop=desktop;let settings:any;
+  const query={close(){},async *[Symbol.asyncIterator](){await new Promise(()=>{});},supportedModels:async()=>[]};
+  const adapter=new ClaudeAdapter(f.ctx,async()=>({query:(v:any)=>{settings=v.options;return query;}}));
+  try{await adapter.start();assert.deepEqual(settings.mcpServers.multivibe_desktop,{type:"stdio",...desktop});assert.deepEqual(settings.settingSources,["user","project","local"]);}finally{adapter.close();}
 });
 test("Hermes ACP receives the loopback MultiVibe model connection",async t=>{
   const f=fixture(t,"hermes-agent");f.ctx.session.authMode="multivibe";f.ctx.session.model="gpt-test";

@@ -67,6 +67,21 @@ export function harnessRuntimeRoutes(runtime?:HostHarnessRuntime,remotes=new Rem
     return res.status(201).json({session,strategy:"isolated_fork"});
   }));
   router.get("/sessions/:id",route(async(req,res)=>res.json(await proxy(req,"GET",`/sessions/${encodeURIComponent(String(req.params.id))}`)??runtime!.snapshot(String(req.params.id)))));
+  // Native Desktop only: these inherit the admin authentication of the runtime.
+  // They deliberately never proxy a remote session onto this Mac.
+  router.post("/sessions/:id/desktop/:operation",route(async(req,res)=>{
+    const id=String(req.params.id),session=runtime!.session(id);
+    if(remote(req) || session.targetId!=="local" || ["librechat","openwebui"].includes(session.harnessId))fail("This harness must expose a local Host tool transport",422);
+    const operation=String(req.params.operation),body=req.body??{};
+    if(operation==="attach")return res.json(runtime!.desktop.attach(id,body.lease));
+    if(operation==="next"){
+      const controller=new AbortController();const closed=()=>controller.abort();res.once("close",closed);
+      try{return res.json(await runtime!.desktop.next(id,body.lease,controller.signal));}finally{res.off("close",closed);}
+    }
+    if(operation==="result"){runtime!.desktop.complete(id,body.lease,body.id,body.result);return res.json({accepted:true});}
+    if(operation==="detach"){runtime!.desktop.detach(id,body.lease);return res.json({detached:true});}
+    fail("Unknown Desktop operation",404);
+  }));
   router.patch("/sessions/:id",route(async(req,res)=>res.json(await proxy(req,"PATCH",`/sessions/${encodeURIComponent(String(req.params.id))}`,req.body)??{session:runtime!.update(String(req.params.id),req.body)})));
   router.delete("/sessions/:id",route(async(req,res)=>{const target=remote(req);if(target)await remotes.request(target,"DELETE",`/sessions/${encodeURIComponent(String(req.params.id))}`);else runtime!.delete(String(req.params.id));return res.json({deleted:true});}));
   router.post("/sessions/:id/commands",route(async(req,res)=>res.json(await proxy(req,"POST",`/sessions/${encodeURIComponent(String(req.params.id))}/commands`,req.body)??{receipt:await runtime!.command(String(req.params.id),req.body)})));

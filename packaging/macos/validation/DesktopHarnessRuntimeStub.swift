@@ -8,6 +8,9 @@ import Foundation
     var lastCreatedWorkspace: String?
     func call(_ route: String, method: String, target: String, body: HarnessJSON?) async throws -> HarnessJSON {
         let body = body ?? .null
+        if route.hasSuffix("/desktop/attach") { return .object(["lease": .string("fixture-desktop-lease")]) }
+        if route.hasSuffix("/desktop/next") { try await Task.sleep(nanoseconds: 20_000_000_000); return .object([:]) }
+        if route.hasSuffix("/desktop/detach") { return .object(["detached": .bool(true)]) }
         if route == "/features" {
             precondition(body["harnessId"].string == "pi")
             return .object(["harnessId": .string("pi"), "capabilities": .object(["skills": .object(["support": .string("native"), "available": .bool(true)])]), "items": .array([.object(["id": .string("skills:documents:0"), "section": .string("skills"), "name": .string("Documents"), "description": .string("Create documents"), "action": .string("insert"), "value": .string("/skill:Documents "), "subject": .string("skills")])]), "errors": .object([:])])
