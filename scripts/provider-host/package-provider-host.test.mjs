@@ -529,3 +529,18 @@ test("ticket validation fails after three network failures", async () => {
   }, async () => {}), /Apple unavailable/);
   assert.deepEqual(actions, ["staple", "validate", "validate", "validate"]);
 });
+
+
+test("notarization explicitly opens the signing keychain for upload and wait", async () => {
+  const calls = [];
+  const keychain = "/tmp/release signing.keychain-db";
+  await submitMacNotarization("Host.dmg", "release", async (_program, args) => {
+    calls.push(args);
+    return args[1] === "submit" ? `id: ${notaryID}` : notaryAccepted;
+  }, 3, async () => {}, keychain);
+  assert.equal(calls.length, 2);
+  for (const args of calls) {
+    assert.equal(args[args.indexOf("--keychain") + 1], keychain);
+    assert.equal(args[args.indexOf("--keychain-profile") + 1], "release");
+  }
+});

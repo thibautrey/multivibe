@@ -442,8 +442,8 @@ const crashedNotaryClient = (error) => error.signal === "SIGBUS";
 const transientNotaryFailure = (error) => (crashedNotaryClient(error) || /abortedUpload|Connection reset by peer|Network\.NWError|NSURLErrorDomain|The network connection was lost|The request timed out/iu
   .test(`${error.stdout ?? ""}\n${error.stderr ?? ""}\n${error.message ?? ""}`));
 
-export async function submitMacNotarization(file, profile, run = command, attempts = 3, wait = pause) {
-  const credentials = ["--keychain-profile", profile];
+export async function submitMacNotarization(file, profile, run = command, attempts = 3, wait = pause, keychain = process.env.SIGNING_KEYCHAIN) {
+  const credentials = ["--keychain-profile", profile, ...(keychain ? ["--keychain", keychain] : [])];
   let output;
   for (let attempt = 1; ; attempt += 1) {
     try {
