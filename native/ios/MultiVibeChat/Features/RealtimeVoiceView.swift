@@ -363,6 +363,7 @@ private struct RealtimeVoiceCanvas: View {
             Spacer(minLength: 24)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea(.container, edges: .horizontal)
     }
 
     private var transcript: some View {
@@ -408,6 +409,7 @@ private struct RealtimeVoiceCanvas: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .center)
+        .ignoresSafeArea(.container, edges: .horizontal)
         .padding(.bottom, 5)
         .allowsHitTesting(false)
     }
