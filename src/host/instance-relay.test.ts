@@ -107,7 +107,7 @@ test('model and effort changes share durable desktop commands and cannot cross d
 test('paired devices discover Desktop sessions and read paginated stable history without starting adapters',async t=>{
  const f=await fixture(t),a=await f.pair(),auth={deviceId:a.deviceId,deviceToken:a.deviceToken};
  const session=await f.runtime.create({harnessId:'pi',model:'fixture/model',title:'Created outside iOS'});
- for(let i=0;i<105;i++)f.runtime.emit(session.id,{type:'message.part',itemId:'row-'+i,payload:{role:'assistant',text:'Historical '+i}});
+ for(let i=0;i<105;i++)f.runtime.store.event(session.id,'message.part',{role:'assistant',text:'Historical '+i},undefined,'row-'+i);
  const targets=JSON.parse(await f.send({...auth,operation:'conversation-targets'}));assert.ok(targets.targets.some((v:any)=>v.id==='local'));
  const catalog=JSON.parse(await f.send({...auth,operation:'conversations',targetId:'local',page:0}));
  const row=catalog.conversations.find((v:any)=>v.source.id===session.id);assert.equal(row.title,'Created outside iOS');assert.ok(!JSON.stringify(row).includes(session.workspace));
@@ -118,7 +118,7 @@ test('paired devices discover Desktop sessions and read paginated stable history
  await assert.rejects(f.send({...auth,operation:'conversations',targetId:'missing',page:0}),/not found/i);
  await assert.rejects(f.send({...auth,operation:'conversations',page:-1}),/Invalid catalog/);
  await assert.rejects(f.send({...auth,deviceToken:'wrong',operation:'conversations'}),/expired or revoked/);
- f.runtime.emit(session.id,{type:'message.part',itemId:'new',payload:{role:'assistant',text:'New'}});
+ f.runtime.store.event(session.id,'message.part',{role:'assistant',text:'New'},undefined,'new');
  await assert.rejects(f.send({...auth,operation:'conversation-history',source:row.source,offset:100,revision:first.revision}),/changed during pagination/);
 });
 

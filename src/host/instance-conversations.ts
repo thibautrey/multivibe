@@ -90,20 +90,21 @@ export class InstanceConversations {
    if(['librechat','openwebui'].includes(source.harnessId)&&snapshot.session.nativeSessionId){
     return this.history({...source,kind:'server',id:snapshot.session.nativeSessionId,connectionId:snapshot.session.configuration?.connectionId},offset,revision);
    }
-   const items=new Map<string,any>();let after=0;
+   const items=new Map<string,any>(),imported=new Map<string,any>();let after=0;
    for(let page=0;;page++){
     if(page>400)fail('Conversation exceeds history limit',413);
     const batch=(await this.events(source.targetId,source.id,after)).events;
     if(!batch.length)break;
     for(const e of batch){after=e.seq;const p=e.payload as any;
+     if(e.type==='history.message'&&['user','assistant','system','tool'].includes(p?.role)&&typeof p.text==='string'){const key=e.itemId??String(e.seq),prior=imported.get(key);imported.set(key,{id:'history:'+key,role:p.role,content:p.append?(prior?.content??'')+p.text:p.text,done:true});}
      if(e.type==='message.user'){const text=p?.parts?.filter((v:any)=>v.type==='text').map((v:any)=>v.text).join('\n');if(text)items.set('user:'+(e.turnId??e.itemId),{id:'user:'+(e.turnId??e.itemId),role:'user',content:text,done:true});}
      if(['message.delta','message.part'].includes(e.type)&&['user','assistant','system','tool'].includes(p?.role)&&typeof p.text==='string'){
       const key=(e.turnId??'')+':'+(e.itemId??p.role),prior=items.get(key);items.set(key,{id:key,role:p.role,content:e.type==='message.delta'?(prior?.content??'')+p.text:p.text,done:!snapshot.session.activeTurnId});
      }
     }
    }
-   messages=[...items.values()];
-   if(typeof snapshot.session.configuration?.sourceId==='string'){
+   messages=[...imported.values(),...items.values()];
+   if(!imported.size&&typeof snapshot.session.configuration?.sourceId==='string'){
     const original=await this.call(source.targetId,'GET',`/native-sessions/${enc(snapshot.session.configuration.sourceId)}/messages?harnessId=${enc(source.harnessId)}`,()=>readNativeMessages(source.harnessId,snapshot.session.configuration.sourceId));
     messages=[...original.messages,...messages];
    }
