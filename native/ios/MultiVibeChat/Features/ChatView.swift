@@ -2978,6 +2978,8 @@ private struct AccountProfileView: View {
             )
             .accessibilityIdentifier("cloudCreditBalance")
             AccountSettingsDivider()
+            RelayAccountRow().id(manager.session?.accountId)
+            AccountSettingsDivider()
             Button {
                 billingPresented = true
             } label: {
