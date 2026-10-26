@@ -19,7 +19,7 @@ const waitFor = async check => { const deadline = Date.now() + 30000; while (!ch
 
 test('MCP harness reaches the real native Host controller and embedded Chromium through the session bridge', { skip: process.platform !== 'darwin', timeout: 300000 }, async () => {
   const temporary = await mkdtemp(path.join(tmpdir(), 'mv200-desktop-e2e-'));
-  let runtime, peer, provider, finish, server;
+  let runtime, peer, provider, finish, server, output = '';
   try {
     const key = randomBytes(24).toString('hex');
     runtime = new HostHarnessRuntime(path.join(temporary, 'runtime'), {
@@ -47,7 +47,7 @@ test('MCP harness reaches the real native Host controller and embedded Chromium 
     for (const signed of [path.join(contents, 'Frameworks/MultiVibe Chromium Helper.app'), appPath]) await execute('codesign', ['--force', '--sign', '-', '--options', 'runtime', '--entitlements', entitlements, signed]);
     const fixtureURL = `http://127.0.0.1:${server.address().port}/fixture`;
     provider = spawn(binary, [String(server.address().port), session.id, fixtureURL, key], { env: { ...process.env, MULTIVIBE_CHROMIUM_TESTING: '1', MULTIVIBE_CHROMIUM_PROFILE_DIR: path.join(temporary, 'profile') }, stdio: ['ignore', 'pipe', 'pipe'] });
-    let output = ''; const capture = chunk => { output = (output + chunk).slice(-1000000); }; provider.stdout.on('data', capture); provider.stderr.on('data', capture);
+    const capture = chunk => { output = (output + chunk).slice(-1000000); }; provider.stdout.on('data', capture); provider.stderr.on('data', capture);
     await waitFor(() => runtime.desktop.available(session.id));
     await runtime.command(session.id, { id: randomUUID(), type: 'prompt', parts: [{ type: 'text', text: 'Validate Host browser tools' }] });
     await waitFor(() => Boolean(finish));
@@ -65,10 +65,12 @@ test('MCP harness reaches the real native Host controller and embedded Chromium 
     assert.match(result.content[0].text, /Host confirmé : MCP vers Chromium/);
     assert.ok(Buffer.from(result.content.find(c => c.type === 'image').data, 'base64').length > 1000);
     await runtime.command(session.id, { id: randomUUID(), type: 'interrupt' });
-    await waitFor(() => provider.exitCode !== null); assert.equal(provider.exitCode, 0, output.slice(-4000));
+    await waitFor(() => provider.exitCode !== null || provider.signalCode !== null); assert.equal(provider.exitCode, 0, `Native exit ${provider.signalCode ?? provider.exitCode}: ${output.slice(-5000)}`);
+    assert.equal(runtime.desktop.available(session.id), false);
     assert.match(output, /PASS native Host provider/);
     console.log('PASS real MCP → session broker → native Host controller → Chromium navigation, input, click, screenshot and release');
-  } finally {
+  } catch (error) { throw new Error(`${error.message}\n${output.slice(-6000)}`, { cause: error }); }
+  finally {
     peer?.close(); provider?.kill('SIGTERM'); await runtime?.close();
     server?.closeAllConnections(); if (server) await new Promise(resolve => server.close(resolve));
     await rm(temporary, { recursive: true, force: true });
