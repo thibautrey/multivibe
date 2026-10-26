@@ -617,7 +617,12 @@ struct ChatView: View {
         ChatWelcomeView(suggestions: suggestions, execute: executeSuggestion, edit: { suggestion in
             highlightedSuggestion = suggestion.id
             suggestionsPresented = true
-        }) { welcomeExecutionSelector }
+        }) {
+            VStack(spacing: 12) {
+                welcomeExecutionSelector
+                if isRemoteConversation { remoteProjectSelector }
+            }
+        }
     }
 
     private func harnessDisplayName(_ identifier: String) -> String {
@@ -897,20 +902,22 @@ struct ChatView: View {
         .accessibilityValue(isRemoteConversation ? (remoteMachine?.name ?? "Instance") + ", " + remoteHarnessName : localExecutionName)
     }
 
+    @ViewBuilder private var remoteProjectSelector: some View {
+        if let chat = remoteChat {
+            HStack(spacing: 8) {
+                Button { remoteProjectPickerPresented = true } label: {
+                    Label(chat.projectName ?? "Aucun projet", systemImage: chat.projectId == nil ? "folder" : "folder.fill")
+                }
+                .disabled(!chat.messages.isEmpty || isGenerating || instances.busy)
+                .accessibilityIdentifier("integratedRemoteProjectPicker")
+                if instances.busy { ProgressView().controlSize(.small) }
+            }
+            .font(.caption.weight(.medium)).buttonStyle(.bordered).controlSize(.small)
+        }
+    }
+
     @ViewBuilder private var remoteConfigurationControls: some View {
         if let chat = remoteChat {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    Button { remoteProjectPickerPresented = true } label: {
-                        Label(chat.projectName ?? "Aucun projet", systemImage: chat.projectId == nil ? "folder" : "folder.fill")
-                    }
-                    .disabled(!chat.messages.isEmpty || isGenerating || instances.busy)
-                    .accessibilityIdentifier("integratedRemoteProjectPicker")
-                    if instances.busy { ProgressView().controlSize(.small) }
-                }
-                .font(.caption.weight(.medium)).buttonStyle(.bordered).controlSize(.small)
-                .padding(.horizontal, 12)
-            }
             if chat.pendingConfiguration != nil {
                 Button("Vérifier le changement de configuration", systemImage: "arrow.clockwise") {
                     Task { do { try await instances.configure(chat.id); remoteConfigurationError = nil } catch { remoteConfigurationError = "La configuration reste à vérifier sur cette instance." } }
