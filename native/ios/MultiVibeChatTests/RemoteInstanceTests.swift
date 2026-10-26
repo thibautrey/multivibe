@@ -3,6 +3,15 @@ import SwiftUI
 @testable import MultiVibeChat
 
 final class RemoteInstanceTests: XCTestCase {
+    func testRemoteFollowHasNoTransportDeadlineAndRetriesWithoutAttemptLimit() {
+        let configuration = RemoteInstanceAPI.sessionConfiguration()
+        XCTAssertEqual(configuration.timeoutIntervalForRequest, .greatestFiniteMagnitude)
+        XCTAssertEqual(configuration.timeoutIntervalForResource, .greatestFiniteMagnitude)
+        XCTAssertEqual(RemoteFollowRetryPolicy.delayNanoseconds(afterFailure: 0), 1_000_000_000)
+        XCTAssertEqual(RemoteFollowRetryPolicy.delayNanoseconds(afterFailure: 4), 16_000_000_000)
+        XCTAssertEqual(RemoteFollowRetryPolicy.delayNanoseconds(afterFailure: 5), 30_000_000_000)
+        XCTAssertEqual(RemoteFollowRetryPolicy.delayNanoseconds(afterFailure: 10_000), 30_000_000_000)
+    }
     func testVoiceTransportKeepsThePairedMachineOnTheFirstPartyOrigin() throws {
         let machine = UUID().uuidString.lowercased()
         let url = try RemoteInstanceAPI.voiceEndpoint(machine, operation: "realtime", voice: "kokoro:ff_siwis")

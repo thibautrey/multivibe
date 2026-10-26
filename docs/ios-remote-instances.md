@@ -24,7 +24,7 @@ ID; only the Host resolves it to a directory. The project is fixed on the first
 turn. Model and effort can change between turns through durable Desktop runtime
 commands. An unconfirmed configuration is persisted with its command ID and blocks
 sending until the same receipt has been checked. Stop requests native interruption;
-Resume follows the saved prompt receipt without resubmitting the prompt.
+tracking otherwise stays attached until the turn reaches a terminal state.
 
 The adapter carries a bounded JSON envelope in one completion message over the
 existing Personal Relay transport. Cloud binds every directory, catalogue and
@@ -34,8 +34,9 @@ revocation, harness/model discovery, prompt and receipt recovery. Cloud validate
 the account and machine ownership before delivery. The Host accepts only its
 configured account and machine, then a separately paired device. Neither the QR
 nor an envelope can choose a network destination, workspace path or executable.
-The existing encrypted queue, single-use start receipt, cancellation/expiry and
-streamed result contracts remain unchanged; no Cloud rollout is required.
+The encrypted queue retains its single-use start receipt, cancellation and streamed
+result contracts. Its running lease is renewed by authenticated Host status checks
+for as long as the turn continues.
 
 Every submitted adapter operation, including pairing and catalogue requests, uses
 the existing Relay message allowance. The transport is not zero-access: Cloud can
@@ -61,9 +62,10 @@ Offline disconnect clears local credentials and reports unconfirmed revocation.
 Native harness sessions, model discovery, command fingerprints, receipts and
 event journals all use the same `HostHarnessRuntime` as Desktop. Mobile session
 identities are scoped to account, device and conversation. A dropped stream does
-not resubmit the prompt: **Resume** reads the persisted command and cursor. A new
-device never adopts another device's session. Tool approvals remain on Desktop;
-iOS explicitly reports when an approval is required there.
+not create a new user turn: iOS reconnects with the same command and cursor using
+bounded backoff until a terminal receipt arrives. A new device never adopts another
+device's session. Tool approvals remain on Desktop; iOS reports when an approval is
+required there and keeps following so completion appears automatically afterward.
 
 The iOS archive is separate from existing on-device conversations, protected by
 iOS file protection, excluded from backups and scoped to the account. Harness and

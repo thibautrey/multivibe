@@ -88,10 +88,18 @@ actor RemoteInstanceAPI {
     static let shared = RemoteInstanceAPI()
     static let model = "multivibe/host-harness-v1"
     private let session: URLSession
+    static func sessionConfiguration() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        // A remote harness turn has no product-level duration limit. Transport
+        // failures are recovered at the command cursor by RemoteInstances.
+        configuration.timeoutIntervalForRequest = .greatestFiniteMagnitude
+        configuration.timeoutIntervalForResource = .greatestFiniteMagnitude
+        return configuration
+    }
     init(session supplied: URLSession? = nil) {
-        let c = URLSessionConfiguration.ephemeral; c.urlCache = nil; c.httpCookieStorage = nil
-        c.timeoutIntervalForRequest = 60; c.timeoutIntervalForResource = 300
-        session = supplied ?? URLSession(configuration: c, delegate: RemoteInstanceRedirectPolicy(), delegateQueue: nil)
+        session = supplied ?? URLSession(configuration: Self.sessionConfiguration(), delegate: RemoteInstanceRedirectPolicy(), delegateQueue: nil)
     }
     func request(_ route: String, token: String, body: Data? = nil, method: String? = nil) throws -> URLRequest {
         // Scanned material can never supply a host, destination or account token.
@@ -151,17 +159,24 @@ actor RemoteInstanceAPI {
     func events(_ machine: String, account: String, token: String, fields: [String: HistoryJSON], update: @Sendable (HistoryJSON) async throws -> Void) async throws {
         let (bytes, response) = try await session.bytes(for: bridgeRequest(machine, account: account, token: token, fields: fields)); try validate(response)
         guard (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "content-type")?.hasPrefix("text/event-stream") == true else { throw APIError.invalidResponse }
-        var total = 0, terminal = false
+        var total = 0
         for try await line in bytes.lines {
             try Task.checkCancellation(); total += line.utf8.count
             guard line.utf8.count <= 1_048_576, total <= 8_388_608 else { throw APIError.invalidResponse }
             if line.hasPrefix("data: ") {
                 let event = try JSONDecoder().decode(HistoryJSON.self, from: Data(line.dropFirst(6).utf8))
                 try await update(event)
-                if ["terminal", "approval_required"].contains(event.object?["type"]?.string ?? "") { terminal = true }
+                if event.object?["type"]?.string == "terminal" { return }
             }
         }
-        guard terminal else { throw APIError.server(502, "instance_stream_interrupted") }
+        throw APIError.server(502, "instance_stream_interrupted")
+    }
+}
+
+enum RemoteFollowRetryPolicy {
+    static func delayNanoseconds(afterFailure attempt: Int) -> UInt64 {
+        let seconds = min(30, 1 << min(max(attempt, 0), 5))
+        return UInt64(seconds) * 1_000_000_000
     }
 }
 private final class RemoteInstanceRedirectPolicy: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
@@ -457,24 +472,45 @@ struct RemoteModelPreference: Codable {
         chats[index].state = "running"
         guard chats[index].command != nil else { return false }
         do { try persist() } catch { self.error = "Le message n’a pas pu être enregistré. Il n’a pas été envoyé."; return false }
-        let epoch = generation, streamEpoch = streamGeneration, chat = chats[index]; activeChat = id; error = nil
+        let epoch = generation, streamEpoch = streamGeneration, initialChat = chats[index]; activeChat = id; error = nil
         task = Task {
             defer { if generation == epoch && streamGeneration == streamEpoch { activeChat = nil; task = nil; try? persist() } }
-            do {
-                let (session, auth) = try await authorizedFields(chat.machine, operation: recover ? "recover" : "prompt"); try check(owner, epoch)
-                var fields = auth; fields["conversationId"] = .string(id.uuidString.lowercased()); fields["commandId"] = .string(chat.command!); fields["after"] = .number(Double(chat.cursor))
-                if !recover {
-                    fields["harnessId"] = .string(chat.harness); fields["model"] = .string(chat.model); fields["text"] = .string(text)
-                    if let provider = chat.provider { fields["provider"] = .string(provider) }
-                    if let effort = chat.effort { fields["effort"] = .string(effort) }
-                    if let projectId = chat.projectId { fields["projectId"] = .string(projectId) }
+            var operation = recover ? "recover" : "prompt"
+            var failures = 0
+            while generation == epoch && streamGeneration == streamEpoch {
+                do {
+                    try check(owner, epoch)
+                    guard let current = chats.first(where: { $0.id == id }), let command = current.command else { return }
+                    let (session, auth) = try await authorizedFields(current.machine, operation: operation); try check(owner, epoch)
+                    var fields = auth
+                    fields["conversationId"] = .string(id.uuidString.lowercased())
+                    fields["commandId"] = .string(command)
+                    fields["after"] = .number(Double(current.cursor))
+                    if operation == "prompt" {
+                        fields["harnessId"] = .string(initialChat.harness); fields["model"] = .string(initialChat.model); fields["text"] = .string(text)
+                        if let provider = initialChat.provider { fields["provider"] = .string(provider) }
+                        if let effort = initialChat.effort { fields["effort"] = .string(effort) }
+                        if let projectId = initialChat.projectId { fields["projectId"] = .string(projectId) }
+                    }
+                    try await RemoteInstanceAPI.shared.events(current.machine, account: owner, token: session.accessToken, fields: fields) { event in
+                        guard await self.streamGeneration == streamEpoch else { throw CancellationError() }
+                        try await self.receive(event, chat: id, owner: owner, epoch: epoch)
+                    }
+                    failures = 0
+                    guard chats.first(where: { $0.id == id })?.command != nil else { return }
+                    operation = "recover"
+                } catch is CancellationError { return }
+                catch {
+                    guard generation == epoch, streamGeneration == streamEpoch,
+                          chats.first(where: { $0.id == id })?.command != nil else { return }
+                    failures += 1
+                    // Retrying the exact prompt command is idempotent on the Host.
+                    // Once a stream ends cleanly without a terminal state (for
+                    // example with an older Host awaiting approval), subsequent
+                    // attempts recover only by command ID and cursor.
                 }
-                try await RemoteInstanceAPI.shared.events(chat.machine, account: owner, token: session.accessToken, fields: fields) { event in
-                    guard await self.streamGeneration == streamEpoch else { throw CancellationError() }
-                    try await self.receive(event, chat: id, owner: owner, epoch: epoch)
-                }
-            } catch is CancellationError { } catch {
-                if generation == epoch && streamGeneration == streamEpoch { self.error = "Le suivi a été interrompu. Le Mac peut continuer ; utilisez Reprendre pour consulter le résultat sans renvoyer le message." }
+                do { try await Task.sleep(nanoseconds: RemoteFollowRetryPolicy.delayNanoseconds(afterFailure: failures - 1)) }
+                catch { return }
             }
         }
         return true
@@ -492,6 +528,7 @@ struct RemoteModelPreference: Codable {
         try check(owner, epoch); guard let index = chats.firstIndex(where: { $0.id == id }), let object = event.object else { throw APIError.invalidResponse }
         let type = object["type"]?.string
         if type == "message.delta" || type == "message.part", let text = object["text"]?.string, let seq = object["seq"]?.number, seq > Double(chats[index].cursor) {
+            if chats[index].state == "waiting_user" { chats[index].state = "running"; error = nil }
             let item = object["itemId"]?.string ?? "assistant"
             if chats[index].items[item] == nil { chats[index].itemOrder.append(item) }
             if type == "message.part" { chats[index].items[item] = text } else { chats[index].items[item, default: ""] += text }
@@ -506,7 +543,7 @@ struct RemoteModelPreference: Codable {
                 if state == "failed" { error = "Le harness a refusé ce tour. Vérifiez son accès au modèle sur le Mac." }
             }
             else { error = "Le harness n’a pas confirmé la réussite de ce tour. Consultez le Mac avant toute nouvelle tentative." }
-        } else if type == "approval_required" { chats[index].state = "waiting_user"; error = "Le harness attend une autorisation sur le Mac. Confirmez-la sur le Mac, puis reprenez le suivi." }
+        } else if type == "approval_required" { chats[index].state = "waiting_user"; error = "Le harness attend une autorisation sur le Mac. Le suivi continue et se terminera automatiquement après confirmation." }
         try persist()
     }
     func disconnect(_ machine: String, revokeMachine: Bool = false) async throws {

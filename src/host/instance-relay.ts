@@ -165,8 +165,8 @@ export class InstanceRelay {
    if(session.queuePaused&&session.state==='interrupted')await this.runtime.command(sessionId,{id:e.commandId!+'-resume',type:'resume_queue'});
    await this.runtime.command(sessionId,{id:e.commandId!,type:'prompt',parts:[{type:'text',text:requiredText(e.text,32000)}]});
   }
-  const deadline=this.clock()+250_000;
-  while(this.clock()<deadline){signal.throwIfAborted();this.device(e);
+  let approvalPending=false;
+  while(true){signal.throwIfAborted();this.device(e);
    const batch=this.runtime.store.events(sessionId,cursor,500);for(const event of batch){cursor=event.seq;await emit(event);}
    if(cursor<this.runtime.store.eventCursor(sessionId))continue;
    const receipt=this.runtime.store.receipt(e.commandId!);
@@ -174,17 +174,18 @@ export class InstanceRelay {
    if(['completed','failed','cancelled','uncertain'].includes(receipt.state)){
     await upload('data: '+JSON.stringify({type:'terminal',state:receipt.state,cursor})+'\n\n',true,200,'text/event-stream');return;
    }
-   if(this.runtime.snapshot(sessionId).interactions.length){await upload('data: '+JSON.stringify({type:'approval_required',cursor})+'\n\n',true,200,'text/event-stream');return;}
+   const awaitingApproval=this.runtime.snapshot(sessionId).interactions.length>0;
+   if(awaitingApproval&&!approvalPending)await upload('data: '+JSON.stringify({type:'approval_required',cursor})+'\n\n',false,200,'text/event-stream');
+   approvalPending=awaitingApproval;
    await delay(150,undefined,{signal});
   }
-  fail('Turn continues on the Host. Reconnect to recover it.',504);
  }
  private async execute(job:any,signal:AbortSignal){
   if(!uuid(job.id))fail('Invalid Relay job');
   // Validate before accepting a single-use dispatch receipt. Never retry start.
   this.envelope(job.body);const start=await this.machine('jobs/'+job.id+'/start',{},signal);if(start.execute!==true)fail('Relay start rejected',409);
-  const local=new AbortController(),execution=AbortSignal.any([signal,local.signal,AbortSignal.timeout(270_000)]);let seq=0,total=0,checking=false;
-  const timer=setInterval(()=>{if(checking)return;checking=true;void this.machine('jobs/'+job.id+'/status',undefined,execution).then(v=>{if(v.state!=='running')local.abort();},()=>local.abort()).finally(()=>{checking=false;});},2000);timer.unref();
+  const local=new AbortController(),execution=AbortSignal.any([signal,local.signal]);let seq=0,total=0,checking=false;
+  const timer=setInterval(()=>{if(checking)return;checking=true;void this.machine('jobs/'+job.id+'/status',undefined,execution).then(v=>{if(v.state!=='running')local.abort();},()=>{}).finally(()=>{checking=false;});},2000);timer.unref();
   const upload:Upload=async(data,terminal=false,status=200,contentType='application/json')=>{total+=Buffer.byteLength(data);if(total>8*1024*1024||seq>2047)fail('Instance response exceeds limit',413);await this.machine('jobs/'+job.id+'/chunks',{sequence:seq++,data,terminal,status,contentType},execution);};
   try{await this.dispatch(job.body,upload,execution);}
   catch(error:any){if(seq===0&&!execution.aborted)await upload(JSON.stringify({error:'Instance operation refused',status:error.status??502}),true,error.status??502);else await this.machine('jobs/'+job.id+'/fail',{},AbortSignal.timeout(5000)).catch(()=>{});}
