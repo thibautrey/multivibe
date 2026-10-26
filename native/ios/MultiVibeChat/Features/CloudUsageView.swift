@@ -269,13 +269,18 @@ struct CloudUsageDashboard: View {
         let tokens: [(String, Int?)] = [("Entrée", metrics.inputTokens), ("Sortie", metrics.outputTokens),
             ("Cache lu", metrics.cacheReadTokens), ("Cache écrit", metrics.cacheWriteTokens), ("Raisonnement", metrics.reasoningTokens)]
         return card("Détail des tokens") {
-            Chart(Array(tokens.enumerated()), id: \.offset) { _, item in
-                if let value = item.1 {
-                    BarMark(x: .value("Tokens", value), y: .value("Type", item.0))
-                        .foregroundStyle(MultiVibeTheme.accent.gradient).cornerRadius(3)
-                        .accessibilityLabel(item.0).accessibilityValue(value.formatted())
-                }
-            }.frame(height: 155)
+            if tokens.contains(where: { $0.1 != nil }) {
+                Chart(Array(tokens.enumerated()), id: \.offset) { _, item in
+                    if let value = item.1 {
+                        BarMark(x: .value("Tokens", value), y: .value("Type", item.0))
+                            .foregroundStyle(MultiVibeTheme.accent.gradient).cornerRadius(3)
+                            .accessibilityLabel(item.0).accessibilityValue(value.formatted())
+                    }
+                }.frame(height: 155)
+            } else {
+                Text("Mesures de tokens indisponibles pour cette période.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
             ForEach(Array(tokens.enumerated()), id: \.offset) { _, item in
                 UsageFact(title: item.0, value: CloudUsageFormat.count(item.1))
             }
