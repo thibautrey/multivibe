@@ -261,6 +261,33 @@ final class AuthenticationUITests: XCTestCase {
     }
 }
 
+@MainActor final class CloudWorkspaceBrowserUITests: XCTestCase {
+    func testFinderGridFolderSearchAndListLayout() {
+        continueAfterFailure = false
+        let app=XCUIApplication()
+        app.launchArguments=["-cloud-workspace-ui-fixture","-AppleLanguages","(fr)","-AppleLocale","fr_FR"]
+        app.launch()
+
+        XCTAssertTrue(app.navigationBars["Espace design"].waitForExistence(timeout:15))
+        XCTAssertTrue(app.otherElements["workspaceGrid"].exists)
+        XCTAssertTrue(app.staticTexts["Documents"].exists)
+        let grid=XCTAttachment(screenshot:app.screenshot());grid.name="workspace-finder-grid";grid.lifetime = .keepAlways;add(grid)
+
+        app.staticTexts["Documents"].tap()
+        XCTAssertTrue(app.navigationBars["Documents"].waitForExistence(timeout:5))
+        XCTAssertTrue(app.otherElements["workspaceBreadcrumbs"].exists)
+        let search=app.textFields["workspaceSearch"]
+        XCTAssertTrue(search.exists);search.tap();search.typeText("Brief")
+        XCTAssertTrue(app.staticTexts["Brief produit.md"].waitForExistence(timeout:5))
+
+        app.buttons["workspaceOptions"].tap()
+        let list=app.buttons["Liste"]
+        XCTAssertTrue(list.waitForExistence(timeout:3));list.tap()
+        XCTAssertTrue(app.otherElements["workspaceList"].waitForExistence(timeout:3))
+        let listCapture=XCTAttachment(screenshot:app.screenshot());listCapture.name="workspace-finder-list-search";listCapture.lifetime = .keepAlways;add(listCapture)
+    }
+}
+
 final class LocalInternetUITests: XCTestCase {
     func testFirstReplyRemainsVisibleAfterComposerDismissal() {
         continueAfterFailure = false
