@@ -799,3 +799,21 @@ test("complete Windows amd64 release fixture passes archive and PE verification"
     assert.equal(output.runtimeChecked, false);
   });
 });
+
+
+test("Linux native detection accepts Node JavaScript entrypoints but rejects invalid native libraries", async () => {
+  for (const [name, valid] of [["index.node.cjs", true], ["index.node.mjs", true], ["addon.node", false], ["libtest.so.1", false]]) {
+    await inTemporaryDirectory(async (directory) => {
+      const archive = path.join(directory, "fixture.tar.gz");
+      await writeFile(archive, completeLinuxBundleTar((files) => {
+        files.set(`app/node_modules/fixture/${name}`, { data: Buffer.from("module.exports = {};\n"), mode: 0o644 });
+      }));
+      const result = await runVerifier(archive);
+      if (valid) assert.equal(result.code, 0, result.stderr);
+      else {
+        assert.notEqual(result.code, 0);
+        assert.match(result.stderr, /native file has the wrong architecture/);
+      }
+    });
+  }
+});
