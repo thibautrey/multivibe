@@ -185,7 +185,7 @@ import Foundation
 
         let fixture = MultiCloudFixture(); let session = try fixture.session()
         try await fixture.authorize(session, as: "account-a")
-        try await session.renameAccount("account-a", name: "Alice")
+        try session.renameAccount("account-a", name: "Alice")
         try await fixture.authorize(session, as: "account-b")
         precondition(session.profiles.count == 2 && session.accountID == "account-b")
         precondition(session.profiles.first { $0.id == "account-a" }?.displayName == "Alice")
@@ -199,7 +199,8 @@ import Foundation
         do { try await session.setPIN("１２３４", for: "account-b"); fatalError("Non-ASCII PIN accepted") } catch NativeCloudSessionError.invalidPINFormat {}
         try await session.setPIN("4321", for: "account-b")
         precondition(session.profiles.first { $0.id == "account-b" }?.hasPIN == true)
-        precondition(!String(data: try JSONEncoder().encode(fixture.registry), encoding: .utf8)!.contains("\"4321\""))
+        let encodedRegistry = try JSONEncoder().encode(fixture.registry)
+        precondition(!String(data: encodedRegistry, encoding: .utf8)!.contains("\"4321\""))
         session.lock()
         do { try await session.selectAccount("account-b"); fatalError("Missing PIN accepted") } catch NativeCloudSessionError.pinRequired {}
         for attempt in 1...5 {
