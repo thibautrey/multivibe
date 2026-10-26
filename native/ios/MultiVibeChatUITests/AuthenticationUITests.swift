@@ -469,3 +469,27 @@ final class LocalInternetUITests: XCTestCase {
         XCTAssertTrue((orb.value as? String)?.contains("86") == true)
     }
 }
+
+
+final class HarnessActivityUITests: XCTestCase {
+    func testIntermediateMessageAndToolAreVisibleBeforeFinalResponse() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-local-agent-ui-fixture", "-local-agent-ui-progress", "-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR"]
+        app.launch()
+        let newConversation = app.buttons["Nouvelle conversation"].firstMatch
+        XCTAssertTrue(newConversation.waitForExistence(timeout: 10)); newConversation.tap()
+        let message = app.descendants(matching: .any).matching(identifier: "Message").firstMatch
+        XCTAssertTrue(message.waitForExistence(timeout: 10)); message.tap(); message.typeText("Consulte la page demandée.")
+        app.buttons["Envoyer"].tap()
+        let allow = app.buttons["allowConversationInternet"]
+        XCTAssertTrue(allow.waitForExistence(timeout: 10)); allow.tap()
+        XCTAssertTrue(app.staticTexts["Je consulte la page demandée."].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["En cours"].firstMatch.exists)
+        XCTAssertFalse(app.staticTexts["EXAMPLE-FETCH-SUCCEEDED"].exists)
+        let running = XCTAttachment(screenshot: app.screenshot()); running.name = "Hermes activity during tool execution"; running.lifetime = .keepAlways; add(running)
+        XCTAssertTrue(app.staticTexts["EXAMPLE-FETCH-SUCCEEDED"].waitForExistence(timeout: 15))
+        XCTAssertFalse(app.staticTexts["En cours"].exists)
+        let completed = XCTAttachment(screenshot: app.screenshot()); completed.name = "Hermes completed activity"; completed.lifetime = .keepAlways; add(completed)
+    }
+}
