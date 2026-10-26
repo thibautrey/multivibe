@@ -82,7 +82,12 @@ export class OpenWebUIAdapter implements HarnessAdapter {
       if(!message)fail("Open WebUI response message is missing",502);
       if(message.error)fail("Open WebUI reported an execution error. Inspect the remote chat for details.",502);
       if(typeof message.content==="string" && message.content!==content){content=message.content;this.ctx.emit({type:"message.part",itemId:assistantId,payload:{role:"assistant",text:content}});}
-      if(message.output && JSON.stringify(message.output)!==output){output=JSON.stringify(message.output);this.ctx.emit({type:"native.event",itemId:assistantId,payload:{output:message.output}});}
+      if(message.output && JSON.stringify(message.output)!==output){
+        output=JSON.stringify(message.output);const values=Array.isArray(message.output)?message.output:[];
+        const tools=values.filter((value:any)=>["function_call","tool_call","mcp_call"].includes(value?.type) || typeof value?.name==="string");
+        for(const [index,value] of tools.entries())this.ctx.emit({type:"tool",itemId:value.call_id??value.id??`${assistantId}-tool-${index}`,payload:{...value,status:value.status??(message.done===true?"completed":"running")}});
+        if(!tools.length)this.ctx.emit({type:"native.event",itemId:assistantId,payload:{output:message.output}});
+      }
       if(message.usage && JSON.stringify(message.usage)!==usage){usage=JSON.stringify(message.usage);this.ctx.emit({type:"usage",payload:message.usage});}
       if(message.done===true){this.ctx.emit({type:"turn.status",payload:{status:"completed"}});return;}
       const tasks=await this.call(`/tasks/chat/${encodeURIComponent(chatId)}`);

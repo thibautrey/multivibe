@@ -25,6 +25,7 @@ enum LocalModel {
 
 struct LocalAgentEvent: Codable, Equatable, Sendable, Identifiable {
     var id = UUID()
+    var kind: String? = nil
     var tool: String
     var detail: String
     var date = Date()
@@ -309,8 +310,8 @@ actor LocalAgentWorkspace {
         await render([.document(.init(id: id, name: updated.name, excerpt: String(content.prefix(500))))])
         return PiToolResult(content: result)
     }
-    func recordHarness(tool: String, input: String, output: String, status: String) async {
-        await event(LocalAgentEvent(tool: tool, detail: output, status: status, input: input, output: output))
+    func recordHarness(tool: String, input: String, output: String, status: String, kind: String? = nil) async {
+        await event(LocalAgentEvent(kind: kind, tool: tool, detail: output, status: status, input: input, output: output))
     }
     private func fetchAuthorized(_ url: URL, method: String) async throws -> LocalWebResponse {
         let started = Date()
