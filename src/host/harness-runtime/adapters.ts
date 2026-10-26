@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { randomBytes } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { ClientServices } from "./client-services.js";
 import { JsonPeer, startProcess, harnessEnvironment } from "./process.js";
@@ -97,7 +98,10 @@ export class AcpAdapter extends Adapter {
     }
     if(old && !caps.loadSession)fail("This harness cannot resume its existing session",409);
     this.loading=true;
-    try{this.sessionInfo=await peer.request(old?"session/load":"session/new",{...(old?{sessionId:old}:{}),cwd:this.ctx.session.workspace,mcpServers:[]});}finally{this.loading=false;}
+    const desktop=this.ctx.desktop;
+    const mcpServers=desktop?[{name:"multivibe_desktop",command:desktop.command,args:desktop.args,env:Object.entries(desktop.env).map(([name,value])=>({name,value}))}]:[];
+    try{this.sessionInfo=await peer.request(old?"session/load":"session/new",{...(old?{sessionId:old}:{}),cwd:this.ctx.session.workspace,mcpServers});}finally{this.loading=false;}
+    if(desktop)this.ctx.capabilities({browser:supported("multivibe"),computer:supported("multivibe")});
     this.ctx.nativeSession(old??this.sessionInfo.sessionId);
     const nativeModel=this.sessionInfo.models?.currentModelId??this.sessionInfo.configOptions?.find((v:any)=>v.category==="model")?.currentValue;if(this.ctx.session.authMode==="native" && !this.ctx.session.model && typeof nativeModel==="string")this.ctx.session.model=nativeModel;
     this.defaultEffort=acpEffort(this.sessionInfo)?.effort.currentValue;
@@ -221,7 +225,9 @@ export class PiAdapter extends Adapter {
     if(this.ctx.session.authMode==="multivibe")args.push("--provider","multivibe");
     else if(typeof this.ctx.session.configuration?.nativeProvider==="string")args.push("--provider",this.ctx.session.configuration.nativeProvider);
     if(this.ctx.session.model)args.push("--model",this.ctx.session.model);
-    const peer=this.connect(args,false);const state=await peer.request("get_state");
+    if(this.ctx.desktop)args.push("--extension",fileURLToPath(new URL(import.meta.url.endsWith(".ts")?"./desktop-pi.ts":"./desktop-pi.js",import.meta.url)));
+    const peer=this.connect(args,false,this.ctx.desktop?.env);const state=await peer.request("get_state");
+    if(this.ctx.desktop)this.ctx.capabilities({browser:supported("multivibe"),computer:supported("multivibe")});
     if(typeof state?.thinkingLevel==="string")this.defaultEffort=state.thinkingLevel;
     if(this.ctx.session.authMode==="native" && typeof state?.model?.id==="string")this.ctx.session.model=state.model.id;
     if(this.ctx.session.authMode==="native" && typeof state?.model?.provider==="string")this.ctx.session.configuration={...this.ctx.session.configuration,nativeProvider:state.model.provider};
@@ -302,10 +308,16 @@ export class CodexAdapter extends Adapter {
   private compactionDone?:{resolve:(v:unknown)=>void;reject:(e:Error)=>void};
   async start() {
     const args=["app-server"];
+    if(this.ctx.desktop){
+      const d=this.ctx.desktop;
+      // Per-process overrides preserve all user-configured MCP servers.
+      args.push("-c",`mcp_servers.multivibe_desktop.command=${JSON.stringify(d.command)}`,"-c",`mcp_servers.multivibe_desktop.args=${JSON.stringify(d.args)}`,"-c",`mcp_servers.multivibe_desktop.env={${Object.entries(d.env).map(([k,v])=>`${k}=${JSON.stringify(v)}`).join(",")}}`);
+    }
     const child=startProcess(this.ctx,args);
     this.peer=new JsonPeer(child,v=>this.event(v),(m,p)=>this.request(m,p),e=>{this.failure=e;this.rejectTurn(e);},text=>this.ctx.emit({type:"diagnostic",payload:{message:text}}));
     await this.peer.request("initialize",{clientInfo:{name:"multivibe",version:"1"},capabilities:{experimentalApi:true}});
     this.peer.notify("initialized");
+    if(this.ctx.desktop)this.ctx.capabilities({browser:supported("multivibe"),computer:supported("multivibe")});
     const s=this.ctx.session;
     if(this.ctx.modelDiscovery)return;
     if(s.nativeSessionId && s.configuration?.forkNativeSession){const fork=await this.peer.request("thread/fork",{threadId:s.nativeSessionId,cwd:s.workspace});this.ctx.nativeSession(fork.thread.id);delete s.configuration.forkNativeSession;}
@@ -422,6 +434,7 @@ export class ClaudeAdapter extends Adapter {
   constructor(ctx:AdapterContext,private sdkLoader?:()=>Promise<any>){super(ctx);}
   async start() {
     if(this.ctx.target.kind==="container")fail("Claude SDK requires a Host inside the container",422);
+    if(this.ctx.desktop)this.ctx.capabilities({browser:supported("multivibe"),computer:supported("multivibe")});
     const moduleName="@anthropic-ai/claude-agent-sdk";const sdk:any=this.sdkLoader?await this.sdkLoader():await import(moduleName);
     const s=this.ctx.session;
     if(this.ctx.modelConnection){
@@ -435,6 +448,7 @@ export class ClaudeAdapter extends Adapter {
       systemPrompt:{type:"preset",preset:"claude_code"},includePartialMessages:true,permissionMode:"default",abortController:this.abort,
       env:harnessEnvironment(s.authMode==="native"),...(s.nativeSessionId?{resume:s.nativeSessionId}:{}),...(s.configuration?.forkNativeSession?{forkSession:true}:{}),...(s.model?{model:s.model}:{}),enableFileCheckpointing:true,
       ...(this.settingsFile?{settings:this.settingsFile}:{}),
+      ...(this.ctx.desktop?{mcpServers:{multivibe_desktop:{type:"stdio",...this.ctx.desktop}},systemPrompt:{type:"preset",preset:"claude_code",append:"MultiVibe Host provides integrated browser and computer tools through multivibe_desktop. Use them for graphical actions; observe before input."}}:{}),
       stderr:(message:string)=>{if(this.stderrBytes<16_384){this.stderrBytes+=message.length;this.ctx.emit({type:"diagnostic",payload:{message:String(redact(message)).slice(0,2048)}});}},
       onElicitation:async(request:any)=>this.ctx.ask(request.mode==="url"?"authentication":"question",request.message??"Un connecteur attend une réponse",{...request,_kind:"mcp_elicitation"}),
       canUseTool:async(name:string,input:any,options:any)=>{
@@ -541,7 +555,9 @@ export class OpenCodeAdapter extends Adapter {
   }
   async start() {
     if(this.ctx.target.kind==="container")fail("OpenCode HTTP requires a Host inside the container",422);
-    const child=this.child=startProcess(this.ctx,["serve","--hostname","127.0.0.1","--port","0"],{OPENCODE_SERVER_PASSWORD:this.password,OPENCODE_SERVER_USERNAME:"opencode"});
+    const desktop=this.ctx.desktop;
+    if(desktop)this.ctx.capabilities({browser:supported("multivibe"),computer:supported("multivibe")});
+    const child=this.child=startProcess(this.ctx,["serve","--hostname","127.0.0.1","--port","0"],{OPENCODE_SERVER_PASSWORD:this.password,OPENCODE_SERVER_USERNAME:"opencode",...(desktop?{OPENCODE_CONFIG_CONTENT:JSON.stringify({mcp:{multivibe_desktop:{type:"local",command:[desktop.command,...desktop.args],environment:desktop.env,enabled:true}}})}:{})});
     this.origin=await new Promise<string>((resolve,reject)=>{
       let output="";const timer=setTimeout(()=>reject(new Error("OpenCode server startup timed out")),20_000);
       const consume=(c:Buffer)=>{output=(output+c.toString()).slice(-8000);const match=output.match(/http:\/\/127\.0\.0\.1:(\d+)/u);if(match){clearTimeout(timer);resolve(match[0]);}};

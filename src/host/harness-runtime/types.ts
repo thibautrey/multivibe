@@ -1,11 +1,12 @@
 import type { RemoteChats } from "./remote-chats.js";
+import type { DesktopConnection } from "./desktop-tools.js";
 import { createHash } from "node:crypto";
 
 export const HARNESS_FEATURES = [
   "sessions", "history", "fork", "queue", "steer", "interrupt", "streaming", "modes", "plans",
   "instructions", "context", "compaction", "memory", "skills", "commands", "tools", "mcp", "plugins",
   "interactions", "attachments", "images", "audio", "video", "artifacts", "terminals", "workspace", "git",
-  "projects", "checkpoints", "models", "settings", "usage", "agents", "automations", "hooks", "remote", "diagnostics",
+  "projects", "checkpoints", "models", "settings", "usage", "agents", "automations", "hooks", "remote", "diagnostics", "browser", "computer",
 ] as const;
 export type HarnessFeature = typeof HARNESS_FEATURES[number];
 export type HarnessCapability = {
@@ -66,6 +67,7 @@ export type HarnessEvent = {
 };
 export type AdapterEvent = { type: string; payload: unknown; itemId?: string };
 export type AdapterContext = {
+  desktop?: DesktopConnection;
   modelDiscovery?: boolean;
   session: HarnessSession; root: string; executable: string; target: HarnessTarget;
   emit: (event: AdapterEvent) => void;

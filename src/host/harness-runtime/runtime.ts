@@ -1,4 +1,5 @@
 import { RemoteChats } from "./remote-chats.js";
+import { DesktopTools } from "./desktop-tools.js";
 import { LibreChatConfiguration, RemoteChatConfiguration } from "./librechat.js";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
@@ -29,6 +30,7 @@ const COMMANDS=new Set(["prompt","steer","interrupt","resume_queue","pause_queue
 type Integration=Pick<HostHarnessIntegrationManager,"list"|"executablePath">;
 
 export class HostHarnessRuntime {
+  readonly desktop = new DesktopTools(id=>Boolean(this.states.get(id)?.activeTurnId));
   readonly store:HarnessRuntimeStore;
   readonly librechat:LibreChatConfiguration;
   readonly openwebui:RemoteChatConfiguration;
@@ -62,6 +64,7 @@ export class HostHarnessRuntime {
   session(id:string){return this.states.get(identifier(id))??this.store.session(id);}
   snapshot(id:string){return {session:this.session(id),queue:this.store.commands(id).filter(c=>c.command.type==="prompt" && ["queued","dispatching","accepted","uncertain"].includes(c.state)),interactions:this.store.interactions(id).filter(v=>v.status==="pending").map(v=>({...v,detail:this.privateInteractions.get(v.id)??v.detail}))};}
   private emit(id:string,event:AdapterEvent):HarnessEvent {
+    if(event.type==="turn.status" || /^turn\.(completed|failed|cancelled)$/u.test(event.type))this.desktop.cancel(id);
     const s=this.session(id),active=s.activeTurnId;
     if(event.type==="harness.metadata"){const p=event.payload as any;if(typeof p?.version==="string")s.harnessVersion=p.version.slice(0,128);if(typeof p?.protocolVersion==="string")s.protocolVersion=p.protocolVersion.slice(0,64);}
     const saved=this.store.event(id,event.type,this.captureArtifacts(id,event.payload),event.type==="history.message"?undefined:active,event.itemId);this.events.emit(id,saved);
@@ -257,6 +260,7 @@ export class HostHarnessRuntime {
       const connection=s.harnessId==="librechat" || s.harnessId==="openwebui"?this[s.harnessId].read():undefined;
       if(["librechat","openwebui"].includes(s.harnessId) && (!connection || connection.endpoint!==s.configuration?.endpoint || s.configuration?.connectionId && this.remoteChats(s.harnessId).identity().connectionId!==s.configuration.connectionId))fail("Reconnect the original server endpoint to resume this conversation",409);
       const instance=this.factory({session:s,root,executable,target,...(connection?(s.harnessId==="openwebui"?{openWebUIConnection:connection,remoteChats:this.remoteChats(s.harnessId)}:{libreChatConnection:connection,remoteChats:this.remoteChats(s.harnessId)}):{}),emit:event=>{if(!this.stopped && this.states.has(id))this.emit(id,event);},
+        ...(target.kind==="local" && this.desktop.available(id) && !connection?{desktop:await this.desktop.connection(id)}:{}),
         ...(s.authMode==="multivibe" && target.kind==="local" && this.options.modelConnection?{modelConnection:this.options.modelConnection()}:{}),
         nativeSession:nativeId=>{if(this.stopped || !this.states.has(id))return;requiredText(nativeId,4096);s.nativeSessionId=nativeId;this.store.save(s);this.emit(id,{type:"session.updated",payload:s});},
         capabilities:values=>{if(this.stopped || !this.states.has(id) || Object.entries(values).every(([key,value])=>JSON.stringify(s.capabilities[key as keyof typeof s.capabilities])===JSON.stringify(value)))return;Object.assign(s.capabilities,values);this.store.save(s);this.emit(id,{type:"capabilities.updated",payload:s.capabilities});},
@@ -312,6 +316,7 @@ export class HostHarnessRuntime {
           (v.ids as string[]).forEach((key,index)=>{const c=pending.find(p=>p.id===key)!;c.ordinal=index;this.store.saveReceipt(c);this.emit(id,{type:"command.updated",payload:c});});break;
         }
         case "interrupt": {
+          this.desktop.cancel(id);
           s.queuePaused=true;s.state="interrupted";this.save(s);
           const activeId=s.activeTurnId,active=activeId?this.store.receipt(activeId):undefined;
           if(active){active.cancelRequested=true;this.store.saveReceipt(active);}
@@ -474,10 +479,11 @@ export class HostHarnessRuntime {
   delete(id:string) {
     const s=this.session(id);if(s.activeTurnId || this.controls.has(id) || this.store.interactions(id).some(i=>i.status==="pending"))fail("Stop this session before deleting it",409);
     const adapter=this.adapters.get(id);if(adapter)void adapter.then(a=>a.close()).catch(()=>{});
-    this.adapters.delete(id);this.states.delete(id);this.store.delete(id);
+    this.desktop.cancel(id);this.adapters.delete(id);this.states.delete(id);this.store.delete(id);
   }
   async close() {
     this.stopped=true;
+    this.desktop.close();
     clearInterval(this.scheduler);
     for(const answer of this.answers.values()){clearTimeout(answer.timer);answer.reject(new Error("Host shutting down"));}this.answers.clear();
     this.privateInteractions.clear();

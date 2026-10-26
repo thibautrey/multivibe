@@ -48,6 +48,21 @@ function fixture(t:any) {
   return {root,runtime,adapters,integrations};
 }
 
+test("Desktop tools are session-scoped, injected before the turn, and cancelled with their owning turn",async t=>{
+  const {runtime,adapters}=fixture(t);const s=await runtime.create({harnessId:"pi"});
+  const {lease}=runtime.desktop.attach(s.id);await runtime.desktop.next(s.id,lease);
+  await runtime.command(s.id,prompt("use Host browser"));
+  await eventually(()=>Boolean(adapters.get(s.id)?.finish));
+  assert.ok(adapters.get(s.id)!.ctx.desktop?.env.MULTIVIBE_DESKTOP_SOCKET);
+  const pending=runtime.desktop.call(s.id,"browser",{action:"observe"});
+  const request=await runtime.desktop.next(s.id,lease);assert.equal(request.command?.target,"browser");
+  const cancelled=assert.rejects(pending,/interrupted/);
+  await runtime.command(s.id,operation("interrupt"));await cancelled;
+  assert.deepEqual(await runtime.desktop.next(s.id,lease),{release:true});
+  assert.throws(()=>runtime.desktop.complete(s.id,lease,request.id,{content:[{type:"text",text:"late"}]}),/expired/);
+  assert.ok(!JSON.stringify(runtime.store.events(s.id,0)).includes("MULTIVIBE_DESKTOP_TOKEN"));
+});
+
 test("queue edits, ordering and idempotency survive subscription changes",async t=>{
   const {runtime,adapters}=fixture(t);const s=await runtime.create({harnessId:"pi"});
   await runtime.command(s.id,operation("pause_queue"));

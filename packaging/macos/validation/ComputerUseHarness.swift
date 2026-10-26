@@ -80,6 +80,30 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate {
         precondition(!controller.allowedApps.contains("test.editor"))
         print("PASS policy, application consent, stale rejection, denial, cancellation, redacted journal and revocation")
 
+        let externalConversation = UUID()
+        _ = try await controller.executeExternal(conversation: externalConversation, command: .init(action: "list_apps"))
+        precondition(controller.running && controller.conversationID == externalConversation)
+        let competing = ComputerUseController(driver: FixtureComputerDriver(), defaults: defaults)
+        do { _ = try await competing.executeExternal(conversation: UUID(), command: .init(action: "list_apps")); fatalError("Two harnesses acquired the Mac") } catch {}
+        do { _ = try await controller.executeExternal(conversation: UUID(), command: .init(action: "list_apps")); fatalError("Another conversation stole control") } catch {}
+        let externalObserve = Task { try await controller.executeExternal(conversation: externalConversation, command: .init(action: "observe", target: "test.editor")) }
+        while controller.approval == nil { await Task.yield() }
+        controller.resolveApproval(1)
+        let externalContent = try await externalObserve.value
+        precondition(externalContent.first?["type"] == "text")
+        let externalObservation = "obs-\(driver.generation)"
+        let operationsBefore = driver.operations.count
+        let externalClick = Task { try await controller.executeExternal(conversation: externalConversation, command: .init(action: "click", target: "test.editor", observation: externalObservation, element: 1)) }
+        while controller.approval == nil { await Task.yield() }
+        controller.stop()
+        do { _ = try await externalClick.value; fatalError("User takeover did not cancel the harness action") } catch {}
+        precondition(driver.operations.count == operationsBefore)
+        controller.releaseExternal(conversation: externalConversation)
+        precondition(!controller.running)
+        _ = try await competing.executeExternal(conversation: UUID(), command: .init(action: "list_apps"))
+        competing.releaseExternal(conversation: competing.conversationID!)
+        print("PASS external harness tools, observations, exclusive ownership, user takeover and release")
+
         if CommandLine.arguments.count > 2 && controller.accessibilityGranted && controller.screenGranted {
             let native = ComputerUseMacDriver()
             let target = "solutions.pleiades.ComputerFixture"
