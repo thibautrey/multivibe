@@ -174,6 +174,7 @@ struct RemoteModelPreference: Codable {
     private(set) var modelCatalog: [String: [RemoteHarnessModel]] = [:]
     private(set) var effortCatalog: [String: RemoteHarnessEffort] = [:]
     private(set) var projectCatalog: [String: [RemoteHarnessProject]] = [:]
+    private var projectCatalogFetchedAt: [String: Date] = [:]
     private(set) var chats: [RemoteChat] = []
     private(set) var preferences: [String: RemoteModelPreference] = [:]
     private(set) var paired: Set<String> = []
@@ -209,7 +210,7 @@ struct RemoteModelPreference: Codable {
     }
     func activate(_ account: String?) {
         guard self.account != account else { return }; task?.cancel(); task = nil; generation = UUID(); activeChat = nil; busy = false
-        self.account = account; machines = []; harnesses = [:]; modelCatalog = [:]; effortCatalog = [:]; projectCatalog = [:]; chats = []; preferences = [:]; paired = []; error = nil; selection = nil; storageLoaded = false
+        self.account = account; machines = []; harnesses = [:]; modelCatalog = [:]; effortCatalog = [:]; projectCatalog = [:]; projectCatalogFetchedAt = [:]; chats = []; preferences = [:]; paired = []; error = nil; selection = nil; storageLoaded = false
         guard let account else { pendingPairing = nil; return }
         let url = archiveURL(account)
         do { if FileManager.default.fileExists(atPath: url.path) {
@@ -296,11 +297,18 @@ struct RemoteModelPreference: Codable {
             remember(preference, machine: machine); updateSelectedEmptyChat(from: preference, machine: machine); try persist()
         } else { effortCatalog[key] = nil }
     }
-    func projects(_ machine: String, harness: String) async throws {
+    func projects(_ machine: String, harness: String, forceRefresh: Bool = false) async throws {
+        let key = machine + ":" + harness
+        // Empty catalogues are cached too. Only successful fetches extend freshness.
+        if !forceRefresh, projectCatalog[key] != nil, let fetchedAt = projectCatalogFetchedAt[key] {
+            let age = Date().timeIntervalSince(fetchedAt)
+            if age >= 0 && age < 300 { return }
+        }
         guard !busy, let owner = account else { return }; let epoch = generation; busy = true; defer { if epoch == generation { busy = false } }
         let (session, auth) = try await authorizedFields(machine, operation: "projects"); var fields = auth; fields["harnessId"] = .string(harness)
         let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields); try check(owner, epoch)
-        projectCatalog[machine + ":" + harness] = try JSONDecoder().decode([RemoteHarnessProject].self, from: JSONEncoder().encode(result.object?["projects"] ?? .array([])))
+        projectCatalog[key] = try JSONDecoder().decode([RemoteHarnessProject].self, from: JSONEncoder().encode(result.object?["projects"] ?? .array([])))
+        projectCatalogFetchedAt[key] = Date()
     }
     func prepare(_ machine: String, harness: String) async throws {
         if harnesses[machine] == nil { try await catalog(machine) }
@@ -453,7 +461,14 @@ struct RemoteModelPreference: Codable {
     func disconnect(_ machine: String, revokeMachine: Bool = false) async throws {
         guard let owner = account, activeChat == nil, !busy else { return }; let epoch = generation
         busy = true; defer { if epoch == generation { busy = false } }
-        defer { RemoteAuthorizationStore.clear(owner, machine); paired.remove(machine) }
+        defer {
+            RemoteAuthorizationStore.clear(owner, machine); paired.remove(machine)
+            // Re-pairing must never reuse the previous authorization's catalogue.
+            if epoch == generation {
+                projectCatalog = projectCatalog.filter { !$0.key.hasPrefix(machine + ":") }
+                projectCatalogFetchedAt = projectCatalogFetchedAt.filter { !$0.key.hasPrefix(machine + ":") }
+            }
+        }
         if revokeMachine {
             let session = try await ConversationManager.shared.validSession(); try check(owner, epoch)
             try await RemoteInstanceAPI.shared.revokeMachine(machine, token: session.accessToken)

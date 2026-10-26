@@ -194,7 +194,7 @@ struct RemoteHarnessProjectPicker: View {
                     ToolbarItem(placement: .topBarLeading) { Button("Fermer") { dismiss() } }
                     ToolbarItem(placement: .topBarTrailing) { Button("Actualiser", systemImage: "arrow.clockwise") {
                         guard let chat else { return }
-                        Task { do { try await instances.projects(chat.machine, harness: chat.harness); failure = nil } catch { failure = "Projets indisponibles sur cette instance." } }
+                        Task { do { try await instances.projects(chat.machine, harness: chat.harness, forceRefresh: true); failure = nil } catch { failure = "Projets indisponibles sur cette instance." } }
                     }.disabled(instances.busy) }
                 }
         }
