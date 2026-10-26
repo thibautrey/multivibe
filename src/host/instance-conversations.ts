@@ -47,16 +47,25 @@ export class InstanceConversations {
  }
  async servers(targetId:string,harnessId:string){
   identifier(harnessId);if(!['librechat','openwebui'].includes(harnessId))fail('Invalid server harness');
+  const target=this.runtime.store.target(targetId);if(target.kind==='container'&&!target.bridgePath)return {conversations:[]};
   const config=await this.call(targetId,'GET','/'+harnessId,()=>this.runtime[harnessId as 'librechat'|'openwebui'].publicConfiguration());
   if(!config.configured)return {conversations:[]};
   const result=await this.call(targetId,'GET',`/remote-chats?harnessId=${harnessId}`,()=>this.runtime.remoteChats(harnessId).list());
   if(!result.complete || !result.connectionId)fail('Incomplete server catalog',502);
   return {conversations:result.conversations.map((s:any)=>({source:{targetId,kind:'server',id:s.id,harnessId,connectionId:result.connectionId},title:String(redact(s.title)),updatedAt:s.updatedAt,model:s.model,canContinue:true}))};
  }
- async snapshot(targetId:string,id:string){return this.call(targetId,'GET',`/sessions/${enc(id)}`,()=>this.runtime.snapshot(id));}
- async command(targetId:string,id:string,command:any){return this.call(targetId,'POST',`/sessions/${enc(id)}/commands`,async()=>({receipt:await this.runtime.command(id,command)}),command);}
- async events(targetId:string,id:string,after:number){return this.call(targetId,'GET',`/sessions/${enc(id)}/events?after=${after}&poll=1`,()=>({events:this.runtime.store.events(id,after,500)}));}
- async receipt(targetId:string,id:string,commandId:string){return this.call(targetId,'GET',`/sessions/${enc(id)}/commands/${enc(commandId)}`,()=>({receipt:this.runtime.store.receipt(commandId)}));}
+ private sessionCall(targetId:string,id:string,method:string,route:string,local:()=>any,body?:unknown){
+  const target=this.runtime.store.target(targetId);
+  if(target.kind==='container'&&!target.bridgePath){
+   if(this.runtime.session(id).targetId!==targetId)fail('Conversation environment changed',409);
+   return Promise.resolve(local());
+  }
+  return this.call(targetId,method,route,local,body);
+ }
+ async snapshot(targetId:string,id:string){return this.sessionCall(targetId,id,'GET',`/sessions/${enc(id)}`,()=>this.runtime.snapshot(id));}
+ async command(targetId:string,id:string,command:any){return this.sessionCall(targetId,id,'POST',`/sessions/${enc(id)}/commands`,async()=>({receipt:await this.runtime.command(id,command)}),command);}
+ async events(targetId:string,id:string,after:number){return this.sessionCall(targetId,id,'GET',`/sessions/${enc(id)}/events?after=${after}&poll=1`,()=>({events:this.runtime.store.events(id,after,500)}));}
+ async receipt(targetId:string,id:string,commandId:string){return this.sessionCall(targetId,id,'GET',`/sessions/${enc(id)}/commands/${enc(commandId)}`,()=>({receipt:this.runtime.store.receipt(commandId)}));}
  private async server(source:InstanceConversationSource){
   const config=await this.call(source.targetId,'GET','/'+source.harnessId,()=>this.runtime.remoteChats(source.harnessId).identity());
   // Public configuration carries connectionId on remote Hosts; local identity is authoritative.
