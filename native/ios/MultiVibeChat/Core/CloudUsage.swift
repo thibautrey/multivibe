@@ -44,6 +44,7 @@ struct CloudUsageMetrics: Decodable, Sendable {
         let tokens = [inputTokens, outputTokens, totalTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens].compactMap { $0 }
         let durations = [latencyP50Ms, latencyP95Ms, ttftP50Ms, ttftP95Ms, tokensPerSecond].compactMap { $0 }
         return counts.allSatisfy { $0 >= 0 && $0 <= requests }
+            && succeeded + failed + pending + unknownOutcomeRequests == requests
             && !costUsd.isNaN && costUsd >= 0
             && tokens.allSatisfy { $0 >= 0 }
             && durations.allSatisfy { $0.isFinite && $0 >= 0 }
