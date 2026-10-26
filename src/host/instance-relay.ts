@@ -1,0 +1,167 @@
+import {createHash,randomBytes,randomUUID,timingSafeEqual} from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import {setTimeout as delay} from 'node:timers/promises';
+import express from 'express';
+import type {HostHarnessRuntime} from './harness-runtime/runtime.js';
+import {fail,identifier,requiredText,type HarnessEvent} from './harness-runtime/types.js';
+
+// An explicitly versioned adapter over the existing Personal Relay completion
+// transport. Cloud still owns account authentication, ownership, encrypted queues,
+// cancellation, single-use start receipts and allowance. No inbound Host listener.
+export const INSTANCE_RELAY_MODEL='multivibe/host-harness-v1';
+const ORIGIN='https://app.multivibe.cloud';
+const hash=(v:string)=>createHash('sha256').update(v).digest('hex');
+const equal=(a:string,b:string)=>a.length===b.length&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
+const uuid=(v:unknown):v is string=>typeof v==='string'&&/^[0-9a-f-]{36}$/i.test(v);
+type Device={id:string;name:string;digest:string;expiresAt:number;previous?:{digest:string;expiresAt:number}};
+type State={version:1;accountId:string;machineId:string;name:string;machineToken:string;devices:Device[]};
+type Envelope={version:1;accountId:string;machineId:string;operation:string;deviceId?:string;deviceToken?:string;handoff?:string;name?:string;harnessId?:string;model?:string;provider?:string;conversationId?:string;commandId?:string;text?:string;after?:number};
+type Upload=(data:string,terminal?:boolean,status?:number,contentType?:string)=>Promise<void>;
+
+export class InstanceRelay {
+ private state?:State;
+ private controller?:AbortController;
+ private handoff?:{digest:string;expiresAt:number;attempts:number};
+ private running=false;
+ private lastError?:string;
+ private rotations=new Map<string,{token:string;expiresAt:number}>();
+ constructor(private readonly runtime:HostHarnessRuntime,private readonly file:string,private readonly fetcher:typeof fetch=fetch,private readonly clock=Date.now) {
+  try {const s=JSON.parse(fs.readFileSync(file,'utf8'));if(s.version!==1||!uuid(s.accountId)||!uuid(s.machineId)||!/^mvr_[A-Za-z0-9_-]{43}$/.test(s.machineToken)||!Array.isArray(s.devices))throw Error();this.state=s;}
+  catch(e:any){if(e.code!=='ENOENT')throw new Error('Remote instance configuration is invalid');}
+ }
+ private persist(){if(!this.state)return;fs.mkdirSync(path.dirname(this.file),{recursive:true,mode:0o700});const temp=this.file+'.'+randomUUID();fs.writeFileSync(temp,JSON.stringify(this.state),{mode:0o600});fs.renameSync(temp,this.file);fs.chmodSync(this.file,0o600);}
+ status(){return {connected:!!this.state,running:this.running,name:this.state?.name,error:this.lastError,devices:this.state?.devices.filter(d=>d.expiresAt>this.clock()).map(({id,name,expiresAt})=>({id,name,expiresAt}))??[]};}
+ private async account(pathname:string,token:string,body?:unknown,method=body===undefined?'GET':'POST',signal?:AbortSignal) {
+  const response=await this.fetcher(ORIGIN+pathname,{method,redirect:'error',credentials:'omit',headers:{authorization:'Bearer '+token,'user-agent':'MultiVibe-Host/1.0',...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.any([AbortSignal.timeout(15_000),...(signal?[signal]:[])])});
+  const text=await response.text();if(text.length>1_048_576)fail('Relay response exceeds its limit',502);
+  if(!response.ok)fail('MultiVibe Relay refused this operation (HTTP '+response.status+')',response.status===401?401:502);
+  return JSON.parse(text);
+ }
+ async connect(accessToken:string,accountId:string,name:string){
+  if(this.state)fail('Disconnect the existing instance before changing accounts',409);
+  if(!uuid(accountId)||typeof accessToken!=='string'||accessToken.length>16384)fail('Invalid account');
+  const verified=await this.account('/native/v1/auth/session',accessToken);
+  if(verified.accountId!==accountId)fail('Account identity changed',403);
+  const issued=await this.account('/relay/v1/machines',accessToken,{name:requiredText(name,80)});
+  if(!uuid(issued.id)||!/^mvr_[A-Za-z0-9_-]{43}$/.test(issued.token))fail('Invalid machine enrollment',502);
+  this.state={version:1,accountId,machineId:issued.id,name,machineToken:issued.token,devices:[]};
+  try{this.persist();}catch(error){await this.account('/relay/v1/machines/'+issued.id,accessToken,undefined,'DELETE').catch(()=>{});this.state=undefined;throw error;}
+  this.start();return this.status();
+ }
+ pairing(){
+  if(!this.state||!this.running)fail('Connect this Host to Relay first',409);
+  const code=randomBytes(9).toString('base64url').toUpperCase();
+  this.handoff={digest:hash(code),expiresAt:this.clock()+5*60_000,attempts:0};
+  const uri=new URL('multivibe-chat://instance/pair');uri.searchParams.set('machine',this.state.machineId);uri.searchParams.set('handoff',code);
+  return {code,uri:uri.toString(),expiresAt:this.handoff.expiresAt,name:this.state.name};
+ }
+ cancelPairing(){this.handoff=undefined;return {cancelled:true};}
+ revokeDevice(id:string){if(this.state){this.state.devices=this.state.devices.filter(d=>d.id!==id);this.persist();}return this.status();}
+ async disconnect(accessToken:string){
+  const old=this.state;if(!old)return;
+  const identity=await this.account('/native/v1/auth/session',accessToken);
+  if(identity.accountId!==old.accountId)fail('Reconnect the owning account',403);
+  await this.account('/relay/v1/machines/'+old.machineId,accessToken,undefined,'DELETE');
+  this.stop();this.state=undefined;this.handoff=undefined;fs.rmSync(this.file,{force:true});
+ }
+ stop(){this.controller?.abort();this.controller=undefined;this.running=false;}
+ start(){if(this.controller||!this.state)return;const controller=new AbortController();this.controller=controller;void this.run(controller.signal).finally(()=>{if(this.controller===controller){this.running=false;this.controller=undefined;}});}
+ private async machine(route:string,body:unknown|undefined,signal:AbortSignal){const s=this.state;if(!s)fail('Instance disconnected',401);return this.account('/relay/v1/machine/'+route,s.machineToken,body,body===undefined?'GET':'POST',signal);}
+ private async run(signal:AbortSignal){
+  let heartbeatAt=0;
+  while(!signal.aborted&&this.state){try{
+   if(this.clock()-heartbeatAt>30_000){await this.machine('heartbeat',{models:[{id:INSTANCE_RELAY_MODEL,name:'MultiVibe Host · harness',supportsTools:false}]},signal);heartbeatAt=this.clock();this.running=true;this.lastError=undefined;}
+   const {job}=await this.machine('jobs',undefined,signal);if(job)await this.execute(job,signal);
+  }catch{if(!signal.aborted){this.lastError='Relay indisponible. Reconnexion en cours.';this.running=false;}}
+  try{await delay(1000,undefined,{signal});}catch{break;}}
+ }
+ private envelope(body:any):Envelope {
+  if(body?.model!==INSTANCE_RELAY_MODEL||!Array.isArray(body.messages)||body.messages.length!==1||body.messages[0]?.role!=='user'||typeof body.messages[0]?.content!=='string'||body.messages[0].content.length>131072)fail('Use the MultiVibe instance protocol',400);
+  let e:Envelope;try{e=JSON.parse(body.messages[0].content);}catch{fail('Invalid instance envelope');}
+  const s=this.state;if(!s||e.version!==1||e.accountId!==s.accountId||e.machineId!==s.machineId)fail('Instance/account mismatch',403);
+  return e;
+ }
+ private device(e:Envelope):Device {
+  const d=this.state?.devices.find(d=>d.id===e.deviceId),digest=hash(typeof e.deviceToken==='string'?e.deviceToken:'');
+  if(!d||d.expiresAt<=this.clock()||!(equal(d.digest,digest)||d.previous&&d.previous.expiresAt>this.clock()&&equal(d.previous.digest,digest)))fail('Device authorization expired or revoked',401);
+  return d;
+ }
+ private authorize(e:Envelope):{deviceId:string;deviceToken:string;expiresAt:number}{
+  if(e.operation==='pair'){
+   const h=this.handoff;const code=typeof e.handoff==='string'?e.handoff.toUpperCase():'';
+   if(!h||h.expiresAt<=this.clock()||++h.attempts>8||!equal(h.digest,hash(code)))fail('Pairing code expired or invalid',403);
+   this.handoff=undefined;
+   if(this.state!.devices.filter(d=>d.expiresAt>this.clock()).length>=10)fail('Device limit reached',409);
+   const token=randomBytes(32).toString('base64url'),d:Device={id:randomUUID(),name:requiredText(e.name,80),digest:hash(token),expiresAt:this.clock()+24*3600_000};
+   this.state!.devices.push(d);this.persist();return {deviceId:d.id,deviceToken:token,expiresAt:d.expiresAt};
+  }
+  const d=this.device(e);const previous=this.rotations.get(d.id);
+  if(previous&&previous.expiresAt>this.clock()&&d.previous&&equal(d.previous.digest,hash(e.deviceToken!)))return {deviceId:d.id,deviceToken:previous.token,expiresAt:d.expiresAt};
+  const token=randomBytes(32).toString('base64url');d.previous={digest:d.digest,expiresAt:this.clock()+60_000};d.digest=hash(token);d.expiresAt=this.clock()+24*3600_000;
+  this.persist();this.rotations.set(d.id,{token,expiresAt:this.clock()+60_000});return {deviceId:d.id,deviceToken:token,expiresAt:d.expiresAt};
+ }
+ // This method is also exercised directly by protocol/security tests. No network
+ // destination, filesystem path, shell command or desktop credential is accepted.
+ async dispatch(body:unknown,upload:Upload,signal:AbortSignal){
+  const e=this.envelope(body);
+  const json=async(value:unknown)=>upload(JSON.stringify({version:1,...value as object}),true,200,'application/json');
+  if(e.operation==='pair'||e.operation==='renew'){const auth=this.authorize(e);await json({...auth,name:this.state!.name,harnesses:await this.runtime.catalog()});return;}
+  const device=this.device(e);
+  if(e.operation==='revoke'){this.revokeDevice(device.id);await json({revoked:true});return;}
+  if(e.operation==='catalog'){await json({name:this.state!.name,harnesses:await this.runtime.catalog()});return;}
+  if(e.operation==='models'){await json(await this.runtime.models({harnessId:identifier(e.harnessId),targetId:'local',authMode:'native'}));return;}
+  if(e.operation!=='prompt'&&e.operation!=='recover')fail('Unsupported instance operation');
+  if(!uuid(e.conversationId)||!uuid(e.commandId))fail('Invalid conversation operation');
+  const sessionId='mobile-'+hash([this.state!.accountId,device.id,e.conversationId].join(':')).slice(0,40);
+  if(e.operation==='prompt')await this.runtime.create({id:sessionId,harnessId:identifier(e.harnessId),targetId:'local',authMode:'native',model:requiredText(e.model,256),...(e.provider?{nativeProvider:requiredText(e.provider,256)}:{}),title:'iPhone · '+device.name});
+  const emit=async(event:HarnessEvent)=>{
+   // Credentials, auth URLs, paths and arbitrary tool records never enter the
+   // mobile transcript. The complete journal remains on the owning Host.
+   const p=event.payload as any;
+   if(event.turnId===e.commandId&&['message.delta','message.part'].includes(event.type)&&p?.role==='assistant'&&typeof p.text==='string')await upload('data: '+JSON.stringify({type:event.type,text:p.text,itemId:event.itemId??'assistant',seq:event.seq})+'\n\n',false,200,'text/event-stream');
+  };
+  let cursor=Number.isSafeInteger(e.after)&&e.after!>=0?e.after!:0;
+  if(e.operation==='prompt'){
+   // Repeated IDs use the desktop runtime's receipt/fingerprint protection.
+   await this.runtime.command(sessionId,{id:e.commandId!,type:'prompt',parts:[{type:'text',text:requiredText(e.text,32000)}]});
+  }
+  const deadline=this.clock()+250_000;
+  while(this.clock()<deadline){signal.throwIfAborted();this.device(e);
+   const batch=this.runtime.store.events(sessionId,cursor,500);for(const event of batch){cursor=event.seq;await emit(event);}
+   if(cursor<this.runtime.store.eventCursor(sessionId))continue;
+   const receipt=this.runtime.store.receipt(e.commandId!);
+   if(!receipt||receipt.sessionId!==sessionId)fail('Operation not found',404);
+   if(['completed','failed','cancelled','uncertain'].includes(receipt.state)){
+    await upload('data: '+JSON.stringify({type:'terminal',state:receipt.state,cursor})+'\n\n',true,200,'text/event-stream');return;
+   }
+   if(this.runtime.snapshot(sessionId).interactions.length){await upload('data: '+JSON.stringify({type:'approval_required',cursor})+'\n\n',true,200,'text/event-stream');return;}
+   await delay(150,undefined,{signal});
+  }
+  fail('Turn continues on the Host. Reconnect to recover it.',504);
+ }
+ private async execute(job:any,signal:AbortSignal){
+  if(!uuid(job.id))fail('Invalid Relay job');
+  // Validate before accepting a single-use dispatch receipt. Never retry start.
+  this.envelope(job.body);const start=await this.machine('jobs/'+job.id+'/start',{},signal);if(start.execute!==true)fail('Relay start rejected',409);
+  const local=new AbortController(),execution=AbortSignal.any([signal,local.signal,AbortSignal.timeout(270_000)]);let seq=0,total=0,checking=false;
+  const timer=setInterval(()=>{if(checking)return;checking=true;void this.machine('jobs/'+job.id+'/status',undefined,execution).then(v=>{if(v.state!=='running')local.abort();},()=>local.abort()).finally(()=>{checking=false;});},2000);timer.unref();
+  const upload:Upload=async(data,terminal=false,status=200,contentType='application/json')=>{total+=Buffer.byteLength(data);if(total>8*1024*1024||seq>2047)fail('Instance response exceeds limit',413);await this.machine('jobs/'+job.id+'/chunks',{sequence:seq++,data,terminal,status,contentType},execution);};
+  try{await this.dispatch(job.body,upload,execution);}
+  catch(error:any){if(seq===0&&!execution.aborted)await upload(JSON.stringify({error:'Instance operation refused',status:error.status??502}),true,error.status??502);else await this.machine('jobs/'+job.id+'/fail',{},AbortSignal.timeout(5000)).catch(()=>{});}
+  finally{clearInterval(timer);local.abort();}
+ }
+}
+
+export function instanceRelayRoutes(service?:InstanceRelay){
+ const router=express.Router();router.use(express.json({limit:'32kb'}));router.use((_req,res,next)=>{res.setHeader('cache-control','no-store');if(!service)return res.status(404).json({error:'Host required'});next();});
+ const route=(fn:(req:express.Request)=>unknown):express.RequestHandler=>(req,res,next)=>{Promise.resolve().then(()=>fn(req)).then(v=>res.json(v??{disconnected:true}),next);};
+ router.get('/',route(()=>service!.status()));
+ router.post('/connect',route(req=>service!.connect(req.body.accessToken,req.body.accountId,req.body.name??os.hostname())));
+ router.post('/pairing',route(()=>service!.pairing()));
+ router.delete('/pairing',route(()=>service!.cancelPairing()));
+ router.delete('/devices/:id',route(req=>service!.revokeDevice(String(req.params.id))));
+ router.post('/disconnect',route(req=>service!.disconnect(req.body.accessToken)));
+ return router;
+}
