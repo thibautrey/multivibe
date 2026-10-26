@@ -14,6 +14,7 @@ struct ChatView: View {
     @Environment(ConversationManager.self) private var manager
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     private var voice: VoiceController { manager.voice }
     @State private var text = ""
     @State private var shortcutDraftConversation: UUID?
@@ -799,7 +800,9 @@ struct ChatView: View {
                         .frame(width: 40, height: 40)
                     }
                     ModelPickerButton(models: pickerModels, selectedModel: pickerSelectedModel, scope: pickerScope, effort: pickerEffort,
-                                      isLoading: pickerIsLoading, isDisabled: pickerIsDisabled, reload: reloadPickerModels, select: selectPickerModel)
+                                      isLoading: pickerIsLoading, isDisabled: pickerIsDisabled,
+                                      compact: dynamicTypeSize.isAccessibilitySize,
+                                      reload: reloadPickerModels, select: selectPickerModel)
                     Spacer(minLength: 0)
                     if isGenerating {
                         composerCircleButton("Arrêter", systemImage: "stop.fill", foreground: .white, background: .primary, size: 36) {
@@ -825,6 +828,7 @@ struct ChatView: View {
                                 (manager.selectedModel.isEmpty || (manager.isSynchronizing && !ModelExecution(manager.selectedModel).isLocal)))
                     }
                 }
+                .dynamicTypeSize(.small ... .accessibility1)
             }
             .labelStyle(.iconOnly)
             .buttonStyle(.plain)
@@ -1164,9 +1168,14 @@ private struct ModelPickerButton: View {
             if models.isEmpty { Task { await reload() } }
         } label: {
             if compact {
-                Image(systemName: "plus")
-                    .font(.title2.weight(.regular))
-                    .frame(width: 44, height: 44)
+                if let model = models.first(where: { $0.id == selectedModel }) {
+                    ModelProviderLogo(provider: model.presentation.provider, publisher: model.logoPublisher ?? model.author, size: 28)
+                        .frame(width: 44, height: 44)
+                } else {
+                    Image(systemName: "cpu")
+                        .font(.title3.weight(.medium))
+                        .frame(width: 44, height: 44)
+                }
             } else {
                 HStack(spacing: 6) {
                     if let model = models.first(where: { $0.id == selectedModel }) {
@@ -2115,6 +2124,7 @@ private struct HarnessIdentityLogo: View {
 }
 
 struct ChatWelcomeView<ExecutionSelector: View>: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let suggestions: [HomeSuggestion]
     let execute: (HomeSuggestion) -> Void
     let edit: (HomeSuggestion) -> Void
@@ -2125,12 +2135,12 @@ struct ChatWelcomeView<ExecutionSelector: View>: View {
     }
     var body: some View {
         ScrollView {
-            VStack(spacing: 24) {
-                Spacer(minLength: 64)
+            VStack(spacing: dynamicTypeSize.isAccessibilitySize ? 16 : 24) {
+                Spacer(minLength: dynamicTypeSize.isAccessibilitySize ? 12 : 64)
                 executionSelector
                 VStack(spacing: 8) {
                     Text("Comment puis-je vous aider ?")
-                        .font(.title2.bold())
+                        .font((dynamicTypeSize.isAccessibilitySize ? Font.headline : Font.title2).bold())
                         .accessibilityAddTraits(.isHeader)
                     Text("Discutez, analysez et agissez avec le modèle de votre choix.")
                         .font(.subheadline)
@@ -2138,13 +2148,15 @@ struct ChatWelcomeView<ExecutionSelector: View>: View {
                         .multilineTextAlignment(.center)
                 }
                 .padding(.horizontal, 20)
-                Spacer(minLength: 24)
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 300), spacing: 10)], spacing: 10) {
+                Spacer(minLength: dynamicTypeSize.isAccessibilitySize ? 8 : 24)
+                LazyVGrid(columns: dynamicTypeSize.isAccessibilitySize
+                    ? [GridItem(.flexible())]
+                    : [GridItem(.adaptive(minimum: 150, maximum: 300), spacing: 10)], spacing: 10) {
                     ForEach(suggestions) { suggestionButton($0) }
                 }
                 .padding(.horizontal, 20)
             }
-            .frame(maxWidth: 720, minHeight: 480)
+            .frame(maxWidth: 720, minHeight: dynamicTypeSize.isAccessibilitySize ? 0 : 480)
             .padding(.bottom, 20)
             .frame(maxWidth: .infinity)
         }.scrollDismissesKeyboard(.interactively)
@@ -2159,15 +2171,17 @@ struct ChatWelcomeView<ExecutionSelector: View>: View {
                 Text(suggestion.title)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.primary)
-                    .lineLimit(2)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
                     .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 14)
             .frame(maxWidth: .infinity, minHeight: 46, alignment: .leading)
-            .background(Color(uiColor: .secondarySystemBackground), in: Capsule())
-            .overlay(Capsule().stroke(.primary.opacity(0.07), lineWidth: 0.7))
-            .contentShape(Capsule())
+            .padding(.vertical, dynamicTypeSize.isAccessibilitySize ? 8 : 0)
+            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(.primary.opacity(0.07), lineWidth: 0.7))
+            .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         }
         .buttonStyle(.plain)
         // Recognize a hold before Button consumes it as an ordinary activation.
