@@ -110,7 +110,7 @@ export class HostHarnessRuntime {
   projects(input:any,home=os.homedir()) {
     const harnessId=identifier(input.harnessId),targetId=identifier(input.targetId??"local"),target=this.store.target(targetId);
     if(target.kind!=="local")return {projects:[]};
-    const generatedRoot=path.resolve(this.root,"workspaces");
+    const generatedRoot=path.join(fs.realpathSync(this.root),"workspaces");
     const projects=discoverHarnessProjects(harnessId,home).filter(project=>{
       const relative=path.relative(generatedRoot,path.resolve(project.path));
       return relative!=="" && (relative.startsWith(".."+path.sep) || path.isAbsolute(relative));
