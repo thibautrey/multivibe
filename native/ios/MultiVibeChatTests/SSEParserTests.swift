@@ -959,12 +959,6 @@ final class VoiceSystemEventTests: XCTestCase {
 }
 
 @MainActor final class VoiceCanvasPresentationTests: XCTestCase {
-    func testOrbCenterCompensatesAsymmetricSafeAreas() {
-        XCTAssertEqual(VoiceCanvasPresentation.horizontalCenterOffset(leading: 70, trailing: 0), -35)
-        XCTAssertEqual(VoiceCanvasPresentation.horizontalCenterOffset(leading: 0, trailing: 20), 10)
-        XCTAssertEqual(VoiceCanvasPresentation.horizontalCenterOffset(leading: 12, trailing: 12), 0)
-    }
-
     func testCanvasWaitsForAssistantContent() {
         let user = ChatMessage(role: "user", content: "Quel temps fera-t-il ?")
         XCTAssertFalse(VoiceCanvasPresentation.shouldActivate(messages: [], assistantDraft: ""))

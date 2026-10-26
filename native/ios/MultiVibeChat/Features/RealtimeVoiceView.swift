@@ -40,8 +40,7 @@ struct RealtimeVoiceView: View {
                         muted: controller.muted,
                         closing: closing,
                         audioLevel: controller.orbAudioLevel,
-                        horizontalCenterOffset: VoiceCanvasPresentation.horizontalCenterOffset(
-                            leading: geometry.safeAreaInsets.leading, trailing: geometry.safeAreaInsets.trailing),
+                        viewportWidth: geometry.size.width,
                         typed: $typed,
                         reduceMotion: reduceMotion,
                         openSettings: { settings = true },
@@ -222,10 +221,6 @@ struct RealtimeVoiceView: View {
 }
 
 enum VoiceCanvasPresentation {
-    static func horizontalCenterOffset(leading: CGFloat, trailing: CGFloat) -> CGFloat {
-        (trailing - leading) / 2
-    }
-
     static func shouldActivate(messages: [ChatMessage], assistantDraft: String) -> Bool {
         if !assistantDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
         return messages.contains {
@@ -275,7 +270,7 @@ private struct RealtimeVoiceCanvas: View {
     let muted: Bool
     let closing: Bool
     let audioLevel: Double
-    let horizontalCenterOffset: CGFloat
+    let viewportWidth: CGFloat
     @Binding var typed: String
     let reduceMotion: Bool
     let openSettings: () -> Void
@@ -352,7 +347,6 @@ private struct RealtimeVoiceCanvas: View {
             VoiceOrb(phase: phase, audioLevel: audioLevel, reduceMotion: reduceMotion)
                 .matchedGeometryEffect(id: "voice-orb", in: orbTransition)
                 .frame(width: 132, height: 132)
-                .offset(x: horizontalCenterOffset)
                 .accessibilityElement(children: .ignore)
                 .accessibilityIdentifier("voiceOrb")
                 .accessibilityLabel(accessibleOrbLabel)
@@ -375,7 +369,7 @@ private struct RealtimeVoiceCanvas: View {
             if let error { errorView(error) }
             Spacer(minLength: 24)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(width: viewportWidth, maxHeight: .infinity)
     }
 
     private var transcript: some View {
@@ -423,8 +417,7 @@ private struct RealtimeVoiceCanvas: View {
                     .transition(.opacity)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .center)
-        .offset(x: horizontalCenterOffset)
+        .frame(width: viewportWidth, alignment: .center)
         .padding(.bottom, 5)
         .allowsHitTesting(false)
     }
@@ -658,8 +651,7 @@ struct RealtimeVoiceFixtureView: View {
                 muted: false,
                 closing: false,
                 audioLevel: hero ? 0.78 : speaking ? 0.86 : 0.64,
-                horizontalCenterOffset: VoiceCanvasPresentation.horizontalCenterOffset(
-                    leading: geometry.safeAreaInsets.leading, trailing: geometry.safeAreaInsets.trailing),
+                viewportWidth: geometry.size.width,
                 typed: $typed,
                 reduceMotion: false,
                 openSettings: {},
