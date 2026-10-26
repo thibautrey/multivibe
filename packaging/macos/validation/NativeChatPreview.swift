@@ -16,6 +16,7 @@ import SwiftUI
 @MainActor final class ChatPreviewDelegate: MultiVibeMenuBarApp {
     private var chatWindow: NSWindow?
     private var previewStore: NativeChatStore?
+    private var previewAgent: NativeChatAgentCoordinator?
     override func applicationDidFinishLaunching(_ notification: Notification) {
         operational = true
         dashboardURL = URL(string: ProcessInfo.processInfo.environment["MULTIVIBE_UI_PREVIEW_URL"]!)!
@@ -29,8 +30,24 @@ import SwiftUI
                 try JSONEncoder().encode(conversations).write(to: file, options: .atomic)
                 let store = NativeChatStore(file: file)
                 previewStore = store
-                let cloud = try NativeCloudSession(storage: .init(load: { nil }, save: { _ in }, clear: {}), transport: { _ in throw HostAssistantError.unavailable })
+                let cloud: NativeCloudSession
+                if ProcessInfo.processInfo.environment["MULTIVIBE_PREVIEW_ACCOUNTS"] == "1" {
+                    let salt = Data(repeating: 7, count: 32)
+                    let verifier = try await Task.detached { try NativeCloudPIN.derive("2468", salt: salt, rounds: 120_000) }.value
+                    var registry: NativeCloudAccountRegistry? = .init(accounts: [
+                        .init(credential: .init(accessToken: "fixture-alice", refreshToken: "fixture-refresh-alice", expiresAt: .distantFuture, accountID: "preview-alice"), displayName: "Alice"),
+                        .init(credential: .init(accessToken: "fixture-noah", refreshToken: "fixture-refresh-noah", expiresAt: .distantFuture, accountID: "preview-noah"), displayName: "Noah", pin: .init(salt: salt, verifier: verifier)),
+                    ], selectedAccountID: "preview-alice")
+                    cloud = try NativeCloudSession(transport: { request in
+                        let id = request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-noah" ? "preview-noah" : "preview-alice"
+                        let payload: [String: Any] = ["accountId": id, "cloudEnabled": false, "exportSources": [], "revision": 1]
+                        return (try JSONSerialization.data(withJSONObject: payload), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+                    }, accountStorage: .init(load: { registry }, save: { registry = $0 }))
+                } else {
+                    cloud = try NativeCloudSession(storage: .init(load: { nil }, save: { _ in }, clear: {}), transport: { _ in throw HostAssistantError.unavailable })
+                }
                 let agent = NativeChatAgentCoordinator(session: cloud, root: root.appendingPathComponent("cloud"))
+                previewAgent = agent
                 let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780), styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)
                 window.title = "MultiVibe UI Preview"
                 window.titleVisibility = .hidden
@@ -61,7 +78,7 @@ import SwiftUI
         }
         menu.addItem(edit)
         let scenes = NSMenuItem(); scenes.submenu = NSMenu(title: "Scénarios")
-        for (index, title) in ["Accueil", "Conversation", "Travail et file", "Question", "Erreur", "Fenêtre étroite", "Fenêtre large", "Clair", "Sombre", "Panneau navigateur"].enumerated() {
+        for (index, title) in ["Accueil", "Conversation", "Travail et file", "Question", "Erreur", "Fenêtre étroite", "Fenêtre large", "Clair", "Sombre", "Panneau navigateur", "Verrouiller le compte"].enumerated() {
             let shortcut = index < 9 ? String(index + 1) : ""
             let item = NSMenuItem(title: title, action: #selector(selectScene(_:)), keyEquivalent: shortcut); item.target = self; item.tag = index
             scenes.submenu?.addItem(item)
@@ -77,7 +94,8 @@ import SwiftUI
         else if sender.tag == 6 { window.setContentSize(NSSize(width: 1180, height: 780)) }
         else if sender.tag == 7 { window.appearance = NSAppearance(named: .aqua) }
         else if sender.tag == 8 { window.appearance = NSAppearance(named: .darkAqua) }
-        else { store.computer.browser.show() }
+        else if sender.tag == 9 { store.computer.browser.show() }
+        else { previewAgent?.lockAccount() }
     }
     override func applicationWillTerminate(_ notification: Notification) {}
 }

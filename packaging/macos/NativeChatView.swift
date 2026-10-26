@@ -158,6 +158,7 @@ private struct NativeChatSuggestionEditor: View {
     @ObservedObject private var desktopAgent: ComputerUseController
     @ObservedObject private var browser: ChromiumBrowser
     @StateObject private var agent: NativeChatAgentCoordinator
+    @StateObject private var identity: NativeDesktopIdentity
     @State private var cloudConsent = false
     @State private var cloudMode = false
     @State private var cloudSelection: UUID?
@@ -231,7 +232,9 @@ private struct NativeChatSuggestionEditor: View {
         self.store = store
         _desktopAgent = ObservedObject(wrappedValue: store.computer)
         _browser = ObservedObject(wrappedValue: store.computer.browser)
-        _agent = StateObject(wrappedValue: agent ?? NativeChatAgentCoordinator())
+        let coordinator = agent ?? NativeChatAgentCoordinator()
+        _agent = StateObject(wrappedValue: coordinator)
+        _identity = StateObject(wrappedValue: NativeDesktopIdentity(agent: coordinator))
     }
 
     private var draft: Binding<String> { Binding(get: { cloudMode ? cloudDraft : (store.current?.draft ?? "") }, set: { value in
@@ -418,6 +421,22 @@ private struct NativeChatSuggestionEditor: View {
         }
         .tint(ChatPalette.accent)
         .frame(minWidth: showingUtilityPanel ? 1080 : 760, maxWidth: .infinity, minHeight: 500, maxHeight: .infinity)
+        .disabled(identity.requiresSelection)
+        .accessibilityHidden(identity.requiresSelection)
+        .overlay {
+            if identity.requiresSelection {
+                ZStack {
+                    ChatPalette.canvas
+                    VStack(spacing: 15) {
+                        Image(systemName: "person.crop.circle").font(.system(size: 46, weight: .light)).foregroundStyle(ChatPalette.accent)
+                        Text("Votre espace vous attend").font(.title2.weight(.semibold))
+                        Button("Choisir mon compte") { identity.openPicker() }.buttonStyle(.borderedProminent)
+                    }
+                }
+            }
+        }
+        .background(NativeIdentityWindowActivity(identity: identity))
+        .sheet(isPresented: $identity.showsPicker) { NativeAccountPickerView(identity: identity) }
         .task {
             if store.current == nil { store.newConversation() }
             await loadNativeChatDependencies(
@@ -457,6 +476,19 @@ private struct NativeChatSuggestionEditor: View {
         .onChange(of: agent.accountID) { _ in
             cloudTask?.cancel(); cloudSending = false; cloudDraft = ""; cloudModel = ""; cloudSelection = nil
             if agent.accountID == nil { cloudMode = false }
+        }
+        .onChange(of: identity.requiresSelection) { required in
+            if required {
+                cloudTask?.cancel(); cloudTask = nil; cloudSending = false
+                speech.stopSpeaking(at: .immediate)
+                if store.computer.running { store.computer.stop() }
+                cloudConsent = false; instancePairing = false
+                configuringRemoteHarness = nil; installingHarness = nil; editingWelcomeSuggestion = nil
+                showingGoal = false; goalText = ""; renameID = nil; renameTitle = ""; deleteID = nil
+                showingAddMenu = false; choosingHarness = false; choosingModel = false
+                choosingEffort = false; choosingProject = false
+                identity.showsPicker = true
+            }
         }
         .onChange(of: cloudSelection) { _ in cloudDraft = "" }
         .onChange(of: cloudMode) { enabled in
@@ -680,23 +712,23 @@ private struct NativeChatSuggestionEditor: View {
     }
     private var sidebarFooter: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 9) {
+            Button { identity.openPicker() } label: { HStack(spacing: 9) {
                 ZStack {
                     Circle().fill(ChatPalette.accent.opacity(0.13))
                     Image(systemName: agent.accountID == nil ? "desktopcomputer" : "person.crop.circle.badge.checkmark")
                         .font(.caption).foregroundStyle(ChatPalette.accent)
                 }.frame(width: 28, height: 28)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(agent.accountID == nil ? "Sur ce Mac" : "Cloud connecté").font(.caption.weight(.semibold))
-                    Text(agent.accountID == nil ? "Historique local" : "Hermes disponible").font(.caption2).foregroundStyle(.secondary)
+                    Text(identity.displayName).font(.caption.weight(.semibold)).lineLimit(1)
+                    Text(identity.profiles.isEmpty ? "Historique local" : "Changer de compte").font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
                 if agent.busy { ProgressView().controlSize(.mini) }
-            }
+                Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
+            }.contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityLabel("Compte : \(identity.displayName). Choisir un compte")
             if agent.accountID == nil {
                 Button("Connecter MultiVibe Cloud") {
-                    guard let window = NSApp.keyWindow else { return }
-                    Task { await agent.connect(window: window) }
+                    Task { await identity.addAccount() }
                 }.buttonStyle(.borderless)
             } else {
                 HStack {
@@ -713,7 +745,8 @@ private struct NativeChatSuggestionEditor: View {
                             }
                         }
                         Divider()
-                        Button("Déconnecter le Cloud") { Task { await agent.disconnect() } }
+                        Button("Changer de compte…") { identity.openPicker() }
+                        Button("Verrouiller le compte") { identity.lock() }
                     }.menuStyle(.borderlessButton)
                 }
             }
