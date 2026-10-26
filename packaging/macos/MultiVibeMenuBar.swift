@@ -139,7 +139,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
     func configurePopover() {
         popover.behavior = .transient
         popover.animates = true
-        popover.contentSize = NSSize(width: 420, height: 570)
+        popover.contentSize = NSSize(width: MenuBarLayoutMetrics.width, height: MenuBarLayoutMetrics.height)
         popover.contentViewController = popoverController
         popover.delegate = self
         popoverController.openAssistant = { [weak self] in

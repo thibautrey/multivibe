@@ -116,6 +116,7 @@ import { createRequestTracingMiddleware } from "./request-tracing.js";
 import { createInternalV1EdgeRouter } from "./internal-v1-edge-routes.js";
 import {
   buildHostMenuBarAccountsSummary,
+  buildHostMenuBarExtensionWidgets,
   buildHostMenuBarGitHubStarPrompt,
 } from "./host/menu-bar.js";
 import {
@@ -651,6 +652,7 @@ app.get("/admin/host/menu-bar", adminGuard, async (req, res) => {
   res.json({
     operational: true,
     ...accountSummary,
+    extensionWidgets: buildHostMenuBarExtensionWidgets(),
     githubStarPrompt: buildHostMenuBarGitHubStarPrompt(generatedOutputTokens),
     ...(forecast ? { forecast } : {}),
     ...(cloud ? { cloud } : {}),

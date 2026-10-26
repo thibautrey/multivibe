@@ -40,14 +40,14 @@ extension HostPopoverController {
         container.addSubview(divider)
 
         NSLayoutConstraint.activate([
-            icon.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 18),
+            icon.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: MenuBarLayoutMetrics.contentInset),
             icon.centerYAnchor.constraint(equalTo: container.centerYAnchor, constant: -1),
             icon.widthAnchor.constraint(equalToConstant: 36),
             icon.heightAnchor.constraint(equalToConstant: 36),
-            labels.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 12),
+            labels.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: MenuBarSpacing.medium),
             labels.centerYAnchor.constraint(equalTo: icon.centerYAnchor),
-            labels.trailingAnchor.constraint(lessThanOrEqualTo: settingsButton.leadingAnchor, constant: -12),
-            settingsButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            labels.trailingAnchor.constraint(lessThanOrEqualTo: settingsButton.leadingAnchor, constant: -MenuBarSpacing.medium),
+            settingsButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -MenuBarLayoutMetrics.contentInset),
             settingsButton.centerYAnchor.constraint(equalTo: container.centerYAnchor),
             settingsButton.widthAnchor.constraint(equalToConstant: 34),
             settingsButton.heightAnchor.constraint(equalToConstant: 34),
@@ -87,8 +87,8 @@ extension HostPopoverController {
             divider.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             divider.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             divider.heightAnchor.constraint(equalToConstant: 1),
-            actions.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 18),
-            actions.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -18),
+            actions.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: MenuBarLayoutMetrics.contentInset),
+            actions.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -MenuBarLayoutMetrics.contentInset),
             actions.centerYAnchor.constraint(equalTo: container.centerYAnchor, constant: 1),
             primaryButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 170),
             primaryButton.heightAnchor.constraint(equalToConstant: 36),
@@ -129,13 +129,23 @@ extension HostPopoverController {
         label(text, size: 10, weight: .semibold, color: MenuBarPalette.muted)
     }
 
+    func sectionHeading(_ title: String, detail: String) -> NSView {
+        let titleLabel = sectionLabel(title)
+        let detailLabel = label(detail, size: 10, color: MenuBarPalette.muted)
+        let row = NSStackView(views: [titleLabel, NSView(), detailLabel])
+        row.orientation = .horizontal
+        row.alignment = .firstBaseline
+        row.widthAnchor.constraint(equalToConstant: MenuBarLayoutMetrics.contentWidth).isActive = true
+        return row
+    }
+
     func card() -> NSView {
         let view = AdaptiveLayerView(backgroundColor: MenuBarPalette.panel, borderColor: MenuBarPalette.line)
-        view.layer?.cornerRadius = 14
+        view.layer?.cornerRadius = MenuBarLayoutMetrics.cardCornerRadius
         view.layer?.borderWidth = 0.5
         view.layer?.masksToBounds = true
         view.translatesAutoresizingMaskIntoConstraints = false
-        view.widthAnchor.constraint(equalToConstant: 384).isActive = true
+        view.widthAnchor.constraint(equalToConstant: MenuBarLayoutMetrics.contentWidth).isActive = true
         return view
     }
 
@@ -144,7 +154,7 @@ extension HostPopoverController {
         container.layer?.cornerRadius = 12
         container.layer?.masksToBounds = true
         container.translatesAutoresizingMaskIntoConstraints = false
-        container.widthAnchor.constraint(equalToConstant: 384).isActive = true
+        container.widthAnchor.constraint(equalToConstant: MenuBarLayoutMetrics.contentWidth).isActive = true
 
         let icon = NSImageView(image: NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil) ?? NSImage())
         icon.contentTintColor = MenuBarPalette.mutedStrong
@@ -162,14 +172,14 @@ extension HostPopoverController {
         container.addSubview(icon)
         container.addSubview(copy)
         NSLayoutConstraint.activate([
-            icon.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            icon.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: MenuBarSpacing.large),
             icon.centerYAnchor.constraint(equalTo: container.centerYAnchor),
             icon.widthAnchor.constraint(equalToConstant: 18),
             icon.heightAnchor.constraint(equalToConstant: 18),
-            copy.topAnchor.constraint(equalTo: container.topAnchor, constant: 11),
-            copy.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 11),
-            copy.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
-            copy.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
+            copy.topAnchor.constraint(equalTo: container.topAnchor, constant: MenuBarSpacing.medium),
+            copy.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: MenuBarSpacing.medium),
+            copy.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -MenuBarSpacing.medium),
+            copy.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -MenuBarSpacing.medium),
         ])
         return container
     }
@@ -178,12 +188,11 @@ extension HostPopoverController {
         let container = card()
         let content: NSView
         if let limiting = provider.windows.min(by: { $0.remainingPercent < $1.remainingPercent }) {
-            let title = label("\(limiting.label) capacity", size: 11, weight: .medium, color: MenuBarPalette.muted)
-            let value = label(percent(limiting.remainingPercent), size: 27, weight: .semibold, color: MenuBarPalette.text)
-            value.font = .monospacedDigitSystemFont(ofSize: 27, weight: .semibold)
-            let heading = NSStackView(views: [title, NSView(), value])
-            heading.orientation = .horizontal
-            heading.alignment = .firstBaseline
+            let title = label("\(limiting.label) capacity", size: 10, weight: .semibold, color: MenuBarPalette.muted)
+            title.alignment = .center
+            let value = label(percent(limiting.remainingPercent), size: 42, weight: .semibold, color: MenuBarPalette.text)
+            value.font = .monospacedDigitSystemFont(ofSize: 42, weight: .semibold)
+            value.alignment = .center
 
             let bar = QuotaBarView()
             bar.remainingPercent = limiting.remainingPercent
@@ -200,26 +209,236 @@ extension HostPopoverController {
             let detail = label(context.joined(separator: "   "), size: 10, color: MenuBarPalette.muted)
             detail.lineBreakMode = .byTruncatingTail
             detail.maximumNumberOfLines = 1
+            detail.alignment = .center
 
-            let stack = NSStackView(views: [heading, bar, detail])
+            let stack = NSStackView(views: [title, value, bar, detail])
             stack.orientation = .vertical
-            stack.alignment = .leading
-            stack.spacing = 7
-            heading.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            stack.alignment = .centerX
+            stack.spacing = MenuBarSpacing.small
             bar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            detail.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
             content = stack
         } else if let balance = provider.balance {
-            content = balanceCell(title: "Available credit", balance: balance)
+            let title = label("Available credit", size: 10, weight: .semibold, color: MenuBarPalette.muted)
+            title.alignment = .center
+            let amount = creditBalanceText(remaining: balance.remaining, unit: balance.unit)
+            let value = label(amount, size: 34, weight: .semibold, color: MenuBarPalette.text)
+            value.font = .monospacedDigitSystemFont(ofSize: 34, weight: .semibold)
+            value.alignment = .center
+            value.setAccessibilityLabel("Available credit")
+            value.setAccessibilityValue(amount)
+            let detail = label(accountCount(balance.accountCount), size: 10, color: MenuBarPalette.muted)
+            detail.alignment = .center
+            let stack = NSStackView(views: [title, value, detail])
+            stack.orientation = .vertical
+            stack.alignment = .centerX
+            stack.spacing = MenuBarSpacing.small
+            content = stack
         } else {
             content = label("Capacity unavailable", size: 11, color: MenuBarPalette.muted)
         }
         content.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(content)
         NSLayoutConstraint.activate([
-            content.topAnchor.constraint(equalTo: container.topAnchor, constant: 14),
-            content.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 15),
-            content.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -15),
-            content.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -14),
+            content.topAnchor.constraint(equalTo: container.topAnchor, constant: MenuBarSpacing.xLarge),
+            content.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: MenuBarSpacing.large),
+            content.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -MenuBarSpacing.large),
+            content.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -MenuBarSpacing.xLarge),
+        ])
+        return container
+    }
+
+    func providerAvailabilityCard(_ provider: ProviderQuota) -> NSView {
+        let container = card()
+        let accounts = provider.accounts
+        let unsupported = !accounts.isEmpty && accounts.allSatisfy { $0.usageStatus == "unsupported" }
+        let content: NSStackView
+
+        if unsupported {
+            let icon = NSImageView(image: NSImage(systemSymbolName: "eye.slash", accessibilityDescription: nil) ?? NSImage())
+            icon.contentTintColor = MenuBarPalette.primary
+            icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 22, weight: .medium)
+            let title = label("Quota unavailable", size: 15, weight: .semibold, color: MenuBarPalette.text)
+            let detail = label("This provider does not expose quota usage.", size: 11, color: MenuBarPalette.muted)
+            detail.alignment = .center
+            detail.maximumNumberOfLines = 2
+            content = NSStackView(views: [icon, title, detail])
+        } else if accounts.count > 1 {
+            let ready = accounts.filter { $0.status == "ready" }.count
+            let title = label("Accounts ready", size: 10, weight: .semibold, color: MenuBarPalette.muted)
+            let value = label("\(ready)/\(accounts.count)", size: 38, weight: .semibold, color: MenuBarPalette.text)
+            value.font = .monospacedDigitSystemFont(ofSize: 38, weight: .semibold)
+            let detail = label("Quota data will appear after the first refresh.", size: 10, color: MenuBarPalette.muted)
+            detail.alignment = .center
+            content = NSStackView(views: [title, value, detail])
+        } else {
+            let icon = NSImageView(image: NSImage(systemSymbolName: "clock", accessibilityDescription: nil) ?? NSImage())
+            icon.contentTintColor = MenuBarPalette.primary
+            icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 22, weight: .medium)
+            let title = label("Quota pending", size: 15, weight: .semibold, color: MenuBarPalette.text)
+            let detail = label(accounts.first.map(usageDetail) ?? "Waiting for provider usage data.", size: 11, color: MenuBarPalette.muted)
+            detail.alignment = .center
+            detail.maximumNumberOfLines = 2
+            content = NSStackView(views: [icon, title, detail])
+        }
+
+        content.orientation = .vertical
+        content.alignment = .centerX
+        content.spacing = MenuBarSpacing.small
+        content.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.topAnchor.constraint(equalTo: container.topAnchor, constant: MenuBarSpacing.xLarge),
+            content.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: MenuBarSpacing.large),
+            content.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -MenuBarSpacing.large),
+            content.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -MenuBarSpacing.xLarge),
+        ])
+        return container
+    }
+
+    func renderExtensionWidgets(_ widgets: [MenuBarExtensionWidget]) {
+        for child in extensionSection.arrangedSubviews {
+            extensionSection.removeArrangedSubview(child)
+            child.removeFromSuperview()
+        }
+        extensionSection.orientation = .vertical
+        extensionSection.alignment = .leading
+        extensionSection.spacing = MenuBarSpacing.small
+        let visible = Array(widgets.prefix(4))
+        guard !visible.isEmpty else { return }
+        extensionSection.addArrangedSubview(sectionHeading("EXTENSIONS", detail: "\(visible.count) visible"))
+        for widget in visible {
+            extensionSection.addArrangedSubview(extensionWidgetCard(widget))
+        }
+    }
+
+    func extensionWidgetCard(_ widget: MenuBarExtensionWidget) -> NSView {
+        let container = card()
+        let fallbackIcon = NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: nil) ?? NSImage()
+        let iconImage = widget.systemImage.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil) } ?? fallbackIcon
+        let icon = NSImageView(image: iconImage)
+        icon.contentTintColor = MenuBarPalette.primary
+        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 28).isActive = true
+
+        let title = label(widget.title, size: 12, weight: .semibold, color: MenuBarPalette.text)
+        title.lineBreakMode = .byTruncatingTail
+        title.maximumNumberOfLines = 1
+        let subtitle = label(widget.subtitle ?? widget.extensionId, size: 10, color: MenuBarPalette.muted)
+        subtitle.lineBreakMode = .byTruncatingTail
+        subtitle.maximumNumberOfLines = 1
+        let copy = NSStackView(views: [title, subtitle])
+        copy.orientation = .vertical
+        copy.alignment = .leading
+        copy.spacing = MenuBarSpacing.xSmall
+        copy.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        var headerViews: [NSView] = [icon, copy, NSView()]
+        if let badge = widget.badge?.trimmingCharacters(in: .whitespacesAndNewlines), !badge.isEmpty {
+            let copy = String(badge.prefix(24))
+            let badgeLabel = AdaptiveLayerTextField(
+                labelWithString: copy,
+                backgroundColor: MenuBarPalette.surfaceMuted,
+                borderColor: MenuBarPalette.line
+            )
+            badgeLabel.font = .systemFont(ofSize: 10, weight: .semibold)
+            badgeLabel.textColor = MenuBarPalette.mutedStrong
+            badgeLabel.alignment = .center
+            badgeLabel.layer?.cornerRadius = 8
+            badgeLabel.layer?.borderWidth = 0.5
+            badgeLabel.translatesAutoresizingMaskIntoConstraints = false
+            let width = ceil((copy as NSString).size(withAttributes: [.font: badgeLabel.font!]).width) + MenuBarSpacing.large
+            badgeLabel.widthAnchor.constraint(equalToConstant: width).isActive = true
+            badgeLabel.heightAnchor.constraint(equalToConstant: 20).isActive = true
+            badgeLabel.setContentHuggingPriority(.required, for: .horizontal)
+            badgeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+            headerViews.append(badgeLabel)
+        }
+        let header = NSStackView(views: headerViews)
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = MenuBarSpacing.medium
+        let headerContainer = insetView(header, horizontal: MenuBarSpacing.medium, vertical: MenuBarSpacing.small)
+
+        let body: NSView
+        if widget.presentation == "progress", let progress = widget.progressPercent, progress.isFinite {
+            let metricLabel = label(widget.label ?? "Progress", size: 10, color: MenuBarPalette.muted)
+            let metricValue = label(widget.value ?? percent(progress), size: 12, weight: .semibold, color: MenuBarPalette.text)
+            let metric = NSStackView(views: [metricLabel, NSView(), metricValue])
+            metric.orientation = .horizontal
+            metric.alignment = .firstBaseline
+            let bar = QuotaBarView()
+            bar.remainingPercent = progress
+            bar.setAccessibilityLabel(widget.label ?? widget.title)
+            bar.setAccessibilityValue(percent(progress))
+            let views: [NSView] = widget.detail.map {
+                let detail = label($0, size: 10, color: MenuBarPalette.muted)
+                detail.lineBreakMode = .byTruncatingTail
+                detail.maximumNumberOfLines = 1
+                return [metric, bar, detail]
+            } ?? [metric, bar]
+            let stack = NSStackView(views: views)
+            stack.orientation = .vertical
+            stack.alignment = .leading
+            stack.spacing = MenuBarSpacing.small
+            metric.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            bar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            body = stack
+        } else {
+            let metricLabel = label(widget.label ?? "Status", size: 10, color: MenuBarPalette.muted)
+            let metricValue = label(widget.value ?? "Available", size: 12, weight: .semibold, color: MenuBarPalette.text)
+            metricValue.lineBreakMode = .byTruncatingTail
+            let metric = NSStackView(views: [metricLabel, NSView(), metricValue])
+            metric.orientation = .horizontal
+            metric.alignment = .firstBaseline
+            if let detailText = widget.detail, !detailText.isEmpty {
+                let detail = label(detailText, size: 10, color: MenuBarPalette.muted)
+                detail.lineBreakMode = .byTruncatingTail
+                detail.maximumNumberOfLines = 1
+                let stack = NSStackView(views: [metric, detail])
+                stack.orientation = .vertical
+                stack.alignment = .leading
+                stack.spacing = MenuBarSpacing.small
+                metric.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+                body = stack
+            } else {
+                body = metric
+            }
+        }
+        let bodyContainer = insetView(body, horizontal: MenuBarSpacing.medium, vertical: MenuBarSpacing.medium)
+        let divider = makeDivider()
+        divider.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        let stack = NSStackView(views: [headerContainer, divider, bodyContainer])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 0
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        headerContainer.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        divider.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        bodyContainer.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        container.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: container.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        container.setAccessibilityLabel("\(widget.title) extension widget")
+        return container
+    }
+
+    func insetView(_ content: NSView, horizontal: CGFloat, vertical: CGFloat) -> NSView {
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+        content.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.topAnchor.constraint(equalTo: container.topAnchor, constant: vertical),
+            content.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: horizontal),
+            content.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -horizontal),
+            content.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -vertical),
         ])
         return container
     }
@@ -252,14 +471,14 @@ extension HostPopoverController {
         let stack = NSStackView(views: quotaCells)
         stack.orientation = .horizontal
         stack.distribution = .fillEqually
-        stack.spacing = 18
+        stack.spacing = MenuBarSpacing.large
         stack.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 14),
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -14),
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: MenuBarSpacing.large),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: MenuBarSpacing.large),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -MenuBarSpacing.large),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -MenuBarSpacing.large),
         ])
         return container
     }
@@ -285,6 +504,29 @@ extension HostPopoverController {
         stack.spacing = 5
         bar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         return stack
+    }
+
+    func accountIdentityCard(_ account: MenuBarAccount) -> NSView {
+        let container = card()
+        let name = label(account.displayName, size: 12, weight: .semibold, color: MenuBarPalette.text)
+        name.lineBreakMode = .byTruncatingMiddle
+        name.maximumNumberOfLines = 1
+        name.toolTip = account.displayName
+        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let state = statusBadge(account.status)
+        let row = NSStackView(views: [name, NSView(), state])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = MenuBarSpacing.small
+        row.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.topAnchor.constraint(equalTo: container.topAnchor, constant: MenuBarSpacing.medium),
+            row.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: MenuBarSpacing.large),
+            row.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -MenuBarSpacing.large),
+            row.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -MenuBarSpacing.medium),
+        ])
+        return container
     }
 
     func accountsCard(_ accounts: [MenuBarAccount]) -> NSView {
@@ -368,16 +610,16 @@ extension HostPopoverController {
         let stack = NSStackView(views: contentViews)
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 6
+        stack.spacing = MenuBarSpacing.small
         stack.translatesAutoresizingMaskIntoConstraints = false
         header.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         windowsView?.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         container.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 15),
-            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -15),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: MenuBarSpacing.medium),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: MenuBarSpacing.large),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -MenuBarSpacing.large),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -MenuBarSpacing.medium),
         ])
         return container
     }
@@ -433,7 +675,7 @@ extension HostPopoverController {
         heading.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 5
+        stack.spacing = MenuBarSpacing.small
         return stack
     }
 
@@ -452,14 +694,21 @@ extension HostPopoverController {
             (copy, color, background) = ("Attention", MenuBarPalette.danger, MenuBarPalette.dangerSoft)
         }
         let badge = AdaptiveLayerTextField(
-            labelWithString: "\u{00a0}\(copy)\u{00a0}",
+            labelWithString: copy,
             backgroundColor: background,
             borderColor: color.withAlphaComponent(0.2)
         )
         badge.font = .systemFont(ofSize: 10, weight: .semibold)
         badge.textColor = color
+        badge.alignment = .center
         badge.layer?.cornerRadius = 8
         badge.layer?.borderWidth = 0.5
+        badge.translatesAutoresizingMaskIntoConstraints = false
+        let width = ceil((copy as NSString).size(withAttributes: [.font: badge.font!]).width) + MenuBarSpacing.large
+        badge.widthAnchor.constraint(equalToConstant: width).isActive = true
+        badge.heightAnchor.constraint(equalToConstant: 20).isActive = true
+        badge.setContentHuggingPriority(.required, for: .horizontal)
+        badge.setContentCompressionResistancePriority(.required, for: .horizontal)
         return badge
     }
 
@@ -479,10 +728,10 @@ extension HostPopoverController {
         stack.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 15),
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 15),
-            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -15),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -15),
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: MenuBarSpacing.large),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: MenuBarSpacing.large),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -MenuBarSpacing.large),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -MenuBarSpacing.large),
         ])
         return container
     }
@@ -496,14 +745,14 @@ extension HostPopoverController {
         ])
         rows.orientation = .vertical
         rows.alignment = .leading
-        rows.spacing = 8
+        rows.spacing = MenuBarSpacing.small
         rows.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(rows)
         NSLayoutConstraint.activate([
-            rows.topAnchor.constraint(equalTo: container.topAnchor, constant: 13),
-            rows.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 15),
-            rows.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -15),
-            rows.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -13),
+            rows.topAnchor.constraint(equalTo: container.topAnchor, constant: MenuBarSpacing.medium),
+            rows.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: MenuBarSpacing.large),
+            rows.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -MenuBarSpacing.large),
+            rows.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -MenuBarSpacing.medium),
         ])
         return container
     }
@@ -547,14 +796,14 @@ extension HostPopoverController {
         let stack = NSStackView(views: [titleLabel, detailLabel, actions])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 9
+        stack.spacing = MenuBarSpacing.medium
         stack.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 14),
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 15),
-            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -15),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -14),
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: MenuBarSpacing.large),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: MenuBarSpacing.large),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -MenuBarSpacing.large),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -MenuBarSpacing.large),
         ])
         return container
     }
@@ -565,7 +814,9 @@ extension HostPopoverController {
         let row = NSStackView(views: [titleLabel, NSView(), valueLabel])
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.widthAnchor.constraint(equalToConstant: 354).isActive = true
+        row.widthAnchor.constraint(
+            equalToConstant: MenuBarLayoutMetrics.contentWidth - MenuBarSpacing.large * 2
+        ).isActive = true
         return row
     }
 

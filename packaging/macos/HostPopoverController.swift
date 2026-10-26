@@ -22,6 +22,7 @@ final class HostPopoverController: NSViewController {
     var hostOperational = false
     var providerPolicyPicker: NSPopUpButton?
     let accountSection = NSStackView()
+    let extensionSection = NSStackView()
     let primaryButton = NSButton(title: "Open Dashboard", target: nil, action: nil)
     let startAtLoginButton = NSButton(checkboxWithTitle: "Launch at login", target: nil, action: nil)
 
@@ -41,8 +42,13 @@ final class HostPopoverController: NSViewController {
         document.translatesAutoresizingMaskIntoConstraints = false
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
-        contentStack.spacing = 13
-        contentStack.edgeInsets = NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18)
+        contentStack.spacing = MenuBarSpacing.large
+        contentStack.edgeInsets = NSEdgeInsets(
+            top: MenuBarSpacing.large,
+            left: MenuBarLayoutMetrics.contentInset,
+            bottom: MenuBarSpacing.large,
+            right: MenuBarLayoutMetrics.contentInset
+        )
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         document.addSubview(contentStack)
         scrollView.documentView = document
@@ -55,12 +61,12 @@ final class HostPopoverController: NSViewController {
         background.addSubview(footer)
 
         NSLayoutConstraint.activate([
-            background.widthAnchor.constraint(equalToConstant: 420),
-            background.heightAnchor.constraint(equalToConstant: 570),
+            background.widthAnchor.constraint(equalToConstant: MenuBarLayoutMetrics.width),
+            background.heightAnchor.constraint(equalToConstant: MenuBarLayoutMetrics.height),
             header.topAnchor.constraint(equalTo: background.topAnchor),
             header.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             header.trailingAnchor.constraint(equalTo: background.trailingAnchor),
-            header.heightAnchor.constraint(equalToConstant: 76),
+            header.heightAnchor.constraint(equalToConstant: MenuBarLayoutMetrics.headerHeight),
             scrollView.topAnchor.constraint(equalTo: header.bottomAnchor),
             scrollView.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: background.trailingAnchor),
@@ -68,7 +74,7 @@ final class HostPopoverController: NSViewController {
             footer.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             footer.trailingAnchor.constraint(equalTo: background.trailingAnchor),
             footer.bottomAnchor.constraint(equalTo: background.bottomAnchor),
-            footer.heightAnchor.constraint(equalToConstant: 60),
+            footer.heightAnchor.constraint(equalToConstant: MenuBarLayoutMetrics.footerHeight),
             document.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
             contentStack.topAnchor.constraint(equalTo: document.topAnchor),
             contentStack.leadingAnchor.constraint(equalTo: document.leadingAnchor),
@@ -120,9 +126,13 @@ final class HostPopoverController: NSViewController {
         }
         accountSection.orientation = .vertical
         accountSection.alignment = .leading
-        accountSection.spacing = 10
+        accountSection.spacing = MenuBarSpacing.medium
         renderAccounts(operational: operational)
         contentStack.addArrangedSubview(accountSection)
+        renderExtensionWidgets(summary?.extensionWidgets ?? [])
+        if !extensionSection.arrangedSubviews.isEmpty {
+            contentStack.addArrangedSubview(extensionSection)
+        }
         if let earnings = summary?.earnings, earnings.hasStartedEarning {
             contentStack.addArrangedSubview(sectionLabel("Earnings"))
             contentStack.addArrangedSubview(earningsCard(earnings))
@@ -181,12 +191,17 @@ final class HostPopoverController: NSViewController {
             accountSection.addArrangedSubview(emptyAccountsCard(operational: operational))
             return
         }
-        accountSection.addArrangedSubview(sectionLabel("CAPACITY"))
         if let selected, !selected.windows.isEmpty || selected.balance != nil {
             accountSection.addArrangedSubview(providerCapacityCard(selected))
+        } else if let selected {
+            accountSection.addArrangedSubview(providerAvailabilityCard(selected))
         }
-        accountSection.addArrangedSubview(sectionLabel("ACCOUNTS · \(accounts.count)"))
-        accountSection.addArrangedSubview(accountsCard(accounts))
+        if accounts.count > 1 {
+            accountSection.addArrangedSubview(sectionHeading("ACCOUNTS", detail: "\(accounts.count)"))
+            accountSection.addArrangedSubview(accountsCard(accounts))
+        } else if let account = accounts.first {
+            accountSection.addArrangedSubview(accountIdentityCard(account))
+        }
     }
 
     @objc func didSelectProvider(_ sender: NSPopUpButton) {

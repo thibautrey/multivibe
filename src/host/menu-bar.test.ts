@@ -3,11 +3,40 @@ import test from "node:test";
 import {
   createHostMenuProviderActivityTracker,
   buildHostMenuBarAccountsSummary,
+  buildHostMenuBarExtensionWidgets,
   buildHostMenuBarGitHubStarPrompt,
   recordHostMenuProviderUsage,
   getHostMenuProviderActivity,
 } from "./menu-bar.js";
 import type { Account } from "../types.js";
+
+test("buildHostMenuBarExtensionWidgets bounds data-only extension contributions", () => {
+  const widgets = buildHostMenuBarExtensionWidgets([
+    null,
+    { id: "git", extensionId: "  source-control  ", title: "  Git Status  ", presentation: "status", label: "Workspace", value: "main · clean", badge: "Ready", systemImage: "git.branch" },
+    { id: "context", extensionId: "token-monitor", title: "Context Monitor", presentation: "progress", label: "Current context", progressPercent: 142, detail: "42k of 100k" },
+    { id: "git", extensionId: "source-control", title: "Duplicate", presentation: "status" },
+    { id: "invalid", extensionId: "broken", presentation: "progress", progressPercent: 20 },
+    { id: "three", extensionId: "fixtures", title: "Third", presentation: "status" },
+    { id: "four", extensionId: "fixtures", title: "Fourth", presentation: "status" },
+    { id: "five", extensionId: "fixtures", title: "Fifth", presentation: "status" },
+  ]);
+
+  assert.equal(widgets.length, 4);
+  assert.deepEqual(widgets[0], {
+    id: "git",
+    extensionId: "source-control",
+    title: "Git Status",
+    presentation: "status",
+    systemImage: "git.branch",
+    label: "Workspace",
+    value: "main · clean",
+    badge: "Ready",
+  });
+  assert.equal(widgets[1].progressPercent, 100);
+  assert.equal(widgets.some((widget) => widget.title === "Duplicate" || widget.title === "Fifth"), false);
+  assert.deepEqual(buildHostMenuBarExtensionWidgets(), []);
+});
 
 test("buildHostMenuBarAccountsSummary preserves SwiftBar quota aggregation", () => {
   const now = 1_800_000_000_000;
