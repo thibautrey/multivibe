@@ -252,7 +252,7 @@ struct RemoteModelPreference: Codable { var harness: String; var model: String; 
         if !recover {
             guard chats[index].command == nil, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             chats[index].command = UUID().uuidString.lowercased(); chats[index].cursor = 0; chats[index].items = [:]; chats[index].itemOrder = []
-            chats[index].messages.append(.init(role: "user", content: text)); chats[index].messages.append(.init(role: "assistant", content: "", completion: .interrupted))
+            chats[index].messages.append(.init(role: "user", content: text)); chats[index].messages.append(.init(role: "assistant", content: ""))
             if chats[index].messages.count == 2 { chats[index].title = ConversationTitle.fallback(for: text) }
         }
         chats[index].state = "running"
