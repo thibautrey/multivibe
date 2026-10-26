@@ -2008,6 +2008,7 @@ private struct AccountProfileView: View {
     @State private var balanceFailed = false
     @State private var billingPresented = false
     @State private var legacyArchivesPresented = false
+    @State private var remoteInstancesPresented = false
 
     private var isSignedIn: Bool { manager.session != nil }
     private var email: String? { profile?.email }
@@ -2035,6 +2036,10 @@ private struct AccountProfileView: View {
                     } else {
                         guestGroup
                     }
+
+                    Button { remoteInstancesPresented = true } label: {
+                        AccountSettingsRow(icon: "desktopcomputer.and.iphone", title: "Instances", showsChevron: true)
+                    }.buttonStyle(.plain).accessibilityIdentifier("openRemoteInstances")
 
                     sessionAction
                 }
@@ -2067,6 +2072,7 @@ private struct AccountProfileView: View {
                     LegacyArchivesConsentView(accountID: accountId).id(accountId)
                 }
             }
+            .sheet(isPresented: $remoteInstancesPresented) { RemoteInstancesView().environment(manager) }
         }
     }
 

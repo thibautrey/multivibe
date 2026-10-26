@@ -2203,6 +2203,7 @@ import Network
         refreshMemoryIndex(); scheduleAutomaticSync()
     }
     func logout() async {
+        await RemoteInstances.shared.logout()
         nativeShortcut = nil
         voice.silence()
         let previous = session
