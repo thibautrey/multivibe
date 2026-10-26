@@ -39,6 +39,7 @@ export function stageInstanceVoiceCompanion(options={}) {
   for(const name of names){const file=path.join(source,name);if(!fs.statSync(file).isFile()||fs.statSync(file).size>1024*1024)throw Error('Build the bounded instance voice companion first');}
   for(const folder of [destination,launchAgents,logs])fs.mkdirSync(folder,{recursive:true,mode:0o700});
   for(const name of names)atomic(path.join(destination,name),fs.readFileSync(path.join(source,name)),0o600);
+  atomic(path.join(destination,'package.json'),JSON.stringify({private:true,type:'module'})+'\n',0o600);
   const main=path.join(destination,'instance-voice-main.js'),plist=path.join(launchAgents,INSTANCE_VOICE_LABEL+'.plist');
   atomic(plist,renderInstanceVoicePlist({node,main,dataDir,stdout:path.join(logs,'instance-voice.log'),stderr:path.join(logs,'instance-voice-error.log')}),0o600);
   return {label:INSTANCE_VOICE_LABEL,plist,main};
