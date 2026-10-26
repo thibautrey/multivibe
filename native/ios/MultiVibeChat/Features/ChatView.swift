@@ -232,6 +232,7 @@ struct ChatView: View {
                 if isNewConversation {
                     welcome
                 } else {
+                    GeometryReader { transcriptGeometry in
                     ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 20) {
@@ -303,6 +304,7 @@ struct ChatView: View {
                             }
                             Color.clear.frame(height: 1).id(latestMessageAnchor)
                         }.padding(.horizontal, 14).padding(.vertical, 18)
+                            .frame(minHeight: transcriptGeometry.size.height, alignment: .bottom)
                             .animation(reduceMotion ? nil : .spring(duration: 0.38, bounce: 0.12), value: displayMessages.count)
                     }
                     .defaultScrollAnchor(.bottom)
@@ -342,6 +344,7 @@ struct ChatView: View {
                     .task(id: displayMessages.count) {
                         await Task.yield()
                         scrollToLatest(proxy)
+                    }
                     }
                     }
                 }
