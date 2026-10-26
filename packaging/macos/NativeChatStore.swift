@@ -63,6 +63,9 @@ struct NativeChatConversation: Codable, Identifiable {
     var remoteEndpoint: String?
     var remoteUnavailable: Bool?
     var remoteActive: Bool?
+    var nativeSource: DesktopNativeSessionSource?
+    var nativeRevision: String?
+    var sourceUnavailable: Bool?
 }
 
 private struct NativeChatModelPreference: Codable {
@@ -101,6 +104,8 @@ private struct NativeChatModelPreference: Codable {
     @Published private(set) var remoteSyncErrors: [String: String] = [:]
     private var remoteCatalogUpdatedAt: [String: Date] = [:]
     private var synchronizingRemote = false
+    private var synchronizingSources = false
+    private func nativeSourceKey(_ source: DesktopNativeSessionSource, target: String) -> String { target + ":" + source.sourceId }
 
     init(file: URL? = nil, runtime: (any DesktopHarnessServing)? = nil, defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -122,7 +127,7 @@ private struct NativeChatModelPreference: Codable {
             guard let self else { return }
             if let owner = self.computer.conversationID { self.nativeTasks[owner]?.cancel() }
         }
-        for conversation in conversations where conversation.runtimeSessionID != nil { attachRuntime(conversation.id) }
+        for conversation in conversations where conversation.runtimeSessionID != nil && (conversation.id == selection || conversation.runtimeSession?.running == true || conversation.pendingSubmissions?.isEmpty == false) { attachRuntime(conversation.id) }
     }
     var current: NativeChatConversation? { conversations.first { $0.id == selection } }
     func runtimeFollowUps(_ id: UUID) -> [DesktopHarnessReceipt] {
@@ -146,7 +151,7 @@ private struct NativeChatModelPreference: Codable {
     }
     func newConversation(text: String = "") {
         if canSave { error = nil }
-        if text.isEmpty, let index = conversations.firstIndex(where: { $0.messages.isEmpty && $0.draft.isEmpty && $0.runtimeSessionID == nil && $0.pendingSubmissions?.isEmpty != false && $0.draftAttachments?.isEmpty != false && $0.nativeQueue?.isEmpty != false && $0.remoteChatID == nil && $0.archived != true }) {
+        if text.isEmpty, let index = conversations.firstIndex(where: { $0.messages.isEmpty && $0.draft.isEmpty && $0.runtimeSessionID == nil && $0.nativeSource == nil && $0.pendingSubmissions?.isEmpty != false && $0.draftAttachments?.isEmpty != false && $0.nativeQueue?.isEmpty != false && $0.remoteChatID == nil && $0.archived != true }) {
             let harness = Self.defaultHarnessID
             conversations[index].harnessID = harness == "native" ? nil : harness
             conversations[index].harnessSessionID = nil
@@ -216,7 +221,7 @@ private struct NativeChatModelPreference: Codable {
         guard let i = conversations.firstIndex(where: { $0.id == selection }) else { return }
         let previous = conversations[i]
         change(&conversations[i])
-        if !previous.messages.isEmpty || previous.runtimeSessionID != nil || previous.pendingSubmissions?.isEmpty == false {
+        if !previous.messages.isEmpty || previous.runtimeSessionID != nil || previous.nativeSource != nil || previous.remoteChatID != nil || previous.pendingSubmissions?.isEmpty == false {
             conversations[i].harnessID = previous.harnessID
             conversations[i].executionTargetID = previous.executionTargetID
             conversations[i].workspace = previous.workspace
@@ -226,6 +231,11 @@ private struct NativeChatModelPreference: Codable {
     }
     func delete(_ id: UUID) {
         guard !isGenerating(id) else { return }
+        if let item = conversations.first(where: { $0.id == id }), let source = item.nativeSource, item.runtimeSessionID == nil {
+            var hidden = Set(defaults.stringArray(forKey: "assistantHiddenNativeSources") ?? [])
+            hidden.insert(nativeSourceKey(source, target: item.executionTargetID ?? "local"))
+            defaults.set(Array(hidden), forKey: "assistantHiddenNativeSources"); removeConversation(id); return
+        }
         if let conversation = conversations.first(where: { $0.id == id }), let remoteID = conversation.remoteChatID, let connectionID = conversation.remoteConnectionID {
             Task { @MainActor in
                 do {
@@ -388,7 +398,12 @@ private struct NativeChatModelPreference: Codable {
         if let remoteID = conversation.remoteChatID, let connectionID = conversation.remoteConnectionID {
             body["remoteChatId"] = .string(remoteID); body["connectionId"] = .string(connectionID)
         }
-        let response = try await runtime.call(conversation.remoteChatID == nil ? "/sessions" : "/sessions/remote", method: "POST", target: conversation.executionTargetID ?? "local", body: .object(body))
+        var route = conversation.remoteChatID == nil ? "/sessions" : "/sessions/remote"
+        if let source = conversation.nativeSource {
+            guard source.canContinue, conversation.sourceUnavailable != true else { throw DesktopHarnessError.rejected("Cet historique reste consultable. Continuez cette session depuis son outil d’origine.") }
+            body["sourceId"] = .string(source.sourceId); body.removeValue(forKey: "history"); route = "/sessions/import"
+        }
+        let response = try await runtime.call(route, method: "POST", target: conversation.executionTargetID ?? "local", body: .object(body))
         let session = try response["session"].decode(DesktopHarnessSession.self)
         guard let current = conversations.firstIndex(where: { $0.id == id }) else { throw DesktopHarnessError.invalidResponse }
         conversations[current].runtimeSessionID = session.id; conversations[current].runtimeSession = session
@@ -397,6 +412,8 @@ private struct NativeChatModelPreference: Codable {
     }
     private func submitHarness(_ id: UUID, interactiveAnswers: Bool, steer: Bool = false) {
         guard let i = conversations.firstIndex(where: { $0.id == id }) else { return }
+        if let source = conversations[i].nativeSource, conversations[i].runtimeSessionID == nil,
+           !source.canContinue || conversations[i].sourceUnavailable == true { error = "Cet historique est en lecture seule. Continuez depuis son outil d’origine."; return }
         guard conversations[i].remoteActive != true else { error = "Ce serveur répond déjà dans cette conversation. Attendez la fin de la réponse."; return }
         guard conversations[i].remoteUnavailable != true else { error = "Cette conversation n’est plus disponible sur le serveur. Votre brouillon est conservé."; return }
         let text = conversations[i].draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -595,6 +612,8 @@ private struct NativeChatModelPreference: Codable {
             let role = event.payload["role"].string ?? "assistant", key = "history:" + (event.itemId ?? String(event.seq)), text = event.payload["text"].string ?? ""
             if let index = conversations[i].messages.firstIndex(where: { $0.runtimeTurnID == key && $0.role == role }) {
                 conversations[i].messages[index].content = event.payload["append"] == .bool(true) ? conversations[i].messages[index].content + text : text
+            } else if conversations[i].nativeSource != nil, let index = conversations[i].messages.firstIndex(where: { $0.runtimeTurnID == nil && $0.role == role && $0.content == text }) {
+                conversations[i].messages[index].runtimeTurnID = key
             } else { conversations[i].messages.append(.init(role: role, content: text, runtimeTurnID: key)) }
         case "turn.completed":
             for index in conversations[i].messages.indices where conversations[i].messages[index].runtimeTurnID == turnID { conversations[i].messages[index].interrupted = false }
@@ -639,21 +658,28 @@ private struct NativeChatModelPreference: Codable {
         guard let i = conversations.firstIndex(where: { $0.id == selection }), var queue = conversations[i].nativeQueue, let index = queue.firstIndex(where: { $0.id == messageID }) else { return }
         let destination = index + (up ? -1 : 1); guard queue.indices.contains(destination) else { return }; queue.swapAt(index, destination); conversations[i].nativeQueue = queue; save()
     }
-    func importRuntimeSession(_ session: DesktopHarnessSession, target: String) {
+    func importRuntimeSession(_ session: DesktopHarnessSession, target: String, select: Bool = true) {
         if let index = conversations.firstIndex(where: {
             ($0.executionTargetID ?? "local") == target && ($0.runtimeSessionID == session.id ||
+            ($0.runtimeSessionID == nil && $0.harnessID == session.harnessId && $0.nativeSource != nil && ($0.nativeSource?.sourceId == session.configuration?["sourceId"].string || $0.nativeSource?.nativeSessionId == session.nativeSessionId)) ||
             (["librechat", "openwebui"].contains(session.harnessId) && $0.harnessID == session.harnessId && $0.remoteChatID == session.nativeSessionId && $0.remoteConnectionID != nil && $0.remoteConnectionID == session.configuration?["connectionId"].string))
         }) {
             conversations[index].runtimeSessionID = session.id; conversations[index].runtimeSession = session
+            if !select {
+                conversations[index].title = session.title; conversations[index].pinned = session.pinned; conversations[index].archived = session.archived
+                conversations[index].updatedAt = Date(timeIntervalSince1970: session.updatedAt / 1000)
+            }
             bindRemoteSession(session, at: index)
-            let id = conversations[index].id; selection = id; save(); attachRuntime(id); return
+            let id = conversations[index].id; if select { selection = id }; if select || session.running || selection == id { attachRuntime(id) }; saveSoon(); return
         }
         var id = UUID(uuidString: session.id) ?? UUID()
         if conversations.contains(where: { $0.id == id }) { id = UUID() }
         var conversation = NativeChatConversation(); conversation.id = id; conversation.title = session.title
         conversation.model = session.model ?? ""; conversation.harnessID = session.harnessId; conversation.runtimeSessionID = session.id
         conversation.runtimeSession = session; conversation.executionTargetID = target; conversation.authMode = session.authMode; conversation.workspace = session.workspace
-        conversations.insert(conversation, at: 0); bindRemoteSession(session, at: 0); selection = id; save(); attachRuntime(id)
+        conversation.pinned = session.pinned; conversation.archived = session.archived; conversation.updatedAt = Date(timeIntervalSince1970: session.updatedAt / 1000)
+        conversations.insert(conversation, at: 0); bindRemoteSession(session, at: 0)
+        if select { selection = id }; if select || session.running { attachRuntime(id) }; saveSoon()
     }
     private func bindRemoteSession(_ session: DesktopHarnessSession, at index: Int) {
         guard ["librechat", "openwebui"].contains(session.harnessId), let nativeID = session.nativeSessionId,
@@ -667,15 +693,89 @@ private struct NativeChatModelPreference: Codable {
     }
     func runRemoteSynchronization() async {
         while !Task.isCancelled {
-            await synchronizeRemoteChats()
+            await synchronizeConversations()
+            do { try await Task.sleep(nanoseconds: 3_000_000_000) } catch { break }
+        }
+    }
+    func synchronizeConversations() async {
+        guard !synchronizingSources else { return }
+        synchronizingSources = true; defer { synchronizingSources = false }
+        var targets = Set(["local", current?.executionTargetID ?? "local"] + conversations.map { $0.executionTargetID ?? "local" })
+        do {
+            let result = try await runtime.call("/targets", method: "GET", target: "local", body: nil)
+            targets.formUnion(try result["targets"].decode([DesktopHarnessTarget].self).map(\.id))
+            remoteSyncErrors["environments"] = nil
+        } catch { remoteSyncErrors["environments"] = error.localizedDescription }
+        // Each environment can finish independently, including when another Host is offline.
+        await withTaskGroup(of: Void.self) { group in
+            for target in targets { group.addTask { @MainActor in
+                do {
+                    let result = try await self.runtime.call("/conversation-sources", method: "GET", target: target, body: nil)
+                    let sessions = try result["sessions"].decode([DesktopHarnessSession].self)
+                    let sources = try result["nativeSessions"].decode([DesktopNativeSessionSource].self)
+                    guard !Task.isCancelled else { return }
+                    for session in sessions { self.importRuntimeSession(session, target: target, select: false) }
+                    self.mergeNativeCatalog(sources, target: target)
+                    self.remoteSyncErrors[target + ":sources"] = nil
+                } catch { if !Task.isCancelled { self.remoteSyncErrors[target + ":sources"] = error.localizedDescription } }
+                await self.synchronizeRemoteChats(targets: [target], includeSelected: false)
+            } }
+        }
+        saveSoon()
+    }
+    func mergeNativeCatalog(_ sources: [DesktopNativeSessionSource], target: String) {
+        let ids = Set(sources.map(\.sourceId))
+        let hidden = Set(defaults.stringArray(forKey: "assistantHiddenNativeSources") ?? [])
+        for source in sources {
+            if hidden.contains(nativeSourceKey(source, target: target)) { continue }
+            if conversations.contains(where: { ($0.executionTargetID ?? "local") == target && $0.harnessID == source.harnessId && $0.runtimeSessionID != nil && ($0.harnessSessionID == source.nativeSessionId || $0.runtimeSession?.nativeSessionId == source.nativeSessionId || $0.runtimeSession?.configuration?["sourceId"].string == source.sourceId) }) { continue }
+            let index: Int
+            if let existing = conversations.firstIndex(where: { ($0.executionTargetID ?? "local") == target && $0.nativeSource?.sourceId == source.sourceId }) { index = existing }
+            else {
+                var item = NativeChatConversation(); item.harnessID = source.harnessId; item.executionTargetID = target; item.authMode = "native"; item.workspace = source.workspace
+                conversations.append(item); index = conversations.count - 1
+            }
+            conversations[index].nativeSource = source; conversations[index].sourceUnavailable = false
+            conversations[index].title = source.title; conversations[index].updatedAt = Date(timeIntervalSince1970: source.updatedAt / 1000)
+        }
+        // A bounded discovery is not proof of deletion: keep cached transcripts and drafts.
+        for index in conversations.indices where (conversations[index].executionTargetID ?? "local") == target && conversations[index].runtimeSessionID == nil {
+            if let source = conversations[index].nativeSource, !ids.contains(source.sourceId) { conversations[index].sourceUnavailable = true }
+        }
+        saveSoon()
+    }
+    func runSelectedConversationSynchronization() async {
+        while !Task.isCancelled {
+            if let conversation = current {
+                if conversation.runtimeSessionID != nil { attachRuntime(conversation.id) }
+                do {
+                    if conversation.remoteChatID != nil, !isGenerating(conversation.id) { try await refreshRemoteConversation(conversation.id) }
+                    else if conversation.nativeSource != nil, conversation.runtimeSessionID == nil { try await refreshNativeConversation(conversation.id) }
+                    remoteSyncErrors["selected-history"] = nil
+                } catch { if !Task.isCancelled { remoteSyncErrors["selected-history"] = error.localizedDescription } }
+            }
             do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { break }
         }
     }
-    func synchronizeRemoteChats(force: Bool = false) async {
-        guard !synchronizingRemote else { return }
-        synchronizingRemote = true
-        defer { synchronizingRemote = false }
-        let targets = Set(["local", current?.executionTargetID ?? "local"] + conversations.filter { $0.remoteChatID != nil }.map { $0.executionTargetID ?? "local" })
+    func refreshNativeConversation(_ id: UUID) async throws {
+        guard let item = conversations.first(where: { $0.id == id }), let source = item.nativeSource, item.runtimeSessionID == nil else { return }
+        let result = try await runtime.call("/native-sessions/\(source.sourceId)/messages?harnessId=\(source.harnessId)", method: "GET", target: item.executionTargetID ?? "local", body: nil)
+        guard !Task.isCancelled, let index = conversations.firstIndex(where: { $0.id == id }), conversations[index].runtimeSessionID == nil,
+              result["source"]["sourceId"].string == source.sourceId else { return }
+        let messages = try result["messages"].decode([DesktopRemoteMessage].self)
+        guard let revision = result["revision"].string else { throw DesktopHarnessError.invalidResponse }
+        if conversations[index].nativeRevision == revision { return }
+        let previous = conversations[index].messages
+        conversations[index].messages = messages.map { value in
+            var message = previous.first { $0.remoteMessageID == value.id } ?? NativeChatMessage(role: value.role, content: value.content)
+            message.role = value.role; message.content = value.content; message.remoteMessageID = value.id; return message
+        }
+        conversations[index].nativeRevision = revision; conversations[index].sourceUnavailable = false; saveSoon()
+    }
+    func synchronizeRemoteChats(force: Bool = false, targets requestedTargets: Set<String>? = nil, includeSelected: Bool = true) async {
+        if requestedTargets == nil { guard !synchronizingRemote else { return }; synchronizingRemote = true }
+        defer { if requestedTargets == nil { synchronizingRemote = false } }
+        let targets = requestedTargets ?? Set(["local", current?.executionTargetID ?? "local"] + conversations.filter { $0.remoteChatID != nil }.map { $0.executionTargetID ?? "local" })
         for target in targets {
             for harnessID in ["librechat", "openwebui"] {
                 if Task.isCancelled { return }
@@ -694,7 +794,7 @@ private struct NativeChatModelPreference: Codable {
                 } catch { if !Task.isCancelled { remoteSyncErrors[key] = error.localizedDescription } }
             }
         }
-        if let conversation = current, conversation.remoteChatID != nil, !isGenerating(conversation.id) {
+        if includeSelected, let conversation = current, conversation.remoteChatID != nil, !isGenerating(conversation.id) {
             do { try await refreshRemoteConversation(conversation.id) }
             catch { if !Task.isCancelled { remoteSyncErrors[(conversation.executionTargetID ?? "local") + ":" + (conversation.harnessID ?? "")] = error.localizedDescription } }
         }
@@ -753,6 +853,13 @@ private struct NativeChatModelPreference: Codable {
                 do {
                     _ = try await runtime.call("/remote-chats/" + Self.remotePath(remoteID), method: "PATCH", target: conversation.executionTargetID ?? "local", body: .object(body))
                     try await refreshRemoteConversation(id)
+                } catch { self.error = error.localizedDescription }
+            }
+        } else if let runtimeID = conversation.runtimeSessionID {
+            Task { @MainActor in
+                do {
+                    let result = try await runtime.call("/sessions/\(runtimeID)", method: "PATCH", target: conversation.executionTargetID ?? "local", body: .object(body))
+                    importRuntimeSession(try result["session"].decode(DesktopHarnessSession.self), target: conversation.executionTargetID ?? "local", select: false)
                 } catch { self.error = error.localizedDescription }
             }
         } else if let index = conversations.firstIndex(where: { $0.id == id }) {
