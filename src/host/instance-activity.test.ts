@@ -22,7 +22,7 @@ test('projects LibreChat batches as separate bounded tool activities',()=>{
  const merged:InstanceActivity[]=[];
  for(const update of instanceActivities(event('tool',{tool_calls:[{index:0,id:'fragment',function:{name:'search',arguments:'{"q"'}}]})))mergeInstanceActivity(merged,update);
  for(const update of instanceActivities(event('tool',{tool_calls:[{index:0,id:'fragment',function:{arguments:':"x"}'}}]})))mergeInstanceActivity(merged,update);
- assert.equal(merged[0].input,'{"q":"x"}');assert.equal(merged[0].title,'Outil');
+ assert.equal(merged[0].input,'{"q":"x"}');assert.equal(merged[0].title,'search');
 });
 
 test('projects reasoning, subagents, plans, compaction, retries, diagnostics and terminal output',()=>{
