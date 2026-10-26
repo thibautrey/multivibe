@@ -32,6 +32,13 @@ private struct SidebarConversationSection: Identifiable {
     let items: [SidebarConversationItem]
 }
 
+private struct WelcomeExecutionAnchorKey: PreferenceKey {
+    static var defaultValue: Anchor<CGRect>?
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = nextValue() ?? value
+    }
+}
+
 struct ChatView: View {
     @Environment(ConversationManager.self) private var manager
     @Environment(\.scenePhase) private var scenePhase
@@ -389,6 +396,25 @@ struct ChatView: View {
                 if !voiceConversationPreparing && !voiceConversationPresented && !modalIsActive {
                     composer
                 }
+            }
+            .overlayPreferenceValue(WelcomeExecutionAnchorKey.self) { anchor in
+                GeometryReader { proxy in
+                    if welcomeExecutionListExpanded, let anchor {
+                        let selectorFrame = proxy[anchor]
+                        let panelWidth = min(310, max(0, proxy.size.width - 32))
+                        let panelLeading = min(
+                            max(16, selectorFrame.midX - panelWidth / 2),
+                            max(16, proxy.size.width - panelWidth - 16)
+                        )
+                        let panelHeight = max(180, min(520, proxy.size.height - selectorFrame.maxY - 24))
+                        welcomeExecutionList(maxHeight: panelHeight)
+                            .frame(width: panelWidth)
+                            .offset(x: panelLeading, y: selectorFrame.maxY + 10)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                            .zIndex(100)
+                    }
+                }
+                .allowsHitTesting(welcomeExecutionListExpanded)
             }
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
@@ -1093,84 +1119,83 @@ struct ChatView: View {
     private var selectedExecutionName: String { isRemoteConversation ? remoteHarnessName : localExecutionName }
 
     private var welcomeExecutionSelector: some View {
-        VStack(spacing: 10) {
-            Button {
-                withAnimation(.snappy) { welcomeExecutionListExpanded.toggle() }
-            } label: {
-                VStack(spacing: 7) {
-                    HarnessIdentityLogo(id: selectedExecutionHarnessID, name: selectedExecutionName, size: 64)
-                    HStack(spacing: 5) {
-                        Text(selectedExecutionName).lineLimit(1)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                            .rotationEffect(.degrees(welcomeExecutionListExpanded ? 180 : 0))
-                    }
-                    .font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
-                    if let machine = remoteMachine { Text(machine.name).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+        Button {
+            withAnimation(.snappy) { welcomeExecutionListExpanded.toggle() }
+        } label: {
+            VStack(spacing: 7) {
+                HarnessIdentityLogo(id: selectedExecutionHarnessID, name: selectedExecutionName, size: 64)
+                HStack(spacing: 5) {
+                    Text(selectedExecutionName).lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(welcomeExecutionListExpanded ? 180 : 0))
                 }
-                .frame(minWidth: 132).contentShape(Rectangle())
+                .font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                if let machine = remoteMachine { Text(machine.name).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Lieu d’exécution et harness")
-            .accessibilityIdentifier("welcomeExecutionPicker")
-            .accessibilityValue((isRemoteConversation ? (remoteMachine?.name ?? "Instance") + ", " + remoteHarnessName : localExecutionName) + (welcomeExecutionListExpanded ? ", liste ouverte" : ", liste fermée"))
-
-            if welcomeExecutionListExpanded {
-                welcomeExecutionList
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
+            .frame(minWidth: 132).contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Lieu d’exécution et harness")
+        .accessibilityIdentifier("welcomeExecutionPicker")
+        .accessibilityValue((isRemoteConversation ? (remoteMachine?.name ?? "Instance") + ", " + remoteHarnessName : localExecutionName) + (welcomeExecutionListExpanded ? ", liste ouverte" : ", liste fermée"))
+        .anchorPreference(key: WelcomeExecutionAnchorKey.self, value: .bounds) { $0 }
         .dynamicTypeSize(.small ... .accessibility1)
     }
 
-    private var welcomeExecutionList: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            welcomeExecutionRow(id: "native", name: "Cet iPhone",
-                                selected: instances.selection == nil && ModelExecution(manager.selectedModel).isLocal) {
-                selectLocalExecution()
-            }
-            welcomeExecutionRow(id: "hermes-cloud", name: "MultiVibe Cloud",
-                                selected: instances.selection == nil && !ModelExecution(manager.selectedModel).isLocal) {
-                selectLocalExecution(cloud: true)
-            }
+    private func welcomeExecutionList(maxHeight: CGFloat) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) {
+                welcomeExecutionRow(id: "native", name: "Cet iPhone",
+                                    selected: instances.selection == nil && ModelExecution(manager.selectedModel).isLocal) {
+                    selectLocalExecution()
+                }
+                welcomeExecutionRow(id: "hermes-cloud", name: "MultiVibe Cloud",
+                                    selected: instances.selection == nil && !ModelExecution(manager.selectedModel).isLocal) {
+                    selectLocalExecution(cloud: true)
+                }
 
-            ForEach(instances.machines.filter { instances.paired.contains($0.id) }) { machine in
-                Divider().padding(.vertical, 5)
-                Text(machine.name)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 2)
-                let available = instances.harnesses[machine.id]?.filter { $0.available } ?? []
-                if available.isEmpty {
-                    Button("Charger les harness…", systemImage: "arrow.clockwise") {
-                        Task { try? await instances.catalog(machine.id) }
-                    }
-                    .font(.subheadline)
-                    .padding(.horizontal, 10)
-                    .frame(minHeight: 42)
-                    .disabled(!machine.online || instances.busy)
-                } else {
-                    ForEach(available) { harness in
-                        welcomeExecutionRow(id: harness.id, name: harness.name,
-                                            selected: remoteChat?.machine == machine.id && remoteChat?.harness == harness.id,
-                                            disabled: !machine.online || instances.busy) {
-                            selectRemoteExecution(machine: machine, harness: harness)
+                ForEach(instances.machines.filter { instances.paired.contains($0.id) }) { machine in
+                    Divider().padding(.vertical, 5)
+                    Text(machine.name)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.bottom, 2)
+                    let available = instances.harnesses[machine.id]?.filter { $0.available } ?? []
+                    if available.isEmpty {
+                        Button("Charger les harness…", systemImage: "arrow.clockwise") {
+                            Task { try? await instances.catalog(machine.id) }
+                        }
+                        .font(.subheadline)
+                        .padding(.horizontal, 10)
+                        .frame(minHeight: 42)
+                        .disabled(!machine.online || instances.busy)
+                    } else {
+                        ForEach(available) { harness in
+                            welcomeExecutionRow(id: harness.id, name: harness.name,
+                                                selected: remoteChat?.machine == machine.id && remoteChat?.harness == harness.id,
+                                                disabled: !machine.online || instances.busy) {
+                                selectRemoteExecution(machine: machine, harness: harness)
+                            }
                         }
                     }
                 }
-            }
 
-            Divider().padding(.vertical, 5)
-            Button("Gérer les instances…", systemImage: "desktopcomputer.and.iphone") { remoteInstancesPresented = true }
+                Divider().padding(.vertical, 5)
+                Button("Gérer les instances…", systemImage: "desktopcomputer.and.iphone") { remoteInstancesPresented = true }
+            }
+            .padding(8)
         }
+        .scrollBounceBehavior(.basedOnSize)
         .font(.subheadline)
         .buttonStyle(.plain)
-        .padding(8)
-        .frame(maxWidth: 310, alignment: .leading)
+        .frame(maxHeight: maxHeight, alignment: .top)
+        .fixedSize(horizontal: false, vertical: true)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(.primary.opacity(0.1), lineWidth: 0.7))
+        .shadow(color: .black.opacity(0.18), radius: 24, y: 12)
         .accessibilityIdentifier("welcomeExecutionList")
     }
 
