@@ -3,6 +3,27 @@ import AVFoundation
 import AuthenticationServices
 @testable import MultiVibeChat
 
+private struct CapturedVoiceTap: @unchecked Sendable { let block: AVAudioNodeTapBlock }
+
+@MainActor final class RealtimeVoiceCaptureTests: XCTestCase {
+    func testMicrophoneTapCreatedByTheInterfaceCanRunOnTheAudioQueue() async throws {
+        let controller = RealtimeVoiceController()
+        let input = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+        let output = try XCTUnwrap(AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 24_000, channels: 1, interleaved: false))
+        let converter = try XCTUnwrap(AVAudioConverter(from: input, to: output))
+        let callback = CapturedVoiceTap(block: RealtimeVoiceController.captureTap(controller: controller, converter: converter, targetFormat: output))
+        // Match AVAudioEngine's actual callback boundary. An inherited MainActor
+        // closure traps here in Swift 6, as on the physical iPhone crash report.
+        try await Task.detached {
+            let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 960))
+            buffer.frameLength = 960
+            if let samples = buffer.floatChannelData?[0] { for index in 0..<960 { samples[index] = 0 } }
+            callback.block(buffer, AVAudioTime(sampleTime: 0, atRate: 48_000))
+        }.value
+    }
+}
+
 @MainActor final class ModelMarketplaceTests: XCTestCase {
     func testCatalogMetadataOwnsProviderIdentity() {
         XCTAssertEqual(ModelOption(id: "gpt-lookalike", author: "anthropic").presentation.provider, .anthropic)
