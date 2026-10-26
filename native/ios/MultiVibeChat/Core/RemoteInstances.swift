@@ -188,7 +188,7 @@ struct RemoteModelPreference: Codable {
     private var network = "inconnu"
     private var storageLoaded = false
     private let monitor = NWPathMonitor()
-    private struct Archive: Codable { var chats: [RemoteChat]; var preferences: [String: RemoteModelPreference] }
+    private struct Archive: Codable { var chats: [RemoteChat]; var preferences: [String: RemoteModelPreference]; var selection: UUID? = nil }
     init() {
         monitor.pathUpdateHandler = { [weak self] path in
             let label = path.usesInterfaceType(.cellular) ? "Réseau cellulaire" : path.usesInterfaceType(.wifi) ? "Wi-Fi → Relay WAN" : "Relay WAN"
@@ -204,7 +204,7 @@ struct RemoteModelPreference: Codable {
     private func persist() throws {
         guard let account, storageLoaded else { throw APIError.invalidResponse }; let url = archiveURL(account)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.protectionKey: FileProtectionType.complete])
-        try JSONEncoder().encode(Archive(chats: chats, preferences: preferences)).write(to: url, options: [.atomic, .completeFileProtection])
+        try JSONEncoder().encode(Archive(chats: chats, preferences: preferences, selection: selection)).write(to: url, options: [.atomic, .completeFileProtection])
         var values = URLResourceValues(); values.isExcludedFromBackup = true; var folder = url.deletingLastPathComponent(); try folder.setResourceValues(values)
     }
     func activate(_ account: String?) {
@@ -214,7 +214,7 @@ struct RemoteModelPreference: Codable {
         let url = archiveURL(account)
         do { if FileManager.default.fileExists(atPath: url.path) {
             let data = try Data(contentsOf: url); guard data.count <= 16_777_216 else { throw APIError.invalidResponse }
-            let archive = try JSONDecoder().decode(Archive.self, from: data); chats = archive.chats; preferences = archive.preferences
+            let archive = try JSONDecoder().decode(Archive.self, from: data); chats = archive.chats; preferences = archive.preferences; selection = archive.chats.contains { $0.id == archive.selection } ? archive.selection : nil
         }; storageLoaded = true } catch { self.error = "L’historique de vos instances est conservé mais ne peut pas être ouvert." }
     }
     private func check(_ owner: String, _ epoch: UUID) throws {
@@ -376,6 +376,7 @@ struct RemoteModelPreference: Codable {
         guard selection != id else { return }
         stopFollowing(); selection = id
         if id != nil { ConversationManager.shared.stop(); ConversationManager.shared.voice.silence() }
+        try? persist()
     }
     func delete(_ id: UUID) throws {
         guard activeChat != id else { return }; chats.removeAll { $0.id == id }; if selection == id { selection = nil }; try persist()
