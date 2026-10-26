@@ -42,7 +42,7 @@ import SwiftUI
                     let previewTransport: @MainActor (URLRequest) async throws -> (Data, URLResponse) = { request in
                         let id = request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-noah" ? "preview-noah" : "preview-alice"
                         let payload: [String: Any] = ["accountId": id, "cloudEnabled": false, "exportSources": [], "revision": 1]
-                        return (try JSONSerialization.data(withJSONObject: payload), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+                        return (try JSONSerialization.data(withJSONObject: payload), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!)
                     }
                     cloud = try NativeCloudSession(transport: previewTransport, accountStorage: .init(load: { registry }, save: { registry = $0 }))
                     cloudClient = NativeAgentClient(token: { try await cloud.token() }, account: { cloud.accountID }, transport: previewTransport)
