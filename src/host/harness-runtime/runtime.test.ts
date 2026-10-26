@@ -147,6 +147,16 @@ test("native discovery only returns metadata and isolated-fork sources",t=>{
   const preview=readNativeSession("pi",oldSource.sourceId,home);assert.equal(preview.readOnly,true);assert.equal(preview.records.length,2);assert.ok(!JSON.stringify(preview).includes("never return"));assert.equal((preview.records[1] as any).secret,"[private]");
   assert.throws(()=>readNativeSession("pi","missing",home),/not found/u);
 });
+test("runtime project picker excludes Host generated conversation workspaces",async t=>{
+  const {root,runtime}=fixture(t),home=fs.mkdtempSync(path.join(os.tmpdir(),"multivibe-project-picker-"));
+  t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
+  const external=path.join(home,"project"),internal=path.join(root,"workspaces","mobile-fixture");
+  fs.mkdirSync(external,{recursive:true});fs.mkdirSync(internal,{recursive:true});
+  const directory=path.join(home,".pi/agent/sessions");fs.mkdirSync(directory,{recursive:true});
+  fs.writeFileSync(path.join(directory,"external.jsonl"),JSON.stringify({type:"session",id:"external",cwd:external}));
+  fs.writeFileSync(path.join(directory,"internal.jsonl"),JSON.stringify({type:"session",id:"internal",cwd:internal}));
+  assert.deepEqual(runtime.projects({harnessId:"pi",targetId:"local"},home).projects.map(project=>project.path),[fs.realpathSync(external)]);
+});
 test("runtime HTTP replay is bounded, read-only and disconnect leaves generation running",async t=>{
   const {runtime,adapters}=fixture(t);const app=express();app.use(harnessRuntimeRoutes(runtime));const server=createServer(app);
   await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));t.after(()=>{server.closeAllConnections();server.close();});const origin=`http://127.0.0.1:${(server.address() as any).port}`;
