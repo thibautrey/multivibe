@@ -126,6 +126,10 @@ final class AuthenticationUITests: XCTestCase {
 
         app.buttons["groupedConversationLayout"].tap()
         XCTAssertTrue(app.buttons["groupedConversationLayout"].isSelected)
+        let groupedCapture = XCTAttachment(screenshot: app.screenshot())
+        groupedCapture.name = "conversation-list-grouped-by-harness"
+        groupedCapture.lifetime = .keepAlways
+        add(groupedCapture)
         app.buttons["flatConversationLayout"].tap()
         XCTAssertTrue(app.buttons["flatConversationLayout"].isSelected)
 
