@@ -377,7 +377,7 @@ struct ChatView: View {
                 if voice.speaking {
                     Button("Arrêter la lecture", systemImage: "stop.circle") { voice.silence() }.padding(.horizontal)
                 }
-                if let error = isRemoteConversation ? (remoteConfigurationError ?? instances.error) : manager.error {
+                if let error = isRemoteConversation ? (remoteConfigurationError ?? instances.error ?? instances.synchronizationError) : manager.error {
                     MultiVibeStatusMessage(message: error)
                         .padding(.horizontal)
                         .accessibilityIdentifier("chatError")
@@ -574,11 +574,19 @@ struct ChatView: View {
         }
         .onAppear { consumeIntent() }
         .task(id: manager.session?.accountId) {
-            instances.activate(manager.session?.accountId); await instances.reload()
-            for machine in instances.machines where instances.paired.contains(machine.id) && machine.online { try? await instances.catalog(machine.id) }
+            instances.activate(manager.session?.accountId)
+        }
+        .task(id: (manager.session?.accountId ?? "") + String(describing: scenePhase)) {
+            instances.activate(manager.session?.accountId)
+            guard scenePhase == .active, manager.session != nil else { return }
+            await instances.runSynchronization()
+        }
+        .task(id: (instances.selection?.uuidString ?? "") + String(describing: scenePhase)) {
+            guard scenePhase == .active else { return }
+            await instances.runSelectedSynchronization()
         }
         .task(id: instances.selection) {
-            guard let chat = remoteChat else { return }
+            guard let chat = remoteChat, chat.source == nil else { return }
             do { try await instances.prepare(chat.machine, harness: chat.harness) }
             catch is CancellationError { }
             catch { remoteConfigurationError = "Configuration distante indisponible. Actualisez les modèles ou vérifiez la connexion au Mac." }
@@ -679,7 +687,7 @@ struct ChatView: View {
         let remoteCount = instances.chats.count
         let legacyDateAnchor = Date()
         let remoteItems = instances.chats.enumerated().compactMap { index, conversation -> SidebarConversationItem? in
-            guard !conversation.messages.isEmpty else { return nil }
+            guard !conversation.messages.isEmpty || conversation.source != nil else { return nil }
             let harnessName = instances.harnesses[conversation.machine]?.first { $0.id == conversation.harness }?.name
                 ?? harnessDisplayName(conversation.harness)
             return SidebarConversationItem(
@@ -697,7 +705,7 @@ struct ChatView: View {
                 guard !query.isEmpty else { return true }
                 let machineName: String
                 if case .remote(let conversation) = item.source {
-                    machineName = instances.machines.first { $0.id == conversation.machine }?.name ?? ""
+                    machineName = [instances.machines.first { $0.id == conversation.machine }?.name, conversation.environmentName].compactMap { $0 }.joined(separator: " · ")
                 } else {
                     machineName = ""
                 }
@@ -812,7 +820,7 @@ struct ChatView: View {
     private var localExecutionName: String { ModelExecution(manager.selectedModel).isLocal ? "Sur cet iPhone" : "MultiVibe Cloud" }
     private var pickerModels: [ModelOption] {
         guard let chat = remoteChat else { return manager.models }
-        let catalog = instances.modelCatalog[chat.machine + ":" + chat.harness] ?? []
+        let catalog = instances.modelCatalog[instances.modelKey(chat.machine, harness: chat.harness)] ?? []
         var values = catalog.map { model in
             let provider = normalizedRemoteProvider(model.provider, modelID: model.id, harnessID: chat.harness)
             return ModelOption(id: model.selectionID, name: model.displayName, author: provider, description: "Modèle fourni par \(remoteHarnessName).", logoPublisher: provider)
@@ -839,7 +847,7 @@ struct ChatView: View {
     }
     private var pickerIsLoading: Bool { isRemoteConversation ? instances.busy : manager.isLoadingModels }
     private var pickerIsDisabled: Bool {
-        if let chat = remoteChat { return chat.command != nil || chat.pendingConfiguration != nil || isGenerating || instances.busy }
+        if let chat = remoteChat { return chat.canContinue == false || chat.command != nil || chat.pendingConfiguration != nil || isGenerating || instances.busy }
         return manager.isStreaming
     }
     private var welcome: some View {
@@ -883,7 +891,7 @@ struct ChatView: View {
 
     private func selectPickerModel(_ option: ModelOption) async throws {
         guard let chat = remoteChat else { await manager.chooseModel(option); return }
-        let key = chat.machine + ":" + chat.harness
+        let key = instances.modelKey(chat.machine, harness: chat.harness)
         guard let model = instances.modelCatalog[key]?.first(where: { $0.selectionID == option.id }) else { throw APIError.noModel }
         remoteConfigurationError = nil
         try await instances.choose(chat.machine, harness: chat.harness, model: model)
@@ -1075,7 +1083,7 @@ struct ChatView: View {
             })
         }
         return AnyView(composerCircleButton("Envoyer", systemImage: "arrow.up", foreground: .white, background: MultiVibeTheme.accent, size: 36) { sendComposerMessage() }
-            .disabled(isRemoteConversation ? (remoteChat?.model.isEmpty != false || remoteChat?.command != nil || remoteChat?.pendingConfiguration != nil || instances.busy) :
+            .disabled(isRemoteConversation ? (remoteChat?.canContinue == false || remoteChat?.model.isEmpty != false || remoteChat?.command != nil || remoteChat?.pendingConfiguration != nil || instances.busy) :
                 (manager.selectedModel.isEmpty || (manager.isSynchronizing && !ModelExecution(manager.selectedModel).isLocal))))
     }
 
@@ -1236,7 +1244,7 @@ struct ChatView: View {
                 Button { remoteProjectPickerPresented = true } label: {
                     Label(chat.projectName ?? "Aucun projet", systemImage: chat.projectId == nil ? "folder" : "folder.fill")
                 }
-                .disabled(!chat.messages.isEmpty || isGenerating || instances.busy)
+                .disabled(chat.source != nil || !chat.messages.isEmpty || isGenerating || instances.busy)
                 .accessibilityIdentifier("integratedRemoteProjectPicker")
                 if instances.busy { ProgressView().controlSize(.small) }
             }
@@ -1246,6 +1254,10 @@ struct ChatView: View {
 
     @ViewBuilder private var remoteConfigurationControls: some View {
         if let chat = remoteChat {
+            if chat.canContinue == false {
+                Text("Historique en lecture seule : ce harness ne permet pas de reprendre cette conversation depuis iOS.")
+                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 12)
+            }
             if chat.pendingConfiguration != nil {
                 Button("Vérifier le changement de configuration", systemImage: "arrow.clockwise") {
                     Task { do { try await instances.configure(chat.id); remoteConfigurationError = nil } catch { remoteConfigurationError = "La configuration reste à vérifier sur cette instance." } }
