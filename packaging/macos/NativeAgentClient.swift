@@ -113,7 +113,18 @@ struct NativeAgentRun: Codable, Sendable {
     let generation: Int
     let result: NativeAgentJSON?
 }
-enum NativeAgentClientError: Error { case accountMismatch, invalidRequest, invalidResponse, tooLarge, http(Int) }
+enum NativeAgentClientError: LocalizedError {
+    case accountMismatch, invalidRequest, invalidResponse, tooLarge, http(Int)
+    var errorDescription: String? {
+        switch self {
+        case .accountMismatch: "Le compte Cloud a changé pendant l’opération. Réessayez."
+        case .invalidRequest: "Cette action Cloud n’est pas valide."
+        case .invalidResponse: "MultiVibe Cloud a renvoyé une réponse inattendue."
+        case .tooLarge: "La réponse Cloud est trop volumineuse."
+        case .http(let status): "MultiVibe Cloud a refusé l’opération (HTTP \(status))."
+        }
+    }
+}
 
 private final class NativeAgentRedirectPolicy: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
