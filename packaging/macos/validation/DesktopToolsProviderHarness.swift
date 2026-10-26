@@ -49,12 +49,19 @@ enum HostAssistantError: Error { case emptyReply }
         let client = DesktopHarnessClient.shared
         let attached = try await client.call("/sessions/\(session)/desktop/attach", method: "POST", body: .object([:]))
         guard let lease = attached["lease"].string else { throw HostAssistantError.emptyReply }
+        FileHandle.standardOutput.write(Data("Provider attached\n".utf8))
         var executed = false
         while true {
             let request = try await client.call("/sessions/\(session)/desktop/next", method: "POST", body: .object(["lease": .string(lease)]))
             if request["release"] == .bool(true) {
                 controller.releaseExternal(conversation: conversation)
-                if executed { print("PASS native Host provider, scoped requests, real Chromium actions and release"); return }
+                if executed {
+                    precondition(!controller.running)
+                    _ = try await client.call("/sessions/\(session)/desktop/detach", method: "POST", body: .object(["lease": .string(lease)]))
+                    FileHandle.standardOutput.write(Data("PASS native Host provider, scoped requests, real Chromium actions and release\n".utf8))
+                    window.contentView = nil; window.orderOut(nil)
+                    return
+                }
             }
             guard let id = request["id"].string else { continue }
             let command = try request["command"].decode(ComputerUseCommand.self)
