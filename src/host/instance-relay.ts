@@ -197,6 +197,10 @@ export class InstanceRelay {
    const receipt=(await this.conversations.receipt(targetId,sessionId,e.commandId!)).receipt;
    if(!receipt||receipt.sessionId!==sessionId)fail('Operation not found',404);
    if(['completed','failed','cancelled','uncertain'].includes(receipt.state)){
+    // The turn can finish between the empty poll and receipt read. Drain its
+    // final tool/message events before closing the stream and advancing cursor.
+    const tail=(await this.conversations.events(targetId,sessionId,cursor)).events as HarnessEvent[];
+    if(tail.length){for(const event of tail){cursor=event.seq;await emit(event);}continue;}
     await upload('data: '+JSON.stringify({type:'terminal',state:receipt.state,cursor})+'\n\n',true,200,'text/event-stream');return;
    }
    const awaitingApproval=(await this.conversations.snapshot(targetId,sessionId)).interactions.length>0;
