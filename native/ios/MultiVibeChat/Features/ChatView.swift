@@ -912,6 +912,7 @@ struct ChatView: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+        .dynamicTypeSize(.small ... .accessibility1)
     }
 
     private var welcomeExecutionList: some View {
@@ -2142,7 +2143,9 @@ struct ChatWelcomeView<ExecutionSelector: View>: View {
                     Text("Comment puis-je vous aider ?")
                         .font((dynamicTypeSize.isAccessibilitySize ? Font.headline : Font.title2).bold())
                         .accessibilityAddTraits(.isHeader)
-                    Text("Discutez, analysez et agissez avec le modèle de votre choix.")
+                    Text(dynamicTypeSize.isAccessibilitySize
+                        ? "Discutez, analysez et agissez."
+                        : "Discutez, analysez et agissez avec le modèle de votre choix.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
