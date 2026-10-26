@@ -2,13 +2,15 @@
 
 The iOS **Account → Instances** screen lists the current account's Personal Relay
 machines. A Host advertises the versioned `multivibe/host-harness-v1` adapter only
-after its owner activates remote access from Desktop's account Actions menu.
-Enrollment reuses native Cloud authentication and `/relay/v1/machines`. The
+after its owner activates remote access from Desktop. Enrollment reuses the
+Host's existing Cloud account authentication and `/relay/v1/machines`. The
 machine credential remains in the Host's private data directory. It is never
 returned to iOS, put into a QR, or used as a proxy/admin credential.
 
 The adapter carries a bounded JSON envelope in one completion message over the
-existing Personal Relay transport. It supports pairing, authorization renewal,
+existing Personal Relay transport. Cloud binds every directory, catalogue and
+completion operation to the authenticated owner; the Host never trusts the
+envelope's claimed account ID. It supports pairing, authorization renewal,
 revocation, harness/model discovery, prompt and receipt recovery. Cloud validates
 the account and machine ownership before delivery. The Host accepts only its
 configured account and machine, then a separately paired device. Neither the QR

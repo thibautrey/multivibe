@@ -18,12 +18,6 @@ import Foundation
     var cloudSession: NativeCloudSession? { session }
     private let client: NativeAgentClient?
     private let root: URL
-    func instanceAuthorization() async throws -> (String, String) {
-        guard let session else { throw NativeAgentClientError.accountMismatch }
-        let token = try await session.token()
-        guard let account = session.accountID else { throw NativeAgentClientError.accountMismatch }
-        return (token, account)
-    }
     private var journal: Journal?
     private struct Journal: Codable {
         let accountID: String
