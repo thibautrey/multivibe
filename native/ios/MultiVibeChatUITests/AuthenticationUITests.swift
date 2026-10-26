@@ -387,7 +387,7 @@ final class LocalInternetUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Je vous écoute"].exists)
         XCTAssertTrue(app.buttons["voiceSettings"].exists)
         XCTAssertTrue(app.buttons["Couper le micro"].exists)
-        XCTAssertTrue(app.buttons["voiceEnd"].exists)
+        XCTAssertTrue(app.buttons["Terminer"].exists)
         XCTAssertFalse(app.descendants(matching: .any)["voiceTranscript"].exists)
 
         let capture = XCTAttachment(screenshot: app.screenshot())
@@ -405,7 +405,7 @@ final class LocalInternetUITests: XCTestCase {
         let orb = app.descendants(matching: .any)["voiceOrb"].firstMatch
         XCTAssertTrue(orb.exists)
         XCTAssertLessThan(orb.frame.width, 100)
-        XCTAssertTrue(app.buttons["voiceEnd"].isEnabled)
+        XCTAssertTrue(app.buttons["Terminer"].isEnabled)
 
         let capture = XCTAttachment(screenshot: app.screenshot())
         capture.name = "realtime-voice-rich-answer"
