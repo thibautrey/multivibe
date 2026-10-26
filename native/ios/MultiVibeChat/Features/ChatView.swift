@@ -1224,7 +1224,10 @@ struct ChatView: View {
 
     private func welcomeExecutionRow(id: String, name: String, selected: Bool, disabled: Bool = false,
                                      action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        Button {
+            withAnimation(.snappy) { welcomeExecutionListExpanded = false }
+            action()
+        } label: {
             HStack(spacing: 10) {
                 HarnessIdentityLogo(id: id, name: name, size: 30)
                 Text(name).foregroundStyle(.primary).lineLimit(1)
