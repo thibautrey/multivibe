@@ -55,6 +55,83 @@ export type HostMenuBarProvider = {
   balance?: HostMenuBarProviderBalance;
 };
 
+/**
+ * Data-only extension contribution for the native menu. The Host renders this
+ * descriptor with its own AppKit components; extensions cannot inject views,
+ * HTML, arbitrary actions, or unbounded content into the popover.
+ */
+export type HostMenuBarExtensionWidget = {
+  id: string;
+  extensionId: string;
+  title: string;
+  subtitle?: string;
+  systemImage?: string;
+  presentation: "status" | "progress";
+  label?: string;
+  value?: string;
+  detail?: string;
+  badge?: string;
+  progressPercent?: number;
+};
+
+const HOST_MENU_BAR_WIDGET_LIMIT = 4;
+
+function boundedWidgetText(value: unknown, maximumLength: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim();
+  return text ? text.slice(0, maximumLength) : undefined;
+}
+
+/**
+ * Normalizes future extension contributions at the service boundary. The
+ * empty default is intentional until the extension registry exposes widgets.
+ */
+export function buildHostMenuBarExtensionWidgets(
+  source: readonly unknown[] = [],
+): HostMenuBarExtensionWidget[] {
+  const widgets: HostMenuBarExtensionWidget[] = [];
+  const identifiers = new Set<string>();
+  for (const candidate of source) {
+    if (widgets.length >= HOST_MENU_BAR_WIDGET_LIMIT) break;
+    if (!candidate || typeof candidate !== "object") continue;
+    const record = candidate as Record<string, unknown>;
+    const id = boundedWidgetText(record.id, 64);
+    const extensionId = boundedWidgetText(record.extensionId, 64);
+    const title = boundedWidgetText(record.title, 80);
+    const presentation = record.presentation === "status" || record.presentation === "progress"
+      ? record.presentation
+      : undefined;
+    if (!id || !extensionId || !title || !presentation) continue;
+    const uniqueId = `${extensionId}:${id}`;
+    if (identifiers.has(uniqueId)) continue;
+    const rawProgress = typeof record.progressPercent === "number" && Number.isFinite(record.progressPercent)
+      ? record.progressPercent
+      : undefined;
+    if (presentation === "progress" && rawProgress === undefined) continue;
+    const subtitle = boundedWidgetText(record.subtitle, 100);
+    const systemImage = boundedWidgetText(record.systemImage, 64);
+    const label = boundedWidgetText(record.label, 80);
+    const value = boundedWidgetText(record.value, 80);
+    const detail = boundedWidgetText(record.detail, 160);
+    const badge = boundedWidgetText(record.badge, 24);
+    identifiers.add(uniqueId);
+    widgets.push({
+      id,
+      extensionId,
+      title,
+      presentation,
+      ...(subtitle ? { subtitle } : {}),
+      ...(systemImage ? { systemImage } : {}),
+      ...(label ? { label } : {}),
+      ...(value ? { value } : {}),
+      ...(detail ? { detail } : {}),
+      ...(badge ? { badge } : {}),
+      ...(rawProgress === undefined ? {} : { progressPercent: Math.max(0, Math.min(100, rawProgress)) }),
+    });
+  }
+  return widgets;
+}
+
 export function hostMenuProviderId(account: Pick<Account, "provider" | "sdkProvider">): string {
   return account.provider === "ai-sdk" ? `ai-sdk:${account.sdkProvider || "unknown"}` : account.provider ?? "openai";
 }

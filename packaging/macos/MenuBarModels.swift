@@ -110,6 +110,22 @@ struct MenuBarForecast: Decodable {
     let score: Double
 }
 
+/// Host-rendered extension contribution. Extensions supply bounded data only;
+/// the Host owns the AppKit view hierarchy, spacing and interaction surface.
+struct MenuBarExtensionWidget: Decodable {
+    let id: String
+    let extensionId: String
+    let title: String
+    let subtitle: String?
+    let systemImage: String?
+    let presentation: String
+    let label: String?
+    let value: String?
+    let detail: String?
+    let badge: String?
+    let progressPercent: Double?
+}
+
 struct MenuBarNotification: Decodable {
     let id: String
     let kind: String
@@ -149,6 +165,7 @@ struct MenuBarSummary: Decodable {
     let githubStarPrompt: MenuBarGitHubStarPrompt?
     let forecast: MenuBarForecast?
     let notifications: [MenuBarNotification]?
+    let extensionWidgets: [MenuBarExtensionWidget]?
     let earnings: Earnings
 }
 
