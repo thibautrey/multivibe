@@ -981,6 +981,21 @@ final class MessageMarkdownTests: XCTestCase {
         }
         XCTAssertEqual(MessageBlock.inline("[Site](https://example.com)").runs.first?.link?.host, "example.com")
     }
+
+    func testWebSearchTransportCitationsAreHiddenFromPresentation() {
+        let framed = "Consulté aujourd’hui.\u{E200}cite\u{E202}turn0search1\u{E201}"
+        let grouped = "Adresse confirmée\u{E200}cite\u{E202}turn0search2\u{E202}turn0search4\u{E201}."
+        let orphaned = "Ouvert 24 h/24\u{E202}turn12search3\u{E201}."
+
+        XCTAssertEqual(String(MessageBlock.inline(framed).characters), "Consulté aujourd’hui.")
+        XCTAssertEqual(String(MessageBlock.inline(grouped).characters), "Adresse confirmée.")
+        XCTAssertEqual(String(MessageBlock.inline(orphaned).characters), "Ouvert 24 h/24.")
+    }
+
+    func testCitationLikeTextInsideCodeRemainsLiteral() {
+        let source = "```text\n\u{E200}cite\u{E202}turn0search1\u{E201}\n```"
+        XCTAssertEqual(MessageBlock.parse(source), [.code("\u{E200}cite\u{E202}turn0search1\u{E201}", "text")])
+    }
 }
 
 @MainActor final class HomeSuggestionTests: XCTestCase {
