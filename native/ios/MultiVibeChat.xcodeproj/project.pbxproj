@@ -87,6 +87,9 @@
 		9603E8B8789A6DE4543FBADA /* RemoteInstances.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA6B89A03896D709E22D13C5 /* RemoteInstances.swift */; };
 		B28DAADAE29B17B03F7DF0FB /* RemoteInstancesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D499EB95F5048DD372591A0 /* RemoteInstancesView.swift */; };
 		DF18DD8A27AC6BAAD42D2194 /* RemoteInstanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65C2FB5C1C8357ED347AEC8F /* RemoteInstanceTests.swift */; };
+		F23B2D1A98894DEFE2241C04 /* RelayUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCE462929D0E3F1A4F619694 /* RelayUsage.swift */; };
+		22602C45A42FA0BC47D8EE51 /* RelayUsageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC6D28D4C268910BBDE0A191 /* RelayUsageView.swift */; };
+		C4A1999FC9655EF81EAB7942 /* RelayUsageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A65934447F415B4FE7CED761 /* RelayUsageTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -190,6 +193,9 @@
 		FA6B89A03896D709E22D13C5 /* RemoteInstances.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteInstances.swift; sourceTree = "<group>"; };
 		2D499EB95F5048DD372591A0 /* RemoteInstancesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteInstancesView.swift; sourceTree = "<group>"; };
 		65C2FB5C1C8357ED347AEC8F /* RemoteInstanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteInstanceTests.swift; sourceTree = "<group>"; };
+		BCE462929D0E3F1A4F619694 /* RelayUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayUsage.swift; sourceTree = "<group>"; };
+		AC6D28D4C268910BBDE0A191 /* RelayUsageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayUsageView.swift; sourceTree = "<group>"; };
+		A65934447F415B4FE7CED761 /* RelayUsageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayUsageTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -250,6 +256,7 @@
 		4E2D41FACA6712F630B5551A /* Features */ = {
 			isa = PBXGroup;
 			children = (
+				AC6D28D4C268910BBDE0A191 /* RelayUsageView.swift */,
 				2D499EB95F5048DD372591A0 /* RemoteInstancesView.swift */,
 				CA4393E98F397246F4A41196 /* AuthenticationView.swift */,
 				4D23AAC6A6C06292DD31EC37 /* ChatView.swift */,
@@ -313,6 +320,7 @@
 		A61722CD3AFEF006161E3043 /* Core */ = {
 			isa = PBXGroup;
 			children = (
+				BCE462929D0E3F1A4F619694 /* RelayUsage.swift */,
 				FA6B89A03896D709E22D13C5 /* RemoteInstances.swift */,
 				68DE1C2DEDCA28B710DD6C5D /* AgentMemory.swift */,
 				BD80E887E35614D8AAC6E385 /* CloudAgentState.swift */,
@@ -369,6 +377,7 @@
 		EB53AE013465F9A3A0975BF0 /* MultiVibeChatTests */ = {
 			isa = PBXGroup;
 			children = (
+				A65934447F415B4FE7CED761 /* RelayUsageTests.swift */,
 				65C2FB5C1C8357ED347AEC8F /* RemoteInstanceTests.swift */,
 				7A9764498BB340F8623FA6CA /* NativeApplicationIdentityTests.swift */,
 				B34FCAA84CB37FAFCB223316 /* AgentMemoryTests.swift */,
@@ -530,6 +539,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C4A1999FC9655EF81EAB7942 /* RelayUsageTests.swift in Sources */,
 				DF18DD8A27AC6BAAD42D2194 /* RemoteInstanceTests.swift in Sources */,
 				62492105ACF7C46D3D8B5DB4 /* NativeApplicationIdentityTests.swift in Sources */,
 				D93DCB45C9AFA5ED65425AE5 /* AgentMemoryTests.swift in Sources */,
@@ -556,7 +566,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				22602C45A42FA0BC47D8EE51 /* RelayUsageView.swift in Sources */,
 				B28DAADAE29B17B03F7DF0FB /* RemoteInstancesView.swift in Sources */,
+				F23B2D1A98894DEFE2241C04 /* RelayUsage.swift in Sources */,
 				9603E8B8789A6DE4543FBADA /* RemoteInstances.swift in Sources */,
 				036E2BC5E7BD23973C3C4181 /* AgentMemory.swift in Sources */,
 				C7FF1FE7C944FBE343910524 /* CloudAgentState.swift in Sources */,
