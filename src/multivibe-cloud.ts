@@ -232,6 +232,17 @@ export class MultivibeCloudService {
    * run on resume; startup also checks persisted expiry before any UI is opened. */
   get sessionRevision(): number { return this.generation; }
 
+  async withRelayAccount<T>(operation:(accessToken:string)=>Promise<T>):Promise<T> {
+    const generation=this.generation;
+    const connection=currentCloudConnection(await this.store.getSettings());
+    if(!connection||connection.authenticationRequired)throw new Error('Connect this Host to MultiVibe Cloud first');
+    const refreshed=await this.refreshConnectionIfNeeded(connection);
+    this.assertGeneration(generation);
+    const result=await operation(refreshed.accessToken);
+    this.assertGeneration(generation);
+    return result;
+  }
+
   installManagedConnection(operation: () => Promise<void>): Promise<void> {
     return this.serialize(async () => {
       if ((await this.store.getSettings()).multivibeCloudDisconnectedAt !== undefined) throw new Error("Cloud was explicitly disconnected");

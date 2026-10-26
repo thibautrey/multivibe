@@ -16,7 +16,7 @@ const hash=(v:string)=>createHash('sha256').update(v).digest('hex');
 const equal=(a:string,b:string)=>a.length===b.length&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
 const uuid=(v:unknown):v is string=>typeof v==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 type Device={id:string;name:string;digest:string;expiresAt:number;previous?:{digest:string;expiresAt:number}};
-type State={version:1;accountId:string;machineId:string;name:string;machineToken:string;devices:Device[]};
+type State={version:1;machineId:string;name:string;machineToken:string;devices:Device[]};
 type Envelope={version:1;accountId:string;machineId:string;operation:string;deviceId?:string;deviceToken?:string;handoff?:string;name?:string;harnessId?:string;model?:string;provider?:string;conversationId?:string;commandId?:string;text?:string;after?:number};
 type Upload=(data:string,terminal?:boolean,status?:number,contentType?:string)=>Promise<void>;
 
@@ -29,7 +29,7 @@ export class InstanceRelay {
  private lastError?:string;
  private rotations=new Map<string,{token:string;expiresAt:number}>();
  constructor(private readonly runtime:HostHarnessRuntime,private readonly file:string,private readonly fetcher:typeof fetch=fetch,private readonly clock=Date.now) {
-  try {const s=JSON.parse(fs.readFileSync(file,'utf8'));if(s.version!==1||!uuid(s.accountId)||!uuid(s.machineId)||!/^mvr_[A-Za-z0-9_-]{43}$/.test(s.machineToken)||!Array.isArray(s.devices))throw Error();this.state=s;}
+  try {const s=JSON.parse(fs.readFileSync(file,'utf8'));if(s.version!==1||!uuid(s.machineId)||!/^mvr_[A-Za-z0-9_-]{43}$/.test(s.machineToken)||!Array.isArray(s.devices))throw Error();this.state=s;}
   catch(e:any){if(e.code!=='ENOENT')throw new Error('Remote instance configuration is invalid');}
  }
  private persist(){if(!this.state)return;fs.mkdirSync(path.dirname(this.file),{recursive:true,mode:0o700});const temp=this.file+'.'+randomUUID();fs.writeFileSync(temp,JSON.stringify(this.state),{mode:0o600});fs.renameSync(temp,this.file);fs.chmodSync(this.file,0o600);}
@@ -40,16 +40,14 @@ export class InstanceRelay {
   if(!response.ok)fail('MultiVibe Relay refused this operation (HTTP '+response.status+')',response.status===401?401:502);
   return JSON.parse(text);
  }
- async connect(accessToken:string,accountId:string,name:string){
+ async connect(accessToken:string,name:string){
   if(this.state||this.connecting)fail('Disconnect the existing instance before changing accounts',409);
   this.connecting=true;
   try {
-  if(!uuid(accountId)||typeof accessToken!=='string'||accessToken.length>16384)fail('Invalid account');
-  const verified=await this.account('/native/v1/auth/session',accessToken);
-  if(verified.accountId!==accountId)fail('Account identity changed',403);
+  if(typeof accessToken!=='string'||accessToken.length>16384)fail('Invalid account');
   const issued=await this.account('/relay/v1/machines',accessToken,{name:requiredText(name,80)});
   if(!uuid(issued.id)||!/^mvr_[A-Za-z0-9_-]{43}$/.test(issued.token))fail('Invalid machine enrollment',502);
-  this.state={version:1,accountId,machineId:issued.id,name,machineToken:issued.token,devices:[]};
+  this.state={version:1,machineId:issued.id,name,machineToken:issued.token,devices:[]};
   try{this.persist();}catch(error){await this.account('/relay/v1/machines/'+issued.id,accessToken,undefined,'DELETE').catch(()=>{});this.state=undefined;throw error;}
   this.start();return this.status();
   } finally {this.connecting=false;}
@@ -68,8 +66,6 @@ export class InstanceRelay {
   const old=this.state;if(!old)return;
   this.stop();this.state=undefined;this.handoff=undefined;fs.rmSync(this.file,{force:true});
   try {
-   const identity=await this.account('/native/v1/auth/session',accessToken);
-   if(identity.accountId!==old.accountId)fail('Reconnect the owning account',403);
    await this.account('/relay/v1/machines/'+old.machineId,accessToken,undefined,'DELETE');
   } catch {fail('Local access disabled; Cloud revocation could not be confirmed',502);}
  }
@@ -87,7 +83,9 @@ export class InstanceRelay {
  private envelope(body:any):Envelope {
   if(body?.model!==INSTANCE_RELAY_MODEL||!Array.isArray(body.messages)||body.messages.length!==1||body.messages[0]?.role!=='user'||typeof body.messages[0]?.content!=='string'||body.messages[0].content.length>131072)fail('Use the MultiVibe instance protocol',400);
   let e:Envelope;try{e=JSON.parse(body.messages[0].content);}catch{fail('Invalid instance envelope');}
-  const s=this.state;if(!s||e.version!==1||e.accountId!==s.accountId||e.machineId!==s.machineId)fail('Instance/account mismatch',403);
+  // Cloud routes a machine only for the authenticated owner account. The Host
+  // binds the envelope to that machine and never trusts its claimed account ID.
+  const s=this.state;if(!s||e.version!==1||!uuid(e.accountId)||e.machineId!==s.machineId)fail('Instance/account mismatch',403);
   return e;
  }
  private device(e:Envelope):Device {
@@ -122,7 +120,7 @@ export class InstanceRelay {
   if(e.operation==='models'){await json(await this.runtime.models({harnessId:identifier(e.harnessId),targetId:'local',authMode:'native'}));return;}
   if(e.operation!=='prompt'&&e.operation!=='recover')fail('Unsupported instance operation');
   if(!uuid(e.conversationId)||!uuid(e.commandId))fail('Invalid conversation operation');
-  const sessionId='mobile-'+hash([this.state!.accountId,device.id,e.conversationId].join(':')).slice(0,40);
+  const sessionId='mobile-'+hash([this.state!.machineId,device.id,e.conversationId].join(':')).slice(0,40);
   if(e.operation==='prompt')await this.runtime.create({id:sessionId,harnessId:identifier(e.harnessId),targetId:'local',authMode:'native',model:requiredText(e.model,256),...(e.provider?{nativeProvider:requiredText(e.provider,256)}:{}),title:'iPhone · '+device.name});
   const emit=async(event:HarnessEvent)=>{
    // Credentials, auth URLs, paths and arbitrary tool records never enter the
@@ -162,14 +160,14 @@ export class InstanceRelay {
  }
 }
 
-export function instanceRelayRoutes(service?:InstanceRelay){
+export function instanceRelayRoutes(service?:InstanceRelay,withAccount?:<T>(operation:(accessToken:string)=>Promise<T>)=>Promise<T>){
  const router=express.Router();router.use(express.json({limit:'32kb'}));router.use((_req,res,next)=>{res.setHeader('cache-control','no-store');if(!service)return res.status(404).json({error:'Host required'});next();});
  const route=(fn:(req:express.Request)=>unknown):express.RequestHandler=>(req,res,next)=>{Promise.resolve().then(()=>fn(req)).then(v=>res.json(v??{disconnected:true}),next);};
  router.get('/',route(()=>service!.status()));
- router.post('/connect',route(req=>service!.connect(req.body.accessToken,req.body.accountId,req.body.name??os.hostname())));
+ router.post('/connect',route(req=>{if(!withAccount)fail('Connect this Host to MultiVibe Cloud first',409);return withAccount(token=>service!.connect(token,req.body.name??os.hostname()));}));
  router.post('/pairing',route(()=>service!.pairing()));
  router.delete('/pairing',route(()=>service!.cancelPairing()));
  router.delete('/devices/:id',route(req=>service!.revokeDevice(String(req.params.id))));
- router.post('/disconnect',route(req=>service!.disconnect(req.body.accessToken)));
+ router.post('/disconnect',route(()=>{if(!withAccount)fail('Connect this Host to MultiVibe Cloud first',409);return withAccount(token=>service!.disconnect(token));}));
  return router;
 }
